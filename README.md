@@ -12,6 +12,9 @@
   <a href="LICENSE">Apache 2.0</a>
 </p>
 
+> [!WARNING]
+> Paseo Hub is in early development. Expect breaking changes and data loss. [Join the Paseo Discord](https://discord.gg/jz8T2uahpH) to learn more about the project.
+
 Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Connect the services where work arrives, describe agents as code in `.paseo/hub.yml`, and run them on the machines where your development environments already live.
 
 - **Your machines:** Hub dispatches to Paseo daemons on your laptop, devbox, or build server.
