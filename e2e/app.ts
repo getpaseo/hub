@@ -161,14 +161,12 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     DATABASE_URL: input.databaseUrl,
     PORT: String(input.port),
     PASEO_HUB_BIND: "127.0.0.1",
-    PASEO_HUB_PUBLIC_URL: input.origin,
-    PASEO_HUB_COMPLETION_TOKEN_SECRET: "phase-zero-completion-secret",
+    PASEO_HUB_APP_URL: input.origin,
     PASEO_REGISTRATION_MODE:
       input.registrationMode ?? (input.bootstrap === undefined ? "open" : "invite_only"),
     PASEO_ORGANIZATION_CREATION:
       input.organizationCreation ?? (input.bootstrap === undefined ? "open" : "disabled"),
-    BETTER_AUTH_URL: input.origin,
-    BETTER_AUTH_SECRET: browserAuthEnabled
+    PASEO_HUB_AUTH_SECRET: browserAuthEnabled
       ? "phase-zero-playwright-secret-at-least-32-characters"
       : `phase-zero-isolated-disabled-auth-${randomUUID()}`,
     PASEO_BROWSER_AUTH_ENABLED: String(browserAuthEnabled),

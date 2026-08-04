@@ -86,8 +86,8 @@ describe("production Hub cold start", () => {
     const previous = new Map(
       [
         "DATABASE_URL",
-        "BETTER_AUTH_SECRET",
-        "BETTER_AUTH_URL",
+        "PASEO_HUB_AUTH_SECRET",
+        "PASEO_HUB_APP_URL",
         "PASEO_REGISTRATION_MODE",
         "PASEO_ORGANIZATION_CREATION",
         "PASEO_BOOTSTRAP_ORGANIZATION",
@@ -96,8 +96,8 @@ describe("production Hub cold start", () => {
       ].map((name) => [name, process.env[name]]),
     );
     process.env["DATABASE_URL"] = databaseUrl;
-    process.env["BETTER_AUTH_SECRET"] = "production-bootstrap-secret-at-least-32-characters";
-    process.env["BETTER_AUTH_URL"] = "http://localhost:3000";
+    process.env["PASEO_HUB_AUTH_SECRET"] = "production-bootstrap-secret-at-least-32-characters";
+    process.env["PASEO_HUB_APP_URL"] = "http://localhost:3000";
     process.env["PASEO_REGISTRATION_MODE"] = "invite_only";
     process.env["PASEO_ORGANIZATION_CREATION"] = "disabled";
     process.env["PASEO_BOOTSTRAP_ORGANIZATION"] = "Production Customer";

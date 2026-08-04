@@ -37,14 +37,14 @@ interface GitHubConfigurationCommand {
 
 async function main(): Promise<void> {
   const databaseUrl = requiredEnvironment("DATABASE_URL");
-  const publicBaseUrl = requiredEnvironment("PASEO_HUB_PUBLIC_URL");
+  const publicBaseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
   const scenario = readScenario();
   const database = await createDatabase(databaseUrl);
-  const authSecret = requiredEnvironment("BETTER_AUTH_SECRET");
+  const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
         databaseUrl,
-        baseURL: requiredEnvironment("BETTER_AUTH_URL"),
+        baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,
         policy: readInstanceAuthPolicy(),
       })
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
       : { operationAuth: auth.apiKeys }),
     registrations,
     publicBaseUrl,
-    completionTokenSecret: requiredEnvironment("PASEO_HUB_COMPLETION_TOKEN_SECRET"),
+    completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     async close() {
       await auth?.close();
       await database.close();

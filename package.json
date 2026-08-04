@@ -2,7 +2,13 @@
   "name": "paseo-hub",
   "version": "1.0.0",
   "private": true,
+  "description": "Self-hosted automation for Paseo daemons",
+  "homepage": "https://paseo.sh/docs/hub",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getpaseo/hub.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite dev",

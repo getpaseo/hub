@@ -7,9 +7,9 @@ primary_region = 'sin'
 [env]
   NODE_ENV = 'production'
   PORT = '3000'
-  PASEO_HUB_PUBLIC_URL = 'https://paseo-hub.fly.dev'
+  PASEO_HUB_APP_URL = 'https://paseo-hub.fly.dev'
   PASEO_HUB_TRUSTED_CLIENT_IP_HEADER = 'fly-client-ip'
-  # PASEO_HUB_COMPLETION_TOKEN_SECRET must be installed with `fly secrets set`.
+  # PASEO_HUB_AUTH_SECRET must be installed in the app's secret store.
 
 [http_service]
   internal_port = 3000

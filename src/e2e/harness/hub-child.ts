@@ -69,8 +69,8 @@ async function main(): Promise<void> {
   });
   const auth = createAuthServer({
     databaseUrl,
-    baseURL: requiredEnvironment("BETTER_AUTH_URL"),
-    secret: requiredEnvironment("BETTER_AUTH_SECRET"),
+    baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
+    secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     policy: readInstanceAuthPolicy(),
   });
   await auth.initialize?.();
@@ -125,8 +125,8 @@ async function main(): Promise<void> {
         },
       },
     ],
-    publicBaseUrl: requiredEnvironment("PASEO_HUB_PUBLIC_URL"),
-    completionTokenSecret: requiredEnvironment("PASEO_HUB_COMPLETION_TOKEN_SECRET"),
+    publicBaseUrl: requiredEnvironment("PASEO_HUB_APP_URL"),
+    completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     browserOrganizationAccess: auth,
   });
   const hub = application.hub;

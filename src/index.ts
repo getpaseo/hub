@@ -40,22 +40,22 @@ export async function handleDaemonUpgrade(
 
 async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const config = loadRuntimeConfig();
+  const identity = readHubIdentity();
   const database = await createDatabaseHandle(config.databaseUrl);
   const auth =
-    database === null ? null : createProductionAuthServer(config.databaseUrl, config.authPolicy);
+    database === null
+      ? null
+      : createProductionAuthServer(config.databaseUrl, config.authPolicy, identity);
   if (config.authPolicy.bootstrap !== undefined && auth === null) {
-    throw new Error("BETTER_AUTH_SECRET is required when instance bootstrap is configured");
+    throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
   }
   await auth?.initialize?.();
-  const configuredPublicBaseUrl = readPublicBaseUrlOption().publicBaseUrl;
-  const applicationBaseUrl =
-    configuredPublicBaseUrl ?? process.env["BETTER_AUTH_URL"] ?? "http://localhost:3000";
   const providerOptions = {
     database,
     auth,
     ...(auth?.apiKeys === undefined ? {} : { operationAuth: auth.apiKeys }),
-    applicationBaseUrl,
-    ...(configuredPublicBaseUrl === undefined ? {} : { publicBaseUrl: configuredPublicBaseUrl }),
+    applicationBaseUrl: identity.appUrl,
+    publicBaseUrl: identity.appUrl,
   };
   const registrations = [
     createGitHubRegistration(providerOptions),
@@ -66,8 +66,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     database,
     auth,
     registrations,
-    ...(configuredPublicBaseUrl === undefined ? {} : { publicBaseUrl: configuredPublicBaseUrl }),
-    ...readCompletionTokenSecretOption(),
+    publicBaseUrl: identity.appUrl,
+    ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),
     async close() {
       await auth?.close();
       await database?.close();
@@ -75,19 +75,19 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   });
 }
 
-function createProductionAuthServer(databaseUrl: string, authPolicy: RuntimeConfig["authPolicy"]) {
-  const secret = process.env["BETTER_AUTH_SECRET"];
-  if (secret === undefined || secret.length === 0) {
-    logger.warn("BETTER_AUTH_SECRET is unset; browser auth routes are closed");
+function createProductionAuthServer(
+  databaseUrl: string,
+  authPolicy: RuntimeConfig["authPolicy"],
+  identity: HubIdentity,
+) {
+  if (identity.authSecret === undefined) {
+    logger.warn("PASEO_HUB_AUTH_SECRET is unset; browser auth routes are closed");
     return null;
   }
   return createAuthServer({
     databaseUrl,
-    secret,
-    baseURL:
-      process.env["BETTER_AUTH_URL"] ??
-      readPublicBaseUrlOption().publicBaseUrl ??
-      "http://localhost:3000",
+    secret: identity.authSecret,
+    baseURL: identity.appUrl,
     policy: authPolicy,
   });
 }
@@ -117,16 +117,20 @@ function loadRuntimeConfig(): RuntimeConfig {
   };
 }
 
-function readCompletionTokenSecretOption(): { completionTokenSecret?: string } {
-  const value = process.env["PASEO_HUB_COMPLETION_TOKEN_SECRET"];
-  return value === undefined || value.length === 0 ? {} : { completionTokenSecret: value };
+interface HubIdentity {
+  appUrl: string;
+  authSecret?: string;
 }
 
-function readPublicBaseUrlOption(): { publicBaseUrl?: string } {
-  const value = process.env["PASEO_HUB_PUBLIC_URL"];
-  return value === undefined || value.length === 0
-    ? {}
-    : { publicBaseUrl: new URL(value).toString() };
+function readHubIdentity(): HubIdentity {
+  const configuredAppUrl = process.env["PASEO_HUB_APP_URL"];
+  const configuredAuthSecret = process.env["PASEO_HUB_AUTH_SECRET"];
+  return {
+    appUrl: new URL(configuredAppUrl ?? "http://localhost:3000").toString(),
+    ...(configuredAuthSecret === undefined || configuredAuthSecret.length === 0
+      ? {}
+      : { authSecret: configuredAuthSecret }),
+  };
 }
 
 async function main(): Promise<void> {
