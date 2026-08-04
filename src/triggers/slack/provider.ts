@@ -56,7 +56,7 @@ export interface SlackOutputContext {
 export function createSlackTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   connectionsForProject?: (projectId: string) => ConnectionResolver;
-  botUserIdForWorkspace(projectId: string, teamId: string): Promise<string | undefined>;
+  botUserIdForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
   client: SlackBotClient;
 }): TriggerProvider<"slack", SlackTriggerContext, SlackOutputContext> {
   return {
@@ -64,7 +64,7 @@ export function createSlackTriggerProvider(options: {
     eventNames: ["slack.mention"],
     async match(trigger) {
       const event = NormalizedSlackMentionEventSchema.parse(trigger.payload);
-      const botUserId = await options.botUserIdForWorkspace(trigger.projectId, event.teamId);
+      const botUserId = await options.botUserIdForWorkspace(trigger.organizationId, event.teamId);
       if (botUserId === undefined) return [];
       const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
       if (stored === undefined) return [];

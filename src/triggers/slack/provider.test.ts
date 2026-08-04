@@ -24,9 +24,9 @@ describe("Slack trigger provider", () => {
         assert.equal(value, "token");
         return "secret-token";
       },
-      botUserIdForWorkspace: (projectId, teamId) => {
+      botUserIdForWorkspace: (organizationId, teamId) => {
         if (!workspaceAvailable) throw new Error("workspace lookup must not run during recovery");
-        botUserLookups.push([projectId, teamId]);
+        botUserLookups.push([organizationId, teamId]);
         return Promise.resolve("UBOT");
       },
       client,
@@ -121,7 +121,7 @@ describe("Slack trigger provider", () => {
     });
     assert.equal(integrationResolutions, 1);
     assert.equal(resolutionContext?.executionId, "execution-1");
-    assert.deepEqual(botUserLookups, [[project.id, "T1"]]);
+    assert.deepEqual(botUserLookups, [["org-1", "T1"]]);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
       status: "succeeded",
