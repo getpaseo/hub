@@ -11,6 +11,7 @@ import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
+import { cn } from "../lib/utils.js";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
@@ -34,6 +35,7 @@ import {
 } from "../connections/functions.js";
 import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
+import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
 import {
   archiveProject,
   availableGitHubRepositories,
@@ -49,7 +51,6 @@ import {
 
 type OrganizationSnapshot = Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>;
 type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>;
-type GitHubRepository = ProjectSnapshot["repositories"][number];
 type CommandResult = Result<{ state: "complete" }>;
 
 export function ProjectsPanel() {
@@ -390,10 +391,20 @@ export function ProjectConfigurationPanel() {
     queryKey: ["github-repositories", tenant.organization.id, tenant.project?.id],
     queryFn: () => loadRepositories({ data: scope }),
   });
+  const [sourceMode, setSourceMode] = useState<"manual" | "github" | null>(null);
+  const [stagedRepository, setStagedRepository] = useState<ComboboxRepository | null>(null);
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const configuration = data.configuration;
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const mode = sourceMode ?? configuration.authority;
+  const selectMode = (next: "manual" | "github") => {
+    setSourceMode(next);
+    setStagedRepository(null);
+    if (next === "manual" && configuration.authority === "github") {
+      manual.mutate({ data: scope });
+    }
+  };
+  const submitManual = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     save.mutate({
       data: { ...scope, rawYaml: formString(new FormData(event.currentTarget), "rawYaml") },
@@ -402,36 +413,8 @@ export function ProjectConfigurationPanel() {
   const availableRepositories = repositories.data?.status === "ok" ? repositories.data.data : [];
   return (
     <>
-      <PageHeader
-        title="Configuration"
-        description="The active revision and the latest source synchronization are independent."
-      >
-        {data.capabilities.manageResources && configuration.authority === "github" ? (
-          <Button
-            disabled={sync.isPending}
-            aria-busy={sync.isPending}
-            onClick={() => sync.mutate({ data: scope })}
-          >
-            {sync.isPending ? "Syncing…" : "Sync now"}
-          </Button>
-        ) : null}
-      </PageHeader>
+      <PageHeader title="Configuration" description={`Setup and source for ${data.project.name}.`} />
       <CommandError mutations={[sync, manual, save, configure]} />
-      {data.capabilities.manageResources ? (
-        <GitHubRepositorySelector
-          repositories={availableRepositories}
-          isPending={configure.isPending}
-          onSelect={(repository) =>
-            configure.mutate({
-              data: {
-                ...scope,
-                connectionId: repository.connectionId,
-                repositoryId: repository.repositoryId,
-              },
-            })
-          }
-        />
-      ) : null}
       <Section title="Active revision">
         <div className="rounded-lg border bg-card p-5">
           {configuration.activeRevision === null ? (
@@ -452,104 +435,202 @@ export function ProjectConfigurationPanel() {
           )}
         </div>
       </Section>
-      <Section title="Latest sync state">
-        <p role="status" className="rounded-lg border bg-card p-5 text-sm">
-          {configuration.lastSyncAttempt === null
-            ? "No synchronization attempt yet."
-            : `${syncOutcome(configuration.lastSyncAttempt.outcome)} at ${formatDate(configuration.lastSyncAttempt.createdAt)}${configuration.lastSyncAttempt.commitSha === null ? "" : ` · ${configuration.lastSyncAttempt.commitSha.slice(0, 12)}`}`}
-        </p>
-      </Section>
-      <ConfigurationSourcePanel
+      <ConfigurationSourceSection
         configuration={configuration}
         manageResources={data.capabilities.manageResources}
-        onSwitchToManual={() => manual.mutate({ data: scope })}
-        onSubmit={submit}
+        mode={mode}
+        onSelectMode={selectMode}
+        switchToManualPending={manual.isPending}
+        repositories={availableRepositories}
+        repositoriesLoading={repositories.isPending}
+        stagedRepository={stagedRepository}
+        onStageRepository={setStagedRepository}
+        onSaveRepository={() => {
+          if (stagedRepository === null) return;
+          configure.mutate(
+            {
+              data: {
+                ...scope,
+                connectionId: stagedRepository.connectionId,
+                repositoryId: stagedRepository.repositoryId,
+              },
+            },
+            { onSuccess: () => setStagedRepository(null) },
+          );
+        }}
+        saveRepositoryPending={configure.isPending}
+        onSync={() => sync.mutate({ data: scope })}
+        syncPending={sync.isPending}
+        onSubmitManual={submitManual}
+        saveManualPending={save.isPending}
       />
     </>
   );
 }
 
-function GitHubRepositorySelector({
+function ConfigurationSourceSection({
+  configuration,
+  manageResources,
+  mode,
+  onSelectMode,
+  switchToManualPending,
   repositories,
-  isPending,
-  onSelect,
+  repositoriesLoading,
+  stagedRepository,
+  onStageRepository,
+  onSaveRepository,
+  saveRepositoryPending,
+  onSync,
+  syncPending,
+  onSubmitManual,
+  saveManualPending,
 }: {
-  repositories: GitHubRepository[];
-  isPending: boolean;
-  onSelect: (repository: GitHubRepository) => void;
+  configuration: ProjectSnapshot["configuration"];
+  manageResources: boolean;
+  mode: "manual" | "github";
+  onSelectMode: (mode: "manual" | "github") => void;
+  switchToManualPending: boolean;
+  repositories: ComboboxRepository[];
+  repositoriesLoading: boolean;
+  stagedRepository: ComboboxRepository | null;
+  onStageRepository: (repository: ComboboxRepository) => void;
+  onSaveRepository: () => void;
+  saveRepositoryPending: boolean;
+  onSync: () => void;
+  syncPending: boolean;
+  onSubmitManual: (event: FormEvent<HTMLFormElement>) => void;
+  saveManualPending: boolean;
 }) {
+  const currentRepository: ComboboxRepository | null =
+    configuration.sourceState.kind === "github"
+      ? {
+          connectionId: configuration.sourceState.githubConnectionId,
+          repositoryId: configuration.sourceState.githubRepositoryId,
+          fullName: configuration.sourceState.githubRepositoryFullName,
+          defaultBranch: configuration.sourceState.githubDefaultBranch,
+        }
+      : null;
+
+  if (!manageResources) {
+    return (
+      <Section title="Configuration source">
+        <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
+          {currentRepository === null ? "Manual" : `GitHub · ${currentRepository.fullName}`}
+        </p>
+      </Section>
+    );
+  }
+
+  const manualUnavailable =
+    configuration.authority === "github" && configuration.activeRevision === null;
+
   return (
-    <Section title="GitHub source">
-      <div className="grid gap-2">
-        {repositories.map((repository) => (
-          <div
-            key={repository.id}
-            className="flex items-center justify-between rounded-md border p-3"
-          >
-            <span className="text-sm">
-              {repository.fullName}
-              <span className="ml-2 text-xs text-muted-foreground">{repository.defaultBranch}</span>
-            </span>
+    <Section
+      title="Configuration source"
+      description="Where this project's configuration comes from."
+    >
+      <div role="radiogroup" aria-label="Configuration source mode" className="inline-flex w-fit gap-1 rounded-md border bg-muted p-1">
+        <SourceModeButton
+          active={mode === "manual"}
+          disabled={switchToManualPending || manualUnavailable}
+          title={manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined}
+          onClick={() => onSelectMode("manual")}
+        >
+          Manual
+        </SourceModeButton>
+        <SourceModeButton active={mode === "github"} disabled={switchToManualPending} onClick={() => onSelectMode("github")}>
+          <ProviderGlyph provider="github" />
+          GitHub
+        </SourceModeButton>
+      </div>
+      {mode === "github" ? (
+        <div className="grid gap-3 rounded-lg border bg-card p-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <RepositoryCombobox
+              repositories={repositories}
+              loading={repositoriesLoading}
+              selected={stagedRepository ?? currentRepository}
+              placeholder="Select repository…"
+              disabled={saveRepositoryPending}
+              onSelect={onStageRepository}
+            />
             <Button
-              size="sm"
-              variant="outline"
-              disabled={isPending}
-              onClick={() => onSelect(repository)}
+              disabled={stagedRepository === null || saveRepositoryPending}
+              aria-busy={saveRepositoryPending}
+              onClick={onSaveRepository}
             >
-              Use for configuration
+              Save
+            </Button>
+            {configuration.authority === "github" ? (
+              <Button variant="outline" disabled={syncPending} aria-busy={syncPending} onClick={onSync}>
+                {syncPending ? "Syncing…" : "Sync now"}
+              </Button>
+            ) : null}
+          </div>
+          {configuration.authority === "github" ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              {configuration.lastSyncAttempt === null
+                ? "No synchronization attempt yet."
+                : `${syncOutcome(configuration.lastSyncAttempt.outcome)} at ${formatDate(configuration.lastSyncAttempt.createdAt)}${configuration.lastSyncAttempt.commitSha === null ? "" : ` · ${configuration.lastSyncAttempt.commitSha.slice(0, 12)}`}`}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <form aria-label="Manual configuration" className="grid gap-3" onSubmit={onSubmitManual}>
+          <label className="text-sm font-medium" htmlFor="manual-configuration">
+            Configuration YAML
+          </label>
+          <textarea
+            id="manual-configuration"
+            name="rawYaml"
+            className="min-h-72 rounded-md border bg-background p-3 font-mono text-xs"
+            defaultValue={configuration.activeRevision?.rawYaml ?? "environments: []\ntriggers: []\n"}
+          />
+          <div>
+            <Button
+              type="submit"
+              disabled={saveManualPending || switchToManualPending}
+              aria-busy={saveManualPending || switchToManualPending}
+            >
+              Save and activate
             </Button>
           </div>
-        ))}
-      </div>
+        </form>
+      )}
     </Section>
   );
 }
 
-function ConfigurationSourcePanel({
-  configuration,
-  manageResources,
-  onSwitchToManual,
-  onSubmit,
+function SourceModeButton({
+  active,
+  disabled,
+  title,
+  onClick,
+  children,
 }: {
-  configuration: ProjectSnapshot["configuration"];
-  manageResources: boolean;
-  onSwitchToManual: () => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  active: boolean;
+  disabled?: boolean;
+  title?: string | undefined;
+  onClick: () => void;
+  children: ReactNode;
 }) {
-  if (configuration.authority === "github") {
-    return (
-      <Section title="GitHub source">
-        {configuration.sourceState.kind === "github" ? (
-          <p className="mb-3 text-sm text-muted-foreground">
-            {configuration.sourceState.githubRepositoryFullName}
-          </p>
-        ) : null}
-        {manageResources && configuration.activeRevision !== null ? (
-          <Button variant="outline" onClick={onSwitchToManual}>
-            Switch to manual
-          </Button>
-        ) : null}
-      </Section>
-    );
-  }
-  if (!manageResources) return null;
   return (
-    <Section title="Manual source">
-      <form aria-label="Manual configuration" className="grid gap-3" onSubmit={onSubmit}>
-        <label className="text-sm font-medium" htmlFor="manual-configuration">
-          Configuration YAML
-        </label>
-        <textarea
-          id="manual-configuration"
-          name="rawYaml"
-          className="min-h-72 rounded-md border bg-background p-3 font-mono text-xs"
-          defaultValue={configuration.activeRevision?.rawYaml ?? "environments: []\ntriggers: []\n"}
-        />
-        <div>
-          <Button type="submit">Save and activate</Button>
-        </div>
-      </form>
-    </Section>
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+        active
+          ? "bg-background text-foreground shadow-xs"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

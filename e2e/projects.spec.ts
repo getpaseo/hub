@@ -52,9 +52,9 @@ test("keeps the active exact-SHA revision when the next GitHub revision is inval
   await app.connections.connectGitHub();
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
-  await app.connections.useGitHubRepository("acme-inc/app");
+  await app.configuration.useRepository("acme-inc/app");
   await projectExternal.setGitHubRevision(9001, "valid-sha", validConfiguration);
-  await app.configuration.useRepository();
+  await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
   await projectExternal.setGitHubRevision(
     9001,
@@ -64,6 +64,27 @@ test("keeps the active exact-SHA revision when the next GitHub revision is inval
   await projectExternal.pushGitHubDefaultBranch(9001, "invalid-sha", "invalid-delivery");
   await app.configuration.syncNow();
   await app.configuration.expectInvalidPreserved(1);
+});
+
+test("switches a project's configuration source between GitHub and manual", async ({
+  hub,
+  page,
+  projectExternal,
+}) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await app.navigation.openOrganizationSection("Connections");
+  await app.connections.connectGitHub();
+  await app.navigation.openOrganizationSection("Projects");
+  await app.navigation.openProject("Default");
+  await app.configuration.useRepository("acme-inc/app");
+  await projectExternal.setGitHubRevision(9001, "valid-sha", validConfiguration);
+  await app.configuration.syncNow();
+  await app.configuration.expectActiveRevision(1);
+  await app.configuration.switchToManual();
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.expectActiveRevision(2);
 });
 
 test("isolates activity and executions by project", async ({ hub, page }) => {
@@ -92,9 +113,9 @@ test("allows every project to use an organization GitHub repository", async ({ h
   await app.connections.connectGitHub();
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
-  await app.connections.useGitHubRepository("acme-inc/app");
+  await app.configuration.useRepository("acme-inc/app");
   await app.navigation.switchProject("Second");
-  await app.connections.useGitHubRepository("acme-inc/app");
+  await app.configuration.useRepository("acme-inc/app");
 });
 
 test("rejects inaccessible tenant slugs and keeps core project routes accessible", async ({
