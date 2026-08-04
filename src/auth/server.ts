@@ -56,6 +56,7 @@ interface AuthServerOptions {
   secret: string;
   baseURL: string;
   policy?: InstanceAuthPolicy;
+  trustedClientIpHeader?: string;
 }
 
 const sessionSchema = z.object({
@@ -102,6 +103,15 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const auth = betterAuth({
     baseURL: options.baseURL,
     secret: options.secret,
+    ...(options.trustedClientIpHeader === undefined
+      ? {}
+      : {
+          advanced: {
+            ipAddress: {
+              ipAddressHeaders: [options.trustedClientIpHeader],
+            },
+          },
+        }),
     database: drizzleAdapter(database, { provider: "pg", schema: authSchema }),
     emailAndPassword: { enabled: true, minPasswordLength: PASSWORD_MIN_LENGTH },
     user: {

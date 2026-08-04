@@ -45,7 +45,12 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const auth =
     database === null
       ? null
-      : createProductionAuthServer(config.databaseUrl, config.authPolicy, identity);
+      : createProductionAuthServer(
+          config.databaseUrl,
+          config.authPolicy,
+          identity,
+          config.trustedClientIpHeader,
+        );
   if (config.authPolicy.bootstrap !== undefined && auth === null) {
     throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
   }
@@ -79,6 +84,7 @@ function createProductionAuthServer(
   databaseUrl: string,
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
+  trustedClientIpHeader: string | undefined,
 ) {
   if (identity.authSecret === undefined) {
     logger.warn("PASEO_HUB_AUTH_SECRET is unset; browser auth routes are closed");
@@ -89,6 +95,7 @@ function createProductionAuthServer(
     secret: identity.authSecret,
     baseURL: identity.appUrl,
     policy: authPolicy,
+    ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
   });
 }
 
