@@ -1,0 +1,170 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import type { ProviderTriggerAcceptance } from "../../db/types.js";
+import { readBoundedRequestBody } from "../../http/request-body.js";
+import { logger } from "../../logger.js";
+import type { TriggerHandler, TriggerSource } from "../index.js";
+import {
+  normalizeSlackEvent,
+  SlackEventCallbackSchema,
+  SlackUrlVerificationSchema,
+} from "./events.js";
+
+const MAX_WEBHOOK_BYTES = 1_048_576;
+const MAX_TIMESTAMP_SKEW_SECONDS = 5 * 60;
+const SlackEnvelopeTypeSchema = z.object({ type: z.string() }).passthrough();
+
+export interface SlackWebhookSourceOptions {
+  appId: string;
+  signingSecret: string;
+  now?: () => number;
+  accept(input: {
+    teamId: string;
+    deliveryId: string;
+    signatureHash: string;
+    source: string;
+    payload: unknown;
+    receivedAt: Date;
+    dropReason?: string;
+  }): Promise<ProviderTriggerAcceptance>;
+  recoverDuplicate?(triggerId: string): Promise<Parameters<TriggerHandler>[0] | undefined>;
+}
+
+export interface SlackWebhookEndpoint extends TriggerSource {
+  handle(request: Request): Promise<Response>;
+}
+
+interface VerifiedSlackRequest {
+  payload: unknown;
+  signatureHash: string;
+}
+
+export function createSlackWebhookSource(options: SlackWebhookSourceOptions): SlackWebhookEndpoint {
+  const handlers = new Set<TriggerHandler>();
+
+  return {
+    dispatchMode: "durable-handoff",
+    async handle(request) {
+      const verified = await verifySlackRequest(request, options);
+      if (verified instanceof Response) return verified;
+      return handleVerifiedSlackRequest(verified, handlers, options);
+    },
+    async start(handler) {
+      handlers.add(handler);
+    },
+    async stop() {
+      handlers.clear();
+    },
+  };
+}
+
+async function verifySlackRequest(
+  request: Request,
+  options: Pick<SlackWebhookSourceOptions, "signingSecret" | "now">,
+): Promise<VerifiedSlackRequest | Response> {
+  const signature = request.headers.get("x-slack-signature");
+  const timestamp = request.headers.get("x-slack-request-timestamp");
+  if (signature === null || timestamp === null) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
+  if (body instanceof Response) return body;
+  if (!verifySlackSignature(options.signingSecret, timestamp, body, signature, options.now?.())) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
+  }
+
+  return { payload, signatureHash: createHash("sha256").update(signature).digest("hex") };
+}
+
+async function handleVerifiedSlackRequest(
+  verified: VerifiedSlackRequest,
+  handlers: Set<TriggerHandler>,
+  options: SlackWebhookSourceOptions,
+): Promise<Response> {
+  const envelopeType = SlackEnvelopeTypeSchema.safeParse(verified.payload);
+  if (!envelopeType.success) return new Response("Bad Request", { status: 400 });
+
+  if (envelopeType.data.type === "url_verification") {
+    const challenge = SlackUrlVerificationSchema.safeParse(verified.payload);
+    if (!challenge.success || !matchesConfiguredApp(challenge.data.api_app_id, options.appId)) {
+      return new Response("Bad Request", { status: 400 });
+    }
+    return Response.json({ challenge: challenge.data.challenge });
+  }
+
+  if (envelopeType.data.type !== "event_callback") return new Response("OK", { status: 200 });
+  const callback = SlackEventCallbackSchema.safeParse(verified.payload);
+  if (!callback.success || callback.data.api_app_id !== options.appId) {
+    return new Response("Bad Request", { status: 400 });
+  }
+  const event = normalizeSlackEvent(callback.data);
+  if (event === undefined) return new Response("OK", { status: 200 });
+
+  const deliveryId = `slack-${event.id}`;
+  try {
+    const acceptance = await options.accept({
+      teamId: event.teamId,
+      deliveryId,
+      signatureHash: verified.signatureHash,
+      source: "slack.mention",
+      payload: event,
+      receivedAt: new Date(event.eventTime * 1_000),
+      ...(handlers.size === 0 ? { dropReason: "slack_no_handler" } : {}),
+    });
+    let triggers: Parameters<TriggerHandler>[0][] = [];
+    if (acceptance.status === "accepted") {
+      triggers = acceptance.triggers;
+    } else if (acceptance.status === "duplicate") {
+      const recovered = await Promise.all(
+        acceptance.triggerIds.map((triggerId) =>
+          Promise.resolve(options.recoverDuplicate?.(triggerId)),
+        ),
+      );
+      triggers = recovered.filter(
+        (trigger): trigger is NonNullable<typeof trigger> => trigger !== undefined,
+      );
+    }
+    await Promise.all(
+      triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
+    );
+    return new Response("OK", { status: 200 });
+  } catch (error) {
+    logger.error({ err: error, deliveryId }, "Slack event handoff failed");
+    return Response.json({ error: "event_handoff_unavailable" }, { status: 503 });
+  }
+}
+
+function matchesConfiguredApp(requestAppId: string | undefined, configuredAppId: string): boolean {
+  return requestAppId === undefined || requestAppId === configuredAppId;
+}
+
+export function verifySlackSignature(
+  secret: string,
+  timestamp: string,
+  body: string | Uint8Array,
+  signature: string,
+  nowMilliseconds = Date.now(),
+): boolean {
+  if (!/^\d+$/u.test(timestamp) || !/^v0=[a-f0-9]{64}$/u.test(signature)) return false;
+  const seconds = Number(timestamp);
+  if (!Number.isSafeInteger(seconds)) return false;
+  const nowSeconds = Math.floor(nowMilliseconds / 1_000);
+  if (Math.abs(nowSeconds - seconds) > MAX_TIMESTAMP_SKEW_SECONDS) return false;
+
+  const expected = createHmac("sha256", secret)
+    .update("v0:")
+    .update(timestamp)
+    .update(":")
+    .update(body)
+    .digest();
+  const actual = Buffer.from(signature.slice(3), "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}

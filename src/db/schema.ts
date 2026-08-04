@@ -1,0 +1,910 @@
+import { sql } from "drizzle-orm";
+import {
+  type AnyPgColumn,
+  boolean,
+  bigint,
+  check,
+  foreignKey,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { INVITATION_ROLES, ORGANIZATION_ROLES } from "../auth/organization-contract.js";
+import { API_KEY_SCOPES } from "../auth/api-key-contract.js";
+
+export { INVITATION_ROLES, ORGANIZATION_ROLES };
+
+export const MACHINE_STATUSES = ["spawning", "alive", "terminated"] as const;
+export const AGENT_EXECUTION_STATUSES = ["spawning", "running", "succeeded", "failed"] as const;
+export const INVITATION_STATUSES = ["pending", "accepted", "rejected", "canceled"] as const;
+
+export type MachineStatus = (typeof MACHINE_STATUSES)[number];
+export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
+
+export const PROJECT_STATUSES = ["active", "archived"] as const;
+export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
+export const CONNECTION_PROVIDERS = ["github", "slack", "discord"] as const;
+
+export type MachineSource =
+  | { kind: "trigger"; triggerId: string }
+  | { kind: "manual"; userId?: string }
+  | { kind: "daemon"; daemonId: string };
+
+export const machineStatus = pgEnum("machine_status", MACHINE_STATUSES);
+export const agentExecutionStatus = pgEnum("agent_execution_status", AGENT_EXECUTION_STATUSES);
+
+export const providerEventReceipts = pgTable(
+  "provider_event_receipts",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number] | "manual">().notNull(),
+    connectionId: uuid("connection_id"),
+    resourceId: text("resource_id"),
+    deliveryId: text("delivery_id").notNull(),
+    signatureHash: text("signature_hash"),
+    source: text().notNull(),
+    repo: text(),
+    payload: jsonb().notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    droppedReason: text("dropped_reason"),
+  },
+  (table) => [
+    uniqueIndex("provider_event_receipts_id_organization_unique").on(
+      table.id,
+      table.organizationId,
+    ),
+    uniqueIndex("provider_event_receipts_organization_delivery_unique").on(
+      table.organizationId,
+      table.deliveryId,
+    ),
+    uniqueIndex("provider_event_receipts_signature_unique")
+      .on(table.signatureHash)
+      .where(sql`${table.signatureHash} is not null`),
+    index("provider_event_receipts_organization_received_idx").on(
+      table.organizationId,
+      table.receivedAt.desc(),
+    ),
+    index("provider_event_receipts_resource_idx").on(
+      table.organizationId,
+      table.provider,
+      table.connectionId,
+      table.resourceId,
+    ),
+    check(
+      "provider_event_receipts_provider_check",
+      sql`${table.provider} in ('github', 'slack', 'discord', 'manual')`,
+    ),
+  ],
+);
+
+export const triggers = pgTable(
+  "triggers",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, {
+        onDelete: "cascade",
+      }),
+    projectId: uuid("project_id"),
+    configurationRevisionId: uuid("configuration_revision_id"),
+    receiptId: uuid("receipt_id").notNull(),
+    connectionId: uuid("connection_id"),
+    resourceId: text("resource_id"),
+    deliveryId: text("delivery_id").notNull(),
+    signatureHash: text("signature_hash"),
+    source: text().notNull(),
+    repo: text(),
+    payload: jsonb().notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    matchedTriggerName: text("matched_trigger_name"),
+    droppedReason: text("dropped_reason"),
+    dispatchPlan: jsonb("dispatch_plan").$type<readonly LaunchMachineIntent[]>(),
+    lifecycleState: text("lifecycle_state").$type<
+      "accepted" | "running" | "succeeded" | "failed"
+    >(),
+  },
+  (table) => [
+    uniqueIndex("triggers_receipt_project_unique").on(table.receiptId, table.projectId),
+    uniqueIndex("triggers_signature_hash_unique")
+      .on(table.signatureHash)
+      .where(sql`${table.signatureHash} is not null`),
+    uniqueIndex("triggers_id_project_organization_unique").on(
+      table.id,
+      table.projectId,
+      table.organizationId,
+    ),
+    index("triggers_received_at_idx").on(table.receivedAt.desc()),
+    index("triggers_organization_received_at_idx").on(
+      table.organizationId,
+      table.receivedAt.desc(),
+    ),
+    index("triggers_project_received_at_idx").on(table.projectId, table.receivedAt.desc()),
+    check(
+      "triggers_project_or_dropped_check",
+      sql`${table.projectId} is not null or ${table.droppedReason} is not null`,
+    ),
+    check(
+      "triggers_lifecycle_state_check",
+      sql`${table.lifecycleState} is null or ${table.lifecycleState} in ('accepted', 'running', 'succeeded', 'failed')`,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "triggers_project_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "triggers_revision_project_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.receiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "triggers_receipt_organization_fk",
+    }),
+  ],
+);
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    slug: text().notNull(),
+    status: text().$type<(typeof PROJECT_STATUSES)[number]>().default("active").notNull(),
+    createdByUserId: text("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    activeConfigurationRevisionId: uuid("active_configuration_revision_id").references(
+      (): AnyPgColumn => projectConfigurationRevisions.id,
+    ),
+  },
+  (table) => [
+    uniqueIndex("projects_organization_slug_unique").on(table.organizationId, table.slug),
+    uniqueIndex("projects_id_organization_unique").on(table.id, table.organizationId),
+    index("projects_organization_status_idx").on(table.organizationId, table.status),
+    check("projects_status_check", sql`${table.status} in ('active', 'archived')`),
+    check(
+      "projects_archive_shape_check",
+      sql`(${table.status} = 'active' and ${table.archivedAt} is null) or (${table.status} = 'archived' and ${table.archivedAt} is not null and ${table.activeConfigurationRevisionId} is null)`,
+    ),
+  ],
+);
+
+export const projectConfigurationRevisions = pgTable(
+  "project_configuration_revisions",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    projectId: uuid("project_id").notNull(),
+    organizationId: text("organization_id").notNull(),
+    version: integer().notNull(),
+    sourceKind: text("source_kind").$type<(typeof CONFIGURATION_SOURCE_KINDS)[number]>().notNull(),
+    sourceEvidence: jsonb("source_evidence").notNull(),
+    rawYaml: text("raw_yaml"),
+    normalizedConfiguration: jsonb("normalized_configuration").notNull(),
+    validationErrors: jsonb("validation_errors"),
+    contentHash: text("content_hash").notNull(),
+    githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
+    githubRepositoryFullName: text("github_repository_full_name"),
+    githubCommitSha: text("github_commit_sha"),
+    githubCommitUrl: text("github_commit_url"),
+    githubRef: text("github_ref"),
+    githubWebhookDeliveryId: text("github_webhook_delivery_id"),
+    githubSender: text("github_sender"),
+    githubAuthor: text("github_author"),
+    githubCommitter: text("github_committer"),
+    createdByUserId: text("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    receivedAt: timestamp("received_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    validatedAt: timestamp("validated_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("project_configuration_revisions_project_version_unique").on(
+      table.projectId,
+      table.version,
+    ),
+    uniqueIndex("project_configuration_revisions_id_project_organization_unique").on(
+      table.id,
+      table.projectId,
+      table.organizationId,
+    ),
+    index("project_configuration_revisions_project_created_idx").on(
+      table.projectId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "project_configuration_revisions_source_kind_check",
+      sql`${table.sourceKind} in ('github', 'manual')`,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "project_configuration_revisions_project_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const projectTriggerRoutes = pgTable(
+  "project_trigger_routes",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    configurationRevisionId: uuid("configuration_revision_id").notNull(),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    resourceId: text("resource_id"),
+    triggerName: text("trigger_name").notNull(),
+  },
+  (table) => [
+    uniqueIndex("project_trigger_routes_shape_unique").on(
+      table.projectId,
+      table.configurationRevisionId,
+      table.provider,
+      table.connectionId,
+      table.resourceId,
+      table.triggerName,
+    ),
+    index("project_trigger_routes_resource_idx").on(
+      table.organizationId,
+      table.provider,
+      table.connectionId,
+      table.resourceId,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "project_trigger_routes_project_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "project_trigger_routes_revision_project_organization_fk",
+    }).onDelete("cascade"),
+    check(
+      "project_trigger_routes_provider_check",
+      sql`${table.provider} in ('github', 'slack', 'discord')`,
+    ),
+  ],
+);
+
+export const machines = pgTable(
+  "machines",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    orgId: text("org_id").notNull(),
+    source: jsonb().$type<MachineSource>().notNull(),
+    status: machineStatus().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    terminatedAt: timestamp("terminated_at", { withTimezone: true }),
+    shutdownReason: text("shutdown_reason"),
+    triggerName: text("trigger_name"),
+    triggerContext: jsonb("trigger_context"),
+    specs: jsonb(),
+  },
+  (table) => [
+    uniqueIndex("machines_id_org_id_unique").on(table.id, table.orgId),
+    index("machines_org_id_idx").on(table.orgId),
+    index("machines_status_idx").on(table.status),
+  ],
+);
+
+export const daemonEnrollmentTokens = pgTable(
+  "daemon_enrollment_tokens",
+  {
+    id: uuid().primaryKey(),
+    verifier: text().notNull().unique(),
+    organizationId: text("organization_id"),
+    authorizationId: uuid("authorization_id").unique(),
+    displayName: text("display_name"),
+    approvedByUserId: text("approved_by_user_id"),
+    issuedByApiKeyId: uuid("issued_by_api_key_id"),
+    registrationMethod: text("registration_method").default("operator").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "daemon_enrollment_tokens_registration_method_check",
+      sql`${table.registrationMethod} in ('operator', 'device')`,
+    ),
+  ],
+);
+
+export const daemons = pgTable(
+  "daemons",
+  {
+    id: uuid().primaryKey(),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    enrollmentVerifier: text("enrollment_verifier").notNull(),
+    slug: text().notNull(),
+    machineId: uuid("machine_id").notNull(),
+    organizationId: text("organization_id").notNull(),
+    serverId: text("server_id").notNull(),
+    daemonPublicKey: text("daemon_public_key").notNull(),
+    credentialVerifier: text("credential_verifier").notNull(),
+    scopes: jsonb().$type<string[]>().notNull(),
+    displayName: text("display_name"),
+    approvedByUserId: text("approved_by_user_id"),
+    registeredByApiKeyId: uuid("registered_by_api_key_id"),
+    registrationMethod: text("registration_method").default("operator").notNull(),
+    status: text().$type<"active" | "revoked">().notNull(),
+    presence: text().$type<"offline" | "connected">().default("offline").notNull(),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("daemons_machine_id_unique").on(table.machineId),
+    uniqueIndex("daemons_id_organization_unique").on(table.id, table.organizationId),
+    uniqueIndex("daemons_organization_slug_unique").on(table.organizationId, table.slug),
+    foreignKey({
+      columns: [table.machineId, table.organizationId],
+      foreignColumns: [machines.id, machines.orgId],
+      name: "daemons_machine_organization_fk",
+    }),
+    check("daemons_status_check", sql`${table.status} in ('active', 'revoked')`),
+    check("daemons_presence_check", sql`${table.presence} in ('offline', 'connected')`),
+    check(
+      "daemons_registration_method_check",
+      sql`${table.registrationMethod} in ('operator', 'device')`,
+    ),
+  ],
+);
+
+export const daemonDeviceAuthorizations = pgTable(
+  "daemon_device_authorizations",
+  {
+    id: uuid().primaryKey(),
+    deviceVerifier: text("device_verifier").notNull().unique(),
+    userCodeVerifier: text("user_code_verifier").notNull().unique(),
+    fingerprintVerifier: text("fingerprint_verifier").notNull(),
+    suggestedDisplayName: text("suggested_display_name").notNull(),
+    status: text().$type<"pending" | "approved" | "denied" | "expired" | "enrolled">().notNull(),
+    pollIntervalSeconds: integer("poll_interval_seconds").notNull(),
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
+    approvedOrganizationId: text("approved_organization_id"),
+    approvedByUserId: text("approved_by_user_id"),
+    approvedDisplayName: text("approved_display_name"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    enrollmentTokenId: uuid("enrollment_token_id").unique(),
+    enrolledDaemonId: uuid("enrolled_daemon_id").unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("daemon_device_authorizations_fingerprint_idx").on(
+      table.fingerprintVerifier,
+      table.expiresAt,
+    ),
+    index("daemon_device_authorizations_status_expiry_idx").on(table.status, table.expiresAt),
+    check(
+      "daemon_device_authorizations_status_check",
+      sql`${table.status} in ('pending', 'approved', 'denied', 'expired', 'enrolled')`,
+    ),
+    check(
+      "daemon_device_authorizations_poll_interval_check",
+      sql`${table.pollIntervalSeconds} >= 5`,
+    ),
+  ],
+);
+
+export const agentExecutions = pgTable(
+  "agent_executions",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    machineId: uuid("machine_id"),
+    status: agentExecutionStatus().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    completedByAgentAt: timestamp("completed_by_agent_at", {
+      withTimezone: true,
+    }),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    idleDeadlineAt: timestamp("idle_deadline_at", { withTimezone: true }),
+    result: jsonb(),
+    triggerContext: jsonb("trigger_context"),
+    outputContext: jsonb("output_context"),
+    configurationRevisionId: uuid("configuration_revision_id").notNull(),
+    completionTokenHash: text("completion_token_hash"),
+    replyClaimedAt: timestamp("reply_claimed_at", { withTimezone: true }),
+    launchIntent: jsonb("launch_intent"),
+    daemonId: uuid("daemon_id"),
+    daemonAgentId: text("daemon_agent_id"),
+    triggerId: uuid("trigger_id"),
+    triggerConnectionId: uuid("trigger_connection_id"),
+    triggerResourceId: text("trigger_resource_id"),
+    hubAction: text("hub_action").$type<"interrupt" | "archive">(),
+    hubActionCompletedAt: timestamp("hub_action_completed_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    index("agent_executions_machine_id_idx").on(table.machineId),
+    index("agent_executions_project_started_at_idx").on(table.projectId, table.startedAt.desc()),
+    index("agent_executions_status_idx").on(table.status),
+    check(
+      "agent_executions_hub_action_check",
+      sql`${table.hubAction} is null or ${table.hubAction} in ('interrupt', 'archive')`,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "agent_executions_project_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "agent_executions_revision_project_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.machineId, table.organizationId],
+      foreignColumns: [machines.id, machines.orgId],
+      name: "agent_executions_machine_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.daemonId, table.organizationId],
+      foreignColumns: [daemons.id, daemons.organizationId],
+      name: "agent_executions_daemon_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.triggerId, table.projectId, table.organizationId],
+      foreignColumns: [triggers.id, triggers.projectId, triggers.organizationId],
+      name: "agent_executions_trigger_project_organization_fk",
+    }),
+  ],
+);
+
+export const users = pgTable("user", {
+  id: text().primaryKey(),
+  name: text().notNull(),
+  email: text().notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  image: text(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  mustChangePassword: boolean("must_change_password").default(false).notNull(),
+});
+
+export const sessions = pgTable(
+  "session",
+  {
+    id: text().primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    token: text().notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    activeOrganizationId: text("active_organization_id"),
+  },
+  (table) => [index("sessions_active_organization_id_idx").on(table.activeOrganizationId)],
+);
+
+export const accounts = pgTable("account", {
+  id: text().primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", {
+    withTimezone: true,
+  }),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+    withTimezone: true,
+  }),
+  scope: text(),
+  password: text(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const verifications = pgTable("verification", {
+  id: text().primaryKey(),
+  identifier: text().notNull(),
+  value: text().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const organizations = pgTable("organization", {
+  id: text().primaryKey(),
+  name: text().notNull(),
+  slug: text().notNull().unique(),
+  logo: text(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  metadata: text(),
+});
+
+export const organizationConnectionAttempts = pgTable(
+  "organization_connection_attempts",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    provider: text().$type<"github" | "discord" | "slack">().notNull(),
+    phase: text()
+      .$type<
+        | "github_setup"
+        | "github_user_authorization"
+        | "discord_authorization"
+        | "slack_authorization"
+      >()
+      .notNull(),
+    stateVerifier: text("state_verifier").notNull().unique(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    returnRoute: text("return_route").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    candidateExternalId: text("candidate_external_id"),
+    pkceVerifier: text("pkce_verifier"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("organization_connection_attempts_expiry_idx").on(table.expiresAt),
+    check(
+      "organization_connection_attempts_provider_check",
+      sql`${table.provider} in ('github', 'discord', 'slack')`,
+    ),
+    check(
+      "organization_connection_attempts_phase_check",
+      sql`${table.phase} in ('github_setup', 'github_user_authorization', 'discord_authorization', 'slack_authorization')`,
+    ),
+    check(
+      "organization_connection_attempts_shape_check",
+      sql`(${table.phase} = 'github_setup' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)
+        or (${table.phase} = 'github_user_authorization' and ${table.provider} = 'github' and ${table.candidateExternalId} is not null and (${table.pkceVerifier} is not null or ${table.consumedAt} is not null))
+        or (${table.phase} = 'discord_authorization' and ${table.provider} = 'discord' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)
+        or (${table.phase} = 'slack_authorization' and ${table.provider} = 'slack' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)`,
+    ),
+  ],
+);
+
+export const githubConnections = pgTable(
+  "github_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    installationId: bigint("installation_id", { mode: "number" }).notNull().unique(),
+    slug: text().notNull(),
+    accountId: text("account_id").notNull(),
+    accountLogin: text("account_login").notNull(),
+    accountType: text("account_type").notNull(),
+    status: text().$type<"active" | "suspended">().notNull(),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("github_connections_installation_unique").on(table.installationId),
+    uniqueIndex("github_connections_organization_slug_unique").on(table.organizationId, table.slug),
+    uniqueIndex("github_connections_id_organization_unique").on(table.id, table.organizationId),
+    index("github_connections_organization_idx").on(table.organizationId),
+    check("github_connections_status_check", sql`${table.status} in ('active', 'suspended')`),
+  ],
+);
+
+export const githubRepositories = pgTable(
+  "github_repositories",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    fullName: text("full_name").notNull(),
+    defaultBranch: text("default_branch").notNull(),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("github_repositories_connection_repository_unique").on(
+      table.connectionId,
+      table.repositoryId,
+    ),
+    index("github_repositories_organization_idx").on(table.organizationId),
+    foreignKey({
+      columns: [table.connectionId, table.organizationId],
+      foreignColumns: [githubConnections.id, githubConnections.organizationId],
+      name: "github_repositories_connection_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const discordConnections = pgTable(
+  "discord_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    guildId: text("guild_id").notNull().unique(),
+    slug: text().notNull(),
+    guildName: text("guild_name").notNull(),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("discord_connections_id_organization_unique").on(table.id, table.organizationId),
+    uniqueIndex("discord_connections_organization_slug_unique").on(
+      table.organizationId,
+      table.slug,
+    ),
+  ],
+);
+
+export const slackConnections = pgTable(
+  "slack_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    teamId: text("team_id").notNull().unique(),
+    slug: text().notNull(),
+    teamName: text("team_name").notNull(),
+    botUserId: text("bot_user_id").notNull(),
+    botAccessToken: text("bot_access_token").notNull(),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("slack_connections_id_organization_unique").on(table.id, table.organizationId),
+    uniqueIndex("slack_connections_organization_slug_unique").on(table.organizationId, table.slug),
+  ],
+);
+
+export const projectConfigurationSources = pgTable(
+  "project_configuration_sources",
+  {
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").primaryKey(),
+    kind: text().$type<(typeof CONFIGURATION_SOURCE_KINDS)[number]>().notNull(),
+    githubConnectionId: uuid("github_connection_id"),
+    githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
+    githubRepositoryFullName: text("github_repository_full_name"),
+    githubDefaultBranch: text("github_default_branch"),
+    automaticDeploymentEnabled: boolean("automatic_deployment_enabled").default(false).notNull(),
+    selectedByUserId: text("selected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "project_configuration_sources_project_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.githubConnectionId, table.organizationId],
+      foreignColumns: [githubConnections.id, githubConnections.organizationId],
+      name: "project_configuration_sources_github_connection_organization_fk",
+    }).onDelete("restrict"),
+    check(
+      "project_configuration_sources_authority_shape_check",
+      sql`(${table.kind} = 'manual' and ${table.githubConnectionId} is null and ${table.githubRepositoryId} is null and not ${table.automaticDeploymentEnabled}) or (${table.kind} = 'github' and ${table.githubConnectionId} is not null and ${table.githubRepositoryId} is not null)`,
+    ),
+  ],
+);
+
+export const configurationSyncAttempts = pgTable(
+  "configuration_sync_attempts",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    githubConnectionId: uuid("github_connection_id"),
+    githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
+    webhookDeliveryId: text("webhook_delivery_id"),
+    commitSha: text("commit_sha"),
+    outcome: text().notNull(),
+    evidence: jsonb().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("configuration_sync_attempts_project_created_idx").on(
+      table.projectId,
+      table.createdAt.desc(),
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "configuration_sync_attempts_project_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.githubConnectionId, table.organizationId],
+      foreignColumns: [githubConnections.id, githubConnections.organizationId],
+      name: "configuration_sync_attempts_github_connection_organization_fk",
+    }).onDelete("set null"),
+  ],
+);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id").references(() => projects.id, {
+      onDelete: "cascade",
+    }),
+    actorKind: text("actor_kind").$type<"user" | "github" | "system">().notNull(),
+    actorIdentity: text("actor_identity").notNull(),
+    action: text().notNull(),
+    subjectType: text("subject_type").notNull(),
+    subjectId: text("subject_id").notNull(),
+    evidence: jsonb().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("audit_events_organization_created_idx").on(table.organizationId, table.createdAt.desc()),
+    index("audit_events_project_created_idx").on(table.projectId, table.createdAt.desc()),
+    check("audit_events_actor_kind_check", sql`${table.actorKind} in ('user', 'github', 'system')`),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "audit_events_project_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const members = pgTable(
+  "member",
+  {
+    id: text().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("members_organization_user_unique").on(table.organizationId, table.userId),
+    index("members_user_id_idx").on(table.userId),
+    index("members_organization_id_idx").on(table.organizationId),
+    check("members_role_check", sql`${table.role} in ('owner', 'admin', 'member')`),
+  ],
+);
+
+export const invitations = pgTable(
+  "invitation",
+  {
+    id: text().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    email: text().notNull(),
+    role: text().notNull(),
+    status: text().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    inviterId: text("inviter_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("invitations_organization_status_idx").on(table.organizationId, table.status),
+    uniqueIndex("invitations_pending_organization_email_unique")
+      .on(table.organizationId, sql`lower(${table.email})`)
+      .where(sql`${table.status} = 'pending'`),
+    check("invitations_role_check", sql`${table.role} in ('admin', 'member')`),
+    check(
+      "invitations_status_check",
+      sql`${table.status} in ('pending', 'accepted', 'rejected', 'canceled')`,
+    ),
+  ],
+);
+
+export const instanceBootstrap = pgTable(
+  "instance_bootstrap",
+  {
+    id: text().primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id, {
+      onDelete: "restrict",
+    }),
+    ownerUserId: text("owner_user_id").references(() => users.id, { onDelete: "restrict" }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "instance_bootstrap_completion_check",
+      sql`${table.completedAt} is null or (${table.organizationId} is not null and ${table.ownerUserId} is not null)`,
+    ),
+  ],
+);
+
+export const organizationApiKeys = pgTable(
+  "organization_api_keys",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    prefix: text().notNull(),
+    verifier: text().notNull(),
+    scopes: text().array().$type<readonly (typeof API_KEY_SCOPES)[number][]>().notNull(),
+    createdByUserId: text("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("organization_api_keys_prefix_unique").on(table.prefix),
+    index("organization_api_keys_organization_created_idx").on(
+      table.organizationId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "organization_api_keys_scopes_check",
+      sql`${table.scopes} <@ ARRAY['configuration:install', 'runs:dispatch', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
+    ),
+  ],
+);

@@ -1,0 +1,62 @@
+import { test } from "./app.js";
+
+test.describe.configure({ timeout: 120_000 });
+
+const alice = {
+  name: "Alice",
+  email: "alice@example.com",
+  password: "alice-phase-two-password",
+};
+
+const bob = {
+  name: "Bob",
+  email: "bob@example.com",
+  password: "bob-phase-two-password",
+};
+
+const carol = {
+  name: "Carol",
+  email: "carol@example.com",
+  password: "carol-phase-two-password",
+};
+
+const dana = {
+  name: "Dana",
+  email: "dana@example.com",
+  password: "dana-phase-two-password",
+};
+
+test("registers and manages a source-built Paseo daemon", async ({ hub }) => {
+  await hub.signUpAs("alice", alice);
+  await hub.createOrganization("alice", "Acme");
+  await hub.startDaemonRegistration("alice");
+  const daemonId = await hub.approveDaemon("alice", "Build Studio");
+  hub.expectRegistrationResponseRecovery();
+  await hub.expectDaemon("alice", "Build Studio", daemonId, "Connected");
+  await hub.proveDaemonAccessBoundaries("alice", "bob", bob, "Build Studio");
+  await hub.renameDaemon("alice", "Build Studio", "Release Studio");
+  await hub.revokeDaemon("alice", "Release Studio");
+});
+
+test("keeps denied and expired registrations terminal", async ({ hub }) => {
+  await hub.signUpAs("alice", alice);
+  await hub.createOrganization("alice", "Acme");
+  await hub.denyRegistration("alice", "Denied Mac");
+  await hub.expireRegistration("alice", "Expired Mac");
+});
+
+test("keeps daemon browser state inside the current identity", async ({ hub }) => {
+  await hub.signUpAs("alice", alice);
+  await hub.createOrganization("alice", "Acme");
+
+  await hub.proveDaemonBrowserIdentityBoundary("alice", carol, dana, "Private Studio");
+});
+
+test("locks tenant controls while browser daemon commands are pending", async ({ hub }) => {
+  await hub.signUpAs("alice", alice);
+  await hub.createOrganization("alice", "Acme");
+  await hub.createAnotherOrganization("alice", "Orbit");
+  await hub.chooseOrganization("alice", "Acme");
+
+  await hub.proveDaemonCommandLocksAccountContext("alice");
+});

@@ -1,0 +1,8 @@
+.env
+*.pem
+dist/
+.output/
+.typecheck/
+playwright-report/
+test-results/
+node_modules/

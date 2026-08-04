@@ -1,0 +1,6 @@
+base/
+dist/
+node_modules/
+.env
+*.pem
+PLAN.md

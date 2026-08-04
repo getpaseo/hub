@@ -1,0 +1,348 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, it } from "vitest";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { Client } from "pg";
+import { createDatabase } from "../db/pg.js";
+import { createAuthServer, type AuthServer } from "./server.js";
+import { z } from "zod";
+
+const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
+
+describe("organization API-key boundary", () => {
+  let postgres: StartedPostgreSqlContainer;
+  let auth: AuthServer;
+  let databaseUrl: string;
+
+  beforeAll(async () => {
+    postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    databaseUrl = postgres.getConnectionUri();
+    const database = await createDatabase(databaseUrl);
+    await database.close();
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`
+      insert into organization (id, name, slug) values
+        ('organization-a', 'Organization A', 'organization-a'),
+        ('organization-b', 'Organization B', 'organization-b');
+      insert into "user" (id, name, email, email_verified) values
+        ('user-a', 'Owner A', 'owner-a@example.test', true),
+        ('user-b', 'Owner B', 'owner-b@example.test', true);
+      insert into member (id, organization_id, user_id, role) values
+        ('member-a', 'organization-a', 'user-a', 'owner'),
+        ('member-b', 'organization-b', 'user-b', 'owner');
+    `);
+    await client.end();
+    auth = createAuthServer({
+      databaseUrl,
+      secret: "test".repeat(8),
+      baseURL: "http://localhost:3000",
+      policy: {
+        registrationMode: "open",
+        organizationCreation: "disabled",
+        bootstrap: undefined,
+      },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await auth.close();
+    await postgres.stop();
+  }, 120_000);
+
+  it("reveals a secret once and keeps key authentication tenant-scoped", async () => {
+    const keyA = await auth.apiKeys!.create("organization-a", "user-a", "deployment A", [
+      "configuration:install",
+      "runs:dispatch",
+    ]);
+    const keyB = await auth.apiKeys!.create("organization-b", "user-b", "deployment B", [
+      "configuration:install",
+    ]);
+
+    const listed = await auth.apiKeys!.list("organization-a");
+    assert.deepEqual(
+      listed.map(({ id, name, prefix, scopes }) => ({ id, name, prefix, scopes })),
+      [
+        {
+          id: keyA.summary.id,
+          name: "deployment A",
+          prefix: keyA.summary.prefix,
+          scopes: ["configuration:install", "runs:dispatch"],
+        },
+      ],
+    );
+    assert.equal(JSON.stringify(listed).includes(keyA.secret), false);
+
+    const authorized = await auth.apiKeys!.authorize(request(keyA.secret), "runs:dispatch");
+    assert.equal(authorized.status, "authorized");
+    if (authorized.status === "authorized") {
+      assert.equal(authorized.access.organizationId, "organization-a");
+      assert.equal(authorized.access.keyId, keyA.summary.id);
+    }
+    assert.equal(
+      (await auth.apiKeys!.authorize(request(keyA.secret), "daemons:enroll")).status,
+      "forbidden",
+    );
+    assert.equal(
+      (
+        await auth.apiKeys!.authorize(
+          request(keyA.secret.replace(/[^_]+$/u, "wrong")),
+          "runs:dispatch",
+        )
+      ).status,
+      "unauthorized",
+    );
+    assert.equal(
+      (await auth.apiKeys!.authorize(request(keyB.secret), "runs:dispatch")).status,
+      "forbidden",
+    );
+    assert.equal(
+      (await auth.apiKeys!.authorize(request("Bearer nope"), "runs:dispatch")).status,
+      "unauthorized",
+    );
+    assert.equal(
+      (await auth.apiKeys!.authorize(request(keyA.secret), "runs:dispatch")).status,
+      "authorized",
+    );
+
+    assert.equal(await auth.apiKeys!.revoke("organization-a", keyA.summary.id), true);
+    assert.equal(
+      (await auth.apiKeys!.authorize(request(keyA.secret), "runs:dispatch")).status,
+      "unauthorized",
+    );
+    assert.equal(await auth.apiKeys!.revoke("organization-b", keyA.summary.id), false);
+  });
+
+  it("keeps last-use evidence conditional on successful authentication", async () => {
+    const key = await auth.apiKeys!.create("organization-a", "user-a", `last-use-${randomUUID()}`, [
+      "configuration:install",
+    ]);
+    const before = (await auth.apiKeys!.list("organization-a")).find(
+      ({ id }) => id === key.summary.id,
+    );
+    assert.equal(before?.lastUsedAt, null);
+    assert.equal(
+      (
+        await auth.apiKeys!.authorize(
+          request(`${key.summary.prefix}_wrong`),
+          "configuration:install",
+        )
+      ).status,
+      "unauthorized",
+    );
+    const failed = (await auth.apiKeys!.list("organization-a")).find(
+      ({ id }) => id === key.summary.id,
+    );
+    assert.equal(failed?.lastUsedAt, null);
+    assert.equal(
+      (await auth.apiKeys!.authorize(request(key.secret), "configuration:install")).status,
+      "authorized",
+    );
+    const used = (await auth.apiKeys!.list("organization-a")).find(
+      ({ id }) => id === key.summary.id,
+    );
+    assert.notEqual(used?.lastUsedAt, null);
+  });
+
+  it("serializes enrollment issuance with API-key revocation", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      const revokedFirst = await auth.apiKeys!.create(
+        "organization-a",
+        "user-a",
+        `revoked-first-${randomUUID()}`,
+        ["daemons:enroll"],
+      );
+      await client.query("begin");
+      await client.query(`select id from organization_api_keys where id = $1 for update`, [
+        revokedFirst.summary.id,
+      ]);
+      const revokeFirst = auth.apiKeys!.revoke("organization-a", revokedFirst.summary.id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const rejectedIssue = database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier: `race-rejected-${randomUUID()}`,
+        organizationId: "organization-a",
+        issuedByApiKeyId: revokedFirst.summary.id,
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+      });
+      await client.query("commit");
+      assert.equal(await revokeFirst, true);
+      assert.equal(await rejectedIssue, false);
+
+      const issuedFirst = await auth.apiKeys!.create(
+        "organization-a",
+        "user-a",
+        `issued-first-${randomUUID()}`,
+        ["daemons:enroll"],
+      );
+      const issuedTokenId = randomUUID();
+      await client.query("begin");
+      await client.query(`select id from organization_api_keys where id = $1 for update`, [
+        issuedFirst.summary.id,
+      ]);
+      const acceptedIssue = database.issueEnrollmentToken({
+        id: issuedTokenId,
+        verifier: `race-accepted-${randomUUID()}`,
+        organizationId: "organization-a",
+        issuedByApiKeyId: issuedFirst.summary.id,
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const revokeAfterIssue = auth.apiKeys!.revoke("organization-a", issuedFirst.summary.id);
+      await client.query("commit");
+      assert.equal(await acceptedIssue, true);
+      assert.equal(await revokeAfterIssue, true);
+      const token = await client.query<{ expires_at: Date }>(
+        `select expires_at from daemon_enrollment_tokens where id = $1`,
+        [issuedTokenId],
+      );
+      assert.equal(token.rowCount, 1);
+      assert.ok(token.rows[0]!.expires_at <= new Date());
+    } finally {
+      await client.end();
+      await database.close();
+    }
+  });
+
+  it("denies API-key management at the HTTP boundary for organization members", async () => {
+    const email = `member-${randomUUID()}@example.test`;
+    const signup = await auth.handle(
+      new Request("http://localhost:3000/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", "content-type": "application/json" },
+        body: JSON.stringify({ name: "Member", email, password: "member-password-123" }),
+      }),
+    );
+    assert.equal(signup.status, 200);
+    const cookie = signup.headers
+      .get("set-cookie")
+      ?.match(/^(?:[^;]+);/u)?.[0]
+      ?.slice(0, -1);
+    assert.ok(cookie);
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    const user = await client.query<{ id: string }>(`select id from "user" where email = $1`, [
+      email,
+    ]);
+    await client.query(
+      `insert into member (id, organization_id, user_id, role) values ($1, 'organization-a', $2, 'member')`,
+      [randomUUID(), user.rows[0]!.id],
+    );
+    await client.end();
+    const select = await auth.handle(
+      new Request("http://localhost:3000/api/auth/paseo/select-organization", {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ organizationId: "organization-a" }),
+      }),
+    );
+    assert.equal(select.status, 200);
+    const list = await auth.handle(
+      new Request("http://localhost:3000/api/auth/paseo/api-keys", {
+        headers: { cookie, origin: "http://localhost:3000" },
+      }),
+    );
+    assert.equal(list.status, 403);
+    assert.deepEqual(await list.json(), { error: "forbidden" });
+  });
+
+  it("keeps concurrent browser key mutations from exhausting the auth pool", async () => {
+    const email = `pool-owner-${randomUUID()}@example.test`;
+    const signup = await auth.handle(
+      new Request("http://localhost:3000/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { origin: "http://localhost:3000", "content-type": "application/json" },
+        body: JSON.stringify({ name: "Pool owner", email, password: "pool-owner-password-123" }),
+      }),
+    );
+    assert.equal(signup.status, 200);
+    const cookie = signup.headers
+      .get("set-cookie")
+      ?.match(/^(?:[^;]+);/u)?.[0]
+      ?.slice(0, -1);
+    assert.ok(cookie);
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    const user = await client.query<{ id: string }>(`select id from "user" where email = $1`, [
+      email,
+    ]);
+    await client.query(
+      `insert into member (id, organization_id, user_id, role)
+       values ($1, 'organization-a', $2, 'owner')`,
+      [randomUUID(), user.rows[0]!.id],
+    );
+    await client.end();
+    const select = await auth.handle(
+      new Request("http://localhost:3000/api/auth/paseo/select-organization", {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "http://localhost:3000",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ organizationId: "organization-a" }),
+      }),
+    );
+    assert.equal(select.status, 200);
+
+    const concurrent = 20;
+    const created = await Promise.all(
+      Array.from({ length: concurrent }, (_, index) =>
+        auth.handle(
+          new Request("http://localhost:3000/api/auth/paseo/api-keys", {
+            method: "POST",
+            headers: {
+              cookie,
+              origin: "http://localhost:3000",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ name: `pool-key-${index}`, scopes: ["runs:dispatch"] }),
+          }),
+        ),
+      ),
+    );
+    assert.deepEqual(
+      created.map((response) => response.status),
+      Array(concurrent).fill(201),
+    );
+    const keyIds = await Promise.all(
+      created.map(
+        async (response) => createdApiKeyResponseSchema.parse(await response.json()).key.id,
+      ),
+    );
+    const revoked = await Promise.all(
+      keyIds.map((id) =>
+        auth.handle(
+          new Request("http://localhost:3000/api/auth/paseo/revoke-api-key", {
+            method: "POST",
+            headers: {
+              cookie,
+              origin: "http://localhost:3000",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ id }),
+          }),
+        ),
+      ),
+    );
+    assert.deepEqual(
+      revoked.map((response) => response.status),
+      Array(concurrent).fill(200),
+    );
+  });
+});
+
+function request(secret: string): Request {
+  return new Request("http://localhost:3000/api/machine", {
+    headers: { authorization: secret.startsWith("Bearer ") ? secret : `Bearer ${secret}` },
+  });
+}

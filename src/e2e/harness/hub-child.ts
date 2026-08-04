@@ -1,0 +1,211 @@
+import { appendFile, writeFile } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
+import { createHubApplication } from "../../app.js";
+import { createDatabase } from "../../db/pg.js";
+import { Client } from "pg";
+import { OutputExecutorRegistry } from "../../execution-capabilities/outputs.js";
+import { createFetchServer } from "../../http/node-server.js";
+import { loadBuiltStartServer } from "../../server/build.js";
+import { createAuthServer } from "../../auth/server.js";
+import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
+import { OrganizationResources } from "../../organizations/resources.js";
+import { ProjectConfigurationStore } from "../../configuration/store.js";
+
+const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
+
+async function main(): Promise<void> {
+  const databaseUrl = requiredEnvironment("DATABASE_URL");
+  const port = Number(requiredEnvironment("PORT"));
+  const outputFile = requiredEnvironment("HUB_E2E_OUTPUT_FILE");
+  const database = await createDatabase(databaseUrl);
+  const organizationId = "hub-e2e";
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  await client.query(
+    `insert into organization (id, name, slug) values ($1, $2, $3) on conflict (id) do nothing`,
+    [organizationId, "Hub E2E", organizationId],
+  );
+  await client.query(
+    `insert into "user" (id, name, email, email_verified)
+     values ('hub-e2e', 'Hub E2E', 'hub-e2e@paseo.test', true)
+     on conflict (id) do nothing`,
+  );
+  await client.query(
+    `insert into member (id, organization_id, user_id, role)
+     values ('hub-e2e-owner', $1, 'hub-e2e', 'owner')
+     on conflict (id) do nothing`,
+    [organizationId],
+  );
+  await client.query(
+    `insert into projects (id, organization_id, name, slug, created_by_user_id)
+     values ($1, $2, $3, $4, 'hub-e2e') on conflict (id) do nothing`,
+    [E2E_PROJECT_ID, organizationId, "Default", "default"],
+  );
+  await client.end();
+  const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
+  const config = await configuration.insertManualRevision({
+    rawYaml: null,
+    rawConfiguration: {
+      environments: [{ name: "hub-e2e", kind: "docker", image: "paseo/e2e" }],
+      triggers: [
+        {
+          name: "e2e-discord",
+          on: "e2e.discord",
+          environment: "hub-e2e",
+          filters: { from_users: ["phase-five-operator"] },
+          agent: { provider: "hub-e2e", mode: "default" },
+          prompt: "Deploy mcp-capability for phase-five-operator",
+        },
+      ],
+    },
+    userId: "hub-e2e",
+    sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
+  });
+  await configuration.activate(config.id);
+  const outputs = new OutputExecutorRegistry();
+  outputs.register("discord.reply", async (output) => {
+    await appendFile(outputFile, `${JSON.stringify(output)}\n`);
+  });
+  const auth = createAuthServer({
+    databaseUrl,
+    baseURL: requiredEnvironment("BETTER_AUTH_URL"),
+    secret: requiredEnvironment("BETTER_AUTH_SECRET"),
+    policy: readInstanceAuthPolicy(),
+  });
+  await auth.initialize?.();
+  const createdApiKey = await auth.apiKeys?.create(
+    organizationId,
+    "hub-e2e",
+    "hub e2e automation",
+    ["configuration:install", "runs:dispatch", "daemons:enroll"],
+  );
+  if (createdApiKey === undefined) throw new Error("API key service unavailable");
+  await writeFile(requiredEnvironment("HUB_E2E_MACHINE_KEY_FILE"), createdApiKey.secret, "utf8");
+  const resources = new OrganizationResources(database);
+  const application = createHubApplication({
+    database,
+    ...(auth.apiKeys === undefined ? {} : { operationAuth: auth.apiKeys }),
+    outputRegistry: outputs,
+    providers: [
+      {
+        name: "discord",
+        eventNames: ["e2e.discord"],
+        async match(trigger) {
+          const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
+          const daemon = (await database.listDaemonsForOrganization(trigger.organizationId))[0];
+          if (daemon === undefined || activeConfiguration === undefined) return [];
+          return [
+            {
+              triggerName: "e2e-discord",
+              environmentName: "hub-e2e",
+              environment: {
+                kind: "daemon" as const,
+                daemonId: daemon.id,
+                authoredSlug: daemon.slug,
+                cwd: process.cwd(),
+              },
+              prompt: "Deploy mcp-capability for phase-five-operator",
+              agent: { provider: "hub-e2e", mode: "default" },
+              allowOutputs: [{ type: "discord.reply" }],
+              autoArchive: false,
+              triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
+              outputContext: {
+                provider: "discord",
+                guildId: "guild-original",
+                channelId: "channel-original",
+                threadId: "thread-original",
+                messageId: "message-original",
+              },
+              configurationRevisionId: activeConfiguration.id,
+              projectId: E2E_PROJECT_ID,
+              hubConfig: {},
+            },
+          ];
+        },
+      },
+    ],
+    publicBaseUrl: requiredEnvironment("PASEO_HUB_PUBLIC_URL"),
+    completionTokenSecret: requiredEnvironment("PASEO_HUB_COMPLETION_TOKEN_SECRET"),
+    browserOrganizationAccess: auth,
+  });
+  const hub = application.hub;
+  await hub.start();
+  const start = await loadBuiltStartServer();
+  await start.startApplication(() => ({
+    hub,
+    operations: application.operations,
+    resources,
+    projectDashboard: null,
+    testTriggerRoutes: true,
+    auth: (request) => auth.handle(request),
+    browserAccount: (request) => auth.browserAccount!(request),
+    signInEmail: (data, headers) => auth.signInEmail!(data, headers),
+    signUpEmail: (data, headers) => auth.signUpEmail!(data, headers),
+    signOut: (headers) => auth.signOut!(headers),
+    organizationResources: (request) => auth.resources(request, resources),
+    connectionStatus: () =>
+      Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
+    connectionAction: () =>
+      Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
+    webhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    async stop() {
+      await hub?.stop();
+      await auth.close();
+    },
+  }));
+  const server = createFetchServer((request) => start.default.fetch(request));
+  server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    void hub?.handleUpgrade?.(request, socket, head);
+  });
+  server.listen(port, "127.0.0.1");
+
+  async function shutdown(): Promise<void> {
+    const failures: unknown[] = [];
+    const listenerClosed = new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await attempt(() => hub?.stop(), failures);
+    await attempt(() => auth.close(), failures);
+    if ("closeIdleConnections" in server) server.closeIdleConnections();
+    if ("closeAllConnections" in server) server.closeAllConnections();
+    await attempt(() => listenerClosed, failures);
+    await attempt(() => database.close(), failures);
+    if (failures.length > 0) throw new AggregateError(failures, "Hub child shutdown failed");
+  }
+
+  const stop = () =>
+    void shutdown().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        process.stderr.write(
+          `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        );
+        process.exit(1);
+      },
+    );
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+}
+
+async function attempt(operation: () => Promise<unknown> | undefined, failures: unknown[]) {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(error);
+  }
+}
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+main().catch((error) => {
+  process.stderr.write(
+    `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+  );
+  process.exit(1);
+});
