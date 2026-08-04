@@ -2611,12 +2611,17 @@ class HubUser {
     await this.chooseOption(form.getByRole("combobox", { name: "Role" }), roleLabel(role));
     await form.getByRole("button", { name: "Create invitation" }).click();
     await expect(form).toBeHidden();
-    const copy = this.invitationRow(email).getByRole("button", { name: "Copy link" });
-    await expect(copy).toBeVisible();
+    await this.context.grantPermissions(["clipboard-read", "clipboard-write"], {
+      origin: this.origin,
+    });
+    const actions = this.invitationRow(email).getByRole("button", { name: `Actions for ${email}` });
+    await actions.click();
+    await this.page.getByRole("menuitem", { name: "Copy link" }).click();
+    await expect(this.page.getByRole("status")).toHaveText("Invitation link copied.");
     return z
       .string()
       .url()
-      .parse(await copy.getAttribute("value"));
+      .parse(await this.page.evaluate(() => navigator.clipboard.readText()));
   }
 
   private async openInvitationForm(): Promise<Locator> {
@@ -2638,7 +2643,8 @@ class HubUser {
       origin: this.origin,
     });
     const invitation = this.invitationRow(email);
-    await invitation.getByRole("button", { name: "Copy link" }).click();
+    await invitation.getByRole("button", { name: `Actions for ${email}` }).click();
+    await this.page.getByRole("menuitem", { name: "Copy link" }).click();
     await expect(this.page.getByRole("status")).toHaveText("Invitation link copied.");
     expect(await this.page.evaluate(() => navigator.clipboard.readText())).toBe(invitationLink);
     await expectAccessible(this.page);
@@ -3091,7 +3097,7 @@ class HubUser {
     guildId: string;
   }): Promise<void> {
     await this.expectProviderDetails(expected);
-    await expect(this.page.getByRole("button", { name: /^Revoke /u })).toHaveCount(2);
+    await expect(this.page.getByRole("button", { name: /^Actions for /u })).toHaveCount(2);
   }
 
   async expectMemberConnectedProviders(expected: {
@@ -3101,7 +3107,7 @@ class HubUser {
     guildId: string;
   }): Promise<void> {
     await this.expectProviderDetails(expected);
-    await expect(this.page.getByRole("button", { name: /^Revoke /u })).toHaveCount(0);
+    await expect(this.page.getByRole("button", { name: /^Actions for /u })).toHaveCount(0);
   }
 
   private async expectProviderDetails(expected: {
@@ -3128,7 +3134,8 @@ class HubUser {
   async disconnectProviders(): Promise<void> {
     for (const provider of ["GitHub", "Discord"]) {
       const row = this.connectionRow(provider);
-      await row.getByRole("button", { name: /^Revoke /u }).click();
+      await row.getByRole("button", { name: /^Actions for /u }).click();
+      await this.page.getByRole("menuitem", { name: "Revoke" }).click();
       const dialog = this.page.getByRole("alertdialog");
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { name: "Revoke connection" }).click();
@@ -3143,11 +3150,12 @@ class HubUser {
     const switcher = this.page.getByRole("button", { name: "Organization" });
     await this.openOrganizationSection("Connections");
     const github = this.connectionRow("GitHub");
-    const revoke = github.getByRole("button", { name: /^Revoke /u });
-    await expect(revoke).toBeVisible();
+    const trigger = github.getByRole("button", { name: /^Actions for /u });
+    await expect(trigger).toBeVisible();
     const pending = await this.holdGitHubDisconnectStatusRefresh();
     try {
-      await revoke.click();
+      await trigger.click();
+      await this.page.getByRole("menuitem", { name: "Revoke" }).click();
       const dialog = this.page.getByRole("alertdialog");
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { name: "Revoke connection" }).click();
@@ -3158,7 +3166,9 @@ class HubUser {
       await expect(this.page.getByRole("region", { name: "Loading account context" })).toHaveCount(
         0,
       );
-      await expect(revoke).toBeDisabled();
+      await trigger.click();
+      await expect(this.page.getByRole("menuitem", { name: "Revoke" })).toBeDisabled();
+      await this.page.keyboard.press("Escape");
       await switcher.click();
       const menu = this.page.getByRole("menu");
       await expect(menu).toBeVisible();
@@ -3273,7 +3283,8 @@ class HubUser {
     const github = this.connectionRow("GitHub");
     await expect(github.getByText("Suspended", { exact: true })).toBeVisible();
     await expect(this.page.getByRole("button", { name: "Reconnect GitHub" })).toBeVisible();
-    await github.getByRole("button", { name: /^Revoke /u }).click();
+    await github.getByRole("button", { name: /^Actions for /u }).click();
+    await this.page.getByRole("menuitem", { name: "Revoke" }).click();
     const dialog = this.page.getByRole("alertdialog");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Revoke connection" }).click();

@@ -1,7 +1,7 @@
-import { Copy, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useMemo, useState, type FormEvent, type MouseEvent } from "react";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
@@ -9,6 +9,7 @@ import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { Button } from "../components/ui/button.js";
+import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
 import {
   Dialog,
   DialogContent,
@@ -302,12 +303,6 @@ function InvitationList({
   organizationName: string;
 }) {
   const [copyStatus, setCopyStatus] = useState<string>();
-  const copyInvitation = useCallback((event: MouseEvent<HTMLButtonElement>): void => {
-    void navigator.clipboard.writeText(event.currentTarget.value).then(
-      () => setCopyStatus("Invitation link copied."),
-      () => setCopyStatus("We couldn't copy the invitation link."),
-    );
-  }, []);
 
   return (
     <div className="grid gap-3">
@@ -328,24 +323,14 @@ function InvitationList({
               </StatusPill>
             </DataCell>
             <DataCell align="end">
-              <div className="flex items-center justify-end gap-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  value={invitation.link}
-                  onClick={copyInvitation}
-                >
-                  <Copy aria-hidden="true" />
-                  Copy link
-                </Button>
-                <CancelInvitation
-                  id={invitation.id}
-                  email={invitation.email}
-                  organizationName={organizationName}
-                  busy={busy}
-                />
-              </div>
+              <InvitationActions
+                id={invitation.id}
+                email={invitation.email}
+                link={invitation.link}
+                organizationName={organizationName}
+                busy={busy}
+                onCopyStatusChange={setCopyStatus}
+              />
             </DataCell>
           </DataRow>
         ))}
@@ -357,16 +342,20 @@ function InvitationList({
   );
 }
 
-function CancelInvitation({
+function InvitationActions({
   id,
   email,
+  link,
   organizationName,
   busy,
+  onCopyStatusChange,
 }: {
   id: string;
   email: string;
+  link: string;
   organizationName: string;
   busy: boolean;
+  onCopyStatusChange: (status: string) => void;
 }) {
   const queryClient = useQueryClient();
   const cancelInvitationMutation = useMutation({
@@ -381,9 +370,16 @@ function CancelInvitation({
   const cancel = useCallback(() => {
     cancelInvitationMutation.mutate({ data: { invitationId: id } });
   }, [cancelInvitationMutation, id]);
+  const copy = useCallback((): void => {
+    void navigator.clipboard.writeText(link).then(
+      () => onCopyStatusChange("Invitation link copied."),
+      () => onCopyStatusChange("We couldn't copy the invitation link."),
+    );
+  }, [link, onCopyStatusChange]);
 
   return (
     <RowActions label={`Actions for ${email}`}>
+      <DropdownMenuItem onSelect={copy}>Copy link</DropdownMenuItem>
       <ConfirmMenuItem
         busy={busy}
         destructive

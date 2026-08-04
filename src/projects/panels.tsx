@@ -4,11 +4,13 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
-import { ConfirmAction } from "../components/app/confirm-action.js";
+import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
+import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
+import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
@@ -123,16 +125,19 @@ export function ProjectsPanel() {
             <DataCell muted>{formatDate(project.createdAt)}</DataCell>
             <DataCell align="end">
               {data.capabilities.manageResources && project.status === "active" ? (
-                <ConfirmAction
-                  label={`Archive ${project.name}`}
-                  title={`Archive ${project.name}?`}
-                  description="Routing is released. History remains available from this list."
-                  confirmLabel="Archive project"
-                  cancelLabel="Cancel"
-                  onConfirm={() =>
-                    archive.mutate({ data: { ...scope, projectSlug: project.slug } })
-                  }
-                />
+                <RowActions label={`Actions for ${project.name}`}>
+                  <ConfirmMenuItem
+                    destructive
+                    label="Archive"
+                    title={`Archive ${project.name}?`}
+                    description="Routing is released. History remains available from this list."
+                    confirmLabel="Archive project"
+                    cancelLabel="Cancel"
+                    onConfirm={() =>
+                      archive.mutate({ data: { ...scope, projectSlug: project.slug } })
+                    }
+                  />
+                </RowActions>
               ) : null}
             </DataCell>
           </DataRow>
@@ -237,7 +242,12 @@ export function OrganizationConnectionsPanel() {
                   {connection.externalId}
                 </span>
               </DataCell>
-              <DataCell>{providerLabel(connection.provider)}</DataCell>
+              <DataCell>
+                <span className="inline-flex items-center gap-1.5">
+                  <ProviderGlyph provider={connection.provider} />
+                  {providerLabel(connection.provider)}
+                </span>
+              </DataCell>
               <DataCell>
                 <StatusPill tone={connection.status === "suspended" ? "warning" : "success"}>
                   {statusLabel(connection.status)}
@@ -245,24 +255,26 @@ export function OrganizationConnectionsPanel() {
               </DataCell>
               <DataCell align="end">
                 {data.capabilities.manageResources ? (
-                  <ConfirmAction
-                    label={`Revoke ${connection.name}`}
-                    title={`Revoke ${connection.name}?`}
-                    description="Projects using this credential will stop receiving new events."
-                    confirmLabel="Revoke connection"
-                    cancelLabel="Cancel"
-                    busy={busy}
-                    destructive
-                    onConfirm={() =>
-                      disconnect.mutate({
-                        data: {
-                          ...scope,
-                          provider: connection.provider,
-                          connectionId: connection.id,
-                        },
-                      })
-                    }
-                  />
+                  <RowActions label={`Actions for ${connection.name}`}>
+                    <ConfirmMenuItem
+                      busy={busy}
+                      destructive
+                      label="Revoke"
+                      title={`Revoke ${connection.name}?`}
+                      description="Projects using this credential will stop receiving new events."
+                      confirmLabel="Revoke connection"
+                      cancelLabel="Cancel"
+                      onConfirm={() =>
+                        disconnect.mutate({
+                          data: {
+                            ...scope,
+                            provider: connection.provider,
+                            connectionId: connection.id,
+                          },
+                        })
+                      }
+                    />
+                  </RowActions>
                 ) : null}
               </DataCell>
             </DataRow>
@@ -275,7 +287,10 @@ export function OrganizationConnectionsPanel() {
                 key={provider}
                 className="flex items-center justify-between gap-2 rounded-md border p-3"
               >
-                <span className="text-sm font-medium">{providerLabel(provider)}</span>
+                <span className="inline-flex items-center gap-2 text-sm font-medium">
+                  <ProviderGlyph provider={provider} />
+                  {providerLabel(provider)}
+                </span>
                 {status.data[provider].status === "notConfigured" ? (
                   <StatusPill tone="neutral">Not configured</StatusPill>
                 ) : (

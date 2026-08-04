@@ -72,11 +72,7 @@ export function ConfirmMenuItem({
   }, [request, title, description, confirmLabel, cancelLabel, onConfirm, destructive]);
 
   return (
-    <DropdownMenuItem
-      variant={destructive === true ? "destructive" : "default"}
-      disabled={busy}
-      onSelect={select}
-    >
+    <DropdownMenuItem disabled={busy} onSelect={select}>
       {label}
     </DropdownMenuItem>
   );

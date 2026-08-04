@@ -17,7 +17,8 @@ export class ProjectLifecycle {
   }
 
   async archive(name: string) {
-    await this.page.getByRole("button", { name: `Archive ${name}` }).click();
+    await this.page.getByRole("button", { name: `Actions for ${name}` }).click();
+    await this.page.getByRole("menuitem", { name: "Archive" }).click();
     await this.page
       .getByRole("alertdialog")
       .getByRole("button", { name: "Archive project" })
