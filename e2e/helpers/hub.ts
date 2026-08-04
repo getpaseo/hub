@@ -1719,6 +1719,9 @@ class HubUser {
   async expectApiKeyLifecycle(): Promise<void> {
     await this.openOrganizationSection("API keys");
     await expect(this.page.getByRole("heading", { name: "API keys", exact: true })).toBeVisible();
+    await expect(
+      this.page.getByRole("link", { name: "API reference", exact: true }),
+    ).toHaveAttribute("href", "https://paseo.sh/docs/hub/api");
     await expect(this.page.getByText("No API keys", { exact: true })).toBeVisible();
     await expectAccessible(this.page);
 

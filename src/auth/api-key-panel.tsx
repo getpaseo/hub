@@ -173,6 +173,9 @@ export function ApiKeys() {
   return (
     <>
       <PageHeader title="API keys" description={`Machine access for ${account.organization.name}.`}>
+        <Button asChild variant="outline">
+          <a href="https://paseo.sh/docs/hub/api">API reference</a>
+        </Button>
         {account.capabilities.manageResources ? (
           <Button type="button" onClick={openCreate}>
             <KeyRound aria-hidden="true" />
