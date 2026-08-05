@@ -151,10 +151,10 @@ async function readThreadContextMessages(
   try {
     const page = await triggerMessage.channel.messages.fetch({
       before: triggerMessage.id,
-      limit: 100,
+      limit: 50,
     });
     return Array.from(page.values())
-      .slice(0, 100)
+      .slice(0, 50)
       .filter((message) => message.id !== triggerMessage.id)
       .map(normalizeContextMessage)
       .sort(compareContextMessages);

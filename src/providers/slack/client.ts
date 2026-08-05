@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-const SLACK_BOT_SCOPES = ["app_mentions:read", "chat:write", "reactions:write"] as const;
+const SLACK_BOT_SCOPES = [
+  "app_mentions:read",
+  "channels:history",
+  "chat:write",
+  "files:read",
+  "groups:history",
+  "reactions:write",
+] as const;
 
 const SlackOAuthResponseSchema = z
   .object({

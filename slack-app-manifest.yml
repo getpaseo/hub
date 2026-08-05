@@ -10,7 +10,10 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - channels:history
       - chat:write
+      - files:read
+      - groups:history
       - reactions:write
 settings:
   event_subscriptions:

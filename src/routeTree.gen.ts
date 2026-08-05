@@ -31,6 +31,7 @@ import { Route as ApiIntegrationsSlackCallbackRouteImport } from './routes/api/i
 import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/integrations/github/setup'
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
+import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
 import { Route as ShellOOrganizationSlugTeamRouteImport } from './routes/_shell/o/$organizationSlug/team'
 import { Route as ShellOOrganizationSlugProjectsRouteImport } from './routes/_shell/o/$organizationSlug/projects'
 import { Route as ShellOOrganizationSlugDaemonsRouteImport } from './routes/_shell/o/$organizationSlug/daemons'
@@ -162,6 +163,12 @@ const ApiIntegrationsDiscordCallbackRoute =
     path: '/api/integrations/discord/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute =
+  AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport.update({
+    id: '/agent-executions/$executionId/attachments/$attachmentId',
+    path: '/agent-executions/$executionId/attachments/$attachmentId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ShellOOrganizationSlugTeamRoute =
   ShellOOrganizationSlugTeamRouteImport.update({
     id: '/o/$organizationSlug/team',
@@ -251,6 +258,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -284,6 +292,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -320,6 +329,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/_shell/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/_shell/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -356,6 +366,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/projects'
     | '/o/$organizationSlug/team'
+    | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -389,6 +400,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/team'
+    | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -424,6 +436,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/daemons'
     | '/_shell/o/$organizationSlug/projects'
     | '/_shell/o/$organizationSlug/team'
+    | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -453,6 +466,7 @@ export interface RootRouteChildren {
   ApiDaemonsEnrollmentTokensRoute: typeof ApiDaemonsEnrollmentTokensRoute
   ApiDeviceAuthorizationsPollRoute: typeof ApiDeviceAuthorizationsPollRoute
   ApiDeviceAuthorizationsIndexRoute: typeof ApiDeviceAuthorizationsIndexRoute
+  AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
   ApiIntegrationsGithubSetupRoute: typeof ApiIntegrationsGithubSetupRoute
@@ -616,6 +630,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsDiscordCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/agent-executions/$executionId/attachments/$attachmentId': {
+      id: '/agent-executions/$executionId/attachments/$attachmentId'
+      path: '/agent-executions/$executionId/attachments/$attachmentId'
+      fullPath: '/agent-executions/$executionId/attachments/$attachmentId'
+      preLoaderRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/o/$organizationSlug/team': {
       id: '/_shell/o/$organizationSlug/team'
       path: '/o/$organizationSlug/team'
@@ -766,6 +787,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDaemonsEnrollmentTokensRoute: ApiDaemonsEnrollmentTokensRoute,
   ApiDeviceAuthorizationsPollRoute: ApiDeviceAuthorizationsPollRoute,
   ApiDeviceAuthorizationsIndexRoute: ApiDeviceAuthorizationsIndexRoute,
+  AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
+    AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,
   ApiIntegrationsGithubCallbackRoute: ApiIntegrationsGithubCallbackRoute,
   ApiIntegrationsGithubSetupRoute: ApiIntegrationsGithubSetupRoute,

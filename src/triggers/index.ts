@@ -4,6 +4,7 @@ import type { DurableTrigger } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
 
 export interface ExternalTrigger {
+  triggerId?: string;
   organizationId: string;
   projectId: string;
   source: string;

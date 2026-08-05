@@ -1,5 +1,11 @@
 import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
+import {
+  createAttachmentCapabilityRegistry,
+  type AttachmentCapabilityRegistry,
+  type AttachmentProvider,
+  type AttachmentResolver,
+} from "./attachments/capabilities.js";
 import type { ApiKeyScope } from "./auth/api-key-contract.js";
 import { requireOperation, type OperationAuthenticator } from "./auth/operation-auth.js";
 import type { OperationAuthorization } from "./auth/api-keys.js";
@@ -39,6 +45,7 @@ export interface HubRuntimeOptions {
   providers?: readonly TriggerProvider[];
   providerFactories?: readonly TriggerProviderFactory[];
   integrations?: readonly ProviderIntegrationRegistration[];
+  attachmentResolvers?: Partial<Record<AttachmentProvider, AttachmentResolver>>;
   connectionsForProject?: TriggerProviderResources["connectionsForProject"];
   configurationRevisionId?: string;
   outputRegistry?: OutputExecutorRegistry;
@@ -74,6 +81,11 @@ export interface HubOperations {
   handleOrganizationDaemonRename(request: Request, daemonId: string): Promise<Response>;
   handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
   handleExecutionCapabilities(request: Request, executionId: string): Promise<Response>;
+  handleAttachmentDownload(
+    request: Request,
+    executionId: string,
+    attachmentId: string,
+  ): Promise<Response>;
   handleConfigurationInstall(request: Request): Promise<Response>;
   handleManualRun(request: Request): Promise<Response>;
   handleManualTrigger(request: Request, entrypoint: "trigger" | "smoke"): Promise<Response>;
@@ -96,6 +108,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   };
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
+  const attachments = createAttachmentRegistry(options);
   const configuredProviders =
     options.database === null
       ? []
@@ -107,6 +120,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
               (() => () => {
                 throw new Error("no connection resolver registered");
               }),
+            ...(attachments === undefined ? {} : { attachments }),
           }),
         );
   const providers = [manualProvider, ...configuredProviders, ...(options.providers ?? [])].filter(
@@ -227,6 +241,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       capabilityServer === null
         ? databaseUnavailable()
         : capabilityServer.handle(request, executionId),
+    handleAttachmentDownload: (request, executionId, attachmentId) =>
+      attachments === undefined
+        ? databaseUnavailable()
+        : attachments.handle(request, executionId, attachmentId),
     handleConfigurationInstall: (request) =>
       machineOperation(request, "configuration:install", (authorization) =>
         options.database === null
@@ -272,6 +290,24 @@ function createAppExecutionCapabilityServer(
     database: options.database,
     outputs: options.outputRegistry ?? new OutputExecutorRegistry(),
     completeExecution: (input) => daemonModule.lifecycle.completeAgentExecutionFromCallback(input),
+  });
+}
+
+function createAttachmentRegistry(
+  options: HubRuntimeOptions,
+): AttachmentCapabilityRegistry | undefined {
+  if (
+    options.database === null ||
+    options.publicBaseUrl === undefined ||
+    options.completionTokenSecret === undefined
+  ) {
+    return undefined;
+  }
+  return createAttachmentCapabilityRegistry({
+    database: options.database,
+    publicBaseUrl: options.publicBaseUrl,
+    authoritySecret: options.completionTokenSecret,
+    resolvers: options.attachmentResolvers ?? {},
   });
 }
 

@@ -108,9 +108,130 @@ describe("Slack Web API client", () => {
     );
     assert.equal(requestSignal?.aborted, true);
   });
+
+  it("hydrates the latest 50 preceding replies across Slack pagination, oldest first", async () => {
+    const requests: Array<{ method: string; body: Record<string, string> }> = [];
+    const messages = Array.from({ length: 55 }, (_, index) => {
+      const sequence = index + 1;
+      return {
+        ts: `1700000000.${String(sequence).padStart(6, "0")}`,
+        text: `reply-${sequence}`,
+        ...(sequence === 55 ? { bot_id: "B55" } : { user: `U${sequence}` }),
+      };
+    });
+    let page = 0;
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input, init) => {
+        requests.push({
+          method: init?.method ?? "GET",
+          body: parseRequestBody(init?.body),
+        });
+        const current = page++ === 0 ? messages.slice(25) : messages.slice(0, 25);
+        return Response.json({
+          ok: true,
+          messages: current,
+          response_metadata: page === 1 ? { next_cursor: "older-page" } : { next_cursor: "" },
+        });
+      },
+    });
+
+    const hydrated = await client.readThreadMessages?.({
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      threadTs: "1700000000.000000",
+      beforeTs: "1700000000.000056",
+    });
+
+    assert.equal(hydrated?.length, 50);
+    assert.equal(hydrated?.[0]?.content, "reply-6");
+    assert.equal(hydrated?.at(-1)?.content, "reply-55");
+    assert.deepEqual(hydrated?.at(-1)?.author, { id: "B55" });
+    assert.deepEqual(
+      requests.map(({ method, body }) => ({ method, body })),
+      [
+        {
+          method: "POST",
+          body: {
+            channel: "C1",
+            ts: "1700000000.000000",
+            latest: "1700000000.000056",
+            inclusive: "false",
+            limit: "100",
+          },
+        },
+        {
+          method: "POST",
+          body: {
+            channel: "C1",
+            ts: "1700000000.000000",
+            latest: "1700000000.000056",
+            inclusive: "false",
+            limit: "100",
+            cursor: "older-page",
+          },
+        },
+      ],
+    );
+  });
+
+  it("keeps Slack file credentials and private URLs inside the client", async () => {
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input, init) => {
+        requests.push({
+          url: requestUrl(input),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        if (requestUrl(input).endsWith("files.info")) {
+          return Response.json({
+            ok: true,
+            file: {
+              id: "F1",
+              url_private_download: "https://files.slack.com/files-pri/T1-F1/download/image.png",
+            },
+          });
+        }
+        return new Response("slack-image-bytes", {
+          headers: { "content-type": "image/png", etag: '"file-1"' },
+        });
+      },
+    });
+
+    const response = await client.downloadAttachment?.({
+      organizationId: "org-1",
+      teamId: "T1",
+      fileId: "F1",
+    });
+
+    assert.equal(await response?.text(), "slack-image-bytes");
+    assert.deepEqual(requests, [
+      { url: "https://slack.com/api/files.info", authorization: "Bearer xoxb-secret" },
+      {
+        url: "https://files.slack.com/files-pri/T1-F1/download/image.png",
+        authorization: "Bearer xoxb-secret",
+      },
+    ]);
+  });
 });
 
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
   return input instanceof URL ? input.toString() : input.url;
+}
+
+function parseRequestBody(value: BodyInit | null | undefined): Record<string, string> {
+  if (typeof value !== "string") throw new Error("expected a JSON request body");
+  const parsed: unknown = JSON.parse(value);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("expected a JSON object request body");
+  }
+  const body: Record<string, string> = {};
+  for (const [key, item] of Object.entries(parsed)) {
+    if (typeof item !== "string") throw new Error("expected string request body values");
+    body[key] = item;
+  }
+  return body;
 }

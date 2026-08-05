@@ -33,6 +33,34 @@ export interface TriggerLifecycleTransition {
   transitioned: boolean;
 }
 
+export type AttachmentProvider = "slack" | "discord";
+
+export interface AttachmentRecord {
+  id: string;
+  triggerId: string;
+  organizationId: string;
+  connectionId: string;
+  provider: AttachmentProvider;
+  sourceId: string;
+  locator: unknown;
+  filename: string;
+  contentType: string | null;
+  byteSize: number | null;
+  createdAt: Date;
+}
+
+export interface InsertAttachmentInput {
+  triggerId: string;
+  organizationId: string;
+  connectionId: string;
+  provider: AttachmentProvider;
+  sourceId: string;
+  locator: unknown;
+  filename: string;
+  contentType?: string | null;
+  byteSize?: number | null;
+}
+
 export interface MachineRecord {
   id: string;
   orgId: string;
@@ -578,6 +606,16 @@ export interface Database {
     organizationId?: string,
   ): Promise<TriggerRecord | undefined>;
   findTriggerById(id: string): Promise<TriggerRecord | undefined>;
+  insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord>;
+  findAttachmentBySource(
+    triggerId: string,
+    provider: AttachmentProvider,
+    sourceId: string,
+  ): Promise<AttachmentRecord | undefined>;
+  findAttachmentForExecution(
+    executionId: string,
+    attachmentId: string,
+  ): Promise<AttachmentRecord | undefined>;
   insertMachine(input: InsertMachineInput): Promise<MachineRecord>;
   findMachineById(id: string): Promise<MachineRecord | undefined>;
   findMachineForOrganization(

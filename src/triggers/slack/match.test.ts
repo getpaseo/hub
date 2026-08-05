@@ -55,5 +55,7 @@ function mention(): NormalizedSlackMentionEvent {
     content: "hello <@UBOT> run tests",
     author: { id: "U1" },
     createdAt: new Date(1_700_000_000_000).toISOString(),
+    attachments: [],
+    threadContextMessages: [],
   };
 }

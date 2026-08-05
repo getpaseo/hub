@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
-import type { SlackBotClient } from "./client.js";
+import type { SlackBotClient, SlackThreadMessage } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
 
 describe("Slack trigger provider", () => {
@@ -85,7 +85,9 @@ describe("Slack trigger provider", () => {
             channel: { id: "C1" },
             thread: { ts: "1700000000.000001" },
             created_at: new Date(1_700_000_000_000).toISOString(),
+            attachments: [],
           },
+          trigger_thread_context: { messages: [] },
         },
       },
     });
@@ -163,6 +165,59 @@ describe("Slack trigger provider", () => {
       "2023-11-14T22:13:20.000Z",
     );
   });
+
+  it("hydrates only the preceding thread replies and leaves top-level mentions alone", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, config(), {
+      organizationId: "org-1",
+    });
+    const client = new RecordingSlackClient({
+      threadMessages: Array.from({ length: 50 }, (_, index) => ({
+        ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
+        createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+        content: `reply-${index + 1}`,
+        author: { id: index === 49 ? "B1" : `U${index + 1}` },
+        attachments: [],
+      })),
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+
+    const [threadMatch] = await provider.match({
+      organizationId: "org-1",
+      projectId: project.id,
+      source: "slack.mention",
+      deliveryId: "slack-thread",
+      receivedAt: new Date(),
+      payload: event(),
+    });
+    assert.equal(
+      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages.length,
+      50,
+    );
+    assert.equal(
+      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages[0]?.content,
+      "reply-1",
+    );
+    assert.equal(
+      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages.at(-1)?.author.id,
+      "B1",
+    );
+
+    const [rootMatch] = await provider.match({
+      organizationId: "org-1",
+      projectId: project.id,
+      source: "slack.mention",
+      deliveryId: "slack-root-no-history",
+      receivedAt: new Date(),
+      payload: event({ threadTs: null }),
+    });
+    assert.equal(rootMatch?.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
+    assert.deepEqual(client.threadReads, ["1700000000.000001"]);
+  });
 });
 
 function config() {
@@ -211,11 +266,19 @@ function event(overrides: { threadTs?: string | null } = {}) {
     content: "<@UBOT> deploy now",
     author: { id: "U1" },
     createdAt: new Date(1_700_000_000_000).toISOString(),
+    attachments: [],
+    threadContextMessages: [],
   };
 }
 
 class RecordingSlackClient implements SlackBotClient {
   reactions: string[] = [];
+  threadReads: string[] = [];
+  private readonly threadMessages: SlackThreadMessage[];
+
+  constructor(options: { threadMessages?: SlackThreadMessage[] } = {}) {
+    this.threadMessages = options.threadMessages ?? [];
+  }
   sendMessage(): Promise<void> {
     return Promise.resolve();
   }
@@ -226,5 +289,15 @@ class RecordingSlackClient implements SlackBotClient {
   removeReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
     this.reactions.push(`${input.organizationId}:${input.teamId}:remove:${input.name}`);
     return Promise.resolve();
+  }
+  readThreadMessages(input: {
+    organizationId: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    beforeTs: string;
+  }): Promise<SlackThreadMessage[]> {
+    this.threadReads.push(input.threadTs);
+    return Promise.resolve(this.threadMessages);
   }
 }

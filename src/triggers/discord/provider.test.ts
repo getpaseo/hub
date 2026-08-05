@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { buildLaunchMachineIntent } from "../../dispatcher/launch-machine-intent.js";
 import type { TriggerProviderMatch } from "../index.js";
@@ -149,15 +150,24 @@ describe("Discord trigger provider", () => {
   });
 
   it("preserves Discord attachments and referenced-message identity", async () => {
-    const { project, store } = await activeConfiguration(
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
       createConfig({
         prompt:
           "trigger=${{ paseo.event.discord.trigger_message.attachments.0.filename }} reply=${{ paseo.event.discord.trigger_message.referenced_message.id }} context=${{ paseo.event.discord.trigger_thread_context.messages.0.attachments.0.url }}",
       }),
     );
+    const attachments = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {},
+    });
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+      attachments,
     });
     const attachment = {
       id: "701",
@@ -169,6 +179,8 @@ describe("Discord trigger provider", () => {
     const [match] = await provider.match({
       organizationId: "org_1",
       projectId: project.id,
+      triggerId: "trigger-discord-media",
+      connectionId: "11111111-1111-4111-8111-111111111111",
       source: "discord.mention",
       deliveryId: "delivery-discord-media",
       receivedAt: new Date(),
@@ -190,9 +202,12 @@ describe("Discord trigger provider", () => {
     });
 
     assert.ok(match);
+    const reference =
+      match.triggerContext.event.discord.trigger_thread_context.messages[0]?.attachments[0];
+    assert.ok(reference);
     assert.equal(
       (await materialize(provider, match, project.id)).prompt,
-      `trigger=design.png reply=298 context=${attachment.url}`,
+      `trigger=design.png reply=298 context=${attachments.urlFor(reference.id, "execution-discord-materialize")}`,
     );
   });
 

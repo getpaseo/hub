@@ -16,6 +16,7 @@ import type { Database, SlackConnectionRecord } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
+import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
 import { createSlackWebhookSource } from "../../triggers/slack/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
@@ -135,10 +136,11 @@ export function createSlackRegistration(
   return {
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject }) =>
+      ({ configurationStoreForProject, connectionsForProject, attachments }) =>
         createSlackTriggerProvider({
           configurationStoreForProject,
           connectionsForProject,
+          ...(attachments === undefined ? {} : { attachments }),
           botUserIdForWorkspace: async (organizationId, teamId) =>
             (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,
           client: bot,
@@ -152,6 +154,7 @@ export function createSlackRegistration(
       },
     ],
     requests: [{ name: "slack.events", handle: (request) => webhook.handle(request) }],
+    attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
   };
 }
 
