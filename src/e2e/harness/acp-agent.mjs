@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
@@ -100,7 +100,9 @@ async function scheduleHubCompletion(server) {
   const jobs = requiredEnvironment("HUB_E2E_COMPLETION_JOBS");
   await mkdir(jobs, { recursive: true });
   const jobPath = join(jobs, `${executionId}.json`);
-  await writeFile(jobPath, JSON.stringify(server), { mode: 0o600 });
+  const temporaryPath = `${jobPath}.${process.pid}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify(server), { mode: 0o600 });
+  await rename(temporaryPath, jobPath);
 }
 
 async function initializeMcp(server) {
