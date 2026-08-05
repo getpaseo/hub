@@ -2582,7 +2582,7 @@ export interface AttachmentRow extends QueryResultRow {
   locator: unknown;
   filename: string;
   content_type: string | null;
-  byte_size: number | null;
+  byte_size: number | string | null;
   created_at: Date;
 }
 

@@ -93,7 +93,7 @@ export function toAttachmentRecord(row: AttachmentRow): AttachmentRecord {
     locator: row.locator,
     filename: row.filename,
     contentType: row.content_type,
-    byteSize: row.byte_size,
+    byteSize: row.byte_size === null ? null : Number(row.byte_size),
     createdAt: row.created_at,
   };
 }
