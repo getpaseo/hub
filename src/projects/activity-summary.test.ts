@@ -50,6 +50,25 @@ describe("summarizeTrigger", () => {
     });
   });
 
+  it("falls back to a generic headline when a valid envelope carries a malformed event payload", () => {
+    const summary = summarizeTrigger("github.push", {
+      id: "1",
+      type: "push",
+      repo: "acme/widgets",
+      repositoryId: 1,
+      installationId: 1,
+      createdAt: new Date().toISOString(),
+      payload: { sender: { login: "bob" } },
+    });
+
+    assert.deepEqual(summary, {
+      provider: "github",
+      headline: "Push",
+      actor: null,
+      externalUrl: null,
+    });
+  });
+
   it("falls back to a generic headline when the GitHub payload does not parse", () => {
     const summary = summarizeTrigger("github.issue_comment", { not: "an event" });
 

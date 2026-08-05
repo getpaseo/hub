@@ -54,12 +54,24 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
     return { provider: "github", headline: "GitHub event", actor: null, externalUrl: null };
   }
   const externalUrl = readGitHubTriggerUrl(event.data.payload) ?? null;
-  const summarize = GITHUB_EVENT_SUMMARIES[event.data.type];
-  const { headline, actor } =
-    summarize === undefined
-      ? { headline: humanize(event.data.type), actor: null }
-      : summarize(event.data.payload);
+  const { headline, actor } = summarizeGitHubEvent(event.data.type, event.data.payload);
   return { provider: "github", headline, actor, externalUrl };
+}
+
+/**
+ * The webhook receipt path validates only the permissive outer envelope, not the
+ * event-specific shape — a stored row can have a `type` whose nested payload doesn't
+ * match that type's schema. Isolate that single throwing call so one bad row falls
+ * back to a generic headline instead of failing the whole snapshot.
+ */
+function summarizeGitHubEvent(type: string, payload: unknown): GitHubHeadline {
+  const summarize = GITHUB_EVENT_SUMMARIES[type];
+  if (summarize === undefined) return { headline: humanize(type), actor: null };
+  try {
+    return summarize(payload);
+  } catch {
+    return { headline: humanize(type), actor: null };
+  }
 }
 
 function summarizeIssueComment(payload: unknown): GitHubHeadline {
