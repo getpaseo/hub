@@ -174,10 +174,17 @@ export class DurableWorkflowEngine {
     );
     if (trigger === undefined)
       throw new Error(`workflow trigger not found: ${run.configuredTriggerName}`);
-    const steps = await database.listWorkflowStepRunsForTriggerRun(run.id);
+    let steps = await database.listWorkflowStepRunsForTriggerRun(run.id);
     if (steps.length !== trigger.steps.length)
       throw new Error(`workflow steps missing for ${run.id}`);
 
+    await this.reconcileTerminalStepExecutions(steps);
+    const reconciledRun = await database.findTriggerRunById(run.id);
+    if (reconciledRun === undefined || reconciledRun.status !== "running") {
+      await database.deleteWorkflowWakeup(run.id);
+      return;
+    }
+    steps = await database.listWorkflowStepRunsForTriggerRun(run.id);
     const liveExecution = await this.findLiveExecution(steps);
     if (liveExecution !== undefined) {
       await database.deleteWorkflowWakeup(run.id);
@@ -190,7 +197,7 @@ export class DurableWorkflowEngine {
     }
     const step = trigger.steps[next.ordinal];
     if (step === undefined) throw new Error(`compiled step missing for ${next.stepId}`);
-    const context = workflowContext(run, steps, trigger.values);
+    const context = workflowContext(reconciledRun, steps, trigger.values);
     let shouldRun = true;
     try {
       shouldRun =
@@ -210,7 +217,15 @@ export class DurableWorkflowEngine {
       return;
     }
 
-    const intent = buildStepIntent(configuration, trigger, step, run, context, next.id, this.now());
+    const intent = buildStepIntent(
+      configuration,
+      trigger,
+      step,
+      reconciledRun,
+      context,
+      next.id,
+      this.now(),
+    );
     const existing = await database.findAgentExecutionByWorkflowStepRunId(next.id);
     if (existing !== undefined) {
       await database.linkWorkflowStepRunExecution(next.id, existing.id, intent);
@@ -254,6 +269,29 @@ export class DurableWorkflowEngine {
         return execution;
     }
     return undefined;
+  }
+
+  private async reconcileTerminalStepExecutions(
+    steps: readonly { status: string; agentExecutionId: string | null }[],
+  ): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    for (const step of steps) {
+      if (step.status !== "running" || step.agentExecutionId === null) continue;
+      const execution = await database.findAgentExecutionById(step.agentExecutionId);
+      if (
+        execution === undefined ||
+        (execution.status !== "succeeded" && execution.status !== "failed")
+      ) {
+        continue;
+      }
+      await database.completeWorkflowStep(
+        execution.id,
+        execution.status === "succeeded" ? "succeeded" : "failed",
+        execution.result,
+        readFailureReason(execution.result),
+      );
+    }
   }
 
   private async configurationForRun(

@@ -61,7 +61,7 @@ import type {
   WorkflowStepExecutionInput,
   WorkflowStepRunRecord,
   WorkflowWakeupRecord,
-  StructuredCompletionInput,
+  WorkflowAgentCompletionInput,
 } from "./types.js";
 
 export interface MemoryDatabaseOptions {
@@ -341,7 +341,10 @@ class MemoryDatabase implements Database {
     if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
     const updated = {
       ...step,
-      status: "running" as const,
+      status:
+        step.status === "succeeded" || step.status === "failed" || step.status === "timed_out"
+          ? step.status
+          : ("running" as const),
       agentExecutionId: executionId,
       startedAt: step.startedAt ?? execution.startedAt,
       ...(dispatchIntent === undefined ? {} : { dispatchIntent }),
@@ -356,77 +359,98 @@ class MemoryDatabase implements Database {
     result: unknown,
     failureReason?: string,
   ) {
-    const execution = this.agentExecutions.get(executionId);
-    if (execution?.workflowStepRunId === null || execution?.workflowStepRunId === undefined)
-      return undefined;
+    const execution = await this.findAgentExecutionById(executionId);
+    if (execution === undefined || execution.workflowStepRunId === null) return undefined;
+    await this.completeWorkflowAgentExecution({
+      executionId,
+      executionStatus: execution.status === "succeeded" ? "succeeded" : "failed",
+      stepStatus: status,
+      result,
+      stepOutput: result,
+      ...(failureReason === undefined ? {} : { failureReason }),
+    });
     const step = this.workflowStepRuns.get(execution.workflowStepRunId);
-    if (step === undefined) return undefined;
-    const run = this.triggerRuns.get(step.triggerRunId);
-    if (run === undefined) return undefined;
-    if (step.status === "succeeded" || step.status === "failed" || step.status === "timed_out") {
-      return { stepRun: step, run };
+    return step === undefined
+      ? undefined
+      : { stepRun: step, run: this.triggerRuns.get(step.triggerRunId)! };
+  }
+
+  async completeWorkflowAgentExecution(input: WorkflowAgentCompletionInput) {
+    const execution = this.readAgentExecution(input.executionId);
+    if (execution.workflowStepRunId === null) {
+      return this.transitionAgentExecution(execution.id, input.executionStatus, {
+        result: input.result,
+        ...(input.completedByAgent === undefined
+          ? {}
+          : { completedByAgent: input.completedByAgent }),
+        ...(input.deadlineCondition === undefined
+          ? {}
+          : { deadlineCondition: input.deadlineCondition }),
+        ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+      });
     }
+    const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+    if (step === undefined)
+      throw new Error(`workflow step run not found: ${execution.workflowStepRunId}`);
+    const run = this.triggerRuns.get(step.triggerRunId);
+    if (run === undefined) throw new Error(`workflow trigger run not found: ${step.triggerRunId}`);
+
+    const transitioned =
+      execution.status === "spawning" || execution.status === "running"
+        ? await this.transitionAgentExecution(execution.id, input.executionStatus, {
+            result: input.result,
+            ...(input.completedByAgent === undefined
+              ? {}
+              : { completedByAgent: input.completedByAgent }),
+            ...(input.deadlineCondition === undefined
+              ? {}
+              : { deadlineCondition: input.deadlineCondition }),
+            ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+          })
+        : { execution, transitioned: false };
+    if (transitioned.transitioned || isTerminalAgentExecutionStatus(execution.status)) {
+      this.finishWorkflowStep(step, run, input);
+    }
+    return transitioned;
+  }
+
+  private finishWorkflowStep(
+    step: WorkflowStepRunRecord,
+    run: TriggerRunRecord,
+    input: WorkflowAgentCompletionInput,
+  ): void {
+    if (step.status === "succeeded" || step.status === "failed" || step.status === "timed_out") {
+      return;
+    }
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
     const now = this.options.now?.() ?? new Date();
     const updatedStep: WorkflowStepRunRecord = {
       ...step,
-      status,
-      output: result,
-      failureReason: failureReason ?? null,
+      status: input.stepStatus,
+      output: freezeEvidence(input.stepOutput !== undefined ? input.stepOutput : input.result),
+      failureReason: input.failureReason ?? null,
       completedAt: now,
     };
-    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
-    const updatedRun: AcceptedTriggerRunRecord =
-      status === "succeeded"
-        ? run
-        : {
-            ...run,
-            status,
-            failureReason: failureReason ?? null,
-            completedAt: now,
-          };
     this.workflowStepRuns.set(step.id, updatedStep);
-    if (status === "succeeded") {
-      this.workflowWakeups.set(run.id, {
-        triggerRunId: run.id,
-        availableAt: now,
-        leaseExpiresAt: null,
-      });
-    } else {
-      this.triggerRuns.set(run.id, updatedRun);
-      this.workflowWakeups.delete(run.id);
+    if (input.stepStatus === "succeeded") {
+      if (run.status === "running") {
+        this.workflowWakeups.set(run.id, {
+          triggerRunId: run.id,
+          availableAt: now,
+          leaseExpiresAt: null,
+        });
+      }
+      return;
     }
-    return { stepRun: updatedStep, run: updatedRun };
-  }
-
-  async completeAgentExecutionWithStructuredOutput(input: StructuredCompletionInput) {
-    const execution = this.readAgentExecution(input.executionId);
-    if (execution.status !== "spawning" && execution.status !== "running") {
-      return { execution, transitioned: false };
-    }
-    const transitioned = await this.transitionAgentExecution(input.executionId, "succeeded", {
-      result: input.result ?? { status: "succeeded", output: input.output },
-      completedByAgent: true,
-    });
-    if (!transitioned.transitioned) return transitioned;
-    const step =
-      execution.workflowStepRunId === null
-        ? undefined
-        : this.workflowStepRuns.get(execution.workflowStepRunId);
-    if (step !== undefined) {
-      const now = this.options.now?.() ?? new Date();
-      this.workflowStepRuns.set(step.id, {
-        ...step,
-        status: "succeeded",
-        output: freezeEvidence(input.output),
+    if (run.status === "running") {
+      this.triggerRuns.set(run.id, {
+        ...run,
+        status: input.stepStatus,
+        failureReason: input.failureReason ?? null,
         completedAt: now,
       });
-      this.workflowWakeups.set(step.triggerRunId, {
-        triggerRunId: step.triggerRunId,
-        availableAt: now,
-        leaseExpiresAt: null,
-      });
     }
-    return transitioned;
+    this.workflowWakeups.delete(run.id);
   }
 
   async markWorkflowStepSkipped(triggerRunId: string, stepId: string, reason: string) {

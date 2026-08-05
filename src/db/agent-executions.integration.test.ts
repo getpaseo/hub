@@ -225,6 +225,191 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
+  it.each([
+    { terminalStatus: "succeeded" as const, expectedRunStatus: "running" as const },
+    { terminalStatus: "failed" as const, expectedRunStatus: "failed" as const },
+  ])(
+    "reconciles a terminal $terminalStatus execution after PostgreSQL restart recovery",
+    async ({ terminalStatus, expectedRunStatus }) => {
+      const fixture = await executionFixture(postgres);
+      const dispatches: string[] = [];
+      const match = restartMatch(fixture.execution.configurationRevisionId);
+      const createEngine = () =>
+        createDurableWorkflowHandler({
+          database: fixture.database,
+          providers: [
+            {
+              name: "test",
+              eventNames: ["test.event"],
+              async match() {
+                return [match];
+              },
+            },
+          ],
+          dispatchLaunchMachineIntent: async (intent) => {
+            if (intent.prompt === "Downstream") {
+              const prior = await fixture.database.findWorkflowStepRunById(firstStepId!);
+              assert.equal(prior?.status, "succeeded");
+            }
+            dispatches.push(intent.prompt);
+            const execution = await fixture.database.insertAgentExecution({
+              id: durableExecutionId(intent),
+              organizationId: intent.organizationId,
+              projectId: intent.projectId,
+              machineId: fixture.execution.machineId,
+              triggerId: intent.triggerId,
+              triggerContext: intent.triggerContext,
+              outputContext: intent.outputContext,
+              configurationRevisionId: intent.configurationRevisionId,
+              workflowStepRunId: intent.workflowStepRunId!,
+              deadlineAt: intent.deadlineAt ?? null,
+              launchIntent: intent,
+            });
+            return { execution };
+          },
+        });
+      let firstStepId: string | undefined;
+      try {
+        const firstEngine = createEngine();
+        const trigger = await insertWorkflowTrigger(
+          fixture.database,
+          fixture.execution.configurationRevisionId,
+          `postgres-restart-${terminalStatus}`,
+        );
+        await firstEngine.handler(toDurableTrigger(trigger.trigger));
+        await firstEngine.engine.processAvailable();
+
+        const run = (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0];
+        assert.ok(run);
+        const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0];
+        assert.ok(firstStep);
+        firstStepId = firstStep.id;
+        const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          firstStep.id,
+        );
+        assert.ok(firstExecution);
+        assert.deepEqual(dispatches, ["First"]);
+
+        await fixture.database.transitionAgentExecution(firstExecution.id, terminalStatus, {
+          result: { status: terminalStatus },
+        });
+
+        const restarted = createEngine();
+        await restarted.engine.processAvailable();
+        await restarted.engine.processAvailable();
+
+        assert.equal(
+          (await fixture.database.findTriggerRunById(run.id))?.status,
+          expectedRunStatus,
+        );
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(firstStep.id))?.status,
+          terminalStatus,
+        );
+        assert.deepEqual(
+          dispatches,
+          terminalStatus === "succeeded" ? ["First", "Downstream"] : ["First"],
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    },
+  );
+
+  it.each([
+    { executionStatus: "succeeded" as const, stepStatus: "succeeded" as const },
+    { executionStatus: "failed" as const, stepStatus: "failed" as const },
+    { executionStatus: "failed" as const, stepStatus: "timed_out" as const },
+  ])(
+    "atomically completes workflow-owned $stepStatus agent executions in PostgreSQL",
+    async ({ executionStatus, stepStatus }) => {
+      const fixture = await executionFixture(postgres);
+      const dispatches: string[] = [];
+      const match = restartMatch(fixture.execution.configurationRevisionId);
+      try {
+        const { handler, engine } = createDurableWorkflowHandler({
+          database: fixture.database,
+          providers: [
+            {
+              name: "test",
+              eventNames: ["test.event"],
+              async match() {
+                return [match];
+              },
+            },
+          ],
+          dispatchLaunchMachineIntent: async (intent) => {
+            dispatches.push(intent.prompt);
+            const execution = await fixture.database.insertAgentExecution({
+              id: durableExecutionId(intent),
+              organizationId: intent.organizationId,
+              projectId: intent.projectId,
+              machineId: fixture.execution.machineId,
+              triggerId: intent.triggerId,
+              triggerContext: intent.triggerContext,
+              outputContext: intent.outputContext,
+              configurationRevisionId: intent.configurationRevisionId,
+              workflowStepRunId: intent.workflowStepRunId!,
+              deadlineAt: intent.deadlineAt ?? null,
+              launchIntent: intent,
+            });
+            return { execution };
+          },
+        });
+        const trigger = await insertWorkflowTrigger(
+          fixture.database,
+          fixture.execution.configurationRevisionId,
+          `postgres-atomic-${stepStatus}`,
+        );
+        await handler(toDurableTrigger(trigger.trigger));
+        await engine.processAvailable();
+        const run = (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0]!;
+        const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          firstStep.id,
+        );
+        assert.ok(execution);
+
+        const terminal = await fixture.database.completeWorkflowAgentExecution({
+          executionId: execution.id,
+          executionStatus,
+          stepStatus,
+          result: { status: executionStatus, reason: stepStatus },
+          stepOutput: { status: stepStatus },
+        });
+        const duplicate = await fixture.database.completeWorkflowAgentExecution({
+          executionId: execution.id,
+          executionStatus,
+          stepStatus,
+          result: { status: executionStatus, reason: "duplicate" },
+          stepOutput: { status: "duplicate" },
+        });
+
+        assert.equal(terminal.transitioned, true);
+        assert.equal(duplicate.transitioned, false);
+        assert.equal(
+          (await fixture.database.findAgentExecutionById(execution.id))?.status,
+          executionStatus,
+        );
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(firstStep.id))?.status,
+          stepStatus,
+        );
+        assert.equal(
+          (await fixture.database.findTriggerRunById(run.id))?.status,
+          stepStatus === "succeeded" ? "running" : stepStatus,
+        );
+        await engine.processAvailable();
+        assert.deepEqual(
+          dispatches,
+          stepStatus === "succeeded" ? ["First", "Downstream"] : ["First"],
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    },
+  );
+
   it("fans one PostgreSQL receipt into independently idempotent configured-trigger branches", async () => {
     const fixture = await executionFixture(postgres);
     let dispatches = 0;
@@ -552,6 +737,23 @@ function phaseOneMatch(
   };
 }
 
+function restartMatch(configurationRevisionId: string): TriggerProviderMatch {
+  const configuration = restartWorkflowConfiguration();
+  return {
+    triggerName: "restart-route",
+    triggerContext: { provider: "test" },
+    outputContext: { provider: "test" },
+    configurationRevisionId,
+    hubConfig: configuration,
+    invocation: {
+      status: "accepted",
+      rawMessage: "repo=hub work",
+      prompt: "work",
+      inputs: { repo: "hub" },
+    },
+  };
+}
+
 function workflowConfiguration(triggerName: string, stepId: string): CompiledHubConfig {
   return activateWorkflowConfiguration(
     compileHubConfig({
@@ -590,10 +792,50 @@ function allWorkflowConfigurations(): CompiledHubConfig {
   const configurations = definitions.map(([triggerName, stepId]) =>
     workflowConfiguration(triggerName, stepId),
   );
+  const restart = restartWorkflowConfiguration();
   return {
     environments: configurations[0]!.environments,
-    triggers: configurations.flatMap((configuration) => configuration.triggers),
+    triggers: [
+      ...configurations.flatMap((configuration) => configuration.triggers),
+      ...restart.triggers,
+    ],
   };
+}
+
+function restartWorkflowConfiguration(): CompiledHubConfig {
+  return activateWorkflowConfiguration(
+    compileHubConfig({
+      environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "restart-route",
+          on: "test.event",
+          max_runtime: "1h",
+          filters: { from_users: ["test"] },
+          inputs: { repo: { type: "string", choices: ["hub"] } },
+          steps: [
+            {
+              id: "first",
+              environment: "work",
+              max_runtime: "30s",
+              idle_timeout: "5s",
+              agent: { provider: "test" },
+              prompt: [{ text: "First" }],
+            },
+            {
+              id: "downstream",
+              if: "${{ paseo.inputs.repo == 'hub' }}",
+              environment: "work",
+              max_runtime: "30s",
+              idle_timeout: "5s",
+              agent: { provider: "test" },
+              prompt: [{ text: "Downstream" }],
+            },
+          ],
+        },
+      ],
+    }),
+  );
 }
 
 function activateWorkflowConfiguration(configuration: CompiledHubConfig): CompiledHubConfig {

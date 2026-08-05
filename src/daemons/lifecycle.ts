@@ -12,6 +12,7 @@ import type {
   HubAction,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
+  WorkflowAgentCompletionInput,
 } from "../db/types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
@@ -32,8 +33,8 @@ import {
   type DaemonCreateAgentOptions,
   type DaemonEvent,
 } from "./protocol.js";
-import { Ajv } from "ajv";
 import type { JsonValue } from "../config/compiler.js";
+import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
 import type { Logger } from "pino";
 
 export interface DaemonDispatchResult {
@@ -254,16 +255,40 @@ export class DaemonDispatchLifecycle {
       outputContext: intent.outputContext,
       configurationRevisionId: intent.configurationRevisionId,
       launchIntent: intent,
-      status: "failed",
-      result: { reason },
+      workflowStepRunId: intent.workflowStepRunId ?? null,
     });
-    if (inserted !== undefined) return inserted;
+    if (inserted !== undefined) {
+      return (
+        await this.options.database.completeWorkflowAgentExecution({
+          executionId,
+          executionStatus: "failed",
+          stepStatus: "failed",
+          result: { status: "failed", reason },
+          stepOutput: { status: "failed", reason },
+          failureReason: reason,
+          hubAction: null,
+        })
+      ).execution;
+    }
 
     const existing = await this.options.database.findAgentExecutionById(executionId);
     if (existing === undefined) {
       throw new Error(`claimed durable execution not found: ${executionId}`);
     }
     if (existing.status === "spawning") {
+      if (existing.workflowStepRunId !== null) {
+        return (
+          await this.options.database.completeWorkflowAgentExecution({
+            executionId,
+            executionStatus: "failed",
+            stepStatus: "failed",
+            result: { status: "failed", reason },
+            stepOutput: { status: "failed", reason },
+            failureReason: reason,
+            hubAction: null,
+          })
+        ).execution;
+      }
       return (
         await this.options.database.transitionAgentExecution(executionId, "failed", {
           result: { reason },
@@ -833,17 +858,21 @@ export class DaemonDispatchLifecycle {
       existing.launchIntent?.outputSchema === undefined || options.output === undefined
         ? undefined
         : jsonValue(options.output);
-    const transition =
-      structuredOutput === undefined
-        ? await this.transitionTerminalAgentExecution(executionId, "succeeded", {
-            result: { status: "succeeded" },
-            completedByAgent: options.completedByAgent === true,
-          })
-        : await this.options.database.completeAgentExecutionWithStructuredOutput({
-            executionId,
-            output: structuredOutput,
-            result: { status: "succeeded", output: options.output },
-          });
+    const transition = await this.transitionTerminalAgentExecution(
+      executionId,
+      "succeeded",
+      {
+        result:
+          structuredOutput === undefined
+            ? { status: "succeeded" }
+            : { status: "succeeded", output: options.output },
+        completedByAgent: options.completedByAgent === true,
+      },
+      {
+        stepStatus: "succeeded",
+        stepOutput: structuredOutput,
+      },
+    );
     if (!transition.transitioned) {
       if (isTerminalExecutionStatus(transition.execution.status)) {
         this.releaseExecutionResources(executionId);
@@ -855,9 +884,6 @@ export class DaemonDispatchLifecycle {
     this.releaseExecutionResources(executionId);
 
     const { execution } = transition;
-    if (structuredOutput === undefined) {
-      await this.options.database.completeWorkflowStep(execution.id, "succeeded", execution.result);
-    }
     this.startedExecutions.delete(executionId);
     await this.notifyExecutionTerminal(execution);
     await this.reconcileHubActionSafely(execution);
@@ -881,18 +907,32 @@ export class DaemonDispatchLifecycle {
       };
     } = {},
   ): Promise<AgentExecutionRecord | undefined> {
-    const transition = await this.transitionTerminalAgentExecution(executionId, "failed", {
-      result: {
-        status: "failed",
-        reason,
-        ...(details.lastInvalidOutput === undefined
-          ? {}
-          : { lastInvalidOutput: details.lastInvalidOutput }),
-      },
-      ...(details.deadlineCondition === undefined
+    const current = await this.options.database.findAgentExecutionById(executionId);
+    if (current === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    const result = {
+      status: "failed" as const,
+      reason,
+      ...(details.lastInvalidOutput === undefined
         ? {}
-        : { deadlineCondition: details.deadlineCondition }),
-    });
+        : { lastInvalidOutput: details.lastInvalidOutput }),
+    };
+    const stepStatus =
+      details.deadlineCondition?.kind === "hard" &&
+      current.deadlineAt !== null &&
+      current.deadlineAt.getTime() <= this.now()
+        ? ("timed_out" as const)
+        : ("failed" as const);
+    const transition = await this.transitionTerminalAgentExecution(
+      executionId,
+      "failed",
+      {
+        result,
+        ...(details.deadlineCondition === undefined
+          ? {}
+          : { deadlineCondition: details.deadlineCondition }),
+      },
+      { stepStatus, stepOutput: result, failureReason: reason },
+    );
     if (!transition.transitioned) {
       if (isTerminalExecutionStatus(transition.execution.status)) {
         this.releaseExecutionResources(executionId);
@@ -904,16 +944,6 @@ export class DaemonDispatchLifecycle {
     this.releaseExecutionResources(executionId);
 
     const { execution } = transition;
-    await this.options.database.completeWorkflowStep(
-      execution.id,
-      details.deadlineCondition?.kind === "hard" &&
-        execution.deadlineAt !== null &&
-        execution.deadlineAt.getTime() <= this.now()
-        ? "timed_out"
-        : "failed",
-      execution.result,
-      reason,
-    );
     this.startedExecutions.delete(executionId);
     await this.notifyExecutionTerminal(execution);
     await this.reconcileHubActionSafely(execution);
@@ -930,9 +960,27 @@ export class DaemonDispatchLifecycle {
     executionId: string,
     status: "succeeded" | "failed",
     fields: TransitionAgentExecutionFields,
+    workflow: Pick<WorkflowAgentCompletionInput, "stepStatus" | "stepOutput" | "failureReason">,
   ): Promise<TransitionAgentExecutionResult> {
     const execution = await this.options.database.findAgentExecutionById(executionId);
     if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    if (execution.workflowStepRunId !== null) {
+      return this.options.database.completeWorkflowAgentExecution({
+        executionId,
+        executionStatus: status,
+        stepStatus: workflow.stepStatus,
+        result: fields.result,
+        stepOutput: workflow.stepOutput,
+        ...(workflow.failureReason === undefined ? {} : { failureReason: workflow.failureReason }),
+        ...(fields.completedByAgent === undefined
+          ? {}
+          : { completedByAgent: fields.completedByAgent }),
+        ...(fields.deadlineCondition === undefined
+          ? {}
+          : { deadlineCondition: fields.deadlineCondition }),
+        hubAction: deriveHubAction(execution, status),
+      });
+    }
     return this.options.database.transitionAgentExecution(executionId, status, {
       ...fields,
       hubAction: deriveHubAction(execution, status),
@@ -1512,17 +1560,11 @@ function executionFailureReason(execution: AgentExecutionRecord | undefined): st
 }
 
 function validateStructuredOutput(schema: JsonValue, output: unknown): asserts output is JsonValue {
-  if (!isRecord(schema)) {
-    throw new AgentExecutionOutputValidationFailure(["configured output schema is invalid"]);
-  }
-  const validator = new Ajv({ allErrors: true, strict: true }).compile(schema);
+  const validator = compileJsonSchema(schema).validate;
   if (!isJsonValue(output))
     throw new AgentExecutionOutputValidationFailure(["output must be valid JSON"]);
   if (validator(output)) return;
-  const errors = (validator.errors ?? []).map((error) => {
-    const path = error.instancePath === "" ? "output" : `output${error.instancePath}`;
-    return `${path} ${error.message ?? "is invalid"}`;
-  });
+  const errors = formatJsonSchemaErrors(validator.errors);
   throw new AgentExecutionOutputValidationFailure(
     errors.length === 0 ? ["output is invalid"] : errors,
   );
@@ -1543,10 +1585,6 @@ function isJsonValue(value: unknown): value is JsonValue {
   if (typeof value === "number") return Number.isFinite(value);
   if (Array.isArray(value)) return value.every(isJsonValue);
   return typeof value === "object" && value !== null && Object.values(value).every(isJsonValue);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function createDaemonDispatchLifecycle(

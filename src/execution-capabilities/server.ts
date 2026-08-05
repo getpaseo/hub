@@ -1,12 +1,40 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Ajv, type ErrorObject } from "ajv";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
+import type { JsonValue } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
+import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
 import type { OutputExecutorRegistry } from "./outputs.js";
 
-const FinishArgumentsSchema = z.object({}).strict();
-const ReplyArgumentsSchema = z.object({ content: z.string().min(1) }).strict();
+interface JsonSchemaNode {
+  readonly [key: string]: JsonValue;
+}
+
+interface JsonSchema {
+  type: "object";
+  properties?: Record<string, JsonSchemaNode>;
+  required?: string[];
+  [key: string]: unknown;
+}
+
+const FinishArgumentsSchema: JsonSchema = {
+  type: "object" as const,
+  properties: {},
+  additionalProperties: false,
+};
+const ReplyArgumentsSchema: JsonSchema = {
+  type: "object" as const,
+  properties: { content: { type: "string", minLength: 1 } },
+  required: ["content"],
+  additionalProperties: false,
+};
 
 export interface ExecutionCapabilityServer {
   handle(request: Request, executionId: string): Promise<Response>;
@@ -78,21 +106,45 @@ function createMcpServer(
   },
   execution: AgentExecutionRecord,
   token: string,
-): McpServer {
-  const server = new McpServer({ name: "paseo-hub-execution", version: "1.0.0" });
-  const finishSchema =
-    execution.launchIntent?.outputSchema === undefined
-      ? FinishArgumentsSchema
-      : z.object({ output: jsonSchemaToZod(execution.launchIntent.outputSchema) }).strict();
-  server.registerTool(
-    "finish_execution",
+): Server {
+  const server = new Server(
+    { name: "paseo-hub-execution", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
+  const ajv = new Ajv({ allErrors: true, strict: true });
+  const finishContract = finishExecutionContract(execution.launchIntent?.outputSchema, ajv);
+  const tools: Tool[] = [
     {
+      name: "finish_execution",
       description: "Mark this Hub execution complete after the task is fully finished.",
-      inputSchema: finishSchema,
+      inputSchema: finishContract.schema,
     },
-    async (args) => {
+  ];
+  const replyOutput = allowedReplyOutput(execution);
+  if (replyOutput !== undefined) {
+    tools.push({
+      name: "reply",
+      description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
+      inputSchema: ReplyArgumentsSchema,
+    });
+  }
+  const contracts = new Map<string, JsonSchemaContract>([["finish_execution", finishContract]]);
+  if (replyOutput !== undefined) {
+    contracts.set("reply", jsonSchemaContract(ReplyArgumentsSchema, ajv));
+  }
+
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const contract = contracts.get(toolName);
+    if (contract === undefined) return toolFailure(`Tool ${toolName} not found`);
+    const args = request.params.arguments ?? {};
+    const validation = contract.validate(args);
+    if (!validation.valid) return toolFailure(validation.message);
+
+    if (toolName === "finish_execution") {
       try {
-        const output = isRecord(args) && Object.hasOwn(args, "output") ? args["output"] : undefined;
+        const output = Object.hasOwn(args, "output") ? args["output"] : undefined;
         const completed = await options.completeExecution({
           executionId: execution.id,
           token,
@@ -106,100 +158,94 @@ function createMcpServer(
           error instanceof Error ? error.message : "Execution could not be finished",
         );
       }
-    },
-  );
+    }
 
-  const replyOutput = allowedReplyOutput(execution);
-  if (replyOutput !== undefined) {
-    server.registerTool(
-      "reply",
-      {
-        description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
-        inputSchema: ReplyArgumentsSchema,
-      },
-      async (args) => {
-        const claimed = await options.database.claimAgentExecutionReply(
-          execution.id,
-          replyOutput.max,
-          options.now?.() ?? new Date(),
-        );
-        if (!claimed) return toolFailure("Reply limit reached");
-        try {
-          await options.outputs.execute({
-            agentExecutionId: execution.id,
-            toolType: replyOutput.type,
-            args,
-            outputContext: execution.outputContext,
-          });
-          return toolSuccess("Reply sent");
-        } catch {
-          return toolFailure("Reply delivery failed; the reply claim remains consumed");
-        }
-      },
+    if (replyOutput === undefined) return toolFailure(`Tool ${toolName} not found`);
+    const claimed = await options.database.claimAgentExecutionReply(
+      execution.id,
+      replyOutput.max,
+      options.now?.() ?? new Date(),
     );
-  }
+    if (!claimed) return toolFailure("Reply limit reached");
+    try {
+      await options.outputs.execute({
+        agentExecutionId: execution.id,
+        toolType: replyOutput.type,
+        args,
+        outputContext: execution.outputContext,
+      });
+      return toolSuccess("Reply sent");
+    } catch {
+      return toolFailure("Reply delivery failed; the reply claim remains consumed");
+    }
+  });
   return server;
 }
 
-function jsonSchemaToZod(schema: unknown): z.ZodTypeAny {
-  if (!isRecord(schema)) return z.any();
-  const enumValues = schema["enum"];
-  if (Array.isArray(enumValues) && enumValues.length > 0) {
-    const stringValues = enumValues.filter((value): value is string => typeof value === "string");
-    if (stringValues.length === enumValues.length) {
-      const enumObject = Object.fromEntries(
-        stringValues.map((value, index) => [`value${index}`, value]),
-      );
-      return z.nativeEnum(enumObject);
-    }
-    return z
-      .any()
-      .refine(
-        (value: unknown) =>
-          enumValues.some((candidate) => JSON.stringify(candidate) === JSON.stringify(value)),
-        {
-          message: "must match one of the configured enum values",
-        },
-      );
-  }
-  if (schema["const"] !== undefined) {
-    const constant = schema["const"];
-    return z.any().refine((value: unknown) => JSON.stringify(value) === JSON.stringify(constant), {
-      message: "must equal the configured constant",
-    });
-  }
-  const type = schema["type"];
-  if (type === "object" || schema["properties"] !== undefined) return jsonObjectSchemaToZod(schema);
-  if (type === "array") return jsonArraySchemaToZod(schema);
-  if (type === "string") return z.string();
-  if (type === "number" || type === "integer") return z.number();
-  if (type === "boolean") return z.boolean();
-  if (type === "null") return z.null();
-  return z.any();
+interface JsonSchemaContract {
+  schema: JsonSchema;
+  validate(args: Record<string, unknown>): { valid: true } | { valid: false; message: string };
 }
 
-function jsonObjectSchemaToZod(schema: Record<string, unknown>): z.ZodTypeAny {
-  const properties = isRecord(schema["properties"]) ? schema["properties"] : {};
-  const required = new Set(
-    Array.isArray(schema["required"])
-      ? schema["required"].filter((name): name is string => typeof name === "string")
-      : [],
-  );
-  const shape: Record<string, z.ZodTypeAny> = {};
-  for (const [name, child] of Object.entries(properties)) {
-    const childSchema = jsonSchemaToZod(child);
-    shape[name] = required.has(name) ? childSchema : childSchema.optional();
-  }
-  const object = z.object(shape);
-  return schema["additionalProperties"] === false ? object.strict() : object;
+function finishExecutionContract(
+  outputSchema: JsonValue | undefined,
+  ajv: Ajv,
+): JsonSchemaContract {
+  if (outputSchema === undefined) return jsonSchemaContract(FinishArgumentsSchema, ajv);
+
+  const outputValidator = compileJsonSchema(outputSchema).validate;
+  const envelope = {
+    type: "object" as const,
+    required: ["output"],
+    properties: { output: {} },
+    additionalProperties: false,
+  };
+  const envelopeValidator = ajv.compile(envelope);
+  const schema = {
+    type: "object" as const,
+    required: ["output"],
+    properties: { output: schemaNode(structuredClone(outputSchema)) },
+    additionalProperties: false,
+  };
+  return {
+    schema,
+    validate(args) {
+      if (!envelopeValidator(args)) {
+        return { valid: false, message: validationMessage(envelopeValidator.errors) };
+      }
+      if (!outputValidator(args["output"])) {
+        return { valid: false, message: validationMessage(outputValidator.errors) };
+      }
+      return { valid: true };
+    },
+  };
 }
 
-function jsonArraySchemaToZod(schema: Record<string, unknown>): z.ZodTypeAny {
-  const items = schema["items"];
-  return z.array(items === undefined ? z.any() : jsonSchemaToZod(items));
+function jsonSchemaContract(schema: JsonSchema, ajv: Ajv): JsonSchemaContract {
+  const validator = ajv.compile(schema);
+  return {
+    schema,
+    validate(args) {
+      return validator(args)
+        ? { valid: true }
+        : { valid: false, message: validationMessage(validator.errors) };
+    },
+  };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function validationMessage(errors: readonly ErrorObject[] | null | undefined): string {
+  const messages = formatJsonSchemaErrors(errors, "arguments");
+  return messages.length === 0
+    ? "Invalid arguments for tool"
+    : `Invalid arguments for tool: ${messages.join("; ")}`;
+}
+
+function schemaNode(value: JsonValue): JsonSchemaNode {
+  if (!isSchemaNode(value)) throw new Error("JSON Schema must be an object");
+  return value;
+}
+
+function isSchemaNode(value: JsonValue): value is JsonSchemaNode {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

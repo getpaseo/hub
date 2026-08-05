@@ -67,9 +67,13 @@ describe("durable multi-step workflow engine", () => {
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.ok(classifier);
 
-    await fixture.database.completeAgentExecutionWithStructuredOutput({
+    await fixture.database.completeWorkflowAgentExecution({
       executionId: classifier.id,
-      output: { repo: "paseo" },
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded", output: { repo: "paseo" } },
+      stepOutput: { repo: "paseo" },
+      completedByAgent: true,
     });
     await engine.processAvailable();
     assert.deepEqual(dispatches, ["classify", "work-paseo"]);
@@ -151,9 +155,13 @@ describe("durable multi-step workflow engine", () => {
       classifierStep.id,
     );
     assert.ok(classifier);
-    await fixture.database.completeAgentExecutionWithStructuredOutput({
+    await fixture.database.completeWorkflowAgentExecution({
       executionId: classifier.id,
-      output: { repo: "hub" },
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded", output: { repo: "hub" } },
+      stepOutput: { repo: "hub" },
+      completedByAgent: true,
     });
 
     const restarted = engineFor(fixture, dispatches);
@@ -168,6 +176,106 @@ describe("durable multi-step workflow engine", () => {
       2,
     );
   });
+
+  it.each([
+    { terminalStatus: "succeeded" as const, expectedRunStatus: "running" as const },
+    { terminalStatus: "failed" as const, expectedRunStatus: "failed" as const },
+  ])(
+    "reconciles a terminal $terminalStatus execution before evaluating downstream work",
+    async ({ terminalStatus, expectedRunStatus }) => {
+      const fixture = await workflowFixture({ terminalRecovery: true });
+      const dispatches: string[] = [];
+      const first = engineFor(fixture, dispatches);
+      await first.handler(fixture.trigger("repo=hub work"));
+      await first.engine.processAvailable();
+
+      const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+      const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+      const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+        firstStep.id,
+      );
+      assert.ok(firstExecution);
+      assert.deepEqual(dispatches, ["first"]);
+
+      await fixture.database.transitionAgentExecution(firstExecution.id, terminalStatus, {
+        result: { status: terminalStatus },
+      });
+
+      const restarted = engineFor(fixture, dispatches, async (intent) => {
+        if (intent.prompt !== "Downstream") return;
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(firstStep.id))?.status,
+          terminalStatus,
+        );
+      });
+      await restarted.engine.processAvailable();
+      await restarted.engine.processAvailable();
+
+      assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, expectedRunStatus);
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(firstStep.id))?.status,
+        terminalStatus,
+      );
+      assert.deepEqual(
+        dispatches,
+        terminalStatus === "succeeded" ? ["first", "downstream"] : ["first"],
+      );
+    },
+  );
+
+  it.each([
+    { executionStatus: "succeeded" as const, stepStatus: "succeeded" as const },
+    { executionStatus: "failed" as const, stepStatus: "failed" as const },
+    { executionStatus: "failed" as const, stepStatus: "timed_out" as const },
+  ])(
+    "atomically completes workflow-owned $stepStatus agent executions in memory",
+    async ({ executionStatus, stepStatus }) => {
+      const fixture = await workflowFixture({ terminalRecovery: true });
+      const dispatches: string[] = [];
+      const { handler, engine } = engineFor(fixture, dispatches);
+      await handler(fixture.trigger("repo=hub work"));
+      await engine.processAvailable();
+      const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+      const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+      const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(firstStep.id);
+      assert.ok(execution);
+
+      const terminal = await fixture.database.completeWorkflowAgentExecution({
+        executionId: execution.id,
+        executionStatus,
+        stepStatus,
+        result: { status: executionStatus, reason: stepStatus },
+        stepOutput: { status: stepStatus },
+      });
+      const duplicate = await fixture.database.completeWorkflowAgentExecution({
+        executionId: execution.id,
+        executionStatus,
+        stepStatus,
+        result: { status: executionStatus, reason: "duplicate" },
+        stepOutput: { status: "duplicate" },
+      });
+
+      assert.equal(terminal.transitioned, true);
+      assert.equal(duplicate.transitioned, false);
+      assert.equal(
+        (await fixture.database.findAgentExecutionById(execution.id))?.status,
+        executionStatus,
+      );
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(firstStep.id))?.status,
+        stepStatus,
+      );
+      assert.equal(
+        (await fixture.database.findTriggerRunById(run.id))?.status,
+        stepStatus === "succeeded" ? "running" : stepStatus,
+      );
+      await engine.processAvailable();
+      assert.deepEqual(
+        dispatches,
+        stepStatus === "succeeded" ? ["first", "downstream"] : ["first"],
+      );
+    },
+  );
 });
 
 interface Fixture {
@@ -178,7 +286,9 @@ interface Fixture {
   trigger(message: string): DurableTrigger;
 }
 
-async function workflowFixture(options: { unavailableValue?: boolean } = {}): Promise<Fixture> {
+async function workflowFixture(
+  options: { unavailableValue?: boolean; terminalRecovery?: boolean } = {},
+): Promise<Fixture> {
   const database = createMemoryDatabase({ organizationIds: ["org-1"] });
   const project = await database.createProject({
     organizationId: "org-1",
@@ -186,7 +296,9 @@ async function workflowFixture(options: { unavailableValue?: boolean } = {}): Pr
     slug: randomUUID(),
     createdByUserId: "user-1",
   });
-  const raw = baseConfiguration(options);
+  const raw = options.terminalRecovery
+    ? terminalRecoveryConfiguration()
+    : baseConfiguration(options);
   const compiled = compileHubConfig(raw);
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
@@ -240,11 +352,16 @@ async function workflowFixture(options: { unavailableValue?: boolean } = {}): Pr
   };
 }
 
-function engineFor(fixture: Fixture, dispatches: string[]) {
+function engineFor(
+  fixture: Fixture,
+  dispatches: string[],
+  beforeDispatch?: (intent: { prompt: string }) => Promise<void>,
+) {
   return createDurableWorkflowHandler({
     database: fixture.database,
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],
     dispatchLaunchMachineIntent: async (intent) => {
+      await beforeDispatch?.(intent);
       dispatches.push(dispatchLabel(intent));
       return {
         execution: await fixture.database.insertAgentExecution({
@@ -349,12 +466,47 @@ function baseConfiguration(options: { unavailableValue?: boolean }): Record<stri
   };
 }
 
+function terminalRecoveryConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "terminal-recovery",
+        on: "manual.run",
+        max_runtime: "1h",
+        inputs: { repo: { type: "string", choices: ["hub"] } },
+        steps: [
+          {
+            id: "first",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "First" }],
+          },
+          {
+            id: "downstream",
+            if: "${{ paseo.inputs.repo == 'hub' }}",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Downstream" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function dispatchLabel(intent: {
   workflowStepRunId?: string;
   triggerName: string;
   prompt: string;
 }): string {
   if (intent.workflowStepRunId === undefined) return "missing";
+  if (intent.prompt === "First") return "first";
+  if (intent.prompt === "Downstream") return "downstream";
   if (intent.triggerName !== "route-request") return "unknown";
   if (intent.prompt.startsWith("Classify")) return "classify";
   return intent.prompt.includes("paseo") ? "work-paseo" : "work-hub";

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { Ajv } from "ajv";
 import { z } from "zod";
 import {
   expressionPaths,
@@ -7,6 +6,7 @@ import {
   type Expression,
   type ExpressionPath,
 } from "../workflows/expression.js";
+import { compileJsonSchema, finiteSchemaChoices } from "../workflows/json-schema.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -602,7 +602,9 @@ function validateExpressionContract(
       if (reference.namespace === "values") validateValue(reference.name, ordinal);
     }
     if (authorityBearing && !isFiniteAuthorityExpression(expression)) {
-      throw new Error(`${path} uses an agent-produced authority without finite choices`);
+      throw new Error(
+        `${path} uses an agent-produced authority without provable finite choices; use a finite enum or const`,
+      );
     }
   }
 
@@ -663,7 +665,9 @@ function validateExpressionContract(
       );
     }
     if (authorityBearing && !hasFiniteSchemaChoices(referencedStep.output.schema, reference.path)) {
-      throw new Error(`${path} uses agent output without finite choices for authority`);
+      throw new Error(
+        `${path} uses agent output without provable finite choices for authority; use a finite enum or const`,
+      );
     }
   }
 
@@ -762,7 +766,7 @@ function validateOutputSchema(schema: JsonValue, path: string): void {
     throw new Error(`${path} must be a JSON Schema object`);
   }
   try {
-    new Ajv({ strict: true, allErrors: true }).compile(schema);
+    compileJsonSchema(schema);
   } catch (error) {
     throw new Error(
       `${path} is invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`,
@@ -774,16 +778,7 @@ function validateOutputSchema(schema: JsonValue, path: string): void {
 }
 
 function hasFiniteSchemaChoices(schema: JsonValue, path: readonly string[]): boolean {
-  let current: unknown = schema;
-  for (const segment of path) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-    current = Reflect.get(current, "properties");
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-    current = Reflect.get(current, segment);
-  }
-  if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-  const choices: unknown = Reflect.get(current, "enum");
-  return Array.isArray(choices) && choices.length > 0;
+  return finiteSchemaChoices(schema, path) !== undefined;
 }
 
 function isExpression(value: unknown): value is Expression {

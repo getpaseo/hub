@@ -74,7 +74,7 @@ import type {
   WorkflowStepExecutionInput,
   WorkflowStepRunRecord,
   WorkflowWakeupRecord,
-  StructuredCompletionInput,
+  WorkflowAgentCompletionInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -849,7 +849,8 @@ class PgDatabase implements Database {
       if (executionRow === undefined) throw new Error(`agent execution not found: ${executionId}`);
       const updated = await client.query<WorkflowStepRunRow>(
         `update workflow_step_runs
-         set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3),
+         set status = case when status = 'pending' then 'running' else status end,
+             agent_execution_id = $2, started_at = coalesce(started_at, $3),
              dispatch_intent = coalesce($4, dispatch_intent)
          where id = $1 and agent_execution_id is null
          returning *`,
@@ -871,74 +872,26 @@ class PgDatabase implements Database {
     result: unknown,
     failureReason?: string,
   ) {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      const selected = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where agent_execution_id = $1 for update`,
-        [executionId],
-      );
-      const step = selected.rows[0];
-      if (step === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      const runRows = await client.query<TriggerRunRow>(
-        `select * from trigger_runs where id = $1 for update`,
-        [step.trigger_run_id],
-      );
-      const run = runRows.rows[0];
-      if (run === undefined) throw new Error("workflow trigger run not found");
-      if (["succeeded", "failed", "timed_out"].includes(step.status)) {
-        await client.query("commit");
-        return {
-          stepRun: toWorkflowStepRunRecord(step),
-          run: toTriggerRunRecord(run),
+    const execution = await this.findAgentExecutionById(executionId);
+    if (execution === undefined || execution.workflowStepRunId === null) return undefined;
+    await this.completeWorkflowAgentExecution({
+      executionId,
+      executionStatus: execution.status === "succeeded" ? "succeeded" : "failed",
+      stepStatus: status,
+      result,
+      stepOutput: result,
+      ...(failureReason === undefined ? {} : { failureReason }),
+    });
+    const step = await this.findWorkflowStepRunById(execution.workflowStepRunId);
+    return step === undefined
+      ? undefined
+      : {
+          stepRun: step,
+          run: (await this.findTriggerRunById(step.triggerRunId))!,
         };
-      }
-      const completedAt = new Date();
-      const updatedStep = await client.query<WorkflowStepRunRow>(
-        `update workflow_step_runs
-         set status = $2, output = $3, failure_reason = $4, completed_at = $5
-         where id = $1 returning *`,
-        [step.id, status, result, failureReason ?? null, completedAt],
-      );
-      let updatedRun: TriggerRunRow = run;
-      if (status === "succeeded") {
-        await client.query(
-          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
-           values ($1, $2, null)
-           on conflict (trigger_run_id) do update
-           set available_at = least(workflow_wakeups.available_at, excluded.available_at),
-               lease_expires_at = null`,
-          [step.trigger_run_id, completedAt],
-        );
-      } else {
-        const updated = await client.query<TriggerRunRow>(
-          `update trigger_runs
-           set status = $2, failure_reason = $3, completed_at = $4
-           where id = $1 returning *`,
-          [step.trigger_run_id, status, failureReason ?? null, completedAt],
-        );
-        updatedRun = updated.rows[0] ?? run;
-        await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
-          step.trigger_run_id,
-        ]);
-      }
-      await client.query("commit");
-      return {
-        stepRun: toWorkflowStepRunRecord(updatedStep.rows[0]!),
-        run: toTriggerRunRecord(updatedRun),
-      };
-    } catch (error) {
-      await client.query("rollback").catch(() => undefined);
-      throw toDatabaseError(error);
-    } finally {
-      client.release();
-    }
   }
 
-  async completeAgentExecutionWithStructuredOutput(input: StructuredCompletionInput) {
+  async completeWorkflowAgentExecution(input: WorkflowAgentCompletionInput) {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -949,54 +902,47 @@ class PgDatabase implements Database {
       const execution = executionRows.rows[0];
       if (execution === undefined)
         throw new Error(`agent execution not found: ${input.executionId}`);
-      if (execution.status !== "spawning" && execution.status !== "running") {
+
+      if (execution.workflow_step_run_id === null) {
+        await client.query("commit");
+        return this.transitionAgentExecution(input.executionId, input.executionStatus, {
+          result: input.result,
+          ...(input.completedByAgent === undefined
+            ? {}
+            : { completedByAgent: input.completedByAgent }),
+          ...(input.deadlineCondition === undefined
+            ? {}
+            : { deadlineCondition: input.deadlineCondition }),
+          ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+        });
+      }
+
+      const stepRows = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where id = $1 for update`,
+        [execution.workflow_step_run_id],
+      );
+      const step = stepRows.rows[0];
+      if (step === undefined) throw new Error("workflow step run not found");
+      const runRows = await client.query<TriggerRunRow>(
+        `select * from trigger_runs where id = $1 for update`,
+        [step.trigger_run_id],
+      );
+      const run = runRows.rows[0];
+      if (run === undefined) throw new Error("workflow trigger run not found");
+
+      const liveTransition = await transitionWorkflowAgentExecution(client, execution, input);
+      if (liveTransition === undefined) {
         await client.query("commit");
         return { execution: toAgentExecutionRecord(execution), transitioned: false };
       }
-      const completedAt = new Date();
-      const updatedExecutionRows = await client.query<AgentExecutionRow>(
-        `update agent_executions
-         set status = 'succeeded', completed_at = $2, completed_by_agent_at = $2,
-             result = $3, idle_deadline_at = null
-         where id = $1 and status in ('spawning', 'running')
-         returning *`,
-        [
-          input.executionId,
-          completedAt,
-          input.result ?? { status: "succeeded", output: input.output },
-        ],
-      );
-      const updatedExecution = updatedExecutionRows.rows[0] ?? execution;
-      if (execution.workflow_step_run_id !== null) {
-        const stepRows = await client.query<WorkflowStepRunRow>(
-          `select * from workflow_step_runs where id = $1 for update`,
-          [execution.workflow_step_run_id],
-        );
-        const step = stepRows.rows[0];
-        if (
-          step !== undefined &&
-          step.status !== "succeeded" &&
-          step.status !== "failed" &&
-          step.status !== "timed_out"
-        ) {
-          await client.query(
-            `update workflow_step_runs
-             set status = 'succeeded', output = $2, failure_reason = null, completed_at = $3
-             where id = $1`,
-            [step.id, input.output, completedAt],
-          );
-          await client.query(
-            `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
-             values ($1, $2, null)
-             on conflict (trigger_run_id) do update
-             set available_at = least(workflow_wakeups.available_at, excluded.available_at),
-                 lease_expires_at = null`,
-            [step.trigger_run_id, completedAt],
-          );
-        }
-      }
+
+      await finishWorkflowStepAndRun(client, step, run, input);
+
       await client.query("commit");
-      return { execution: toAgentExecutionRecord(updatedExecution), transitioned: true };
+      return {
+        execution: toAgentExecutionRecord(liveTransition.execution),
+        transitioned: liveTransition.transitioned,
+      };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
@@ -3352,6 +3298,121 @@ interface GitHubRepositoryRow extends QueryResultRow {
   repository_id: number | string;
   full_name: string;
   default_branch: string;
+}
+
+function deadlineConditionAllows(
+  execution: AgentExecutionRow,
+  condition: WorkflowAgentCompletionInput["deadlineCondition"],
+): boolean {
+  if (condition === undefined) return true;
+  const current = condition.kind === "hard" ? execution.deadline_at : execution.idle_deadline_at;
+  return (
+    current !== null &&
+    current.getTime() === condition.deadlineAt.getTime() &&
+    current.getTime() <= condition.observedAt.getTime()
+  );
+}
+
+async function transitionWorkflowAgentExecution(
+  client: PoolClient,
+  execution: AgentExecutionRow,
+  input: WorkflowAgentCompletionInput,
+): Promise<{ execution: AgentExecutionRow; transitioned: boolean } | undefined> {
+  if (execution.status !== "spawning" && execution.status !== "running") {
+    return { execution, transitioned: false };
+  }
+  if (!deadlineConditionAllows(execution, input.deadlineCondition)) return undefined;
+
+  const completedAt = new Date();
+  const updatedRows = await client.query<AgentExecutionRow>(
+    `update agent_executions
+     set status = $2, completed_at = $3,
+         completed_by_agent_at = case
+           when $4::boolean and $2 = 'succeeded'::agent_execution_status then $3
+           else completed_by_agent_at
+         end,
+         result = case when $5::boolean then $6 else result end,
+         idle_deadline_at = null,
+         hub_action = case when $7::boolean then $8 else hub_action end,
+         hub_action_completed_at = case
+           when $7::boolean and $8::text is null then $3
+           when $7::boolean then null
+           else hub_action_completed_at
+         end
+     where id = $1 and status in ('spawning', 'running')
+     returning *`,
+    [
+      input.executionId,
+      input.executionStatus,
+      completedAt,
+      input.completedByAgent === true,
+      input.result !== undefined,
+      input.result ?? null,
+      input.hubAction !== undefined,
+      input.hubAction ?? null,
+    ],
+  );
+  return {
+    execution: updatedRows.rows[0] ?? execution,
+    transitioned: updatedRows.rows.length === 1,
+  };
+}
+
+async function finishWorkflowStepAndRun(
+  client: PoolClient,
+  step: WorkflowStepRunRow,
+  run: TriggerRunRow,
+  input: WorkflowAgentCompletionInput,
+): Promise<void> {
+  if (isTerminalWorkflowStepStatus(step.status)) return;
+
+  const completedAt = new Date();
+  await client.query(
+    `update workflow_step_runs
+     set status = $2, output = $3, failure_reason = $4, completed_at = $5
+     where id = $1`,
+    [
+      step.id,
+      input.stepStatus,
+      input.stepOutput !== undefined ? input.stepOutput : (input.result ?? null),
+      input.failureReason ?? null,
+      completedAt,
+    ],
+  );
+  if (input.stepStatus === "succeeded") {
+    if (run.status === "running") await wakeWorkflowRun(client, step.trigger_run_id, completedAt);
+    return;
+  }
+  if (run.status === "running") {
+    await client.query(
+      `update trigger_runs
+       set status = $2, failure_reason = $3, completed_at = $4
+       where id = $1`,
+      [step.trigger_run_id, input.stepStatus, input.failureReason ?? null, completedAt],
+    );
+  }
+  await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
+    step.trigger_run_id,
+  ]);
+}
+
+async function wakeWorkflowRun(
+  client: PoolClient,
+  triggerRunId: string,
+  availableAt: Date,
+): Promise<void> {
+  await client.query(
+    `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+     values ($1, $2, null)
+     on conflict (trigger_run_id) do update
+     set available_at = least(workflow_wakeups.available_at, excluded.available_at),
+         lease_expires_at = null`,
+    [triggerRunId, availableAt],
+  );
+}
+
+function isTerminalWorkflowStepStatus(status: WorkflowStepRunRow["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "timed_out";
 }
 
 interface GitHubConfigurationTargetRow extends GitHubRepositoryRow {

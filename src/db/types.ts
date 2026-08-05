@@ -1,7 +1,6 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
-import type { JsonValue } from "../config/compiler.js";
 
 export interface TriggerRecord {
   id: string;
@@ -550,10 +549,16 @@ export interface WorkflowStepExecutionInput {
   execution: InsertAgentExecutionInput;
 }
 
-export interface StructuredCompletionInput {
+export interface WorkflowAgentCompletionInput {
   executionId: string;
-  output: JsonValue;
+  executionStatus: "succeeded" | "failed";
+  stepStatus: "succeeded" | "failed" | "timed_out";
   result?: unknown;
+  stepOutput?: unknown;
+  failureReason?: string;
+  completedByAgent?: boolean;
+  deadlineCondition?: TransitionAgentExecutionFields["deadlineCondition"];
+  hubAction?: HubAction | null;
 }
 
 export interface EnrollDaemonInput {
@@ -677,8 +682,8 @@ export interface Database {
     result: unknown,
     failureReason?: string,
   ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
-  completeAgentExecutionWithStructuredOutput(
-    input: StructuredCompletionInput,
+  completeWorkflowAgentExecution(
+    input: WorkflowAgentCompletionInput,
   ): Promise<TransitionAgentExecutionResult>;
   markWorkflowStepSkipped(
     triggerRunId: string,

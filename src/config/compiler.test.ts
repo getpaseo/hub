@@ -194,6 +194,66 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("resolves finite referenced output authority and rejects unprovable composition authority", () => {
+    const trigger = configuration().triggers[0]!;
+    const outputSchema = {
+      type: "object",
+      properties: {
+        provider: { $ref: "#/$defs/provider" },
+      },
+      $defs: { provider: { enum: ["codex"] } },
+    };
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            steps: [
+              { ...trigger.steps[0]!, id: "classify", output: { schema: outputSchema } },
+              {
+                ...trigger.steps[0]!,
+                id: "work",
+                agent: { provider: "${{ steps.classify.outputs.provider }}" },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...trigger.steps[0]!,
+                  id: "classify",
+                  output: {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        provider: { oneOf: [{ enum: ["codex"] }, { const: "opus" }] },
+                      },
+                    },
+                  },
+                },
+                {
+                  ...trigger.steps[0]!,
+                  id: "work",
+                  agent: { provider: "${{ steps.classify.outputs.provider }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /provable finite choices/iu,
+    );
+  });
+
   it("re-establishes the multi-step contract for stored JSON and hashes all compiled fields", () => {
     const compiled = compileHubConfig(configuration());
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);

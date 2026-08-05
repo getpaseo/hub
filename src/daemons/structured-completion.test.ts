@@ -22,7 +22,8 @@ describe("structured daemon completion", () => {
       type: "object",
       additionalProperties: false,
       required: ["repo"],
-      properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+      $defs: { repo: { type: "string", minLength: 3, enum: ["paseo", "hub"] } },
+      properties: { repo: { $ref: "#/$defs/repo" } },
     };
     const intent: LaunchMachineIntent = {
       kind: "launch_machine",

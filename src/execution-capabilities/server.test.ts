@@ -159,10 +159,37 @@ describe("execution capability MCP boundary", () => {
 
   it("advertises and enforces the exact configured structured output schema", async () => {
     const schema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      $defs: {
+        repo: { type: "string", minLength: 3, pattern: "^(paseo|hub)$" },
+        count: { type: "integer", minimum: 1, maximum: 3 },
+      },
       type: "object",
       additionalProperties: false,
-      required: ["repo"],
-      properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+      required: ["repo", "attempts", "tags", "metadata"],
+      properties: {
+        repo: { $ref: "#/$defs/repo" },
+        attempts: {
+          oneOf: [{ $ref: "#/$defs/count" }, { const: 99 }],
+        },
+        tags: {
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          items: { type: "string", minLength: 2 },
+        },
+        metadata: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["source"],
+              properties: { source: { type: "string" } },
+            },
+          ],
+        },
+      },
     };
     const fixture = await capabilityFixture(() => Promise.resolve(), "succeeded", 1, schema);
     const tools = await fixture.call("tools/list");
@@ -170,23 +197,51 @@ describe("execution capability MCP boundary", () => {
       (candidate) => candidate.name === "finish_execution",
     );
     assert.deepEqual(tool?.inputSchema, {
-      $schema: "http://json-schema.org/draft-07/schema#",
       type: "object",
       additionalProperties: false,
       required: ["output"],
       properties: {
         output: {
+          $schema: "http://json-schema.org/draft-07/schema#",
+          $defs: {
+            repo: { type: "string", minLength: 3, pattern: "^(paseo|hub)$" },
+            count: { type: "integer", minimum: 1, maximum: 3 },
+          },
           type: "object",
           additionalProperties: false,
-          required: ["repo"],
-          properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+          required: ["repo", "attempts", "tags", "metadata"],
+          properties: {
+            repo: { $ref: "#/$defs/repo" },
+            attempts: {
+              oneOf: [{ $ref: "#/$defs/count" }, { const: 99 }],
+            },
+            tags: {
+              type: "array",
+              minItems: 1,
+              maxItems: 2,
+              items: { type: "string", minLength: 2 },
+            },
+            metadata: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["source"],
+                  properties: { source: { type: "string" } },
+                },
+              ],
+            },
+          },
         },
       },
     });
 
     const invalid = await fixture.call("tools/call", {
       name: "finish_execution",
-      arguments: { output: { repo: "other" } },
+      arguments: {
+        output: { repo: "hub", attempts: 4, tags: ["ok"], metadata: null },
+      },
     });
     assert.equal(ToolResultSchema.parse(invalid.result).isError, true);
     assert.deepEqual(fixture.completions, []);
@@ -197,11 +252,27 @@ describe("execution capability MCP boundary", () => {
 
     const valid = await fixture.call("tools/call", {
       name: "finish_execution",
-      arguments: { output: { repo: "hub" } },
+      arguments: {
+        output: {
+          repo: "hub",
+          attempts: 2,
+          tags: ["ok"],
+          metadata: { source: "agent" },
+        },
+      },
     });
     assert.equal(ToolResultSchema.parse(valid.result).isError, undefined);
     assert.deepEqual(fixture.completions, [
-      { executionId: fixture.executionId, token: "token", output: { repo: "hub" } },
+      {
+        executionId: fixture.executionId,
+        token: "token",
+        output: {
+          repo: "hub",
+          attempts: 2,
+          tags: ["ok"],
+          metadata: { source: "agent" },
+        },
+      },
     ]);
   });
 
