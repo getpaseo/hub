@@ -1,11 +1,11 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, typescript-eslint/no-unsafe-type-assertion -- route links and mutation controls are intentionally scoped to each rendered tenant snapshot */
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- route links and mutation controls are intentionally scoped to each rendered tenant snapshot */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
-import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
@@ -24,6 +24,13 @@ import {
 } from "../components/ui/dialog.js";
 import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import {
@@ -33,6 +40,16 @@ import {
   type ConnectionDisconnectResult,
   type ConnectionStatus,
 } from "../connections/functions.js";
+import {
+  EventRow,
+  ExecutionDetailSheet,
+  ExecutionRow,
+  outcomeKey,
+  TriggerDetailSheet,
+  type ExecutionItem,
+  type OutcomeKey,
+  type TriggerItem,
+} from "./activity-rows.js";
 import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
 import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
@@ -178,6 +195,7 @@ export function OrganizationConnectionsPanel() {
     queryFn: () => loadStatus({ data: scope }),
   });
   const [result, setResult] = useState(consumeConnectionResult);
+  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -319,8 +337,18 @@ export function OrganizationConnectionsPanel() {
         title="Known unrouted events"
         description="Events whose credential belongs to this organization but no project route was available."
       >
-        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" />
+        <ActivityTable
+          activity={data.unroutedEvents}
+          label="Unrouted events"
+          onSelect={setSelectedTrigger}
+        />
       </Section>
+      <TriggerDetailSheet
+        trigger={selectedTrigger}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTrigger(undefined);
+        }}
+      />
     </>
   );
 }
@@ -337,9 +365,14 @@ export function OrganizationDaemonsPanel() {
 }
 
 export function ProjectOverviewPanel() {
+  const tenant = useRouteTenant();
   const snapshot = useProjectSnapshot();
+  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
+  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem>();
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
+  const base = `/o/${tenant.organization.slug}/projects/${data.project.slug}`;
+  const scope = { organizationSlug: tenant.organization.slug, projectSlug: data.project.slug };
   return (
     <>
       <PageHeader
@@ -367,12 +400,50 @@ export function ProjectOverviewPanel() {
           detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length)} organization connections`}
         />
       </div>
-      <Section title="Recent activity">
-        <ActivityTable activity={data.activity.slice(0, 5)} label="Recent activity" />
+      <Section
+        title="Recent activity"
+        action={
+          <Link className="text-sm hover:underline" to={`${base}/activity` as never}>
+            View all
+          </Link>
+        }
+      >
+        <ActivityTable
+          activity={data.activity.slice(0, 5)}
+          label="Recent activity"
+          onSelect={setSelectedTrigger}
+        />
       </Section>
-      <Section title="Recent executions">
-        <ExecutionTable executions={data.executions.slice(0, 5)} label="Recent executions" />
+      <Section
+        title="Recent executions"
+        action={
+          <Link className="text-sm hover:underline" to={`${base}/executions` as never}>
+            View all
+          </Link>
+        }
+      >
+        <ExecutionTable
+          executions={data.executions.slice(0, 5)}
+          activity={data.activity}
+          label="Recent executions"
+          onSelect={setSelectedExecution}
+          onSelectTrigger={setSelectedTrigger}
+        />
       </Section>
+      <TriggerDetailSheet
+        trigger={selectedTrigger}
+        scope={scope}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTrigger(undefined);
+        }}
+      />
+      <ExecutionDetailSheet
+        execution={selectedExecution}
+        scope={scope}
+        onOpenChange={(open) => {
+          if (!open) setSelectedExecution(undefined);
+        }}
+      />
     </>
   );
 }
@@ -654,24 +725,140 @@ function SourceModeButton({
   );
 }
 
+const ACTIVITY_SOURCE_OPTIONS: readonly {
+  value: "all" | TriggerItem["summary"]["provider"];
+  label: string;
+}[] = [
+  { value: "all", label: "All sources" },
+  { value: "github", label: "GitHub" },
+  { value: "slack", label: "Slack" },
+  { value: "discord", label: "Discord" },
+  { value: "manual", label: "Manual" },
+];
+
+const ACTIVITY_OUTCOME_OPTIONS: readonly { value: "all" | OutcomeKey; label: string }[] = [
+  { value: "all", label: "All outcomes" },
+  { value: "accepted", label: "Accepted" },
+  { value: "dropped", label: "Dropped" },
+  { value: "running", label: "Running" },
+  { value: "succeeded", label: "Succeeded" },
+  { value: "failed", label: "Failed" },
+];
+
 export function ProjectActivityPanel() {
+  const tenant = useRouteTenant();
+  const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
+  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
+  const [source, setSource] = useState<"all" | TriggerItem["summary"]["provider"]>("all");
+  const [outcome, setOutcome] = useState<"all" | OutcomeKey>("all");
   if (!snapshot.ok) return snapshot.element;
+  const activity = snapshot.data.activity.filter(
+    (event) =>
+      (source === "all" || event.summary.provider === source) &&
+      (outcome === "all" || outcomeKey(event) === outcome),
+  );
   return (
     <>
       <PageHeader title="Activity" description="Provider events routed to this project." />
-      <ActivityTable activity={snapshot.data.activity} label="Project activity" />
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Select value={source} onValueChange={(value) => setSource(value as typeof source)}>
+          <SelectTrigger size="sm" aria-label="Filter activity by source">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ACTIVITY_SOURCE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={outcome} onValueChange={(value) => setOutcome(value as typeof outcome)}>
+          <SelectTrigger size="sm" aria-label="Filter activity by outcome">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ACTIVITY_OUTCOME_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <ActivityTable activity={activity} label="Project activity" onSelect={setSelectedTrigger} />
+      <TriggerDetailSheet
+        trigger={selectedTrigger}
+        scope={scope}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTrigger(undefined);
+        }}
+      />
     </>
   );
 }
 
+const EXECUTION_STATUS_OPTIONS: readonly {
+  value: "all" | ExecutionItem["status"];
+  label: string;
+}[] = [
+  { value: "all", label: "All statuses" },
+  { value: "spawning", label: "Spawning" },
+  { value: "running", label: "Running" },
+  { value: "succeeded", label: "Succeeded" },
+  { value: "failed", label: "Failed" },
+];
+
 export function ProjectExecutionsPanel() {
+  const tenant = useRouteTenant();
+  const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
+  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem>();
+  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
+  const [status, setStatus] = useState<"all" | ExecutionItem["status"]>("all");
   if (!snapshot.ok) return snapshot.element;
+  const executions = snapshot.data.executions.filter(
+    (execution) => status === "all" || execution.status === status,
+  );
   return (
     <>
       <PageHeader title="Executions" description="Durable executions owned by this project." />
-      <ExecutionTable executions={snapshot.data.executions} label="Project executions" />
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Select value={status} onValueChange={(value) => setStatus(value as typeof status)}>
+          <SelectTrigger size="sm" aria-label="Filter executions by status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EXECUTION_STATUS_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <ExecutionTable
+        executions={executions}
+        activity={snapshot.data.activity}
+        label="Project executions"
+        onSelect={setSelectedExecution}
+        onSelectTrigger={setSelectedTrigger}
+      />
+      <ExecutionDetailSheet
+        execution={selectedExecution}
+        scope={scope}
+        onOpenChange={(open) => {
+          if (!open) setSelectedExecution(undefined);
+        }}
+      />
+      <TriggerDetailSheet
+        trigger={selectedTrigger}
+        scope={scope}
+        onOpenChange={(open) => {
+          if (!open) setSelectedTrigger(undefined);
+        }}
+      />
     </>
   );
 }
@@ -894,79 +1081,79 @@ function SetupCard({ label, ready, detail }: { label: string; ready: boolean; de
   );
 }
 
+const ACTIVITY_COLUMNS: readonly DataColumn[] = [
+  { header: "Event" },
+  { header: "Outcome" },
+  { header: "Received", align: "end" },
+];
+
 function ActivityTable({
   activity,
   label,
+  onSelect,
 }: {
-  activity: ProjectSnapshot["activity"];
+  activity: readonly TriggerItem[];
   label: string;
+  onSelect: (event: TriggerItem) => void;
 }) {
   return (
     <DataTable
       label={label}
-      columns={[
-        { header: "Event" },
-        { header: "Source" },
-        { header: "Result" },
-        { header: "Received" },
-      ]}
+      columns={ACTIVITY_COLUMNS}
       isEmpty={activity.length === 0}
       empty={{ title: "No activity" }}
     >
       {activity.map((event) => (
-        <DataRow key={event.id}>
-          <DataCell>
-            <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
-            {event.repo === null ? null : (
-              <span className="block text-xs text-muted-foreground">{event.repo}</span>
-            )}
-          </DataCell>
-          <DataCell>{event.source}</DataCell>
-          <DataCell>
-            {event.droppedReason ?? event.lifecycleState ?? event.matchedTriggerName ?? "Accepted"}
-          </DataCell>
-          <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
-        </DataRow>
+        <EventRow key={event.id} event={event} onSelect={() => onSelect(event)} />
       ))}
     </DataTable>
   );
 }
 
+const EXECUTION_COLUMNS: readonly DataColumn[] = [
+  { header: "Run" },
+  { header: "Status" },
+  { header: "Daemon" },
+  { header: "Started", align: "end" },
+];
+
 function ExecutionTable({
   executions,
+  activity,
   label,
+  onSelect,
+  onSelectTrigger,
 }: {
-  executions: ProjectSnapshot["executions"];
+  executions: readonly ExecutionItem[];
+  activity: readonly TriggerItem[];
   label: string;
+  onSelect: (execution: ExecutionItem) => void;
+  onSelectTrigger: (trigger: TriggerItem) => void;
 }) {
+  const activityById = useMemo(
+    () => new Map(activity.map((event) => [event.id, event])),
+    [activity],
+  );
   return (
     <DataTable
       label={label}
-      columns={[
-        { header: "Execution" },
-        { header: "Status" },
-        { header: "Revision" },
-        { header: "Started" },
-      ]}
+      columns={EXECUTION_COLUMNS}
       isEmpty={executions.length === 0}
       empty={{ title: "No executions" }}
     >
-      {executions.map((execution) => (
-        <DataRow key={execution.id}>
-          <DataCell>
-            <span className="font-mono text-xs">{execution.id}</span>
-          </DataCell>
-          <DataCell>
-            <StatusPill tone={executionTone(execution.status)}>{execution.status}</StatusPill>
-          </DataCell>
-          <DataCell muted>
-            <span className="font-mono text-xs">
-              {execution.configurationRevisionId.slice(0, 12)}
-            </span>
-          </DataCell>
-          <DataCell muted>{formatDate(execution.startedAt)}</DataCell>
-        </DataRow>
-      ))}
+      {executions.map((execution) => {
+        const trigger =
+          execution.triggerId === null ? undefined : activityById.get(execution.triggerId);
+        return (
+          <ExecutionRow
+            key={execution.id}
+            execution={execution}
+            trigger={trigger}
+            onSelect={() => onSelect(execution)}
+            {...(trigger === undefined ? {} : { onSelectTrigger: () => onSelectTrigger(trigger) })}
+          />
+        );
+      })}
     </DataTable>
   );
 }
@@ -1035,11 +1222,6 @@ function syncOutcome(outcome: string) {
   if (outcome === "invalid") return "Invalid revision; active revision preserved";
   if (outcome === "superseded") return "Superseded push ignored";
   return "Fetch failed; active revision preserved";
-}
-function executionTone(status: string): "success" | "danger" | "neutral" {
-  if (status === "succeeded") return "success";
-  if (status === "failed") return "danger";
-  return "neutral";
 }
 function formString(form: FormData, name: string) {
   const value = form.get(name);

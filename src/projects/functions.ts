@@ -33,6 +33,8 @@ const configurationRepositorySchema = projectScopeSchema.extend({
   repositoryId: z.number().int().positive(),
 });
 const manualConfigurationSchema = projectScopeSchema.extend({ rawYaml: z.string().max(1_048_576) });
+const triggerPayloadSchema = projectScopeSchema.extend({ triggerId: z.string().uuid() });
+const executionResultSchema = projectScopeSchema.extend({ executionId: z.string().uuid() });
 
 export const tenantContext = createServerFn({ method: "GET" })
   .validator(
@@ -108,6 +110,18 @@ export const saveManualConfiguration = createServerFn({ method: "POST" })
     command(data, (dashboard) =>
       dashboard.saveManualConfiguration(getRequest(), data, data.rawYaml),
     ),
+  );
+
+export const triggerPayload = createServerFn({ method: "GET" })
+  .validator(triggerPayloadSchema)
+  .handler(async ({ data }) =>
+    read(data, (dashboard) => dashboard.triggerPayload(getRequest(), data, data.triggerId)),
+  );
+
+export const executionResult = createServerFn({ method: "GET" })
+  .validator(executionResultSchema)
+  .handler(async ({ data }) =>
+    read(data, (dashboard) => dashboard.executionResult(getRequest(), data, data.executionId)),
   );
 
 export const syncProjectConfiguration = createServerFn({ method: "POST" })

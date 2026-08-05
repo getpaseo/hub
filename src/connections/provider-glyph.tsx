@@ -1,11 +1,20 @@
+import { TerminalIcon } from "lucide-react";
+
 /**
  * Brand marks for the connection providers. Lucide dropped brand icons, and a generic
  * message or repository icon reads as "some integration" rather than "Discord" or
- * "GitHub" — a provider card is exactly where the mark carries the meaning.
+ * "GitHub" — a provider card is exactly where the mark carries the meaning. "manual"
+ * is not a brand, so it gets a plain lucide glyph instead of a drawn mark.
  */
-export function ProviderGlyph({ provider }: { provider: "github" | "discord" | "slack" }) {
+export function ProviderGlyph({
+  provider,
+}: {
+  provider: "github" | "discord" | "slack" | "manual";
+}) {
   if (provider === "github") return <GitHubMark />;
-  return provider === "discord" ? <DiscordMark /> : <SlackMark />;
+  if (provider === "discord") return <DiscordMark />;
+  if (provider === "slack") return <SlackMark />;
+  return <TerminalIcon className="size-4.5" aria-hidden="true" />;
 }
 
 function GitHubMark() {

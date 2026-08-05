@@ -6,8 +6,18 @@ import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
-import type { Database } from "../db/types.js";
+import type { DaemonRecord, Database } from "../db/types.js";
 import { resolveRouteTenant } from "./access.js";
+import { summarizeTrigger } from "./activity-summary.js";
+
+/** A jsonb column value, cast at the DB boundary so it survives the server-fn serializer. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface ProjectRouteScope {
   organizationSlug: string;
@@ -75,6 +85,7 @@ export class ProjectDashboard {
       this.database.listTriggersForProject(project.id, 50),
       this.database.listAgentExecutionsForProject(project.id, 50),
     ]);
+    const daemonsById = new Map(organizationDaemons.map((daemon) => [daemon.id, daemon]));
     return {
       account: account.account,
       organization: tenant.organization,
@@ -93,7 +104,7 @@ export class ProjectDashboard {
         defaultBranch: repository.defaultBranch,
       })),
       activity: activity.map(triggerView),
-      executions: executions.map(executionView),
+      executions: executions.map((execution) => executionView(execution, daemonsById)),
     };
   }
 
@@ -209,6 +220,33 @@ export class ProjectDashboard {
     });
     if (revision.validationErrors === null) await store.activate(revision.id);
     return revision;
+  }
+
+  /**
+   * The raw provider payload for one trigger, fetched on demand when a detail sheet
+   * opens. Kept out of `projectSnapshot` — a busy project's 50 most recent triggers
+   * could carry megabytes of webhook bodies that most sessions never look at.
+   */
+  async triggerPayload(request: Request, scope: ProjectRouteScope, triggerId: string) {
+    const { tenant } = await this.resolveProject(request, scope);
+    const trigger = await this.database.findTriggerById(triggerId);
+    if (trigger === undefined || trigger.projectId !== tenant.project.id) {
+      throw new ProjectCommandError("trigger_unavailable");
+    }
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    return trigger.payload as JsonValue;
+  }
+
+  /** The raw result for one execution, fetched on demand — same reasoning as `triggerPayload`. */
+  async executionResult(request: Request, scope: ProjectRouteScope, executionId: string) {
+    const { tenant } = await this.resolveProject(request, scope);
+    const execution = await this.database.findAgentExecutionForProject(
+      tenant.project.id,
+      executionId,
+    );
+    if (execution === undefined) throw new ProjectCommandError("execution_unavailable");
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    return execution.result as JsonValue;
   }
 
   async syncConfiguration(request: Request, scope: ProjectRouteScope) {
@@ -364,17 +402,33 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     matchedTriggerName: trigger.matchedTriggerName,
     droppedReason: trigger.droppedReason,
     lifecycleState: trigger.lifecycleState,
+    summary: summarizeTrigger(trigger.source, trigger.payload),
   };
 }
 
-function executionView(execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {}) {
+function executionView(
+  execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {},
+  daemonsById: Map<string, DaemonRecord>,
+) {
   if (execution === undefined) throw new Error("execution unavailable");
+  const daemon = execution.daemonId === null ? undefined : daemonsById.get(execution.daemonId);
+  const launchIntent = execution.launchIntent;
   return {
     id: execution.id,
     status: execution.status,
     startedAt: execution.startedAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
+    durationMs:
+      execution.completedAt === null
+        ? null
+        : execution.completedAt.getTime() - execution.startedAt.getTime(),
     configurationRevisionId: execution.configurationRevisionId,
-    daemonId: execution.daemonId,
+    triggerId: execution.triggerId,
+    triggerName: launchIntent?.triggerName ?? null,
+    agent:
+      launchIntent === null
+        ? null
+        : { provider: launchIntent.agent.provider, model: launchIntent.agent.model ?? null },
+    daemon: daemon === undefined ? null : daemonView(daemon),
   };
 }
