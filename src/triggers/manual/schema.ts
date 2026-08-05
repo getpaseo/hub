@@ -3,6 +3,8 @@ import { z } from "zod";
 export const ManualTriggerPayloadSchema = z.object({
   organizationId: z.string().min(1, "organizationId is required"),
   projectId: z.string().uuid("projectId is required"),
+  connectionId: z.string().uuid().nullable().optional(),
+  resourceId: z.string().nullable().optional(),
   source: z
     .string()
     .min(1, "source is required and must be a non-empty string")

@@ -1,5 +1,6 @@
 import type {
   AgentExecutionRow,
+  AttachmentRow,
   MachineRow,
   ProjectConfigurationRevisionRow,
   ProjectRow,
@@ -7,6 +8,7 @@ import type {
 } from "./pg.js";
 import type {
   AgentExecutionRecord,
+  AttachmentRecord,
   MachineRecord,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
@@ -77,6 +79,22 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     triggerResourceId: row.trigger_resource_id,
     hubAction: row.hub_action,
     hubActionCompletedAt: row.hub_action_completed_at,
+  };
+}
+
+export function toAttachmentRecord(row: AttachmentRow): AttachmentRecord {
+  return {
+    id: row.id,
+    triggerId: row.trigger_id,
+    organizationId: row.organization_id,
+    connectionId: row.connection_id,
+    provider: row.provider,
+    sourceId: row.source_id,
+    locator: row.locator,
+    filename: row.filename,
+    contentType: row.content_type,
+    byteSize: row.byte_size === null ? null : Number(row.byte_size),
+    createdAt: row.created_at,
   };
 }
 

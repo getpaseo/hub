@@ -160,6 +160,36 @@ export const triggers = pgTable(
   ],
 );
 
+export const attachmentCapabilities = pgTable(
+  "attachment_capabilities",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    triggerId: uuid("trigger_id")
+      .notNull()
+      .references(() => triggers.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull(),
+    provider: text().$type<"slack" | "discord">().notNull(),
+    sourceId: text("source_id").notNull(),
+    locator: jsonb().notNull(),
+    filename: text().notNull(),
+    contentType: text("content_type"),
+    byteSize: bigint("byte_size", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("attachment_capabilities_trigger_provider_source_unique").on(
+      table.triggerId,
+      table.provider,
+      table.sourceId,
+    ),
+    index("attachment_capabilities_trigger_idx").on(table.triggerId),
+    check("attachment_capabilities_provider_check", sql`${table.provider} in ('slack', 'discord')`),
+  ],
+);
+
 export const projects = pgTable(
   "projects",
   {
@@ -701,6 +731,10 @@ export const slackConnections = pgTable(
     teamName: text("team_name").notNull(),
     botUserId: text("bot_user_id").notNull(),
     botAccessToken: text("bot_access_token").notNull(),
+    scopes: jsonb()
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     connectedByUserId: text("connected_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

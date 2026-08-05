@@ -1,5 +1,10 @@
 import type { ConnectionResolver } from "../../config/index.js";
 import type {
+  AttachmentCapabilityRegistry,
+  AttachmentDescriptor,
+  AttachmentReference,
+} from "../../attachments/capabilities.js";
+import type {
   CompiledProjectConfiguration,
   ProjectConfigurationStore,
 } from "../../configuration/store.js";
@@ -25,13 +30,7 @@ export interface DiscordMergeMessage {
   author: { id: string; username: string; bot?: boolean };
   channel: { id: string };
   created_at: string;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    url: string;
-    content_type: string | null;
-    size: number;
-  }>;
+  attachments: AttachmentReference[] | AttachmentDescriptor[];
   referenced_message: { id: string; channel_id: string; guild_id: string | null } | null;
 }
 
@@ -66,6 +65,7 @@ export function createDiscordTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   connectionsForProject?: (projectId: string) => ConnectionResolver;
   bot: DiscordBotClient;
+  attachments?: AttachmentCapabilityRegistry;
 }): TriggerProvider<"discord", DiscordTriggerContext, DiscordOutputContext> {
   return {
     name: "discord",
@@ -97,7 +97,14 @@ export function createDiscordTriggerProvider(options: {
         const triggerContext: DiscordTriggerContext = {
           provider: "discord",
           target: outputContext,
-          event: buildDiscordMergeData(event, botClientId),
+          event: await buildDiscordMergeData(
+            event,
+            botClientId,
+            trigger.triggerId,
+            trigger.organizationId,
+            trigger.connectionId,
+            options.attachments,
+          ),
         };
 
         const environment: DaemonEnvironmentTarget = {
@@ -131,8 +138,13 @@ export function createDiscordTriggerProvider(options: {
       return matches;
     },
     async materializeLaunch(launch) {
-      const context = createInterpolationContext(
+      const event = await materializeDiscordMergeData(
         launch.triggerContext.event,
+        launch.executionId,
+        options.attachments,
+      );
+      const context = createInterpolationContext(
+        event,
         withExecutionContext(options.connectionsForProject?.(launch.projectId), launch.executionId),
       );
       const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
@@ -202,16 +214,40 @@ function withExecutionContext(
   return (connectionSlug, value) => connections(connectionSlug, value, { executionId });
 }
 
-function buildDiscordMergeData(
+async function buildDiscordMergeData(
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
-): DiscordMergeData {
+  triggerId: string | undefined,
+  organizationId: string,
+  connectionId: string | null | undefined,
+  attachments: AttachmentCapabilityRegistry | undefined,
+): Promise<DiscordMergeData> {
+  const triggerAttachments = await registerAttachments(
+    event.attachments,
+    triggerId,
+    organizationId,
+    connectionId,
+    attachments,
+  );
+  const contextMessages = await Promise.all(
+    event.threadContextMessages.map(async (message) => ({
+      ...buildDiscordMergeMessage(message),
+      attachments: await registerAttachments(
+        message.attachments,
+        triggerId,
+        organizationId,
+        connectionId,
+        attachments,
+      ),
+    })),
+  );
   return {
     discord: {
       event_type: event.type,
       guild: { id: event.guildId },
       trigger_message: {
         ...buildDiscordMergeMessage(event),
+        attachments: triggerAttachments,
         body: readDiscordPromptBody(event, botClientId),
         url: buildDiscordMessageUrl(event),
         thread:
@@ -224,7 +260,7 @@ function buildDiscordMergeData(
               },
       },
       trigger_thread_context: {
-        messages: event.threadContextMessages.map(buildDiscordMergeMessage),
+        messages: contextMessages,
       },
     },
   };
@@ -237,7 +273,7 @@ function buildDiscordMergeMessage(
   > & {
     channelId: string;
   },
-): DiscordMergeMessage {
+): Omit<DiscordMergeMessage, "attachments"> {
   return {
     id: message.id,
     content: message.content,
@@ -248,13 +284,6 @@ function buildDiscordMergeMessage(
     },
     channel: { id: message.channelId },
     created_at: message.createdAt,
-    attachments: message.attachments.map((attachment) => ({
-      id: attachment.id,
-      filename: attachment.filename,
-      url: attachment.url,
-      content_type: attachment.contentType,
-      size: attachment.size,
-    })),
     referenced_message:
       message.referencedMessage === null
         ? null
@@ -263,6 +292,62 @@ function buildDiscordMergeMessage(
             channel_id: message.referencedMessage.channelId,
             guild_id: message.referencedMessage.guildId,
           },
+  };
+}
+
+async function registerAttachments(
+  source: NormalizedDiscordMessageEvent["attachments"],
+  triggerId: string | undefined,
+  organizationId: string,
+  connectionId: string | null | undefined,
+  attachments: AttachmentCapabilityRegistry | undefined,
+): Promise<AttachmentReference[]> {
+  if (source.length === 0) return [];
+  if (attachments === undefined) throw new Error("attachment capability unavailable");
+  if (triggerId === undefined || connectionId === null || connectionId === undefined) {
+    throw new Error("attachment ownership unavailable");
+  }
+  return Promise.all(
+    source.map((file) =>
+      attachments.register({
+        triggerId,
+        organizationId,
+        connectionId,
+        provider: "discord",
+        sourceId: file.id,
+        locator: { url: file.url },
+        filename: file.filename,
+        contentType: file.contentType,
+        byteSize: file.size,
+      }),
+    ),
+  );
+}
+
+async function materializeDiscordMergeData(
+  event: DiscordMergeData,
+  executionId: string,
+  attachments: AttachmentCapabilityRegistry | undefined,
+): Promise<DiscordMergeData> {
+  const materialize = (attachment: AttachmentReference | AttachmentDescriptor) => {
+    if ("url" in attachment) return attachment;
+    if (attachments === undefined) throw new Error("attachment capability unavailable");
+    return attachments.materialize(attachment, executionId);
+  };
+  return {
+    discord: {
+      ...event.discord,
+      trigger_message: {
+        ...event.discord.trigger_message,
+        attachments: event.discord.trigger_message.attachments.map(materialize),
+      },
+      trigger_thread_context: {
+        messages: event.discord.trigger_thread_context.messages.map((message) => ({
+          ...message,
+          attachments: message.attachments.map(materialize),
+        })),
+      },
+    },
   };
 }
 

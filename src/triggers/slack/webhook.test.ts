@@ -102,6 +102,8 @@ describe("Slack webhook", () => {
       content: "<@U999> investigate",
       author: { id: "U123" },
       createdAt: "2023-11-14T22:13:20.000Z",
+      attachments: [],
+      threadContextMessages: [],
     });
   });
 

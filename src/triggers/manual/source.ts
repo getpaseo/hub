@@ -47,7 +47,11 @@ export async function dispatchManualTrigger(
 ): Promise<TriggerDispatchOutcome | void> {
   const state = manualTriggerStates.get(source);
   if (state === undefined) throw new Error("manual_runtime_unavailable");
-  const persisted = await state.database.persistManualTrigger(trigger);
+  const persisted = await state.database.persistManualTrigger({
+    ...trigger,
+    connectionId: trigger.connectionId ?? null,
+    resourceId: trigger.resourceId ?? null,
+  });
   if (persisted.status === "duplicate") return { triggerId: persisted.triggerId };
   if (state.handler === undefined) {
     await state.database.markTriggerDropped(persisted.trigger.triggerId, "manual_no_handler");

@@ -39,6 +39,9 @@ import type { DaemonClock } from "../registry.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
 import type { TriggerProvider } from "../../triggers/index.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
+import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
+import type { SlackBotClient, SlackThreadMessage } from "../../triggers/slack/client.js";
+import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -856,7 +859,7 @@ export class HubHarness {
   async installConfiguration(input: {
     yaml: string;
     auth?: "valid" | "missing" | "wrong";
-  }): Promise<{ status: number; versionId?: string }> {
+  }): Promise<{ status: number; versionId?: string; validationErrors?: unknown }> {
     const headers = machineHeaders(input.auth ?? "valid");
     const response = await fetch(`${this.origin}/api/configurations/install`, {
       method: "POST",
@@ -867,13 +870,83 @@ export class HubHarness {
       }),
     });
     const body = z
-      .object({ versionId: z.string().optional() })
+      .object({ versionId: z.string().optional(), error: z.string().optional() })
       .passthrough()
       .parse(await response.json());
+    const validationErrors =
+      body.versionId === undefined
+        ? undefined
+        : (
+            await this.requireDatabase().findProjectConfigurationRevision(
+              HUB_PROJECT_ID,
+              body.versionId,
+            )
+          )?.validationErrors;
     return {
       status: response.status,
       ...(body.versionId === undefined ? {} : { versionId: body.versionId }),
+      ...(body.error === undefined ? {} : { error: body.error }),
+      ...(validationErrors === undefined || validationErrors === null ? {} : { validationErrors }),
     };
+  }
+
+  slackConfigurationYaml(): string {
+    return [
+      "environments:",
+      "  - name: production",
+      "    kind: daemon",
+      `    daemon: ${this.requireDaemon().slug}`,
+      "    cwd: /workspace/slack",
+      "triggers:",
+      "  - name: slack-mention",
+      "    on: slack.mention",
+      "    environment: production",
+      "    filters:",
+      "      from_users: [U1]",
+      "    agent:",
+      "      provider: opencode",
+      "      mode: full-access",
+      '    prompt: "Review ${{ paseo.event.slack.trigger_message.body }} ${{ paseo.event.slack.trigger_message.attachments.0.filename }} ${{ paseo.event.slack.trigger_message.attachments.0.content_type }} ${{ paseo.event.slack.trigger_message.attachments.0.size }} ${{ paseo.event.slack.trigger_message.attachments.0.url }} after ${{ paseo.event.slack.trigger_thread_context.messages.0.content }}"',
+    ].join("\n");
+  }
+
+  async deliverSlackMention(): Promise<Response> {
+    return fetch(`${this.origin}/test/trigger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        organizationId: HUB_ORGANIZATION_ID,
+        projectId: HUB_PROJECT_ID,
+        connectionId: "00000000-0000-4000-8000-000000000002",
+        resourceId: "T1",
+        source: "slack.mention",
+        deliveryId: "slack-harness-image-1",
+        receivedAt: "2026-08-05T10:00:00.000Z",
+        payload: {
+          type: "mention",
+          id: "Ev-harness-image-1",
+          teamId: "T1",
+          appId: "A1",
+          channelId: "C1",
+          messageTs: "1700000000.000100",
+          threadTs: "1700000000.000001",
+          eventTs: "1700000000.000100",
+          eventTime: 1_700_000_001,
+          content: "<@UBOT> inspect this image",
+          author: { id: "U1" },
+          createdAt: "2023-11-14T22:13:20.100Z",
+          attachments: [
+            {
+              id: "F1",
+              filename: "diagram.png",
+              contentType: "image/png",
+              size: 19,
+            },
+          ],
+          threadContextMessages: [],
+        },
+      }),
+    });
   }
 
   async activeConfiguration() {
@@ -1063,6 +1136,16 @@ export class HubHarness {
     const application = createHubApplication({
       database: this.databaseForApplication(),
       providers: [this.recordingProvider()],
+      providerFactories: [
+        ({ configurationStoreForProject, attachments }) =>
+          createSlackTriggerProvider({
+            configurationStoreForProject,
+            botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+            client: new HarnessSlackClient(),
+            ...(attachments === undefined ? {} : { attachments }),
+          }),
+      ],
+      attachmentResolvers: { slack: createSlackAttachmentResolver(new HarnessSlackClient()) },
       outputRegistry: registry,
       operationAuth: hubOperationAuth,
       ...(this.completionTokenSecretEnabled
@@ -1253,6 +1336,48 @@ export class HubHarness {
         this.terminalExecutionIds.push(executionId);
       },
     };
+  }
+}
+
+class HarnessSlackClient implements SlackBotClient {
+  sendMessage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  addReaction(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  removeReaction(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  readThreadMessages(): Promise<SlackThreadMessage[]> {
+    return Promise.resolve([
+      {
+        ts: "1700000000.000050",
+        createdAt: "2023-11-14T22:13:20.050Z",
+        content: "Please inspect the latest diagram",
+        author: { id: "U2" },
+        attachments: [],
+      },
+      {
+        ts: "1700000000.000075",
+        createdAt: "2023-11-14T22:13:20.075Z",
+        content: "I agree, this is the bot follow-up",
+        author: { id: "B2" },
+        attachments: [],
+      },
+    ]);
+  }
+
+  downloadAttachment(input: { fileId: string }): Promise<Response> {
+    if (input.fileId !== "F1") return Promise.resolve(new Response("Not Found", { status: 404 }));
+    return Promise.resolve(
+      new Response("diagram-image-bytes", {
+        headers: { "content-type": "image/png", "content-length": "19", etag: '"diagram-1"' },
+      }),
+    );
   }
 }
 

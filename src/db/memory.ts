@@ -36,6 +36,8 @@ import type {
   AcceptDiscordTriggerInput,
   AcceptGitHubTriggerInput,
   AcceptSlackTriggerInput,
+  AttachmentProvider,
+  AttachmentRecord,
   DurableTrigger,
   GitHubLifecycleClaim,
   GitHubLifecycleClaimInput,
@@ -44,6 +46,7 @@ import type {
   ProviderTriggerAcceptance,
   CreateProjectInput,
   InsertProjectConfigurationRevisionInput,
+  InsertAttachmentInput,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
   TenantRouteAccess,
@@ -83,6 +86,8 @@ class MemoryDatabase implements Database {
   private readonly providerReceiptActivities = new Map<string, TriggerRecord>();
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
+  private readonly attachments = new Map<string, AttachmentRecord>();
+  private readonly attachmentIdsBySource = new Map<string, string>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
@@ -326,6 +331,50 @@ class MemoryDatabase implements Database {
 
   async findTriggerById(id: string): Promise<TriggerRecord | undefined> {
     return this.triggers.get(id);
+  }
+
+  async insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord> {
+    const sourceKey = attachmentSourceKey(input.triggerId, input.provider, input.sourceId);
+    const existingId = this.attachmentIdsBySource.get(sourceKey);
+    if (existingId !== undefined) return this.readAttachment(existingId);
+    const attachment: AttachmentRecord = {
+      id: randomUUID(),
+      triggerId: input.triggerId,
+      organizationId: input.organizationId,
+      connectionId: input.connectionId,
+      provider: input.provider,
+      sourceId: input.sourceId,
+      locator: input.locator,
+      filename: input.filename,
+      contentType: input.contentType ?? null,
+      byteSize: input.byteSize ?? null,
+      createdAt: new Date(),
+    };
+    this.attachments.set(attachment.id, attachment);
+    this.attachmentIdsBySource.set(sourceKey, attachment.id);
+    return attachment;
+  }
+
+  async findAttachmentBySource(
+    triggerId: string,
+    provider: AttachmentProvider,
+    sourceId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const id = this.attachmentIdsBySource.get(attachmentSourceKey(triggerId, provider, sourceId));
+    return id === undefined ? undefined : this.attachments.get(id);
+  }
+
+  async findAttachmentForExecution(
+    executionId: string,
+    attachmentId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    const attachment = this.attachments.get(attachmentId);
+    return execution?.triggerId !== null &&
+      execution?.organizationId === attachment?.organizationId &&
+      execution?.triggerId === attachment?.triggerId
+      ? attachment
+      : undefined;
   }
 
   async insertMachine(input: InsertMachineInput): Promise<MachineRecord> {
@@ -1294,6 +1343,12 @@ class MemoryDatabase implements Database {
     return trigger;
   }
 
+  private readAttachment(id: string): AttachmentRecord {
+    const attachment = this.attachments.get(id);
+    if (attachment === undefined) throw new Error(`attachment not found: ${id}`);
+    return attachment;
+  }
+
   private async acceptMemoryTrigger(
     input: AcceptGitHubTriggerInput | AcceptDiscordTriggerInput | AcceptSlackTriggerInput,
     organizationId: string | undefined,
@@ -1492,4 +1547,12 @@ function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
 
 function triggerDeliveryKey(organizationId: string, deliveryId: string): string {
   return `${organizationId}:${deliveryId}`;
+}
+
+function attachmentSourceKey(
+  triggerId: string,
+  provider: AttachmentProvider,
+  sourceId: string,
+): string {
+  return `${triggerId}:${provider}:${sourceId}`;
 }

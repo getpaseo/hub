@@ -153,10 +153,24 @@ export class ConnectionRepository {
   }
 
   async bindSlack(input: BindSlackConnectionInput): Promise<void> {
-    await this.bindExclusive(input, "slack", input.teamId, async (transaction, attempt) => {
-      const [_connection] = await transaction
-        .insert(schema.slackConnections)
-        .values({
+    await this.database.transaction(async (transaction) => {
+      await lockAccountSession(transaction, input.access);
+      await lockExternal(transaction, "slack", input.teamId);
+      const attempt = await lockAttempt(transaction, input);
+      await lockStoredAuthority(transaction, attempt);
+      const [existing] = await transaction
+        .select({
+          id: schema.slackConnections.id,
+          organizationId: schema.slackConnections.organizationId,
+        })
+        .from(schema.slackConnections)
+        .where(eq(schema.slackConnections.teamId, input.teamId))
+        .for("update");
+      if (existing !== undefined && existing.organizationId !== attempt.organizationId) {
+        throw new ConnectionConflictError();
+      }
+      if (existing === undefined) {
+        await transaction.insert(schema.slackConnections).values({
           organizationId: attempt.organizationId,
           teamId: input.teamId,
           teamName: input.teamName,
@@ -168,9 +182,23 @@ export class ConnectionRepository {
           ),
           botUserId: input.botUserId,
           botAccessToken: input.botAccessToken,
+          scopes: input.scopes,
           connectedByUserId: attempt.userId,
-        })
-        .returning({ id: schema.slackConnections.id });
+        });
+      } else {
+        await transaction
+          .update(schema.slackConnections)
+          .set({
+            teamName: input.teamName,
+            botUserId: input.botUserId,
+            botAccessToken: input.botAccessToken,
+            scopes: input.scopes,
+            connectedByUserId: attempt.userId,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(eq(schema.slackConnections.id, existing.id));
+      }
+      await consumeLockedAttempt(transaction, attempt.id);
     });
   }
 
@@ -556,6 +584,7 @@ function slackConnection(row: typeof schema.slackConnections.$inferSelect): Slac
     teamName: row.teamName,
     botUserId: row.botUserId,
     botAccessToken: row.botAccessToken,
+    scopes: row.scopes,
   };
 }
 
