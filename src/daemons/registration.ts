@@ -33,6 +33,7 @@ const enrollmentBody = z
     serverId: z.string(),
     daemonPublicKey: z.string(),
     credentialVerifier: z.string(),
+    scopes: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
 

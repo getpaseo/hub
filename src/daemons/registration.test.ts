@@ -240,6 +240,7 @@ class RegistrationJourney {
           serverId: "server-1",
           daemonPublicKey: "public-key",
           credentialVerifier: "credential-verifier",
+          scopes: ["hub.execution.*"],
         },
         { authorization: `Bearer ${token}` },
       ),
