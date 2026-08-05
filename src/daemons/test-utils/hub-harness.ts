@@ -949,6 +949,7 @@ export class HubHarness {
     error?: string;
     triggerId?: string;
     triggerRunId?: string;
+    configuredTriggerName?: string;
     workflowStatus?: string;
   }> {
     const response = await fetch(`${this.origin}/api/manual-runs`, {
@@ -974,6 +975,7 @@ export class HubHarness {
       .object({
         triggerId: z.string().optional(),
         triggerRunId: z.string().optional(),
+        configuredTriggerName: z.string().optional(),
         workflowStatus: z.string().optional(),
         error: z.string().optional(),
       })
@@ -984,6 +986,9 @@ export class HubHarness {
       ...(body.error === undefined ? {} : { error: body.error }),
       ...(body.triggerId === undefined ? {} : { triggerId: body.triggerId }),
       ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
+      ...(body.configuredTriggerName === undefined
+        ? {}
+        : { configuredTriggerName: body.configuredTriggerName }),
       ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
     };
   }

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
+import { durableExecutionId } from "../../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import type { DurableTrigger } from "../../db/types.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { createDurableWorkflowHandler } from "../../workflows/engine.js";
 import type { GitHubExecutionTokenAuth } from "../../auth/github.js";
 import type { GitHubReactionClient } from "./provider.js";
 import { createGitHubTriggerProvider } from "./provider.js";
@@ -69,6 +72,187 @@ describe("GitHub Phase 1 trigger provider", () => {
       ["eyes", "rocket", "+1"],
     );
   });
+
+  it("replaces GitHub in-progress reactions on terminal failure at the event target", async () => {
+    const { project, store } = await activeConfiguration();
+    const reactions = new TestReactions();
+    const provider = createProvider(store, reactions);
+    const match = (await provider.match(external(project.id, createEvent())))[0];
+    assert.ok(match);
+
+    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+
+    assert.deepEqual(
+      reactions.created.map((call) => call.content),
+      ["eyes", "-1"],
+    );
+    assert.deepEqual(
+      reactions.deleted.map((call) => call.reactionId),
+      [1],
+    );
+    assert.deepEqual(reactions.deleted[0], {
+      installationId: 42,
+      repo: "boudra/faro",
+      subject: { kind: "issue_comment", commentId: 123 },
+      reactionId: 1,
+    });
+  });
+
+  it("passes a static worktree target through durable launch recovery", async () => {
+    const { project, store } = await activeConfiguration(githubWorktreeConfiguration());
+    const provider = createProvider(store, new TestReactions());
+    const match = (await provider.match(external(project.id, createEvent())))[0];
+    assert.ok(match);
+    assert.deepEqual(match.environment.worktree, {
+      mode: "branch-off",
+      newBranch: "github-recovery",
+      base: "main",
+    });
+    const materialized = await provider.materializeLaunch?.({
+      executionId: "00000000-0000-4000-8000-000000000002",
+      organizationId: "org_1",
+      projectId: project.id,
+      prompt: match.prompt,
+      environmentWorktree: match.environment.worktree,
+      triggerContext: match.triggerContext,
+    });
+    assert.deepEqual(materialized?.environmentWorktree, match.environment.worktree);
+  });
+
+  it("revokes every token minted before terminal cleanup", async () => {
+    const { project, store } = await activeConfiguration();
+    const tokens = new TestExecutionTokens();
+    const provider = createProvider(store, new TestReactions(), tokens);
+    const match = (await provider.match(external(project.id, createEvent())))[0];
+    assert.ok(match);
+    const launch = {
+      executionId: "00000000-0000-4000-8000-000000000003",
+      organizationId: "org_1",
+      projectId: project.id,
+      prompt: match.prompt,
+      triggerContext: match.triggerContext,
+    };
+
+    await provider.materializeLaunch?.(launch);
+    await provider.materializeLaunch?.(launch);
+    await provider.onAgentExecutionTerminal?.(launch.executionId, match.triggerContext);
+    assert.deepEqual(tokens.revoked, ["execution-token-1", "execution-token-2"]);
+  });
+
+  it("rejects materialization when the execution becomes terminal mid-flight", async () => {
+    const { project, store } = await activeConfiguration();
+    const tokens = new DeferredExecutionTokens();
+    const provider = createProvider(store, new TestReactions(), tokens);
+    const match = (await provider.match(external(project.id, createEvent())))[0];
+    assert.ok(match);
+    const executionId = "00000000-0000-4000-8000-000000000004";
+    const materialization = provider.materializeLaunch?.({
+      executionId,
+      organizationId: "org_1",
+      projectId: project.id,
+      prompt: match.prompt,
+      triggerContext: match.triggerContext,
+    });
+    assert.ok(materialization);
+    await provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);
+    tokens.resolve("racing-execution-token");
+    await assert.rejects(materialization, /cannot materialize terminal execution/u);
+    assert.deepEqual(tokens.revoked, ["racing-execution-token"]);
+  });
+
+  it("bounds cleanup when GitHub token revocation hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const { project, store } = await activeConfiguration();
+      const tokens = new TestExecutionTokens(true);
+      const provider = createProvider(store, new TestReactions(), tokens);
+      const match = (await provider.match(external(project.id, createEvent())))[0];
+      assert.ok(match);
+      const executionId = "00000000-0000-4000-8000-000000000005";
+      await provider.materializeLaunch?.({
+        executionId,
+        organizationId: "org_1",
+        projectId: project.id,
+        prompt: match.prompt,
+        triggerContext: match.triggerContext,
+      });
+      const cleanup = provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);
+      assert.ok(cleanup);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await cleanup;
+      assert.deepEqual(tokens.revoked, ["execution-token-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands every matching configured GitHub trigger to the durable fan-out boundary", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await activeFanoutConfiguration(database);
+    const provider = createProvider(store, new TestReactions());
+    const matches = await provider.match(external(project.id, createEvent()));
+    assert.deepEqual(
+      matches.map((match) => match.triggerName),
+      ["github-mention", "github-mention-secondary"],
+    );
+
+    let dispatches = 0;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches += 1;
+        return {
+          execution: await database.insertAgentExecution({
+            id: durableExecutionId(intent),
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            machineId: null,
+            triggerId: intent.triggerId,
+            triggerContext: intent.triggerContext,
+            outputContext: intent.outputContext,
+            configurationRevisionId: intent.configurationRevisionId,
+            workflowStepRunId: intent.workflowStepRunId!,
+            launchIntent: intent,
+          }),
+        };
+      },
+    });
+    const trigger = {
+      triggerId: "github-fanout-trigger",
+      organizationId: "org_1",
+      projectId: project.id,
+      source: "github.issue_comment",
+      deliveryId: "github-fanout-delivery",
+      receivedAt: new Date(),
+      payload: createEvent(),
+      connectionId: null,
+      resourceId: null,
+    } satisfies DurableTrigger;
+
+    await handler(trigger);
+    await handler(trigger);
+    await engine.processAvailable();
+
+    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
+    assert.equal(runs.length, 2);
+    assert.equal(dispatches, 2);
+    assert.equal(
+      new Set(
+        await Promise.all(
+          runs.map(async (run) => {
+            const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+            assert.ok(step);
+            const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+            assert.ok(execution);
+            return execution.id;
+          }),
+        ),
+      ).size,
+      2,
+    );
+  });
 });
 
 function createProvider(
@@ -83,8 +267,36 @@ function createProvider(
   });
 }
 
-async function activeConfiguration() {
-  return createActiveProjectConfiguration(createMemoryDatabase(), {
+async function activeConfiguration(rawConfiguration = githubConfiguration()) {
+  return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
+}
+
+function githubWorktreeConfiguration() {
+  const configuration = githubConfiguration();
+  return {
+    ...configuration,
+    environments: [
+      {
+        ...configuration.environments[0]!,
+        worktree: { mode: "branch-off" as const, newBranch: "github-recovery", base: "main" },
+      },
+    ],
+  };
+}
+
+async function activeFanoutConfiguration(database: ReturnType<typeof createMemoryDatabase>) {
+  const configuration = githubConfiguration();
+  const first = configuration.triggers[0]!;
+  configuration.triggers.push({
+    ...first,
+    name: "github-mention-secondary",
+    steps: [{ ...first.steps[0]!, id: "github-step-secondary" }],
+  });
+  return createActiveProjectConfiguration(database, configuration);
+}
+
+function githubConfiguration() {
+  return {
     environments: [
       {
         name: "github-runner",
@@ -113,7 +325,7 @@ async function activeConfiguration() {
         ],
       },
     ],
-  });
+  };
 }
 
 function external(projectId: string, payload: NormalizedGitHubEvent) {
@@ -151,22 +363,47 @@ function createEvent(overrides: { actor?: string } = {}): NormalizedGitHubEvent 
 
 class TestReactions implements GitHubReactionClient {
   readonly created: Array<{ content: string }> = [];
+  readonly deleted: Array<Parameters<GitHubReactionClient["deleteReaction"]>[0]> = [];
 
   async createReaction(input: Parameters<GitHubReactionClient["createReaction"]>[0]) {
     this.created.push({ content: input.content });
     return { id: this.created.length };
   }
 
-  async deleteReaction(): Promise<void> {}
+  async deleteReaction(input: Parameters<GitHubReactionClient["deleteReaction"]>[0]) {
+    this.deleted.push(input);
+  }
 }
 
 class TestExecutionTokens implements GitHubExecutionTokenAuth {
   readonly revoked: string[] = [];
   private count = 0;
 
+  constructor(private readonly hangRevocation = false) {}
+
   async mintExecutionToken(): Promise<string> {
     this.count += 1;
     return `execution-token-${this.count}`;
+  }
+
+  async revokeInstallationToken(token: string): Promise<void> {
+    this.revoked.push(token);
+    if (this.hangRevocation) return new Promise(() => undefined);
+  }
+}
+
+class DeferredExecutionTokens implements GitHubExecutionTokenAuth {
+  readonly revoked: string[] = [];
+  private resolveMint!: (token: string) => void;
+
+  async mintExecutionToken(): Promise<string> {
+    return new Promise((resolve) => {
+      this.resolveMint = resolve;
+    });
+  }
+
+  resolve(token: string): void {
+    this.resolveMint(token);
   }
 
   async revokeInstallationToken(token: string): Promise<void> {

@@ -72,50 +72,50 @@ export class DurableWorkflowEngine {
       );
       return { triggerId: trigger.triggerId };
     }
-    if (matches.length !== 1) {
-      throw new Error("multiple_matching_triggers_are_not_supported_in_phase_1");
-    }
-
-    const match = matches[0]!;
-    const configurationRevisionId =
-      match.configurationRevisionId ?? this.options.configurationRevisionId;
-    if (configurationRevisionId === undefined) {
-      throw new Error("workflow_configuration_revision_required");
-    }
-    if (match.stepId === undefined) {
-      throw new Error("workflow_step_id_required");
-    }
-    if (match.runTimeoutMs === undefined) {
-      throw new Error("workflow_run_max_runtime_required");
-    }
-
     const createdAt = this.now();
-    const stepRunId = randomUUID();
-    const runDeadline = new Date(createdAt.getTime() + match.runTimeoutMs);
-    const baseIntent = buildLaunchMachineIntent({
-      ...match,
-      organizationId: trigger.organizationId,
-      projectId: trigger.projectId,
-      triggerId: trigger.triggerId,
-      configurationRevisionId,
-    });
-    const intent: LaunchMachineIntent = {
-      ...baseIntent,
-      workflowStepRunId: stepRunId,
-    };
-    await this.options.database.createTriggerRun({
-      organizationId: trigger.organizationId,
-      projectId: trigger.projectId,
-      configurationRevisionId,
-      triggerId: trigger.triggerId,
-      rawPrompt: rawPrompt(trigger.payload),
-      prompt: match.prompt,
-      deadlineAt: runDeadline,
-      stepId: match.stepId,
-      stepRunId,
-      dispatchIntent: intent,
-      createdAt,
-    });
+    await Promise.all(
+      matches.map(async (match) => {
+        const configurationRevisionId =
+          match.configurationRevisionId ?? this.options.configurationRevisionId;
+        if (configurationRevisionId === undefined) {
+          throw new Error("workflow_configuration_revision_required");
+        }
+        if (match.stepId === undefined) {
+          throw new Error("workflow_step_id_required");
+        }
+        if (match.runTimeoutMs === undefined) {
+          throw new Error("workflow_run_max_runtime_required");
+        }
+
+        const stepRunId = randomUUID();
+        const runDeadline = new Date(createdAt.getTime() + match.runTimeoutMs);
+        const baseIntent = buildLaunchMachineIntent({
+          ...match,
+          organizationId: trigger.organizationId,
+          projectId: trigger.projectId,
+          triggerId: trigger.triggerId,
+          configurationRevisionId,
+        });
+        const intent: LaunchMachineIntent = {
+          ...baseIntent,
+          workflowStepRunId: stepRunId,
+        };
+        await this.options.database!.createTriggerRun({
+          organizationId: trigger.organizationId,
+          projectId: trigger.projectId,
+          configurationRevisionId,
+          triggerId: trigger.triggerId,
+          configuredTriggerName: match.triggerName,
+          rawPrompt: rawPrompt(trigger.payload),
+          prompt: match.prompt,
+          deadlineAt: runDeadline,
+          stepId: match.stepId,
+          stepRunId,
+          dispatchIntent: intent,
+          createdAt,
+        });
+      }),
+    );
 
     return { triggerId: trigger.triggerId };
   }

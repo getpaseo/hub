@@ -363,6 +363,7 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     repo: trigger.repo,
     receivedAt: trigger.receivedAt.toISOString(),
     matchedTriggerName: trigger.matchedTriggerName,
+    configuredTriggerNames: [...trigger.configuredTriggerNames],
     droppedReason: trigger.droppedReason,
   };
 }

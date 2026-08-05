@@ -85,6 +85,7 @@ describe("agent execution PostgreSQL repository", () => {
         projectId: fixture.execution.projectId,
         configurationRevisionId: fixture.execution.configurationRevisionId,
         triggerId: trigger.trigger.id,
+        configuredTriggerName: "one-step",
         rawPrompt: "raw",
         prompt: intent.prompt,
         deadlineAt: new Date(Date.now() + 60_000),
@@ -170,7 +171,7 @@ describe("agent execution PostgreSQL repository", () => {
       await handler(durableTrigger);
       await handler(durableTrigger);
 
-      const run = await fixture.database.findTriggerRunByTriggerId(trigger.trigger.id);
+      const run = (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0];
       assert.ok(run);
       const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
       assert.ok(step);
@@ -200,6 +201,137 @@ describe("agent execution PostgreSQL repository", () => {
       assert.equal(first?.run.status, "succeeded");
       assert.deepEqual(second, first);
       assert.equal(await fixture.database.claimWorkflowWakeup(now, 1_000), undefined);
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  it("fans one PostgreSQL receipt into independently idempotent configured-trigger branches", async () => {
+    const fixture = await executionFixture(postgres);
+    let dispatches = 0;
+    try {
+      const matches = [
+        phaseOneMatch(fixture.execution.configurationRevisionId, "first-route", "first-step"),
+        phaseOneMatch(fixture.execution.configurationRevisionId, "second-route", "second-step"),
+      ];
+      const { handler, engine } = createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [
+          {
+            name: "test",
+            eventNames: ["test.event"],
+            async match() {
+              return matches;
+            },
+          },
+        ],
+        dispatchLaunchMachineIntent: async (intent) => {
+          dispatches += 1;
+          const execution = await fixture.database.insertAgentExecution({
+            id: durableExecutionId(intent),
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            machineId: fixture.execution.machineId,
+            triggerId: intent.triggerId,
+            triggerContext: intent.triggerContext,
+            outputContext: intent.outputContext,
+            configurationRevisionId: intent.configurationRevisionId,
+            workflowStepRunId: intent.workflowStepRunId!,
+            deadlineAt: intent.deadlineAt ?? null,
+            launchIntent: intent,
+          });
+          return { execution };
+        },
+      });
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-fanout",
+      );
+      const durableTrigger = toDurableTrigger(trigger.trigger);
+
+      await handler(durableTrigger);
+      await handler(durableTrigger);
+      const runs = await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id);
+      assert.equal(runs.length, 2);
+      assert.deepEqual(runs.map((run) => run.configuredTriggerName).sort(), [
+        "first-route",
+        "second-route",
+      ]);
+      const activity = (
+        await fixture.database.listTriggersForProject(fixture.execution.projectId, 10)
+      ).find((candidate) => candidate.id === trigger.trigger.id);
+      assert.deepEqual(activity?.configuredTriggerNames.toSorted(), [
+        "first-route",
+        "second-route",
+      ]);
+      await Promise.all(
+        runs.flatMap((run) => [
+          fixture.database.wakeWorkflowRun(run.id, new Date()),
+          fixture.database.wakeWorkflowRun(run.id, new Date()),
+        ]),
+      );
+
+      await engine.processAvailable();
+      const branches = await Promise.all(
+        runs.map(async (run) => {
+          const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
+          assert.ok(step);
+          const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+          assert.ok(execution);
+          return { run, execution };
+        }),
+      );
+      assert.equal(dispatches, 2);
+      assert.equal(new Set(branches.map(({ execution }) => execution.id)).size, 2);
+
+      const first = branches[0]!;
+      const second = branches[1]!;
+      await fixture.database.transitionAgentExecution(first.execution.id, "succeeded", {
+        result: { route: first.run.configuredTriggerName },
+      });
+      const firstFinish = await fixture.database.completeWorkflowStep(
+        first.execution.id,
+        "succeeded",
+        {
+          route: first.run.configuredTriggerName,
+        },
+      );
+      const firstDuplicateFinish = await fixture.database.completeWorkflowStep(
+        first.execution.id,
+        "succeeded",
+        {
+          route: first.run.configuredTriggerName,
+        },
+      );
+      assert.deepEqual(firstDuplicateFinish, firstFinish);
+      assert.equal((await fixture.database.findTriggerRunById(first.run.id))?.status, "succeeded");
+      assert.equal((await fixture.database.findTriggerRunById(second.run.id))?.status, "running");
+
+      await fixture.database.transitionAgentExecution(second.execution.id, "succeeded", {
+        result: { route: second.run.configuredTriggerName },
+      });
+      const secondFinish = await fixture.database.completeWorkflowStep(
+        second.execution.id,
+        "succeeded",
+        {
+          route: second.run.configuredTriggerName,
+        },
+      );
+      assert.deepEqual(
+        await fixture.database.completeWorkflowStep(second.execution.id, "succeeded", {
+          route: second.run.configuredTriggerName,
+        }),
+        secondFinish,
+      );
+      await handler(durableTrigger);
+      await engine.processAvailable();
+      assert.equal((await fixture.database.findTriggerRunById(second.run.id))?.status, "succeeded");
+      assert.equal(dispatches, 2);
+      assert.equal(
+        (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id)).length,
+        2,
+      );
     } finally {
       await fixture.database.close();
     }
@@ -263,11 +395,15 @@ function launchIntent(
   };
 }
 
-function phaseOneMatch(configurationRevisionId: string): TriggerProviderMatch {
-  const base = launchIntent("trigger-placeholder", configurationRevisionId, "one-step");
+function phaseOneMatch(
+  configurationRevisionId: string,
+  triggerName = "one-step",
+  stepId = "step-one",
+): TriggerProviderMatch {
+  const base = launchIntent("trigger-placeholder", configurationRevisionId, triggerName);
   return {
-    triggerName: "one-step",
-    stepId: "step-one",
+    triggerName,
+    stepId,
     environmentName: base.environmentName,
     environment: base.environment,
     prompt: base.prompt,

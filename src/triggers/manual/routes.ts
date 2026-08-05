@@ -65,13 +65,14 @@ export async function runManualTrigger(
   }
   if (triggerId === undefined)
     return Response.json({ error: "manual_run_not_dispatched" }, { status: 409 });
-  const run = await database.findTriggerRunByTriggerId(triggerId);
+  const run = (await database.findTriggerRunsByTriggerId(triggerId))[0];
   if (!run) return Response.json({ error: "manual_run_not_enqueued" }, { status: 409 });
   return Response.json(
     {
       deliveryKey: body.data.deliveryKey,
       triggerId,
       triggerRunId: run.id,
+      configuredTriggerName: run.configuredTriggerName,
       workflowStatus: run.status,
     },
     { status: 200 },

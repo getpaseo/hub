@@ -29,6 +29,7 @@ export function toTriggerRecord(row: TriggerRow): TriggerRecord {
     payload: row.payload,
     receivedAt: row.received_at,
     matchedTriggerName: row.matched_trigger_name,
+    configuredTriggerNames: row.configured_trigger_names ?? [],
     droppedReason: row.dropped_reason,
   };
 }

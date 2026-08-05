@@ -61,7 +61,7 @@ describe("manual trigger durable workflow boundary", () => {
     assert.equal(outcome?.triggerId !== undefined, true);
     const triggerId = outcome?.triggerId;
     assert.ok(triggerId);
-    const run = await database.findTriggerRunByTriggerId(triggerId);
+    const run = (await database.findTriggerRunsByTriggerId(triggerId))[0];
     assert.ok(run);
     const step = await database.findWorkflowStepRunByTriggerRun(run.id);
     assert.ok(step);

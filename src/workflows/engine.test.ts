@@ -31,7 +31,7 @@ describe("durable Phase 1 workflow engine", () => {
 
     await handler(trigger);
     await engine.processAvailable();
-    const run = await database.findTriggerRunByTriggerId(trigger.triggerId);
+    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
     assert.ok(run);
     const step = await database.findWorkflowStepRunByTriggerRun(run.id);
     assert.ok(step);
@@ -40,6 +40,111 @@ describe("durable Phase 1 workflow engine", () => {
     assert.equal(step.agentExecutionId, execution.id);
     assert.equal(execution.workflowStepRunId, step.id);
     assert.equal(step.status, "running");
+  });
+
+  it("fans one provider receipt out to one durable branch per configured trigger", async () => {
+    const database = createMemoryDatabase();
+    const trigger = await insertTrigger(database, "delivery-fanout");
+    const matches = [
+      providerMatch("first-trigger", "first-step").match,
+      providerMatch("second-trigger", "second-step").match,
+    ];
+    let dispatches = 0;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database,
+      providers: [
+        {
+          name: "test",
+          eventNames: ["test.event"],
+          async match() {
+            return matches;
+          },
+        },
+      ],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches += 1;
+        return {
+          execution: await database.insertAgentExecution({
+            id: durableExecutionId(intent),
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            machineId: null,
+            triggerId: intent.triggerId,
+            triggerContext: intent.triggerContext,
+            outputContext: intent.outputContext,
+            configurationRevisionId: intent.configurationRevisionId,
+            workflowStepRunId: intent.workflowStepRunId!,
+            launchIntent: intent,
+          }),
+        };
+      },
+    });
+
+    await handler(trigger);
+    await handler(trigger);
+    await engine.processAvailable();
+
+    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
+    assert.equal(runs.length, 2);
+    assert.deepEqual(runs.map((run) => run.configuredTriggerName).sort(), [
+      "first-trigger",
+      "second-trigger",
+    ]);
+    assert.deepEqual(
+      (await database.findTriggerById(trigger.triggerId))?.configuredTriggerNames.toSorted(),
+      ["first-trigger", "second-trigger"],
+    );
+    await Promise.all(
+      runs.flatMap((run) => [
+        database.wakeWorkflowRun(run.id, new Date()),
+        database.wakeWorkflowRun(run.id, new Date()),
+      ]),
+    );
+    const branches = await Promise.all(
+      runs.map(async (run) => {
+        const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+        assert.ok(step);
+        const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+        assert.ok(execution);
+        return { run, step, execution };
+      }),
+    );
+    assert.equal(dispatches, 2);
+    assert.equal(new Set(branches.map(({ execution }) => execution.id)).size, 2);
+
+    const first = branches[0]!;
+    const second = branches[1]!;
+    await database.transitionAgentExecution(first.execution.id, "succeeded", {
+      result: { branch: first.run.configuredTriggerName },
+    });
+    const firstFinish = await database.completeWorkflowStep(first.execution.id, "succeeded", {
+      branch: first.run.configuredTriggerName,
+    });
+    assert.deepEqual(
+      await database.completeWorkflowStep(first.execution.id, "succeeded", {
+        branch: first.run.configuredTriggerName,
+      }),
+      firstFinish,
+    );
+    assert.equal((await database.findTriggerRunById(first.run.id))?.status, "succeeded");
+    assert.equal((await database.findTriggerRunById(second.run.id))?.status, "running");
+
+    await database.transitionAgentExecution(second.execution.id, "failed", {
+      result: { branch: second.run.configuredTriggerName },
+    });
+    const secondFinish = await database.completeWorkflowStep(second.execution.id, "failed", {
+      branch: second.run.configuredTriggerName,
+    });
+    assert.deepEqual(
+      await database.completeWorkflowStep(second.execution.id, "failed", {
+        branch: second.run.configuredTriggerName,
+      }),
+      secondFinish,
+    );
+    await handler(trigger);
+    await engine.processAvailable();
+    assert.equal((await database.findTriggerRunById(second.run.id))?.status, "failed");
+    assert.equal(dispatches, 2);
   });
 
   it("deduplicates delivery, wakeup, and finish transitions", async () => {
@@ -66,7 +171,7 @@ describe("durable Phase 1 workflow engine", () => {
     await handler(trigger);
     await handler(trigger);
     await engine.processAvailable();
-    const run = await database.findTriggerRunByTriggerId(trigger.triggerId);
+    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
     assert.ok(run);
     const step = await database.findWorkflowStepRunByTriggerRun(run.id);
     assert.ok(step);
@@ -96,6 +201,7 @@ describe("durable Phase 1 workflow engine", () => {
       projectId: trigger.projectId,
       configurationRevisionId: "config-1",
       triggerId: trigger.triggerId,
+      configuredTriggerName: "test-trigger",
       rawPrompt: "raw",
       prompt: "prompt",
       deadlineAt: new Date(now.getTime() + 60_000),
@@ -138,7 +244,7 @@ describe("durable Phase 1 workflow engine", () => {
     });
     await handler(trigger);
     await engine.processAvailable();
-    const run = await database.findTriggerRunByTriggerId(trigger.triggerId);
+    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
     assert.ok(run);
     const step = await database.findWorkflowStepRunByTriggerRun(run.id);
     assert.ok(step);
@@ -164,14 +270,14 @@ function provider() {
   };
 }
 
-function providerMatch() {
+function providerMatch(triggerName = "test-trigger", stepId = "step-one") {
   const intent = {
     kind: "launch_machine" as const,
     organizationId: "org-1",
     projectId: "00000000-0000-4000-8000-000000000001",
     triggerId: "trigger-placeholder",
     workflowStepRunId: "step-run-one",
-    triggerName: "test-trigger",
+    triggerName,
     environmentName: "runner",
     environment: {
       kind: "daemon" as const,
@@ -193,8 +299,8 @@ function providerMatch() {
   return {
     intent,
     match: {
-      triggerName: "test-trigger",
-      stepId: "step-one",
+      triggerName,
+      stepId,
       environmentName: "runner",
       environment: intent.environment,
       prompt: "prompt",

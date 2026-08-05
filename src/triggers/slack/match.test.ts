@@ -36,7 +36,16 @@ describe("Slack trigger matching", () => {
 
     assert.equal(matchSlackTriggers(config, event, "UBOT").length, 1);
     assert.equal(readSlackPromptBody(event, "UBOT"), "run tests");
+    assert.equal(
+      matchSlackTriggers(config, { ...event, author: { id: "UBOT" } }, "UBOT").length,
+      0,
+    );
+    assert.equal(matchSlackTriggers(config, { ...event, teamId: "T2" }, "UBOT").length, 0);
     assert.equal(matchSlackTriggers(config, { ...event, channelId: "C2" }, "UBOT").length, 0);
+    assert.equal(
+      matchSlackTriggers(config, { ...event, content: "<@UBOT> please run tests" }, "UBOT").length,
+      0,
+    );
     assert.equal(matchSlackTriggers(config, { ...event, content: "run tests" }, "UBOT").length, 0);
   });
 });

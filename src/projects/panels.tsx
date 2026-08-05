@@ -922,7 +922,12 @@ function ActivityTable({
             )}
           </DataCell>
           <DataCell>{event.source}</DataCell>
-          <DataCell>{event.droppedReason ?? event.matchedTriggerName ?? "Accepted"}</DataCell>
+          <DataCell>
+            {event.droppedReason ??
+              (event.configuredTriggerNames.length > 0
+                ? event.configuredTriggerNames.join(", ")
+                : (event.matchedTriggerName ?? "Accepted"))}
+          </DataCell>
           <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
         </DataRow>
       ))}

@@ -87,7 +87,7 @@ class MemoryDatabase implements Database {
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
-  private readonly triggerRunIdsByTrigger = new Map<string, string>();
+  private readonly triggerRunIdsByTrigger = new Map<string, Map<string, string>>();
   private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
   private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
@@ -119,7 +119,9 @@ class MemoryDatabase implements Database {
   }
 
   async createTriggerRun(input: CreateTriggerRunInput) {
-    const existingId = this.triggerRunIdsByTrigger.get(input.triggerId);
+    const triggerRuns =
+      this.triggerRunIdsByTrigger.get(input.triggerId) ?? new Map<string, string>();
+    const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
       const existing = this.triggerRuns.get(existingId);
       if (existing === undefined)
@@ -133,6 +135,7 @@ class MemoryDatabase implements Database {
       projectId: input.projectId,
       configurationRevisionId: input.configurationRevisionId,
       triggerId: input.triggerId,
+      configuredTriggerName: input.configuredTriggerName,
       status: "running",
       rawPrompt: input.rawPrompt,
       prompt: input.prompt,
@@ -156,7 +159,8 @@ class MemoryDatabase implements Database {
       dispatchIntent: input.dispatchIntent,
     };
     this.triggerRuns.set(run.id, run);
-    this.triggerRunIdsByTrigger.set(run.triggerId, run.id);
+    triggerRuns.set(input.configuredTriggerName, run.id);
+    this.triggerRunIdsByTrigger.set(input.triggerId, triggerRuns);
     this.workflowStepRuns.set(step.id, step);
     this.workflowWakeups.set(run.id, {
       triggerRunId: run.id,
@@ -170,9 +174,11 @@ class MemoryDatabase implements Database {
     return this.triggerRuns.get(id);
   }
 
-  async findTriggerRunByTriggerId(triggerId: string) {
-    const id = this.triggerRunIdsByTrigger.get(triggerId);
-    return id === undefined ? undefined : this.triggerRuns.get(id);
+  async findTriggerRunsByTriggerId(triggerId: string) {
+    return [...(this.triggerRunIdsByTrigger.get(triggerId)?.values() ?? [])]
+      .map((id) => this.triggerRuns.get(id))
+      .filter((run): run is TriggerRunRecord => run !== undefined)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
   }
 
   async findWorkflowStepRunById(id: string) {
@@ -395,6 +401,7 @@ class MemoryDatabase implements Database {
       payload: input.payload,
       receivedAt: input.receivedAt,
       matchedTriggerName: input.matchedTriggerName ?? null,
+      configuredTriggerNames: [],
       droppedReason: input.droppedReason ?? null,
     };
 
@@ -543,11 +550,13 @@ class MemoryDatabase implements Database {
     const id = this.triggersByDeliveryId.get(
       organizationId === undefined ? deliveryId : `${organizationId}:${deliveryId}`,
     );
-    return id === undefined ? undefined : this.triggers.get(id);
+    const trigger = id === undefined ? undefined : this.triggers.get(id);
+    return trigger === undefined ? undefined : this.triggerWithConfiguredNames(trigger);
   }
 
   async findTriggerById(id: string): Promise<TriggerRecord | undefined> {
-    return this.triggers.get(id);
+    const trigger = this.triggers.get(id);
+    return trigger === undefined ? undefined : this.triggerWithConfiguredNames(trigger);
   }
 
   async insertMachine(input: InsertMachineInput): Promise<MachineRecord> {
@@ -920,7 +929,16 @@ class MemoryDatabase implements Database {
     return Array.from(this.triggers.values())
       .filter((trigger) => trigger.projectId === projectId)
       .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())
-      .slice(0, limit);
+      .slice(0, limit)
+      .map((trigger) => this.triggerWithConfiguredNames(trigger));
+  }
+
+  private triggerWithConfiguredNames(trigger: TriggerRecord): TriggerRecord {
+    const configuredTriggerNames = [...this.triggerRuns.values()]
+      .filter((run) => run.triggerId === trigger.id)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .map((run) => run.configuredTriggerName);
+    return { ...trigger, configuredTriggerNames };
   }
 
   async claimAgentExecutionReply(
@@ -1550,6 +1568,7 @@ class MemoryDatabase implements Database {
         payload: input.payload,
         receivedAt: input.receivedAt,
         matchedTriggerName: null,
+        configuredTriggerNames: [],
         droppedReason: reason ?? null,
       });
     }

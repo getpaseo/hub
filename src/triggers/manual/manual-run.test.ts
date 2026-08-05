@@ -30,6 +30,7 @@ describe("production Phase 1 manual runs", () => {
     assert.equal(run.status, 200);
     assert.equal(typeof run.triggerId, "string");
     assert.equal(typeof run.triggerRunId, "string");
+    assert.equal(run.configuredTriggerName, "deploy");
     assert.equal(run.workflowStatus, "running");
   });
 

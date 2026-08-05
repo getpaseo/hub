@@ -16,6 +16,7 @@ export interface TriggerRecord {
   payload: unknown;
   receivedAt: Date;
   matchedTriggerName: string | null;
+  configuredTriggerNames: readonly string[];
   droppedReason: string | null;
 }
 
@@ -460,6 +461,7 @@ export interface TriggerRunRecord {
   projectId: string;
   configurationRevisionId: string;
   triggerId: string;
+  configuredTriggerName: string;
   status: "running" | "succeeded" | "failed" | "timed_out";
   rawPrompt: string;
   prompt: string;
@@ -496,6 +498,7 @@ export interface CreateTriggerRunInput {
   projectId: string;
   configurationRevisionId: string;
   triggerId: string;
+  configuredTriggerName: string;
   rawPrompt: string;
   prompt: string;
   deadlineAt: Date;
@@ -604,7 +607,7 @@ export interface Database {
     input: CreateTriggerRunInput,
   ): Promise<{ run: TriggerRunRecord; created: boolean }>;
   findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
-  findTriggerRunByTriggerId(triggerId: string): Promise<TriggerRunRecord | undefined>;
+  findTriggerRunsByTriggerId(triggerId: string): Promise<TriggerRunRecord[]>;
   findWorkflowStepRunById(id: string): Promise<WorkflowStepRunRecord | undefined>;
   findWorkflowStepRunByTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord | undefined>;
   findAgentExecutionByWorkflowStepRunId(

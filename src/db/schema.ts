@@ -295,6 +295,7 @@ export const triggerRuns = pgTable(
     projectId: uuid("project_id").notNull(),
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
     triggerId: uuid("trigger_id").notNull(),
+    configuredTriggerName: text("configured_trigger_name").notNull(),
     status: text().$type<"running" | "succeeded" | "failed" | "timed_out">().notNull(),
     rawPrompt: text("raw_prompt").notNull(),
     prompt: text().notNull(),
@@ -305,7 +306,10 @@ export const triggerRuns = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("trigger_runs_trigger_unique").on(table.triggerId),
+    uniqueIndex("trigger_runs_trigger_configured_unique").on(
+      table.triggerId,
+      table.configuredTriggerName,
+    ),
     index("trigger_runs_status_deadline_idx").on(table.status, table.deadlineAt),
     index("trigger_runs_project_created_idx").on(table.projectId, table.createdAt.desc()),
     check(

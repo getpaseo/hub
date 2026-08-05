@@ -1620,6 +1620,7 @@ export class PaseoHub {
         deliveryKey: z.literal("built-contract-run"),
         triggerId: z.string().uuid(),
         triggerRunId: z.string().uuid(),
+        configuredTriggerName: z.literal("deploy"),
         workflowStatus: z.literal("running"),
       })
       .strict()

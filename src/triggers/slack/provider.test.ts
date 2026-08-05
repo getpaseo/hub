@@ -54,6 +54,53 @@ describe("Slack Phase 1 trigger provider", () => {
       "org-1:T1:add:white_check_mark",
     ]);
   });
+
+  it("keeps a root Slack mention as the reply thread root", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
+      organizationId: "org-1",
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const match = (await provider.match(external(project.id, { threadTs: null })))[0];
+
+    assert.ok(match);
+    assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
+    assert.equal(match.outputContext.threadTs, match.outputContext.messageTs);
+    assert.equal(
+      match.triggerContext.event.slack.trigger_message.created_at,
+      "2023-11-14T22:13:20.000Z",
+    );
+  });
+
+  it("targets Slack failure output at the originating message thread", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
+      organizationId: "org-1",
+    });
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (await provider.match(external(project.id)))[0];
+    assert.ok(match);
+
+    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+    assert.deepEqual(client.messages, [
+      {
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1700000000.000001",
+        content: "Paseo agent failed: boom",
+      },
+    ]);
+  });
 });
 
 function configuration() {
@@ -81,7 +128,7 @@ function configuration() {
   };
 }
 
-function external(projectId: string) {
+function external(projectId: string, overrides: { threadTs?: string | null } = {}) {
   return {
     organizationId: "org-1",
     projectId,
@@ -95,7 +142,7 @@ function external(projectId: string) {
       appId: "A1",
       channelId: "C1",
       messageTs: "1700000000.000001",
-      threadTs: "1700000000.000001",
+      threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
       eventTs: "1700000000.000001",
       eventTime: 1_700_000_001,
       content: "<@UBOT> deploy now",
@@ -107,8 +154,16 @@ function external(projectId: string) {
 
 class RecordingSlackClient implements SlackBotClient {
   reactions: string[] = [];
+  messages: Array<{
+    organizationId: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    content: string;
+  }> = [];
 
-  sendMessage(): Promise<void> {
+  sendMessage(input: (typeof this.messages)[number]): Promise<void> {
+    this.messages.push(input);
     return Promise.resolve();
   }
 

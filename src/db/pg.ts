@@ -529,10 +529,11 @@ class PgDatabase implements Database {
       await client.query("begin");
       const inserted = await client.query<TriggerRunRow>(
         `insert into trigger_runs
-           (id, organization_id, project_id, configuration_revision_id, trigger_id, status,
+           (id, organization_id, project_id, configuration_revision_id, trigger_id,
+            configured_trigger_name, status,
             raw_prompt, prompt, inputs, deadline_at, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, 'running', $6, $7, '{}'::jsonb, $8, $9)
-         on conflict (trigger_id) do nothing
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'running', $7, $8, '{}'::jsonb, $9, $10)
+         on conflict (trigger_id, configured_trigger_name) do nothing
          returning *`,
         [
           input.id ?? null,
@@ -540,6 +541,7 @@ class PgDatabase implements Database {
           input.projectId,
           input.configurationRevisionId,
           input.triggerId,
+          input.configuredTriggerName,
           input.rawPrompt,
           input.prompt,
           input.deadlineAt,
@@ -550,8 +552,10 @@ class PgDatabase implements Database {
       const created = run !== undefined;
       if (run === undefined) {
         const existing = await client.query<TriggerRunRow>(
-          `select * from trigger_runs where trigger_id = $1 for update`,
-          [input.triggerId],
+          `select * from trigger_runs
+           where trigger_id = $1 and configured_trigger_name = $2
+           for update`,
+          [input.triggerId, input.configuredTriggerName],
         );
         run = existing.rows[0];
       }
@@ -585,13 +589,13 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
   }
 
-  async findTriggerRunByTriggerId(triggerId: string) {
+  async findTriggerRunsByTriggerId(triggerId: string) {
     const rows = await query<TriggerRunRow>(
       this.pool,
-      `select * from trigger_runs where trigger_id = $1`,
+      `select * from trigger_runs where trigger_id = $1 order by created_at, id`,
       [triggerId],
     );
-    return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
+    return rows.rows.map(toTriggerRunRecord);
   }
 
   async findWorkflowStepRunById(id: string) {
@@ -1470,8 +1474,18 @@ class PgDatabase implements Database {
   async listTriggersForProject(projectId: string, limit: number) {
     const rows = await query<TriggerRow>(
       this.pool,
-      `select * from triggers where project_id = $1
-       order by received_at desc, id desc limit $2`,
+      `select t.*,
+              coalesce(
+                array_agg(r.configured_trigger_name order by r.created_at, r.id)
+                  filter (where r.id is not null),
+                '{}'::text[]
+              ) as configured_trigger_names
+       from triggers t
+       left join trigger_runs r on r.trigger_id = t.id
+       where t.project_id = $1
+       group by t.id
+       order by t.received_at desc, t.id desc
+       limit $2`,
       [projectId, limit],
     );
     return rows.rows.map(toTriggerRecord);
@@ -2519,6 +2533,7 @@ class PgDatabase implements Database {
                 receipt.payload,
                 receipt.received_at,
                 null::text as matched_trigger_name,
+                null::text[] as configured_trigger_names,
                 receipt.dropped_reason
          from provider_event_receipts receipt
          where receipt.organization_id = $1
@@ -2819,6 +2834,7 @@ export interface TriggerRow extends QueryResultRow {
   payload: unknown;
   received_at: Date;
   matched_trigger_name: string | null;
+  configured_trigger_names?: string[] | null;
   dropped_reason: string | null;
 }
 
@@ -2828,6 +2844,7 @@ interface TriggerRunRow extends QueryResultRow {
   project_id: string;
   configuration_revision_id: string;
   trigger_id: string;
+  configured_trigger_name: string;
   status: TriggerRunRecord["status"];
   raw_prompt: string;
   prompt: string;
@@ -2865,6 +2882,7 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     projectId: row.project_id,
     configurationRevisionId: row.configuration_revision_id,
     triggerId: row.trigger_id,
+    configuredTriggerName: row.configured_trigger_name,
     status: row.status,
     rawPrompt: row.raw_prompt,
     prompt: row.prompt,

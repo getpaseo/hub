@@ -127,6 +127,13 @@
       "when": 1785936904837,
       "tag": "0017_old_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785941223127,
+      "tag": "0018_bent_jack_power",
+      "breakpoints": true
     }
   ]
 }

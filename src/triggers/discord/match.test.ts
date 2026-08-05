@@ -29,6 +29,55 @@ describe("Discord trigger matching", () => {
     );
   });
 
+  it("rejects raw bot-looking content without Discord mention evidence", () => {
+    const config = configFor({ guild: "100", from_users: ["400"] });
+    assert.deepEqual(
+      matchDiscordTriggers(
+        config,
+        createEvent({ content: "<@123456789012345678> ping", mentionedUserIds: [] }),
+        BOT_ID,
+      ),
+      [],
+    );
+  });
+
+  it("accepts a managed bot-role mention and preserves native mention precedence", () => {
+    const config = configFor({ guild: "100", from_users: ["400"], contains: "ping" });
+    assert.equal(
+      matchDiscordTriggers(
+        config,
+        createEvent({
+          content: "<@&987654321098765432> FYI <@123456789012345678> ping",
+          mentionedUserIds: [BOT_ID],
+          mentionedBotRoleIds: ["987654321098765432"],
+        }),
+        BOT_ID,
+      ).length,
+      1,
+    );
+  });
+
+  it("allows an explicitly configured bot author while still requiring the native mention", () => {
+    const config = configFor({ guild: "100", from_users: [BOT_ID] });
+    assert.equal(
+      matchDiscordTriggers(config, createEvent({ authorId: BOT_ID, authorBot: true }), BOT_ID)
+        .length,
+      1,
+    );
+  });
+
+  it("fails closed when a Discord trigger has no from_users allowlist", () => {
+    assert.throws(
+      () => configFor({ guild: "100" }),
+      /requires a non-empty filters\.from_users allowlist/u,
+    );
+  });
+
+  it("matches a guildless trigger from any guild", () => {
+    const config = configFor({ from_users: ["400"] });
+    assert.equal(matchDiscordTriggers(config, createEvent({ guildId: "101" }), BOT_ID).length, 1);
+  });
+
   it("supports parent-channel matching for threads and rejects other guilds", () => {
     const config = configFor({ guild: "100", channels: ["200"], from_users: ["400"] });
     assert.equal(
@@ -74,8 +123,10 @@ function createEvent(
     threadId?: string | null;
     parentChannelId?: string | null;
     authorId?: string;
+    authorBot?: boolean;
     content?: string;
     mentionedUserIds?: string[];
+    mentionedBotRoleIds?: string[];
   } = {},
 ): NormalizedDiscordMessageEvent {
   return {
@@ -87,9 +138,13 @@ function createEvent(
     parentChannelId: overrides.parentChannelId ?? null,
     messageId: "300",
     content: overrides.content ?? `<@${BOT_ID}> ping`,
-    author: { id: overrides.authorId ?? "400", username: "author", bot: false },
+    author: {
+      id: overrides.authorId ?? "400",
+      username: "author",
+      bot: overrides.authorBot ?? false,
+    },
     mentionedUserIds: overrides.mentionedUserIds ?? [BOT_ID],
-    mentionedBotRoleIds: [],
+    mentionedBotRoleIds: overrides.mentionedBotRoleIds ?? [],
     attachments: [],
     referencedMessage: null,
     threadContextMessages: [],

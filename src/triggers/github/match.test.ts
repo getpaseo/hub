@@ -69,6 +69,40 @@ describe("GitHub trigger matching", () => {
       [],
     );
   });
+
+  it("applies the same security filters to pull-request review comments", () => {
+    const config = compileHubConfig({
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "review-comment",
+          on: "github.pull_request_review_comment",
+          max_runtime: "2h",
+          filters: { repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] },
+          steps: [
+            {
+              id: "reply",
+              environment: "runner",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "default" },
+              prompt: [{ text: "Handle it" }],
+            },
+          ],
+        },
+      ],
+    });
+    const event: NormalizedGitHubEvent = {
+      ...createEvent(),
+      type: "pull_request_review_comment",
+      payload: {
+        comment: { id: 999, body: "@paseo review this", user: { login: "boudra" } },
+        sender: { login: "boudra" },
+        pull_request: { head: { ref: "topic" } },
+      },
+    };
+    assert.equal(matchTriggers(config, event).length, 1);
+  });
 });
 
 function configFor(filters: Record<string, unknown>) {
