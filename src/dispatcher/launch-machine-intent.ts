@@ -16,6 +16,7 @@ export interface LaunchMachineIntent {
   organizationId: string;
   projectId: string;
   triggerId: string;
+  workflowStepRunId?: string;
   triggerName: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
@@ -28,6 +29,7 @@ export interface LaunchMachineIntent {
   triggerContext: unknown;
   outputContext: unknown;
   configurationRevisionId: string;
+  deadlineAt?: Date;
   hubConfig: unknown;
 }
 

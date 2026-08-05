@@ -43,7 +43,6 @@ export function createSlackWebhookSource(options: SlackWebhookSourceOptions): Sl
   const handlers = new Set<TriggerHandler>();
 
   return {
-    dispatchMode: "durable-handoff",
     async handle(request) {
       const verified = await verifySlackRequest(request, options);
       if (verified instanceof Response) return verified;

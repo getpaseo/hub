@@ -30,8 +30,6 @@ export function toTriggerRecord(row: TriggerRow): TriggerRecord {
     receivedAt: row.received_at,
     matchedTriggerName: row.matched_trigger_name,
     droppedReason: row.dropped_reason,
-    dispatchPlan: row.dispatch_plan,
-    lifecycleState: row.lifecycle_state,
   };
 }
 
@@ -75,6 +73,7 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     triggerId: row.trigger_id,
     triggerConnectionId: row.trigger_connection_id,
     triggerResourceId: row.trigger_resource_id,
+    workflowStepRunId: row.workflow_step_run_id,
     hubAction: row.hub_action,
     hubActionCompletedAt: row.hub_action_completed_at,
   };

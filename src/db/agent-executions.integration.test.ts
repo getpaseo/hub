@@ -6,6 +6,10 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { createDatabase } from "./pg.js";
 import type { AgentExecutionRecord, Database } from "./types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import type { DurableTrigger } from "../db/types.js";
+import { durableExecutionId } from "../daemons/lifecycle.js";
+import type { TriggerProviderMatch } from "../triggers/index.js";
+import { createDurableWorkflowHandler } from "../workflows/engine.js";
 
 describe("agent execution PostgreSQL repository", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -59,7 +63,7 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
-  it("claims one immutable dispatch plan and advances lifecycle monotonically", async () => {
+  it("persists one run, one step, explicit execution ownership, and idempotent finish", async () => {
     const fixture = await executionFixture(postgres);
     try {
       const trigger = await fixture.database.insertTrigger({
@@ -71,31 +75,131 @@ describe("agent execution PostgreSQL repository", () => {
         payload: {},
         receivedAt: new Date(),
       });
-      const plans = ["first", "second"].map((triggerName) => [
-        launchIntent(trigger.trigger.id, fixture.execution.configurationRevisionId, triggerName),
-      ]);
+      const intent = launchIntent(
+        trigger.trigger.id,
+        fixture.execution.configurationRevisionId,
+        "one-step",
+      );
+      const created = await fixture.database.createTriggerRun({
+        organizationId: "org-1",
+        projectId: fixture.execution.projectId,
+        configurationRevisionId: fixture.execution.configurationRevisionId,
+        triggerId: trigger.trigger.id,
+        rawPrompt: "raw",
+        prompt: intent.prompt,
+        deadlineAt: new Date(Date.now() + 60_000),
+        stepId: "step-one",
+        dispatchIntent: intent,
+      });
+      const step = await fixture.database.findWorkflowStepRunByTriggerRun(created.run.id);
+      assert.ok(step);
+      const execution = await fixture.database.insertAgentExecution({
+        organizationId: "org-1",
+        projectId: fixture.execution.projectId,
+        machineId: fixture.execution.machineId,
+        triggerId: trigger.trigger.id,
+        triggerContext: intent.triggerContext,
+        outputContext: intent.outputContext,
+        configurationRevisionId: fixture.execution.configurationRevisionId,
+        workflowStepRunId: step.id,
+        launchIntent: intent,
+      });
+      await fixture.database.linkWorkflowStepRunExecution(step.id, execution.id);
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(step.id))?.agentExecutionId,
+        execution.id,
+      );
+      await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
+        result: { status: "succeeded" },
+      });
+      const first = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+        status: "succeeded",
+      });
+      const second = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+        status: "succeeded",
+      });
+      assert.equal(first?.run.status, "succeeded");
+      assert.deepEqual(second, first);
+    } finally {
+      await fixture.database.close();
+    }
+  });
 
-      const claims = await Promise.all(
-        plans.map((plan) => fixture.database.claimTriggerDispatchPlan(trigger.trigger.id, plan)),
+  it("keeps delivery, wakeup lease, deadline, and finish idempotent in PostgreSQL", async () => {
+    const fixture = await executionFixture(postgres);
+    let now = new Date("2026-08-05T12:00:00.000Z");
+    try {
+      const providerMatch = phaseOneMatch(fixture.execution.configurationRevisionId);
+      const { handler, engine } = createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [
+          {
+            name: "test",
+            eventNames: ["test.event"],
+            async match() {
+              return [providerMatch];
+            },
+          },
+        ],
+        now: () => now,
+        leaseMs: 1_000,
+        dispatchLaunchMachineIntent: async (intent) => {
+          const execution = await fixture.database.insertAgentExecution({
+            id: durableExecutionId(intent),
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            machineId: fixture.execution.machineId,
+            triggerId: intent.triggerId,
+            triggerContext: intent.triggerContext,
+            outputContext: intent.outputContext,
+            configurationRevisionId: intent.configurationRevisionId,
+            workflowStepRunId: intent.workflowStepRunId!,
+            deadlineAt: intent.deadlineAt ?? null,
+            launchIntent: intent,
+          });
+          return { execution };
+        },
+      });
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-delivery",
       );
-      assert.equal(claims.filter((claim) => claim.claimed).length, 1);
-      assert.deepEqual(claims[0]?.plan, claims[1]?.plan);
+      const durableTrigger = toDurableTrigger(trigger.trigger);
 
+      await handler(durableTrigger);
+      await handler(durableTrigger);
+
+      const run = await fixture.database.findTriggerRunByTriggerId(trigger.trigger.id);
+      assert.ok(run);
+      const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
+      assert.ok(step);
+      assert.equal(run.deadlineAt.toISOString(), "2026-08-05T12:00:05.000Z");
+      assert.equal((await fixture.database.claimWorkflowWakeup(now, 1_000)) !== undefined, true);
       assert.equal(
-        (await fixture.database.transitionTriggerLifecycle(trigger.trigger.id, "accepted"))
-          .transitioned,
-        true,
+        await fixture.database.claimWorkflowWakeup(new Date(now.getTime() + 500), 1_000),
+        undefined,
       );
-      assert.equal(
-        (await fixture.database.transitionTriggerLifecycle(trigger.trigger.id, "running"))
-          .transitioned,
-        true,
-      );
-      assert.equal(
-        (await fixture.database.transitionTriggerLifecycle(trigger.trigger.id, "accepted"))
-          .transitioned,
-        false,
-      );
+
+      now = new Date("2026-08-05T12:00:04.500Z");
+      await engine.processAvailable();
+      const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+      assert.ok(execution);
+      assert.equal(execution.deadlineAt?.toISOString(), "2026-08-05T12:00:05.000Z");
+      assert.equal(execution.workflowStepRunId, step.id);
+
+      await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
+        result: { status: "succeeded" },
+      });
+      const first = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+        status: "succeeded",
+      });
+      const second = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+        status: "succeeded",
+      });
+      assert.equal(first?.run.status, "succeeded");
+      assert.deepEqual(second, first);
+      assert.equal(await fixture.database.claimWorkflowWakeup(now, 1_000), undefined);
     } finally {
       await fixture.database.close();
     }
@@ -156,6 +260,60 @@ function launchIntent(
     outputContext: {},
     configurationRevisionId,
     hubConfig: {},
+  };
+}
+
+function phaseOneMatch(configurationRevisionId: string): TriggerProviderMatch {
+  const base = launchIntent("trigger-placeholder", configurationRevisionId, "one-step");
+  return {
+    triggerName: "one-step",
+    stepId: "step-one",
+    environmentName: base.environmentName,
+    environment: base.environment,
+    prompt: base.prompt,
+    agent: base.agent,
+    allowOutputs: base.allowOutputs,
+    timeoutMs: 30_000,
+    runTimeoutMs: 5_000,
+    idleTimeoutMs: 5_000,
+    autoArchive: base.autoArchive,
+    triggerContext: base.triggerContext,
+    outputContext: base.outputContext,
+    configurationRevisionId,
+    hubConfig: base.hubConfig,
+  };
+}
+
+async function insertWorkflowTrigger(
+  database: Database,
+  configurationRevisionId: string,
+  deliveryId: string,
+) {
+  return database.insertTrigger({
+    organizationId: "org-1",
+    projectId: "00000000-0000-4000-8000-000000000001",
+    configurationRevisionId,
+    deliveryId,
+    source: "test.event",
+    payload: { prompt: "raw" },
+    receivedAt: new Date("2026-08-05T12:00:00.000Z"),
+  });
+}
+
+function toDurableTrigger(
+  trigger: Awaited<ReturnType<Database["insertTrigger"]>>["trigger"],
+): DurableTrigger {
+  if (trigger.projectId === null) throw new Error("workflow trigger project is required");
+  return {
+    triggerId: trigger.id,
+    organizationId: trigger.organizationId,
+    projectId: trigger.projectId,
+    source: trigger.source,
+    deliveryId: trigger.deliveryId,
+    payload: trigger.payload,
+    receivedAt: trigger.receivedAt,
+    connectionId: trigger.connectionId,
+    resourceId: trigger.resourceId,
   };
 }
 

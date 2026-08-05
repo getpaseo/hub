@@ -1,13 +1,18 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
+
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedDiscordTrigger {
   event: NormalizedDiscordMessageEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
 }
 
 export function matchDiscordTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
   connectionId?: string | null,

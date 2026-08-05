@@ -10,6 +10,7 @@ describe("LaunchMachineIntent", () => {
       triggerId: "trigger-row-1",
       configurationRevisionId: "config-version-1",
       triggerName: "discord-ping",
+      stepId: "reply",
       environmentName: "hetzner-faro",
       environment: {
         kind: "daemon",

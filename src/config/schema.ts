@@ -6,12 +6,9 @@ import {
   rawConfigurationHash,
   parseDurationMs,
   parseCompiledHubConfig,
-  parseExpression,
-  parsePromptText,
   WorktreeTargetSchema,
   type AuthoredEnvironment,
   type AuthoredHubConfig,
-  type AuthoredInputDefinition,
   type AuthoredStep,
   type AuthoredTrigger,
   type AuthoredTriggerFilter,
@@ -28,14 +25,11 @@ export {
   rawConfigurationHash,
   parseDurationMs,
   parseCompiledHubConfig,
-  parseExpression,
-  parsePromptText,
   WorktreeTargetSchema,
 };
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-export type AuthoredInput = AuthoredInputDefinition;
 export type AuthoredAgent = AuthoredStep["agent"];
 export type AgentConfig = AuthoredAgent;
 export type AllowOutput = NonNullable<AuthoredStep["allow_outputs"]>[number];

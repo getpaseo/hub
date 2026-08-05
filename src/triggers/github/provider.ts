@@ -1,20 +1,8 @@
-import type {
-  ConnectionResolver,
-  InterpolationContext,
-  ConnectionResolutionContext,
-} from "../../config/index.js";
+import type { ConnectionResolver } from "../../config/connections.js";
 import type {
   CompiledProjectConfiguration,
   ProjectConfigurationStore,
 } from "../../configuration/store.js";
-import {
-  createInterpolationContext,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  parseTemplate,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
 import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
 import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
@@ -140,17 +128,26 @@ export function createGitHubTriggerProvider(options: {
       "github.pull_request_review_comment",
       "github.push",
     ],
-    async match(trigger) {
-      const event = NormalizedGitHubEventSchema.parse(trigger.payload);
-      const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
+    async match(externalTrigger) {
+      const event = NormalizedGitHubEventSchema.parse(externalTrigger.payload);
+      const stored = await options
+        .configurationStoreForProject(externalTrigger.projectId)
+        .getActive();
       if (stored === undefined) return [];
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
 
-      for (const match of matchTriggers(stored.configuration, event, trigger.connectionId)) {
-        const baseEnvironment = readDaemonEnvironment(
-          stored.configuration,
-          match.trigger.environment,
+      for (const match of matchTriggers(
+        stored.configuration,
+        event,
+        externalTrigger.connectionId,
+      )) {
+        const compiledTrigger = stored.configuration.triggers.find(
+          (candidate) => candidate.name === match.trigger.name,
         );
+        if (compiledTrigger === undefined)
+          throw new Error(`compiled trigger not found: ${match.trigger.name}`);
+        const step = compiledTrigger.steps[0];
+        const baseEnvironment = readDaemonEnvironment(stored.configuration, step.environment);
         const triggerContext: GitHubTriggerContext = {
           provider: "github",
           target: { installationId: event.installationId, repository: event.repo },
@@ -160,25 +157,20 @@ export function createGitHubTriggerProvider(options: {
 
         const environment: DaemonEnvironmentTarget = {
           ...baseEnvironment,
-          ...(match.trigger.env === undefined
-            ? {}
-            : {
-                env: Object.fromEntries(
-                  Object.entries(match.trigger.env).map(([key, value]) => [key, value.value]),
-                ),
-              }),
         };
 
         matches.push({
           triggerName: match.trigger.name,
-          environmentName: match.trigger.environment,
+          stepId: step.id,
+          environmentName: step.environment,
           environment,
-          prompt: match.trigger.prompt.value,
-          agent: cleanTriggerAgent(match.trigger.agent),
-          allowOutputs: cleanAllowedOutputs(match.trigger.allow_outputs ?? []),
-          timeoutMs: parseTriggerTimeoutMs(match.trigger.timeout),
-          idleTimeoutMs: parseTriggerTimeoutMs(match.trigger.idle_timeout),
-          autoArchive: match.trigger.auto_archive,
+          prompt: step.prompt.map((block) => block.value).join("\n"),
+          agent: cleanTriggerAgent(step.agent),
+          allowOutputs: cleanAllowedOutputs(step.allowOutputs),
+          timeoutMs: step.maxRuntimeMs,
+          runTimeoutMs: compiledTrigger.maxRuntimeMs,
+          idleTimeoutMs: step.idleTimeoutMs,
+          autoArchive: step.autoArchive,
           triggerContext,
           outputContext: triggerContext,
           configurationRevisionId: stored.revision.id,
@@ -219,47 +211,15 @@ export function createGitHubTriggerProvider(options: {
       state.tokens.add(token);
       state.pendingMints += 1;
       try {
-        const projectConnections = options.connectionsForProject?.(launch.projectId);
-        const context = buildInterpolationContext(
-          launch.triggerContext.event,
-          projectConnections === undefined
-            ? undefined
-            : (connectionSlug, value) =>
-                projectConnections(connectionSlug, value, {
-                  executionId: launch.executionId,
-                  registerToken: (resolvedToken) =>
-                    registerExecutionToken(
-                      options.executionTokens,
-                      launch.executionId,
-                      state,
-                      resolvedToken,
-                    ),
-                } satisfies ConnectionResolutionContext),
-        );
-        const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
-          interpolateTemplate(parseTemplate(launch.prompt), context),
-          interpolateRecord(
-            launch.environmentEnv === undefined
-              ? undefined
-              : Object.fromEntries(
-                  Object.entries(launch.environmentEnv).map(([key, value]) => [
-                    key,
-                    parseTemplate(value),
-                  ]),
-                ),
-            context,
-          ),
-          launch.environmentWorktree === undefined
-            ? undefined
-            : interpolateWorktree(launch.environmentWorktree, context),
-        ]);
         if (state.terminal) {
           throw new Error(`cannot materialize terminal execution ${launch.executionId}`);
         }
         return {
-          prompt,
-          environmentEnv: { ...environmentEnv, GH_TOKEN: token },
-          ...(environmentWorktree === undefined ? {} : { environmentWorktree }),
+          prompt: launch.prompt,
+          environmentEnv: { ...launch.environmentEnv, GH_TOKEN: token },
+          ...(launch.environmentWorktree === undefined
+            ? {}
+            : { environmentWorktree: launch.environmentWorktree }),
         };
       } finally {
         state.pendingMints -= 1;
@@ -314,19 +274,6 @@ function deleteEmptyExecutionTokenState(
   }
 }
 
-async function registerExecutionToken(
-  executionTokens: GitHubExecutionTokenAuth,
-  executionId: string,
-  state: ExecutionTokenState,
-  token: string,
-): Promise<void> {
-  if (state.terminal) {
-    await revokeExecutionTokens(executionTokens, executionId, [token]);
-    return;
-  }
-  state.tokens.add(token);
-}
-
 async function revokeExecutionTokens(
   executionTokens: GitHubExecutionTokenAuth,
   executionId: string,
@@ -353,13 +300,6 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
     );
   });
   return Promise.race([operation, deadline]).finally(() => clearTimeout(timeout));
-}
-
-function buildInterpolationContext(
-  event: GitHubMergeData,
-  connections: ConnectionResolver | undefined,
-): InterpolationContext {
-  return createInterpolationContext(event, connections);
 }
 
 function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {

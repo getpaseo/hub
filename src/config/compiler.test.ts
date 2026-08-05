@@ -4,543 +4,203 @@ import {
   compileHubConfig,
   compiledConfigurationHash,
   parseCompiledHubConfig,
-  parseExpression,
   rawConfigurationHash,
-  type AuthoredHubConfig,
-  type CompiledHubConfig,
 } from "./compiler.js";
-import * as configExports from "./index.js";
 
-describe("Hub configuration compiler", () => {
-  it("compiles the canonical step-based workflow contract", () => {
-    const compiled = compileHubConfig(canonicalConfiguration);
+const environment = { name: "runner", kind: "docker" as const, image: "paseo/test" };
 
-    assert.equal(compiled.triggers[0]?.name, "chat-request");
-    assert.equal(compiled.triggers[0]?.maxRuntimeMs, 2 * 60 * 60_000);
-    assert.deepEqual(compiled.triggers[0]?.inputs["repo"], {
-      type: "string",
-      required: false,
-      choices: ["paseo", "hub"],
-    });
-    assert.equal(compiled.triggers[0]?.steps[0]?.maxRuntimeMs, 2 * 60_000);
-    assert.equal(compiled.triggers[0]?.steps[0]?.idleTimeoutMs, 30_000);
-    assert.deepEqual(compiled.triggers[0]?.steps[0]?.prompt[0], {
-      kind: "include",
-      path: "classify.md",
-    });
-    assert.equal(compiled.triggers[0]?.steps[0]?.prompt[1]?.kind, "text");
-    assert.equal(compiled.triggers[0]?.steps[0]?.if?.kind, "binary");
-    assert.equal(compiled.triggers[0]?.values["repo"]?.kind, "binary");
-    assert.notEqual(Object.isFrozen(compiled), false);
-  });
+function configuration(overrides: Record<string, unknown> = {}) {
+  return {
+    environments: [environment],
+    triggers: [
+      {
+        name: "run",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "work",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex", model: "small" },
+            prompt: [{ text: "Do the work." }],
+            allow_outputs: [{ type: "manual.reply", max: 2 }],
+            auto_archive: true,
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
 
-  it("parses JSON literals and the supported operator grammar without evaluation", () => {
-    assert.deepEqual(parseExpression('${{ {"repo":"hub"} }}'), {
-      kind: "literal",
-      value: { repo: "hub" },
-    });
-    assert.equal(parseExpression("${{ ! (true == false) }}").kind, "unary");
+describe("Phase 1 workflow compiler", () => {
+  it("compiles one inline text step and preserves the complete contract", () => {
+    const compiled = compileHubConfig(configuration());
+    const trigger = compiled.triggers[0]!;
+    const step = trigger.steps[0];
+
+    assert.equal(trigger.maxRuntimeMs, 3_600_000);
+    assert.equal(step.maxRuntimeMs, 600_000);
+    assert.equal(step.idleTimeoutMs, 60_000);
+    assert.deepEqual(step.prompt, [{ kind: "text", value: "Do the work." }]);
+    assert.deepEqual(step.allowOutputs, [{ type: "manual.reply", max: 2 }]);
+    assert.equal(step.autoArchive, true);
+    assert.equal(Object.isFrozen(compiled), true);
+    assert.equal(Object.isFrozen(step), true);
   });
 
   it.each([
-    "environment",
-    "agent",
-    "prompt",
-    "timeout",
-    "idle_timeout",
-    "auto_archive",
-    "allow_outputs",
-  ])("rejects removed trigger-level %s with a migration hint", (field) => {
-    const configuration = cloneCanonicalConfiguration();
-    const trigger = configuration["triggers"][0]!;
-    Object.assign(trigger, { [field]: field === "agent" ? { provider: "codex" } : "removed" });
-
+    ["environment", "trigger-level environment"],
+    ["agent", "trigger-level agent"],
+    ["prompt", "trigger-level prompt"],
+    ["idle_timeout", "trigger-level idle_timeout"],
+    ["auto_archive", "trigger-level auto_archive"],
+    ["allow_outputs", "trigger-level allow_outputs"],
+  ])("rejects old trigger-level %s syntax", (field, message) => {
     assert.throws(
-      () => compileHubConfig(configuration),
-      field === "timeout" ? /timeout.*max_runtime/iu : new RegExp(`${field}.*step`, "iu"),
+      () =>
+        compileHubConfig(
+          configuration({ triggers: [{ ...configuration().triggers[0], [field]: "old" }] }),
+        ),
+      new RegExp(message, "u"),
     );
   });
 
-  it("rejects timeout and points authors at max_runtime", () => {
-    const configuration = cloneCanonicalConfiguration();
-    Object.assign(configuration["triggers"][0]!, { timeout: "1h" });
-
-    assert.throws(() => compileHubConfig(configuration), /timeout.*max_runtime/iu);
-  });
-
-  it("rejects timeout nested on a step with direct max_runtime guidance", () => {
-    const configuration = cloneCanonicalConfiguration();
-    Object.assign(configuration["triggers"][0]!["steps"][0]!, { timeout: "1m" });
-
-    assert.throws(() => compileHubConfig(configuration), /timeout.*max_runtime/iu);
-  });
-
-  it("allows an input named repo when it is used only in prompt text", () => {
-    const configuration = cloneCanonicalConfiguration();
-    const trigger = configuration["triggers"][0]!;
-    trigger["inputs"] = {
-      repo: { type: "string" },
-      agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
-    };
-    delete trigger["values"];
-    delete trigger["steps"][0]!["if"];
-    delete trigger["steps"][1]!["if"];
-    trigger["steps"][0]!["prompt"].push({ text: "Repo hint: ${{ paseo.inputs.repo }}" });
-
-    assert.doesNotThrow(() => compileHubConfig(configuration));
-  });
-
-  it("requires choices when an arbitrary-named input selects an agent", () => {
-    const configuration = cloneCanonicalConfiguration();
-    const trigger = configuration["triggers"][0]!;
-    trigger["inputs"] = {
-      agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
-      selector: { type: "string" },
-    };
-    delete trigger["values"];
-    delete trigger["steps"][0]!["if"];
-    delete trigger["steps"][1]!["if"];
-    trigger["steps"][1]!["agent"]["provider"] = "${{ paseo.inputs.selector }}";
-
-    assert.throws(() => compileHubConfig(configuration), /finite choices/iu);
-  });
-
-  it.each(["slack.mention", "github.issue_comment", "discord.mention"])(
-    "requires non-empty from_users for externally sourced %s triggers",
-    (event) => {
-      const configuration = cloneCanonicalConfiguration();
-      const trigger = configuration["triggers"][0]!;
-      trigger["on"] = event;
-      delete trigger["filters"];
-
-      assert.throws(() => compileHubConfig(configuration), /from_users/iu);
-    },
-  );
-
-  it("does not require from_users for manual.run", () => {
-    const configuration = cloneCanonicalConfiguration();
-    const trigger = configuration["triggers"][0]!;
-    trigger["on"] = "manual.run";
-    delete trigger["filters"];
-
-    assert.doesNotThrow(() => compileHubConfig(configuration));
-  });
-
-  it("rejects an empty from_users allowlist for externally sourced triggers", () => {
-    const configuration = cloneCanonicalConfiguration();
-    configuration["triggers"][0]!["filters"] = { from_users: [] };
-
-    assert.throws(() => compileHubConfig(configuration), /from_users/iu);
-  });
-
-  it("rejects organization routing IDs in authored filters", () => {
-    const configuration = cloneCanonicalConfiguration();
-    const filters = configuration["triggers"][0]!["filters"];
-    if (filters === undefined) throw new Error("canonical trigger filters are missing");
-    Object.assign(filters, {
-      connectionId: "00000000-0000-4000-8000-000000000001",
-      resourceId: "100",
-    });
-
-    assert.throws(() => compileHubConfig(configuration), /connectionId|resourceId/iu);
-  });
-
-  it.each([
-    [
-      "duplicate step IDs",
-      (config: AuthoredHubConfig) => {
-        const trigger = config["triggers"][0]!;
-        const steps = trigger["steps"];
-        steps[1] = { ...steps[1]!, id: steps[0]!.id };
-      },
-    ],
-    [
-      "unknown step references",
-      (config: AuthoredHubConfig) => {
-        const trigger = config["triggers"][0]!;
-        trigger["values"] = { ...trigger["values"], repo: "${{ steps.missing.outputs.repo }}" };
-      },
-    ],
-    [
-      "forward step references",
-      (config: AuthoredHubConfig) => {
-        const steps = config["triggers"][0]!["steps"];
-        steps[0]!["if"] = "${{ steps.work-on-hub.outputs.repo == 'hub' }}";
-        steps[1]!["output"] = {
-          schema: { type: "object", properties: { repo: { type: "string" } } },
-        };
-      },
-    ],
-    [
-      "value cycles",
-      (config: AuthoredHubConfig) => {
-        config["triggers"][0]!["values"] = {
-          first: "${{ values.second }}",
-          second: "${{ values.first }}",
-        };
-      },
-    ],
-    [
-      "invalid choices",
-      (config: AuthoredHubConfig) => {
-        const input = config["triggers"][0]!["inputs"]?.["agent"];
-        if (input === undefined) throw new Error("canonical agent input is missing");
-        Object.assign(input, { choices: ["codex", 3] });
-      },
-    ],
-    [
-      "unsafe prompt includes",
-      (config: AuthoredHubConfig) => {
-        config["triggers"][0]!["steps"][0]!["prompt"] = [{ include: "../secret.md" }];
-      },
-    ],
-  ])("rejects %s", (_name, mutate) => {
-    const configuration = cloneCanonicalConfiguration();
-    mutate(configuration);
-    assert.throws(() => compileHubConfig(configuration));
-  });
-
-  it("changes the compiled contract hash when a step changes", () => {
-    const first = compileHubConfig(canonicalConfiguration);
-    const changed = cloneCanonicalConfiguration();
-    changed["triggers"][0]!["steps"][0]!["max_runtime"] = "3m";
-    const second = compileHubConfig(changed);
-
-    assert.notEqual(compiledConfigurationHash(first), compiledConfigurationHash(second));
-  });
-
-  it("keeps raw revision hashing separate from compiled contract hashing", () => {
-    const compiled = compileHubConfig(canonicalConfiguration);
-
-    assert.equal(
-      rawConfigurationHash(canonicalConfiguration),
-      rawConfigurationHash(cloneCanonicalConfiguration()),
-    );
-    assert.notEqual(
-      rawConfigurationHash(canonicalConfiguration),
-      compiledConfigurationHash(compiled),
-    );
-    const malformed = structuredClone(compiled);
-    Object.assign(malformed["triggers"][0]!, { maxRuntimeMs: "2h" });
+  it.each(["inputs", "values"])("rejects later-phase trigger field %s", (field) => {
     assert.throws(
-      () => compiledConfigurationHash(malformed),
+      () =>
+        compileHubConfig(
+          configuration({ triggers: [{ ...configuration().triggers[0], [field]: {} }] }),
+        ),
+      new RegExp(`${field}.*Phase 1`, "u"),
+    );
+  });
+
+  it.each(["if", "output"])("rejects later-phase step field %s", (field) => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [{ ...trigger, steps: [{ ...step, [field]: {} }] }],
+        }),
+      new RegExp(`${field}.*Phase 1`, "u"),
+    );
+  });
+
+  it("rejects includes, expressions, and multiple steps", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [{ ...trigger, steps: [{ ...step, prompt: [{ include: "developer.md" }] }] }],
+        }),
+      /prompt.*include.*Phase 1/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            { ...trigger, steps: [{ ...step, agent: { provider: "${{ values.agent }}" } }] },
+          ],
+        }),
+      /expressions.*Phase 1/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({ ...configuration(), triggers: [{ ...trigger, steps: [step, step] }] }),
+      /exactly one.*Phase 1/iu,
+    );
+  });
+
+  it("rejects timeout at every authored nesting level", () => {
+    assert.throws(
+      () => compileHubConfig({ ...configuration(), timeout: "1m" }),
+      /timeout.*max_runtime/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...configuration().triggers[0],
+              steps: [{ ...configuration().triggers[0]!.steps[0], timeout: "1m" }],
+            },
+          ],
+        }),
+      /timeout.*max_runtime/iu,
+    );
+  });
+
+  it("rejects duplicate IDs, unknown environments, and unsafe external launches", () => {
+    assert.throws(
+      () => compileHubConfig({ ...configuration(), environments: [environment, environment] }),
+      /duplicate environment/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...configuration().triggers[0],
+              steps: [{ ...configuration().triggers[0]!.steps[0], environment: "missing" }],
+            },
+          ],
+        }),
+      /unknown environment/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [{ ...configuration().triggers[0], on: "slack.mention" }],
+        }),
+      /from_users/iu,
+    );
+  });
+
+  it("re-establishes the single-step contract when parsing stored JSON", () => {
+    const compiled = compileHubConfig(configuration());
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.throws(
+      () =>
+        parseCompiledHubConfig({ ...compiled, triggers: [{ ...compiled.triggers[0], steps: [] }] }),
+      /invalid compiled workflow contract/iu,
+    );
+    assert.throws(
+      () =>
+        parseCompiledHubConfig({
+          ...compiled,
+          triggers: [{ ...compiled.triggers[0], filters: { resourceId: "9" } }],
+        }),
       /invalid compiled workflow contract/iu,
     );
   });
 
-  it("does not expose the removed trigger execution parser through the config module", () => {
-    assert.equal("parseTriggerTimeoutMs" in configExports, false);
-    assert.equal("TriggerSchema" in configExports, false);
-  });
-
-  it("strictly validates stored compiled contracts", () => {
-    const compiled = compileHubConfig(canonicalConfiguration);
-    const malformed = structuredClone(compiled);
-    Object.assign(malformed["triggers"][0]!, { maxRuntimeMs: "2h" });
-
-    assert.throws(() => parseCompiledHubConfig(malformed), /invalid compiled workflow contract/iu);
-  });
-
-  it("parses resolved routing evidence in a compiled contract", () => {
-    const compiled = structuredClone(compileHubConfig(canonicalConfiguration));
-    const filter = compiled["triggers"][0]!["filters"];
-    if (filter === undefined) throw new Error("canonical trigger filters are missing");
-    compiled["triggers"][0]!["filters"] = {
-      ...filter,
-      connectionId: "00000000-0000-4000-8000-000000000001",
-      resourceId: "100",
-    };
-
-    const parsed = parseCompiledHubConfig(compiled);
-    assert.equal(
-      parsed["triggers"][0]!["filters"]?.connectionId,
-      "00000000-0000-4000-8000-000000000001",
-    );
-    assert.equal(parsed["triggers"][0]!["filters"]?.resourceId, "100");
-  });
-
-  it.each([
-    [
-      "duplicate environment IDs",
-      (configuration: CompiledHubConfig) => {
-        configuration["environments"] = [
-          ...configuration["environments"],
-          configuration["environments"][0]!,
-        ];
-      },
-    ],
-    [
-      "duplicate trigger IDs",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"] = [...configuration["triggers"], configuration["triggers"][0]!];
-      },
-    ],
-    [
-      "duplicate step IDs",
-      (configuration: CompiledHubConfig) => {
-        const trigger = configuration["triggers"][0]!;
-        configuration["triggers"] = [
-          {
-            ...trigger,
-            steps: [...trigger["steps"], trigger["steps"][0]!],
-          },
-          ...configuration["triggers"].slice(1),
-        ];
-      },
-    ],
-    [
-      "invalid input default relationship",
-      (configuration: CompiledHubConfig) => {
-        const input = configuration["triggers"][0]!["inputs"]["repo"];
-        if (input === undefined) throw new Error("canonical repo input is missing");
-        Object.assign(input, {
-          required: true,
-          default: "hub",
-        });
-      },
-    ],
-    [
-      "invalid input choices",
-      (configuration: CompiledHubConfig) => {
-        const input = configuration["triggers"][0]!["inputs"]["repo"];
-        if (input === undefined) throw new Error("canonical repo input is missing");
-        Object.assign(input, {
-          choices: ["paseo", "paseo"],
-        });
-      },
-    ],
-    [
-      "invalid timeout relationship",
-      (configuration: CompiledHubConfig) => {
-        Object.assign(configuration["triggers"][0]!["steps"][0]!, {
-          idleTimeoutMs: 120_000,
-          maxRuntimeMs: 60_000,
-        });
-      },
-    ],
-    [
-      "unknown environment reference",
-      (configuration: CompiledHubConfig) => {
-        Object.assign(configuration["triggers"][0]!["steps"][0]!, {
-          environment: "missing-environment",
-        });
-      },
-    ],
-    [
-      "unknown step reference",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"][0]!["values"] = {
-          repo: parseExpression("${{ steps.missing.outputs.repo }}"),
-        };
-      },
-    ],
-    [
-      "value cycle",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"][0]!["values"] = {
-          first: parseExpression("${{ values.second }}"),
-          second: parseExpression("${{ values.first }}"),
-        };
-      },
-    ],
-    [
-      "invalid output schema",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"][0]!["steps"][0]!["outputSchema"] = {
-          type: "not-a-json-schema-type",
-        };
-      },
-    ],
-    [
-      "invalid allow_outputs type",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"][0]!["steps"][1]!["allowOutputs"] = [
-          { type: "not-an-event", max: 1 },
-        ];
-      },
-    ],
-    [
-      "missing external from_users",
-      (configuration: CompiledHubConfig) => {
-        delete configuration["triggers"][0]!["filters"];
-      },
-    ],
-    [
-      "resource ID without connection ID",
-      (configuration: CompiledHubConfig) => {
-        const filter = configuration["triggers"][0]!["filters"];
-        if (filter === undefined) throw new Error("canonical trigger filters are missing");
-        configuration["triggers"][0]!["filters"] = { ...filter, resourceId: "100" };
-      },
-    ],
-    [
-      "invalid compiled connection ID",
-      (configuration: CompiledHubConfig) => {
-        const filter = configuration["triggers"][0]!["filters"];
-        if (filter === undefined) throw new Error("canonical trigger filters are missing");
-        configuration["triggers"][0]!["filters"] = {
-          ...filter,
-          connectionId: "not-a-uuid",
-          resourceId: "100",
-        };
-      },
-    ],
-    [
-      "unsafe compiled prompt include",
-      (configuration: CompiledHubConfig) => {
-        configuration["triggers"][0]!["steps"][0]!["prompt"] = [
-          { kind: "include", path: "../secret.md" },
-        ];
-      },
-    ],
-  ])("re-establishes %s at the stored-contract boundary", (_name, mutate) => {
-    const configuration = structuredClone(compileHubConfig(canonicalConfiguration));
-    mutate(configuration);
-
-    assert.throws(() => parseCompiledHubConfig(configuration));
-  });
-
-  it("rejects unsupported JSON Schema keywords at the compiler boundary", () => {
-    const configuration = cloneCanonicalConfiguration();
-    configuration["triggers"][0]!["steps"][0]!["output"] = {
-      schema: { type: "object", unsupportedKeyword: true },
-    };
-
-    assert.throws(() => compileHubConfig(configuration), /invalid JSON Schema/iu);
-  });
-
-  it("accepts output paths through valid JSON Schema composition", () => {
-    const configuration = cloneCanonicalConfiguration();
-    configuration["triggers"][0]!["steps"][0]!["output"] = {
-      schema: {
-        $defs: {
-          classification: {
-            type: "object",
-            required: ["repo"],
-            properties: {
-              repo: { type: "string" },
-              timeout: { type: "string" },
+  it("separates raw and validated compiled hashing", () => {
+    const compiled = compileHubConfig(configuration());
+    assert.notEqual(rawConfigurationHash(configuration()), compiledConfigurationHash(compiled));
+    assert.notEqual(
+      compiledConfigurationHash(compiled),
+      compiledConfigurationHash(
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...configuration().triggers[0],
+              steps: [{ ...configuration().triggers[0]!.steps[0], prompt: [{ text: "changed" }] }],
             },
-          },
-        },
-        allOf: [{ $ref: "#/$defs/classification" }],
-        oneOf: [{ type: "object" }, { type: "array" }],
-      },
-    };
-
-    assert.doesNotThrow(() => compileHubConfig(configuration));
-  });
-
-  it.each(["if", "prompt", "agent"])(
-    "rejects transitive forward outputs at the step %s use site",
-    (useSite) => {
-      const configuration = cloneCanonicalConfiguration();
-      const trigger = configuration["triggers"][0]!;
-      trigger["values"] = {
-        ...trigger["values"],
-        later: "${{ steps.work-on-hub.outputs.repo }}",
-      };
-      trigger["steps"][1]!["output"] = {
-        schema: { type: "object", properties: { repo: { type: "string" } } },
-      };
-      if (useSite === "if") trigger["steps"][0]!["if"] = "${{ values.later == 'hub' }}";
-      if (useSite === "prompt") trigger["steps"][0]!["prompt"] = [{ text: "${{ values.later }}" }];
-      if (useSite === "agent") trigger["steps"][0]!["agent"]["provider"] = "${{ values.later }}";
-
-      assert.throws(() => compileHubConfig(configuration), /forward step reference/iu);
-    },
-  );
-
-  it.each([
-    [
-      "invalid IDs",
-      (config: AuthoredHubConfig) => {
-        Object.assign(config["triggers"][0]!, { name: "Not an ID" });
-      },
-    ],
-    [
-      "invalid expressions",
-      (config: AuthoredHubConfig) => {
-        config["triggers"][0]!["values"] = { repo: "${{ paseo.inputs.repo + 'hub' }}" };
-      },
-    ],
-    [
-      "invalid JSON schemas",
-      (config: AuthoredHubConfig) => {
-        config["triggers"][0]!["steps"][0]!["output"] = {
-          schema: { type: "not-a-json-schema-type" },
-        };
-      },
-    ],
-    [
-      "invalid durations",
-      (config: AuthoredHubConfig) => {
-        config["triggers"][0]!["max_runtime"] = "0s";
-      },
-    ],
-  ])("rejects %s", (_name, mutate) => {
-    const configuration = cloneCanonicalConfiguration();
-    mutate(configuration);
-    assert.throws(() => compileHubConfig(configuration));
+          ],
+        }),
+      ),
+    );
   });
 });
-
-function cloneCanonicalConfiguration(): AuthoredHubConfig {
-  return structuredClone(canonicalConfiguration);
-}
-
-const canonicalConfiguration = {
-  environments: [
-    { name: "classifier", kind: "docker", image: "paseo/classifier" },
-    { name: "hub-devbox", kind: "daemon", daemon: "hub-devbox", cwd: "/workspace" },
-  ],
-  triggers: [
-    {
-      name: "chat-request",
-      on: "slack.mention",
-      max_runtime: "2h",
-      filters: { from_users: ["U123456"] },
-      inputs: {
-        repo: { type: "string", required: false, choices: ["paseo", "hub"] },
-        agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
-      },
-      values: {
-        repo: "${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}",
-      },
-      steps: [
-        {
-          id: "classify",
-          if: "${{ paseo.inputs.repo == null }}",
-          environment: "classifier",
-          max_runtime: "2m",
-          idle_timeout: "30s",
-          agent: { provider: "codex", model: "small-fast-model", mode: "read-only" },
-          prompt: [{ include: "classify.md" }, { text: "Request: ${{ paseo.prompt }}" }],
-          output: {
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              required: ["repo"],
-              properties: { repo: { enum: ["paseo", "hub"] } },
-            },
-          },
-        },
-        {
-          id: "work-on-hub",
-          if: "${{ values.repo == 'hub' }}",
-          environment: "hub-devbox",
-          max_runtime: "90m",
-          idle_timeout: "10m",
-          auto_archive: true,
-          agent: { provider: "${{ paseo.inputs.agent }}" },
-          prompt: [
-            { include: "developer.md" },
-            { include: "chat-progress.md" },
-            { text: "User request: ${{ paseo.prompt }}" },
-          ],
-          allow_outputs: [{ type: "slack.reply", max: 5 }],
-        },
-      ],
-    },
-  ],
-} satisfies AuthoredHubConfig;

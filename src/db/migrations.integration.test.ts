@@ -228,7 +228,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 16,
+      drizzleMigrations: 18,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -620,10 +620,18 @@ describe("database migration application", () => {
           {
             name: "github-trigger",
             on: "github.push",
-            environment: "runner",
+            max_runtime: "2h",
             filters: { from_users: ["user-1"] },
-            agent: { provider: "test", mode: "default" },
-            prompt: "Handle the push",
+            steps: [
+              {
+                id: "push-step",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "test", mode: "default" },
+                prompt: [{ text: "Handle the push" }],
+              },
+            ],
           },
         ],
       };

@@ -388,10 +388,10 @@ export class PaseoHub {
        ), activity as (
          insert into triggers
            (organization_id, project_id, configuration_revision_id, receipt_id, delivery_id, source, payload,
-            matched_trigger_name, lifecycle_state)
+            matched_trigger_name)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-                receipt.delivery_id,
-                'manual.run', '{}'::jsonb, 'Browser history', 'succeeded'
+               receipt.delivery_id,
+                'manual.run', '{}'::jsonb, 'Browser history'
          from revision
          join receipt on receipt.delivery_id = concat('browser-history-', revision.project_id)
          returning id, project_id, organization_id, configuration_revision_id
@@ -491,38 +491,41 @@ export class PaseoHub {
     await this.deliverGitHub("orbit-github", 84, "orbit/widgets", "alice");
     await this.deliverDiscord("302", "200", "800");
 
-    const dispatches = z
-      .array(
-        z.object({
-          delivery_id: z.string(),
-          trigger_organization_id: z.string(),
-          config_organization_id: z.string(),
-          machine_organization_id: z.string(),
-          daemon_id: z.string(),
-          daemon_slug: z.literal("shared-dispatch"),
-          execution_id: z.string().uuid(),
-        }),
-      )
-      .parse(
-        await this.queryDatabaseRows(
-          this.primary.databaseUrl,
-          `select t.delivery_id,
-                  t.organization_id as trigger_organization_id,
-                  c.organization_id as config_organization_id,
-                  m.org_id as machine_organization_id,
-                  d.id::text as daemon_id,
-                  d.slug as daemon_slug,
-                  e.id::text as execution_id
-           from triggers t
-           join agent_executions e on e.trigger_id = t.id
-           join project_configuration_revisions c on c.id = e.configuration_revision_id
-           join machines m on m.id = e.machine_id
-           join daemons d on d.machine_id = m.id
-           where t.delivery_id = any($1::text[])
-           order by t.delivery_id`,
-          [["acme-github", "discord-301", "orbit-github", "discord-302"]],
+    const dispatchesSchema = z.array(
+      z.object({
+        delivery_id: z.string(),
+        trigger_organization_id: z.string(),
+        config_organization_id: z.string(),
+        machine_organization_id: z.string(),
+        daemon_id: z.string(),
+        daemon_slug: z.literal("shared-dispatch"),
+        execution_id: z.string().uuid(),
+      }),
+    );
+    const dispatches = await retryUntil(
+      async () =>
+        dispatchesSchema.parse(
+          await this.queryDatabaseRows(
+            this.primary.databaseUrl,
+            `select t.delivery_id,
+                    t.organization_id as trigger_organization_id,
+                    c.organization_id as config_organization_id,
+                    m.org_id as machine_organization_id,
+                    d.id::text as daemon_id,
+                    d.slug as daemon_slug,
+                    e.id::text as execution_id
+             from triggers t
+             join agent_executions e on e.trigger_id = t.id
+             join project_configuration_revisions c on c.id = e.configuration_revision_id
+             join machines m on m.id = e.machine_id
+             join daemons d on d.machine_id = m.id
+             where t.delivery_id = any($1::text[])
+             order by t.delivery_id`,
+            [["acme-github", "discord-301", "orbit-github", "discord-302"]],
+          ),
         ),
-      );
+      (rows) => rows.length === 4,
+    );
     expect(dispatches).toEqual([
       dispatchEvidence("acme-github", acmeId, acmeDaemon.daemonId),
       dispatchEvidence("discord-301", acmeId, acmeDaemon.daemonId),
@@ -1616,14 +1619,25 @@ export class PaseoHub {
       .object({
         deliveryKey: z.literal("built-contract-run"),
         triggerId: z.string().uuid(),
-        executionId: z.string().uuid(),
-        status: z.literal("running"),
-        daemonId: z.string().uuid(),
-        agentId: z.string().min(1),
+        triggerRunId: z.string().uuid(),
+        workflowStatus: z.literal("running"),
       })
       .strict()
       .parse(await response.json());
-    return { executionId: body.executionId };
+    const execution = await retryUntil(
+      async () =>
+        z
+          .array(z.object({ id: z.string().uuid() }))
+          .parse(
+            await this.queryDatabaseRows(
+              application.databaseUrl,
+              "select id from agent_executions where trigger_id = $1",
+              [body.triggerId],
+            ),
+          ),
+      (rows) => rows.length === 1,
+    );
+    return { executionId: execution[0]!.id };
   }
 
   private async completeExecution(
@@ -3819,18 +3833,34 @@ function providerDispatchConfiguration(repo: string, guildId: string) {
       {
         name: "github-dispatch",
         on: "github.issue_comment",
-        environment: "shared",
+        max_runtime: "1h",
         filters: { repo, from_users: ["alice"] },
-        agent: { provider: "opencode", mode: "full-access" },
-        prompt: "Handle GitHub tenant dispatch",
+        steps: [
+          {
+            id: "github-dispatch-step",
+            environment: "shared",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "opencode", mode: "full-access" },
+            prompt: [{ text: "Handle GitHub tenant dispatch" }],
+          },
+        ],
       },
       {
         name: "discord-dispatch",
         on: "discord.mention",
-        environment: "shared",
+        max_runtime: "1h",
         filters: { guild: guildId, from_users: ["800"] },
-        agent: { provider: "opencode", mode: "full-access" },
-        prompt: "Handle Discord tenant dispatch",
+        steps: [
+          {
+            id: "discord-dispatch-step",
+            environment: "shared",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "opencode", mode: "full-access" },
+            prompt: [{ text: "Handle Discord tenant dispatch" }],
+          },
+        ],
       },
     ],
   };
@@ -3869,13 +3899,18 @@ function manualConfiguration(daemonSlug: string): string {
     "triggers:",
     "  - name: deploy",
     "    on: manual.run",
-    "    environment: production",
+    "    max_runtime: 1h",
     "    filters:",
     "      from_users: [contract-operator]",
-    "    agent:",
-    "      provider: opencode",
-    "      mode: full-access",
-    '    prompt: "Deploy the contract"',
+    "    steps:",
+    "      - id: deploy-step",
+    "        environment: production",
+    "        max_runtime: 30m",
+    "        idle_timeout: 5m",
+    "        agent:",
+    "          provider: opencode",
+    "          mode: full-access",
+    '        prompt: [{ text: "Deploy the contract" }]',
   ].join("\n");
 }
 
@@ -3883,4 +3918,15 @@ function readSocketData(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString();
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString();
   return Buffer.from(data).toString();
+}
+
+async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 15_000;
+  let value = await read();
+  while (!done(value)) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for durable provider dispatch");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    value = await read();
+  }
+  return value;
 }

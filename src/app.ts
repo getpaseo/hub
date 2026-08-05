@@ -17,8 +17,7 @@ import {
   type DaemonClock,
   type DaemonModule,
 } from "./daemons/index.js";
-import { createDispatcher } from "./dispatcher/index.js";
-import type { LaunchMachineIntent } from "./dispatcher/launch-machine-intent.js";
+import { createDispatcherWithEngine } from "./dispatcher/index.js";
 import type {
   DaemonDispatchLifecycleOptions,
   ExecutionDeadlineClock,
@@ -128,15 +127,11 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
 
   const manualSource =
     options.database === null ? undefined : createManualTriggerSource(options.database);
-  const synchronousDispatchHandler =
-    options.database === null || daemonModule === null
-      ? undefined
-      : (intent: LaunchMachineIntent) => daemonModule.lifecycle.dispatchLaunchMachineIntent(intent);
   const durableDispatchHandler =
     options.database === null || daemonModule === null
       ? undefined
-      : (intents: readonly LaunchMachineIntent[]) =>
-          daemonModule.lifecycle.handoffLaunchMachineIntents(intents);
+      : (intent: Parameters<DaemonModule["lifecycle"]["handoffLaunchMachineIntent"]>[0]) =>
+          daemonModule.lifecycle.handoffLaunchMachineIntent(intent);
   const dispatcherOptions = {
     database: options.database,
     providers,
@@ -144,18 +139,11 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       ? {}
       : { configurationRevisionId: options.configurationRevisionId }),
   };
-  const synchronousDispatcher = createDispatcher({
+  const { handler: workflowDispatcher, engine: workflowEngine } = createDispatcherWithEngine({
     ...dispatcherOptions,
-    ...(synchronousDispatchHandler === undefined
-      ? {}
-      : { dispatchLaunchMachineIntent: synchronousDispatchHandler }),
-  });
-  const durableDispatcher = createDispatcher({
-    ...dispatcherOptions,
-    freezeDispatchPlan: true,
     ...(durableDispatchHandler === undefined
       ? {}
-      : { dispatchLaunchMachineIntents: durableDispatchHandler }),
+      : { dispatchLaunchMachineIntent: durableDispatchHandler }),
   });
   connectDaemonLifecycle(daemons, daemonModule);
   let activeSources: readonly TriggerSource[] = [];
@@ -173,19 +161,14 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         daemonModule?.lifecycle.recoverAgentExecutionDeadlines(),
         daemonModule?.lifecycle.recoverPendingHubActions(),
       ]);
+      workflowEngine.start();
       activeSources = [...(manualSource === undefined ? [] : [manualSource]), ...sources];
-      await Promise.all(
-        activeSources.map(async (source) =>
-          source.start(
-            source.dispatchMode === "durable-handoff" ? durableDispatcher : synchronousDispatcher,
-          ),
-        ),
-      );
+      await Promise.all(activeSources.map(async (source) => source.start(workflowDispatcher)));
     },
     async stop() {
       await Promise.all(activeSources.map(async (source) => source.stop()));
       activeSources = [];
-      await Promise.all([daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
     },
   };
   const operations: HubOperations = {

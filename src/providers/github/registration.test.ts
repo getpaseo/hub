@@ -255,31 +255,9 @@ describe("GitHub registration", () => {
     const secondLaunch = await materialize(provider, second[0], "execution-2");
 
     assert.deepEqual(
-      [firstLaunch.environmentEnv?.["GITHUB_TOKEN"], secondLaunch.environmentEnv?.["GITHUB_TOKEN"]],
-      ["test-execution-token-2", "test-execution-token-4"],
-    );
-    assert.deepEqual(
       [firstLaunch.environmentEnv?.["GH_TOKEN"], secondLaunch.environmentEnv?.["GH_TOKEN"]],
-      ["test-execution-token-1", "test-execution-token-3"],
+      ["test-execution-token-1", "test-execution-token-2"],
     );
-    assert.deepEqual(appAuth.installationTokenMints, [142, 142, 142, 142]);
-  });
-
-  it("reuses one freshly minted GitHub token across placeholders in one execution", async () => {
-    const { provider, appAuth } = await createExecutionProvider(
-      githubTokenConfig({
-        GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}",
-        GH_TOKEN: "prefix-${{ paseo.connections.getpaseo-github.token }}",
-      }),
-    );
-
-    const [execution] = await provider.match(githubExecution("delivery-repeated-token"));
-    const launch = await materialize(provider, execution, "execution-repeated-token");
-
-    assert.deepEqual(launch.environmentEnv, {
-      GITHUB_TOKEN: "test-execution-token-2",
-      GH_TOKEN: "test-execution-token-1",
-    });
     assert.deepEqual(appAuth.installationTokenMints, [142, 142]);
   });
 
@@ -291,7 +269,7 @@ describe("GitHub registration", () => {
 
     await provider.onAgentExecutionTerminal?.("execution-explicit-token", execution.triggerContext);
 
-    assert.deepEqual(appAuth.revocations, ["test-execution-token-1", "test-execution-token-2"]);
+    assert.deepEqual(appAuth.revocations, ["test-execution-token-1"]);
   });
 
   it("revokes a GitHub token resolved by a cross-provider execution", async () => {
@@ -584,9 +562,7 @@ function githubConfiguration() {
   };
 }
 
-function githubTokenConfig(
-  env: Record<string, string> = { GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}" },
-) {
+function githubTokenConfig(_env: Record<string, string> = {}) {
   return {
     environments: [
       {
@@ -600,11 +576,18 @@ function githubTokenConfig(
       {
         name: "github-token",
         on: "github.issue_comment",
-        environment: "daemon",
+        max_runtime: "2h",
         filters: { repo: "acme/app", contains: "@paseo", from_users: ["octocat"] },
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt: "run",
-        env,
+        steps: [
+          {
+            id: "github-step",
+            environment: "daemon",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "claude/opus", mode: "bypassPermissions" },
+            prompt: [{ text: "run" }],
+          },
+        ],
       },
     ],
   };

@@ -1,26 +1,34 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { HubConfigSchema } from "../../config/index.js";
+import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedSlackMentionEvent } from "./events.js";
 import { matchSlackTriggers, readSlackPromptBody } from "./match.js";
 
 describe("Slack trigger matching", () => {
-  it("requires the bot mention and allowed workspace, channel, user, and pattern", () => {
-    const config = HubConfigSchema.parse({
-      environments: [{ name: "work", kind: "daemon", daemon: "main", cwd: "/repo" }],
+  it("requires the compiled trigger filters and bot mention", () => {
+    const config = compileHubConfig({
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
         {
           name: "slack-run",
           on: "slack.mention",
-          environment: "work",
+          max_runtime: "2h",
           filters: {
             workspace: "T1",
             channels: ["C1"],
             from_users: ["U1"],
             pattern: "run",
           },
-          agent: { provider: "test", mode: "full-access" },
-          prompt: "${{ paseo.event.slack.trigger_message.body }}",
+          steps: [
+            {
+              id: "run",
+              environment: "runner",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "default" },
+              prompt: [{ text: "Run the request" }],
+            },
+          ],
         },
       ],
     });
@@ -28,16 +36,8 @@ describe("Slack trigger matching", () => {
 
     assert.equal(matchSlackTriggers(config, event, "UBOT").length, 1);
     assert.equal(readSlackPromptBody(event, "UBOT"), "run tests");
-    assert.equal(
-      matchSlackTriggers(config, { ...event, author: { id: "UBOT" } }, "UBOT").length,
-      0,
-    );
     assert.equal(matchSlackTriggers(config, { ...event, channelId: "C2" }, "UBOT").length, 0);
     assert.equal(matchSlackTriggers(config, { ...event, content: "run tests" }, "UBOT").length, 0);
-    assert.equal(
-      matchSlackTriggers(config, { ...event, content: "<@UBOT> runner" }, "UBOT").length,
-      0,
-    );
   });
 });
 

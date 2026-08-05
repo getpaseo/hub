@@ -1,10 +1,4 @@
 import { z } from "zod";
-import {
-  interpolateRecord,
-  interpolateTemplate,
-  createInterpolationContext,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
 import type {
   CompiledProjectConfiguration,
   ProjectConfigurationStore,
@@ -64,7 +58,8 @@ export function createManualRunProvider(
       if (!trigger) throw new Error("manual_trigger_not_found");
       if (!trigger.filters?.from_users?.includes(payload.actor))
         throw new Error("manual_actor_forbidden");
-      const environment = readEnvironment(stored.configuration.environments, trigger.environment);
+      const step = trigger.steps[0];
+      const environment = readEnvironment(stored.configuration.environments, step.environment);
       const event: ManualMergeData = {
         manual: {
           actor: payload.actor,
@@ -76,24 +71,20 @@ export function createManualRunProvider(
             : { expected_version_id: payload.expectedVersionId }),
         },
       };
-      const context = createInterpolationContext(event);
-      const [prompt, env] = await Promise.all([
-        interpolateTemplate(trigger.prompt, context),
-        interpolateRecord(trigger.env, context),
-      ]);
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,
-        environmentName: trigger.environment,
+        stepId: step.id,
+        environmentName: step.environment,
         environment: {
           ...environment,
-          ...(Object.keys(env).length === 0 ? {} : { env }),
         },
-        prompt,
-        agent: cleanTriggerAgent(trigger.agent),
-        allowOutputs: trigger.allow_outputs ?? [],
-        timeoutMs: parseTriggerTimeoutMs(trigger.timeout),
-        idleTimeoutMs: parseTriggerTimeoutMs(trigger.idle_timeout),
-        autoArchive: trigger.auto_archive,
+        prompt: step.prompt.map((block) => block.value).join("\n"),
+        agent: cleanTriggerAgent(step.agent),
+        allowOutputs: step.allowOutputs,
+        timeoutMs: step.maxRuntimeMs,
+        runTimeoutMs: trigger.maxRuntimeMs,
+        idleTimeoutMs: step.idleTimeoutMs,
+        autoArchive: step.autoArchive,
         triggerContext: {
           provider: "manual",
           deliveryId: external.deliveryId,

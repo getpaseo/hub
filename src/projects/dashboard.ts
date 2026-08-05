@@ -364,7 +364,6 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     receivedAt: trigger.receivedAt.toISOString(),
     matchedTriggerName: trigger.matchedTriggerName,
     droppedReason: trigger.droppedReason,
-    lifecycleState: trigger.lifecycleState,
   };
 }
 

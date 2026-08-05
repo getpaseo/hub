@@ -37,7 +37,7 @@ import { PushPayloadSchema } from "../../auth/github-events.js";
 import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
-import type { ConnectionResolutionContext } from "../../config/interpolation.js";
+import type { ConnectionResolutionContext } from "../../config/connections.js";
 import { createGitHubExecutionTokenRegistry } from "./execution-token-registry.js";
 
 export interface GitHubRegistrationConfiguration {

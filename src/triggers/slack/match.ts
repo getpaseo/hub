@@ -1,24 +1,29 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import type { NormalizedSlackMentionEvent } from "./events.js";
+
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedSlackTrigger {
   event: NormalizedSlackMentionEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
 }
 
 export function matchSlackTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedSlackMentionEvent,
   botUserId: string,
   connectionId?: string | null,
 ): MatchedSlackTrigger[] {
   if (event.author.id === botUserId) return [];
-  return config.triggers.flatMap((trigger) =>
-    trigger.on === "slack.mention" &&
-    matchesFilters(event, trigger.filters, botUserId, connectionId)
+  return config.triggers.flatMap((trigger) => {
+    return trigger.on === "slack.mention" &&
+      matchesFilters(event, trigger.filters, botUserId, connectionId)
       ? [{ event, trigger }]
-      : [],
-  );
+      : [];
+  });
 }
 
 function matchesFilters(

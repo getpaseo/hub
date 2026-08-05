@@ -88,7 +88,8 @@ class PhaseFiveAgent {
         },
       },
     });
-    if (service === "daemon-restart") await runUntilInterrupted();
+    if (service === "daemon-restart" || prompt.includes("daemon-restart"))
+      await runUntilInterrupted();
     if (this.hubMcp) await scheduleHubCompletion(this.hubMcp);
     return { stopReason: "end_turn" };
   }

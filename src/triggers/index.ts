@@ -21,7 +21,6 @@ export interface TriggerDispatchOutcome {
 export type TriggerHandler = (trigger: DurableTrigger) => Promise<TriggerDispatchOutcome | void>;
 
 export interface TriggerSource {
-  dispatchMode?: "synchronous" | "durable-handoff";
   start(handler: TriggerHandler): Promise<void>;
   stop(): Promise<void>;
 }
@@ -35,10 +34,12 @@ export interface TriggerAgentConfig {
   thinkingOptionId?: string | undefined;
 }
 
-export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig {
+export function cleanTriggerAgent(
+  agent: Omit<TriggerAgentConfig, "mode"> & { mode?: string | undefined },
+): TriggerAgentConfig {
   return {
     provider: agent.provider,
-    mode: agent.mode,
+    mode: agent.mode ?? "default",
     ...(agent.model === undefined ? {} : { model: agent.model }),
     ...(agent.thinkingOptionId === undefined ? {} : { thinkingOptionId: agent.thinkingOptionId }),
   };
@@ -46,12 +47,14 @@ export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig
 
 export interface TriggerProviderMatch<TriggerContext = unknown, OutputContext = TriggerContext> {
   triggerName: string;
+  stepId: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
   timeoutMs?: number;
+  runTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
   triggerContext: TriggerContext;

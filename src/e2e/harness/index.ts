@@ -207,15 +207,34 @@ export class HubE2E {
       "triggers:",
       "  - name: deploy",
       "    on: manual.run",
-      "    environment: phase-five",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [phase-five-operator]",
-      "    agent:",
-      "      provider: hub-e2e",
-      "      mode: default",
-      '    prompt: "Deploy ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
-      "    allow_outputs:",
-      "      - type: hub.e2e.result",
+      "    steps:",
+      "      - id: deploy-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
+      "        allow_outputs:",
+      "          - type: hub.e2e",
+      "  - name: restart",
+      "    on: manual.run",
+      "    max_runtime: 2h",
+      "    filters:",
+      "      from_users: [phase-five-operator]",
+      "    steps:",
+      "      - id: restart-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "daemon-restart" }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",
@@ -225,7 +244,11 @@ export class HubE2E {
       },
       body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
     });
-    assertStatus(response, 201, "install production configuration");
+    if (response.status !== 201) {
+      throw new Error(
+        `install production configuration returned HTTP ${response.status}: ${await response.text()}`,
+      );
+    }
   }
 
   async installRealAgentConfiguration(): Promise<void> {
@@ -243,13 +266,18 @@ export class HubE2E {
       "triggers:",
       "  - name: finalize",
       "    on: manual.run",
-      "    environment: real-agent",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [real-agent-operator]",
-      "    agent:",
-      "      provider: codex",
-      "      mode: full-access",
-      '    prompt: "Call the hub.finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP."',
+      "    steps:",
+      "      - id: finalize-step",
+      "        environment: real-agent",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: codex",
+      "          mode: full-access",
+      '        prompt: [{ text: "Call the hub.finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",
@@ -262,7 +290,7 @@ export class HubE2E {
     assertStatus(response, 201, "install real-agent configuration");
   }
 
-  async runManual(deliveryKey: string, service: string): Promise<ManualRun> {
+  async runManual(deliveryKey: string, service: string, trigger = "deploy"): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
       method: "POST",
       headers: {
@@ -271,7 +299,7 @@ export class HubE2E {
       },
       body: JSON.stringify({
         projectSlug: PROJECT_SLUG,
-        trigger: "deploy",
+        trigger,
         actor: "phase-five-operator",
         deliveryKey,
         input: { service },
@@ -291,11 +319,8 @@ export class HubE2E {
         )}\n${this.failureArtifacts()}`,
       );
     }
-    const body = asRecord(await response.json());
-    return {
-      executionId: requiredString(body, "executionId"),
-      agentId: requiredString(body, "agentId"),
-    };
+    await response.json();
+    return this.waitForManualRun(deliveryKey);
   }
 
   async runRealAgentManual(deliveryKey: string): Promise<ManualRun> {
@@ -318,11 +343,8 @@ export class HubE2E {
         `run real-agent manual trigger returned HTTP ${response.status}: ${await response.text()}`,
       );
     }
-    const body = asRecord(await response.json());
-    return {
-      executionId: requiredString(body, "executionId"),
-      agentId: requiredString(body, "agentId"),
-    };
+    await response.json();
+    return this.waitForManualRun(deliveryKey);
   }
 
   async realAgentCompletionEvidence(run: ManualRun): Promise<{
@@ -564,7 +586,7 @@ export class HubE2E {
 
   async beginDaemonRestartRun(): Promise<ManualRun> {
     await rm(this.completionGate, { force: true });
-    const run = await this.runManual("daemon-restart-delivery", "daemon-restart");
+    const run = await this.runManual("daemon-restart-delivery", "daemon-restart", "restart");
     await this.observe(
       async () =>
         (await readJsonLines(this.acpRecordFile)).some(
@@ -984,6 +1006,25 @@ export class HubE2E {
       [deliveryId],
     );
     return row.rows[0]!.id;
+  }
+
+  private async waitForManualRun(deliveryId: string): Promise<ManualRun> {
+    const executionId = await this.executionForDelivery(deliveryId);
+    await this.observe(async () => {
+      const row = await this.requirePool().query<{ daemon_agent_id: string | null }>(
+        "select daemon_agent_id from agent_executions where id = $1",
+        [executionId],
+      );
+      return row.rows[0]?.daemon_agent_id !== null;
+    }, "manual execution association");
+    const row = await this.requirePool().query<{ daemon_agent_id: string | null }>(
+      "select daemon_agent_id from agent_executions where id = $1",
+      [executionId],
+    );
+    return {
+      executionId,
+      agentId: requiredString({ agentId: row.rows[0]?.daemon_agent_id }, "agentId"),
+    };
   }
 
   private async outputIsPersisted(executionId: string): Promise<boolean> {

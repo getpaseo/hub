@@ -1,4 +1,7 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import {
   IssueCommentPayloadSchema,
   IssuesPayloadSchema,
@@ -7,13 +10,15 @@ import {
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
+
 export interface MatchedTriggerEvent {
   event: NormalizedGitHubEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
 }
 
 export function matchTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
 ): MatchedTriggerEvent[] {

@@ -40,7 +40,6 @@ describe("Slack registration", () => {
 
     assert.equal(registration.connection.name, "slack");
     assert.equal(registration.sources.length, 1);
-    assert.equal(registration.sources[0]?.dispatchMode, "durable-handoff");
     assert.equal(registration.triggerProviders.length, 1);
     assert.deepEqual(
       registration.outputs.map((output) => output.type),

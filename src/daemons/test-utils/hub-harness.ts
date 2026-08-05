@@ -339,8 +339,7 @@ export class HubHarness {
     if (!module) throw new Error("Daemon module is unavailable");
     const triggerId = existingTriggerId ?? (await this.insertTestTrigger());
     const intents = this.batchIntents(triggerId, triggerNames);
-    const plan = (await this.requireDatabase().claimTriggerDispatchPlan(triggerId, intents)).plan;
-    const result = await module.lifecycle.handoffLaunchMachineIntents(plan);
+    const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
     return { ...result, triggerId };
   }
   async handoffAuthoredSlugBatch(
@@ -355,15 +354,23 @@ export class HubHarness {
       triggerId,
       triggerName: `member-${index}`,
     }));
-    const plan = (await this.requireDatabase().claimTriggerDispatchPlan(triggerId, intents)).plan;
-    const result = await module.lifecycle.handoffLaunchMachineIntents(plan);
+    const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
     return { ...result, triggerId };
   }
-  async triggerLifecycleState(triggerId: string): Promise<string | null> {
-    return (await this.requireDatabase().findTriggerById(triggerId))?.lifecycleState ?? null;
+  async triggerStatus(triggerId: string): Promise<string | null> {
+    const executions = await this.requireDatabase().findAgentExecutionsByTriggerId(triggerId);
+    if (executions.some((execution) => execution.status === "failed")) return "failed";
+    if (
+      executions.length > 0 &&
+      executions.every((execution) => execution.status === "succeeded")
+    ) {
+      return "succeeded";
+    }
+    return executions.length > 0 ? "running" : null;
   }
-  async triggerDispatchPlanPrompt(triggerId: string): Promise<string | undefined> {
-    return (await this.requireDatabase().findTriggerById(triggerId))?.dispatchPlan?.[0]?.prompt;
+  async triggerPrompt(triggerId: string): Promise<string | undefined> {
+    return (await this.requireDatabase().findAgentExecutionsByTriggerId(triggerId))[0]?.launchIntent
+      ?.prompt;
   }
   async persistUnlaunchedBatch(
     triggerNames: readonly string[],
@@ -375,14 +382,13 @@ export class HubHarness {
     const intents = this.batchIntents(triggerId, triggerNames).map((intent) =>
       Object.assign({}, intent, overrides, { triggerId }),
     );
-    const plan = (await database.claimTriggerDispatchPlan(triggerId, intents)).plan;
     const daemon = await database.findDaemonForOrganization(
-      plan[0]!.organizationId,
-      plan[0]!.environment.daemonId,
+      intents[0]!.organizationId,
+      intents[0]!.environment.daemonId,
     );
     if (daemon === undefined) throw new Error("Daemon is unavailable");
     const executions = [];
-    for (const intent of plan.slice(0, persistedCount)) {
+    for (const intent of intents.slice(0, persistedCount)) {
       const id = durableExecutionId(intent);
       const completionToken = deriveAgentExecutionCompletionToken(
         "hub-harness-completion-secret",
@@ -490,6 +496,10 @@ export class HubHarness {
     const execution = (await this.requireDatabase().findPendingAgentExecutions())[0];
     if (!execution) throw new Error("Pending execution does not exist");
     return execution;
+  }
+  async waitForPendingExecution(): Promise<AgentExecutionRecord> {
+    await waitFor(async () => (await this.pendingExecutionCount()) > 0);
+    return this.pendingExecution();
   }
   async pendingExecutionCount(): Promise<number> {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
@@ -827,29 +837,37 @@ export class HubHarness {
       "    cwd: /workspace/manual",
       "    worktree:",
       "      mode: branch-off",
-      '      newBranch: "manual-${{ paseo.event.manual.input.service }}"',
+      '      newBranch: "manual-branch"',
       "      base: main",
       "triggers:",
       "  - name: deploy",
       "    on: manual.run",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [alice]",
-      "    env:",
-      '      MANUAL_ACTOR: "${{ paseo.event.manual.actor }}"',
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Deploy ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
+      "    steps:",
+      "      - id: deploy-step",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Deploy the requested service" }] ',
       "  - name: rollback",
       "    on: manual.run",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [alice]",
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Rollback ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
+      "    steps:",
+      "      - id: rollback-step",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Rollback the requested service" }] ',
     ].join("\n");
   }
 
@@ -929,9 +947,9 @@ export class HubHarness {
   }): Promise<{
     status: number;
     error?: string;
-    executionId?: string;
-    daemonId?: string | null;
-    agentId?: string | null;
+    triggerId?: string;
+    triggerRunId?: string;
+    workflowStatus?: string;
   }> {
     const response = await fetch(`${this.origin}/api/manual-runs`, {
       method: "POST",
@@ -954,19 +972,19 @@ export class HubHarness {
       throw new Error("manual run was interrupted by application restart");
     const body = z
       .object({
-        executionId: z.string().optional(),
+        triggerId: z.string().optional(),
+        triggerRunId: z.string().optional(),
+        workflowStatus: z.string().optional(),
         error: z.string().optional(),
-        daemonId: z.string().nullable().optional(),
-        agentId: z.string().nullable().optional(),
       })
       .passthrough()
       .parse(await response.json());
     return {
       status: response.status,
       ...(body.error === undefined ? {} : { error: body.error }),
-      ...(body.executionId === undefined ? {} : { executionId: body.executionId }),
-      ...(body.daemonId === undefined ? {} : { daemonId: body.daemonId }),
-      ...(body.agentId === undefined ? {} : { agentId: body.agentId }),
+      ...(body.triggerId === undefined ? {} : { triggerId: body.triggerId }),
+      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
+      ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
     };
   }
 
@@ -1041,10 +1059,18 @@ export class HubHarness {
           {
             name: "discord-ping",
             on: "discord.mention",
-            environment: "test",
+            max_runtime: "2h",
             filters: { from_users: ["test-user"] },
-            agent: { provider: "opencode", mode: "full-access" },
-            prompt: "Reply pong.",
+            steps: [
+              {
+                id: "discord-step",
+                environment: "test",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "opencode", mode: "full-access" },
+                prompt: [{ text: "Reply pong." }],
+              },
+            ],
           },
         ],
       },

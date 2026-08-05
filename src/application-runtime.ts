@@ -1,7 +1,7 @@
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import type { OperationAuthenticator } from "./auth/operation-auth.js";
-import type { ConnectionResolutionContext, ConnectionResolver } from "./config/interpolation.js";
+import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";

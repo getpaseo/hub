@@ -1,16 +1,8 @@
-import type { ConnectionResolver } from "../../config/index.js";
+import type { ConnectionResolver } from "../../config/connections.js";
 import type {
   CompiledProjectConfiguration,
   ProjectConfigurationStore,
 } from "../../configuration/store.js";
-import {
-  createInterpolationContext,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  parseTemplate,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
 import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
 import { logger } from "../../logger.js";
 import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
@@ -70,9 +62,11 @@ export function createDiscordTriggerProvider(options: {
   return {
     name: "discord",
     eventNames: ["discord.mention"],
-    async match(trigger) {
-      const event = NormalizedDiscordMessageEventSchema.parse(trigger.payload);
-      const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
+    async match(externalTrigger) {
+      const event = NormalizedDiscordMessageEventSchema.parse(externalTrigger.payload);
+      const stored = await options
+        .configurationStoreForProject(externalTrigger.projectId)
+        .getActive();
       if (stored === undefined) return [];
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
@@ -81,12 +75,15 @@ export function createDiscordTriggerProvider(options: {
         stored.configuration,
         event,
         botClientId,
-        trigger.connectionId,
+        externalTrigger.connectionId,
       )) {
-        const baseEnvironment = readDaemonEnvironment(
-          stored.configuration,
-          match.trigger.environment,
+        const compiledTrigger = stored.configuration.triggers.find(
+          (candidate) => candidate.name === match.trigger.name,
         );
+        if (compiledTrigger === undefined)
+          throw new Error(`compiled trigger not found: ${match.trigger.name}`);
+        const step = compiledTrigger.steps[0];
+        const baseEnvironment = readDaemonEnvironment(stored.configuration, step.environment);
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -102,25 +99,20 @@ export function createDiscordTriggerProvider(options: {
 
         const environment: DaemonEnvironmentTarget = {
           ...baseEnvironment,
-          ...(match.trigger.env === undefined
-            ? {}
-            : {
-                env: Object.fromEntries(
-                  Object.entries(match.trigger.env).map(([key, value]) => [key, value.value]),
-                ),
-              }),
         };
 
         matches.push({
           triggerName: match.trigger.name,
-          environmentName: match.trigger.environment,
+          stepId: step.id,
+          environmentName: step.environment,
           environment,
-          prompt: match.trigger.prompt.value,
-          agent: cleanTriggerAgent(match.trigger.agent),
-          allowOutputs: cleanAllowedOutputs(match.trigger.allow_outputs ?? []),
-          timeoutMs: parseTriggerTimeoutMs(match.trigger.timeout),
-          idleTimeoutMs: parseTriggerTimeoutMs(match.trigger.idle_timeout),
-          autoArchive: match.trigger.auto_archive,
+          prompt: step.prompt.map((block) => block.value).join("\n"),
+          agent: cleanTriggerAgent(step.agent),
+          allowOutputs: cleanAllowedOutputs(step.allowOutputs),
+          timeoutMs: step.maxRuntimeMs,
+          runTimeoutMs: compiledTrigger.maxRuntimeMs,
+          idleTimeoutMs: step.idleTimeoutMs,
+          autoArchive: step.autoArchive,
           triggerContext,
           outputContext,
           configurationRevisionId: stored.revision.id,
@@ -131,31 +123,12 @@ export function createDiscordTriggerProvider(options: {
       return matches;
     },
     async materializeLaunch(launch) {
-      const context = createInterpolationContext(
-        launch.triggerContext.event,
-        withExecutionContext(options.connectionsForProject?.(launch.projectId), launch.executionId),
-      );
-      const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
-        interpolateTemplate(parseTemplate(launch.prompt), context),
-        interpolateRecord(
-          launch.environmentEnv === undefined
-            ? undefined
-            : Object.fromEntries(
-                Object.entries(launch.environmentEnv).map(([key, value]) => [
-                  key,
-                  parseTemplate(value),
-                ]),
-              ),
-          context,
-        ),
-        launch.environmentWorktree === undefined
-          ? undefined
-          : interpolateWorktree(launch.environmentWorktree, context),
-      ]);
       return {
-        prompt,
-        ...(Object.keys(environmentEnv).length === 0 ? {} : { environmentEnv }),
-        ...(environmentWorktree === undefined ? {} : { environmentWorktree }),
+        prompt: launch.prompt,
+        ...(launch.environmentEnv === undefined ? {} : { environmentEnv: launch.environmentEnv }),
+        ...(launch.environmentWorktree === undefined
+          ? {}
+          : { environmentWorktree: launch.environmentWorktree }),
       };
     },
     async onDispatchAccepted(triggerContext) {
@@ -192,14 +165,6 @@ export function createDiscordTriggerProvider(options: {
       }
     },
   };
-}
-
-function withExecutionContext(
-  connections: ConnectionResolver | undefined,
-  executionId: string,
-): ConnectionResolver | undefined {
-  if (connections === undefined) return undefined;
-  return (connectionSlug, value) => connections(connectionSlug, value, { executionId });
 }
 
 function buildDiscordMergeData(

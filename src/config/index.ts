@@ -18,27 +18,10 @@ export {
   WorktreeTargetSchema,
   parseDurationMs,
   parseCompiledHubConfig,
-  parseExpression,
-  parsePromptText,
   rawConfigurationHash,
   compileHubConfig,
   compiledConfigurationHash,
 } from "./schema.js";
-export {
-  parseEnvironmentTemplate,
-  type EnvironmentTemplateAst,
-  type ParsedEnvironmentTemplate,
-} from "./environment-template.js";
-export {
-  createInterpolationContext,
-  interpolateAst,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  type ConnectionResolutionContext,
-  type ConnectionResolver,
-  type InterpolationContext,
-} from "./interpolation.js";
 export type {
   AgentConfig,
   HubConfig,

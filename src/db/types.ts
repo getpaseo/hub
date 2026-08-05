@@ -17,20 +17,6 @@ export interface TriggerRecord {
   receivedAt: Date;
   matchedTriggerName: string | null;
   droppedReason: string | null;
-  dispatchPlan: readonly LaunchMachineIntent[] | null;
-  lifecycleState: TriggerLifecycleState | null;
-}
-
-export type TriggerLifecycleState = "accepted" | "running" | "succeeded" | "failed";
-
-export interface TriggerDispatchPlanClaim {
-  plan: readonly LaunchMachineIntent[];
-  claimed: boolean;
-}
-
-export interface TriggerLifecycleTransition {
-  trigger: TriggerRecord;
-  transitioned: boolean;
 }
 
 export interface MachineRecord {
@@ -70,6 +56,7 @@ export interface AgentExecutionRecord {
   triggerId: string | null;
   triggerConnectionId: string | null;
   triggerResourceId: string | null;
+  workflowStepRunId: string | null;
   hubAction: HubAction | null;
   hubActionCompletedAt: Date | null;
 }
@@ -461,9 +448,69 @@ export interface InsertAgentExecutionInput {
   triggerId?: string | null;
   triggerConnectionId?: string | null;
   triggerResourceId?: string | null;
+  workflowStepRunId?: string | null;
   launchIntent?: LaunchMachineIntent | null;
   status?: "spawning" | "failed";
   result?: unknown;
+}
+
+export interface TriggerRunRecord {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  triggerId: string;
+  status: "running" | "succeeded" | "failed" | "timed_out";
+  rawPrompt: string;
+  prompt: string;
+  inputs: unknown;
+  deadlineAt: Date;
+  failureReason: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}
+
+export interface WorkflowStepRunRecord {
+  id: string;
+  triggerRunId: string;
+  stepId: string;
+  ordinal: number;
+  status: "pending" | "running" | "succeeded" | "skipped" | "failed" | "timed_out";
+  agentExecutionId: string | null;
+  output: unknown;
+  failureReason: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  dispatchIntent: LaunchMachineIntent | null;
+}
+
+export interface WorkflowWakeupRecord {
+  triggerRunId: string;
+  availableAt: Date;
+  leaseExpiresAt: Date | null;
+}
+
+export interface CreateTriggerRunInput {
+  id?: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  triggerId: string;
+  rawPrompt: string;
+  prompt: string;
+  deadlineAt: Date;
+  stepId: string;
+  stepRunId?: string;
+  dispatchIntent: LaunchMachineIntent;
+  createdAt?: Date;
+}
+
+export interface WorkflowStepExecutionInput {
+  triggerRunId: string;
+  stepId: string;
+  ordinal: number;
+  executionId: string;
+  execution: InsertAgentExecutionInput;
 }
 
 export interface EnrollDaemonInput {
@@ -553,16 +600,42 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  createTriggerRun(
+    input: CreateTriggerRunInput,
+  ): Promise<{ run: TriggerRunRecord; created: boolean }>;
+  findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
+  findTriggerRunByTriggerId(triggerId: string): Promise<TriggerRunRecord | undefined>;
+  findWorkflowStepRunById(id: string): Promise<WorkflowStepRunRecord | undefined>;
+  findWorkflowStepRunByTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord | undefined>;
+  findAgentExecutionByWorkflowStepRunId(
+    stepRunId: string,
+  ): Promise<AgentExecutionRecord | undefined>;
+  claimWorkflowWakeup(now: Date, leaseMs: number): Promise<WorkflowWakeupRecord | undefined>;
+  wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
+  deleteWorkflowWakeup(triggerRunId: string): Promise<void>;
+  createWorkflowStepExecution(input: WorkflowStepExecutionInput): Promise<{
+    stepRun: WorkflowStepRunRecord;
+    execution: AgentExecutionRecord | undefined;
+    created: boolean;
+  }>;
+  linkWorkflowStepRunExecution(
+    stepRunId: string,
+    executionId: string,
+  ): Promise<WorkflowStepRunRecord>;
+  completeWorkflowStep(
+    executionId: string,
+    status: "succeeded" | "failed" | "timed_out",
+    result: unknown,
+    failureReason?: string,
+  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  failWorkflowRun(
+    triggerRunId: string,
+    status: "failed" | "timed_out",
+    failureReason: string,
+  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  recoverWorkflowWakeups(now: Date): Promise<void>;
   insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult>;
   markTriggerDropped(id: string, reason: string): Promise<TriggerRecord>;
-  claimTriggerDispatchPlan(
-    id: string,
-    plan: readonly LaunchMachineIntent[],
-  ): Promise<TriggerDispatchPlanClaim>;
-  transitionTriggerLifecycle(
-    id: string,
-    state: TriggerLifecycleState,
-  ): Promise<TriggerLifecycleTransition>;
   acceptGitHubTrigger(input: AcceptGitHubTriggerInput): Promise<ProviderTriggerAcceptance>;
   acceptDiscordTrigger(input: AcceptDiscordTriggerInput): Promise<ProviderTriggerAcceptance>;
   acceptSlackTrigger(input: AcceptSlackTriggerInput): Promise<ProviderTriggerAcceptance>;

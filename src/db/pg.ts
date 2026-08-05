@@ -32,7 +32,6 @@ import type {
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
   TriggerRecord,
-  TriggerLifecycleState,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -65,6 +64,11 @@ import type {
   GitHubRepositoryRecord,
   GitHubConfigurationTarget,
   ProjectTriggerRoute,
+  CreateTriggerRunInput,
+  TriggerRunRecord,
+  WorkflowStepExecutionInput,
+  WorkflowStepRunRecord,
+  WorkflowWakeupRecord,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -222,64 +226,6 @@ class PgDatabase implements Database {
       }
 
       return existing;
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
-  }
-
-  async claimTriggerDispatchPlan(
-    id: string,
-    plan: readonly LaunchMachineIntent[],
-  ): Promise<{ plan: readonly LaunchMachineIntent[]; claimed: boolean }> {
-    try {
-      const rows = await query<TriggerRow>(
-        this.pool,
-        `update triggers
-         set dispatch_plan = $2
-         where id = $1 and dispatch_plan is null
-         returning *`,
-        [id, JSON.stringify(plan)],
-      );
-      const claimed = rows.rows[0];
-      if (claimed !== undefined)
-        return {
-          plan: toTriggerRecord(claimed).dispatchPlan ?? [],
-          claimed: true,
-        };
-      const existing = await this.findTriggerById(id);
-      if (existing === undefined) throw new Error(`trigger not found: ${id}`);
-      if (existing.dispatchPlan === null)
-        throw new Error(`trigger dispatch plan unavailable: ${id}`);
-      return { plan: existing.dispatchPlan, claimed: false };
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
-  }
-
-  async transitionTriggerLifecycle(
-    id: string,
-    state: TriggerLifecycleState,
-  ): Promise<{ trigger: TriggerRecord; transitioned: boolean }> {
-    try {
-      const rows = await query<TriggerRow>(
-        this.pool,
-        `update triggers
-         set lifecycle_state = $2
-         where id = $1
-           and lifecycle_state is distinct from $2
-           and (
-             lifecycle_state is null
-             or (lifecycle_state = 'accepted' and $2 in ('running', 'succeeded', 'failed'))
-             or (lifecycle_state = 'running' and $2 in ('succeeded', 'failed'))
-           )
-         returning *`,
-        [id, state],
-      );
-      const updated = rows.rows[0];
-      if (updated !== undefined) return { trigger: toTriggerRecord(updated), transitioned: true };
-      const existing = await this.findTriggerById(id);
-      if (existing === undefined) throw new Error(`trigger not found: ${id}`);
-      return { trigger: existing, transitioned: false };
     } catch (error) {
       throw toDatabaseError(error);
     }
@@ -447,10 +393,11 @@ class PgDatabase implements Database {
             trigger_connection_id,
             trigger_resource_id,
             launch_intent,
+            workflow_step_run_id,
             result,
             completed_at
           )
-          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17,
+          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $18, $17,
                  case when $16 = 'failed'::agent_execution_status then now() else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
@@ -486,6 +433,7 @@ class PgDatabase implements Database {
           input.launchIntent ?? null,
           input.status ?? "spawning",
           input.result ?? null,
+          input.workflowStepRunId ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -524,10 +472,11 @@ class PgDatabase implements Database {
             trigger_connection_id,
             trigger_resource_id,
             launch_intent,
+            workflow_step_run_id,
             result,
             completed_at
           )
-          select $1, $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17,
+          select $1, $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $18, $17,
                  case when $16 = 'failed'::agent_execution_status then now() else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
@@ -564,6 +513,7 @@ class PgDatabase implements Database {
           input.launchIntent ?? null,
           input.status ?? "spawning",
           input.result ?? null,
+          input.workflowStepRunId ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -571,6 +521,377 @@ class PgDatabase implements Database {
     } catch (error) {
       throw toDatabaseError(error);
     }
+  }
+
+  async createTriggerRun(input: CreateTriggerRunInput) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const inserted = await client.query<TriggerRunRow>(
+        `insert into trigger_runs
+           (id, organization_id, project_id, configuration_revision_id, trigger_id, status,
+            raw_prompt, prompt, inputs, deadline_at, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, 'running', $6, $7, '{}'::jsonb, $8, $9)
+         on conflict (trigger_id) do nothing
+         returning *`,
+        [
+          input.id ?? null,
+          input.organizationId,
+          input.projectId,
+          input.configurationRevisionId,
+          input.triggerId,
+          input.rawPrompt,
+          input.prompt,
+          input.deadlineAt,
+          input.createdAt ?? new Date(),
+        ],
+      );
+      let run = inserted.rows[0];
+      const created = run !== undefined;
+      if (run === undefined) {
+        const existing = await client.query<TriggerRunRow>(
+          `select * from trigger_runs where trigger_id = $1 for update`,
+          [input.triggerId],
+        );
+        run = existing.rows[0];
+      }
+      if (run === undefined) throw new Error("trigger run insert returned no row");
+      await client.query(
+        `insert into workflow_step_runs (id, trigger_run_id, step_id, ordinal, status, dispatch_intent)
+         values (coalesce($1, gen_random_uuid()), $2, $3, 0, 'pending', $4)
+         on conflict (trigger_run_id, ordinal) do nothing`,
+        [input.stepRunId ?? null, run.id, input.stepId, input.dispatchIntent],
+      );
+      await client.query(
+        `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+         values ($1, $2, null)
+         on conflict (trigger_run_id) do nothing`,
+        [run.id, input.createdAt ?? new Date()],
+      );
+      await client.query("commit");
+      return { run: toTriggerRunRecord(run), created };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async findTriggerRunById(id: string) {
+    const rows = await query<TriggerRunRow>(this.pool, `select * from trigger_runs where id = $1`, [
+      id,
+    ]);
+    return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
+  }
+
+  async findTriggerRunByTriggerId(triggerId: string) {
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs where trigger_id = $1`,
+      [triggerId],
+    );
+    return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
+  }
+
+  async findWorkflowStepRunById(id: string) {
+    const rows = await query<WorkflowStepRunRow>(
+      this.pool,
+      `select * from workflow_step_runs where id = $1`,
+      [id],
+    );
+    return rows.rows[0] === undefined ? undefined : toWorkflowStepRunRecord(rows.rows[0]);
+  }
+
+  async findWorkflowStepRunByTriggerRun(triggerRunId: string) {
+    const rows = await query<WorkflowStepRunRow>(
+      this.pool,
+      `select * from workflow_step_runs where trigger_run_id = $1 order by ordinal limit 1`,
+      [triggerRunId],
+    );
+    return rows.rows[0] === undefined ? undefined : toWorkflowStepRunRecord(rows.rows[0]);
+  }
+
+  async findAgentExecutionByWorkflowStepRunId(stepRunId: string) {
+    const rows = await query<AgentExecutionRow>(
+      this.pool,
+      `select * from agent_executions where workflow_step_run_id = $1 limit 1`,
+      [stepRunId],
+    );
+    return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<WorkflowWakeupRow>(
+        `select * from workflow_wakeups
+         where available_at <= $1
+           and (lease_expires_at is null or lease_expires_at <= $1)
+         order by available_at, trigger_run_id
+         for update skip locked limit 1`,
+        [now],
+      );
+      const wakeup = selected.rows[0];
+      if (wakeup === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      const updated = await client.query<WorkflowWakeupRow>(
+        `update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 returning *`,
+        [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs)],
+      );
+      await client.query("commit");
+      return toWorkflowWakeupRecord(updated.rows[0]!);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async wakeWorkflowRun(triggerRunId: string, availableAt: Date) {
+    await query(
+      this.pool,
+      `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+       values ($1, $2, null)
+       on conflict (trigger_run_id) do update
+       set available_at = least(workflow_wakeups.available_at, excluded.available_at),
+           lease_expires_at = null`,
+      [triggerRunId, availableAt],
+    );
+  }
+
+  async deleteWorkflowWakeup(triggerRunId: string) {
+    await query(this.pool, `delete from workflow_wakeups where trigger_run_id = $1`, [
+      triggerRunId,
+    ]);
+  }
+
+  async createWorkflowStepExecution(input: WorkflowStepExecutionInput) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3 for update`,
+        [input.triggerRunId, input.stepId, input.ordinal],
+      );
+      let step = selected.rows[0];
+      if (step === undefined) throw new Error("workflow step run not found");
+      if (step.agent_execution_id !== null) {
+        const existing = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1`,
+          [step.agent_execution_id],
+        );
+        await client.query("commit");
+        return {
+          stepRun: toWorkflowStepRunRecord(step),
+          execution:
+            existing.rows[0] === undefined ? undefined : toAgentExecutionRecord(existing.rows[0]),
+          created: false,
+        };
+      }
+      const execution = await insertAgentExecutionOnClient(client, {
+        ...input.execution,
+        id: input.executionId,
+        workflowStepRunId: step.id,
+      });
+      const updated = await client.query<WorkflowStepRunRow>(
+        `update workflow_step_runs
+         set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3)
+         where id = $1 and agent_execution_id is null
+         returning *`,
+        [step.id, execution.id, execution.started_at],
+      );
+      step = updated.rows[0] ?? step;
+      await client.query("commit");
+      return {
+        stepRun: toWorkflowStepRunRecord(step),
+        execution: toAgentExecutionRecord(execution),
+        created: true,
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async linkWorkflowStepRunExecution(stepRunId: string, executionId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where id = $1 for update`,
+        [stepRunId],
+      );
+      const step = selected.rows[0];
+      if (step === undefined) throw new Error(`workflow step run not found: ${stepRunId}`);
+      if (step.agent_execution_id !== null && step.agent_execution_id !== executionId) {
+        throw new Error(`workflow step run already linked: ${stepRunId}`);
+      }
+      if (step.agent_execution_id === executionId) {
+        await client.query("commit");
+        return toWorkflowStepRunRecord(step);
+      }
+      const execution = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1`,
+        [executionId],
+      );
+      const executionRow = execution.rows[0];
+      if (executionRow === undefined) throw new Error(`agent execution not found: ${executionId}`);
+      const updated = await client.query<WorkflowStepRunRow>(
+        `update workflow_step_runs
+         set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3)
+         where id = $1 and agent_execution_id is null
+         returning *`,
+        [stepRunId, executionId, executionRow.started_at],
+      );
+      await client.query("commit");
+      return toWorkflowStepRunRecord(updated.rows[0] ?? step);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async completeWorkflowStep(
+    executionId: string,
+    status: "succeeded" | "failed" | "timed_out",
+    result: unknown,
+    failureReason?: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where agent_execution_id = $1 for update`,
+        [executionId],
+      );
+      const step = selected.rows[0];
+      if (step === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      const runRows = await client.query<TriggerRunRow>(
+        `select * from trigger_runs where id = $1 for update`,
+        [step.trigger_run_id],
+      );
+      const run = runRows.rows[0];
+      if (run === undefined) throw new Error("workflow trigger run not found");
+      if (["succeeded", "failed", "timed_out"].includes(step.status)) {
+        await client.query("commit");
+        return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
+      }
+      const completedAt = new Date();
+      const updatedStep = await client.query<WorkflowStepRunRow>(
+        `update workflow_step_runs
+         set status = $2, output = $3, failure_reason = $4, completed_at = $5
+         where id = $1 returning *`,
+        [step.id, status, result, failureReason ?? null, completedAt],
+      );
+      const updatedRun = await client.query<TriggerRunRow>(
+        `update trigger_runs
+         set status = $2, failure_reason = $3, completed_at = $4
+         where id = $1 returning *`,
+        [
+          step.trigger_run_id,
+          status === "succeeded" ? "succeeded" : status,
+          failureReason ?? null,
+          completedAt,
+        ],
+      );
+      await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
+        step.trigger_run_id,
+      ]);
+      await client.query("commit");
+      return {
+        stepRun: toWorkflowStepRunRecord(updatedStep.rows[0]!),
+        run: toTriggerRunRecord(updatedRun.rows[0]!),
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async failWorkflowRun(
+    triggerRunId: string,
+    status: "failed" | "timed_out",
+    failureReason: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const runRows = await client.query<TriggerRunRow>(
+        `select * from trigger_runs where id = $1 for update`,
+        [triggerRunId],
+      );
+      const run = runRows.rows[0];
+      const stepRows = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where trigger_run_id = $1 order by ordinal limit 1 for update`,
+        [triggerRunId],
+      );
+      const step = stepRows.rows[0];
+      if (run === undefined || step === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      if (run.status !== "running") {
+        await client.query("commit");
+        return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
+      }
+      const completedAt = new Date();
+      const updatedStep = await client.query<WorkflowStepRunRow>(
+        `update workflow_step_runs
+         set status = case when status in ('pending', 'running') then $2 else status end,
+             failure_reason = case when status in ('pending', 'running') then $3 else failure_reason end,
+             completed_at = case when status in ('pending', 'running') then $4 else completed_at end
+         where id = $1 returning *`,
+        [step.id, status, failureReason, completedAt],
+      );
+      const updatedRun = await client.query<TriggerRunRow>(
+        `update trigger_runs
+         set status = $2, failure_reason = $3, completed_at = $4
+         where id = $1 returning *`,
+        [triggerRunId, status, failureReason, completedAt],
+      );
+      await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [triggerRunId]);
+      await client.query("commit");
+      return {
+        stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
+        run: toTriggerRunRecord(updatedRun.rows[0]!),
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async recoverWorkflowWakeups(now: Date) {
+    await query(
+      this.pool,
+      `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+       select runs.id, $1, null
+       from trigger_runs runs
+       join workflow_step_runs steps on steps.trigger_run_id = runs.id
+       left join agent_executions executions on executions.workflow_step_run_id = steps.id
+       left join workflow_wakeups wakeups on wakeups.trigger_run_id = runs.id
+       where runs.status = 'running'
+         and (executions.id is null or executions.status in ('succeeded', 'failed'))
+         and wakeups.trigger_run_id is null
+       on conflict (trigger_run_id) do nothing`,
+      [now],
+    );
   }
 
   async issueEnrollmentToken(input: EnrollmentTokenRecord): Promise<boolean> {
@@ -2198,9 +2519,7 @@ class PgDatabase implements Database {
                 receipt.payload,
                 receipt.received_at,
                 null::text as matched_trigger_name,
-                receipt.dropped_reason,
-                null::jsonb as dispatch_plan,
-                null::text as lifecycle_state
+                receipt.dropped_reason
          from provider_event_receipts receipt
          where receipt.organization_id = $1
            and receipt.dropped_reason is not null
@@ -2431,6 +2750,58 @@ function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+async function insertAgentExecutionOnClient(
+  client: PoolClient,
+  input: InsertAgentExecutionInput,
+): Promise<AgentExecutionRow> {
+  const rows = await client.query<AgentExecutionRow>(
+    `insert into agent_executions
+       (id, organization_id, project_id, machine_id, daemon_id, status,
+        trigger_context, output_context, configuration_revision_id, completion_token_hash,
+        deadline_at, idle_deadline_at, trigger_id, trigger_connection_id, trigger_resource_id,
+        launch_intent, workflow_step_run_id, result, completed_at)
+     select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11,
+            $12, $13, $14, $15, $18, $17,
+            case when $16 = 'failed'::agent_execution_status then now() else null end
+     from projects
+     where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
+       and exists (
+         select 1 from project_configuration_revisions
+         where id = $8 and project_id = $3 and organization_id = $2
+       )
+       and ($5::uuid is null or exists (
+         select 1 from daemons daemon
+         join machines daemon_machine on daemon_machine.id = daemon.machine_id
+         where daemon.id = $5 and daemon_machine.org_id = $2
+       ))
+       and ($4::uuid is null or exists (select 1 from machines where id = $4 and org_id = $2))
+     returning *`,
+    [
+      input.id ?? null,
+      input.organizationId,
+      input.projectId,
+      input.machineId,
+      input.daemonId ?? null,
+      input.triggerContext,
+      input.outputContext,
+      input.configurationRevisionId,
+      input.completionTokenHash ?? null,
+      input.deadlineAt ?? null,
+      input.idleDeadlineAt ?? null,
+      input.triggerId ?? null,
+      input.triggerConnectionId ?? null,
+      input.triggerResourceId ?? null,
+      input.launchIntent ?? null,
+      input.status ?? "spawning",
+      input.result ?? null,
+      input.workflowStepRunId ?? null,
+    ],
+  );
+  const execution = rows.rows[0];
+  if (execution === undefined) throw new Error("agent execution insert returned no row");
+  return execution;
+}
+
 const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
 
 export interface TriggerRow extends QueryResultRow {
@@ -2449,8 +2820,84 @@ export interface TriggerRow extends QueryResultRow {
   received_at: Date;
   matched_trigger_name: string | null;
   dropped_reason: string | null;
-  dispatch_plan: readonly LaunchMachineIntent[] | null;
-  lifecycle_state: TriggerLifecycleState | null;
+}
+
+interface TriggerRunRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  configuration_revision_id: string;
+  trigger_id: string;
+  status: TriggerRunRecord["status"];
+  raw_prompt: string;
+  prompt: string;
+  inputs: unknown;
+  deadline_at: Date;
+  failure_reason: string | null;
+  created_at: Date;
+  completed_at: Date | null;
+}
+
+interface WorkflowStepRunRow extends QueryResultRow {
+  id: string;
+  trigger_run_id: string;
+  step_id: string;
+  ordinal: number;
+  status: WorkflowStepRunRecord["status"];
+  agent_execution_id: string | null;
+  output: unknown;
+  failure_reason: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  dispatch_intent: LaunchMachineIntent | null;
+}
+
+interface WorkflowWakeupRow extends QueryResultRow {
+  trigger_run_id: string;
+  available_at: Date;
+  lease_expires_at: Date | null;
+}
+
+function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    configurationRevisionId: row.configuration_revision_id,
+    triggerId: row.trigger_id,
+    status: row.status,
+    rawPrompt: row.raw_prompt,
+    prompt: row.prompt,
+    inputs: row.inputs,
+    deadlineAt: row.deadline_at,
+    failureReason: row.failure_reason,
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  };
+}
+
+function toWorkflowStepRunRecord(row: WorkflowStepRunRow): WorkflowStepRunRecord {
+  return {
+    id: row.id,
+    triggerRunId: row.trigger_run_id,
+    stepId: row.step_id,
+    ordinal: row.ordinal,
+    status: row.status,
+    agentExecutionId: row.agent_execution_id,
+    output: row.output,
+    failureReason: row.failure_reason,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    dispatchIntent: row.dispatch_intent,
+  };
+}
+
+function toWorkflowWakeupRecord(row: WorkflowWakeupRow): WorkflowWakeupRecord {
+  return {
+    triggerRunId: row.trigger_run_id,
+    availableAt: row.available_at,
+    leaseExpiresAt: row.lease_expires_at,
+  };
 }
 
 export interface MachineRow extends QueryResultRow {
@@ -2490,6 +2937,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   trigger_id: string | null;
   trigger_connection_id: string | null;
   trigger_resource_id: string | null;
+  workflow_step_run_id: string | null;
   hub_action: "interrupt" | "archive" | null;
   hub_action_completed_at: Date | null;
 }

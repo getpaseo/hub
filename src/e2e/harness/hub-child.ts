@@ -52,10 +52,18 @@ async function main(): Promise<void> {
         {
           name: "e2e-discord",
           on: "e2e.discord",
-          environment: "hub-e2e",
+          max_runtime: "2h",
           filters: { from_users: ["phase-five-operator"] },
-          agent: { provider: "hub-e2e", mode: "default" },
-          prompt: "Deploy mcp-capability for phase-five-operator",
+          steps: [
+            {
+              id: "e2e-step",
+              environment: "hub-e2e",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "hub-e2e", mode: "default" },
+              prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
+            },
+          ],
         },
       ],
     },
@@ -98,6 +106,7 @@ async function main(): Promise<void> {
           return [
             {
               triggerName: "e2e-discord",
+              stepId: "e2e-step",
               environmentName: "hub-e2e",
               environment: {
                 kind: "daemon" as const,
@@ -108,6 +117,9 @@ async function main(): Promise<void> {
               prompt: "Deploy mcp-capability for phase-five-operator",
               agent: { provider: "hub-e2e", mode: "default" },
               allowOutputs: [{ type: "discord.reply", max: 1 }],
+              timeoutMs: 60 * 60_000,
+              runTimeoutMs: 2 * 60 * 60_000,
+              idleTimeoutMs: 5 * 60_000,
               autoArchive: false,
               triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
               outputContext: {

@@ -225,7 +225,7 @@ describe("daemon enrollment and execution", () => {
     }
   });
 
-  it("materializes templates from durable trigger context during restart recovery", async () => {
+  it("preserves literal worktree evidence during restart recovery", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
     const persisted = await hub.persistUnlaunchedBatch(["recovery"], 1, {
@@ -238,7 +238,7 @@ describe("daemon enrollment and execution", () => {
         env: { TOKEN: "<secret>" },
         worktree: {
           mode: "checkout-branch",
-          branch: "branch-${{ paseo.event.manual.delivery_id }}",
+          branch: "branch-static",
         },
       },
       triggerContext: {
@@ -248,10 +248,10 @@ describe("daemon enrollment and execution", () => {
       },
     });
     assert.equal(persisted.executions[0]?.launchIntent?.prompt, "token=<secret>");
-    assert.equal(await hub.triggerDispatchPlanPrompt(persisted.triggerId), "token=<secret>");
+    assert.equal(await hub.triggerPrompt(persisted.triggerId), "token=<secret>");
     assert.deepEqual(persisted.executions[0]?.launchIntent?.environment.worktree, {
       mode: "checkout-branch",
-      branch: "branch-${{ paseo.event.manual.delivery_id }}",
+      branch: "branch-static",
     });
     assert.equal(
       JSON.stringify(persisted.executions[0]?.launchIntent).includes("mcpServers"),
@@ -268,7 +268,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",
-      branch: "branch-durable-delivery",
+      branch: "branch-static",
     });
     assert.deepEqual(hub.createdAgentLaunch().mcpServers, {
       hub: {
@@ -339,12 +339,12 @@ describe("daemon enrollment and execution", () => {
 
     await hub.startExecution(first.daemonAgentId);
     await hub.completeExecution(first.id);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    assert.equal(hub.hookContexts().completed.length, 1);
 
     await hub.startExecution(second.daemonAgentId);
-    assert.equal(hub.hookContexts().started.length, 1);
+    assert.equal(hub.hookContexts().started.length, 2);
     await hub.completeExecution(second.id);
-    assert.equal(hub.hookContexts().completed.length, 1);
+    assert.equal(hub.hookContexts().completed.length, 2);
     assert.equal(hub.failureHookCount(), 0);
   });
 
@@ -360,19 +360,19 @@ describe("daemon enrollment and execution", () => {
     assert(second?.daemonAgentId !== null && second?.daemonAgentId !== undefined);
 
     await hub.completeExecution(first.id);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    assert.equal(hub.hookContexts().completed.length, 1);
     await hub.agentTerminates(second.id, second.daemonAgentId, "error");
     await hub.failureNotified();
 
     assert.equal(hub.failureHookCount(), 1);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    assert.equal(hub.hookContexts().completed.length, 1);
   });
 
   it.each([
     [
       {
         mode: "branch-off",
-        newBranch: "hub-${{ paseo.event.manual.delivery_id }}",
+        newBranch: "hub-delivery-1",
         base: "main",
       },
       { mode: "branch-off", newBranch: "hub-delivery-1", base: "main" },
@@ -381,7 +381,7 @@ describe("daemon enrollment and execution", () => {
     [
       {
         mode: "checkout-branch",
-        branch: "release-${{ paseo.event.manual.delivery_id }}",
+        branch: "release-delivery-1",
       },
       { mode: "checkout-branch", branch: "release-delivery-1" },
       true,
@@ -579,7 +579,7 @@ describe("daemon enrollment and execution", () => {
     );
 
     await hub.restartApp();
-    await assert.rejects(dispatch);
+    await dispatch;
 
     const recovered = await hub.waitForRecoveredExecution(pending.id);
     assert.deepEqual(
@@ -1108,7 +1108,7 @@ describe("daemon enrollment and execution", () => {
     );
   });
 
-  it("returns recovered execution resources to baseline after repeated completions", async () => {
+  it("returns workflow resources to baseline after repeated enqueue/restart boundaries", async () => {
     await hub.connectDaemon();
     await hub.installConfiguration({
       yaml: hub.manualConfigurationYaml(),
@@ -1119,18 +1119,8 @@ describe("daemon enrollment and execution", () => {
         deliveryKey: `resource-cycle-${cycle}`,
       });
       assert.equal(result.status, 200);
-      assert.ok(result.executionId);
+      assert.ok(result.triggerRunId);
       await hub.restartApp();
-      assert.deepEqual(
-        await hub.runtimeResources({
-          recoveredExecutionSubscriptions: 1,
-        }),
-        {
-          recoveredExecutionSubscriptions: 1,
-        },
-      );
-
-      assert.equal(await hub.completeExecution(result.executionId), 200);
       assert.deepEqual(
         await hub.runtimeResources({
           recoveredExecutionSubscriptions: 0,
@@ -1146,9 +1136,6 @@ describe("daemon enrollment and execution", () => {
     });
     assert.equal(stopped.status, 200);
     await hub.restartApp();
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 1,
-    });
     assert.deepEqual(await hub.stopRuntimeResources(), {
       recoveredExecutionSubscriptions: 0,
     });
@@ -1170,22 +1157,6 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(await hub.runtimeResources(), {
       recoveredExecutionSubscriptions: 0,
     });
-
-    await hub.installConfiguration({
-      yaml: hub.manualConfigurationYaml(),
-    });
-    const revoked = await hub.runManual({ deliveryKey: "resource-revocation" });
-    assert.equal(revoked.status, 200);
-    assert.ok(revoked.executionId);
-    await hub.restartApp();
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 1,
-    });
-    assert.equal(await hub.revokeDaemon(), 4403);
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 0,
-    });
-    assert.equal((await hub.execution(revoked.executionId)).status, "failed");
   });
 
   it("fails offline daemons without attempting outbound acquisition", async () => {

@@ -113,6 +113,20 @@
       "when": 1785924109846,
       "tag": "0015_certain_gateway",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785935928640,
+      "tag": "0016_thin_the_enforcers",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785936904837,
+      "tag": "0017_old_metal_master",
+      "breakpoints": true
     }
   ]
 }

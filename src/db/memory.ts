@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import type {
   AgentExecutionRecord,
@@ -13,7 +12,6 @@ import type {
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
   TriggerRecord,
-  TriggerLifecycleState,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -54,6 +52,11 @@ import type {
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
+  CreateTriggerRunInput,
+  TriggerRunRecord,
+  WorkflowStepExecutionInput,
+  WorkflowStepRunRecord,
+  WorkflowWakeupRecord,
 } from "./types.js";
 
 export interface MemoryDatabaseOptions {
@@ -83,6 +86,10 @@ class MemoryDatabase implements Database {
   private readonly providerReceiptActivities = new Map<string, TriggerRecord>();
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
+  private readonly triggerRuns = new Map<string, TriggerRunRecord>();
+  private readonly triggerRunIdsByTrigger = new Map<string, string>();
+  private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
+  private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
@@ -109,6 +116,241 @@ class MemoryDatabase implements Database {
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
+  }
+
+  async createTriggerRun(input: CreateTriggerRunInput) {
+    const existingId = this.triggerRunIdsByTrigger.get(input.triggerId);
+    if (existingId !== undefined) {
+      const existing = this.triggerRuns.get(existingId);
+      if (existing === undefined)
+        throw new Error(`trigger run index points at missing row: ${existingId}`);
+      return { run: existing, created: false };
+    }
+    const now = input.createdAt ?? this.options.now?.() ?? new Date();
+    const run: TriggerRunRecord = {
+      id: input.id ?? randomUUID(),
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      configurationRevisionId: input.configurationRevisionId,
+      triggerId: input.triggerId,
+      status: "running",
+      rawPrompt: input.rawPrompt,
+      prompt: input.prompt,
+      inputs: {},
+      deadlineAt: input.deadlineAt,
+      failureReason: null,
+      createdAt: now,
+      completedAt: null,
+    };
+    const step: WorkflowStepRunRecord = {
+      id: input.stepRunId ?? randomUUID(),
+      triggerRunId: run.id,
+      stepId: input.stepId,
+      ordinal: 0,
+      status: "pending",
+      agentExecutionId: null,
+      output: null,
+      failureReason: null,
+      startedAt: null,
+      completedAt: null,
+      dispatchIntent: input.dispatchIntent,
+    };
+    this.triggerRuns.set(run.id, run);
+    this.triggerRunIdsByTrigger.set(run.triggerId, run.id);
+    this.workflowStepRuns.set(step.id, step);
+    this.workflowWakeups.set(run.id, {
+      triggerRunId: run.id,
+      availableAt: now,
+      leaseExpiresAt: null,
+    });
+    return { run, created: true };
+  }
+
+  async findTriggerRunById(id: string) {
+    return this.triggerRuns.get(id);
+  }
+
+  async findTriggerRunByTriggerId(triggerId: string) {
+    const id = this.triggerRunIdsByTrigger.get(triggerId);
+    return id === undefined ? undefined : this.triggerRuns.get(id);
+  }
+
+  async findWorkflowStepRunById(id: string) {
+    return this.workflowStepRuns.get(id);
+  }
+
+  async findWorkflowStepRunByTriggerRun(triggerRunId: string) {
+    return Array.from(this.workflowStepRuns.values()).find(
+      (step) => step.triggerRunId === triggerRunId,
+    );
+  }
+
+  async findAgentExecutionByWorkflowStepRunId(stepRunId: string) {
+    return Array.from(this.agentExecutions.values()).find(
+      (execution) => execution.workflowStepRunId === stepRunId,
+    );
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+    const candidate = Array.from(this.workflowWakeups.values())
+      .filter(
+        (wakeup) =>
+          wakeup.availableAt <= now &&
+          (wakeup.leaseExpiresAt === null || wakeup.leaseExpiresAt <= now),
+      )
+      .sort((left, right) => left.availableAt.getTime() - right.availableAt.getTime())[0];
+    if (candidate === undefined) return undefined;
+    const claimed = { ...candidate, leaseExpiresAt: new Date(now.getTime() + leaseMs) };
+    this.workflowWakeups.set(candidate.triggerRunId, claimed);
+    return claimed;
+  }
+
+  async wakeWorkflowRun(triggerRunId: string, availableAt: Date) {
+    const current = this.workflowWakeups.get(triggerRunId);
+    this.workflowWakeups.set(triggerRunId, {
+      triggerRunId,
+      availableAt:
+        current === undefined || current.availableAt > availableAt
+          ? availableAt
+          : current.availableAt,
+      leaseExpiresAt: null,
+    });
+  }
+
+  async deleteWorkflowWakeup(triggerRunId: string) {
+    this.workflowWakeups.delete(triggerRunId);
+  }
+
+  async createWorkflowStepExecution(input: WorkflowStepExecutionInput) {
+    let step = await this.findWorkflowStepRunByTriggerRun(input.triggerRunId);
+    if (step === undefined || step.stepId !== input.stepId || step.ordinal !== input.ordinal) {
+      throw new Error("workflow step run not found");
+    }
+    if (step.agentExecutionId !== null) {
+      return {
+        stepRun: step,
+        execution: await this.findAgentExecutionById(step.agentExecutionId),
+        created: false,
+      };
+    }
+    const execution = await this.insertAgentExecution({
+      ...input.execution,
+      id: input.executionId,
+      workflowStepRunId: step.id,
+    });
+    step = {
+      ...step,
+      status: "running",
+      agentExecutionId: execution.id,
+      startedAt: execution.startedAt,
+    };
+    this.workflowStepRuns.set(step.id, step);
+    return { stepRun: step, execution, created: true };
+  }
+
+  async linkWorkflowStepRunExecution(stepRunId: string, executionId: string) {
+    const step = this.workflowStepRuns.get(stepRunId);
+    if (step === undefined) throw new Error(`workflow step run not found: ${stepRunId}`);
+    if (step.agentExecutionId !== null && step.agentExecutionId !== executionId) {
+      throw new Error(`workflow step run already linked: ${stepRunId}`);
+    }
+    if (step.agentExecutionId === executionId) return step;
+    const execution = await this.findAgentExecutionById(executionId);
+    if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    const updated = {
+      ...step,
+      status: "running" as const,
+      agentExecutionId: executionId,
+      startedAt: step.startedAt ?? execution.startedAt,
+    };
+    this.workflowStepRuns.set(stepRunId, updated);
+    return updated;
+  }
+
+  async completeWorkflowStep(
+    executionId: string,
+    status: "succeeded" | "failed" | "timed_out",
+    result: unknown,
+    failureReason?: string,
+  ) {
+    const execution = this.agentExecutions.get(executionId);
+    if (execution?.workflowStepRunId === null || execution?.workflowStepRunId === undefined)
+      return undefined;
+    const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+    if (step === undefined) return undefined;
+    const run = this.triggerRuns.get(step.triggerRunId);
+    if (run === undefined) return undefined;
+    if (step.status === "succeeded" || step.status === "failed" || step.status === "timed_out") {
+      return { stepRun: step, run };
+    }
+    const now = this.options.now?.() ?? new Date();
+    const updatedStep: WorkflowStepRunRecord = {
+      ...step,
+      status,
+      output: result,
+      failureReason: failureReason ?? null,
+      completedAt: now,
+    };
+    const updatedRun: TriggerRunRecord = {
+      ...run,
+      status: status === "succeeded" ? "succeeded" : status,
+      failureReason: failureReason ?? null,
+      completedAt: now,
+    };
+    this.workflowStepRuns.set(step.id, updatedStep);
+    this.triggerRuns.set(run.id, updatedRun);
+    this.workflowWakeups.delete(run.id);
+    return { stepRun: updatedStep, run: updatedRun };
+  }
+
+  async failWorkflowRun(
+    triggerRunId: string,
+    status: "failed" | "timed_out",
+    failureReason: string,
+  ) {
+    const run = this.triggerRuns.get(triggerRunId);
+    const step = await this.findWorkflowStepRunByTriggerRun(triggerRunId);
+    if (run === undefined || step === undefined) return undefined;
+    if (run.status !== "running") return { stepRun: step, run };
+    const now = this.options.now?.() ?? new Date();
+    const updatedStep =
+      step.status === "pending" || step.status === "running"
+        ? { ...step, status, failureReason, completedAt: now }
+        : step;
+    const updatedRun = {
+      ...run,
+      status,
+      failureReason,
+      completedAt: now,
+    };
+    this.workflowStepRuns.set(step.id, updatedStep);
+    this.triggerRuns.set(run.id, updatedRun);
+    this.workflowWakeups.delete(run.id);
+    return { stepRun: updatedStep, run: updatedRun };
+  }
+
+  async recoverWorkflowWakeups(now: Date) {
+    for (const run of this.triggerRuns.values()) {
+      if (run.status !== "running") continue;
+      const wakeup = this.workflowWakeups.get(run.id);
+      const step = await this.findWorkflowStepRunByTriggerRun(run.id);
+      const execution =
+        step?.agentExecutionId === null || step?.agentExecutionId === undefined
+          ? undefined
+          : await this.findAgentExecutionById(step.agentExecutionId);
+      if (
+        wakeup === undefined &&
+        (execution === undefined ||
+          execution.status === "succeeded" ||
+          execution.status === "failed")
+      ) {
+        this.workflowWakeups.set(run.id, {
+          triggerRunId: run.id,
+          availableAt: now,
+          leaseExpiresAt: null,
+        });
+      }
+    }
   }
 
   async insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult> {
@@ -154,8 +396,6 @@ class MemoryDatabase implements Database {
       receivedAt: input.receivedAt,
       matchedTriggerName: input.matchedTriggerName ?? null,
       droppedReason: input.droppedReason ?? null,
-      dispatchPlan: null,
-      lifecycleState: null,
     };
 
     this.triggers.set(trigger.id, trigger);
@@ -194,24 +434,6 @@ class MemoryDatabase implements Database {
     };
     this.triggers.set(id, updated);
     return updated;
-  }
-
-  async claimTriggerDispatchPlan(id: string, plan: readonly LaunchMachineIntent[]) {
-    const trigger = this.readTrigger(id);
-    if (trigger.dispatchPlan !== null) return { plan: trigger.dispatchPlan, claimed: false };
-    const updated = { ...trigger, dispatchPlan: plan };
-    this.triggers.set(id, updated);
-    return { plan, claimed: true };
-  }
-
-  async transitionTriggerLifecycle(id: string, lifecycleState: TriggerLifecycleState) {
-    const trigger = this.readTrigger(id);
-    if (!canTransitionTriggerLifecycle(trigger.lifecycleState, lifecycleState)) {
-      return { trigger, transitioned: false };
-    }
-    const updated = { ...trigger, lifecycleState };
-    this.triggers.set(id, updated);
-    return { trigger: updated, transitioned: true };
   }
 
   async acceptGitHubTrigger(input: AcceptGitHubTriggerInput): Promise<ProviderTriggerAcceptance> {
@@ -408,6 +630,7 @@ class MemoryDatabase implements Database {
       triggerId: input.triggerId ?? null,
       triggerConnectionId: input.triggerConnectionId ?? null,
       triggerResourceId: input.triggerResourceId ?? null,
+      workflowStepRunId: input.workflowStepRunId ?? null,
       hubAction: null,
       hubActionCompletedAt: null,
     };
@@ -1328,8 +1551,6 @@ class MemoryDatabase implements Database {
         receivedAt: input.receivedAt,
         matchedTriggerName: null,
         droppedReason: reason ?? null,
-        dispatchPlan: null,
-        lifecycleState: null,
       });
     }
     if (reason !== undefined || organizationId === undefined || connectionId === undefined) {
@@ -1415,16 +1636,6 @@ class MemoryDatabase implements Database {
 
 function connectionPersistenceUnavailable(): never {
   throw new Error("connection persistence requires PostgreSQL");
-}
-
-function canTransitionTriggerLifecycle(
-  from: TriggerLifecycleState | null,
-  to: TriggerLifecycleState,
-): boolean {
-  if (from === null) return true;
-  if (from === "accepted") return to === "running" || to === "succeeded" || to === "failed";
-  if (from === "running") return to === "succeeded" || to === "failed";
-  return false;
 }
 
 function durableTrigger(trigger: TriggerRecord): DurableTrigger {
