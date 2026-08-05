@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it } from "vitest";
 import {
   compileHubConfig,
   compiledConfigurationHash,
+  parseCompiledHubConfig,
   parseExpression,
   type AuthoredHubConfig,
 } from "./compiler.js";
+import * as configExports from "./index.js";
 
 describe("Hub configuration compiler", () => {
   it("compiles the canonical step-based workflow contract", () => {
@@ -16,7 +15,7 @@ describe("Hub configuration compiler", () => {
 
     assert.equal(compiled.triggers[0]?.name, "chat-request");
     assert.equal(compiled.triggers[0]?.maxRuntimeMs, 2 * 60 * 60_000);
-    assert.deepEqual(compiled.triggers[0]?.inputs.repo, {
+    assert.deepEqual(compiled.triggers[0]?.inputs["repo"], {
       type: "string",
       required: false,
       choices: ["paseo", "hub"],
@@ -29,7 +28,7 @@ describe("Hub configuration compiler", () => {
     });
     assert.equal(compiled.triggers[0]?.steps[0]?.prompt[1]?.kind, "text");
     assert.equal(compiled.triggers[0]?.steps[0]?.if?.kind, "binary");
-    assert.equal(compiled.triggers[0]?.values.repo?.kind, "binary");
+    assert.equal(compiled.triggers[0]?.values["repo"]?.kind, "binary");
     assert.notEqual(Object.isFrozen(compiled), false);
   });
 
@@ -50,17 +49,16 @@ describe("Hub configuration compiler", () => {
     "auto_archive",
     "allow_outputs",
   ])("rejects removed trigger-level %s with a migration hint", (field) => {
-    const configuration = structuredClone(canonicalConfiguration) as Record<string, unknown>;
-    const trigger = (configuration.triggers as Array<Record<string, unknown>>)[0]!;
-    trigger[field] = field === "agent" ? { provider: "codex" } : "removed";
+    const configuration = cloneCanonicalConfiguration();
+    const trigger = configuration["triggers"][0]!;
+    Object.assign(trigger, { [field]: field === "agent" ? { provider: "codex" } : "removed" });
 
     assert.throws(() => compileHubConfig(configuration), new RegExp(`${field}.*step`, "iu"));
   });
 
   it("rejects timeout and points authors at max_runtime", () => {
-    const configuration = structuredClone(canonicalConfiguration) as Record<string, unknown>;
-    const trigger = (configuration.triggers as Array<Record<string, unknown>>)[0]!;
-    trigger.timeout = "1h";
+    const configuration = cloneCanonicalConfiguration();
+    Object.assign(configuration["triggers"][0]!, { timeout: "1h" });
 
     assert.throws(() => compileHubConfig(configuration), /timeout.*max_runtime/iu);
   });
@@ -68,114 +66,146 @@ describe("Hub configuration compiler", () => {
   it.each([
     [
       "duplicate step IDs",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const steps = trigger.steps as Array<Record<string, unknown>>;
-        steps[1] = { ...steps[1], id: steps[0]!.id };
+      (config: AuthoredHubConfig) => {
+        const trigger = config["triggers"][0]!;
+        const steps = trigger["steps"];
+        steps[1] = { ...steps[1]!, id: steps[0]!.id };
       },
     ],
     [
       "unknown step references",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const values = trigger.values as Record<string, string>;
-        values.repo = "${{ steps.missing.outputs.repo }}";
+      (config: AuthoredHubConfig) => {
+        const trigger = config["triggers"][0]!;
+        trigger["values"] = { ...trigger["values"], repo: "${{ steps.missing.outputs.repo }}" };
       },
     ],
     [
       "forward step references",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const steps = trigger.steps as Array<Record<string, unknown>>;
-        steps[0]!.if = "${{ steps.work-on-hub.outputs.repo == 'hub' }}";
-        steps[1]!.output = { schema: { type: "object", properties: { repo: { type: "string" } } } };
+      (config: AuthoredHubConfig) => {
+        const steps = config["triggers"][0]!["steps"];
+        steps[0]!["if"] = "${{ steps.work-on-hub.outputs.repo == 'hub' }}";
+        steps[1]!["output"] = {
+          schema: { type: "object", properties: { repo: { type: "string" } } },
+        };
       },
     ],
     [
       "value cycles",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        trigger.values = { first: "${{ values.second }}", second: "${{ values.first }}" };
+      (config: AuthoredHubConfig) => {
+        config["triggers"][0]!["values"] = {
+          first: "${{ values.second }}",
+          second: "${{ values.first }}",
+        };
       },
     ],
     [
       "invalid choices",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const inputs = trigger.inputs as Record<string, Record<string, unknown>>;
-        inputs.agent.choices = ["codex", 3];
+      (config: AuthoredHubConfig) => {
+        const input = config["triggers"][0]!["inputs"]?.["agent"];
+        if (input === undefined) throw new Error("canonical agent input is missing");
+        Object.assign(input, { choices: ["codex", 3] });
       },
     ],
     [
       "unsafe prompt includes",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const steps = trigger.steps as Array<Record<string, unknown>>;
-        steps[0]!.prompt = [{ include: "../secret.md" }];
+      (config: AuthoredHubConfig) => {
+        config["triggers"][0]!["steps"][0]!["prompt"] = [{ include: "../secret.md" }];
       },
     ],
   ])("rejects %s", (_name, mutate) => {
-    const configuration = structuredClone(canonicalConfiguration) as Record<string, unknown>;
+    const configuration = cloneCanonicalConfiguration();
     mutate(configuration);
     assert.throws(() => compileHubConfig(configuration));
   });
 
   it("changes the compiled contract hash when a step changes", () => {
     const first = compileHubConfig(canonicalConfiguration);
-    const changed = structuredClone(canonicalConfiguration) as AuthoredHubConfig;
-    changed.triggers[0]!.steps[0]!.max_runtime = "3m";
+    const changed = cloneCanonicalConfiguration();
+    changed["triggers"][0]!["steps"][0]!["max_runtime"] = "3m";
     const second = compileHubConfig(changed);
 
     assert.notEqual(compiledConfigurationHash(first), compiledConfigurationHash(second));
   });
 
-  it("does not retain the legacy trigger execution parser or default hydrator", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const schemaSource = readFileSync(join(here, "schema.ts"), "utf8");
-    const storeSource = readFileSync(join(here, "../configuration/store.ts"), "utf8");
-
-    assert.equal(schemaSource.includes("TriggerSchema"), false);
-    assert.equal(schemaSource.includes("parseTriggerTimeoutMs"), false);
-    assert.equal(storeSource.includes("hydrateTriggerDefaults"), false);
-    assert.equal(storeSource.includes("restoreAuthoredTemplates"), false);
+  it("does not expose the removed trigger execution parser through the config module", () => {
+    assert.equal("parseTriggerTimeoutMs" in configExports, false);
+    assert.equal("TriggerSchema" in configExports, false);
   });
+
+  it("strictly validates stored compiled contracts", () => {
+    const compiled = compileHubConfig(canonicalConfiguration);
+    const malformed = structuredClone(compiled);
+    Object.assign(malformed["triggers"][0]!, { maxRuntimeMs: "2h" });
+
+    assert.throws(() => parseCompiledHubConfig(malformed), /invalid compiled workflow contract/iu);
+  });
+
+  it("rejects unsupported JSON Schema keywords at the compiler boundary", () => {
+    const configuration = cloneCanonicalConfiguration();
+    configuration["triggers"][0]!["steps"][0]!["output"] = {
+      schema: { type: "object", unsupportedKeyword: true },
+    };
+
+    assert.throws(() => compileHubConfig(configuration), /invalid JSON Schema/iu);
+  });
+
+  it.each(["if", "prompt", "agent"])(
+    "rejects transitive forward outputs at the step %s use site",
+    (useSite) => {
+      const configuration = cloneCanonicalConfiguration();
+      const trigger = configuration["triggers"][0]!;
+      trigger["values"] = {
+        ...trigger["values"],
+        later: "${{ steps.work-on-hub.outputs.repo }}",
+      };
+      trigger["steps"][1]!["output"] = {
+        schema: { type: "object", properties: { repo: { type: "string" } } },
+      };
+      if (useSite === "if") trigger["steps"][0]!["if"] = "${{ values.later == 'hub' }}";
+      if (useSite === "prompt") trigger["steps"][0]!["prompt"] = [{ text: "${{ values.later }}" }];
+      if (useSite === "agent") trigger["steps"][0]!["agent"]["provider"] = "${{ values.later }}";
+
+      assert.throws(() => compileHubConfig(configuration), /forward step reference/iu);
+    },
+  );
 
   it.each([
     [
       "invalid IDs",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        trigger.name = "Not an ID";
+      (config: AuthoredHubConfig) => {
+        Object.assign(config["triggers"][0]!, { name: "Not an ID" });
       },
     ],
     [
       "invalid expressions",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        trigger.values = { repo: "${{ paseo.inputs.repo + 'hub' }}" };
+      (config: AuthoredHubConfig) => {
+        config["triggers"][0]!["values"] = { repo: "${{ paseo.inputs.repo + 'hub' }}" };
       },
     ],
     [
       "invalid JSON schemas",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        const steps = trigger.steps as Array<Record<string, unknown>>;
-        steps[0]!.output = { schema: { type: "object", required: ["missing"], properties: {} } };
+      (config: AuthoredHubConfig) => {
+        config["triggers"][0]!["steps"][0]!["output"] = {
+          schema: { type: "not-a-json-schema-type" },
+        };
       },
     ],
     [
       "invalid durations",
-      (config: Record<string, unknown>) => {
-        const trigger = (config.triggers as Array<Record<string, unknown>>)[0]!;
-        trigger.max_runtime = "0s";
+      (config: AuthoredHubConfig) => {
+        config["triggers"][0]!["max_runtime"] = "0s";
       },
     ],
   ])("rejects %s", (_name, mutate) => {
-    const configuration = structuredClone(canonicalConfiguration) as Record<string, unknown>;
+    const configuration = cloneCanonicalConfiguration();
     mutate(configuration);
     assert.throws(() => compileHubConfig(configuration));
   });
 });
+
+function cloneCanonicalConfiguration(): AuthoredHubConfig {
+  return structuredClone(canonicalConfiguration);
+}
 
 const canonicalConfiguration = {
   environments: [

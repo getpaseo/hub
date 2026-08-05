@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
@@ -138,7 +139,7 @@ const AuthoredSchema = z
 export const HubConfigSchema = AuthoredSchema;
 
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
 
 export type AuthoredInputDefinition = z.infer<typeof InputSchema>;
 export type AuthoredEnvironment = z.infer<typeof EnvironmentSchema>;
@@ -168,30 +169,28 @@ export type CompiledPromptBlock =
 export interface CompiledInputDefinition {
   type: AuthoredInputDefinition["type"];
   required: boolean;
-  default?: JsonPrimitive;
-  choices?: readonly JsonPrimitive[];
+  default?: JsonPrimitive | undefined;
+  choices?: readonly JsonPrimitive[] | undefined;
 }
 
 export interface CompiledAgent {
   provider: string | ExpressionAst;
-  model?: string | ExpressionAst;
-  mode?: string | ExpressionAst;
-  thinkingOptionId?: string | ExpressionAst;
+  model?: string | ExpressionAst | undefined;
+  mode?: string | ExpressionAst | undefined;
+  thinkingOptionId?: string | ExpressionAst | undefined;
 }
 
-export interface JsonSchemaContract {
-  readonly [key: string]: JsonValue;
-}
+export type JsonSchemaContract = boolean | { readonly [key: string]: JsonValue };
 
 export interface CompiledStep {
   id: string;
-  if?: ExpressionAst;
+  if?: ExpressionAst | undefined;
   environment: string;
   maxRuntimeMs: number;
   idleTimeoutMs: number;
   agent: CompiledAgent;
   prompt: readonly CompiledPromptBlock[];
-  outputSchema?: JsonSchemaContract;
+  outputSchema?: JsonSchemaContract | undefined;
   allowOutputs: readonly { type: string; max: number }[];
   autoArchive: boolean;
 }
@@ -203,13 +202,148 @@ export interface CompiledTrigger {
   inputs: Readonly<Record<string, CompiledInputDefinition>>;
   values: Readonly<Record<string, ExpressionAst>>;
   steps: readonly CompiledStep[];
-  filters?: AuthoredTrigger["filters"];
+  filters?: AuthoredTrigger["filters"] | undefined;
 }
 
+export type CompiledEnvironment =
+  | (Extract<AuthoredEnvironment, { kind: "daemon" }> & { daemonId?: string | undefined })
+  | Exclude<AuthoredEnvironment, { kind: "daemon" }>;
+
 export interface CompiledHubConfig {
-  environments: readonly (AuthoredEnvironment & { daemonId?: string })[];
+  environments: readonly CompiledEnvironment[];
   triggers: readonly CompiledTrigger[];
 }
+
+const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(JsonValueSchema),
+    z.record(z.string(), JsonValueSchema),
+  ]),
+);
+
+const ExpressionAstSchema: z.ZodType<ExpressionAst> = z.lazy(() =>
+  z.union([
+    z.object({ kind: z.literal("path"), path: z.array(z.string().min(1)) }).strict(),
+    z.object({ kind: z.literal("literal"), value: JsonValueSchema }).strict(),
+    z
+      .object({ kind: z.literal("unary"), operator: z.literal("!"), operand: ExpressionAstSchema })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("binary"),
+        operator: z.enum(["==", "!=", "&&", "||", "??"]),
+        left: ExpressionAstSchema,
+        right: ExpressionAstSchema,
+      })
+      .strict(),
+  ]),
+);
+
+const CompiledPromptExpressionPartSchema: z.ZodType<PromptExpressionPart> = z.union([
+  z.object({ kind: z.literal("literal"), value: z.string() }).strict(),
+  z.object({ kind: z.literal("expression"), expression: ExpressionAstSchema }).strict(),
+]);
+
+const CompiledPromptBlockSchema: z.ZodType<CompiledPromptBlock> = z.union([
+  z.object({ kind: z.literal("include"), path: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal("text"),
+      value: z.string(),
+      ast: z.array(CompiledPromptExpressionPartSchema),
+    })
+    .strict(),
+]);
+
+const CompiledInputDefinitionSchema: z.ZodType<CompiledInputDefinition> = z
+  .object({
+    type: z.enum(["string", "number", "boolean"]),
+    required: z.boolean(),
+    default: z.union([z.string(), z.number().finite(), z.boolean(), z.null()]).optional(),
+    choices: z.array(z.union([z.string(), z.number().finite(), z.boolean(), z.null()])).optional(),
+  })
+  .strict();
+
+const CompiledExpressionValueSchema = z.union([z.string().min(1), ExpressionAstSchema]);
+const CompiledAgentSchema: z.ZodType<CompiledAgent> = z
+  .object({
+    provider: CompiledExpressionValueSchema,
+    model: CompiledExpressionValueSchema.optional(),
+    mode: CompiledExpressionValueSchema.optional(),
+    thinkingOptionId: CompiledExpressionValueSchema.optional(),
+  })
+  .strict();
+
+const CompiledEnvironmentSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      name: z.string().regex(IDENTIFIER),
+      kind: z.literal("daemon"),
+      daemon: z.string().min(1),
+      daemonId: z.string().min(1).optional(),
+      cwd: z.string().min(1),
+      worktree: WorktreeTargetSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      name: z.string().regex(IDENTIFIER),
+      kind: z.literal("fly"),
+      image: z.string().min(1),
+      cwd: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      name: z.string().regex(IDENTIFIER),
+      kind: z.literal("docker"),
+      image: z.string().min(1),
+      cwd: z.string().min(1).optional(),
+    })
+    .strict(),
+]);
+
+const CompiledStepSchema: z.ZodType<CompiledStep> = z
+  .object({
+    id: z.string().regex(IDENTIFIER),
+    if: ExpressionAstSchema.optional(),
+    environment: z.string().min(1),
+    maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+    idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
+    agent: CompiledAgentSchema,
+    prompt: z.array(CompiledPromptBlockSchema).min(1),
+    outputSchema: z.union([z.boolean(), z.record(z.string(), JsonValueSchema)]).optional(),
+    allowOutputs: z.array(
+      z.object({ type: z.string().min(1), max: z.number().int().positive() }).strict(),
+    ),
+    autoArchive: z.boolean(),
+  })
+  .strict();
+
+const CompiledTriggerSchema: z.ZodType<CompiledTrigger> = z
+  .object({
+    name: z.string().regex(IDENTIFIER),
+    on: z.string().regex(EVENT_NAME),
+    maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+    inputs: z.record(z.string().regex(IDENTIFIER), CompiledInputDefinitionSchema),
+    values: z.record(z.string().regex(IDENTIFIER), ExpressionAstSchema),
+    steps: z.array(CompiledStepSchema).min(1),
+    filters: FilterSchema.optional(),
+  })
+  .strict();
+
+const CompiledHubConfigSchema: z.ZodType<CompiledHubConfig> = z
+  .object({
+    environments: z.array(CompiledEnvironmentSchema).min(1),
+    triggers: z.array(CompiledTriggerSchema),
+  })
+  .strict();
+
+const jsonSchemaCompiler = new Ajv2020({ allErrors: true, strict: true });
 
 export function compileHubConfig(raw: unknown): CompiledHubConfig {
   rejectRemovedFields(raw);
@@ -224,13 +358,39 @@ export function compileHubConfig(raw: unknown): CompiledHubConfig {
 }
 
 export function parseCompiledHubConfig(value: unknown): CompiledHubConfig {
-  if (!isRecord(value) || !Array.isArray(value.environments) || !Array.isArray(value.triggers)) {
+  let cloned: unknown;
+  try {
+    cloned = structuredClone(value);
+  } catch {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
-  return deepFreeze(structuredClone(value)) as CompiledHubConfig;
+  const parsed = CompiledHubConfigSchema.safeParse(cloned);
+  if (!parsed.success) {
+    throw new Error("active configuration contains an invalid compiled workflow contract");
+  }
+  for (const trigger of parsed.data.triggers) {
+    for (const step of trigger.steps) {
+      if (step.outputSchema !== undefined) {
+        validateJsonSchema(step.outputSchema, `step ${step.id} output.schema`);
+      }
+    }
+  }
+  const environmentNames = new Set(parsed.data.environments.map((environment) => environment.name));
+  for (const trigger of parsed.data.triggers) {
+    for (const step of trigger.steps) {
+      if (!environmentNames.has(step.environment)) {
+        throw new Error(`active configuration contains an unknown environment ${step.environment}`);
+      }
+      if (step.idleTimeoutMs > step.maxRuntimeMs) {
+        throw new Error(`active configuration contains an invalid step timeout relationship`);
+      }
+    }
+  }
+  validateReferences(parsed.data);
+  return deepFreeze(parsed.data);
 }
 
-export function compiledConfigurationHash(configuration: CompiledHubConfig): string {
+export function compiledConfigurationHash(configuration: unknown): string {
   return createHash("sha256").update(stableJson(configuration)).digest("hex");
 }
 
@@ -241,7 +401,10 @@ export function parseDurationMs(value: string, field: string): number {
   }
   const amount = Number(match[1]);
   const unit = match[2];
-  const multiplier = unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000;
+  let multiplier = 3_600_000;
+  if (unit === "ms") multiplier = 1;
+  else if (unit === "s") multiplier = 1_000;
+  else if (unit === "m") multiplier = 60_000;
   const duration = amount * multiplier;
   if (!Number.isSafeInteger(duration) || duration > MAX_DURATION_MS) {
     throw new Error(`${field} must not exceed 24h`);
@@ -384,12 +547,18 @@ function compileStep(
     const parsed = parsePromptText(block.text, `step ${step.id} prompt block ${index}`);
     return { kind: "text" as const, value: parsed.value, ast: parsed.ast };
   });
-  const agent = Object.fromEntries(
-    Object.entries(step.agent).map(([name, value]) => [
-      name,
-      isExpression(value) ? parseExpression(value, `step ${step.id} agent.${name}`) : value,
-    ]),
-  ) as unknown as CompiledAgent;
+  const agent: CompiledAgent = {
+    provider: compileAgentValue(step.agent.provider, `step ${step.id} agent.provider`),
+  };
+  if (step.agent.model !== undefined)
+    agent.model = compileAgentValue(step.agent.model, `step ${step.id} agent.model`);
+  if (step.agent.mode !== undefined)
+    agent.mode = compileAgentValue(step.agent.mode, `step ${step.id} agent.mode`);
+  if (step.agent.thinkingOptionId !== undefined)
+    agent.thinkingOptionId = compileAgentValue(
+      step.agent.thinkingOptionId,
+      `step ${step.id} agent.thinkingOptionId`,
+    );
   return {
     id: step.id,
     ...(step.if === undefined ? {} : { if: parseExpression(step.if, `step ${step.id} if`) }),
@@ -409,6 +578,10 @@ function compileStep(
   };
 }
 
+function compileAgentValue(value: string, field: string): string | ExpressionAst {
+  return isExpression(value) ? parseExpression(value, field) : value;
+}
+
 function validateReferences(config: CompiledHubConfig): void {
   for (const trigger of config.triggers) {
     const stepOrdinals = new Map(trigger.steps.map((step, index) => [step.id, index]));
@@ -419,33 +592,83 @@ function validateReferences(config: CompiledHubConfig): void {
     }
     for (const [index, step] of trigger.steps.entries()) {
       if (step.if !== undefined) {
-        walkExpression(step.if, (path) => {
-          validatePath(path, trigger, stepOrdinals, `step ${step.id} if`);
-          const referencedStep = path[0] === "steps" ? stepOrdinals.get(path[1]!) : undefined;
-          if (referencedStep !== undefined && referencedStep >= index) {
-            throw new Error(`step ${step.id} if contains a forward step reference to ${path[1]}`);
-          }
-        });
+        validateExpressionAtStep(step.if, trigger, stepOrdinals, index, `step ${step.id} if`);
       }
-      for (const block of step.prompt) {
-        if (block.kind !== "text") continue;
-        for (const part of block.ast) {
-          if (part.kind === "expression") {
-            walkExpression(part.expression, (path) =>
-              validatePath(path, trigger, stepOrdinals, `step ${step.id} prompt`),
-            );
-          }
-        }
-      }
-      for (const value of Object.values(step.agent)) {
-        if (typeof value !== "string")
-          walkExpression(value, (path) =>
-            validatePath(path, trigger, stepOrdinals, `step ${step.id} agent`),
-          );
-      }
+      validatePromptReferences(step, trigger, stepOrdinals, index);
+      validateAgentReferences(step, trigger, stepOrdinals, index);
     }
     detectValueCycles(trigger);
   }
+}
+
+function validatePromptReferences(
+  step: CompiledStep,
+  trigger: CompiledTrigger,
+  stepOrdinals: ReadonlyMap<string, number>,
+  index: number,
+): void {
+  for (const block of step.prompt) {
+    if (block.kind !== "text") continue;
+    for (const part of block.ast) {
+      if (part.kind !== "expression") continue;
+      validateExpressionAtStep(
+        part.expression,
+        trigger,
+        stepOrdinals,
+        index,
+        `step ${step.id} prompt`,
+      );
+    }
+  }
+}
+
+function validateAgentReferences(
+  step: CompiledStep,
+  trigger: CompiledTrigger,
+  stepOrdinals: ReadonlyMap<string, number>,
+  index: number,
+): void {
+  const values = [
+    step.agent.provider,
+    step.agent.model,
+    step.agent.mode,
+    step.agent.thinkingOptionId,
+  ];
+  for (const value of values) {
+    if (value === undefined || typeof value === "string") continue;
+    validateExpressionAtStep(value, trigger, stepOrdinals, index, `step ${step.id} agent`);
+  }
+}
+
+function validateExpressionAtStep(
+  expression: ExpressionAst,
+  trigger: CompiledTrigger,
+  stepOrdinals: ReadonlyMap<string, number>,
+  currentOrdinal: number,
+  field: string,
+): void {
+  const visitingValues = new Set<string>();
+  const visit = (current: ExpressionAst, currentField: string): void => {
+    walkExpression(current, (path) => {
+      validatePath(path, trigger, stepOrdinals, currentField);
+      if (path[0] === "steps") {
+        const referencedStep = stepOrdinals.get(path[1]!);
+        if (referencedStep !== undefined && referencedStep >= currentOrdinal) {
+          throw new Error(`${field} contains a forward step reference to ${path[1]}`);
+        }
+      }
+      if (path[0] === "values") {
+        const valueName = path[1]!;
+        if (visitingValues.has(valueName)) return;
+        const valueExpression = trigger.values[valueName];
+        if (valueExpression === undefined) return;
+        visitingValues.add(valueName);
+        visit(valueExpression, `${field} through values.${valueName}`);
+        visitingValues.delete(valueName);
+      }
+    });
+  };
+  visit(expression, field);
 }
 
 function validatePath(
@@ -505,115 +728,34 @@ function detectValueCycles(trigger: CompiledTrigger): void {
 }
 
 function outputPathExists(schema: JsonSchemaContract, path: readonly string[]): boolean {
-  let current: JsonSchemaContract | undefined = schema;
+  let current: JsonSchemaContract = schema;
   for (const segment of path) {
-    const properties = current["properties"] as unknown;
-    if (isRecord(properties) && segment in properties && isRecord(properties[segment])) {
-      current = properties[segment] as JsonSchemaContract;
+    if (typeof current === "boolean") return current;
+    const properties = current["properties"];
+    if (isRecord(properties) && isJsonSchemaContract(properties[segment])) {
+      current = properties[segment];
       continue;
     }
-    if (current.additionalProperties === true) return true;
-    if (isRecord(current.additionalProperties)) {
-      current = current.additionalProperties as JsonSchemaContract;
+    const additionalProperties = current["additionalProperties"];
+    if (additionalProperties === true) return true;
+    if (isJsonSchemaContract(additionalProperties)) {
+      current = additionalProperties;
       continue;
     }
     return false;
   }
-  return true;
+  return typeof current !== "boolean" || current;
 }
 
 function validateJsonSchema(value: unknown, field: string): JsonSchemaContract {
-  if (!isRecord(value)) throw new Error(`${field} must be a JSON Schema object`);
-  validateSchemaNode(value, field);
-  return structuredClone(value) as JsonSchemaContract;
-}
-
-function validateSchemaNode(schema: Record<string, unknown>, field: string): void {
-  const allowedTypes = new Set([
-    "object",
-    "array",
-    "string",
-    "number",
-    "integer",
-    "boolean",
-    "null",
-  ]);
-  if (
-    schema.type !== undefined &&
-    (typeof schema.type !== "string" || !allowedTypes.has(schema.type))
-  ) {
-    throw new Error(`${field}.type must be a supported JSON Schema type`);
+  if (!isJsonSchemaContract(value)) throw new Error(`${field} must be a JSON Schema`);
+  try {
+    jsonSchemaCompiler.compile(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "invalid JSON Schema";
+    throw new Error(`${field} is invalid JSON Schema: ${message}`, { cause: error });
   }
-  if (schema.enum !== undefined) {
-    if (!Array.isArray(schema.enum) || schema.enum.length === 0)
-      throw new Error(`${field}.enum must be a non-empty array`);
-    for (const value of schema.enum) {
-      if (!isJsonValue(value)) throw new Error(`${field}.enum must contain JSON values`);
-      if (schema.type !== undefined && !matchesJsonSchemaType(schema.type, value)) {
-        throw new Error(`${field}.enum contains a value incompatible with type ${schema.type}`);
-      }
-    }
-  }
-  if (schema.required !== undefined) {
-    if (
-      !Array.isArray(schema.required) ||
-      schema.required.some((item) => typeof item !== "string")
-    ) {
-      throw new Error(`${field}.required must be an array of property names`);
-    }
-    if (new Set(schema.required).size !== schema.required.length) {
-      throw new Error(`${field}.required must not contain duplicate property names`);
-    }
-  }
-  if (schema.properties !== undefined) {
-    if (!isRecord(schema.properties)) throw new Error(`${field}.properties must be an object`);
-    for (const [name, child] of Object.entries(schema.properties)) {
-      if (!isRecord(child))
-        throw new Error(`${field}.properties.${name} must be a JSON Schema object`);
-      validateSchemaNode(child, `${field}.properties.${name}`);
-    }
-    if (Array.isArray(schema.required)) {
-      for (const name of schema.required) {
-        if (!(name in schema.properties))
-          throw new Error(`${field}.required references unknown property ${name}`);
-      }
-    }
-  } else if (Array.isArray(schema.required) && schema.required.length > 0) {
-    throw new Error(`${field}.required requires properties`);
-  }
-  if (
-    schema.additionalProperties !== undefined &&
-    typeof schema.additionalProperties !== "boolean" &&
-    !isRecord(schema.additionalProperties)
-  ) {
-    throw new Error(`${field}.additionalProperties must be boolean or a schema`);
-  }
-  if (isRecord(schema.additionalProperties))
-    validateSchemaNode(schema.additionalProperties, `${field}.additionalProperties`);
-  if (schema.items !== undefined) {
-    if (!isRecord(schema.items)) throw new Error(`${field}.items must be a JSON Schema object`);
-    validateSchemaNode(schema.items, `${field}.items`);
-  }
-  for (const keyword of ["minLength", "maxLength", "minimum", "maximum"]) {
-    if (
-      schema[keyword] !== undefined &&
-      (typeof schema[keyword] !== "number" || !Number.isFinite(schema[keyword]))
-    ) {
-      throw new Error(`${field}.${keyword} must be a finite number`);
-    }
-  }
-}
-
-function matchesJsonSchemaType(type: string, value: unknown): boolean {
-  return (
-    (type === "null" && value === null) ||
-    (type === "string" && typeof value === "string") ||
-    (type === "number" && typeof value === "number" && Number.isFinite(value)) ||
-    (type === "integer" && typeof value === "number" && Number.isInteger(value)) ||
-    (type === "boolean" && typeof value === "boolean") ||
-    (type === "array" && Array.isArray(value)) ||
-    (type === "object" && isRecord(value))
-  );
+  return structuredClone(value);
 }
 
 function validateIds(config: AuthoredHubConfig): void {
@@ -667,24 +809,13 @@ function matchesInputType(type: AuthoredInputDefinition["type"], value: JsonPrim
 }
 
 function rejectRemovedFields(raw: unknown): void {
-  if (!isRecord(raw) || !Array.isArray(raw.triggers)) return;
-  for (const [index, trigger] of raw.triggers.entries()) {
+  if (!isRecord(raw) || !Array.isArray(raw["triggers"])) return;
+  for (const [index, trigger] of raw["triggers"].entries()) {
     if (!isRecord(trigger)) continue;
     for (const [field, hint] of REMOVED_TRIGGER_FIELDS) {
       if (field in trigger) throw new Error(`triggers[${index}].${field}: ${hint}`);
     }
   }
-  rejectTimeoutAnywhere(raw);
-}
-
-function rejectTimeoutAnywhere(value: unknown, path = "configuration"): void {
-  if (Array.isArray(value)) {
-    value.forEach((child, index) => rejectTimeoutAnywhere(child, `${path}[${index}]`));
-    return;
-  }
-  if (!isRecord(value)) return;
-  if ("timeout" in value) throw new Error(`${path}.timeout: timeout was removed; use max_runtime`);
-  for (const [key, child] of Object.entries(value)) rejectTimeoutAnywhere(child, `${path}.${key}`);
 }
 
 function isExpression(value: string): boolean {
@@ -725,20 +856,32 @@ function isJsonValue(value: unknown): value is JsonValue {
   return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+function isJsonSchemaContract(value: unknown): value is JsonSchemaContract {
+  return typeof value === "boolean" || isJsonObject(value);
+}
+
+function isJsonObject(value: unknown): value is { readonly [key: string]: JsonValue } {
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function deepFreeze<T>(value: T): T {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
   Object.freeze(value);
-  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  if (Array.isArray(value)) {
+    for (const child of value) deepFreeze(child);
+  } else if (isRecord(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
   return value;
 }
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (typeof value !== "object" || value === null) return JSON.stringify(value);
+  if (typeof value !== "object" || value === null) return JSON.stringify(value) ?? "undefined";
   return `{${Object.entries(value)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
@@ -795,7 +938,9 @@ class ExpressionParser {
   private parseEquality(): ExpressionAst {
     let left = this.parseUnary();
     while (true) {
-      const operator = this.takeOperator("==") ? "==" : this.takeOperator("!=") ? "!=" : undefined;
+      let operator: "==" | "!=" | undefined;
+      if (this.takeOperator("==")) operator = "==";
+      else if (this.takeOperator("!=")) operator = "!=";
       if (operator === undefined) return left;
       left = { kind: "binary", operator, left, right: this.parseUnary() };
     }
@@ -841,95 +986,117 @@ class ExpressionParser {
   }
 }
 
+type BinaryOperator = Exclude<Operator, "(" | ")" | "!">;
+interface TokenRead {
+  token: Token;
+  nextIndex: number;
+}
+
+const TWO_CHARACTER_OPERATORS: Readonly<Record<string, BinaryOperator>> = {
+  "==": "==",
+  "!=": "!=",
+  "&&": "&&",
+  "||": "||",
+  "??": "??",
+};
+
 function tokenize(source: string, field: string): Token[] {
   const tokens: Token[] = [];
   let index = 0;
   while (index < source.length) {
-    const character = source[index]!;
+    const character = source[index];
+    if (character === undefined) break;
     if (/\s/u.test(character)) {
       index += 1;
       continue;
     }
-    const two = source.slice(index, index + 2);
-    if (["==", "!=", "&&", "||", "??"].includes(two)) {
-      tokens.push({ kind: "operator", value: two as "==" | "!=" | "&&" | "||" | "??" });
-      index += 2;
-      continue;
-    }
-    if (character === "(" || character === ")" || character === "!") {
-      tokens.push({ kind: "operator", value: character });
-      index += 1;
-      continue;
-    }
-    if (character === ".") {
-      tokens.push({ kind: "dot" });
-      index += 1;
-      continue;
-    }
-    if (character === "[" || character === "{") {
-      const end = findJsonLiteralEnd(source, index, field);
-      const raw = source.slice(index, end);
-      let value: unknown;
-      try {
-        value = JSON.parse(raw);
-      } catch {
-        throw new Error(`${field} contains an invalid JSON literal`);
-      }
-      if (!isJsonValue(value)) throw new Error(`${field} contains an invalid JSON literal`);
-      tokens.push({ kind: "literal", value });
-      index = end;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      const quote = character;
-      const literalStart = index;
-      let end = index + 1;
-      let escaped = false;
-      let value = "";
-      for (; end < source.length; end += 1) {
-        const current = source[end]!;
-        if (escaped) {
-          value +=
-            current === "n" ? "\n" : current === "r" ? "\r" : current === "t" ? "\t" : current;
-          escaped = false;
-        } else if (current === "\\") escaped = true;
-        else if (current === quote) break;
-        else value += current;
-      }
-      if (source[end] !== quote)
-        throw new Error(`${field} contains an unterminated string literal`);
-      if (quote === '"') {
-        try {
-          tokens.push({ kind: "literal", value: JSON.parse(source.slice(literalStart, end + 1)) });
-        } catch {
-          throw new Error(`${field} contains an invalid string literal`);
-        }
-      } else {
-        tokens.push({ kind: "literal", value });
-      }
-      index = end + 1;
-      continue;
-    }
-    const number = source
-      .slice(index)
-      .match(/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u)?.[0];
-    if (number !== undefined) {
-      tokens.push({ kind: "literal", value: Number(number) });
-      index += number.length;
-      continue;
-    }
-    const identifier = source.slice(index).match(/^[a-zA-Z_][a-zA-Z0-9_-]*/u)?.[0];
-    if (identifier !== undefined) {
-      if (identifier === "true" || identifier === "false")
-        tokens.push({ kind: "literal", value: identifier === "true" });
-      else if (identifier === "null") tokens.push({ kind: "literal", value: null });
-      else tokens.push({ kind: "identifier", value: identifier });
-      index += identifier.length;
-      continue;
-    }
-    throw new Error(`${field} contains an unsupported token near ${source.slice(index)}`);
+    const read = readToken(source, index, field);
+    tokens.push(read.token);
+    index = read.nextIndex;
   }
   return tokens;
+}
+
+function readToken(source: string, index: number, field: string): TokenRead {
+  const character = source[index];
+  if (character === undefined) throw new Error(`${field} contains an unexpected end`);
+  const operator = TWO_CHARACTER_OPERATORS[source.slice(index, index + 2)];
+  if (operator !== undefined)
+    return { token: { kind: "operator", value: operator }, nextIndex: index + 2 };
+  if (character === "(" || character === ")" || character === "!") {
+    return { token: { kind: "operator", value: character }, nextIndex: index + 1 };
+  }
+  if (character === ".") return { token: { kind: "dot" }, nextIndex: index + 1 };
+  if (character === "[" || character === "{") return readJsonToken(source, index, field);
+  if (character === '"' || character === "'") return readStringToken(source, index, field);
+  const number = source
+    .slice(index)
+    .match(/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u)?.[0];
+  if (number !== undefined) {
+    return { token: { kind: "literal", value: Number(number) }, nextIndex: index + number.length };
+  }
+  const identifier = source.slice(index).match(/^[a-zA-Z_][a-zA-Z0-9_-]*/u)?.[0];
+  if (identifier !== undefined) return readIdentifier(identifier, index);
+  throw new Error(`${field} contains an unsupported token near ${source.slice(index)}`);
+}
+
+function readIdentifier(identifier: string, index: number): TokenRead {
+  let token: Token;
+  if (identifier === "true" || identifier === "false")
+    token = { kind: "literal", value: identifier === "true" };
+  else if (identifier === "null") token = { kind: "literal", value: null };
+  else token = { kind: "identifier", value: identifier };
+  return { token, nextIndex: index + identifier.length };
+}
+
+function readJsonToken(source: string, index: number, field: string): TokenRead {
+  const end = findJsonLiteralEnd(source, index, field);
+  let value: unknown;
+  try {
+    value = JSON.parse(source.slice(index, end));
+  } catch {
+    throw new Error(`${field} contains an invalid JSON literal`);
+  }
+  if (!isJsonValue(value)) throw new Error(`${field} contains an invalid JSON literal`);
+  return { token: { kind: "literal", value }, nextIndex: end };
+}
+
+function readStringToken(source: string, index: number, field: string): TokenRead {
+  const quote = source[index];
+  if (quote !== '"' && quote !== "'")
+    throw new Error(`${field} contains an invalid string literal`);
+  let end = index + 1;
+  let escaped = false;
+  let value = "";
+  for (; end < source.length; end += 1) {
+    const current = source[end];
+    if (current === undefined) break;
+    if (escaped) {
+      value += decodeEscapedCharacter(current);
+      escaped = false;
+    } else if (current === "\\") escaped = true;
+    else if (current === quote) break;
+    else value += current;
+  }
+  if (source[end] !== quote) throw new Error(`${field} contains an unterminated string literal`);
+  if (quote === '"') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source.slice(index, end + 1));
+    } catch {
+      throw new Error(`${field} contains an invalid string literal`);
+    }
+    if (!isJsonValue(parsed)) throw new Error(`${field} contains an invalid string literal`);
+    return { token: { kind: "literal", value: parsed }, nextIndex: end + 1 };
+  }
+  return { token: { kind: "literal", value }, nextIndex: end + 1 };
+}
+
+function decodeEscapedCharacter(character: string): string {
+  if (character === "n") return "\n";
+  if (character === "r") return "\r";
+  if (character === "t") return "\t";
+  return character;
 }
 
 function findJsonLiteralEnd(source: string, start: number, field: string): number {

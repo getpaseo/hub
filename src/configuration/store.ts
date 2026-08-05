@@ -21,11 +21,11 @@ export interface StoredProjectConfiguration {
 }
 
 export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments" | "triggers"> & {
-  environments: Array<
+  environments: readonly (
     | Exclude<EnvironmentConfig, { kind: "daemon" }>
     | (Extract<EnvironmentConfig, { kind: "daemon" }> & { daemonId: string })
-  >;
-  triggers: CompiledTrigger[];
+  )[];
+  triggers: readonly CompiledTrigger[];
 };
 
 export class ProjectConfigurationStore {
@@ -152,11 +152,22 @@ export class ProjectConfigurationStore {
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
-  return parseCompiledHubConfig(revision.normalizedConfiguration) as CompiledProjectConfiguration;
+  return toProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
 }
 
 export function configurationHash(configuration: unknown): string {
-  return compiledConfigurationHash(configuration as CompiledHubConfig);
+  return compiledConfigurationHash(configuration);
+}
+
+function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProjectConfiguration {
+  const environments = configuration.environments.map((environment) => {
+    if (environment.kind !== "daemon") return environment;
+    if (environment.daemonId === undefined) {
+      throw new Error("active configuration contains an uncompiled daemon reference");
+    }
+    return { ...environment, daemonId: environment.daemonId };
+  });
+  return { environments, triggers: configuration.triggers };
 }
 
 async function prepareRevision(
@@ -167,7 +178,7 @@ async function prepareRevision(
   const compiled = await compileConfiguration(database, projectId, rawConfiguration);
   if (!compiled.success) {
     return {
-      normalizedConfiguration: rawConfiguration,
+      normalizedConfiguration: compiled.configuration ?? rawConfiguration,
       validationErrors: compiled.validationErrors ?? {
         formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
       },
@@ -182,7 +193,12 @@ async function compileConfiguration(
   rawConfiguration: unknown,
 ): Promise<
   | { success: true; configuration: CompiledProjectConfiguration }
-  | { success: false; missing: string[]; validationErrors?: unknown }
+  | {
+      success: false;
+      missing: string[];
+      validationErrors?: unknown;
+      configuration?: CompiledHubConfig;
+    }
 > {
   let configuration: CompiledHubConfig;
   try {
@@ -192,13 +208,7 @@ async function compileConfiguration(
       success: false,
       missing: [],
       validationErrors: {
-        formErrors: [
-          error instanceof z.ZodError
-            ? z.treeifyError(error)
-            : error instanceof Error
-              ? error.message
-              : "invalid configuration",
-        ],
+        formErrors: [formatConfigurationError(error)],
       },
     };
   }
@@ -227,21 +237,36 @@ async function compileConfiguration(
   );
   const unresolved = [...missing, ...triggerCompilation.missing];
   if (unresolved.length > 0) {
-    return { success: false, missing: unresolved };
+    return { success: false, missing: unresolved, configuration };
   }
-  const resolvedConfiguration = {
+  const resolvedConfiguration: CompiledHubConfig = {
     ...configuration,
-    environments: resolutions.map(({ environment, daemon }) =>
-      environment.kind === "daemon"
-        ? Object.assign({}, environment, { daemonId: daemon!.id })
-        : environment,
-    ),
+    environments: resolutions.map(resolveEnvironment),
     triggers: triggerCompilation.triggers,
   };
   return {
     success: true,
-    configuration: parseCompiledHubConfig(resolvedConfiguration) as CompiledProjectConfiguration,
+    configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration)),
   };
+}
+
+function formatConfigurationError(error: unknown): unknown {
+  if (error instanceof z.ZodError) return z.treeifyError(error);
+  if (error instanceof Error) return error.message;
+  return "invalid configuration";
+}
+
+function resolveEnvironment(
+  resolution: EnvironmentResolution,
+): CompiledHubConfig["environments"][number] {
+  const { environment, daemon } = resolution;
+  if (environment.kind !== "daemon" || daemon === undefined) return environment;
+  return Object.assign({}, environment, { daemonId: daemon.id });
+}
+
+interface EnvironmentResolution {
+  environment: CompiledHubConfig["environments"][number];
+  daemon: { id: string } | undefined;
 }
 
 async function compileTriggerRoutes(
@@ -381,8 +406,4 @@ async function resolveResource(
   return connection === undefined || !allowedConnectionIds.has(connection.id)
     ? undefined
     : { connectionId: connection.id, resourceId: resource };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

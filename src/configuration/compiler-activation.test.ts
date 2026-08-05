@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import { ProjectConfigurationStore } from "./store.js";
+import { parseProjectConfiguration, ProjectConfigurationStore } from "./store.js";
 
 describe("compiled workflow activation", () => {
   it("activates a valid step-based configuration and stores the compiled contract", async () => {
@@ -39,17 +39,9 @@ describe("compiled workflow activation", () => {
     });
 
     assert.equal(revision.validationErrors, null);
-    assert.equal(
-      (revision.normalizedConfiguration as { triggers: Array<{ maxRuntimeMs: number }> })
-        .triggers[0]?.maxRuntimeMs,
-      3_600_000,
-    );
-    assert.equal(
-      "max_runtime" in
-        (revision.normalizedConfiguration as { triggers: Array<Record<string, unknown>> })
-          .triggers[0]!,
-      false,
-    );
+    const compiled = parseProjectConfiguration(revision);
+    assert.equal(compiled.triggers[0]?.maxRuntimeMs, 3_600_000);
+    assert.equal("max_runtime" in compiled.triggers[0], false);
 
     const active = await store.activate(revision.id);
     assert.equal(active.configuration.triggers[0]?.steps[0]?.maxRuntimeMs, 600_000);

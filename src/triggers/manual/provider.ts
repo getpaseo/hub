@@ -3,6 +3,7 @@ import {
   interpolateRecord,
   interpolateTemplate,
   createInterpolationContext,
+  parseTriggerTimeoutMs,
 } from "../../config/index.js";
 import type {
   CompiledProjectConfiguration,
@@ -90,6 +91,8 @@ export function createManualRunProvider(
         prompt,
         agent: cleanTriggerAgent(trigger.agent),
         allowOutputs: trigger.allow_outputs ?? [],
+        timeoutMs: parseTriggerTimeoutMs(trigger.timeout),
+        idleTimeoutMs: parseTriggerTimeoutMs(trigger.idle_timeout),
         autoArchive: trigger.auto_archive,
         triggerContext: {
           provider: "manual",
