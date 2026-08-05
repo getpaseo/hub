@@ -1329,7 +1329,7 @@ export class PaseoHub {
   }
 
   private async verifyManualApplication(application: BuiltApplication): Promise<void> {
-    await this.verifyExactContracts(application, MANUAL_FAILURE_CONTRACTS);
+    await this.verifyExactContracts(application, manualFailureContracts());
     await this.verifyLegacyCompletionCallbackAbsent(application);
     await this.verifyDocumentAndAssetContracts(application);
     await this.verifyAuthContracts(application);
@@ -3639,93 +3639,95 @@ const ORGANIZATION_POST_PATHS = [
 const TEXT_TYPE = "text/plain;charset=UTF-8";
 const HTML_TYPE = "text/html; charset=utf-8";
 
-const MANUAL_FAILURE_CONTRACTS: readonly HttpContract[] = [
-  exact("health", "/health", "GET", 200, '{"ok":true}', JSON_TYPE),
-  exact(
-    "enrollment token requires machine authentication",
-    "/api/daemons/enrollment-tokens",
-    "POST",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "daemon enrollment requires a token",
-    "/api/daemons/enroll",
-    "POST",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "daemon revocation conceals missing daemons",
-    "/api/daemons/00000000-0000-4000-8000-000000000000",
-    "DELETE",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "execution completion requires a token",
-    "/agent-executions/00000000-0000-4000-8000-000000000000/mcp",
-    "POST",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "configuration install requires admin",
-    "/api/configurations/install",
-    "POST",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "manual run requires admin",
-    "/api/manual-runs",
-    "POST",
-    401,
-    '{"error":"unauthorized"}',
-    JSON_TYPE,
-  ),
-  exact(
-    "obsolete test trigger is unavailable",
-    "/test/trigger",
-    "POST",
-    404,
-    "Not Found",
-    TEXT_TYPE,
-  ),
-  exact("obsolete test smoke is unavailable", "/test/smoke", "POST", 404, "Not Found", TEXT_TYPE),
-  exact("webhook requires a signature", "/webhook", "POST", 401, "Unauthorized", TEXT_TYPE),
-  exact(
-    "invalid configuration is not activated",
-    "/api/configurations/install",
-    "POST",
-    422,
-    '{"error":"invalid_yaml"}',
-    JSON_TYPE,
-    { ...machineHeaders(), "content-type": "application/json" },
-    JSON.stringify({ projectSlug: "default", yaml: "environments: [" }),
-  ),
-  exact(
-    "unknown manual config is visible",
-    "/api/manual-runs",
-    "POST",
-    404,
-    '{"error":"project_not_found"}',
-    JSON_TYPE,
-    { ...machineHeaders(), "content-type": "application/json" },
-    JSON.stringify({
-      projectSlug: "missing",
-      trigger: "deploy",
-      actor: "contract-operator",
-      deliveryKey: "missing",
-      input: {},
-    }),
-  ),
-];
+function manualFailureContracts(): readonly HttpContract[] {
+  return [
+    exact("health", "/health", "GET", 200, '{"ok":true}', JSON_TYPE),
+    exact(
+      "enrollment token requires machine authentication",
+      "/api/daemons/enrollment-tokens",
+      "POST",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "daemon enrollment requires a token",
+      "/api/daemons/enroll",
+      "POST",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "daemon revocation conceals missing daemons",
+      "/api/daemons/00000000-0000-4000-8000-000000000000",
+      "DELETE",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "execution completion requires a token",
+      "/agent-executions/00000000-0000-4000-8000-000000000000/mcp",
+      "POST",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "configuration install requires admin",
+      "/api/configurations/install",
+      "POST",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "manual run requires admin",
+      "/api/manual-runs",
+      "POST",
+      401,
+      '{"error":"unauthorized"}',
+      JSON_TYPE,
+    ),
+    exact(
+      "obsolete test trigger is unavailable",
+      "/test/trigger",
+      "POST",
+      404,
+      "Not Found",
+      TEXT_TYPE,
+    ),
+    exact("obsolete test smoke is unavailable", "/test/smoke", "POST", 404, "Not Found", TEXT_TYPE),
+    exact("webhook requires a signature", "/webhook", "POST", 401, "Unauthorized", TEXT_TYPE),
+    exact(
+      "invalid configuration is not activated",
+      "/api/configurations/install",
+      "POST",
+      422,
+      '{"error":"invalid_yaml"}',
+      JSON_TYPE,
+      { ...machineHeaders(), "content-type": "application/json" },
+      JSON.stringify({ projectSlug: "default", yaml: "environments: [" }),
+    ),
+    exact(
+      "unknown manual config is visible",
+      "/api/manual-runs",
+      "POST",
+      404,
+      '{"error":"project_not_found"}',
+      JSON_TYPE,
+      { ...machineHeaders(), "content-type": "application/json" },
+      JSON.stringify({
+        projectSlug: "missing",
+        trigger: "deploy",
+        actor: "contract-operator",
+        deliveryKey: "missing",
+        input: {},
+      }),
+    ),
+  ];
+}
 
 const WEBHOOK_SOURCE_CONTRACTS: readonly HttpContract[] = [
   exact(
