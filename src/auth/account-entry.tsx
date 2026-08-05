@@ -40,13 +40,16 @@ type OrganizationAccount = Extract<AccountState, { status: "organizationRequired
  * screen at a time. Stacking both forms made the card taller than the viewport.
  */
 export function AccountEntry({ account }: { account: AccountState & { status: "signedOut" } }) {
-  const invitationContext =
-    account.registration === "invite_only" && account.invitation !== undefined;
+  const invitationContext = account.invitation !== undefined;
   const invitationId = account.invitation?.id;
+  const invitationSignInRequested =
+    typeof window !== "undefined" && window.history.state?.paseoInvitationMode === "sign-in";
   const [mode, setMode] = useState<"signIn" | "signUp">(invitationContext ? "signUp" : "signIn");
   useEffect(() => {
-    if (invitationContext && invitationId !== undefined) setMode("signUp");
-  }, [invitationContext, invitationId]);
+    if (invitationContext && invitationId !== undefined) {
+      setMode(invitationSignInRequested ? "signIn" : "signUp");
+    }
+  }, [invitationContext, invitationId, invitationSignInRequested]);
   const invitationSignup = invitationContext && mode === "signUp";
   const queryClient = useQueryClient();
   const signInMutation = useMutation({
@@ -149,10 +152,11 @@ function SignedOutFooter({
   busy: boolean;
   onToggle: () => void;
 }) {
-  if (registration === "open") {
+  if (invitationContext) {
     return (
       <p className="text-center text-sm text-muted-foreground">
-        {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
+        This invitation is bound to the invited email address.{" "}
+        {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
         <Button
           type="button"
           variant="link"
@@ -166,11 +170,10 @@ function SignedOutFooter({
       </p>
     );
   }
-  if (invitationContext) {
+  if (registration === "open") {
     return (
       <p className="text-center text-sm text-muted-foreground">
-        This invitation is bound to the invited email address.{" "}
-        {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
+        {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
         <Button
           type="button"
           variant="link"
@@ -383,6 +386,16 @@ function useAccountCommandResult(
   return useCallback(
     async (result: AccountCommandResult) => {
       if (result.status !== "ok") return;
+      if (result.data.state === "sessionExpired") {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("invitation")) {
+          window.history.replaceState(
+            { ...(window.history.state ?? {}), paseoInvitationMode: "sign-in" },
+            "",
+            url,
+          );
+        }
+      }
       if (clearInvitation && result.data.state === "complete") {
         window.history.replaceState({}, "", "/");
       }

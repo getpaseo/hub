@@ -2713,7 +2713,7 @@ class HubUser {
     const signIn = this.page.getByRole("form", { name: "Sign in" });
     await expect(signIn).toBeVisible();
     await expect(this.page).toHaveURL(invitationUrl.toString());
-    await signIn.getByLabel("Email").fill(account.email);
+    await expect(signIn.getByLabel("Email")).toHaveValue(account.email);
     await signIn.getByLabel("Password").fill(account.password);
     await signIn.getByRole("button", { name: "Sign in" }).click();
     await expect(this.page).toHaveURL(invitationUrl.toString());

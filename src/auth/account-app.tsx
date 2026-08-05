@@ -16,7 +16,6 @@ export function AccountApp() {
     queryKey: ["account", invitation],
     queryFn: () => loadAccount({ data: { invitation } }),
   });
-
   if (account.isPending) return <LoadingEntry />;
   if (account.isError || account.data.status === "error") {
     return (
