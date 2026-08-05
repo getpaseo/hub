@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import {
+  compiledConfigurationHash,
+  parseCompiledHubConfig,
+  rawConfigurationHash,
+} from "../config/compiler.js";
 import { ProjectConfigurationStore } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { DiscordConnectionRecord } from "../db/types.js";
@@ -44,6 +49,10 @@ describe("ProjectConfigurationStore resource compilation", () => {
       }),
       userId: "user-1",
     });
+    assert.equal(
+      revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+    );
     const active = await store.activate(revision.id);
 
     assert.equal(revision.validationErrors, null);
@@ -51,6 +60,12 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, primary.id);
     assert.deepEqual(active.configuration.triggers[0]?.filters?.resourceId, "100");
     assert.equal(Object.isFrozen(active.configuration.triggers[0]?.filters), true);
+
+    const switched = await store.switchToManual("user-1");
+    assert.equal(
+      switched.revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(switched.revision.normalizedConfiguration)),
+    );
   });
 
   it("resolves a unique guild without requiring a connection slug", async () => {
@@ -129,6 +144,43 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.deepEqual(revision.validationErrors, {
       formErrors: ["unresolved organization resources: missing-daemon"],
     });
+    assert.equal(
+      revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+    );
+  });
+
+  it("records invalid authored configuration with its raw configuration hash", async () => {
+    const database = createMemoryDatabase();
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Invalid configuration project",
+      slug: "invalid-configuration-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const rawConfiguration = {
+      environments: [],
+      triggers: [
+        {
+          name: "legacy",
+          on: "manual.run",
+          environment: "docker",
+          agent: { provider: "test", mode: "default" },
+          prompt: [{ text: "Run" }],
+          steps: [],
+        },
+      ],
+    };
+
+    const revision = await store.insertManualRevision({
+      rawYaml: "triggers:\n  - name: legacy\n",
+      rawConfiguration,
+      userId: "user-1",
+    });
+
+    assert.notEqual(revision.validationErrors, null);
+    assert.equal(revision.contentHash, rawConfigurationHash(rawConfiguration));
   });
 
   it("accepts one durable trigger per project when multiple routes match", async () => {

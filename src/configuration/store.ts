@@ -2,6 +2,7 @@ import { dump } from "js-yaml";
 import { z } from "zod";
 import {
   compileHubConfig,
+  compiledConfigurationHash,
   parseCompiledHubConfig,
   rawConfigurationHash,
   type CompiledHubConfig,
@@ -54,7 +55,7 @@ export class ProjectConfigurationStore {
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: rawConfigurationHash(prepared.normalizedConfiguration),
+      contentHash: prepared.contentHash,
       createdByUserId: input.userId,
     });
   }
@@ -89,7 +90,7 @@ export class ProjectConfigurationStore {
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: rawConfigurationHash(prepared.normalizedConfiguration),
+      contentHash: prepared.contentHash,
     });
   }
 
@@ -142,7 +143,7 @@ export class ProjectConfigurationStore {
       userId,
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
-      contentHash: rawConfigurationHash(active.normalizedConfiguration),
+      contentHash: compiledConfigurationHash(configuration),
       formattingPreserved,
       routes,
     });
@@ -171,38 +172,75 @@ async function prepareRevision(
   database: Database,
   projectId: string,
   rawConfiguration: unknown,
-): Promise<{ normalizedConfiguration: unknown; validationErrors?: unknown }> {
+): Promise<PreparedRevision> {
   const compiled = await compileConfiguration(database, projectId, rawConfiguration);
   if (!compiled.success) {
+    if (compiled.kind === "compiled") {
+      return {
+        kind: "compiled",
+        normalizedConfiguration: compiled.configuration,
+        contentHash: compiledConfigurationHash(compiled.configuration),
+        validationErrors: compiled.validationErrors ?? {
+          formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
+        },
+      };
+    }
     return {
-      normalizedConfiguration: compiled.configuration ?? rawConfiguration,
-      validationErrors: compiled.validationErrors ?? {
-        formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
-      },
+      kind: "raw",
+      normalizedConfiguration: rawConfiguration,
+      contentHash: rawConfigurationHash(rawConfiguration),
+      validationErrors: compiled.validationErrors,
     };
   }
-  return { normalizedConfiguration: compiled.configuration };
+  return {
+    kind: "compiled",
+    normalizedConfiguration: compiled.configuration,
+    contentHash: compiledConfigurationHash(compiled.configuration),
+  };
 }
+
+type PreparedRevision =
+  | {
+      kind: "compiled";
+      normalizedConfiguration: CompiledHubConfig;
+      contentHash: string;
+      validationErrors?: unknown;
+    }
+  | {
+      kind: "raw";
+      normalizedConfiguration: unknown;
+      contentHash: string;
+      validationErrors: unknown;
+    };
+
+type CompileConfigurationResult =
+  | { success: true; configuration: CompiledProjectConfiguration }
+  | {
+      success: false;
+      kind: "compiled";
+      configuration: CompiledHubConfig;
+      missing: string[];
+      validationErrors?: unknown;
+    }
+  | {
+      success: false;
+      kind: "raw";
+      missing: string[];
+      validationErrors: unknown;
+    };
 
 async function compileConfiguration(
   database: Database,
   projectId: string,
   rawConfiguration: unknown,
-): Promise<
-  | { success: true; configuration: CompiledProjectConfiguration }
-  | {
-      success: false;
-      missing: string[];
-      validationErrors?: unknown;
-      configuration?: CompiledHubConfig;
-    }
-> {
+): Promise<CompileConfigurationResult> {
   let configuration: CompiledHubConfig;
   try {
     configuration = compileHubConfig(rawConfiguration);
   } catch (error) {
     return {
       success: false,
+      kind: "raw",
       missing: [],
       validationErrors: {
         formErrors: [formatConfigurationError(error)],
@@ -210,7 +248,9 @@ async function compileConfiguration(
     };
   }
   const project = await database.findProjectById(projectId);
-  if (project === undefined) return { success: false, missing: ["project"] };
+  if (project === undefined) {
+    return { success: false, kind: "compiled", missing: ["project"], configuration };
+  }
   const resolutions = await Promise.all(
     configuration.environments.map(async (environment) =>
       environment.kind === "daemon"
@@ -234,7 +274,7 @@ async function compileConfiguration(
   );
   const unresolved = [...missing, ...triggerCompilation.missing];
   if (unresolved.length > 0) {
-    return { success: false, missing: unresolved, configuration };
+    return { success: false, kind: "compiled", missing: unresolved, configuration };
   }
   const resolvedConfiguration: CompiledHubConfig = {
     ...configuration,
