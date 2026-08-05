@@ -6,6 +6,7 @@ import {
   parseCompiledHubConfig,
   parseExpression,
   type AuthoredHubConfig,
+  type CompiledHubConfig,
 } from "./compiler.js";
 import * as configExports from "./index.js";
 
@@ -53,7 +54,10 @@ describe("Hub configuration compiler", () => {
     const trigger = configuration["triggers"][0]!;
     Object.assign(trigger, { [field]: field === "agent" ? { provider: "codex" } : "removed" });
 
-    assert.throws(() => compileHubConfig(configuration), new RegExp(`${field}.*step`, "iu"));
+    assert.throws(
+      () => compileHubConfig(configuration),
+      field === "timeout" ? /timeout.*max_runtime/iu : new RegExp(`${field}.*step`, "iu"),
+    );
   });
 
   it("rejects timeout and points authors at max_runtime", () => {
@@ -61,6 +65,71 @@ describe("Hub configuration compiler", () => {
     Object.assign(configuration["triggers"][0]!, { timeout: "1h" });
 
     assert.throws(() => compileHubConfig(configuration), /timeout.*max_runtime/iu);
+  });
+
+  it("rejects timeout nested on a step with direct max_runtime guidance", () => {
+    const configuration = cloneCanonicalConfiguration();
+    Object.assign(configuration["triggers"][0]!["steps"][0]!, { timeout: "1m" });
+
+    assert.throws(() => compileHubConfig(configuration), /timeout.*max_runtime/iu);
+  });
+
+  it("allows an input named repo when it is used only in prompt text", () => {
+    const configuration = cloneCanonicalConfiguration();
+    const trigger = configuration["triggers"][0]!;
+    trigger["inputs"] = {
+      repo: { type: "string" },
+      agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+    };
+    delete trigger["values"];
+    delete trigger["steps"][0]!["if"];
+    delete trigger["steps"][1]!["if"];
+    trigger["steps"][0]!["prompt"].push({ text: "Repo hint: ${{ paseo.inputs.repo }}" });
+
+    assert.doesNotThrow(() => compileHubConfig(configuration));
+  });
+
+  it("requires choices when an arbitrary-named input selects an agent", () => {
+    const configuration = cloneCanonicalConfiguration();
+    const trigger = configuration["triggers"][0]!;
+    trigger["inputs"] = {
+      agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+      selector: { type: "string" },
+    };
+    delete trigger["values"];
+    delete trigger["steps"][0]!["if"];
+    delete trigger["steps"][1]!["if"];
+    trigger["steps"][1]!["agent"]["provider"] = "${{ paseo.inputs.selector }}";
+
+    assert.throws(() => compileHubConfig(configuration), /finite choices/iu);
+  });
+
+  it.each(["slack.mention", "github.issue_comment", "discord.mention"])(
+    "requires non-empty from_users for externally sourced %s triggers",
+    (event) => {
+      const configuration = cloneCanonicalConfiguration();
+      const trigger = configuration["triggers"][0]!;
+      trigger["on"] = event;
+      delete trigger["filters"];
+
+      assert.throws(() => compileHubConfig(configuration), /from_users/iu);
+    },
+  );
+
+  it("does not require from_users for manual.run", () => {
+    const configuration = cloneCanonicalConfiguration();
+    const trigger = configuration["triggers"][0]!;
+    trigger["on"] = "manual.run";
+    delete trigger["filters"];
+
+    assert.doesNotThrow(() => compileHubConfig(configuration));
+  });
+
+  it("rejects an empty from_users allowlist for externally sourced triggers", () => {
+    const configuration = cloneCanonicalConfiguration();
+    configuration["triggers"][0]!["filters"] = { from_users: [] };
+
+    assert.throws(() => compileHubConfig(configuration), /from_users/iu);
   });
 
   it.each([
@@ -140,6 +209,127 @@ describe("Hub configuration compiler", () => {
     assert.throws(() => parseCompiledHubConfig(malformed), /invalid compiled workflow contract/iu);
   });
 
+  it.each([
+    [
+      "duplicate environment IDs",
+      (configuration: CompiledHubConfig) => {
+        configuration["environments"] = [
+          ...configuration["environments"],
+          configuration["environments"][0]!,
+        ];
+      },
+    ],
+    [
+      "duplicate trigger IDs",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"] = [...configuration["triggers"], configuration["triggers"][0]!];
+      },
+    ],
+    [
+      "duplicate step IDs",
+      (configuration: CompiledHubConfig) => {
+        const trigger = configuration["triggers"][0]!;
+        configuration["triggers"] = [
+          {
+            ...trigger,
+            steps: [...trigger["steps"], trigger["steps"][0]!],
+          },
+          ...configuration["triggers"].slice(1),
+        ];
+      },
+    ],
+    [
+      "invalid input default relationship",
+      (configuration: CompiledHubConfig) => {
+        const input = configuration["triggers"][0]!["inputs"]["repo"];
+        if (input === undefined) throw new Error("canonical repo input is missing");
+        Object.assign(input, {
+          required: true,
+          default: "hub",
+        });
+      },
+    ],
+    [
+      "invalid input choices",
+      (configuration: CompiledHubConfig) => {
+        const input = configuration["triggers"][0]!["inputs"]["repo"];
+        if (input === undefined) throw new Error("canonical repo input is missing");
+        Object.assign(input, {
+          choices: ["paseo", "paseo"],
+        });
+      },
+    ],
+    [
+      "invalid timeout relationship",
+      (configuration: CompiledHubConfig) => {
+        Object.assign(configuration["triggers"][0]!["steps"][0]!, {
+          idleTimeoutMs: 120_000,
+          maxRuntimeMs: 60_000,
+        });
+      },
+    ],
+    [
+      "unknown environment reference",
+      (configuration: CompiledHubConfig) => {
+        Object.assign(configuration["triggers"][0]!["steps"][0]!, {
+          environment: "missing-environment",
+        });
+      },
+    ],
+    [
+      "unknown step reference",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"][0]!["values"] = {
+          repo: parseExpression("${{ steps.missing.outputs.repo }}"),
+        };
+      },
+    ],
+    [
+      "value cycle",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"][0]!["values"] = {
+          first: parseExpression("${{ values.second }}"),
+          second: parseExpression("${{ values.first }}"),
+        };
+      },
+    ],
+    [
+      "invalid output schema",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"][0]!["steps"][0]!["outputSchema"] = {
+          type: "not-a-json-schema-type",
+        };
+      },
+    ],
+    [
+      "invalid allow_outputs type",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"][0]!["steps"][1]!["allowOutputs"] = [
+          { type: "not-an-event", max: 1 },
+        ];
+      },
+    ],
+    [
+      "missing external from_users",
+      (configuration: CompiledHubConfig) => {
+        delete configuration["triggers"][0]!["filters"];
+      },
+    ],
+    [
+      "unsafe compiled prompt include",
+      (configuration: CompiledHubConfig) => {
+        configuration["triggers"][0]!["steps"][0]!["prompt"] = [
+          { kind: "include", path: "../secret.md" },
+        ];
+      },
+    ],
+  ])("re-establishes %s at the stored-contract boundary", (_name, mutate) => {
+    const configuration = structuredClone(compileHubConfig(canonicalConfiguration));
+    mutate(configuration);
+
+    assert.throws(() => parseCompiledHubConfig(configuration));
+  });
+
   it("rejects unsupported JSON Schema keywords at the compiler boundary", () => {
     const configuration = cloneCanonicalConfiguration();
     configuration["triggers"][0]!["steps"][0]!["output"] = {
@@ -147,6 +337,28 @@ describe("Hub configuration compiler", () => {
     };
 
     assert.throws(() => compileHubConfig(configuration), /invalid JSON Schema/iu);
+  });
+
+  it("accepts output paths through valid JSON Schema composition", () => {
+    const configuration = cloneCanonicalConfiguration();
+    configuration["triggers"][0]!["steps"][0]!["output"] = {
+      schema: {
+        $defs: {
+          classification: {
+            type: "object",
+            required: ["repo"],
+            properties: {
+              repo: { type: "string" },
+              timeout: { type: "string" },
+            },
+          },
+        },
+        allOf: [{ $ref: "#/$defs/classification" }],
+        oneOf: [{ type: "object" }, { type: "array" }],
+      },
+    };
+
+    assert.doesNotThrow(() => compileHubConfig(configuration));
   });
 
   it.each(["if", "prompt", "agent"])(
@@ -217,6 +429,7 @@ const canonicalConfiguration = {
       name: "chat-request",
       on: "slack.mention",
       max_runtime: "2h",
+      filters: { from_users: ["U123456"] },
       inputs: {
         repo: { type: "string", required: false, choices: ["paseo", "hub"] },
         agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
