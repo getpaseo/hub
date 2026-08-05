@@ -124,12 +124,9 @@ export class SourcePaseo {
     this.cli = child;
     const output = new SourceCommandOutput(child);
     const userCode = await output.waitForUserCode();
-    return new SourceRegistration(
-      this,
-      child,
-      output,
-      `${connectOrigin}/activate?code=${encodeURIComponent(userCode)}`,
-    );
+    const verificationUrl = new URL("/activate", hubOrigin);
+    verificationUrl.searchParams.set("code", userCode);
+    return new SourceRegistration(this, child, output, verificationUrl.toString());
   }
 
   async connectWithToken(hubOrigin: string, token: string): Promise<Record<string, unknown>> {
