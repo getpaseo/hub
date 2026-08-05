@@ -2736,6 +2736,7 @@ class HubUser {
     const projects = this.page.getByRole("link", { name: "Projects", exact: true });
     const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
+    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
 
@@ -2747,6 +2748,8 @@ class HubUser {
     await expect(daemons).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(connections).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
     await this.page.keyboard.press("Tab");
@@ -2776,6 +2779,7 @@ class HubUser {
     const projects = this.page.getByRole("link", { name: "Projects", exact: true });
     const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
+    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
@@ -2789,6 +2793,8 @@ class HubUser {
     await expect(daemons).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(connections).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
     await this.page.keyboard.press("Tab");
@@ -2845,7 +2851,7 @@ class HubUser {
     await expect(organization).toBeFocused();
     // Forward through the destinations in their rendered order rather than relying on the
     // focus trap wrapping backwards: the drawer now ends on the account menu, not on Team.
-    for (const destination of ["Projects", "Daemons", "Connections", "Team"]) {
+    for (const destination of ["Projects", "Daemons", "Connections", "API keys", "Team"]) {
       await this.page.keyboard.press("Tab");
       await expect(sidebar.getByRole("link", { name: destination, exact: true })).toBeFocused();
     }
