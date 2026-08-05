@@ -731,6 +731,10 @@ export const slackConnections = pgTable(
     teamName: text("team_name").notNull(),
     botUserId: text("bot_user_id").notNull(),
     botAccessToken: text("bot_access_token").notNull(),
+    scopes: jsonb()
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     connectedByUserId: text("connected_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

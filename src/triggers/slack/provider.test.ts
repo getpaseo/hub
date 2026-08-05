@@ -218,6 +218,31 @@ describe("Slack trigger provider", () => {
     assert.equal(rootMatch?.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
   });
+
+  it("does not hydrate an unrouted Slack thread", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, config(), {
+      organizationId: "org-1",
+    });
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+
+    const matches = await provider.match({
+      organizationId: "org-1",
+      projectId: project.id,
+      source: "slack.mention",
+      deliveryId: "slack-unrouted-thread",
+      receivedAt: new Date(),
+      payload: event({ authorId: "U2" }),
+    });
+
+    assert.deepEqual(matches, []);
+    assert.deepEqual(client.threadReads, []);
+  });
 });
 
 function config() {
@@ -252,7 +277,7 @@ function config() {
   };
 }
 
-function event(overrides: { threadTs?: string | null } = {}) {
+function event(overrides: { threadTs?: string | null; authorId?: string } = {}) {
   return {
     type: "mention",
     id: "Ev1",
@@ -264,7 +289,7 @@ function event(overrides: { threadTs?: string | null } = {}) {
     eventTs: "1700000000.000001",
     eventTime: 1_700_000_001,
     content: "<@UBOT> deploy now",
-    author: { id: "U1" },
+    author: { id: overrides.authorId ?? "U1" },
     createdAt: new Date(1_700_000_000_000).toISOString(),
     attachments: [],
     threadContextMessages: [],

@@ -128,6 +128,7 @@ export function createAttachmentCapabilityRegistry(options: {
         headers.set("content-length", String(attachment.byteSize));
       }
       headers.set("content-disposition", contentDisposition(attachment.filename));
+      headers.set("cache-control", "no-store");
       return new Response(upstream.body, { status: 200, headers });
     },
   };

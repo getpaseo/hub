@@ -62,6 +62,7 @@ describe("attachment capability boundary", () => {
     assert.equal(response.status, 200);
     assert.equal(await response.text(), "exact bytes");
     assert.equal(response.headers.get("content-type"), "image/png");
+    assert.equal(response.headers.get("cache-control"), "no-store");
     assert.match(response.headers.get("content-disposition") ?? "", /pixel\.png/u);
     assert.equal(resolverCalls.length, 1);
     assert.deepEqual(resolverCalls[0], {
@@ -254,6 +255,7 @@ describe("attachment capability boundary", () => {
 
     assert.equal(await response.text(), "discord-bytes");
     assert.equal(response.headers.get("etag"), '"discord-1"');
+    assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("content-length"), "13");
   });
 });

@@ -2007,9 +2007,10 @@ class PgDatabase implements Database {
         team_name: string;
         bot_user_id: string;
         bot_access_token: string;
+        scopes: unknown;
       }>(
         this.pool,
-        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token
+        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes
          from slack_connections where organization_id = $1
          order by team_name, id`,
         [organizationId],
@@ -2041,6 +2042,7 @@ class PgDatabase implements Database {
         teamName: row.team_name,
         botUserId: row.bot_user_id,
         botAccessToken: row.bot_access_token,
+        scopes: stringArray(row.scopes),
       })),
     };
   }
@@ -2451,6 +2453,10 @@ async function query<T extends QueryResultRow = QueryResultRow>(
   values: unknown[] = [],
 ) {
   return withDatabaseDeadline(pool.query<T>(text, values));
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
 }
 
 async function ensureTriggerReceipt(pool: Pool, input: InsertTriggerInput): Promise<string> {

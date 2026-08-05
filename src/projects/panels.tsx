@@ -232,6 +232,20 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
+  const connectionActionLabel = (provider: "github" | "discord" | "slack") => {
+    if (provider === "slack" && status.data.slack.status === "requiresReauthorization") {
+      return "Reauthorize";
+    }
+    if (
+      provider === "github" &&
+      rows.some(
+        (connection) => connection.provider === "github" && connection.status === "suspended",
+      )
+    ) {
+      return "Reconnect";
+    }
+    return "Connect";
+  };
   return (
     <>
       <PageHeader title="Connections" description="Organization provider connections." />
@@ -268,7 +282,14 @@ export function OrganizationConnectionsPanel() {
                 </span>
               </DataCell>
               <DataCell>
-                <StatusPill tone={connection.status === "suspended" ? "warning" : "success"}>
+                <StatusPill
+                  tone={
+                    connection.status === "suspended" ||
+                    connection.status === "requiresReauthorization"
+                      ? "warning"
+                      : "success"
+                  }
+                >
                   {statusLabel(connection.status)}
                 </StatusPill>
               </DataCell>
@@ -318,14 +339,7 @@ export function OrganizationConnectionsPanel() {
                     variant="outline"
                     onClick={() => connectProvider(provider)}
                   >
-                    {provider === "github" &&
-                    rows.some(
-                      (connection) =>
-                        connection.provider === "github" && connection.status === "suspended",
-                    )
-                      ? "Reconnect"
-                      : "Connect"}{" "}
-                    {providerLabel(provider)}
+                    {connectionActionLabel(provider)} {providerLabel(provider)}
                   </Button>
                 )}
               </div>
@@ -1179,7 +1193,9 @@ function connectionRows(data: OrganizationSnapshot) {
       id: connection.id,
       name: connection.slug,
       externalId: `workspace ${connection.teamId}`,
-      status: "connected" as const,
+      status: connection.requiresReauthorization
+        ? ("requiresReauthorization" as const)
+        : ("connected" as const),
     })),
   ];
 }
@@ -1215,6 +1231,7 @@ function connectionResultCopy(result: string): string {
 }
 
 function statusLabel(status: string): string {
+  if (status === "requiresReauthorization") return "Reauthorization required";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 function syncOutcome(outcome: string) {

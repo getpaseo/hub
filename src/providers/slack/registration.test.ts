@@ -78,6 +78,35 @@ describe("Slack registration", () => {
     assert.deepEqual(registration.requests, []);
   });
 
+  it("surfaces legacy Slack installations that need the expanded grant", () => {
+    const registration = createSlackRegistration({
+      database: createMemoryDatabase(),
+      auth: null,
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: slackConfiguration(),
+    });
+    assert.deepEqual(
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [
+          {
+            id: "slack-connection",
+            organizationId: "org",
+            slug: "slack-workspace",
+            teamId: "T1",
+            teamName: "Workspace",
+            botUserId: "UBOT",
+            botAccessToken: "token",
+            scopes: [],
+          },
+        ],
+      }),
+      { status: "requiresReauthorization" },
+    );
+  });
+
   it("does not lend a rebound workspace token to an older organization execution", async () => {
     const database = createMemoryDatabase();
     database.findSlackConnectionForOrganization = () =>
@@ -89,6 +118,14 @@ describe("Slack registration", () => {
         teamName: "Workspace",
         botUserId: "UBOT-B",
         botAccessToken: "token-b",
+        scopes: [
+          "app_mentions:read",
+          "channels:history",
+          "chat:write",
+          "files:read",
+          "groups:history",
+          "reactions:write",
+        ],
       });
     const requests: string[] = [];
     const registration = createSlackRegistration({

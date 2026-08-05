@@ -22,6 +22,7 @@ import { createSlackWebhookSource } from "../../triggers/slack/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createSlackConnectionClient,
+  hasRequiredSlackScopes,
   type SlackConnectionClient,
   type SlackInstallation,
 } from "./client.js";
@@ -164,7 +165,9 @@ async function findSlackBindingForOrganization(
   teamId: string,
 ): Promise<SlackConnectionRecord | undefined> {
   const binding = await database.findSlackConnectionForOrganization(organizationId, teamId);
-  return binding?.organizationId === organizationId ? binding : undefined;
+  return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
+    ? binding
+    : undefined;
 }
 
 function emptySlackRegistration(
@@ -302,8 +305,9 @@ async function bindSlack(
 
 function slackStatus(configured: boolean, bindings: readonly SlackConnectionRecord[]) {
   if (!configured) return { status: "notConfigured" as const };
-  return bindings.length === 0
-    ? { status: "disconnected" as const }
+  if (bindings.length === 0) return { status: "disconnected" as const };
+  return bindings.some((binding) => !hasRequiredSlackScopes(binding.scopes))
+    ? { status: "requiresReauthorization" as const }
     : { status: "connected" as const };
 }
 

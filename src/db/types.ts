@@ -322,6 +322,7 @@ export interface SlackConnectionRecord {
   teamName: string;
   botUserId: string;
   botAccessToken: string;
+  scopes: string[];
 }
 
 export interface StartConnectionAttemptInput {
@@ -361,6 +362,7 @@ export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
   teamName: string;
   botUserId: string;
   botAccessToken: string;
+  scopes: string[];
 }
 
 export type DisconnectConnectionResult =

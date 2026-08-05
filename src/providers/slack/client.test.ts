@@ -17,6 +17,8 @@ describe("Slack connection client", () => {
           app_id: "A1",
           access_token: "xoxb-token",
           bot_user_id: "UBOT",
+          scope:
+            "app_mentions:read,channels:history,chat:write,files:read,groups:history,reactions:write",
           team: { id: "T1", name: "Acme" },
         });
       },
@@ -38,6 +40,14 @@ describe("Slack connection client", () => {
       teamName: "Acme",
       botUserId: "UBOT",
       botAccessToken: "xoxb-token",
+      scopes: [
+        "app_mentions:read",
+        "channels:history",
+        "chat:write",
+        "files:read",
+        "groups:history",
+        "reactions:write",
+      ],
     });
     assert.equal(exchangeBody?.get("client_secret"), "secret-1");
     assert.equal(

@@ -7,6 +7,7 @@ import {
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
 import type { DaemonRecord, Database } from "../db/types.js";
+import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
 import { summarizeTrigger } from "./activity-summary.js";
 
@@ -357,6 +358,7 @@ function connectionUsageView(
       slug: connection.slug,
       teamId: connection.teamId,
       teamName: connection.teamName,
+      requiresReauthorization: !hasRequiredSlackScopes(connection.scopes),
     })),
   };
 }

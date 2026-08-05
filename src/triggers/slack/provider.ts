@@ -80,23 +80,25 @@ export function createSlackTriggerProvider(options: {
     name: "slack",
     eventNames: ["slack.mention"],
     async match(trigger) {
-      const event = await hydrateSlackEvent(
-        NormalizedSlackMentionEventSchema.parse(trigger.payload),
+      const rawEvent = NormalizedSlackMentionEventSchema.parse(trigger.payload);
+      const botUserId = await options.botUserIdForWorkspace(
         trigger.organizationId,
-        options.client,
+        rawEvent.teamId,
       );
-      const botUserId = await options.botUserIdForWorkspace(trigger.organizationId, event.teamId);
       if (botUserId === undefined) return [];
       const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
       if (stored === undefined) return [];
-      const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
-
-      for (const match of matchSlackTriggers(
+      const matchedTriggers = matchSlackTriggers(
         stored.configuration,
-        event,
+        rawEvent,
         botUserId,
         trigger.connectionId,
-      )) {
+      );
+      if (matchedTriggers.length === 0) return [];
+      const event = await hydrateSlackEvent(rawEvent, trigger.organizationId, options.client);
+      const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
+
+      for (const match of matchedTriggers) {
         const baseEnvironment = readDaemonEnvironment(
           stored.configuration,
           match.trigger.environment,
