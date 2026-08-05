@@ -413,7 +413,10 @@ export function ProjectConfigurationPanel() {
   const availableRepositories = repositories.data?.status === "ok" ? repositories.data.data : [];
   return (
     <>
-      <PageHeader title="Configuration" description={`Setup and source for ${data.project.name}.`} />
+      <PageHeader
+        title="Configuration"
+        description={`Setup and source for ${data.project.name}.`}
+      />
       <CommandError mutations={[sync, manual, save, configure]} />
       <Section title="Active revision">
         <div className="rounded-lg border bg-card p-5">
@@ -529,16 +532,26 @@ function ConfigurationSourceSection({
       title="Configuration source"
       description="Where this project's configuration comes from."
     >
-      <div role="radiogroup" aria-label="Configuration source mode" className="inline-flex w-fit gap-1 rounded-md border bg-muted p-1">
+      <div
+        role="radiogroup"
+        aria-label="Configuration source mode"
+        className="inline-flex w-fit gap-1 rounded-md border bg-muted p-1"
+      >
         <SourceModeButton
           active={mode === "manual"}
           disabled={switchToManualPending || manualUnavailable}
-          title={manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined}
+          title={
+            manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined
+          }
           onClick={() => onSelectMode("manual")}
         >
           Manual
         </SourceModeButton>
-        <SourceModeButton active={mode === "github"} disabled={switchToManualPending} onClick={() => onSelectMode("github")}>
+        <SourceModeButton
+          active={mode === "github"}
+          disabled={switchToManualPending}
+          onClick={() => onSelectMode("github")}
+        >
           <ProviderGlyph provider="github" />
           GitHub
         </SourceModeButton>
@@ -562,7 +575,12 @@ function ConfigurationSourceSection({
               Save
             </Button>
             {configuration.authority === "github" ? (
-              <Button variant="outline" disabled={syncPending} aria-busy={syncPending} onClick={onSync}>
+              <Button
+                variant="outline"
+                disabled={syncPending}
+                aria-busy={syncPending}
+                onClick={onSync}
+              >
                 {syncPending ? "Syncing…" : "Sync now"}
               </Button>
             ) : null}
@@ -584,7 +602,9 @@ function ConfigurationSourceSection({
             id="manual-configuration"
             name="rawYaml"
             className="min-h-72 rounded-md border bg-background p-3 font-mono text-xs"
-            defaultValue={configuration.activeRevision?.rawYaml ?? "environments: []\ntriggers: []\n"}
+            defaultValue={
+              configuration.activeRevision?.rawYaml ?? "environments: []\ntriggers: []\n"
+            }
           />
           <div>
             <Button

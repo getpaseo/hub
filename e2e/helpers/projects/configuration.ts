@@ -12,9 +12,7 @@ export class ProjectConfiguration {
     const githubMode = this.page.getByRole("radio", { name: "GitHub" });
     if ((await githubMode.getAttribute("aria-checked")) !== "true") await githubMode.click();
     await this.page.getByRole("combobox").click();
-    await this.page
-      .getByRole("option", { name: new RegExp(escapeRegExp(fullName)) })
-      .click();
+    await this.page.getByRole("option", { name: new RegExp(escapeRegExp(fullName)) }).click();
     await this.page.getByRole("button", { name: "Save" }).click();
     await expect(this.page.getByRole("combobox")).toHaveText(fullName);
   }
