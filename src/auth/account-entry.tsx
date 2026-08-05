@@ -42,8 +42,7 @@ type OrganizationAccount = Extract<AccountState, { status: "organizationRequired
 export function AccountEntry({ account }: { account: AccountState & { status: "signedOut" } }) {
   const invitationContext = account.invitation !== undefined;
   const invitationId = account.invitation?.id;
-  const invitationSignInRequested =
-    typeof window !== "undefined" && window.history.state?.paseoInvitationMode === "sign-in";
+  const invitationSignInRequested = readInvitationSignInRequest();
   const [mode, setMode] = useState<"signIn" | "signUp">(invitationContext ? "signUp" : "signIn");
   useEffect(() => {
     if (invitationContext && invitationId !== undefined) {
@@ -136,6 +135,16 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
         />
       </AuthCard>
     </AuthLayout>
+  );
+}
+
+function readInvitationSignInRequest(): boolean {
+  if (typeof window === "undefined") return false;
+  const historyState: unknown = window.history.state;
+  return (
+    historyState !== null &&
+    typeof historyState === "object" &&
+    Reflect.get(historyState, "paseoInvitationMode") === "sign-in"
   );
 }
 
@@ -390,7 +399,7 @@ function useAccountCommandResult(
         const url = new URL(window.location.href);
         if (url.searchParams.has("invitation")) {
           window.history.replaceState(
-            { ...(window.history.state ?? {}), paseoInvitationMode: "sign-in" },
+            Object.assign({}, window.history.state, { paseoInvitationMode: "sign-in" }),
             "",
             url,
           );
