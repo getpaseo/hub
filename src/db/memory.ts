@@ -139,7 +139,7 @@ class MemoryDatabase implements Database {
       status: "running",
       rawPrompt: input.rawPrompt,
       prompt: input.prompt,
-      inputs: {},
+      inputs: freezeEvidence(input.inputs),
       deadlineAt: input.deadlineAt,
       failureReason: null,
       createdAt: now,
@@ -1722,4 +1722,11 @@ function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
 
 function triggerDeliveryKey(organizationId: string, deliveryId: string): string {
   return `${organizationId}:${deliveryId}`;
+}
+
+function freezeEvidence<T>(value: T): T {
+  if (typeof value !== "object" || value === null) return value;
+  if (Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeEvidence(child);
+  return Object.freeze(value);
 }

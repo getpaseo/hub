@@ -132,6 +132,12 @@ async function main(): Promise<void> {
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
               hubConfig: {},
+              invocation: {
+                status: "accepted",
+                rawMessage: "Deploy mcp-capability for phase-five-operator",
+                prompt: "Deploy mcp-capability for phase-five-operator",
+                inputs: {},
+              },
             },
           ];
         },

@@ -2,6 +2,7 @@ import type { AllowedOutput } from "../execution-capabilities/outputs.js";
 import type { DaemonEnvironmentTarget } from "../dispatcher/launch-machine-intent.js";
 import type { DurableTrigger } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { InvocationParseResult } from "./invocation.js";
 
 export interface ExternalTrigger {
   organizationId: string;
@@ -61,6 +62,7 @@ export interface TriggerProviderMatch<TriggerContext = unknown, OutputContext = 
   outputContext: OutputContext;
   configurationRevisionId?: string;
   hubConfig: unknown;
+  invocation: InvocationParseResult;
 }
 
 export interface TriggerProviderLifecycleResult {

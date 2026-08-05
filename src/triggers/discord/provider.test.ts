@@ -7,6 +7,28 @@ import { createDiscordTriggerProvider } from "./provider.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 
 describe("Discord Phase 1 trigger provider", () => {
+  it("normalizes typed inputs identically at the provider boundary", async () => {
+    const { project, store } = await activeConfiguration(inputConfiguration());
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, event({ content: "<@900> repo=hub agent=opus investigate" })),
+      )
+    )[0];
+
+    assert.ok(match);
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "<@900> repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
   it("matches a literal one-step prompt and keeps the mention allowlist fail-closed", async () => {
     const { project, revision, store } = await activeConfiguration();
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
@@ -253,6 +275,36 @@ function discordConfiguration() {
   };
 }
 
+function inputConfiguration() {
+  const base = discordConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          repo: { type: "string", choices: ["paseo", "hub"] },
+          agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+        },
+        filters: {
+          guild: "100",
+          contains: "repo=hub",
+          from_users: ["400"],
+          inputs: { repo: "hub" },
+        },
+        steps: [
+          {
+            ...trigger.steps[0]!,
+            agent: { provider: "${{ paseo.inputs.agent }}", mode: "bypassPermissions" },
+            prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function discordWorktreeConfiguration() {
   const configuration = discordConfiguration();
   return {
@@ -298,6 +350,7 @@ function external(projectId: string, payload: NormalizedDiscordMessageEvent) {
 function event(
   overrides: {
     authorId?: string;
+    content?: string;
     channelId?: string;
     threadId?: string | null;
     parentChannelId?: string | null;
@@ -315,7 +368,7 @@ function event(
     threadId: overrides.threadId ?? null,
     parentChannelId: overrides.parentChannelId ?? null,
     messageId: overrides.messageId ?? "300",
-    content: "<@900> ping",
+    content: overrides.content ?? "<@900> ping",
     mentionedUserIds: ["900"],
     author: { id: overrides.authorId ?? "400", username: "tester", bot: false },
     createdAt: "2026-05-19T00:00:00.000Z",

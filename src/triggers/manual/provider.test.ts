@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import { describe, it } from "vitest";
+import { createMemoryDatabase } from "../../db/memory.js";
+import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { createManualRunProvider } from "./provider.js";
+
+describe("manual invocation provider", () => {
+  it("uses the same typed invocation evidence as message providers", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "manual-request",
+          on: "manual.run",
+          max_runtime: "1h",
+          filters: { from_users: ["operator"], inputs: { repo: "hub" } },
+          inputs: {
+            repo: { type: "string", choices: ["paseo", "hub"] },
+            agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+          },
+          steps: [
+            {
+              id: "work",
+              environment: "runner",
+              max_runtime: "10m",
+              idle_timeout: "1m",
+              agent: { provider: "${{ paseo.inputs.agent }}" },
+              prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+            },
+          ],
+        },
+      ],
+    });
+    const provider = createManualRunProvider(() => store);
+    const match = (
+      await provider.match({
+        organizationId: "org-1",
+        projectId: project.id,
+        source: "manual.run",
+        deliveryId: "manual-1",
+        receivedAt: new Date(),
+        payload: {
+          trigger: "manual-request",
+          actor: "operator",
+          input: "repo=hub agent=opus investigate",
+        },
+      })
+    )[0];
+
+    assert.ok(match);
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+});

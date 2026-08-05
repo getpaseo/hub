@@ -11,6 +11,25 @@ import { createGitHubTriggerProvider } from "./provider.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
+  it("normalizes typed inputs identically at the provider boundary", async () => {
+    const { project, store } = await activeConfiguration(inputConfiguration());
+    const provider = createProvider(store, new TestReactions());
+
+    const match = (
+      await provider.match(
+        external(project.id, createEvent({ body: "@paseo repo=hub agent=opus investigate" })),
+      )
+    )[0];
+
+    assert.ok(match);
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "@paseo repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
   it("matches a literal one-step prompt only after the security filters pass", async () => {
     const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
@@ -271,6 +290,31 @@ async function activeConfiguration(rawConfiguration = githubConfiguration()) {
   return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
 }
 
+function inputConfiguration() {
+  const base = githubConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          repo: { type: "string", choices: ["paseo", "hub"] },
+          agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+        },
+        filters: { ...trigger.filters, inputs: { repo: "hub" } },
+        steps: [
+          {
+            ...trigger.steps[0]!,
+            agent: { provider: "${{ paseo.inputs.agent }}", mode: "bypassPermissions" },
+            prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function githubWorktreeConfiguration() {
   const configuration = githubConfiguration();
   return {
@@ -339,7 +383,7 @@ function external(projectId: string, payload: NormalizedGitHubEvent) {
   };
 }
 
-function createEvent(overrides: { actor?: string } = {}): NormalizedGitHubEvent {
+function createEvent(overrides: { actor?: string; body?: string } = {}): NormalizedGitHubEvent {
   const actor = overrides.actor ?? "boudra";
   return {
     id: "github-delivery-1",
@@ -351,7 +395,7 @@ function createEvent(overrides: { actor?: string } = {}): NormalizedGitHubEvent 
       issue: { number: 211, title: "smoke", body: "smoke" },
       comment: {
         id: 123,
-        body: "hello @paseo",
+        body: overrides.body ?? "hello @paseo",
         html_url: "https://github.com/boudra/faro/issues/211#issuecomment-123",
         user: { login: actor },
       },

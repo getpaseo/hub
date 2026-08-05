@@ -147,6 +147,101 @@ describe("durable Phase 1 workflow engine", () => {
     assert.equal(dispatches, 2);
   });
 
+  it("stores raw prompt, clean prompt, immutable inputs, and renders the launch contract", async () => {
+    const database = createMemoryDatabase();
+    const trigger = await insertTrigger(database, "delivery-inputs");
+    const base = providerMatch();
+    const match = {
+      ...base.match,
+      prompt: "Request: ${{ paseo.prompt }} for ${{ paseo.inputs.repo }}",
+      agent: { provider: "${{ paseo.inputs.agent }}", mode: "default" },
+      invocation: {
+        status: "accepted" as const,
+        rawMessage: "@Paseo repo=hub agent=opus investigate",
+        prompt: "investigate",
+        inputs: { repo: "hub", agent: "opus" },
+      },
+    };
+    const { handler, engine } = createDurableWorkflowHandler({
+      database,
+      providers: [
+        {
+          ...provider(),
+          async match() {
+            return [match];
+          },
+        },
+      ],
+      dispatchLaunchMachineIntent: async (intent) => ({
+        execution: await database.insertAgentExecution({
+          id: durableExecutionId(intent),
+          organizationId: intent.organizationId,
+          projectId: intent.projectId,
+          machineId: null,
+          triggerId: intent.triggerId,
+          triggerContext: intent.triggerContext,
+          outputContext: intent.outputContext,
+          configurationRevisionId: intent.configurationRevisionId,
+          workflowStepRunId: intent.workflowStepRunId!,
+          launchIntent: intent,
+        }),
+      }),
+    });
+
+    await handler(trigger);
+    await engine.processAvailable();
+
+    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
+    assert.ok(run);
+    assert.equal(run.rawPrompt, "@Paseo repo=hub agent=opus investigate");
+    assert.equal(run.prompt, "investigate");
+    assert.deepEqual(run.inputs, { repo: "hub", agent: "opus" });
+    assert.equal(Object.isFrozen(run.inputs), true);
+    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+    assert.ok(step);
+    const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    assert.equal(execution.launchIntent?.prompt, "Request: investigate for hub");
+    assert.equal(execution.launchIntent?.agent.provider, "opus");
+  });
+
+  it("records a rejected invocation as Activity evidence without creating a run or execution", async () => {
+    const database = createMemoryDatabase();
+    const trigger = await insertTrigger(database, "delivery-invalid-input");
+    const base = providerMatch();
+    const rejected = {
+      ...base.match,
+      invocation: {
+        status: "rejected" as const,
+        rawMessage: "repo=unknown investigate",
+        prompt: "investigate",
+        inputs: {},
+        reason: "input repo must be one of the declared choices",
+      },
+    };
+    const { handler, engine } = createDurableWorkflowHandler({
+      database,
+      providers: [
+        {
+          ...provider(),
+          async match() {
+            return [rejected];
+          },
+        },
+      ],
+    });
+
+    await handler(trigger);
+    await engine.processAvailable();
+
+    assert.deepEqual(await database.findTriggerRunsByTriggerId(trigger.triggerId), []);
+    assert.deepEqual(await database.findAgentExecutionsByTriggerId(trigger.triggerId), []);
+    assert.match(
+      (await database.findTriggerById(trigger.triggerId))?.droppedReason ?? "",
+      /rejected_input.*declared choices/iu,
+    );
+  });
+
   it("deduplicates delivery, wakeup, and finish transitions", async () => {
     const database = createMemoryDatabase();
     const trigger = await insertTrigger(database, "delivery-duplicate");
@@ -204,6 +299,7 @@ describe("durable Phase 1 workflow engine", () => {
       configuredTriggerName: "test-trigger",
       rawPrompt: "raw",
       prompt: "prompt",
+      inputs: {},
       deadlineAt: new Date(now.getTime() + 60_000),
       stepId: "step-one",
       stepRunId: "step-run-one",
@@ -314,6 +410,12 @@ function providerMatch(triggerName = "test-trigger", stepId = "step-one") {
       outputContext: intent.outputContext,
       configurationRevisionId: "config-1",
       hubConfig: {},
+      invocation: {
+        status: "accepted" as const,
+        rawMessage: "prompt",
+        prompt: "prompt",
+        inputs: {},
+      },
     },
   };
 }

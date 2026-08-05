@@ -10,10 +10,12 @@ import {
   type AuthoredEnvironment,
   type AuthoredHubConfig,
   type AuthoredStep,
+  type AuthoredInput,
   type AuthoredTrigger,
   type AuthoredTriggerFilter,
   type CompiledHubConfig,
   type CompiledStep,
+  type CompiledInput,
   type CompiledTriggerFilter,
   type CompiledTrigger,
 } from "./compiler.js";
@@ -43,6 +45,8 @@ export type HubConfig = AuthoredHubConfig;
 export type CompiledConfiguration = CompiledHubConfig;
 export type CompiledTriggerConfig = CompiledTrigger;
 export type CompiledStepConfig = CompiledStep;
+export type InputDefinition = AuthoredInput;
+export type CompiledInputDefinition = CompiledInput;
 export type WorktreeTarget = NonNullable<DaemonEnvironment["worktree"]>;
 export type { AuthoredTriggerFilter, CompiledTriggerFilter };
 

@@ -15,6 +15,7 @@ import type {
   TriggerProvider,
   TriggerProviderMatch,
 } from "../triggers/index.js";
+import { interpolateInvocation } from "../triggers/invocation.js";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
@@ -75,6 +76,13 @@ export class DurableWorkflowEngine {
     const createdAt = this.now();
     await Promise.all(
       matches.map(async (match) => {
+        if (match.invocation.status === "rejected") {
+          await this.options.database!.markTriggerDropped(
+            trigger.triggerId,
+            `rejected_input:${match.triggerName}:${match.invocation.reason}`,
+          );
+          return;
+        }
         const configurationRevisionId =
           match.configurationRevisionId ?? this.options.configurationRevisionId;
         if (configurationRevisionId === undefined) {
@@ -89,8 +97,28 @@ export class DurableWorkflowEngine {
 
         const stepRunId = randomUUID();
         const runDeadline = new Date(createdAt.getTime() + match.runTimeoutMs);
-        const baseIntent = buildLaunchMachineIntent({
+        const materializedMatch = {
           ...match,
+          prompt: interpolateInvocation(match.prompt, match.invocation),
+          agent: {
+            ...match.agent,
+            provider: interpolateInvocation(match.agent.provider, match.invocation),
+            ...(match.agent.model === undefined
+              ? {}
+              : { model: interpolateInvocation(match.agent.model, match.invocation) }),
+            mode: interpolateInvocation(match.agent.mode, match.invocation),
+            ...(match.agent.thinkingOptionId === undefined
+              ? {}
+              : {
+                  thinkingOptionId: interpolateInvocation(
+                    match.agent.thinkingOptionId,
+                    match.invocation,
+                  ),
+                }),
+          },
+        } satisfies TriggerProviderMatch;
+        const baseIntent = buildLaunchMachineIntent({
+          ...materializedMatch,
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           triggerId: trigger.triggerId,
@@ -106,8 +134,9 @@ export class DurableWorkflowEngine {
           configurationRevisionId,
           triggerId: trigger.triggerId,
           configuredTriggerName: match.triggerName,
-          rawPrompt: rawPrompt(trigger.payload),
-          prompt: match.prompt,
+          rawPrompt: match.invocation.rawMessage,
+          prompt: match.invocation.prompt,
+          inputs: match.invocation.inputs,
           deadlineAt: runDeadline,
           stepId: match.stepId,
           stepRunId,
@@ -280,10 +309,6 @@ function readExecutionStatus(value: unknown): AgentExecutionStatus {
 
 function readFailureReason(result: unknown): string | undefined {
   return isRecord(result) && typeof result["reason"] === "string" ? result["reason"] : undefined;
-}
-
-function rawPrompt(payload: unknown): string {
-  return typeof payload === "string" ? payload : (JSON.stringify(payload) ?? "");
 }
 
 function isTriggerEventName(value: string): value is TriggerEventName {

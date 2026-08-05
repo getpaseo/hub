@@ -68,13 +68,65 @@ describe("Phase 1 workflow compiler", () => {
     );
   });
 
-  it.each(["inputs", "values"])("rejects later-phase trigger field %s", (field) => {
+  it("rejects the later-phase trigger field values", () => {
     assert.throws(
       () =>
         compileHubConfig(
-          configuration({ triggers: [{ ...configuration().triggers[0], [field]: {} }] }),
+          configuration({ triggers: [{ ...configuration().triggers[0], values: {} }] }),
         ),
-      new RegExp(`${field}.*Phase 1`, "u"),
+      /values.*Phase 3/iu,
+    );
+  });
+
+  it("compiles typed inputs, defaults, exact filters, and prompt interpolation", () => {
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...configuration().triggers[0],
+          inputs: {
+            repo: { type: "string", choices: ["paseo", "hub"] },
+            agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+          },
+          filters: { inputs: { repo: "hub" } },
+          steps: [
+            {
+              ...configuration().triggers[0]!.steps[0],
+              agent: { provider: "${{ paseo.inputs.agent }}" },
+              prompt: [{ text: "${{ paseo.prompt }} on ${{ paseo.inputs.repo }}" }],
+            },
+          ],
+        },
+      ],
+    });
+    const trigger = compiled.triggers[0]!;
+    assert.deepEqual(trigger.inputs, {
+      repo: { type: "string", required: false, choices: ["paseo", "hub"] },
+      agent: { type: "string", required: false, default: "codex", choices: ["codex", "opus"] },
+    });
+    assert.deepEqual(trigger.filters?.inputs, { repo: "hub" });
+    assert.equal(trigger.steps[0].agent.provider, "${{ paseo.inputs.agent }}");
+  });
+
+  it("requires finite choices when an input controls authority", () => {
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...configuration().triggers[0],
+              inputs: { agent: { type: "string" } },
+              steps: [
+                {
+                  ...configuration().triggers[0]!.steps[0],
+                  agent: { provider: "${{ paseo.inputs.agent }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /finite choices/iu,
     );
   });
 
@@ -87,7 +139,7 @@ describe("Phase 1 workflow compiler", () => {
           ...configuration(),
           triggers: [{ ...trigger, steps: [{ ...step, [field]: {} }] }],
         }),
-      new RegExp(`${field}.*Phase 1`, "u"),
+      new RegExp(`${field}.*Phase 3`, "u"),
     );
   });
 
@@ -100,7 +152,7 @@ describe("Phase 1 workflow compiler", () => {
           ...configuration(),
           triggers: [{ ...trigger, steps: [{ ...step, prompt: [{ include: "developer.md" }] }] }],
         }),
-      /prompt.*include.*Phase 1/iu,
+      /prompt.*include.*Phase 4/iu,
     );
     assert.throws(
       () =>
@@ -110,12 +162,12 @@ describe("Phase 1 workflow compiler", () => {
             { ...trigger, steps: [{ ...step, agent: { provider: "${{ values.agent }}" } }] },
           ],
         }),
-      /expressions.*Phase 1/iu,
+      /unsupported expression/iu,
     );
     assert.throws(
       () =>
         compileHubConfig({ ...configuration(), triggers: [{ ...trigger, steps: [step, step] }] }),
-      /exactly one.*Phase 1/iu,
+      /exactly one.*Phase 2/iu,
     );
   });
 

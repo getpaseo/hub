@@ -7,7 +7,8 @@ import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-in
 import { logger } from "../../logger.js";
 import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
-import { matchDiscordTriggers, readDiscordPromptBody } from "./match.js";
+import { matchDiscordTriggers, readDiscordMentionToken, readDiscordPromptBody } from "./match.js";
+import { interpolateInvocation, matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 
@@ -83,7 +84,23 @@ export function createDiscordTriggerProvider(options: {
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const step = compiledTrigger.steps[0];
-        const baseEnvironment = readDaemonEnvironment(stored.configuration, step.environment);
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          readDiscordMentionToken(event, botClientId),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
+        const environmentName =
+          invocation.status === "accepted"
+            ? interpolateInvocation(step.environment, invocation)
+            : step.environment;
+        const baseEnvironment = readDaemonEnvironment(
+          stored.configuration,
+          environmentName,
+          invocation.status === "rejected",
+        );
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -104,7 +121,7 @@ export function createDiscordTriggerProvider(options: {
         matches.push({
           triggerName: match.trigger.name,
           stepId: step.id,
-          environmentName: step.environment,
+          environmentName,
           environment,
           prompt: step.prompt.map((block) => block.value).join("\n"),
           agent: cleanTriggerAgent(step.agent),
@@ -117,6 +134,7 @@ export function createDiscordTriggerProvider(options: {
           outputContext,
           configurationRevisionId: stored.revision.id,
           hubConfig: stored.configuration,
+          invocation,
         });
       }
 
@@ -242,8 +260,13 @@ function buildDiscordContextUrl(event: NormalizedDiscordMessageEvent): string {
 function readDaemonEnvironment(
   config: CompiledProjectConfiguration,
   environmentName: string,
+  allowRejectedFallback = false,
 ): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === environmentName);
+  const environment =
+    config.environments.find((item) => item.name === environmentName) ??
+    (allowRejectedFallback
+      ? config.environments.find((item) => item.kind === "daemon")
+      : undefined);
 
   if (environment === undefined) {
     throw new Error(`environment not found: ${environmentName}`);

@@ -956,7 +956,6 @@ export class HubE2E {
         listen: daemonHost,
         relay: { enabled: false },
         mcp: { enabled: false, injectIntoAgents: false },
-        browserTools: { enabled: false },
         cors: { allowedOrigins: [] },
       },
       ...(this.options.realAgent === true

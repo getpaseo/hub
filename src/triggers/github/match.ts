@@ -17,6 +17,19 @@ export interface MatchedTriggerEvent {
   trigger: MatchedTriggerDefinition;
 }
 
+export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): string {
+  return getFilterText(event);
+}
+
+export function readGitHubMention(
+  event: NormalizedGitHubEvent,
+  filter: TriggerFilter | undefined,
+): string | undefined {
+  const message = readGitHubInvocationMessage(event);
+  const candidate = filter?.pattern ?? filter?.contains;
+  return candidate !== undefined && message.includes(candidate) ? candidate : undefined;
+}
+
 export function matchTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,

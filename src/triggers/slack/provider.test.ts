@@ -6,6 +6,57 @@ import type { SlackBotClient } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
 
 describe("Slack Phase 1 trigger provider", () => {
+  it("normalizes typed inputs identically at the provider boundary", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      inputConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, { content: "<@UBOT> repo=hub agent=opus investigate" }),
+      )
+    )[0];
+
+    assert.ok(match);
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "<@UBOT> repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
+  it("uses exact input filters to select one configured trigger", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      inputFilterFanoutConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const matches = await provider.match(
+      external(project.id, { content: "<@UBOT> repo=hub investigate" }),
+    );
+
+    assert.deepEqual(
+      matches.map((match) => match.triggerName),
+      ["hub-only"],
+    );
+  });
+
   it("matches the literal step and preserves the message reply target", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -128,7 +179,47 @@ function configuration() {
   };
 }
 
-function external(projectId: string, overrides: { threadTs?: string | null } = {}) {
+function inputConfiguration() {
+  const base = configuration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          repo: { type: "string", choices: ["paseo", "hub"] },
+          agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+        },
+        filters: { ...trigger.filters, inputs: { repo: "hub" } },
+        steps: [
+          {
+            ...trigger.steps[0]!,
+            agent: { provider: "${{ paseo.inputs.agent }}", mode: "full-access" },
+            prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function inputFilterFanoutConfiguration() {
+  const base = inputConfiguration();
+  const first = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      { ...first, name: "hub-only" },
+      { ...first, name: "paseo-only", filters: { ...first.filters, inputs: { repo: "paseo" } } },
+    ],
+  };
+}
+
+function external(
+  projectId: string,
+  overrides: { threadTs?: string | null; content?: string } = {},
+) {
   return {
     organizationId: "org-1",
     projectId,
@@ -145,7 +236,7 @@ function external(projectId: string, overrides: { threadTs?: string | null } = {
       threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
       eventTs: "1700000000.000001",
       eventTime: 1_700_000_001,
-      content: "<@UBOT> deploy now",
+      content: overrides.content ?? "<@UBOT> deploy now",
       author: { id: "U1" },
       createdAt: new Date(1_700_000_000_000).toISOString(),
     },

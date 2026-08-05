@@ -570,7 +570,6 @@ function defaultConfig(daemonHost: string): unknown {
       listen: daemonHost,
       relay: { enabled: false },
       mcp: { enabled: false, injectIntoAgents: false },
-      browserTools: { enabled: false },
       cors: { allowedOrigins: [] },
     },
     features: { dictation: { enabled: false }, voiceMode: { enabled: false } },

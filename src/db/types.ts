@@ -501,6 +501,7 @@ export interface CreateTriggerRunInput {
   configuredTriggerName: string;
   rawPrompt: string;
   prompt: string;
+  inputs: unknown;
   deadlineAt: Date;
   stepId: string;
   stepRunId?: string;

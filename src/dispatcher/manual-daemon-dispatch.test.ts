@@ -121,6 +121,12 @@ function matchingProvider(): TriggerProvider {
           triggerContext: trigger.payload,
           outputContext: { provider: "manual" },
           hubConfig: { environments: [], triggers: [] },
+          invocation: {
+            status: "accepted",
+            rawMessage: "run",
+            prompt: "run",
+            inputs: {},
+          },
         },
       ];
     },

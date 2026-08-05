@@ -532,7 +532,7 @@ class PgDatabase implements Database {
            (id, organization_id, project_id, configuration_revision_id, trigger_id,
             configured_trigger_name, status,
             raw_prompt, prompt, inputs, deadline_at, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'running', $7, $8, '{}'::jsonb, $9, $10)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'running', $7, $8, $9, $10, $11)
          on conflict (trigger_id, configured_trigger_name) do nothing
          returning *`,
         [
@@ -544,6 +544,7 @@ class PgDatabase implements Database {
           input.configuredTriggerName,
           input.rawPrompt,
           input.prompt,
+          input.inputs,
           input.deadlineAt,
           input.createdAt ?? new Date(),
         ],

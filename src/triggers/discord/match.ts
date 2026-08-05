@@ -84,6 +84,13 @@ export function readDiscordPromptBody(
     : event.content.slice(mention.index + mention.token.length).trimStart();
 }
 
+export function readDiscordMentionToken(
+  event: NormalizedDiscordMessageEvent,
+  botClientId: string,
+): string | undefined {
+  return findBotMention(event, botClientId)?.token;
+}
+
 function matchesBotMentionPattern(
   event: NormalizedDiscordMessageEvent,
   botClientId: string,

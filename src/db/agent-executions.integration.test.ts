@@ -86,11 +86,18 @@ describe("agent execution PostgreSQL repository", () => {
         configurationRevisionId: fixture.execution.configurationRevisionId,
         triggerId: trigger.trigger.id,
         configuredTriggerName: "one-step",
-        rawPrompt: "raw",
-        prompt: intent.prompt,
+        rawPrompt: "@Paseo repo=hub investigate",
+        prompt: "investigate",
+        inputs: { repo: "hub" },
         deadlineAt: new Date(Date.now() + 60_000),
         stepId: "step-one",
         dispatchIntent: intent,
+      });
+      assert.deepEqual((await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0], {
+        ...created.run,
+        rawPrompt: "@Paseo repo=hub investigate",
+        prompt: "investigate",
+        inputs: { repo: "hub" },
       });
       const step = await fixture.database.findWorkflowStepRunByTriggerRun(created.run.id);
       assert.ok(step);
@@ -168,8 +175,7 @@ describe("agent execution PostgreSQL repository", () => {
       );
       const durableTrigger = toDurableTrigger(trigger.trigger);
 
-      await handler(durableTrigger);
-      await handler(durableTrigger);
+      await Promise.all([handler(durableTrigger), handler(durableTrigger)]);
 
       const run = (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0];
       assert.ok(run);
@@ -250,8 +256,7 @@ describe("agent execution PostgreSQL repository", () => {
       );
       const durableTrigger = toDurableTrigger(trigger.trigger);
 
-      await handler(durableTrigger);
-      await handler(durableTrigger);
+      await Promise.all([handler(durableTrigger), handler(durableTrigger)]);
       const runs = await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id);
       assert.equal(runs.length, 2);
       assert.deepEqual(runs.map((run) => run.configuredTriggerName).sort(), [
@@ -417,6 +422,12 @@ function phaseOneMatch(
     outputContext: base.outputContext,
     configurationRevisionId,
     hubConfig: base.hubConfig,
+    invocation: {
+      status: "accepted",
+      rawMessage: "run",
+      prompt: "run",
+      inputs: {},
+    },
   };
 }
 

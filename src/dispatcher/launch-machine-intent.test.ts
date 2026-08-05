@@ -32,6 +32,12 @@ describe("LaunchMachineIntent", () => {
       triggerContext: { messageId: "message-1" },
       outputContext: { messageId: "message-1" },
       hubConfig: { triggers: [] },
+      invocation: {
+        status: "accepted",
+        rawMessage: "Reply pong",
+        prompt: "Reply pong",
+        inputs: {},
+      },
     });
 
     assert.deepEqual(intent, {

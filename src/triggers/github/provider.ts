@@ -7,7 +7,8 @@ import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-in
 import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
 import { logger } from "../../logger.js";
-import { matchTriggers } from "./match.js";
+import { matchTriggers, readGitHubInvocationMessage, readGitHubMention } from "./match.js";
+import { interpolateInvocation, matchesInputFilters, parseInvocation } from "../invocation.js";
 import {
   IssueCommentPayloadSchema,
   NormalizedGitHubEventSchema,
@@ -147,7 +148,23 @@ export function createGitHubTriggerProvider(options: {
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const step = compiledTrigger.steps[0];
-        const baseEnvironment = readDaemonEnvironment(stored.configuration, step.environment);
+        const invocation = parseInvocation(
+          readGitHubInvocationMessage(event),
+          compiledTrigger.inputs,
+          readGitHubMention(event, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
+        const environmentName =
+          invocation.status === "accepted"
+            ? interpolateInvocation(step.environment, invocation)
+            : step.environment;
+        const baseEnvironment = readDaemonEnvironment(
+          stored.configuration,
+          environmentName,
+          invocation.status === "rejected",
+        );
         const triggerContext: GitHubTriggerContext = {
           provider: "github",
           target: { installationId: event.installationId, repository: event.repo },
@@ -162,7 +179,7 @@ export function createGitHubTriggerProvider(options: {
         matches.push({
           triggerName: match.trigger.name,
           stepId: step.id,
-          environmentName: step.environment,
+          environmentName,
           environment,
           prompt: step.prompt.map((block) => block.value).join("\n"),
           agent: cleanTriggerAgent(step.agent),
@@ -175,6 +192,7 @@ export function createGitHubTriggerProvider(options: {
           outputContext: triggerContext,
           configurationRevisionId: stored.revision.id,
           hubConfig: stored.configuration,
+          invocation,
         });
       }
 
@@ -320,8 +338,13 @@ function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {
 function readDaemonEnvironment(
   config: CompiledProjectConfiguration,
   environmentName: string,
+  allowRejectedFallback = false,
 ): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === environmentName);
+  const environment =
+    config.environments.find((item) => item.name === environmentName) ??
+    (allowRejectedFallback
+      ? config.environments.find((item) => item.kind === "daemon")
+      : undefined);
 
   if (environment === undefined) {
     throw new Error(`environment not found: ${environmentName}`);

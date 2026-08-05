@@ -211,6 +211,10 @@ export class PaseoHub {
     await this.requireUser(alias).expectApiKeyLifecycle();
   }
 
+  async createRunApiKey(alias: string): Promise<string> {
+    return await this.requireUser(alias).createRunApiKey();
+  }
+
   async proveInviteOnlyJourney(account: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -403,6 +407,46 @@ export class PaseoHub {
        from activity`,
       [this.requireUser(alias).accountEmail, projectSlug],
     );
+  }
+
+  async setDaemonSlug(daemonId: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      "update daemons set slug = $2 where id = $1",
+      [daemonId, slug],
+    );
+  }
+
+  async runManualInput(input: {
+    rawInput: string;
+    deliveryKey: string;
+    trigger?: string;
+    apiKey?: string;
+  }): Promise<{ status: number; error?: string; reason?: string }> {
+    const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
+      headers: {
+        ...(input.apiKey === undefined
+          ? machineHeaders()
+          : { authorization: `Bearer ${input.apiKey}` }),
+        "content-type": "application/json",
+      },
+      data: {
+        projectSlug: "default",
+        trigger: input.trigger ?? "deploy",
+        actor: "alice",
+        deliveryKey: input.deliveryKey,
+        input: input.rawInput,
+      },
+    });
+    const body = z
+      .object({ error: z.string().optional(), reason: z.string().optional() })
+      .passthrough()
+      .parse(await response.json());
+    return {
+      status: response.status(),
+      ...(body.error === undefined ? {} : { error: body.error }),
+      ...(body.reason === undefined ? {} : { reason: body.reason }),
+    };
   }
 
   async createAdminInvitationWithKeyboard(alias: string, email: string): Promise<void> {
@@ -1800,6 +1844,21 @@ class HubUser {
         return response.status;
       }, revealedSecret),
     ).resolves.toBe(401);
+  }
+
+  async createRunApiKey(): Promise<string> {
+    await this.openOrganizationSection("API keys");
+    await expect(this.page.getByRole("heading", { name: "API keys", exact: true })).toBeVisible();
+    await this.page.getByRole("button", { name: "Create API key" }).click();
+    const dialog = this.page.getByRole("dialog");
+    const form = dialog.getByRole("form", { name: "Create API key" });
+    await form.getByLabel("Name").fill("Phase Two runner");
+    await form.getByLabel("Start runs").check();
+    await form.getByRole("button", { name: "Create API key" }).click();
+    await expect(dialog.getByRole("heading", { name: "Copy your API key" })).toBeVisible();
+    const secret = await dialog.getByLabel("Generated API key").inputValue();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    return secret;
   }
 
   async signUpForInvitation(account: Account): Promise<void> {
