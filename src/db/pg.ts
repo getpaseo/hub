@@ -1156,16 +1156,21 @@ class PgDatabase implements Database {
     return rows.rows.map(toTriggerRecord);
   }
 
-  async claimAgentExecutionReply(executionId: string, claimedAt: Date): Promise<boolean> {
+  async claimAgentExecutionReply(
+    executionId: string,
+    maxReplies: number,
+    claimedAt: Date,
+  ): Promise<boolean> {
     const rows = await query(
       this.pool,
       `update agent_executions
-       set reply_claimed_at = $2
+       set reply_claimed_at = coalesce(reply_claimed_at, $3),
+           reply_claim_count = reply_claim_count + 1
        where id = $1
-         and reply_claimed_at is null
+         and reply_claim_count < $2
          and status in ('spawning', 'running')
        returning id`,
-      [executionId, claimedAt],
+      [executionId, maxReplies, claimedAt],
     );
     return rows.rowCount === 1;
   }
@@ -2478,6 +2483,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   configuration_revision_id: string;
   completion_token_hash: string | null;
   reply_claimed_at: Date | null;
+  reply_claim_count: number;
   launch_intent: AgentExecutionRecord["launchIntent"];
   daemon_id: string | null;
   daemon_agent_id: string | null;

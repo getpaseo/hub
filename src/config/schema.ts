@@ -49,6 +49,7 @@ const AgentConfigSchema = z.object({
 
 export const AllowOutputSchema = z.object({
   type: TriggerEventNameSchema,
+  max: z.number().int().positive().default(1),
 });
 
 const BaseEnvironmentSchema = z.object({

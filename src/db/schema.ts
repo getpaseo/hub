@@ -438,6 +438,7 @@ export const agentExecutions = pgTable(
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
     completionTokenHash: text("completion_token_hash"),
     replyClaimedAt: timestamp("reply_claimed_at", { withTimezone: true }),
+    replyClaimCount: integer("reply_claim_count").default(0).notNull(),
     launchIntent: jsonb("launch_intent"),
     daemonId: uuid("daemon_id"),
     daemonAgentId: text("daemon_agent_id"),

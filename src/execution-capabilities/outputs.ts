@@ -1,5 +1,6 @@
 export interface AllowedOutput {
   type: string;
+  max: number;
 }
 
 export interface OutputExecutionInput {

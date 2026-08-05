@@ -401,6 +401,7 @@ class MemoryDatabase implements Database {
       configurationRevisionId: input.configurationRevisionId,
       completionTokenHash: input.completionTokenHash ?? null,
       replyClaimedAt: null,
+      replyClaimCount: 0,
       launchIntent: input.launchIntent ?? null,
       daemonId: input.daemonId ?? null,
       daemonAgentId: null,
@@ -699,17 +700,22 @@ class MemoryDatabase implements Database {
       .slice(0, limit);
   }
 
-  async claimAgentExecutionReply(executionId: string, claimedAt: Date): Promise<boolean> {
+  async claimAgentExecutionReply(
+    executionId: string,
+    maxReplies: number,
+    claimedAt: Date,
+  ): Promise<boolean> {
     const execution = this.readAgentExecution(executionId);
     if (
-      execution.replyClaimedAt !== null ||
+      execution.replyClaimCount >= maxReplies ||
       (execution.status !== "spawning" && execution.status !== "running")
     ) {
       return false;
     }
     this.agentExecutions.set(executionId, {
       ...execution,
-      replyClaimedAt: claimedAt,
+      replyClaimedAt: execution.replyClaimedAt ?? claimedAt,
+      replyClaimCount: execution.replyClaimCount + 1,
     });
     return true;
   }

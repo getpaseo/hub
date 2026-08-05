@@ -193,6 +193,25 @@ describe("execution capability MCP boundary", () => {
     ]);
   });
 
+  it("allows replies up to the configured maximum", async () => {
+    const fixture = await capabilityFixture(() => Promise.resolve(), "succeeded", 3);
+
+    for (const content of ["first", "second", "third"]) {
+      const response = await fixture.call("tools/call", {
+        name: "reply",
+        arguments: { content },
+      });
+      assert.equal(ToolResultSchema.parse(response.result).isError, undefined);
+    }
+    const exhausted = await fixture.call("tools/call", {
+      name: "reply",
+      arguments: { content: "fourth" },
+    });
+
+    assert.equal(ToolResultSchema.parse(exhausted.result).isError, true);
+    assert.equal(fixture.outbound.length, 3);
+  });
+
   it("burns an ambiguous failed reply claim", async () => {
     const fixture = await capabilityFixture(() => Promise.reject(new Error("delivery timeout")));
     const failed = await fixture.call("tools/call", {
@@ -211,6 +230,10 @@ describe("execution capability MCP boundary", () => {
         ?.replyClaimedAt instanceof Date,
       true,
     );
+    assert.equal(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.replyClaimCount,
+      1,
+    );
     assert.equal(fixture.outbound.length, 1);
   });
 });
@@ -226,6 +249,7 @@ const slackOutputContext = {
 async function capabilityFixture(
   execute: (() => Promise<void>) | undefined = () => Promise.resolve(),
   completionStatus: "succeeded" | "failed" = "succeeded",
+  maxReplies = 1,
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
@@ -239,7 +263,7 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(),
+    launchIntent: launchIntent(maxReplies),
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
@@ -311,7 +335,7 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-function launchIntent(): LaunchMachineIntent {
+function launchIntent(maxReplies = 1): LaunchMachineIntent {
   return {
     kind: "launch_machine",
     organizationId: "org-1",
@@ -327,7 +351,7 @@ function launchIntent(): LaunchMachineIntent {
     },
     prompt: "reply",
     agent: { provider: "codex", mode: "full-access" },
-    allowOutputs: [{ type: "slack.reply" }],
+    allowOutputs: [{ type: "slack.reply", max: maxReplies }],
     autoArchive: false,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,

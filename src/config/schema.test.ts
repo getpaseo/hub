@@ -33,7 +33,7 @@ describe("HubConfigSchema", () => {
           env: {
             GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}",
           },
-          allow_outputs: [{ type: "discord.reply" }],
+          allow_outputs: [{ type: "discord.reply", max: 5 }],
         },
       ],
     });
@@ -47,7 +47,7 @@ describe("HubConfigSchema", () => {
         raw: "${{ paseo.connections.getpaseo-github.token }}",
       },
     ]);
-    assert.deepEqual(parsed.triggers[0]?.allow_outputs, [{ type: "discord.reply" }]);
+    assert.deepEqual(parsed.triggers[0]?.allow_outputs, [{ type: "discord.reply", max: 5 }]);
     assert.deepEqual(parsed.triggers[0]?.agent, {
       provider: "codex",
       model: "gpt-5.6-sol",

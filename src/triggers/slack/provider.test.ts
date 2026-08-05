@@ -97,7 +97,7 @@ describe("Slack trigger provider", () => {
       threadTs: "1700000000.000001",
       messageTs: "1700000000.000001",
     });
-    assert.deepEqual(match?.allowOutputs, [{ type: "slack.reply" }]);
+    assert.deepEqual(match?.allowOutputs, [{ type: "slack.reply", max: 1 }]);
 
     assert(match !== undefined);
     workspaceAvailable = false;

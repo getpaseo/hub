@@ -1137,7 +1137,7 @@ export class HubHarness {
         mode: "full-access",
         thinkingOptionId: "xhigh",
       },
-      allowOutputs: [{ type: "discord.reply" }],
+      allowOutputs: [{ type: "discord.reply", max: 1 }],
       autoArchive: false,
       triggerContext: { provider: "manual-discord", deliveryId: randomUUID() },
       outputContext: { channelId: "channel-1" },

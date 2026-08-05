@@ -101,23 +101,28 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
-  it("atomically burns one reply claim under concurrent callers", async () => {
+  it("atomically enforces the configured reply limit under concurrent callers", async () => {
     const fixture = await executionFixture(postgres);
     try {
       const claims = await Promise.all(
         Array.from({ length: 8 }, (_, index) =>
           fixture.database.claimAgentExecutionReply(
             fixture.execution.id,
+            3,
             new Date(`2026-08-03T00:00:0${index}.000Z`),
           ),
         ),
       );
 
-      assert.equal(claims.filter(Boolean).length, 1);
+      assert.equal(claims.filter(Boolean).length, 3);
       assert.equal(
         (await fixture.database.findAgentExecutionById(fixture.execution.id))?.replyClaimedAt !==
           null,
         true,
+      );
+      assert.equal(
+        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.replyClaimCount,
+        3,
       );
     } finally {
       await fixture.database.close();

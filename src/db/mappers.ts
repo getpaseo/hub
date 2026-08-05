@@ -68,6 +68,7 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     configurationRevisionId: row.configuration_revision_id,
     completionTokenHash: row.completion_token_hash,
     replyClaimedAt: row.reply_claimed_at,
+    replyClaimCount: row.reply_claim_count,
     launchIntent: row.launch_intent,
     daemonId: row.daemon_id,
     daemonAgentId: row.daemon_agent_id,

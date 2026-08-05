@@ -90,24 +90,25 @@ function createMcpServer(
     },
   );
 
-  const replyType = allowedReplyType(execution);
-  if (replyType !== undefined) {
+  const replyOutput = allowedReplyOutput(execution);
+  if (replyOutput !== undefined) {
     server.registerTool(
       "reply",
       {
-        description: "Send one reply to the conversation that triggered this execution.",
+        description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
         inputSchema: ReplyArgumentsSchema,
       },
       async (args) => {
         const claimed = await options.database.claimAgentExecutionReply(
           execution.id,
+          replyOutput.max,
           options.now?.() ?? new Date(),
         );
-        if (!claimed) return toolFailure("Reply already claimed");
+        if (!claimed) return toolFailure("Reply limit reached");
         try {
           await options.outputs.execute({
             agentExecutionId: execution.id,
-            toolType: replyType,
+            toolType: replyOutput.type,
             args,
             outputContext: execution.outputContext,
           });
@@ -121,17 +122,16 @@ function createMcpServer(
   return server;
 }
 
-function allowedReplyType(
+function allowedReplyOutput(
   execution: AgentExecutionRecord,
-): "slack.reply" | "discord.reply" | undefined {
+): { type: "slack.reply" | "discord.reply"; max: number } | undefined {
   const provider = readProvider(execution.outputContext);
   let type: "slack.reply" | "discord.reply" | undefined;
   if (provider === "slack") type = "slack.reply";
   if (provider === "discord") type = "discord.reply";
-  return type !== undefined &&
-    execution.launchIntent?.allowOutputs.some((output) => output.type === type)
-    ? type
-    : undefined;
+  if (type === undefined) return undefined;
+  const output = execution.launchIntent?.allowOutputs.find((candidate) => candidate.type === type);
+  return output === undefined ? undefined : { type, max: output.max };
 }
 
 function readProvider(value: unknown): unknown {

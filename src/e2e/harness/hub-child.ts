@@ -107,7 +107,7 @@ async function main(): Promise<void> {
               },
               prompt: "Deploy mcp-capability for phase-five-operator",
               agent: { provider: "hub-e2e", mode: "default" },
-              allowOutputs: [{ type: "discord.reply" }],
+              allowOutputs: [{ type: "discord.reply", max: 1 }],
               autoArchive: false,
               triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
               outputContext: {

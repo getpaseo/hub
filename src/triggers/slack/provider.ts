@@ -228,8 +228,8 @@ function readDaemonEnvironment(
   };
 }
 
-function cleanAllowedOutputs(outputs: readonly { type: string }[]) {
-  return outputs.map((output) => ({ type: output.type }));
+function cleanAllowedOutputs(outputs: readonly { type: string; max: number }[]) {
+  return outputs.map((output) => ({ type: output.type, max: output.max }));
 }
 
 async function replaceReaction(

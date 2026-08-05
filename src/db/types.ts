@@ -63,6 +63,7 @@ export interface AgentExecutionRecord {
   configurationRevisionId: string;
   completionTokenHash: string | null;
   replyClaimedAt: Date | null;
+  replyClaimCount: number;
   launchIntent: LaunchMachineIntent | null;
   daemonId: string | null;
   daemonAgentId: string | null;
@@ -644,7 +645,11 @@ export interface Database {
   findAgentExecutionsByTriggerId(triggerId: string): Promise<AgentExecutionRecord[]>;
   listAgentExecutionsForProject(projectId: string, limit: number): Promise<AgentExecutionRecord[]>;
   listTriggersForProject(projectId: string, limit: number): Promise<TriggerRecord[]>;
-  claimAgentExecutionReply(executionId: string, claimedAt: Date): Promise<boolean>;
+  claimAgentExecutionReply(
+    executionId: string,
+    maxReplies: number,
+    claimedAt: Date,
+  ): Promise<boolean>;
   transitionAgentExecution(
     id: string,
     toStatus: AgentExecutionStatus,
