@@ -222,6 +222,33 @@ export class ProjectDashboard {
     return revision;
   }
 
+  /**
+   * The raw provider payload for one trigger, fetched on demand when a detail sheet
+   * opens. Kept out of `projectSnapshot` — a busy project's 50 most recent triggers
+   * could carry megabytes of webhook bodies that most sessions never look at.
+   */
+  async triggerPayload(request: Request, scope: ProjectRouteScope, triggerId: string) {
+    const { tenant } = await this.resolveProject(request, scope);
+    const trigger = await this.database.findTriggerById(triggerId);
+    if (trigger === undefined || trigger.projectId !== tenant.project.id) {
+      throw new ProjectCommandError("trigger_unavailable");
+    }
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    return trigger.payload as JsonValue;
+  }
+
+  /** The raw result for one execution, fetched on demand — same reasoning as `triggerPayload`. */
+  async executionResult(request: Request, scope: ProjectRouteScope, executionId: string) {
+    const { tenant } = await this.resolveProject(request, scope);
+    const execution = await this.database.findAgentExecutionForProject(
+      tenant.project.id,
+      executionId,
+    );
+    if (execution === undefined) throw new ProjectCommandError("execution_unavailable");
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    return execution.result as JsonValue;
+  }
+
   async syncConfiguration(request: Request, scope: ProjectRouteScope) {
     const { tenant } = await this.resolveProjectManager(request, scope);
     if (this.github === undefined) throw new ProjectCommandError("github_sync_unavailable");
@@ -376,8 +403,6 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     droppedReason: trigger.droppedReason,
     lifecycleState: trigger.lifecycleState,
     summary: summarizeTrigger(trigger.source, trigger.payload),
-    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
-    payload: trigger.payload as JsonValue,
   };
 }
 
@@ -405,7 +430,5 @@ function executionView(
         ? null
         : { provider: launchIntent.agent.provider, model: launchIntent.agent.model ?? null },
     daemon: daemon === undefined ? null : daemonView(daemon),
-    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
-    result: execution.result as JsonValue,
   };
 }

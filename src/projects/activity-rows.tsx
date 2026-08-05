@@ -1,4 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop -- detail rows and click handlers are scoped to each rendered trigger/execution */
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { DataCell, DataRow } from "../components/app/data-table.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { StatusPill, type StatusTone } from "../components/app/status-pill.js";
@@ -11,10 +13,15 @@ import {
 } from "../components/ui/sheet.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import type { ProjectDashboard } from "./dashboard.js";
+import { executionResult, triggerPayload } from "./functions.js";
 
 type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>;
 export type TriggerItem = ProjectSnapshot["activity"][number];
 export type ExecutionItem = ProjectSnapshot["executions"][number];
+export interface ProjectScope {
+  organizationSlug: string;
+  projectSlug: string;
+}
 
 /** One provider event, one line: what happened, who did it, when. */
 export function EventRow({ event, onSelect }: { event: TriggerItem; onSelect: () => void }) {
@@ -96,11 +103,23 @@ export function ExecutionRow({
 
 export function TriggerDetailSheet({
   trigger,
+  scope,
   onOpenChange,
 }: {
   trigger: TriggerItem | undefined;
+  /** Omitted for triggers with no owning project (e.g. unrouted events) — raw payload isn't fetchable there. */
+  scope?: ProjectScope;
   onOpenChange: (open: boolean) => void;
 }) {
+  const loadPayload = useServerFn(triggerPayload);
+  const payload = useQuery({
+    queryKey: ["trigger-payload", scope?.organizationSlug, scope?.projectSlug, trigger?.id],
+    queryFn: () => {
+      if (trigger === undefined || scope === undefined) throw new Error("trigger unavailable");
+      return loadPayload({ data: { ...scope, triggerId: trigger.id } });
+    },
+    enabled: trigger !== undefined && scope !== undefined,
+  });
   return (
     <Sheet open={trigger !== undefined} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-y-auto">
@@ -134,7 +153,10 @@ export function TriggerDetailSheet({
                   Open on {providerLabel(trigger.summary.provider)}
                 </a>
               )}
-              <RawJson label="Raw payload" value={trigger.payload} />
+              <RawJson
+                label="Raw payload"
+                value={payload.data?.status === "ok" ? payload.data.data : null}
+              />
             </div>
           </>
         )}
@@ -145,11 +167,22 @@ export function TriggerDetailSheet({
 
 export function ExecutionDetailSheet({
   execution,
+  scope,
   onOpenChange,
 }: {
   execution: ExecutionItem | undefined;
+  scope: ProjectScope;
   onOpenChange: (open: boolean) => void;
 }) {
+  const loadResult = useServerFn(executionResult);
+  const result = useQuery({
+    queryKey: ["execution-result", scope.organizationSlug, scope.projectSlug, execution?.id],
+    queryFn: () => {
+      if (execution === undefined) throw new Error("execution unavailable");
+      return loadResult({ data: { ...scope, executionId: execution.id } });
+    },
+    enabled: execution !== undefined,
+  });
   return (
     <Sheet open={execution !== undefined} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-y-auto">
@@ -176,7 +209,10 @@ export function ExecutionDetailSheet({
                   ["Configuration revision", execution.configurationRevisionId],
                 ]}
               />
-              <RawJson label="Result" value={execution.result} />
+              <RawJson
+                label="Result"
+                value={result.data?.status === "ok" ? result.data.data : null}
+              />
             </div>
           </>
         )}

@@ -372,6 +372,7 @@ export function ProjectOverviewPanel() {
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const base = `/o/${tenant.organization.slug}/projects/${data.project.slug}`;
+  const scope = { organizationSlug: tenant.organization.slug, projectSlug: data.project.slug };
   return (
     <>
       <PageHeader
@@ -431,12 +432,14 @@ export function ProjectOverviewPanel() {
       </Section>
       <TriggerDetailSheet
         trigger={selectedTrigger}
+        scope={scope}
         onOpenChange={(open) => {
           if (!open) setSelectedTrigger(undefined);
         }}
       />
       <ExecutionDetailSheet
         execution={selectedExecution}
+        scope={scope}
         onOpenChange={(open) => {
           if (!open) setSelectedExecution(undefined);
         }}
@@ -743,6 +746,8 @@ const ACTIVITY_OUTCOME_OPTIONS: readonly { value: "all" | OutcomeKey; label: str
 ];
 
 export function ProjectActivityPanel() {
+  const tenant = useRouteTenant();
+  const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
   const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
   const [source, setSource] = useState<"all" | TriggerItem["summary"]["provider"]>("all");
@@ -785,6 +790,7 @@ export function ProjectActivityPanel() {
       <ActivityTable activity={activity} label="Project activity" onSelect={setSelectedTrigger} />
       <TriggerDetailSheet
         trigger={selectedTrigger}
+        scope={scope}
         onOpenChange={(open) => {
           if (!open) setSelectedTrigger(undefined);
         }}
@@ -805,6 +811,8 @@ const EXECUTION_STATUS_OPTIONS: readonly {
 ];
 
 export function ProjectExecutionsPanel() {
+  const tenant = useRouteTenant();
+  const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
   const [selectedExecution, setSelectedExecution] = useState<ExecutionItem>();
   const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
@@ -839,12 +847,14 @@ export function ProjectExecutionsPanel() {
       />
       <ExecutionDetailSheet
         execution={selectedExecution}
+        scope={scope}
         onOpenChange={(open) => {
           if (!open) setSelectedExecution(undefined);
         }}
       />
       <TriggerDetailSheet
         trigger={selectedTrigger}
+        scope={scope}
         onOpenChange={(open) => {
           if (!open) setSelectedTrigger(undefined);
         }}
