@@ -6,8 +6,18 @@ import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
-import type { Database } from "../db/types.js";
+import type { DaemonRecord, Database } from "../db/types.js";
 import { resolveRouteTenant } from "./access.js";
+import { summarizeTrigger } from "./activity-summary.js";
+
+/** A jsonb column value, cast at the DB boundary so it survives the server-fn serializer. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface ProjectRouteScope {
   organizationSlug: string;
@@ -75,6 +85,7 @@ export class ProjectDashboard {
       this.database.listTriggersForProject(project.id, 50),
       this.database.listAgentExecutionsForProject(project.id, 50),
     ]);
+    const daemonsById = new Map(organizationDaemons.map((daemon) => [daemon.id, daemon]));
     return {
       account: account.account,
       organization: tenant.organization,
@@ -93,7 +104,7 @@ export class ProjectDashboard {
         defaultBranch: repository.defaultBranch,
       })),
       activity: activity.map(triggerView),
-      executions: executions.map(executionView),
+      executions: executions.map((execution) => executionView(execution, daemonsById)),
     };
   }
 
@@ -364,17 +375,37 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     matchedTriggerName: trigger.matchedTriggerName,
     droppedReason: trigger.droppedReason,
     lifecycleState: trigger.lifecycleState,
+    summary: summarizeTrigger(trigger.source, trigger.payload),
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    payload: trigger.payload as JsonValue,
   };
 }
 
-function executionView(execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {}) {
+function executionView(
+  execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {},
+  daemonsById: Map<string, DaemonRecord>,
+) {
   if (execution === undefined) throw new Error("execution unavailable");
+  const daemon = execution.daemonId === null ? undefined : daemonsById.get(execution.daemonId);
+  const launchIntent = execution.launchIntent;
   return {
     id: execution.id,
     status: execution.status,
     startedAt: execution.startedAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
+    durationMs:
+      execution.completedAt === null
+        ? null
+        : execution.completedAt.getTime() - execution.startedAt.getTime(),
     configurationRevisionId: execution.configurationRevisionId,
-    daemonId: execution.daemonId,
+    triggerId: execution.triggerId,
+    triggerName: launchIntent?.triggerName ?? null,
+    agent:
+      launchIntent === null
+        ? null
+        : { provider: launchIntent.agent.provider, model: launchIntent.agent.model ?? null },
+    daemon: daemon === undefined ? null : daemonView(daemon),
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- jsonb columns are guaranteed JSON at the DB layer; Drizzle just doesn't type them
+    result: execution.result as JsonValue,
   };
 }
