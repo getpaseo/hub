@@ -6,6 +6,10 @@ import {
   compiledConfigurationHash,
   type CompiledHubConfig,
 } from "../config/compiler.js";
+import {
+  hashPromptPartialContent,
+  type ResolvedPromptPartials,
+} from "../config/prompt-partials.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, DurableTrigger } from "../db/types.js";
@@ -14,6 +18,34 @@ import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
+  it("launches the exact committed partial content with inline-equivalent interpolation", async () => {
+    const content = "Committed partial for ${{ paseo.prompt }} / ${{ paseo.inputs.repo }}";
+    const fixture = await workflowFixture({
+      rawConfiguration: partialRuntimeConfiguration(),
+      resolvedPromptPartials: new Map([
+        [
+          ".paseo/partials/instructions.md",
+          {
+            path: ".paseo/partials/instructions.md",
+            content,
+            contentHash: hashPromptPartialContent(content),
+          },
+        ],
+      ]),
+    });
+    const dispatches: string[] = [];
+    const prompts: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, async (intent) => {
+      prompts.push(intent.prompt);
+    });
+
+    await handler(fixture.trigger("repo=hub request"));
+    await engine.processAvailable();
+
+    assert.deepEqual(dispatches, ["unknown"]);
+    assert.deepEqual(prompts, ["Committed partial for request / hub\nInline request / hub"]);
+  });
+
   it("skips classification for deterministic input and launches only the matching branch", async () => {
     const fixture = await workflowFixture();
     const dispatches: string[] = [];
@@ -287,7 +319,12 @@ interface Fixture {
 }
 
 async function workflowFixture(
-  options: { unavailableValue?: boolean; terminalRecovery?: boolean } = {},
+  options: {
+    unavailableValue?: boolean;
+    terminalRecovery?: boolean;
+    rawConfiguration?: Record<string, unknown>;
+    resolvedPromptPartials?: ResolvedPromptPartials;
+  } = {},
 ): Promise<Fixture> {
   const database = createMemoryDatabase({ organizationIds: ["org-1"] });
   const project = await database.createProject({
@@ -296,10 +333,15 @@ async function workflowFixture(
     slug: randomUUID(),
     createdByUserId: "user-1",
   });
-  const raw = options.terminalRecovery
-    ? terminalRecoveryConfiguration()
-    : baseConfiguration(options);
-  const compiled = compileHubConfig(raw);
+  const raw =
+    options.rawConfiguration ??
+    (options.terminalRecovery ? terminalRecoveryConfiguration() : baseConfiguration(options));
+  const compiled = compileHubConfig(
+    raw,
+    options.resolvedPromptPartials === undefined
+      ? {}
+      : { resolvedPromptPartials: options.resolvedPromptPartials },
+  );
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
       if (environment.kind !== "daemon") return environment;
@@ -349,6 +391,33 @@ async function workflowFixture(
         resourceId: null,
       };
     },
+  };
+}
+
+function partialRuntimeConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "partial-request",
+        on: "manual.run",
+        max_runtime: "1h",
+        inputs: { repo: { type: "string", choices: ["hub"] } },
+        steps: [
+          {
+            id: "work-hub",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [
+              { include: "instructions.md" },
+              { text: "Inline ${{ paseo.prompt }} / ${{ paseo.inputs.repo }}" },
+            ],
+          },
+        ],
+      },
+    ],
   };
 }
 

@@ -443,7 +443,9 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   readFileAtCommit(input: { repositoryId: number; commitSha: string; path: string }) {
     this.reads.push(input);
     const rawYaml = this.files[input.commitSha];
-    return Promise.resolve(rawYaml === undefined ? undefined : { rawYaml });
+    return Promise.resolve(
+      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
+    );
   }
   async push(
     registration: ReturnType<typeof createGitHubRegistration>,

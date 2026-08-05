@@ -147,7 +147,9 @@ export class BrowserGitHubConfiguration implements GitHubConfigurationProvider {
 
   readFileAtCommit(input: { repositoryId: number; commitSha: string }) {
     const rawYaml = this.files.get(`${input.repositoryId}:${input.commitSha}`);
-    return Promise.resolve(rawYaml === undefined ? undefined : { rawYaml });
+    return Promise.resolve(
+      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
+    );
   }
 
   setRevision(input: { repositoryId: number; commitSha: string; rawYaml?: string }) {

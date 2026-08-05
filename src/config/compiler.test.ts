@@ -287,7 +287,7 @@ describe("workflow compiler", () => {
     );
   });
 
-  it("rejects removed trigger syntax and timeout while retaining prompt partial rejection", () => {
+  it("rejects removed trigger syntax and keeps manual partial behavior explicit", () => {
     assert.throws(
       () => compileHubConfig({ ...configuration(), timeout: "1m" }),
       /timeout.*max_runtime/iu,
@@ -313,7 +313,7 @@ describe("workflow compiler", () => {
             },
           ],
         }),
-      /Phase 4/iu,
+      /manual configurations cannot include repository files/iu,
     );
   });
 });

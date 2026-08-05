@@ -7,6 +7,12 @@ import {
   type ExpressionPath,
 } from "../workflows/expression.js";
 import { compileJsonSchema, finiteSchemaChoices } from "../workflows/json-schema.js";
+import {
+  hashPromptPartialContent,
+  validatePromptPartialPath,
+  validateResolvedPromptPartialPath,
+  type ResolvedPromptPartials,
+} from "./prompt-partials.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -37,7 +43,10 @@ const AgentSchema = z
   })
   .strict();
 
-const PromptBlockSchema = z.object({ text: z.string() }).strict();
+const PromptBlockSchema = z.union([
+  z.object({ text: z.string() }).strict(),
+  z.object({ include: z.string().min(1) }).strict(),
+]);
 const JsonSchemaSchema = z.record(z.string(), z.unknown());
 
 const AuthoredTriggerFilterSchema = z
@@ -164,10 +173,9 @@ export type AuthoredHubConfig = z.infer<typeof AuthoredSchema>;
 
 export type AuthoredInput = z.infer<typeof AuthoredInputSchema>;
 
-export interface CompiledPromptBlock {
-  kind: "text";
-  value: string;
-}
+export type CompiledPromptBlock =
+  | { kind: "text"; value: string }
+  | { kind: "partial"; path: string; content: string; contentHash: string };
 
 export interface CompiledAgent {
   provider: string;
@@ -227,9 +235,21 @@ export interface CompiledHubConfig {
   triggers: readonly CompiledTrigger[];
 }
 
-const CompiledPromptBlockSchema: z.ZodType<CompiledPromptBlock> = z
-  .object({ kind: z.literal("text"), value: z.string() })
-  .strict();
+export interface CompileHubConfigOptions {
+  resolvedPromptPartials?: ResolvedPromptPartials;
+}
+
+const CompiledPromptBlockSchema: z.ZodType<CompiledPromptBlock> = z.union([
+  z.object({ kind: z.literal("text"), value: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal("partial"),
+      path: z.string().min(1),
+      content: z.string(),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    })
+    .strict(),
+]);
 
 const CompiledAgentSchema: z.ZodType<CompiledAgent> = z
   .object({
@@ -318,12 +338,17 @@ const CompiledHubConfigSchema: z.ZodType<CompiledHubConfig> = z
   })
   .strict();
 
-export function compileHubConfig(raw: unknown): CompiledHubConfig {
+export function compileHubConfig(
+  raw: unknown,
+  options: CompileHubConfigOptions = {},
+): CompiledHubConfig {
   rejectRemovedFields(raw);
   const authored = AuthoredSchema.parse(raw);
   validateAuthoredIds(authored);
   const environmentNames = new Set(authored.environments.map((environment) => environment.name));
-  const triggers = authored.triggers.map((trigger) => compileTrigger(trigger, environmentNames));
+  const triggers = authored.triggers.map((trigger) =>
+    compileTrigger(trigger, environmentNames, options.resolvedPromptPartials),
+  );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
   validateCompiledContract(compiled);
   return deepFreeze(compiled);
@@ -378,12 +403,15 @@ export function parseDurationMs(value: string, field: string): number {
 function compileTrigger(
   trigger: AuthoredTrigger,
   environmentNames: ReadonlySet<string>,
+  resolvedPromptPartials: ResolvedPromptPartials | undefined,
 ): CompiledTrigger {
   if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
   const inputs = compileInputs(trigger);
   validateInputFilters(trigger, inputs);
   validateEnvironmentInputChoices(trigger, inputs, environmentNames);
-  const steps = trigger.steps.map((step) => compileStep(trigger, step, environmentNames));
+  const steps = trigger.steps.map((step) =>
+    compileStep(trigger, step, environmentNames, resolvedPromptPartials),
+  );
   const values = compileValues(trigger);
   const compiled = {
     name: trigger.name,
@@ -402,6 +430,7 @@ function compileStep(
   trigger: AuthoredTrigger,
   step: AuthoredStep,
   environmentNames: ReadonlySet<string>,
+  resolvedPromptPartials: ResolvedPromptPartials | undefined,
 ): CompiledStep {
   if (!environmentNames.has(step.environment) && !DYNAMIC_INPUT_REFERENCE.test(step.environment)) {
     throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
@@ -428,7 +457,7 @@ function compileStep(
     maxRuntimeMs,
     idleTimeoutMs,
     agent: { ...step.agent, mode: step.agent.mode ?? "default" },
-    prompt: step.prompt.map((block) => ({ kind: "text" as const, value: block.text })),
+    prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
@@ -437,6 +466,52 @@ function compileStep(
     })),
     autoArchive: step.auto_archive ?? false,
   };
+}
+
+function compilePromptBlocks(
+  triggerName: string,
+  stepId: string,
+  blocks: AuthoredStep["prompt"],
+  resolvedPromptPartials: ResolvedPromptPartials | undefined,
+): readonly CompiledPromptBlock[] {
+  return blocks.map((block, index) => {
+    if ("text" in block) return { kind: "text" as const, value: block.text };
+    if (resolvedPromptPartials === undefined) {
+      throw new Error(
+        `trigger ${triggerName} step ${stepId} prompt[${index}].include: repository partials are only available for GitHub-synchronized configurations; manual configurations cannot include repository files`,
+      );
+    }
+    const path = validatePromptPartialPathForCompilation(block.include);
+    const partial = resolvedPromptPartials.get(path);
+    if (partial === undefined) {
+      throw new Error(
+        `trigger ${triggerName} step ${stepId} prompt[${index}].include: partial ${path} was not resolved at the exact configuration commit`,
+      );
+    }
+    if (
+      partial.path !== path ||
+      partial.contentHash !== hashPromptPartialContent(partial.content)
+    ) {
+      throw new Error(`prompt partial ${path} has invalid resolved content evidence`);
+    }
+    return {
+      kind: "partial" as const,
+      path,
+      content: partial.content,
+      contentHash: partial.contentHash,
+    };
+  });
+}
+
+function validatePromptPartialPathForCompilation(value: string): string {
+  try {
+    return validatePromptPartialPath(value);
+  } catch (error) {
+    throw new Error(
+      `prompt include path is unsafe: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 function compileValues(trigger: AuthoredTrigger): Readonly<Record<string, Expression>> {
@@ -578,7 +653,12 @@ function validateExpressionContract(
       true,
     );
     for (const [index, block] of step.prompt.entries()) {
-      validateTemplate(block.value, ordinal, `step ${step.id} prompt[${index}]`, false);
+      validateTemplate(
+        block.kind === "text" ? block.value : block.content,
+        ordinal,
+        `step ${step.id} prompt[${index}]`,
+        false,
+      );
     }
   }
 
@@ -741,9 +821,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
       if (step.idleTimeoutMs > step.maxRuntimeMs) {
         throw new Error(`step ${step.id} idle_timeout must not exceed max_runtime`);
       }
-      if (step.prompt.some((block) => block.kind !== "text")) {
-        throw new Error(`step ${step.id} prompt supports inline text blocks only`);
-      }
+      validateCompiledPromptBlocks(step);
       if (step.condition !== undefined && !isExpression(step.condition)) {
         throw new Error(`step ${step.id} contains an invalid condition`);
       }
@@ -758,6 +836,20 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     }
     validateExpressionContract(trigger.name, trigger, environmentIds);
     validateTriggerLaunchSecurity(trigger);
+  }
+}
+
+function validateCompiledPromptBlocks(step: CompiledStep): void {
+  for (const block of step.prompt) {
+    if (block.kind !== "partial") continue;
+    try {
+      validateResolvedPromptPartialPath(block.path);
+    } catch {
+      throw new Error(`step ${step.id} contains an unsafe resolved prompt partial path`);
+    }
+    if (hashPromptPartialContent(block.content) !== block.contentHash) {
+      throw new Error(`step ${step.id} contains invalid prompt partial content evidence`);
+    }
   }
 }
 
@@ -873,26 +965,6 @@ function rejectTriggerFields(value: unknown, index: number): void {
       );
     }
   }
-  const steps: unknown = value["steps"];
-  if (!Array.isArray(steps)) return;
-  steps.forEach((step, stepIndex) => rejectStepFields(step, index, stepIndex));
-}
-
-function rejectStepFields(value: unknown, triggerIndex: number, stepIndex: number): void {
-  if (!isRecord(value)) return;
-  const path = `triggers[${triggerIndex}].steps[${stepIndex}]`;
-  const prompt: unknown = value["prompt"];
-  if (isRecord(prompt) && "include" in prompt) {
-    throw new Error(`${path}.prompt.include: prompt include blocks are not implemented in Phase 4`);
-  }
-  if (!Array.isArray(prompt)) return;
-  prompt.forEach((block: unknown, blockIndex) => {
-    if (isRecord(block) && "include" in block) {
-      throw new Error(
-        `${path}.prompt[${blockIndex}].include: prompt includes are not implemented in Phase 4`,
-      );
-    }
-  });
 }
 
 function rejectTimeoutAnywhere(value: unknown, path = "configuration"): void {

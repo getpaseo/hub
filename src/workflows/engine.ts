@@ -389,7 +389,11 @@ function buildStepIntent(
         cwd: environment.cwd,
         ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
       },
-      prompt: step.prompt.map((block) => renderExpressionTemplate(block.value, context)).join("\n"),
+      prompt: step.prompt
+        .map((block) =>
+          renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),
+        )
+        .join("\n"),
       agent,
       allowOutputs: step.allowOutputs,
       timeoutMs: step.maxRuntimeMs,

@@ -10,6 +10,7 @@ import {
   type CompiledTrigger,
 } from "../config/compiler.js";
 import type { EnvironmentConfig } from "../config/schema.js";
+import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
 import type {
   ConnectionProvider,
   Database,
@@ -70,8 +71,22 @@ export class ProjectConfigurationStore {
     commitSha: string;
     path: string;
     webhookDeliveryId: string | null;
+    resolvedPromptPartials?: ResolvedPromptPartials;
+    validationErrors?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
-    const prepared = await prepareRevision(this.database, this.projectId, input.rawConfiguration);
+    const prepared =
+      input.validationErrors === undefined
+        ? await prepareRevision(
+            this.database,
+            this.projectId,
+            input.rawConfiguration,
+            input.resolvedPromptPartials,
+          )
+        : {
+            normalizedConfiguration: input.rawConfiguration,
+            contentHash: rawConfigurationHash(input.rawConfiguration),
+            validationErrors: input.validationErrors,
+          };
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
       sourceKind: "github",
@@ -84,6 +99,15 @@ export class ProjectConfigurationStore {
         commitSha: input.commitSha,
         path: input.path,
         webhookDeliveryId: input.webhookDeliveryId,
+        ...(input.resolvedPromptPartials === undefined
+          ? {}
+          : {
+              partials: [...input.resolvedPromptPartials.values()].map((partial) => ({
+                path: partial.path,
+                content: partial.content,
+                contentHash: partial.contentHash,
+              })),
+            }),
       },
       rawYaml: input.rawYaml,
       normalizedConfiguration: prepared.normalizedConfiguration,
@@ -172,8 +196,14 @@ async function prepareRevision(
   database: Database,
   projectId: string,
   rawConfiguration: unknown,
+  resolvedPromptPartials?: ResolvedPromptPartials,
 ): Promise<PreparedRevision> {
-  const compiled = await compileConfiguration(database, projectId, rawConfiguration);
+  const compiled = await compileConfiguration(
+    database,
+    projectId,
+    rawConfiguration,
+    resolvedPromptPartials,
+  );
   if (!compiled.success) {
     if (compiled.kind === "compiled") {
       return {
@@ -233,10 +263,14 @@ async function compileConfiguration(
   database: Database,
   projectId: string,
   rawConfiguration: unknown,
+  resolvedPromptPartials?: ResolvedPromptPartials,
 ): Promise<CompileConfigurationResult> {
   let configuration: CompiledHubConfig;
   try {
-    configuration = compileHubConfig(rawConfiguration);
+    configuration = compileHubConfig(
+      rawConfiguration,
+      resolvedPromptPartials === undefined ? {} : { resolvedPromptPartials },
+    );
   } catch (error) {
     return {
       success: false,
