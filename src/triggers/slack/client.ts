@@ -34,6 +34,7 @@ const SlackFileInfoSchema = SlackApiResponseSchema.extend({
     .optional(),
 });
 const SLACK_API_TIMEOUT_MS = 10_000;
+const MAX_THREAD_PAGES = 4;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -145,25 +146,33 @@ export function createSlackBotClient(options: {
   }): Promise<SlackThreadMessage[]> {
     let cursor: string | undefined;
     let selected: SlackThreadMessage[] = [];
+    let pageCount = 0;
     do {
-      const result = SlackThreadRepliesSchema.parse(
-        await callJson(input.organizationId, input.teamId, "conversations.replies", {
-          channel: input.channelId,
-          ts: input.threadTs,
-          latest: input.beforeTs,
-          inclusive: "false",
-          limit: "100",
-          ...(cursor === undefined ? {} : { cursor }),
-        }),
-      );
-      if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+      let result: z.infer<typeof SlackThreadRepliesSchema>;
+      try {
+        result = SlackThreadRepliesSchema.parse(
+          await callJson(input.organizationId, input.teamId, "conversations.replies", {
+            channel: input.channelId,
+            ts: input.threadTs,
+            latest: input.beforeTs,
+            inclusive: "false",
+            limit: "100",
+            ...(cursor === undefined ? {} : { cursor }),
+          }),
+        );
+        if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+      } catch (error) {
+        if (selected.length === 0) throw error;
+        break;
+      }
       selected = [...selected, ...(result.messages ?? []).map(normalizeThreadMessage)]
         .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0)
         .sort((left, right) => compareSlackTs(right.ts, left.ts))
         .slice(0, 50);
+      pageCount += 1;
       const next = result.response_metadata?.next_cursor;
       cursor = next === undefined || next.length === 0 ? undefined : next;
-    } while (cursor !== undefined);
+    } while (cursor !== undefined && pageCount < MAX_THREAD_PAGES);
 
     return selected.sort((left, right) => compareSlackTs(left.ts, right.ts));
   }

@@ -176,6 +176,40 @@ describe("Slack Web API client", () => {
     );
   });
 
+  it("keeps earlier Slack replies when a later page is rate-limited", async () => {
+    let requests = 0;
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async () => {
+        requests += 1;
+        return requests === 1
+          ? Response.json({
+              ok: true,
+              messages: [
+                { ts: "1700000000.000001", text: "reply-1", user: "U1" },
+                { ts: "1700000000.000002", text: "reply-2", user: "U2" },
+              ],
+              response_metadata: { next_cursor: "next-page" },
+            })
+          : Response.json({ ok: false, error: "ratelimited" });
+      },
+    });
+
+    const hydrated = await client.readThreadMessages?.({
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      threadTs: "1700000000.000000",
+      beforeTs: "1700000000.000003",
+    });
+
+    assert.deepEqual(
+      hydrated?.map((message) => message.content),
+      ["reply-1", "reply-2"],
+    );
+    assert.equal(requests, 2);
+  });
+
   it("keeps Slack file credentials and private URLs inside the client", async () => {
     const requests: Array<{ url: string; authorization: string | null }> = [];
     const client = createSlackBotClient({
