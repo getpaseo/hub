@@ -2,18 +2,19 @@ import * as React from "react";
 
 import { cn } from "../../lib/utils.js";
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({ className, "aria-label": label, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
       role="region"
-      aria-label="Scrollable table"
+      aria-label={label === undefined ? "Scrollable table" : `${label} table`}
       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- horizontal overflow must be keyboard-scrollable
       tabIndex={0}
       className="relative w-full overflow-x-auto"
     >
       <table
         data-slot="table"
+        aria-label={label}
         className={cn("w-full caption-bottom text-sm", className)}
         {...props}
       />
