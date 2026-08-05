@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { interpolateRecord, interpolateTemplate, interpolateWorktree } from "./interpolation.js";
-import { parseTemplate, type WorktreeTarget } from "./schema.js";
+import { parseEnvironmentTemplate } from "./environment-template.js";
+import type { WorktreeTarget } from "./schema.js";
 
 describe("interpolation", () => {
   it("resolves event paths into surrounding literals", async () => {
-    const template = parseTemplate(
+    const template = parseEnvironmentTemplate(
       "Handle ${{ paseo.event.github.comment.body }} from ${{ paseo.event.github.sender.login }}",
     );
 
@@ -23,7 +24,7 @@ describe("interpolation", () => {
   });
 
   it("stringifies non-string event values without escaping printable JSON", async () => {
-    const template = parseTemplate(
+    const template = parseEnvironmentTemplate(
       "issue=${{ paseo.event.github.issue.number }} draft=${{ paseo.event.github.issue.draft }} payload=${{ paseo.event.github.issue.labels }}",
     );
 
@@ -38,7 +39,7 @@ describe("interpolation", () => {
   });
 
   it("throws a useful error when an event path is missing", async () => {
-    const template = parseTemplate("body=${{ paseo.event.github.comment.body }}");
+    const template = parseEnvironmentTemplate("body=${{ paseo.event.github.comment.body }}");
 
     await assert.rejects(
       () =>
@@ -51,7 +52,9 @@ describe("interpolation", () => {
   });
 
   it("invokes the matching integration resolver with the requested value", async () => {
-    const template = parseTemplate("token=${{ paseo.connections.getpaseo-github.token }}");
+    const template = parseEnvironmentTemplate(
+      "token=${{ paseo.connections.getpaseo-github.token }}",
+    );
     const calls: string[] = [];
 
     const result = await interpolateTemplate(template, {
@@ -68,7 +71,7 @@ describe("interpolation", () => {
   });
 
   it("supports async integration resolvers", async () => {
-    const template = parseTemplate("${{ paseo.connections.getpaseo-github.token }}");
+    const template = parseEnvironmentTemplate("${{ paseo.connections.getpaseo-github.token }}");
 
     const result = await interpolateTemplate(template, {
       event: {},
@@ -83,7 +86,7 @@ describe("interpolation", () => {
   });
 
   it("fails loudly when a referenced connection slug is unavailable", async () => {
-    const template = parseTemplate("${{ paseo.connections.getpaseo-discord.token }}");
+    const template = parseEnvironmentTemplate("${{ paseo.connections.getpaseo-discord.token }}");
 
     await assert.rejects(
       () =>
@@ -99,8 +102,8 @@ describe("interpolation", () => {
 
   it("interpolates a record of templates in parallel", async () => {
     const env = {
-      GITHUB_TOKEN: parseTemplate("${{ paseo.connections.getpaseo-github.token }}"),
-      ISSUE: parseTemplate("issue-${{ paseo.event.github.issue.number }}"),
+      GITHUB_TOKEN: parseEnvironmentTemplate("${{ paseo.connections.getpaseo-github.token }}"),
+      ISSUE: parseEnvironmentTemplate("issue-${{ paseo.event.github.issue.number }}"),
     };
 
     const result = await interpolateRecord(env, {

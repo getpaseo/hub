@@ -1,9 +1,9 @@
 import {
-  parseTemplate,
-  type MergeTemplateAst,
-  type ParsedTemplate,
-  type WorktreeTarget,
-} from "./schema.js";
+  parseEnvironmentTemplate,
+  type EnvironmentTemplateAst,
+  type ParsedEnvironmentTemplate,
+} from "./environment-template.js";
+import type { WorktreeTarget } from "./schema.js";
 
 export interface InterpolationContext {
   event: unknown;
@@ -34,14 +34,14 @@ export function createInterpolationContext(
 }
 
 export async function interpolateTemplate(
-  template: ParsedTemplate,
+  template: ParsedEnvironmentTemplate,
   context: InterpolationContext,
 ): Promise<string> {
   return interpolateAst(template.ast, context);
 }
 
 export async function interpolateAst(
-  ast: MergeTemplateAst,
+  ast: EnvironmentTemplateAst,
   context: InterpolationContext,
 ): Promise<string> {
   const parts = await Promise.all(ast.map((node) => resolveNode(node, context)));
@@ -49,7 +49,7 @@ export async function interpolateAst(
 }
 
 export async function interpolateRecord(
-  record: Readonly<Record<string, ParsedTemplate>> | undefined,
+  record: Readonly<Record<string, ParsedEnvironmentTemplate>> | undefined,
   context: InterpolationContext,
 ): Promise<Record<string, string>> {
   if (record === undefined) {
@@ -73,15 +73,15 @@ export async function interpolateWorktree(
     case "branch-off":
       return {
         mode: "branch-off",
-        newBranch: await interpolateTemplate(parseTemplate(worktree.newBranch), context),
+        newBranch: await interpolateTemplate(parseEnvironmentTemplate(worktree.newBranch), context),
         ...(worktree.base === undefined
           ? {}
-          : { base: await interpolateTemplate(parseTemplate(worktree.base), context) }),
+          : { base: await interpolateTemplate(parseEnvironmentTemplate(worktree.base), context) }),
       };
     case "checkout-branch":
       return {
         mode: "checkout-branch",
-        branch: await interpolateTemplate(parseTemplate(worktree.branch), context),
+        branch: await interpolateTemplate(parseEnvironmentTemplate(worktree.branch), context),
       };
     case "checkout-pr":
       return worktree;
@@ -90,7 +90,7 @@ export async function interpolateWorktree(
 }
 
 async function resolveNode(
-  node: MergeTemplateAst[number],
+  node: EnvironmentTemplateAst[number],
   context: InterpolationContext,
 ): Promise<string> {
   if (node.kind === "literal") {

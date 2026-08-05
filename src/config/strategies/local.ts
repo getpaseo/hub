@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { load } from "js-yaml";
-import { HubConfigSchema } from "../schema.js";
+import { compileHubConfig } from "../compiler.js";
 import type { ConfigStrategy, ResolvedHubConfig } from "../resolver.js";
 import { ConfigInvalid, ConfigNotFound, ConfigRefUnsupported } from "../resolver.js";
 
@@ -15,7 +15,7 @@ export function createLocalConfigStrategy(): ConfigStrategy {
       try {
         const rawConfig = await readFile(ref.path, "utf8");
         const parsed = load(rawConfig);
-        const config = HubConfigSchema.parse(parsed);
+        const config = compileHubConfig(parsed);
 
         return {
           ref,

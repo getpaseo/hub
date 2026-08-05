@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HubConfigSchema } from "../config/schema.js";
+import { compileHubConfig } from "../config/compiler.js";
 import {
   ProjectConfigurationStore,
   configurationHash,
@@ -49,7 +49,7 @@ export async function createActiveProjectConfiguration(
 }
 
 function compileTestDaemonReferences(rawConfiguration: unknown): CompiledProjectConfiguration {
-  const configuration = HubConfigSchema.parse(rawConfiguration);
+  const configuration = compileHubConfig(rawConfiguration);
   return {
     ...configuration,
     environments: configuration.environments.map((environment) =>

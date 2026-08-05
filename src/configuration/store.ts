@@ -1,13 +1,13 @@
-import { createHash } from "node:crypto";
 import { dump } from "js-yaml";
 import { z } from "zod";
 import {
-  HubConfigSchema,
-  DEFAULT_TRIGGER_IDLE_TIMEOUT,
-  DEFAULT_TRIGGER_TIMEOUT,
-  type HubConfig,
-} from "../config/schema.js";
-import type { EnvironmentConfig, Trigger } from "../config/schema.js";
+  compileHubConfig,
+  compiledConfigurationHash,
+  parseCompiledHubConfig,
+  type CompiledHubConfig,
+  type CompiledTrigger,
+} from "../config/compiler.js";
+import type { EnvironmentConfig } from "../config/schema.js";
 import type {
   ConnectionProvider,
   Database,
@@ -20,12 +20,12 @@ export interface StoredProjectConfiguration {
   configuration: CompiledProjectConfiguration;
 }
 
-export type CompiledProjectConfiguration = Omit<HubConfig, "environments" | "triggers"> & {
+export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments" | "triggers"> & {
   environments: Array<
     | Exclude<EnvironmentConfig, { kind: "daemon" }>
     | (Extract<EnvironmentConfig, { kind: "daemon" }> & { daemonId: string })
   >;
-  triggers: Trigger[];
+  triggers: CompiledTrigger[];
 };
 
 export class ProjectConfigurationStore {
@@ -152,81 +152,11 @@ export class ProjectConfigurationStore {
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
-  const hydrated = hydrateStoredDefaults(revision.normalizedConfiguration);
-  const configuration = HubConfigSchema.parse(restoreAuthoredTemplates(hydrated));
-  if (!isRecord(hydrated) || !isUnknownArray(hydrated["environments"])) {
-    throw new Error("active configuration contains invalid environments");
-  }
-  const storedEnvironments = hydrated["environments"];
-  const environments = configuration.environments.map((environment, index) => {
-    if (environment.kind !== "daemon") return environment;
-    const stored = storedEnvironments[index];
-    if (!isRecord(stored) || !isNonEmptyString(stored["daemonId"])) {
-      throw new Error("active configuration contains an uncompiled daemon reference");
-    }
-    return Object.assign({}, environment, { daemonId: stored["daemonId"] });
-  });
-  return Object.assign({}, configuration, { environments });
+  return parseCompiledHubConfig(revision.normalizedConfiguration) as CompiledProjectConfiguration;
 }
 
 export function configurationHash(configuration: unknown): string {
-  return createHash("sha256").update(stableJson(configuration)).digest("hex");
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (typeof value !== "object" || value === null) return JSON.stringify(value);
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
-    .join(",")}}`;
-}
-
-function hydrateStoredDefaults(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value["triggers"])) return value;
-  return {
-    ...value,
-    triggers: value["triggers"].map(hydrateTriggerDefaults),
-  };
-}
-
-function hydrateTriggerDefaults(trigger: unknown): unknown {
-  if (!isRecord(trigger)) return trigger;
-  return {
-    ...trigger,
-    ...(trigger["timeout"] === undefined ? { timeout: DEFAULT_TRIGGER_TIMEOUT } : {}),
-    ...(trigger["idle_timeout"] === undefined
-      ? { idle_timeout: DEFAULT_TRIGGER_IDLE_TIMEOUT }
-      : {}),
-  };
-}
-
-function restoreAuthoredTemplates(value: unknown): unknown {
-  if (!isRecord(value) || !isUnknownArray(value["triggers"])) return value;
-  return {
-    ...value,
-    triggers: value["triggers"].map((trigger) => {
-      if (!isRecord(trigger)) return trigger;
-      return {
-        ...trigger,
-        prompt: restoreAuthoredTemplate(trigger["prompt"]),
-        ...(isRecord(trigger["env"]) ? { env: restoreAuthoredTemplateRecord(trigger["env"]) } : {}),
-        ...(isRecord(trigger["files"])
-          ? { files: restoreAuthoredTemplateRecord(trigger["files"]) }
-          : {}),
-      };
-    }),
-  };
-}
-
-function restoreAuthoredTemplateRecord(record: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(record).map(([key, template]) => [key, restoreAuthoredTemplate(template)]),
-  );
-}
-
-function restoreAuthoredTemplate(value: unknown): unknown {
-  return isRecord(value) && isNonEmptyString(value["value"]) ? value["value"] : value;
+  return compiledConfigurationHash(configuration as CompiledHubConfig);
 }
 
 async function prepareRevision(
@@ -234,18 +164,11 @@ async function prepareRevision(
   projectId: string,
   rawConfiguration: unknown,
 ): Promise<{ normalizedConfiguration: unknown; validationErrors?: unknown }> {
-  const parsed = HubConfigSchema.safeParse(rawConfiguration);
-  if (!parsed.success) {
-    return {
-      normalizedConfiguration: rawConfiguration,
-      validationErrors: z.treeifyError(parsed.error),
-    };
-  }
-  const compiled = await compileConfiguration(database, projectId, parsed.data);
+  const compiled = await compileConfiguration(database, projectId, rawConfiguration);
   if (!compiled.success) {
     return {
       normalizedConfiguration: rawConfiguration,
-      validationErrors: {
+      validationErrors: compiled.validationErrors ?? {
         formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
       },
     };
@@ -256,11 +179,29 @@ async function prepareRevision(
 async function compileConfiguration(
   database: Database,
   projectId: string,
-  configuration: HubConfig,
+  rawConfiguration: unknown,
 ): Promise<
   | { success: true; configuration: CompiledProjectConfiguration }
-  | { success: false; missing: string[] }
+  | { success: false; missing: string[]; validationErrors?: unknown }
 > {
+  let configuration: CompiledHubConfig;
+  try {
+    configuration = compileHubConfig(rawConfiguration);
+  } catch (error) {
+    return {
+      success: false,
+      missing: [],
+      validationErrors: {
+        formErrors: [
+          error instanceof z.ZodError
+            ? z.treeifyError(error)
+            : error instanceof Error
+              ? error.message
+              : "invalid configuration",
+        ],
+      },
+    };
+  }
   const project = await database.findProjectById(projectId);
   if (project === undefined) return { success: false, missing: ["project"] };
   const resolutions = await Promise.all(
@@ -288,17 +229,18 @@ async function compileConfiguration(
   if (unresolved.length > 0) {
     return { success: false, missing: unresolved };
   }
+  const resolvedConfiguration = {
+    ...configuration,
+    environments: resolutions.map(({ environment, daemon }) =>
+      environment.kind === "daemon"
+        ? Object.assign({}, environment, { daemonId: daemon!.id })
+        : environment,
+    ),
+    triggers: triggerCompilation.triggers,
+  };
   return {
     success: true,
-    configuration: {
-      ...configuration,
-      environments: resolutions.map(({ environment, daemon }) =>
-        environment.kind === "daemon"
-          ? Object.assign({}, environment, { daemonId: daemon!.id })
-          : environment,
-      ),
-      triggers: triggerCompilation.triggers,
-    },
+    configuration: parseCompiledHubConfig(resolvedConfiguration) as CompiledProjectConfiguration,
   };
 }
 
@@ -318,10 +260,10 @@ async function compileTriggerRoutes(
 async function compileTriggers(
   database: Database,
   organizationId: string,
-  triggers: readonly Trigger[],
-): Promise<{ triggers: Trigger[]; routes: ProjectTriggerRoute[]; missing: string[] }> {
+  triggers: readonly CompiledTrigger[],
+): Promise<{ triggers: CompiledTrigger[]; routes: ProjectTriggerRoute[]; missing: string[] }> {
   const usage = await database.organizationConnectionUsage(organizationId);
-  const compiled: Trigger[] = [];
+  const compiled: CompiledTrigger[] = [];
   const routes: ProjectTriggerRoute[] = [];
   const missing: string[] = [];
 
@@ -355,7 +297,7 @@ async function compileTriggers(
         ...filter,
         connectionId: resolved.connectionId,
         resourceId: resolved.resourceId,
-      } as Trigger["filters"] & { connectionId: string; resourceId: string };
+      } as CompiledTrigger["filters"] & { connectionId: string; resourceId: string };
       compiled.push({ ...trigger, filters: nextFilter });
       routes.push({
         provider,
@@ -368,7 +310,7 @@ async function compileTriggers(
 
     const nextFilter =
       typeof authoredConnection === "string"
-        ? ({ ...filter, connectionId: candidates[0]!.id } as Trigger["filters"])
+        ? ({ ...filter, connectionId: candidates[0]!.id } as CompiledTrigger["filters"])
         : filter;
     compiled.push({ ...trigger, ...(nextFilter === undefined ? {} : { filters: nextFilter }) });
     for (const connection of candidates) {
@@ -392,7 +334,7 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
 
 function readAuthoredResource(
   provider: ConnectionProvider,
-  filters: Trigger["filters"] | undefined,
+  filters: CompiledTrigger["filters"] | undefined,
 ): string | undefined {
   if (filters === undefined) return undefined;
   let value: string | undefined;
@@ -405,7 +347,7 @@ function readAuthoredResource(
 function connectionCandidates(
   provider: ConnectionProvider,
   usage: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
-  filters: Trigger["filters"] | undefined,
+  filters: CompiledTrigger["filters"] | undefined,
 ) {
   const connections = usage[provider];
   const authoredSlug = filters?.["connection"];
@@ -443,12 +385,4 @@ async function resolveResource(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isUnknownArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
 }

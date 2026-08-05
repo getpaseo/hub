@@ -16,14 +16,18 @@ export {
   HubConfigSchema,
   ConfigRefSchema,
   WorktreeTargetSchema,
-  DEFAULT_TRIGGER_IDLE_TIMEOUT,
-  DEFAULT_TRIGGER_TIMEOUT,
-  parseTriggerTimeoutMs,
-  parseTemplate,
-  type MergeTemplateAst,
-  type MergeVariableAst,
-  type ParsedTemplate,
+  parseDurationMs,
+  parseCompiledHubConfig,
+  parseExpression,
+  parsePromptText,
+  compileHubConfig,
+  compiledConfigurationHash,
 } from "./schema.js";
+export {
+  parseEnvironmentTemplate,
+  type EnvironmentTemplateAst,
+  type ParsedEnvironmentTemplate,
+} from "./environment-template.js";
 export {
   createInterpolationContext,
   interpolateAst,
@@ -45,6 +49,9 @@ export type {
   Trigger,
   TriggerFilter,
   WorktreeTarget,
+  CompiledConfiguration,
+  CompiledStepConfig,
+  CompiledTriggerConfig,
 } from "./schema.js";
 
 export interface RuntimeConfig {

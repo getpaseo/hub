@@ -12,8 +12,7 @@ import {
   interpolateRecord,
   interpolateTemplate,
   interpolateWorktree,
-  parseTemplate,
-  parseTriggerTimeoutMs,
+  parseEnvironmentTemplate,
 } from "../../config/index.js";
 import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
 import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
@@ -176,8 +175,6 @@ export function createGitHubTriggerProvider(options: {
           prompt: match.trigger.prompt.value,
           agent: cleanTriggerAgent(match.trigger.agent),
           allowOutputs: cleanAllowedOutputs(match.trigger.allow_outputs ?? []),
-          timeoutMs: parseTriggerTimeoutMs(match.trigger.timeout),
-          idleTimeoutMs: parseTriggerTimeoutMs(match.trigger.idle_timeout),
           autoArchive: match.trigger.auto_archive,
           triggerContext,
           outputContext: triggerContext,
@@ -237,14 +234,14 @@ export function createGitHubTriggerProvider(options: {
                 } satisfies ConnectionResolutionContext),
         );
         const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
-          interpolateTemplate(parseTemplate(launch.prompt), context),
+          interpolateTemplate(parseEnvironmentTemplate(launch.prompt), context),
           interpolateRecord(
             launch.environmentEnv === undefined
               ? undefined
               : Object.fromEntries(
                   Object.entries(launch.environmentEnv).map(([key, value]) => [
                     key,
-                    parseTemplate(value),
+                    parseEnvironmentTemplate(value),
                   ]),
                 ),
             context,

@@ -221,10 +221,18 @@ function discordConfiguration(filters: Record<string, string>) {
       {
         name: "discord-mention",
         on: "discord.mention",
-        environment: "docker",
+        max_runtime: "1h",
         filters: { ...filters, from_users: ["user-1"] },
-        agent: { provider: "test", mode: "default" },
-        prompt: "Handle the mention",
+        steps: [
+          {
+            id: "run",
+            environment: "docker",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "test", mode: "default" },
+            prompt: [{ text: "Handle the mention" }],
+          },
+        ],
       },
     ],
   };
