@@ -1,15 +1,11 @@
 import type { ConnectionResolver } from "../../config/connections.js";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import { logger } from "../../logger.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { SlackBotClient } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
 import { matchSlackTriggers, readSlackPromptBody } from "./match.js";
-import { interpolateInvocation, matchesInputFilters, parseInvocation } from "../invocation.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
 export interface SlackMergeData {
   slack: {
@@ -74,7 +70,6 @@ export function createSlackTriggerProvider(options: {
         );
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
-        const step = compiledTrigger.steps[0];
         const outputContext: SlackOutputContext = {
           provider: "slack",
           organizationId: trigger.organizationId,
@@ -108,22 +103,8 @@ export function createSlackTriggerProvider(options: {
           });
           continue;
         }
-        const environmentName = interpolateInvocation(step.environment, invocation);
-        const baseEnvironment = readDaemonEnvironment(stored.configuration, environmentName);
         matches.push({
           triggerName: match.trigger.name,
-          stepId: step.id,
-          environmentName,
-          environment: {
-            ...baseEnvironment,
-          },
-          prompt: step.prompt.map((block) => block.value).join("\n"),
-          agent: cleanTriggerAgent(step.agent),
-          allowOutputs: cleanAllowedOutputs(step.allowOutputs),
-          timeoutMs: step.maxRuntimeMs,
-          runTimeoutMs: compiledTrigger.maxRuntimeMs,
-          idleTimeoutMs: step.idleTimeoutMs,
-          autoArchive: step.autoArchive,
           triggerContext,
           outputContext,
           configurationRevisionId: stored.revision.id,
@@ -187,28 +168,6 @@ function buildSlackMergeData(
       },
     },
   };
-}
-
-function readDaemonEnvironment(
-  config: CompiledProjectConfiguration,
-  name: string,
-): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === name);
-  if (environment === undefined) throw new Error(`environment not found: ${name}`);
-  if (environment.kind !== "daemon") {
-    throw new Error(`environment kind is not implemented: ${environment.kind}`);
-  }
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
-  };
-}
-
-function cleanAllowedOutputs(outputs: readonly { type: string; max: number }[]) {
-  return outputs.map((output) => ({ type: output.type, max: output.max }));
 }
 
 async function replaceReaction(

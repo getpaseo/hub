@@ -301,6 +301,8 @@ export const triggerRuns = pgTable(
     rawPrompt: text("raw_prompt").notNull(),
     prompt: text().notNull(),
     inputs: jsonb().notNull().default({}),
+    triggerContext: jsonb("trigger_context").notNull().default({}),
+    outputContext: jsonb("output_context").notNull().default({}),
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     failureReason: text("failure_reason"),
     rejection: jsonb(),

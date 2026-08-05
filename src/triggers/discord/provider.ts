@@ -1,14 +1,10 @@
 import type { ConnectionResolver } from "../../config/connections.js";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import { logger } from "../../logger.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
 import { matchDiscordTriggers, readDiscordPromptBody } from "./match.js";
-import { interpolateInvocation, matchesInputFilters, parseInvocation } from "../invocation.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 
@@ -83,7 +79,6 @@ export function createDiscordTriggerProvider(options: {
         );
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
-        const step = compiledTrigger.steps[0];
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -116,23 +111,8 @@ export function createDiscordTriggerProvider(options: {
           });
           continue;
         }
-        const environmentName = interpolateInvocation(step.environment, invocation);
-        const baseEnvironment = readDaemonEnvironment(stored.configuration, environmentName);
-
-        const environment: DaemonEnvironmentTarget = { ...baseEnvironment };
-
         matches.push({
           triggerName: match.trigger.name,
-          stepId: step.id,
-          environmentName,
-          environment,
-          prompt: step.prompt.map((block) => block.value).join("\n"),
-          agent: cleanTriggerAgent(step.agent),
-          allowOutputs: cleanAllowedOutputs(step.allowOutputs),
-          timeoutMs: step.maxRuntimeMs,
-          runTimeoutMs: compiledTrigger.maxRuntimeMs,
-          idleTimeoutMs: step.idleTimeoutMs,
-          autoArchive: step.autoArchive,
           triggerContext,
           outputContext,
           configurationRevisionId: stored.revision.id,
@@ -258,33 +238,6 @@ function buildDiscordMessageUrl(event: NormalizedDiscordMessageEvent): string {
 
 function buildDiscordContextUrl(event: NormalizedDiscordMessageEvent): string {
   return `https://discord.com/channels/${event.guildId}/${event.threadId ?? event.channelId}`;
-}
-
-function readDaemonEnvironment(
-  config: CompiledProjectConfiguration,
-  environmentName: string,
-): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === environmentName);
-
-  if (environment === undefined) {
-    throw new Error(`environment not found: ${environmentName}`);
-  }
-
-  if (environment.kind !== "daemon") {
-    throw new Error(`environment kind is not implemented: ${environment.kind}`);
-  }
-
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
-  };
-}
-
-function cleanAllowedOutputs(outputs: readonly { type: string; max: number }[]) {
-  return outputs.map((output) => ({ type: output.type, max: output.max }));
 }
 
 async function reactSafely(

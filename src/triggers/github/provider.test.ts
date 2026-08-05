@@ -38,10 +38,6 @@ describe("GitHub Phase 1 trigger provider", () => {
     const match = (await provider.match(external(project.id, createEvent())))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.stepId, "github-step");
-    assert.equal(match.prompt, "Handle the GitHub issue comment.");
-    assert.equal(match.runTimeoutMs, 7_200_000);
-    assert.equal(match.timeoutMs, 3_600_000);
     assert.equal(match.configurationRevisionId, revision.id);
     assert.equal(reactions.created.length, 0);
 
@@ -63,7 +59,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "00000000-0000-4000-8000-000000000001",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: match.prompt,
+      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     });
     assert.equal(materialized?.prompt, "Handle the GitHub issue comment.");
@@ -81,7 +77,6 @@ describe("GitHub Phase 1 trigger provider", () => {
     const provider = createProvider(store, reactions);
     const match = (await provider.match(external(project.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.deepEqual(match.allowOutputs, [{ type: "github.reply", max: 1 }]);
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
@@ -124,20 +119,20 @@ describe("GitHub Phase 1 trigger provider", () => {
     const provider = createProvider(store, new TestReactions());
     const match = (await provider.match(external(project.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.deepEqual(match.environment.worktree, {
+    const worktree = {
       mode: "branch-off",
       newBranch: "github-recovery",
       base: "main",
-    });
+    } as const;
     const materialized = await provider.materializeLaunch?.({
       executionId: "00000000-0000-4000-8000-000000000002",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: match.prompt,
-      environmentWorktree: match.environment.worktree,
+      prompt: "Handle the GitHub issue comment.",
+      environmentWorktree: worktree,
       triggerContext: match.triggerContext,
     });
-    assert.deepEqual(materialized?.environmentWorktree, match.environment.worktree);
+    assert.deepEqual(materialized?.environmentWorktree, worktree);
   });
 
   it("revokes every token minted before terminal cleanup", async () => {
@@ -150,7 +145,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "00000000-0000-4000-8000-000000000003",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: match.prompt,
+      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     };
 
@@ -171,7 +166,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId,
       organizationId: "org_1",
       projectId: project.id,
-      prompt: match.prompt,
+      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     });
     assert.ok(materialization);
@@ -194,7 +189,7 @@ describe("GitHub Phase 1 trigger provider", () => {
         executionId,
         organizationId: "org_1",
         projectId: project.id,
-        prompt: match.prompt,
+        prompt: "Handle the GitHub issue comment.",
         triggerContext: match.triggerContext,
       });
       const cleanup = provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);

@@ -1,11 +1,7 @@
 import { z } from "zod";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
-import { interpolateInvocation, matchesInputFilters, parseInvocation } from "../invocation.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
 export const ManualRunPayloadSchema = z.object({
   expectedVersionId: z.string().uuid().optional(),
@@ -59,7 +55,6 @@ export function createManualRunProvider(
       if (!trigger) throw new Error("manual_trigger_not_found");
       if (!trigger.filters?.from_users?.includes(payload.actor))
         throw new Error("manual_actor_forbidden");
-      const step = trigger.steps[0];
       const event: ManualMergeData = {
         manual: {
           actor: payload.actor,
@@ -96,22 +91,8 @@ export function createManualRunProvider(
       if (invocation.status === "accepted") {
         if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) return [];
       }
-      const environmentName = interpolateInvocation(step.environment, invocation);
-      const environment = readEnvironment(stored.configuration.environments, environmentName);
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,
-        stepId: step.id,
-        environmentName,
-        environment: {
-          ...environment,
-        },
-        prompt: step.prompt.map((block) => block.value).join("\n"),
-        agent: cleanTriggerAgent(step.agent),
-        allowOutputs: step.allowOutputs,
-        timeoutMs: step.maxRuntimeMs,
-        runTimeoutMs: trigger.maxRuntimeMs,
-        idleTimeoutMs: step.idleTimeoutMs,
-        autoArchive: step.autoArchive,
         triggerContext,
         outputContext,
         configurationRevisionId: stored.revision.id,
@@ -120,21 +101,5 @@ export function createManualRunProvider(
       };
       return [match];
     },
-  };
-}
-
-function readEnvironment(
-  environments: CompiledProjectConfiguration["environments"],
-  name: string,
-): DaemonEnvironmentTarget {
-  const environment = environments.find((candidate) => candidate.name === name);
-  if (!environment || environment.kind !== "daemon")
-    throw new Error("manual_environment_not_found");
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
   };
 }

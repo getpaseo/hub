@@ -30,4 +30,34 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completedToolCall, true);
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
+
+  it("routes deterministic input and classifier fallback through the real daemon", async () => {
+    const enrollment = await hub.issueEnrollment();
+    await hub.connect(enrollment);
+    await hub.daemonIsConnected();
+    await hub.installRealAgentRoutingConfiguration();
+
+    await hub.runRealAgentRouting("routing-deterministic", "repo=paseo task");
+    const deterministic = await hub.realAgentRoutingEvidence("routing-deterministic");
+    assert.deepEqual(
+      deterministic.steps.map((step) => [step.stepId, step.status]),
+      [
+        ["classify", "skipped"],
+        ["work-paseo", "succeeded"],
+        ["work-hub", "skipped"],
+      ],
+    );
+
+    await hub.runRealAgentRouting("routing-classifier", "investigate");
+    const classified = await hub.realAgentRoutingEvidence("routing-classifier");
+    assert.deepEqual(
+      classified.steps.map((step) => [step.stepId, step.status]),
+      [
+        ["classify", "succeeded"],
+        ["work-paseo", "skipped"],
+        ["work-hub", "succeeded"],
+      ],
+    );
+    assert.deepEqual(classified.steps[0]?.output, { repo: "hub" });
+  }, 600_000);
 });

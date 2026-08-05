@@ -1,557 +1,365 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
+import {
+  compileHubConfig,
+  compiledConfigurationHash,
+  type CompiledHubConfig,
+} from "../config/compiler.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { DurableTrigger } from "../db/types.js";
-import type { RejectedTriggerProviderMatch } from "../triggers/index.js";
+import type { Database, DurableTrigger } from "../db/types.js";
+import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
+import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
-describe("durable Phase 1 workflow engine", () => {
-  it("persists one run, one step, and one explicitly owned execution", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-one");
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [provider()],
-      dispatchLaunchMachineIntent: async (intent) => {
-        const execution = await database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          launchIntent: intent,
-        });
-        return { execution };
-      },
-    });
-
-    await handler(trigger);
-    await engine.processAvailable();
-    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
-    assert.ok(run);
-    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-    assert.ok(step);
-    const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-    assert.ok(execution);
-    assert.equal(step.agentExecutionId, execution.id);
-    assert.equal(execution.workflowStepRunId, step.id);
-    assert.equal(step.status, "running");
-  });
-
-  it("fans one provider receipt out to one durable branch per configured trigger", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-fanout");
-    const matches = [
-      providerMatch("first-trigger", "first-step").match,
-      providerMatch("second-trigger", "second-step").match,
-    ];
-    let dispatches = 0;
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [
-        {
-          name: "test",
-          eventNames: ["test.event"],
-          async match() {
-            return matches;
-          },
-        },
-      ],
-      dispatchLaunchMachineIntent: async (intent) => {
-        dispatches += 1;
-        return {
-          execution: await database.insertAgentExecution({
-            id: durableExecutionId(intent),
-            organizationId: intent.organizationId,
-            projectId: intent.projectId,
-            machineId: null,
-            triggerId: intent.triggerId,
-            triggerContext: intent.triggerContext,
-            outputContext: intent.outputContext,
-            configurationRevisionId: intent.configurationRevisionId,
-            workflowStepRunId: intent.workflowStepRunId!,
-            launchIntent: intent,
-          }),
-        };
-      },
-    });
-
-    await handler(trigger);
-    await handler(trigger);
+describe("durable multi-step workflow engine", () => {
+  it("skips classification for deterministic input and launches only the matching branch", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("repo=hub work"));
+    assert.equal((await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId)).length, 1);
     await engine.processAvailable();
 
-    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
-    assert.equal(runs.length, 2);
-    assert.deepEqual(runs.map((run) => run.configuredTriggerName).sort(), [
-      "first-trigger",
-      "second-trigger",
-    ]);
+    let run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0];
+    assert.ok(run && run.outcome === "accepted");
+    let steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     assert.deepEqual(
-      (await database.findTriggerById(trigger.triggerId))?.configuredTriggerNames.toSorted(),
-      ["first-trigger", "second-trigger"],
-    );
-    await Promise.all(
-      runs.flatMap((run) => [
-        database.wakeWorkflowRun(run.id, new Date()),
-        database.wakeWorkflowRun(run.id, new Date()),
-      ]),
-    );
-    const branches = await Promise.all(
-      runs.map(async (run) => {
-        const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-        assert.ok(step);
-        const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-        assert.ok(execution);
-        return { run, step, execution };
-      }),
-    );
-    assert.equal(dispatches, 2);
-    assert.equal(new Set(branches.map(({ execution }) => execution.id)).size, 2);
-
-    const first = branches[0]!;
-    const second = branches[1]!;
-    await database.transitionAgentExecution(first.execution.id, "succeeded", {
-      result: { branch: first.run.configuredTriggerName },
-    });
-    const firstFinish = await database.completeWorkflowStep(first.execution.id, "succeeded", {
-      branch: first.run.configuredTriggerName,
-    });
-    assert.deepEqual(
-      await database.completeWorkflowStep(first.execution.id, "succeeded", {
-        branch: first.run.configuredTriggerName,
-      }),
-      firstFinish,
-    );
-    assert.equal((await database.findTriggerRunById(first.run.id))?.status, "succeeded");
-    assert.equal((await database.findTriggerRunById(second.run.id))?.status, "running");
-
-    await database.transitionAgentExecution(second.execution.id, "failed", {
-      result: { branch: second.run.configuredTriggerName },
-    });
-    const secondFinish = await database.completeWorkflowStep(second.execution.id, "failed", {
-      branch: second.run.configuredTriggerName,
-    });
-    assert.deepEqual(
-      await database.completeWorkflowStep(second.execution.id, "failed", {
-        branch: second.run.configuredTriggerName,
-      }),
-      secondFinish,
-    );
-    await handler(trigger);
-    await engine.processAvailable();
-    assert.equal((await database.findTriggerRunById(second.run.id))?.status, "failed");
-    assert.equal(dispatches, 2);
-  });
-
-  it("stores raw prompt, clean prompt, immutable inputs, and renders the launch contract", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-inputs");
-    const base = providerMatch();
-    const match = {
-      ...base.match,
-      prompt: "Request: ${{ paseo.prompt }} for ${{ paseo.inputs.repo }}",
-      agent: { provider: "${{ paseo.inputs.agent }}", mode: "default" },
-      invocation: {
-        status: "accepted" as const,
-        rawMessage: "@Paseo repo=hub agent=opus investigate",
-        prompt: "investigate",
-        inputs: { repo: "hub", agent: "opus" },
-      },
-    };
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [
-        {
-          ...provider(),
-          async match() {
-            return [match];
-          },
-        },
-      ],
-      dispatchLaunchMachineIntent: async (intent) => ({
-        execution: await database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          launchIntent: intent,
-        }),
-      }),
-    });
-
-    await handler(trigger);
-    await engine.processAvailable();
-
-    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
-    assert.ok(run);
-    assert.equal(run.rawPrompt, "@Paseo repo=hub agent=opus investigate");
-    assert.equal(run.prompt, "investigate");
-    assert.deepEqual(run.inputs, { repo: "hub", agent: "opus" });
-    assert.equal(Object.isFrozen(run.inputs), true);
-    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-    assert.ok(step);
-    const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-    assert.ok(execution);
-    assert.equal(execution.launchIntent?.prompt, "Request: investigate for hub");
-    assert.equal(execution.launchIntent?.agent.provider, "opus");
-  });
-
-  it("records a rejected invocation as Activity evidence without creating a run or execution", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-invalid-input");
-    const base = providerMatch();
-    const rejected: RejectedTriggerProviderMatch = {
-      triggerName: base.match.triggerName,
-      triggerContext: base.match.triggerContext,
-      outputContext: base.match.outputContext,
-      configurationRevisionId: base.match.configurationRevisionId,
-      hubConfig: base.match.hubConfig,
-      invocation: {
-        status: "rejected" as const,
-        rawMessage: "repo=unknown investigate",
-        prompt: "investigate",
-        inputs: {},
-        reason: "input repo must be one of the declared choices",
-        rejection: {
-          code: "invalid_choice" as const,
-          inputName: "repo",
-          value: "unknown",
-          choices: ["hub"],
-        },
-      },
-    };
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [
-        {
-          ...provider(),
-          async match() {
-            return [rejected];
-          },
-        },
-      ],
-    });
-
-    await handler(trigger);
-    await engine.processAvailable();
-
-    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
-    assert.equal(runs.length, 1);
-    const rejectedRun = runs[0]!;
-    assert.equal(rejectedRun.status, "rejected");
-    assert.equal(rejectedRun.outcome, "rejected");
-    assert.equal(rejectedRun.rejection.code, "invalid_choice");
-    assert.equal(rejectedRun.rejection.inputName, "repo");
-    assert.equal(await database.findWorkflowStepRunByTriggerRun(runs[0]!.id), undefined);
-    assert.deepEqual(await database.findAgentExecutionsByTriggerId(trigger.triggerId), []);
-    assert.equal((await database.findTriggerById(trigger.triggerId))?.droppedReason, null);
-  });
-
-  it("keeps accepted and independently rejected fan-out branches durable and idempotent", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-mixed-fanout");
-    const accepted = providerMatch("accepted-trigger", "accepted-step").match;
-    const rejected: RejectedTriggerProviderMatch = {
-      triggerName: "rejected-trigger",
-      triggerContext: { provider: "test" },
-      outputContext: { provider: "test" },
-      configurationRevisionId: "config-1",
-      hubConfig: {},
-      invocation: {
-        status: "rejected" as const,
-        rawMessage: "repo=unknown investigate",
-        prompt: "investigate",
-        inputs: {},
-        reason: "input repo must be one of the declared choices",
-        rejection: {
-          code: "invalid_choice",
-          inputName: "repo",
-          value: "unknown",
-          choices: ["hub"],
-        },
-      },
-    };
-    const secondRejected: RejectedTriggerProviderMatch = {
-      ...rejected,
-      triggerName: "second-rejected-trigger",
-      invocation: {
-        ...rejected.invocation,
-        reason: "duplicate input repo",
-        rejection: { code: "duplicate_input" as const, inputName: "repo" },
-      },
-    };
-    let dispatches = 0;
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [
-        {
-          name: "test",
-          eventNames: ["test.event"],
-          async match() {
-            return [accepted, rejected, secondRejected];
-          },
-        },
-      ],
-      dispatchLaunchMachineIntent: async (intent) => {
-        dispatches += 1;
-        return {
-          execution: await database.insertAgentExecution({
-            id: durableExecutionId(intent),
-            organizationId: intent.organizationId,
-            projectId: intent.projectId,
-            machineId: null,
-            triggerId: intent.triggerId,
-            triggerContext: intent.triggerContext,
-            outputContext: intent.outputContext,
-            configurationRevisionId: intent.configurationRevisionId,
-            workflowStepRunId: intent.workflowStepRunId!,
-            launchIntent: intent,
-          }),
-        };
-      },
-    });
-
-    await Promise.all([handler(trigger), handler(trigger)]);
-    await engine.processAvailable();
-
-    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
-    assert.equal(runs.length, 3);
-    assert.deepEqual(
-      runs
-        .map((run) => ({ name: run.configuredTriggerName, status: run.status }))
-        .sort((left, right) => left.name.localeCompare(right.name)),
+      steps.map((step) => [step.stepId, step.status]),
       [
-        { name: "accepted-trigger", status: "running" },
-        { name: "rejected-trigger", status: "rejected" },
-        { name: "second-rejected-trigger", status: "rejected" },
+        ["classify", "skipped"],
+        ["work-hub", "running"],
+        ["work-paseo", "pending"],
       ],
     );
-    const rejectedRun = runs.find((run) => run.configuredTriggerName === "rejected-trigger");
-    assert.ok(rejectedRun);
-    if (rejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
-    assert.equal(rejectedRun.rejection.code, "invalid_choice");
-    assert.equal(await database.findWorkflowStepRunByTriggerRun(rejectedRun.id), undefined);
-    const secondRejectedRun = runs.find(
-      (run) => run.configuredTriggerName === "second-rejected-trigger",
-    );
-    assert.ok(secondRejectedRun);
-    if (secondRejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
-    assert.equal(secondRejectedRun.rejection.code, "duplicate_input");
-    assert.equal(await database.findWorkflowStepRunByTriggerRun(secondRejectedRun.id), undefined);
-    assert.equal(dispatches, 1);
-    assert.equal((await database.findTriggerById(trigger.triggerId))?.droppedReason, null);
-  });
+    assert.deepEqual(dispatches, ["work-hub"]);
 
-  it("deduplicates delivery, wakeup, and finish transitions", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-duplicate");
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [provider()],
-      dispatchLaunchMachineIntent: async (intent) => ({
-        execution: await database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          launchIntent: intent,
-        }),
-      }),
-    });
-    await handler(trigger);
-    await handler(trigger);
-    await engine.processAvailable();
-    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
-    assert.ok(run);
-    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-    assert.ok(step);
-    const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[1]!.id);
     assert.ok(execution);
-    await database.transitionAgentExecution(execution.id, "succeeded", {
+    await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
       result: { status: "succeeded" },
     });
-    const first = await database.completeWorkflowStep(execution.id, "succeeded", {
-      status: "succeeded",
-    });
-    const second = await database.completeWorkflowStep(execution.id, "succeeded", {
-      status: "succeeded",
-    });
-    assert.equal(first?.run.status, "succeeded");
-    assert.deepEqual(second, first);
-    assert.equal((await database.findAgentExecutionByWorkflowStepRunId(step.id))?.id, execution.id);
-  });
-
-  it("allows an expired wakeup lease to be claimed by the next worker", async () => {
-    const database = createMemoryDatabase();
-    const now = new Date("2026-08-05T12:00:00.000Z");
-    const trigger = await insertTrigger(database, "delivery-lease");
-    const intent = providerMatch().intent;
-    const created = await database.createAcceptedTriggerRun({
-      organizationId: trigger.organizationId,
-      projectId: trigger.projectId,
-      configurationRevisionId: "config-1",
-      triggerId: trigger.triggerId,
-      configuredTriggerName: "test-trigger",
-      rawPrompt: "raw",
-      prompt: "prompt",
-      inputs: {},
-      deadlineAt: new Date(now.getTime() + 60_000),
-      stepId: "step-one",
-      stepRunId: "step-run-one",
-      dispatchIntent: intent,
-      createdAt: now,
-    });
-    assert.equal((await database.claimWorkflowWakeup(now, 1_000))?.triggerRunId, created.run.id);
-    assert.equal(
-      await database.claimWorkflowWakeup(new Date(now.getTime() + 500), 1_000),
-      undefined,
-    );
-    assert.equal(
-      (await database.claimWorkflowWakeup(new Date(now.getTime() + 1_001), 1_000))?.triggerRunId,
-      created.run.id,
+    await fixture.database.completeWorkflowStep(execution.id, "succeeded", { status: "succeeded" });
+    await engine.processAvailable();
+    run = await fixture.database.findTriggerRunById(run.id);
+    assert.equal(run?.status, "succeeded");
+    steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    assert.deepEqual(
+      steps.map((step) => [step.stepId, step.status]),
+      [
+        ["classify", "skipped"],
+        ["work-hub", "succeeded"],
+        ["work-paseo", "skipped"],
+      ],
     );
   });
 
-  it("recreates a wakeup after a restart boundary when a terminal execution was not finalized", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await insertTrigger(database, "delivery-recovery");
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      providers: [provider()],
-      dispatchLaunchMachineIntent: async (intent) => ({
-        execution: await database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          launchIntent: intent,
-        }),
-      }),
-    });
-    await handler(trigger);
+  it("runs classification when input is absent and composes its validated output", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("investigate"));
     await engine.processAvailable();
-    const run = (await database.findTriggerRunsByTriggerId(trigger.triggerId))[0];
-    assert.ok(run);
-    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-    assert.ok(step);
-    const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-    assert.ok(execution);
-    await database.transitionAgentExecution(execution.id, "succeeded", {
-      result: { status: "succeeded" },
+    assert.deepEqual(dispatches, ["classify"]);
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.ok(classifier);
+
+    await fixture.database.completeAgentExecutionWithStructuredOutput({
+      executionId: classifier.id,
+      output: { repo: "paseo" },
     });
-    await database.deleteWorkflowWakeup(run.id);
-    await database.recoverWorkflowWakeups(new Date());
     await engine.processAvailable();
-    assert.equal((await database.findTriggerRunById(run.id))?.status, "succeeded");
+    assert.deepEqual(dispatches, ["classify", "work-paseo"]);
+    assert.equal(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[1]!.status,
+      "skipped",
+    );
+  });
+
+  it("fails when an unavailable output is evaluated outside a short-circuited branch", async () => {
+    const fixture = await workflowFixture({ unavailableValue: true });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("repo=hub work"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.status, "failed");
+    assert.match(run.failureReason ?? "", /unavailable|evaluation/iu);
+    assert.deepEqual(dispatches, []);
+  });
+
+  it("fails a classifier without launching downstream work", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("investigate"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.ok(classifier);
+    await fixture.database.transitionAgentExecution(classifier.id, "failed", {
+      result: { reason: "classifier_failed" },
+    });
+    await fixture.database.completeWorkflowStep(
+      classifier.id,
+      "failed",
+      { reason: "classifier_failed" },
+      "classifier_failed",
+    );
+    await engine.processAvailable();
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "failed");
+    assert.deepEqual(dispatches, ["classify"]);
+  });
+
+  it("times out a classifier without launching downstream work", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("investigate"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.ok(classifier);
+    await fixture.database.transitionAgentExecution(classifier.id, "failed", {
+      result: { reason: "timed_out" },
+    });
+    await fixture.database.completeWorkflowStep(
+      classifier.id,
+      "timed_out",
+      { reason: "timed_out" },
+      "timed_out",
+    );
+    await engine.processAvailable();
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "timed_out");
+    assert.deepEqual(dispatches, ["classify"]);
+  });
+
+  it("restarts after structured completion and creates exactly one downstream execution", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const first = engineFor(fixture, dispatches);
+    await first.handler(fixture.trigger("investigate"));
+    await first.engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const classifierStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      classifierStep.id,
+    );
+    assert.ok(classifier);
+    await fixture.database.completeAgentExecutionWithStructuredOutput({
+      executionId: classifier.id,
+      output: { repo: "hub" },
+    });
+
+    const restarted = engineFor(fixture, dispatches);
+    await restarted.engine.processAvailable();
+    await fixture.database.wakeWorkflowRun(run.id, new Date());
+    await restarted.engine.processAvailable();
+    assert.deepEqual(dispatches, ["classify", "work-hub"]);
+    assert.equal(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id)).filter(
+        (step) => step.agentExecutionId !== null,
+      ).length,
+      2,
+    );
   });
 });
 
-function provider() {
-  return {
-    name: "test",
-    eventNames: ["test.event" as const],
-    async match() {
-      return [providerMatch().match];
-    },
-  };
+interface Fixture {
+  database: Database;
+  triggerId: string;
+  revisionId: string;
+  configuration: CompiledHubConfig;
+  trigger(message: string): DurableTrigger;
 }
 
-function providerMatch(triggerName = "test-trigger", stepId = "step-one") {
-  const intent = {
-    kind: "launch_machine" as const,
+async function workflowFixture(options: { unavailableValue?: boolean } = {}): Promise<Fixture> {
+  const database = createMemoryDatabase({ organizationIds: ["org-1"] });
+  const project = await database.createProject({
     organizationId: "org-1",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    triggerId: "trigger-placeholder",
-    workflowStepRunId: "step-run-one",
-    triggerName,
-    environmentName: "runner",
-    environment: {
-      kind: "daemon" as const,
-      daemonId: "daemon-1",
-      authoredSlug: "runner",
-      cwd: "/repo",
-    },
-    prompt: "prompt",
-    agent: { provider: "test", mode: "default" },
-    allowOutputs: [],
-    timeoutMs: 30_000,
-    idleTimeoutMs: 5_000,
-    autoArchive: false,
-    triggerContext: { provider: "test" },
-    outputContext: { provider: "test" },
-    configurationRevisionId: "config-1",
-    hubConfig: {},
+    name: "Workflow",
+    slug: randomUUID(),
+    createdByUserId: "user-1",
+  });
+  const raw = baseConfiguration(options);
+  const compiled = compileHubConfig(raw);
+  const configuration: CompiledHubConfig = {
+    environments: compiled.environments.map((environment) => {
+      if (environment.kind !== "daemon") return environment;
+      return {
+        name: environment.name,
+        kind: "daemon",
+        daemon: environment.daemon,
+        daemonId: "daemon-1",
+        cwd: environment.cwd,
+        ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
+      };
+    }),
+    triggers: compiled.triggers,
   };
-  return {
-    intent,
-    match: {
-      triggerName,
-      stepId,
-      environmentName: "runner",
-      environment: intent.environment,
-      prompt: "prompt",
-      agent: intent.agent,
-      allowOutputs: [],
-      timeoutMs: 30_000,
-      runTimeoutMs: 60_000,
-      idleTimeoutMs: 5_000,
-      autoArchive: false,
-      triggerContext: intent.triggerContext,
-      outputContext: intent.outputContext,
-      configurationRevisionId: "config-1",
-      hubConfig: {},
-      invocation: {
-        status: "accepted" as const,
-        rawMessage: "prompt",
-        prompt: "prompt",
-        inputs: {},
-      },
-    },
-  };
-}
-
-async function insertTrigger(
-  database: ReturnType<typeof createMemoryDatabase>,
-  deliveryId: string,
-) {
+  const revision = await database.insertProjectConfigurationRevision({
+    projectId: project.id,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "test" },
+    normalizedConfiguration: configuration,
+    contentHash: compiledConfigurationHash(configuration),
+    createdByUserId: "user-1",
+  });
   const trigger = await database.insertTrigger({
     organizationId: "org-1",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    configurationRevisionId: "config-1",
-    deliveryId,
-    source: "test.event",
-    payload: { prompt: "raw" },
+    projectId: project.id,
+    configurationRevisionId: revision.id,
+    deliveryId: randomUUID(),
+    source: "manual.run",
+    payload: {},
     receivedAt: new Date(),
   });
   return {
+    database,
     triggerId: trigger.trigger.id,
-    organizationId: "org-1",
-    projectId: "00000000-0000-4000-8000-000000000001",
-    source: "test.event",
-    deliveryId,
-    payload: { prompt: "raw" },
-    receivedAt: new Date(),
-    connectionId: null,
-    resourceId: null,
-  } satisfies DurableTrigger;
+    revisionId: revision.id,
+    configuration,
+    trigger(message) {
+      return {
+        triggerId: trigger.trigger.id,
+        organizationId: "org-1",
+        projectId: project.id,
+        source: "manual.run",
+        deliveryId: trigger.trigger.deliveryId,
+        payload: { input: message },
+        receivedAt: new Date(),
+        connectionId: null,
+        resourceId: null,
+      };
+    },
+  };
+}
+
+function engineFor(fixture: Fixture, dispatches: string[]) {
+  return createDurableWorkflowHandler({
+    database: fixture.database,
+    providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+    dispatchLaunchMachineIntent: async (intent) => {
+      dispatches.push(dispatchLabel(intent));
+      return {
+        execution: await fixture.database.insertAgentExecution({
+          id: durableExecutionId(intent),
+          organizationId: intent.organizationId,
+          projectId: intent.projectId,
+          machineId: null,
+          triggerId: intent.triggerId,
+          triggerContext: intent.triggerContext,
+          outputContext: intent.outputContext,
+          configurationRevisionId: intent.configurationRevisionId,
+          workflowStepRunId: intent.workflowStepRunId!,
+          deadlineAt: intent.deadlineAt ?? null,
+          launchIntent: intent,
+        }),
+      };
+    },
+  });
+}
+
+function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
+  return {
+    name: "manual",
+    eventNames: ["manual.run"] as const,
+    async match(external): Promise<readonly AcceptedTriggerProviderMatch[]> {
+      const trigger = configuration.triggers[0]!;
+      const input =
+        isRecord(external.payload) && typeof external.payload["input"] === "string"
+          ? external.payload["input"]
+          : "";
+      const invocation = parseInvocation(input, trigger.inputs);
+      if (invocation.status !== "accepted")
+        throw new Error("test invocation unexpectedly rejected");
+      return [
+        {
+          triggerName: trigger.name,
+          triggerContext: { provider: "manual" },
+          outputContext: { provider: "manual" },
+          configurationRevisionId: revisionId,
+          hubConfig: configuration,
+          invocation,
+        },
+      ];
+    },
+  } satisfies import("../triggers/index.js").TriggerProvider;
+}
+
+function baseConfiguration(options: { unavailableValue?: boolean }): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "route-request",
+        on: "manual.run",
+        max_runtime: "1h",
+        inputs: { repo: { type: "string", choices: ["paseo", "hub"] } },
+        values: {
+          repo:
+            options.unavailableValue === true
+              ? "${{ steps.classify.outputs.repo }}"
+              : "${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}",
+        },
+        steps: [
+          {
+            id: "classify",
+            if: "${{ paseo.inputs.repo == null }}",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Classify" }],
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["repo"],
+                properties: { repo: { enum: ["paseo", "hub"] } },
+              },
+            },
+          },
+          {
+            id: "work-hub",
+            if: "${{ values.repo == 'hub' }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Work hub" }],
+          },
+          {
+            id: "work-paseo",
+            if: "${{ values.repo == 'paseo' }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Work paseo" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function dispatchLabel(intent: {
+  workflowStepRunId?: string;
+  triggerName: string;
+  prompt: string;
+}): string {
+  if (intent.workflowStepRunId === undefined) return "missing";
+  if (intent.triggerName !== "route-request") return "unknown";
+  if (intent.prompt.startsWith("Classify")) return "classify";
+  return intent.prompt.includes("paseo") ? "work-paseo" : "work-hub";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

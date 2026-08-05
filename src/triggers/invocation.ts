@@ -143,21 +143,6 @@ export function matchesInputFilters(
   return Object.entries(filters).every(([name, value]) => inputs[name] === value);
 }
 
-export function interpolateInvocation(
-  template: string,
-  invocation: Extract<InvocationParseResult, { status: "accepted" }>,
-): string {
-  return template.replace(
-    /\$\{\{\s*paseo\.(prompt|inputs\.([a-z][a-z0-9_-]*))\s*\}\}/gu,
-    (_expression, path: string, inputName: string | undefined) => {
-      if (path === "prompt") return invocation.prompt;
-      const value = inputName === undefined ? undefined : invocation.inputs[inputName];
-      if (value === undefined) throw new Error(`invocation input ${inputName} is unavailable`);
-      return String(value);
-    },
-  );
-}
-
 function consumeDeclaredHeaders(
   message: string,
   definitions: InvocationInputDefinitions,

@@ -937,7 +937,7 @@ function activityResult(event: ProjectSnapshot["activity"][number]): string {
       .map((branch) =>
         branch.outcome === "rejected"
           ? `rejected_input:${branch.configuredTriggerName}:${branch.rejectionReason}`
-          : `${branch.configuredTriggerName}:${branch.status}`,
+          : `${branch.configuredTriggerName}:${branch.status}${branch.steps.length === 0 ? "" : ` (${branch.steps.map((step) => `${step.stepId}:${step.status}`).join(", ")})`}`,
       )
       .join(", ");
   }

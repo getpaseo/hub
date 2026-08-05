@@ -4,6 +4,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { createDatabase } from "./pg.js";
+import {
+  compileHubConfig,
+  compiledConfigurationHash,
+  type CompiledHubConfig,
+} from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "./types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { DurableTrigger } from "../db/types.js";
@@ -89,9 +94,10 @@ describe("agent execution PostgreSQL repository", () => {
         rawPrompt: "@Paseo repo=hub investigate",
         prompt: "investigate",
         inputs: { repo: "hub" },
+        triggerContext: intent.triggerContext,
+        outputContext: intent.outputContext,
         deadlineAt: new Date(Date.now() + 60_000),
-        stepId: "step-one",
-        dispatchIntent: intent,
+        stepIds: ["step-one"],
       });
       assert.deepEqual((await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0], {
         ...created.run,
@@ -126,7 +132,11 @@ describe("agent execution PostgreSQL repository", () => {
       const second = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
         status: "succeeded",
       });
-      assert.equal(first?.run.status, "succeeded");
+      await fixture.database.succeedTriggerRun(created.run.id);
+      assert.equal(
+        (await fixture.database.findTriggerRunById(created.run.id))?.status,
+        "succeeded",
+      );
       assert.deepEqual(second, first);
     } finally {
       await fixture.database.close();
@@ -182,7 +192,7 @@ describe("agent execution PostgreSQL repository", () => {
       if (run.outcome !== "accepted") throw new Error("expected accepted trigger run");
       const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
       assert.ok(step);
-      assert.equal(run.deadlineAt.toISOString(), "2026-08-05T12:00:05.000Z");
+      assert.equal(run.deadlineAt.toISOString(), "2026-08-05T13:00:00.000Z");
       assert.equal((await fixture.database.claimWorkflowWakeup(now, 1_000)) !== undefined, true);
       assert.equal(
         await fixture.database.claimWorkflowWakeup(new Date(now.getTime() + 500), 1_000),
@@ -193,7 +203,7 @@ describe("agent execution PostgreSQL repository", () => {
       await engine.processAvailable();
       const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
       assert.ok(execution);
-      assert.equal(execution.deadlineAt?.toISOString(), "2026-08-05T12:00:05.000Z");
+      assert.equal(execution.deadlineAt?.toISOString(), "2026-08-05T12:00:34.500Z");
       assert.equal(execution.workflowStepRunId, step.id);
 
       await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
@@ -205,8 +215,10 @@ describe("agent execution PostgreSQL repository", () => {
       const second = await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
         status: "succeeded",
       });
-      assert.equal(first?.run.status, "succeeded");
+      assert.equal(first?.run.status, "running");
       assert.deepEqual(second, first);
+      await fixture.database.succeedTriggerRun(run.id);
+      assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "succeeded");
       assert.equal(await fixture.database.claimWorkflowWakeup(now, 1_000), undefined);
     } finally {
       await fixture.database.close();
@@ -311,7 +323,7 @@ describe("agent execution PostgreSQL repository", () => {
         },
       );
       assert.deepEqual(firstDuplicateFinish, firstFinish);
-      assert.equal((await fixture.database.findTriggerRunById(first.run.id))?.status, "succeeded");
+      assert.equal((await fixture.database.findTriggerRunById(first.run.id))?.status, "running");
       assert.equal((await fixture.database.findTriggerRunById(second.run.id))?.status, "running");
 
       await fixture.database.transitionAgentExecution(second.execution.id, "succeeded", {
@@ -527,26 +539,77 @@ function phaseOneMatch(
   const base = launchIntent("trigger-placeholder", configurationRevisionId, triggerName);
   return {
     triggerName,
-    stepId,
-    environmentName: base.environmentName,
-    environment: base.environment,
-    prompt: base.prompt,
-    agent: base.agent,
-    allowOutputs: base.allowOutputs,
-    timeoutMs: 30_000,
-    runTimeoutMs: 5_000,
-    idleTimeoutMs: 5_000,
-    autoArchive: base.autoArchive,
     triggerContext: base.triggerContext,
     outputContext: base.outputContext,
     configurationRevisionId,
-    hubConfig: base.hubConfig,
+    hubConfig: workflowConfiguration(triggerName, stepId),
     invocation: {
       status: "accepted",
       rawMessage: "run",
       prompt: "run",
       inputs: {},
     },
+  };
+}
+
+function workflowConfiguration(triggerName: string, stepId: string): CompiledHubConfig {
+  return activateWorkflowConfiguration(
+    compileHubConfig({
+      environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
+      triggers: [
+        {
+          name: triggerName,
+          on: "test.event",
+          max_runtime: "1h",
+          filters: { from_users: ["test"] },
+          steps: [
+            {
+              id: stepId,
+              environment: "work",
+              max_runtime: "30s",
+              idle_timeout: "5s",
+              agent: { provider: "test" },
+              prompt: [{ text: "run" }],
+            },
+          ],
+        },
+      ],
+    }),
+  );
+}
+
+function allWorkflowConfigurations(): CompiledHubConfig {
+  const definitions = [
+    ["one-step", "step-one"],
+    ["first-route", "first-step"],
+    ["second-route", "second-step"],
+    ["accepted-route", "accepted-step"],
+    ["rejected-route", "rejected-step"],
+    ["second-rejected-route", "second-rejected-step"],
+  ] as const;
+  const configurations = definitions.map(([triggerName, stepId]) =>
+    workflowConfiguration(triggerName, stepId),
+  );
+  return {
+    environments: configurations[0]!.environments,
+    triggers: configurations.flatMap((configuration) => configuration.triggers),
+  };
+}
+
+function activateWorkflowConfiguration(configuration: CompiledHubConfig): CompiledHubConfig {
+  return {
+    environments: configuration.environments.map((environment) => {
+      if (environment.kind !== "daemon") return environment;
+      return {
+        name: environment.name,
+        kind: "daemon",
+        daemon: environment.daemon,
+        daemonId: "daemon-1",
+        cwd: environment.cwd,
+        ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
+      };
+    }),
+    triggers: configuration.triggers,
   };
 }
 
@@ -600,12 +663,13 @@ async function executionFixture(
   );
   await client.end();
 
+  const revisionConfiguration = allWorkflowConfigurations();
   const config = await database.insertProjectConfigurationRevision({
     projectId: "00000000-0000-4000-8000-000000000001",
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
-    normalizedConfiguration: {},
-    contentHash: "test-config",
+    normalizedConfiguration: revisionConfiguration,
+    contentHash: compiledConfigurationHash(revisionConfiguration),
   });
   const machine = await database.insertMachine({
     orgId: "org-1",

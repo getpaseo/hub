@@ -10,7 +10,6 @@ describe("LaunchMachineIntent", () => {
       triggerId: "trigger-row-1",
       configurationRevisionId: "config-version-1",
       triggerName: "discord-ping",
-      stepId: "reply",
       environmentName: "hetzner-faro",
       environment: {
         kind: "daemon",
@@ -32,12 +31,6 @@ describe("LaunchMachineIntent", () => {
       triggerContext: { messageId: "message-1" },
       outputContext: { messageId: "message-1" },
       hubConfig: { triggers: [] },
-      invocation: {
-        status: "accepted",
-        rawMessage: "Reply pong",
-        prompt: "Reply pong",
-        inputs: {},
-      },
     });
 
     assert.deepEqual(intent, {

@@ -10,7 +10,7 @@ import { loadBuiltStartServer } from "../../server/build.js";
 import { createAuthServer } from "../../auth/server.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
-import { ProjectConfigurationStore } from "../../configuration/store.js";
+import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -101,26 +101,20 @@ async function main(): Promise<void> {
         eventNames: ["e2e.discord"],
         async match(trigger) {
           const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
+          const compiledConfiguration =
+            activeConfiguration === undefined
+              ? undefined
+              : parseProjectConfiguration(activeConfiguration);
           const daemon = (await database.listDaemonsForOrganization(trigger.organizationId))[0];
-          if (daemon === undefined || activeConfiguration === undefined) return [];
+          if (
+            daemon === undefined ||
+            activeConfiguration === undefined ||
+            compiledConfiguration === undefined
+          )
+            return [];
           return [
             {
               triggerName: "e2e-discord",
-              stepId: "e2e-step",
-              environmentName: "hub-e2e",
-              environment: {
-                kind: "daemon" as const,
-                daemonId: daemon.id,
-                authoredSlug: daemon.slug,
-                cwd: process.cwd(),
-              },
-              prompt: "Deploy mcp-capability for phase-five-operator",
-              agent: { provider: "hub-e2e", mode: "default" },
-              allowOutputs: [{ type: "discord.reply", max: 1 }],
-              timeoutMs: 60 * 60_000,
-              runTimeoutMs: 2 * 60 * 60_000,
-              idleTimeoutMs: 5 * 60_000,
-              autoArchive: false,
               triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
               outputContext: {
                 provider: "discord",
@@ -131,7 +125,7 @@ async function main(): Promise<void> {
               },
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
-              hubConfig: {},
+              hubConfig: compiledConfiguration,
               invocation: {
                 status: "accepted",
                 rawMessage: "Deploy mcp-capability for phase-five-operator",

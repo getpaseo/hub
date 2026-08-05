@@ -141,6 +141,13 @@
       "when": 1785953359248,
       "tag": "0019_demonic_piledriver",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785958775711,
+      "tag": "0020_wandering_apocalypse",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { describe, it } from "vitest";
 import { z } from "zod";
 import { hashAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
+import type { JsonValue } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
@@ -19,6 +20,11 @@ const RpcResponseSchema = z
   })
   .passthrough();
 const ToolResultSchema = z.object({ isError: z.boolean().optional() }).passthrough();
+const ToolsListSchema = z
+  .object({
+    tools: z.array(z.object({ name: z.string(), inputSchema: z.unknown() }).passthrough()),
+  })
+  .passthrough();
 
 describe("execution capability MCP boundary", () => {
   it.each([
@@ -151,6 +157,54 @@ describe("execution capability MCP boundary", () => {
     }
   });
 
+  it("advertises and enforces the exact configured structured output schema", async () => {
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["repo"],
+      properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+    };
+    const fixture = await capabilityFixture(() => Promise.resolve(), "succeeded", 1, schema);
+    const tools = await fixture.call("tools/list");
+    const tool = ToolsListSchema.parse(tools.result).tools.find(
+      (candidate) => candidate.name === "finish_execution",
+    );
+    assert.deepEqual(tool?.inputSchema, {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      additionalProperties: false,
+      required: ["output"],
+      properties: {
+        output: {
+          type: "object",
+          additionalProperties: false,
+          required: ["repo"],
+          properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+        },
+      },
+    });
+
+    const invalid = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: { output: { repo: "other" } },
+    });
+    assert.equal(ToolResultSchema.parse(invalid.result).isError, true);
+    assert.deepEqual(fixture.completions, []);
+    assert.equal(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.status,
+      "spawning",
+    );
+
+    const valid = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: { output: { repo: "hub" } },
+    });
+    assert.equal(ToolResultSchema.parse(valid.result).isError, undefined);
+    assert.deepEqual(fixture.completions, [
+      { executionId: fixture.executionId, token: "token", output: { repo: "hub" } },
+    ]);
+  });
+
   it("reports a failed durable completion as a tool error", async () => {
     const fixture = await capabilityFixture(undefined, "failed");
 
@@ -250,6 +304,7 @@ async function capabilityFixture(
   execute: (() => Promise<void>) | undefined = () => Promise.resolve(),
   completionStatus: "succeeded" | "failed" = "succeeded",
   maxReplies = 1,
+  outputSchema?: JsonValue,
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
@@ -263,7 +318,7 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(maxReplies),
+    launchIntent: launchIntent(maxReplies, outputSchema),
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
@@ -271,7 +326,7 @@ async function capabilityFixture(
     outbound.push(input);
     await execute();
   });
-  const completions: Array<{ executionId: string; token: string }> = [];
+  const completions: Array<{ executionId: string; token: string; output?: unknown }> = [];
   const server = createExecutionCapabilityServer({
     database,
     outputs,
@@ -335,7 +390,7 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-function launchIntent(maxReplies = 1): LaunchMachineIntent {
+function launchIntent(maxReplies = 1, outputSchema?: JsonValue): LaunchMachineIntent {
   return {
     kind: "launch_machine",
     organizationId: "org-1",
@@ -355,6 +410,7 @@ function launchIntent(maxReplies = 1): LaunchMachineIntent {
     autoArchive: false,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,
+    ...(outputSchema === undefined ? {} : { outputSchema }),
     configurationRevisionId: randomUUID(),
     hubConfig: {},
   };

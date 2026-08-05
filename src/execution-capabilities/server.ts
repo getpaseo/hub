@@ -15,7 +15,11 @@ export interface ExecutionCapabilityServer {
 export function createExecutionCapabilityServer(options: {
   database: Database;
   outputs: OutputExecutorRegistry;
-  completeExecution(input: { executionId: string; token: string }): Promise<AgentExecutionRecord>;
+  completeExecution(input: {
+    executionId: string;
+    token: string;
+    output?: unknown;
+  }): Promise<AgentExecutionRecord>;
   now?: () => Date;
 }): ExecutionCapabilityServer {
   return {
@@ -65,27 +69,42 @@ function createMcpServer(
   options: {
     database: Database;
     outputs: OutputExecutorRegistry;
-    completeExecution(input: { executionId: string; token: string }): Promise<AgentExecutionRecord>;
+    completeExecution(input: {
+      executionId: string;
+      token: string;
+      output?: unknown;
+    }): Promise<AgentExecutionRecord>;
     now?: () => Date;
   },
   execution: AgentExecutionRecord,
   token: string,
 ): McpServer {
   const server = new McpServer({ name: "paseo-hub-execution", version: "1.0.0" });
+  const finishSchema =
+    execution.launchIntent?.outputSchema === undefined
+      ? FinishArgumentsSchema
+      : z.object({ output: jsonSchemaToZod(execution.launchIntent.outputSchema) }).strict();
   server.registerTool(
     "finish_execution",
     {
       description: "Mark this Hub execution complete after the task is fully finished.",
-      inputSchema: FinishArgumentsSchema,
+      inputSchema: finishSchema,
     },
-    async () => {
+    async (args) => {
       try {
-        const completed = await options.completeExecution({ executionId: execution.id, token });
+        const output = isRecord(args) && Object.hasOwn(args, "output") ? args["output"] : undefined;
+        const completed = await options.completeExecution({
+          executionId: execution.id,
+          token,
+          ...(output === undefined ? {} : { output }),
+        });
         return completed.status === "succeeded"
           ? toolSuccess("Execution finished")
           : toolFailure("Execution could not be finished");
-      } catch {
-        return toolFailure("Execution could not be finished");
+      } catch (error) {
+        return toolFailure(
+          error instanceof Error ? error.message : "Execution could not be finished",
+        );
       }
     },
   );
@@ -120,6 +139,68 @@ function createMcpServer(
     );
   }
   return server;
+}
+
+function jsonSchemaToZod(schema: unknown): z.ZodTypeAny {
+  if (!isRecord(schema)) return z.any();
+  const enumValues = schema["enum"];
+  if (Array.isArray(enumValues) && enumValues.length > 0) {
+    const stringValues = enumValues.filter((value): value is string => typeof value === "string");
+    if (stringValues.length === enumValues.length) {
+      const enumObject = Object.fromEntries(
+        stringValues.map((value, index) => [`value${index}`, value]),
+      );
+      return z.nativeEnum(enumObject);
+    }
+    return z
+      .any()
+      .refine(
+        (value: unknown) =>
+          enumValues.some((candidate) => JSON.stringify(candidate) === JSON.stringify(value)),
+        {
+          message: "must match one of the configured enum values",
+        },
+      );
+  }
+  if (schema["const"] !== undefined) {
+    const constant = schema["const"];
+    return z.any().refine((value: unknown) => JSON.stringify(value) === JSON.stringify(constant), {
+      message: "must equal the configured constant",
+    });
+  }
+  const type = schema["type"];
+  if (type === "object" || schema["properties"] !== undefined) return jsonObjectSchemaToZod(schema);
+  if (type === "array") return jsonArraySchemaToZod(schema);
+  if (type === "string") return z.string();
+  if (type === "number" || type === "integer") return z.number();
+  if (type === "boolean") return z.boolean();
+  if (type === "null") return z.null();
+  return z.any();
+}
+
+function jsonObjectSchemaToZod(schema: Record<string, unknown>): z.ZodTypeAny {
+  const properties = isRecord(schema["properties"]) ? schema["properties"] : {};
+  const required = new Set(
+    Array.isArray(schema["required"])
+      ? schema["required"].filter((name): name is string => typeof name === "string")
+      : [],
+  );
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [name, child] of Object.entries(properties)) {
+    const childSchema = jsonSchemaToZod(child);
+    shape[name] = required.has(name) ? childSchema : childSchema.optional();
+  }
+  const object = z.object(shape);
+  return schema["additionalProperties"] === false ? object.strict() : object;
+}
+
+function jsonArraySchemaToZod(schema: Record<string, unknown>): z.ZodTypeAny {
+  const items = schema["items"];
+  return z.array(items === undefined ? z.any() : jsonSchemaToZod(items));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function allowedReplyOutput(

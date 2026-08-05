@@ -3,6 +3,7 @@ import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
 import { rawConfigurationHash } from "../config/compiler.js";
+import type { JsonValue } from "../config/compiler.js";
 import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
@@ -60,6 +61,7 @@ export class ProjectDashboard {
   async projectSnapshot(request: Request, scope: ProjectRouteScope) {
     const { account, tenant } = await this.resolveProject(request, scope);
     const project = tenant.project;
+    const triggerRuns = await this.database.listTriggerRunsForProject(project.id, 200);
     const [
       projects,
       configuration,
@@ -67,8 +69,8 @@ export class ProjectDashboard {
       connections,
       repositories,
       activity,
-      triggerRuns,
       executions,
+      stepRuns,
     ] = await Promise.all([
       this.database.listProjectsForOrganization(tenant.organization.id),
       this.database.projectConfigurationReadModel(project.id),
@@ -76,8 +78,13 @@ export class ProjectDashboard {
       this.database.organizationConnectionUsage(tenant.organization.id),
       this.database.listGitHubRepositories(tenant.organization.id),
       this.database.listTriggersForProject(project.id, 50),
-      this.database.listTriggerRunsForProject(project.id, 200),
       this.database.listAgentExecutionsForProject(project.id, 50),
+      Promise.all(
+        triggerRuns.map(
+          async (run) =>
+            [run.id, await this.database.listWorkflowStepRunsForTriggerRun(run.id)] as const,
+        ),
+      ),
     ]);
     return {
       account: account.account,
@@ -100,6 +107,7 @@ export class ProjectDashboard {
         triggerView(
           trigger,
           triggerRuns.filter((run) => run.triggerId === trigger.id),
+          new Map(stepRuns),
         ),
       ),
       executions: executions.map(executionView),
@@ -366,6 +374,7 @@ function configurationView(
 function triggerView(
   trigger: Awaited<ReturnType<Database["findTriggerById"]>> & {},
   runs: Awaited<ReturnType<Database["findTriggerRunsByTriggerId"]>> = [],
+  stepRuns = new Map<string, Awaited<ReturnType<Database["listWorkflowStepRunsForTriggerRun"]>>>(),
 ) {
   if (trigger === undefined) throw new Error("trigger unavailable");
   return {
@@ -383,15 +392,39 @@ function triggerView(
             outcome: run.outcome,
             status: run.status,
             rejectionReason: formatInvocationRejection(run.rejection),
+            steps: [],
           }
         : {
             configuredTriggerName: run.configuredTriggerName,
             outcome: run.outcome,
             status: run.status,
             rejectionReason: null,
+            rawPrompt: run.rawPrompt,
+            prompt: run.prompt,
+            inputs: jsonValue(run.inputs),
+            failureReason: run.failureReason,
+            steps: (stepRuns.get(run.id) ?? []).map((step) => ({
+              id: step.id,
+              stepId: step.stepId,
+              ordinal: step.ordinal,
+              status: step.status,
+              output: step.output === null ? null : jsonValue(step.output),
+              failureReason: step.failureReason,
+              completedAt: step.completedAt?.toISOString() ?? null,
+            })),
           },
     ),
   };
+}
+
+function jsonValue(value: unknown): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonValue(child)]));
+  }
+  return null;
 }
 
 function executionView(execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {}) {

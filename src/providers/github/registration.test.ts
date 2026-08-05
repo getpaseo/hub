@@ -663,8 +663,7 @@ async function materialize(
     executionId,
     organizationId: "org_1",
     projectId: "project-1",
-    prompt: match.prompt,
-    ...(match.environment.env === undefined ? {} : { environmentEnv: match.environment.env }),
+    prompt: "Handle the GitHub issue comment.",
     triggerContext: match.triggerContext,
   });
 }

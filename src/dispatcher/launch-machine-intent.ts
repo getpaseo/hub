@@ -1,6 +1,7 @@
 import type { AllowedOutput } from "../execution-capabilities/outputs.js";
-import type { AcceptedTriggerProviderMatch, TriggerAgentConfig } from "../triggers/index.js";
+import type { TriggerAgentConfig } from "../triggers/index.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { JsonValue } from "../config/compiler.js";
 
 export interface DaemonEnvironmentTarget {
   kind: "daemon";
@@ -28,19 +29,30 @@ export interface LaunchMachineIntent {
   autoArchive: boolean;
   triggerContext: unknown;
   outputContext: unknown;
+  outputSchema?: JsonValue;
   configurationRevisionId: string;
   deadlineAt?: Date;
   hubConfig: unknown;
 }
 
-export function buildLaunchMachineIntent(
-  input: {
-    organizationId: string;
-    projectId: string;
-    triggerId: string;
-    configurationRevisionId: string;
-  } & Omit<AcceptedTriggerProviderMatch, "configurationRevisionId">,
-): LaunchMachineIntent {
+export function buildLaunchMachineIntent(input: {
+  organizationId: string;
+  projectId: string;
+  triggerId: string;
+  configurationRevisionId: string;
+  triggerName: string;
+  environmentName: string;
+  environment: DaemonEnvironmentTarget;
+  prompt: string;
+  agent: TriggerAgentConfig;
+  allowOutputs: readonly AllowedOutput[];
+  timeoutMs?: number;
+  idleTimeoutMs?: number;
+  autoArchive: boolean;
+  triggerContext: unknown;
+  outputContext: unknown;
+  hubConfig: unknown;
+}): LaunchMachineIntent {
   return {
     kind: "launch_machine",
     organizationId: input.organizationId,

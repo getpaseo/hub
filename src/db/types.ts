@@ -1,6 +1,7 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
+import type { JsonValue } from "../config/compiler.js";
 
 export interface TriggerRecord {
   id: string;
@@ -466,6 +467,8 @@ interface TriggerRunEvidence {
   rawPrompt: string;
   prompt: string;
   inputs: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
   createdAt: Date;
 }
 
@@ -516,10 +519,10 @@ export interface CreateAcceptedTriggerRunInput {
   rawPrompt: string;
   prompt: string;
   inputs: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
   deadlineAt: Date;
-  stepId: string;
-  stepRunId?: string;
-  dispatchIntent: LaunchMachineIntent;
+  stepIds: readonly string[];
   createdAt?: Date;
 }
 
@@ -533,6 +536,8 @@ export interface CreateRejectedTriggerRunInput {
   rawPrompt: string;
   prompt: string;
   inputs: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
   rejection: InvocationRejection;
   createdAt?: Date;
 }
@@ -543,6 +548,12 @@ export interface WorkflowStepExecutionInput {
   ordinal: number;
   executionId: string;
   execution: InsertAgentExecutionInput;
+}
+
+export interface StructuredCompletionInput {
+  executionId: string;
+  output: JsonValue;
+  result?: unknown;
 }
 
 export interface EnrollDaemonInput {
@@ -643,6 +654,7 @@ export interface Database {
   listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
   findWorkflowStepRunById(id: string): Promise<WorkflowStepRunRecord | undefined>;
   findWorkflowStepRunByTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord | undefined>;
+  listWorkflowStepRunsForTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord[]>;
   findAgentExecutionByWorkflowStepRunId(
     stepRunId: string,
   ): Promise<AgentExecutionRecord | undefined>;
@@ -657,6 +669,7 @@ export interface Database {
   linkWorkflowStepRunExecution(
     stepRunId: string,
     executionId: string,
+    dispatchIntent?: LaunchMachineIntent,
   ): Promise<WorkflowStepRunRecord>;
   completeWorkflowStep(
     executionId: string,
@@ -664,10 +677,20 @@ export interface Database {
     result: unknown,
     failureReason?: string,
   ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  completeAgentExecutionWithStructuredOutput(
+    input: StructuredCompletionInput,
+  ): Promise<TransitionAgentExecutionResult>;
+  markWorkflowStepSkipped(
+    triggerRunId: string,
+    stepId: string,
+    reason: string,
+  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  succeedTriggerRun(triggerRunId: string): Promise<TriggerRunRecord | undefined>;
   failWorkflowRun(
     triggerRunId: string,
     status: "failed" | "timed_out",
     failureReason: string,
+    stepId?: string,
   ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult>;

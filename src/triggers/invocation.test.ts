@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { interpolateInvocation, parseInvocation } from "./invocation.js";
+import { parseInvocation } from "./invocation.js";
 
 const inputs = {
   repo: { type: "string" as const, choices: ["paseo", "hub"] },
@@ -137,19 +137,5 @@ describe("provider-neutral message invocation parser", () => {
       prompt: "-- repo=hub investigate",
       inputs: { agent: "codex" },
     });
-  });
-
-  it("interpolates only the provider-neutral prompt and input paths", () => {
-    const invocation = parseInvocation("repo=hub investigate", inputs);
-    assert.equal(invocation.status, "accepted");
-    if (invocation.status === "accepted") {
-      assert.equal(
-        interpolateInvocation(
-          "Request: ${{ paseo.prompt }} (${{ paseo.inputs.repo }})",
-          invocation,
-        ),
-        "Request: investigate (hub)",
-      );
-    }
   });
 });

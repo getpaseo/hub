@@ -1,5 +1,3 @@
-import type { AllowedOutput } from "../execution-capabilities/outputs.js";
-import type { DaemonEnvironmentTarget } from "../dispatcher/launch-machine-intent.js";
 import type { DurableTrigger } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { InvocationParseResult } from "./invocation.js";
@@ -58,16 +56,6 @@ export interface AcceptedTriggerProviderMatch<
   TriggerContext = unknown,
   OutputContext = TriggerContext,
 > extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
-  stepId: string;
-  environmentName: string;
-  environment: DaemonEnvironmentTarget;
-  prompt: string;
-  agent: TriggerAgentConfig;
-  allowOutputs: readonly AllowedOutput[];
-  timeoutMs?: number;
-  runTimeoutMs?: number;
-  idleTimeoutMs?: number;
-  autoArchive: boolean;
   invocation: Extract<InvocationParseResult, { status: "accepted" }>;
 }
 

@@ -32,6 +32,8 @@ import {
   type DaemonCreateAgentOptions,
   type DaemonEvent,
 } from "./protocol.js";
+import { Ajv } from "ajv";
+import type { JsonValue } from "../config/compiler.js";
 import type { Logger } from "pino";
 
 export interface DaemonDispatchResult {
@@ -116,6 +118,13 @@ export class AgentExecutionCompletionFailure extends Error {
   constructor(readonly reason: "not_found" | "unauthorized" | "expired") {
     super(`agent execution completion failed: ${reason}`);
     this.name = "AgentExecutionCompletionFailure";
+  }
+}
+
+export class AgentExecutionOutputValidationFailure extends Error {
+  constructor(readonly errors: readonly string[]) {
+    super(`invalid structured output: ${errors.join("; ")}`);
+    this.name = "AgentExecutionOutputValidationFailure";
   }
 }
 
@@ -589,6 +598,7 @@ export class DaemonDispatchLifecycle {
   async completeAgentExecutionFromCallback(input: {
     executionId: string;
     token: string;
+    output?: unknown;
   }): Promise<AgentExecutionRecord> {
     const existingExecution = await this.options.database.findAgentExecutionById(input.executionId);
     if (existingExecution === undefined) {
@@ -618,9 +628,13 @@ export class DaemonDispatchLifecycle {
       throw new AgentExecutionCompletionFailure("expired");
     }
 
+    if (currentExecution.launchIntent?.outputSchema !== undefined) {
+      validateStructuredOutput(currentExecution.launchIntent.outputSchema, input.output);
+    }
     this.clearExecutionDeadline(input.executionId);
     const execution = await this.completeAgentExecution(input.executionId, {
       completedByAgent: true,
+      ...(input.output === undefined ? {} : { output: input.output }),
     });
     this.completionWatchersByExecution.get(input.executionId)?.();
     return execution;
@@ -811,12 +825,25 @@ export class DaemonDispatchLifecycle {
 
   private async completeAgentExecution(
     executionId: string,
-    options: { completedByAgent?: boolean } = {},
+    options: { completedByAgent?: boolean; output?: unknown } = {},
   ): Promise<AgentExecutionRecord> {
-    const transition = await this.transitionTerminalAgentExecution(executionId, "succeeded", {
-      result: { status: "succeeded" },
-      completedByAgent: options.completedByAgent === true,
-    });
+    const existing = await this.options.database.findAgentExecutionById(executionId);
+    if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    const structuredOutput =
+      existing.launchIntent?.outputSchema === undefined || options.output === undefined
+        ? undefined
+        : jsonValue(options.output);
+    const transition =
+      structuredOutput === undefined
+        ? await this.transitionTerminalAgentExecution(executionId, "succeeded", {
+            result: { status: "succeeded" },
+            completedByAgent: options.completedByAgent === true,
+          })
+        : await this.options.database.completeAgentExecutionWithStructuredOutput({
+            executionId,
+            output: structuredOutput,
+            result: { status: "succeeded", output: options.output },
+          });
     if (!transition.transitioned) {
       if (isTerminalExecutionStatus(transition.execution.status)) {
         this.releaseExecutionResources(executionId);
@@ -828,7 +855,9 @@ export class DaemonDispatchLifecycle {
     this.releaseExecutionResources(executionId);
 
     const { execution } = transition;
-    await this.options.database.completeWorkflowStep(execution.id, "succeeded", execution.result);
+    if (structuredOutput === undefined) {
+      await this.options.database.completeWorkflowStep(execution.id, "succeeded", execution.result);
+    }
     this.startedExecutions.delete(executionId);
     await this.notifyExecutionTerminal(execution);
     await this.reconcileHubActionSafely(execution);
@@ -1480,6 +1509,44 @@ function executionFailureReason(execution: AgentExecutionRecord | undefined): st
   if (typeof execution?.result !== "object" || execution.result === null) return undefined;
   const reason = (execution.result as { reason?: unknown }).reason;
   return typeof reason === "string" ? reason : undefined;
+}
+
+function validateStructuredOutput(schema: JsonValue, output: unknown): asserts output is JsonValue {
+  if (!isRecord(schema)) {
+    throw new AgentExecutionOutputValidationFailure(["configured output schema is invalid"]);
+  }
+  const validator = new Ajv({ allErrors: true, strict: true }).compile(schema);
+  if (!isJsonValue(output))
+    throw new AgentExecutionOutputValidationFailure(["output must be valid JSON"]);
+  if (validator(output)) return;
+  const errors = (validator.errors ?? []).map((error) => {
+    const path = error.instancePath === "" ? "output" : `output${error.instancePath}`;
+    return `${path} ${error.message ?? "is invalid"}`;
+  });
+  throw new AgentExecutionOutputValidationFailure(
+    errors.length === 0 ? ["output is invalid"] : errors,
+  );
+}
+
+function jsonValue(value: unknown): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonValue(child)]));
+  }
+  throw new AgentExecutionOutputValidationFailure(["output must be valid JSON"]);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return typeof value === "object" && value !== null && Object.values(value).every(isJsonValue);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function createDaemonDispatchLifecycle(

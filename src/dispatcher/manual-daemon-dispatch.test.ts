@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import {
+  compileHubConfig,
+  compiledConfigurationHash,
+  type CompiledHubConfig,
+} from "../config/compiler.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { ManualTriggerInput } from "../triggers/manual/schema.js";
@@ -30,12 +35,27 @@ describe("manual trigger durable workflow boundary", () => {
 
   it("persists one manual run and lets the workflow worker own the step dispatch", async () => {
     const database = createMemoryDatabase();
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Manual",
+      slug: "manual",
+      createdByUserId: "user-1",
+    });
+    const configuration = manualWorkflowConfiguration();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: configuration,
+      contentHash: compiledConfigurationHash(configuration),
+      createdByUserId: "user-1",
+    });
     const source = createManualTriggerSource(database);
     const dispatches: string[] = [];
     const { handler, engine } = createDispatcherWithEngine({
       database,
-      providers: [matchingProvider()],
-      configurationRevisionId: "config-1",
+      providers: [matchingProvider(configuration, revision.id)],
+      configurationRevisionId: revision.id,
       dispatchLaunchMachineIntent: async (intent) => {
         dispatches.push(intent.workflowStepRunId ?? "");
         const execution = await database.insertAgentExecution({
@@ -55,7 +75,10 @@ describe("manual trigger durable workflow boundary", () => {
     });
     await source.start(handler);
 
-    const outcome = await dispatchManualTrigger(source, manualTrigger("manual-durable"));
+    const outcome = await dispatchManualTrigger(
+      source,
+      manualTrigger("manual-durable", project.id),
+    );
     await engine.processAvailable();
 
     assert.equal(outcome?.triggerId !== undefined, true);
@@ -73,10 +96,10 @@ describe("manual trigger durable workflow boundary", () => {
   });
 });
 
-function manualTrigger(deliveryId: string): ManualTriggerInput {
+function manualTrigger(deliveryId: string, projectId = PROJECT_ID): ManualTriggerInput {
   const trigger: ExternalTrigger = {
     organizationId: "org_1",
-    projectId: PROJECT_ID,
+    projectId,
     source: "manual.run",
     deliveryId,
     receivedAt: new Date("2026-08-05T12:00:00.000Z"),
@@ -95,7 +118,7 @@ function noMatchingProvider(): TriggerProvider {
   };
 }
 
-function matchingProvider(): TriggerProvider {
+function matchingProvider(configuration: CompiledHubConfig, revisionId: string): TriggerProvider {
   return {
     name: "manual",
     eventNames: ["manual.run"],
@@ -103,24 +126,10 @@ function matchingProvider(): TriggerProvider {
       return [
         {
           triggerName: "deploy",
-          stepId: "deploy-agent",
-          environmentName: "runner",
-          environment: {
-            kind: "daemon",
-            daemonId: "daemon-1",
-            authoredSlug: "runner",
-            cwd: "/repo",
-          },
-          prompt: `Run ${JSON.stringify(trigger.payload)}`,
-          agent: { provider: "opencode", mode: "default" },
-          allowOutputs: [],
-          runTimeoutMs: 60_000,
-          timeoutMs: 30_000,
-          idleTimeoutMs: 5_000,
-          autoArchive: false,
           triggerContext: trigger.payload,
           outputContext: { provider: "manual" },
-          hubConfig: { environments: [], triggers: [] },
+          configurationRevisionId: revisionId,
+          hubConfig: configuration,
           invocation: {
             status: "accepted",
             rawMessage: "run",
@@ -130,5 +139,41 @@ function matchingProvider(): TriggerProvider {
         },
       ];
     },
+  };
+}
+
+function manualWorkflowConfiguration(): CompiledHubConfig {
+  const compiled = compileHubConfig({
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+    triggers: [
+      {
+        name: "deploy",
+        on: "manual.run",
+        max_runtime: "1m",
+        filters: { from_users: ["operator"] },
+        steps: [
+          {
+            id: "deploy-agent",
+            environment: "runner",
+            max_runtime: "30s",
+            idle_timeout: "5s",
+            agent: { provider: "opencode" },
+            prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  });
+  return {
+    environments: [
+      {
+        name: "runner",
+        kind: "daemon",
+        daemon: "runner",
+        daemonId: "daemon-1",
+        cwd: "/repo",
+      },
+    ],
+    triggers: compiled.triggers,
   };
 }

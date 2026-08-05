@@ -40,10 +40,7 @@ describe("Discord Phase 1 trigger provider", () => {
     const match = (await provider.match(external(project.id, event())))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.stepId, "discord-step");
-    assert.equal(match.prompt, "Respond to the Discord mention.");
     assert.equal(match.configurationRevisionId, revision.id);
-    assert.deepEqual(match.allowOutputs, [{ type: "discord.reply", max: 1 }]);
     assert.deepEqual(await provider.match(external(project.id, event({ authorId: "401" }))), []);
   });
 
@@ -56,8 +53,6 @@ describe("Discord Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id, event())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.autoArchive, true);
-
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
@@ -177,20 +172,20 @@ describe("Discord Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id, event())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.deepEqual(match.environment.worktree, {
+    const worktree = {
       mode: "branch-off",
       newBranch: "discord-recovery",
       base: "main",
-    });
+    } as const;
     const materialized = await provider.materializeLaunch?.({
       executionId: "discord-worktree-recovery",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: match.prompt,
-      environmentWorktree: match.environment.worktree,
+      prompt: "Respond to the Discord mention.",
+      environmentWorktree: worktree,
       triggerContext: match.triggerContext,
     });
-    assert.deepEqual(materialized?.environmentWorktree, match.environment.worktree);
+    assert.deepEqual(materialized?.environmentWorktree, worktree);
   });
 
   it("targets lifecycle reactions and termination notices at the original Discord message", async () => {

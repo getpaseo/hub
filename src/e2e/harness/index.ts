@@ -221,6 +221,22 @@ export class HubE2E {
       '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
       "        allow_outputs:",
       "          - type: hub.e2e",
+      "  - name: e2e-discord",
+      "    on: e2e.discord",
+      "    max_runtime: 2h",
+      "    filters:",
+      "      from_users: [phase-five-operator]",
+      "    steps:",
+      "      - id: e2e-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }] ',
+      "        allow_outputs:",
+      "          - type: discord.reply",
       "  - name: restart",
       "    on: manual.run",
       "    max_runtime: 2h",
@@ -290,6 +306,79 @@ export class HubE2E {
     assertStatus(response, 201, "install real-agent configuration");
   }
 
+  async installRealAgentRoutingConfiguration(): Promise<void> {
+    const daemon = await this.requirePool().query<{ slug: string }>(
+      "select slug from daemons limit 1",
+    );
+    const slug = daemon.rows[0]?.slug;
+    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const yaml = [
+      "environments:",
+      "  - name: real-agent-routing",
+      "    kind: daemon",
+      `    daemon: ${slug}`,
+      `    cwd: ${JSON.stringify(this.workspace)}`,
+      "triggers:",
+      "  - name: route",
+      "    on: manual.run",
+      "    max_runtime: 2h",
+      "    inputs:",
+      "      repo:",
+      "        type: string",
+      "        choices: [paseo, hub]",
+      "    values:",
+      "      selected: '${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}'",
+      "    filters:",
+      "      from_users: [real-agent-routing-operator]",
+      "    steps:",
+      "      - id: classify",
+      "        if: '${{ paseo.inputs.repo == null }}'",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: codex",
+      "          mode: full-access",
+      '        prompt: [{ text: "Call hub.finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP." }] ',
+      "        output:",
+      "          schema:",
+      "            type: object",
+      "            additionalProperties: false",
+      "            required: [repo]",
+      "            properties:",
+      "              repo:",
+      "                type: string",
+      "                enum: [paseo, hub]",
+      "      - id: work-paseo",
+      "        if: \"${{ values.selected == 'paseo' }}\"",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: codex",
+      "          mode: full-access",
+      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      "      - id: work-hub",
+      "        if: \"${{ values.selected == 'hub' }}\"",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: codex",
+      "          mode: full-access",
+      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+    ].join("\n");
+    const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${MACHINE_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
+    });
+    assertStatus(response, 201, "install real-agent routing configuration");
+  }
+
   async runManual(deliveryKey: string, service: string, trigger = "deploy"): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
       method: "POST",
@@ -324,6 +413,19 @@ export class HubE2E {
   }
 
   async runRealAgentManual(deliveryKey: string): Promise<ManualRun> {
+    return this.runRealAgentWorkflow(deliveryKey, "", "finalize", "real-agent-operator");
+  }
+
+  async runRealAgentRouting(deliveryKey: string, input: string): Promise<ManualRun> {
+    return this.runRealAgentWorkflow(deliveryKey, input, "route", "real-agent-routing-operator");
+  }
+
+  private async runRealAgentWorkflow(
+    deliveryKey: string,
+    input: string,
+    trigger: string,
+    actor: string,
+  ): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
       method: "POST",
       headers: {
@@ -332,10 +434,10 @@ export class HubE2E {
       },
       body: JSON.stringify({
         projectSlug: PROJECT_SLUG,
-        trigger: "finalize",
-        actor: "real-agent-operator",
+        trigger,
+        actor,
         deliveryKey,
-        input: {},
+        input,
       }),
     });
     if (response.status !== 200) {
@@ -345,6 +447,50 @@ export class HubE2E {
     }
     await response.json();
     return this.waitForManualRun(deliveryKey);
+  }
+
+  async realAgentRoutingEvidence(deliveryKey: string): Promise<{
+    runStatus: string;
+    steps: Array<{ stepId: string; status: string; output: unknown }>;
+  }> {
+    let evidence:
+      | {
+          runStatus: string;
+          steps: Array<{ stepId: string; status: string; output: unknown }>;
+        }
+      | undefined;
+    await this.observe(
+      async () => {
+        const result = await this.requirePool().query<{
+          run_status: string;
+          step_id: string;
+          step_status: string;
+          output: unknown;
+        }>(
+          `select runs.status as run_status, steps.step_id, steps.status as step_status, steps.output
+         from trigger_runs runs
+         join triggers triggers on triggers.id = runs.trigger_id
+         join workflow_step_runs steps on steps.trigger_run_id = runs.id
+         where triggers.delivery_id = $1
+         order by steps.ordinal`,
+          [deliveryKey],
+        );
+        if (result.rows.length !== 3 || result.rows[0]?.run_status !== "succeeded") return false;
+        evidence = {
+          runStatus: result.rows[0].run_status,
+          steps: result.rows.map((row) => ({
+            stepId: row.step_id,
+            status: row.step_status,
+            output: row.output,
+          })),
+        };
+        return true;
+      },
+      "real-agent routing workflow to finish",
+      300_000,
+    );
+    if (evidence === undefined) throw new Error("routing evidence unavailable");
+    return evidence;
   }
 
   async realAgentCompletionEvidence(run: ManualRun): Promise<{

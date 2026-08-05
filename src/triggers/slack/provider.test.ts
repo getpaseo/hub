@@ -74,10 +74,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const match = (await provider.match(external(project.id)))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.stepId, "slack-step");
-    assert.equal(match.prompt, "Handle the Slack mention.");
     assert.equal(match.configurationRevisionId, revision.id);
-    assert.deepEqual(match.allowOutputs, [{ type: "slack.reply", max: 1 }]);
     assert.equal(match.outputContext.threadTs, "1700000000.000001");
     assert.equal(match.outputContext.messageTs, "1700000000.000001");
   });
