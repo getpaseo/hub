@@ -117,14 +117,15 @@ export function createAttachmentCapabilityRegistry(options: {
       if (!upstream.ok) return new Response("Attachment unavailable", { status: 502 });
 
       const headers = new Headers();
+      const upstreamIsEncoded = upstream.headers.has("content-encoding");
       copyHeader(upstream.headers, headers, "content-type");
-      copyHeader(upstream.headers, headers, "content-length");
+      if (!upstreamIsEncoded) copyHeader(upstream.headers, headers, "content-length");
       copyHeader(upstream.headers, headers, "etag");
       copyHeader(upstream.headers, headers, "last-modified");
       if (!headers.has("content-type") && attachment.contentType !== null) {
         headers.set("content-type", attachment.contentType);
       }
-      if (!headers.has("content-length") && attachment.byteSize !== null) {
+      if (!upstreamIsEncoded && !headers.has("content-length") && attachment.byteSize !== null) {
         headers.set("content-length", String(attachment.byteSize));
       }
       headers.set("content-disposition", contentDisposition(attachment.filename));

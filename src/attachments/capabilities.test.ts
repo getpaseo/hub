@@ -258,6 +258,63 @@ describe("attachment capability boundary", () => {
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("content-length"), "13");
   });
+
+  it("does not forward encoded upstream lengths", async () => {
+    const database = createMemoryDatabase();
+    const trigger = await database.insertTrigger({
+      organizationId: "org-1",
+      projectId: "project-1",
+      source: "slack.mention",
+      deliveryId: "encoded-delivery",
+      payload: {},
+      receivedAt: new Date(),
+    });
+    const executionId = randomUUID();
+    await database.insertAgentExecution({
+      id: executionId,
+      organizationId: "org-1",
+      projectId: "project-1",
+      machineId: null,
+      triggerId: trigger.trigger.id,
+      triggerContext: {},
+      outputContext: {},
+      configurationRevisionId: randomUUID(),
+    });
+    const registry = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {
+        slack: async () =>
+          new Response("decoded bytes", {
+            headers: {
+              "content-encoding": "gzip",
+              "content-length": "123",
+            },
+          }),
+      },
+    });
+    const attachment = await registry.register({
+      triggerId: trigger.trigger.id,
+      organizationId: "org-1",
+      connectionId: "connection-1",
+      provider: "slack",
+      sourceId: "encoded-file",
+      locator: { fileId: "encoded-file" },
+      filename: "file.bin",
+      contentType: "application/octet-stream",
+      byteSize: 12,
+    });
+
+    const response = await registry.handle(
+      new Request(registry.urlFor(attachment.id, executionId)),
+      executionId,
+      attachment.id,
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-length"), null);
+  });
 });
 
 function requestUrl(input: RequestInfo | URL): string {
