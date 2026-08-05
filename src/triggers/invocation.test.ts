@@ -53,6 +53,26 @@ describe("provider-neutral message invocation parser", () => {
       },
     },
     {
+      name: "requires a mention boundary before removing the provider mention",
+      message: "@PaseoBot repo=hub investigate",
+      mention: "@Paseo",
+      expected: {
+        rawMessage: "@PaseoBot repo=hub investigate",
+        prompt: "@PaseoBot repo=hub investigate",
+        inputs: { agent: "codex" },
+      },
+    },
+    {
+      name: "does not remove an embedded provider mention",
+      message: "request @Paseo repo=hub investigate",
+      mention: "@Paseo",
+      expected: {
+        rawMessage: "request @Paseo repo=hub investigate",
+        prompt: "request @Paseo repo=hub investigate",
+        inputs: { agent: "codex" },
+      },
+    },
+    {
       name: "stops at an undeclared key and preserves the entire remainder",
       message: "unknown=value repo=hub investigate",
       expected: {
@@ -69,18 +89,45 @@ describe("provider-neutral message invocation parser", () => {
   });
 
   it.each([
-    ["required", "repo=hub investigate", /required input.*dry/iu],
-    ["invalid choice", "repo=other investigate", /repo.*choice/iu],
-    ["invalid number", "count=not-a-number investigate", /count.*number/iu],
-    ["invalid boolean", "dry=sometimes investigate", /dry.*boolean/iu],
-    ["duplicate key", "repo=hub repo=paseo investigate", /duplicate.*repo/iu],
-  ] as const)("rejects %s values before execution", (_name, message, error) => {
+    {
+      name: "invalid choice",
+      message: "repo=unknown investigate",
+      expectedPrompt: "investigate",
+      reason: /repo.*choice/iu,
+    },
+    {
+      name: "duplicate key",
+      message: "repo=hub repo=paseo investigate",
+      expectedPrompt: "investigate",
+      reason: /duplicate.*repo/iu,
+    },
+  ])("strips the $name control token from the clean prompt", (example) => {
+    const result = parseInvocation(example.message, inputs);
+    assert.equal(result.status, "rejected");
+    if (result.status === "rejected") {
+      assert.equal(result.prompt, example.expectedPrompt);
+      assert.match(result.reason, example.reason);
+      assert.equal(result.rawMessage, example.message);
+      assert.equal(typeof result.rejection.code, "string");
+    }
+  });
+
+  it.each([
+    ["required", "repo=hub investigate", "investigate", /required input.*dry/iu],
+    ["invalid choice", "repo=other investigate", "investigate", /repo.*choice/iu],
+    ["invalid number", "count=not-a-number investigate", "investigate", /count.*number/iu],
+    ["invalid boolean", "dry=sometimes investigate", "investigate", /dry.*boolean/iu],
+    ["duplicate key", "repo=hub repo=paseo investigate", "investigate", /duplicate.*repo/iu],
+  ] as const)("rejects %s values before execution", (_name, message, expectedPrompt, error) => {
     const result = parseInvocation(
       message,
       _name === "required" || _name === "invalid boolean" ? requiredInputs : inputs,
     );
     assert.equal(result.status, "rejected");
-    if (result.status === "rejected") assert.match(result.reason, error);
+    if (result.status === "rejected") {
+      assert.match(result.reason, error);
+      assert.equal(result.prompt, expectedPrompt);
+    }
   });
 
   it("does not implement a delimiter grammar", () => {

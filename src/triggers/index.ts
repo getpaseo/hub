@@ -46,8 +46,18 @@ export function cleanTriggerAgent(
   };
 }
 
-export interface TriggerProviderMatch<TriggerContext = unknown, OutputContext = TriggerContext> {
+interface TriggerProviderMatchBase<TriggerContext, OutputContext> {
   triggerName: string;
+  triggerContext: TriggerContext;
+  outputContext: OutputContext;
+  configurationRevisionId?: string;
+  hubConfig: unknown;
+}
+
+export interface AcceptedTriggerProviderMatch<
+  TriggerContext = unknown,
+  OutputContext = TriggerContext,
+> extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
   stepId: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
@@ -58,11 +68,30 @@ export interface TriggerProviderMatch<TriggerContext = unknown, OutputContext = 
   runTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
-  triggerContext: TriggerContext;
-  outputContext: OutputContext;
-  configurationRevisionId?: string;
-  hubConfig: unknown;
-  invocation: InvocationParseResult;
+  invocation: Extract<InvocationParseResult, { status: "accepted" }>;
+}
+
+export interface RejectedTriggerProviderMatch<
+  TriggerContext = unknown,
+  OutputContext = TriggerContext,
+> extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
+  invocation: Extract<InvocationParseResult, { status: "rejected" }>;
+}
+
+export type TriggerProviderMatch<TriggerContext = unknown, OutputContext = TriggerContext> =
+  | AcceptedTriggerProviderMatch<TriggerContext, OutputContext>
+  | RejectedTriggerProviderMatch<TriggerContext, OutputContext>;
+
+export function isAcceptedTriggerProviderMatch<TriggerContext, OutputContext>(
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+): match is AcceptedTriggerProviderMatch<TriggerContext, OutputContext> {
+  return match !== undefined && match.invocation.status === "accepted";
+}
+
+export function isRejectedTriggerProviderMatch<TriggerContext, OutputContext>(
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+): match is RejectedTriggerProviderMatch<TriggerContext, OutputContext> {
+  return match !== undefined && match.invocation.status === "rejected";
 }
 
 export interface TriggerProviderLifecycleResult {

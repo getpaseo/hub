@@ -56,4 +56,46 @@ describe("manual invocation provider", () => {
       inputs: { repo: "hub", agent: "opus" },
     });
   });
+
+  it("returns a rejected branch before resolving an unusable launch environment", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(database, {
+      environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
+      triggers: [
+        {
+          name: "manual-request",
+          on: "manual.run",
+          max_runtime: "1h",
+          filters: { from_users: ["operator"] },
+          inputs: { repo: { type: "string", choices: ["hub"] } },
+          steps: [
+            {
+              id: "work",
+              environment: "runner",
+              max_runtime: "10m",
+              idle_timeout: "1m",
+              agent: { provider: "codex" },
+              prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+            },
+          ],
+        },
+      ],
+    });
+    const provider = createManualRunProvider(() => store);
+    const matches = await provider.match({
+      organizationId: "org-1",
+      projectId: project.id,
+      source: "manual.run",
+      deliveryId: "manual-invalid-environment",
+      receivedAt: new Date(),
+      payload: {
+        trigger: "manual-request",
+        actor: "operator",
+        input: "repo=unknown investigate",
+      },
+    });
+
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]!.invocation.status, "rejected");
+  });
 });

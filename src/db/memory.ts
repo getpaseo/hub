@@ -52,7 +52,10 @@ import type {
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
-  CreateTriggerRunInput,
+  CreateAcceptedTriggerRunInput,
+  CreateRejectedTriggerRunInput,
+  AcceptedTriggerRunRecord,
+  RejectedTriggerRunRecord,
   TriggerRunRecord,
   WorkflowStepExecutionInput,
   WorkflowStepRunRecord,
@@ -118,7 +121,9 @@ class MemoryDatabase implements Database {
     this.organizationIds = new Set(options.organizationIds);
   }
 
-  async createTriggerRun(input: CreateTriggerRunInput) {
+  async createAcceptedTriggerRun(
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     const triggerRuns =
       this.triggerRunIdsByTrigger.get(input.triggerId) ?? new Map<string, string>();
     const existingId = triggerRuns.get(input.configuredTriggerName);
@@ -126,16 +131,18 @@ class MemoryDatabase implements Database {
       const existing = this.triggerRuns.get(existingId);
       if (existing === undefined)
         throw new Error(`trigger run index points at missing row: ${existingId}`);
+      if (existing.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
       return { run: existing, created: false };
     }
     const now = input.createdAt ?? this.options.now?.() ?? new Date();
-    const run: TriggerRunRecord = {
+    const run: AcceptedTriggerRunRecord = {
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
       configurationRevisionId: input.configurationRevisionId,
       triggerId: input.triggerId,
       configuredTriggerName: input.configuredTriggerName,
+      outcome: "accepted",
       status: "running",
       rawPrompt: input.rawPrompt,
       prompt: input.prompt,
@@ -170,6 +177,42 @@ class MemoryDatabase implements Database {
     return { run, created: true };
   }
 
+  async createRejectedTriggerRun(
+    input: CreateRejectedTriggerRunInput,
+  ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
+    const triggerRuns =
+      this.triggerRunIdsByTrigger.get(input.triggerId) ?? new Map<string, string>();
+    const existingId = triggerRuns.get(input.configuredTriggerName);
+    if (existingId !== undefined) {
+      const existing = this.triggerRuns.get(existingId);
+      if (existing === undefined)
+        throw new Error(`trigger run index points at missing row: ${existingId}`);
+      if (existing.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+      return { run: existing, created: false };
+    }
+    const now = input.createdAt ?? this.options.now?.() ?? new Date();
+    const run: RejectedTriggerRunRecord = {
+      id: input.id ?? randomUUID(),
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      configurationRevisionId: input.configurationRevisionId,
+      triggerId: input.triggerId,
+      configuredTriggerName: input.configuredTriggerName,
+      outcome: "rejected",
+      status: "rejected",
+      rawPrompt: input.rawPrompt,
+      prompt: input.prompt,
+      inputs: freezeEvidence(input.inputs),
+      rejection: freezeEvidence(input.rejection),
+      createdAt: now,
+      completedAt: now,
+    };
+    this.triggerRuns.set(run.id, run);
+    triggerRuns.set(input.configuredTriggerName, run.id);
+    this.triggerRunIdsByTrigger.set(input.triggerId, triggerRuns);
+    return { run, created: true };
+  }
+
   async findTriggerRunById(id: string) {
     return this.triggerRuns.get(id);
   }
@@ -178,7 +221,22 @@ class MemoryDatabase implements Database {
     return [...(this.triggerRunIdsByTrigger.get(triggerId)?.values() ?? [])]
       .map((id) => this.triggerRuns.get(id))
       .filter((run): run is TriggerRunRecord => run !== undefined)
-      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+      .sort(
+        (left, right) =>
+          left.createdAt.getTime() - right.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      );
+  }
+
+  async listTriggerRunsForProject(projectId: string, limit: number) {
+    return [...this.triggerRuns.values()]
+      .filter((run) => run.projectId === projectId)
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      )
+      .slice(0, limit);
   }
 
   async findWorkflowStepRunById(id: string) {
@@ -297,7 +355,8 @@ class MemoryDatabase implements Database {
       failureReason: failureReason ?? null,
       completedAt: now,
     };
-    const updatedRun: TriggerRunRecord = {
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+    const updatedRun: AcceptedTriggerRunRecord = {
       ...run,
       status: status === "succeeded" ? "succeeded" : status,
       failureReason: failureReason ?? null,
@@ -323,7 +382,8 @@ class MemoryDatabase implements Database {
       step.status === "pending" || step.status === "running"
         ? { ...step, status, failureReason, completedAt: now }
         : step;
-    const updatedRun = {
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+    const updatedRun: AcceptedTriggerRunRecord = {
       ...run,
       status,
       failureReason,

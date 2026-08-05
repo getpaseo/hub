@@ -6,8 +6,10 @@ const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
 const DURATION = /^([1-9][0-9]*)(ms|s|m|h)$/u;
 const MAX_DURATION_MS = 24 * 60 * 60_000;
 const INPUT_NAME = /^[a-z][a-z0-9_-]*$/u;
-const INPUT_EXPRESSION = /\$\{\{\s*paseo\.(prompt|inputs\.([a-z][a-z0-9_-]*))\s*\}\}/gu;
 const DYNAMIC_INPUT_REFERENCE = /^\$\{\{\s*paseo\.inputs\.([a-z][a-z0-9_-]*)\s*\}\}$/u;
+const EXPRESSION_START = "${{";
+const EXPRESSION_END = "}}";
+const SUPPORTED_EXPRESSION = /^\s*paseo\.(prompt|inputs\.([a-z][a-z0-9_-]*))\s*$/u;
 
 const InputValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
 
@@ -602,27 +604,28 @@ function validateInterpolationString(
   authorityBearing: boolean,
 ): void {
   if (value === undefined) return;
-  INPUT_EXPRESSION.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let consumed = "";
-  while ((match = INPUT_EXPRESSION.exec(value)) !== null) {
-    consumed += value.slice(consumed.length, match.index);
-    consumed += match[0];
-    const inputName = match[2];
-    if (inputName !== undefined) {
+  let cursor = 0;
+  while (true) {
+    const start = value.indexOf(EXPRESSION_START, cursor);
+    if (start < 0) return;
+    const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
+    if (end < 0) throw new Error(`${path} uses an unsupported expression`);
+    const expression = value.slice(start + EXPRESSION_START.length, end);
+    const match = SUPPORTED_EXPRESSION.exec(expression);
+    if (match === null) throw new Error(`${path} uses an unsupported expression`);
+    if (match[1] === "prompt") {
+      if (authorityBearing) {
+        throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
+      }
+    } else {
+      const inputName = match[2]!;
       const input = inputs[inputName];
       if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
       if (authorityBearing && input.choices === undefined) {
         throw new Error(`${path} uses input ${inputName} without finite choices`);
       }
     }
-  }
-  if (consumed.length === 0) {
-    if (value.includes("${{")) throw new Error(`${path} uses an unsupported expression`);
-    return;
-  }
-  if (value.slice(consumed.length).includes("${{")) {
-    throw new Error(`${path} uses an unsupported expression`);
+    cursor = end + EXPRESSION_END.length;
   }
 }
 

@@ -8,6 +8,7 @@ import {
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
 import type { Database } from "../db/types.js";
+import { formatInvocationRejection } from "../triggers/invocation.js";
 import { resolveRouteTenant } from "./access.js";
 
 export interface ProjectRouteScope {
@@ -51,7 +52,7 @@ export class ProjectDashboard {
       capabilities: capabilitiesFor(tenant.membership.role),
       projects: projects.map(projectView),
       connections: connectionUsageView(connections),
-      unroutedEvents: unroutedEvents.map(triggerView),
+      unroutedEvents: unroutedEvents.map((trigger) => triggerView(trigger)),
       daemons: daemons.map(daemonView),
     };
   }
@@ -66,6 +67,7 @@ export class ProjectDashboard {
       connections,
       repositories,
       activity,
+      triggerRuns,
       executions,
     ] = await Promise.all([
       this.database.listProjectsForOrganization(tenant.organization.id),
@@ -74,6 +76,7 @@ export class ProjectDashboard {
       this.database.organizationConnectionUsage(tenant.organization.id),
       this.database.listGitHubRepositories(tenant.organization.id),
       this.database.listTriggersForProject(project.id, 50),
+      this.database.listTriggerRunsForProject(project.id, 200),
       this.database.listAgentExecutionsForProject(project.id, 50),
     ]);
     return {
@@ -93,7 +96,12 @@ export class ProjectDashboard {
         fullName: repository.fullName,
         defaultBranch: repository.defaultBranch,
       })),
-      activity: activity.map(triggerView),
+      activity: activity.map((trigger) =>
+        triggerView(
+          trigger,
+          triggerRuns.filter((run) => run.triggerId === trigger.id),
+        ),
+      ),
       executions: executions.map(executionView),
     };
   }
@@ -355,7 +363,10 @@ function configurationView(
   };
 }
 
-function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> & {}) {
+function triggerView(
+  trigger: Awaited<ReturnType<Database["findTriggerById"]>> & {},
+  runs: Awaited<ReturnType<Database["findTriggerRunsByTriggerId"]>> = [],
+) {
   if (trigger === undefined) throw new Error("trigger unavailable");
   return {
     id: trigger.id,
@@ -365,6 +376,21 @@ function triggerView(trigger: Awaited<ReturnType<Database["findTriggerById"]>> &
     matchedTriggerName: trigger.matchedTriggerName,
     configuredTriggerNames: [...trigger.configuredTriggerNames],
     droppedReason: trigger.droppedReason,
+    branchOutcomes: runs.map((run) =>
+      run.outcome === "rejected"
+        ? {
+            configuredTriggerName: run.configuredTriggerName,
+            outcome: run.outcome,
+            status: run.status,
+            rejectionReason: formatInvocationRejection(run.rejection),
+          }
+        : {
+            configuredTriggerName: run.configuredTriggerName,
+            outcome: run.outcome,
+            status: run.status,
+            rejectionReason: null,
+          },
+    ),
   };
 }
 

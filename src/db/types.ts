@@ -1,5 +1,6 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import type { InvocationRejection } from "../triggers/invocation.js";
 
 export interface TriggerRecord {
   id: string;
@@ -455,22 +456,35 @@ export interface InsertAgentExecutionInput {
   result?: unknown;
 }
 
-export interface TriggerRunRecord {
+interface TriggerRunEvidence {
   id: string;
   organizationId: string;
   projectId: string;
   configurationRevisionId: string;
   triggerId: string;
   configuredTriggerName: string;
-  status: "running" | "succeeded" | "failed" | "timed_out";
   rawPrompt: string;
   prompt: string;
   inputs: unknown;
+  createdAt: Date;
+}
+
+export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
+  outcome: "accepted";
+  status: "running" | "succeeded" | "failed" | "timed_out";
   deadlineAt: Date;
   failureReason: string | null;
-  createdAt: Date;
   completedAt: Date | null;
 }
+
+export interface RejectedTriggerRunRecord extends TriggerRunEvidence {
+  outcome: "rejected";
+  status: "rejected";
+  rejection: InvocationRejection;
+  completedAt: Date;
+}
+
+export type TriggerRunRecord = AcceptedTriggerRunRecord | RejectedTriggerRunRecord;
 
 export interface WorkflowStepRunRecord {
   id: string;
@@ -492,7 +506,7 @@ export interface WorkflowWakeupRecord {
   leaseExpiresAt: Date | null;
 }
 
-export interface CreateTriggerRunInput {
+export interface CreateAcceptedTriggerRunInput {
   id?: string;
   organizationId: string;
   projectId: string;
@@ -506,6 +520,20 @@ export interface CreateTriggerRunInput {
   stepId: string;
   stepRunId?: string;
   dispatchIntent: LaunchMachineIntent;
+  createdAt?: Date;
+}
+
+export interface CreateRejectedTriggerRunInput {
+  id?: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  triggerId: string;
+  configuredTriggerName: string;
+  rawPrompt: string;
+  prompt: string;
+  inputs: unknown;
+  rejection: InvocationRejection;
   createdAt?: Date;
 }
 
@@ -604,11 +632,15 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
-  createTriggerRun(
-    input: CreateTriggerRunInput,
-  ): Promise<{ run: TriggerRunRecord; created: boolean }>;
+  createAcceptedTriggerRun(
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
+  createRejectedTriggerRun(
+    input: CreateRejectedTriggerRunInput,
+  ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;
   findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
   findTriggerRunsByTriggerId(triggerId: string): Promise<TriggerRunRecord[]>;
+  listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
   findWorkflowStepRunById(id: string): Promise<WorkflowStepRunRecord | undefined>;
   findWorkflowStepRunByTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord | undefined>;
   findAgentExecutionByWorkflowStepRunId(

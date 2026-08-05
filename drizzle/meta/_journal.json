@@ -134,6 +134,13 @@
       "when": 1785941223127,
       "tag": "0018_bent_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785953359248,
+      "tag": "0019_demonic_piledriver",
+      "breakpoints": true
     }
   ]
 }

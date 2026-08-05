@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { OperationAuthorization } from "../../auth/api-keys.js";
 import type { Database } from "../../db/types.js";
 import type { TriggerSource } from "../index.js";
+import { formatInvocationRejection } from "../invocation.js";
 import { dispatchManualTrigger } from "./source.js";
 
 const ManualRunRequestSchema = z
@@ -65,16 +66,23 @@ export async function runManualTrigger(
   }
   if (triggerId === undefined)
     return Response.json({ error: "manual_run_not_dispatched" }, { status: 409 });
-  const run = (await database.findTriggerRunsByTriggerId(triggerId))[0];
+  const run = (await database.findTriggerRunsByTriggerId(triggerId)).find(
+    (candidate) => candidate.configuredTriggerName === body.data.trigger,
+  );
   if (!run) {
-    const trigger = await database.findTriggerById(triggerId);
-    if (trigger?.droppedReason?.startsWith("rejected_input:") === true) {
-      return Response.json(
-        { error: "invalid_input", reason: trigger.droppedReason },
-        { status: 400 },
-      );
-    }
     return Response.json({ error: "manual_run_not_enqueued" }, { status: 409 });
+  }
+  if (run.outcome === "rejected") {
+    return Response.json(
+      {
+        error: "invalid_input",
+        reason: `rejected_input:${run.configuredTriggerName}:${formatInvocationRejection(run.rejection)}`,
+        triggerId,
+        triggerRunId: run.id,
+        configuredTriggerName: run.configuredTriggerName,
+      },
+      { status: 400 },
+    );
   }
   return Response.json(
     {

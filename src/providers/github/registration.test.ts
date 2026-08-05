@@ -8,7 +8,7 @@ import { createActiveProjectConfiguration } from "../../test-utils/project-confi
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
-import type { TriggerProviderMatch } from "../../triggers/index.js";
+import { isAcceptedTriggerProviderMatch, type TriggerProviderMatch } from "../../triggers/index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 
 describe("GitHub registration", () => {
@@ -657,7 +657,7 @@ async function materialize(
   match: TriggerProviderMatch | undefined,
   executionId: string,
 ) {
-  assert.ok(match);
+  if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
   if (provider.materializeLaunch === undefined) throw new Error("materializer is unavailable");
   return provider.materializeLaunch({
     executionId,

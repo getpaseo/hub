@@ -75,23 +75,6 @@ export function createSlackTriggerProvider(options: {
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const step = compiledTrigger.steps[0];
-        const invocation = parseInvocation(
-          event.content,
-          compiledTrigger.inputs,
-          `<@${botUserId}>`,
-        );
-        if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
-        }
-        const environmentName =
-          invocation.status === "accepted"
-            ? interpolateInvocation(step.environment, invocation)
-            : step.environment;
-        const baseEnvironment = readDaemonEnvironment(
-          stored.configuration,
-          environmentName,
-          invocation.status === "rejected",
-        );
         const outputContext: SlackOutputContext = {
           provider: "slack",
           organizationId: trigger.organizationId,
@@ -105,6 +88,28 @@ export function createSlackTriggerProvider(options: {
           target: outputContext,
           event: buildSlackMergeData(event, botUserId),
         };
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          undefined,
+          readSlackPromptBody(event, botUserId),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
+        if (invocation.status === "rejected") {
+          matches.push({
+            triggerName: match.trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          });
+          continue;
+        }
+        const environmentName = interpolateInvocation(step.environment, invocation);
+        const baseEnvironment = readDaemonEnvironment(stored.configuration, environmentName);
         matches.push({
           triggerName: match.trigger.name,
           stepId: step.id,
@@ -187,13 +192,8 @@ function buildSlackMergeData(
 function readDaemonEnvironment(
   config: CompiledProjectConfiguration,
   name: string,
-  allowRejectedFallback = false,
 ): DaemonEnvironmentTarget {
-  const environment =
-    config.environments.find((item) => item.name === name) ??
-    (allowRejectedFallback
-      ? config.environments.find((item) => item.kind === "daemon")
-      : undefined);
+  const environment = config.environments.find((item) => item.name === name);
   if (environment === undefined) throw new Error(`environment not found: ${name}`);
   if (environment.kind !== "daemon") {
     throw new Error(`environment kind is not implemented: ${environment.kind}`);

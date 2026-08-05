@@ -14,7 +14,9 @@ import type {
   TriggerHandler,
   TriggerProvider,
   TriggerProviderMatch,
+  AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
+import { isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { interpolateInvocation } from "../triggers/invocation.js";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
@@ -76,47 +78,58 @@ export class DurableWorkflowEngine {
     const createdAt = this.now();
     await Promise.all(
       matches.map(async (match) => {
-        if (match.invocation.status === "rejected") {
-          await this.options.database!.markTriggerDropped(
-            trigger.triggerId,
-            `rejected_input:${match.triggerName}:${match.invocation.reason}`,
-          );
-          return;
-        }
         const configurationRevisionId =
           match.configurationRevisionId ?? this.options.configurationRevisionId;
         if (configurationRevisionId === undefined) {
           throw new Error("workflow_configuration_revision_required");
         }
-        if (match.stepId === undefined) {
-          throw new Error("workflow_step_id_required");
+        if (match.invocation.status === "rejected") {
+          await this.options.database!.createRejectedTriggerRun({
+            organizationId: trigger.organizationId,
+            projectId: trigger.projectId,
+            configurationRevisionId,
+            triggerId: trigger.triggerId,
+            configuredTriggerName: match.triggerName,
+            rawPrompt: match.invocation.rawMessage,
+            prompt: match.invocation.prompt,
+            inputs: match.invocation.inputs,
+            rejection: match.invocation.rejection,
+            createdAt,
+          });
+          return;
         }
-        if (match.runTimeoutMs === undefined) {
+        if (!isAcceptedTriggerProviderMatch(match)) {
+          throw new Error("accepted workflow match required");
+        }
+        const acceptedMatch: AcceptedTriggerProviderMatch = match;
+        if (acceptedMatch.runTimeoutMs === undefined) {
           throw new Error("workflow_run_max_runtime_required");
         }
 
         const stepRunId = randomUUID();
-        const runDeadline = new Date(createdAt.getTime() + match.runTimeoutMs);
+        const runDeadline = new Date(createdAt.getTime() + acceptedMatch.runTimeoutMs);
         const materializedMatch = {
-          ...match,
-          prompt: interpolateInvocation(match.prompt, match.invocation),
+          ...acceptedMatch,
+          prompt: interpolateInvocation(acceptedMatch.prompt, acceptedMatch.invocation),
           agent: {
-            ...match.agent,
-            provider: interpolateInvocation(match.agent.provider, match.invocation),
-            ...(match.agent.model === undefined
+            ...acceptedMatch.agent,
+            provider: interpolateInvocation(acceptedMatch.agent.provider, acceptedMatch.invocation),
+            ...(acceptedMatch.agent.model === undefined
               ? {}
-              : { model: interpolateInvocation(match.agent.model, match.invocation) }),
-            mode: interpolateInvocation(match.agent.mode, match.invocation),
-            ...(match.agent.thinkingOptionId === undefined
+              : {
+                  model: interpolateInvocation(acceptedMatch.agent.model, acceptedMatch.invocation),
+                }),
+            mode: interpolateInvocation(acceptedMatch.agent.mode, acceptedMatch.invocation),
+            ...(acceptedMatch.agent.thinkingOptionId === undefined
               ? {}
               : {
                   thinkingOptionId: interpolateInvocation(
-                    match.agent.thinkingOptionId,
-                    match.invocation,
+                    acceptedMatch.agent.thinkingOptionId,
+                    acceptedMatch.invocation,
                   ),
                 }),
           },
-        } satisfies TriggerProviderMatch;
+        } satisfies AcceptedTriggerProviderMatch;
         const baseIntent = buildLaunchMachineIntent({
           ...materializedMatch,
           organizationId: trigger.organizationId,
@@ -128,17 +141,17 @@ export class DurableWorkflowEngine {
           ...baseIntent,
           workflowStepRunId: stepRunId,
         };
-        await this.options.database!.createTriggerRun({
+        await this.options.database!.createAcceptedTriggerRun({
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           configurationRevisionId,
           triggerId: trigger.triggerId,
-          configuredTriggerName: match.triggerName,
-          rawPrompt: match.invocation.rawMessage,
-          prompt: match.invocation.prompt,
-          inputs: match.invocation.inputs,
+          configuredTriggerName: acceptedMatch.triggerName,
+          rawPrompt: acceptedMatch.invocation.rawMessage,
+          prompt: acceptedMatch.invocation.prompt,
+          inputs: acceptedMatch.invocation.inputs,
           deadlineAt: runDeadline,
-          stepId: match.stepId,
+          stepId: acceptedMatch.stepId,
           stepRunId,
           dispatchIntent: intent,
           createdAt,

@@ -60,22 +60,6 @@ export function createManualRunProvider(
       if (!trigger.filters?.from_users?.includes(payload.actor))
         throw new Error("manual_actor_forbidden");
       const step = trigger.steps[0];
-      const invocation = parseInvocation(
-        typeof payload.input === "string" ? payload.input : "",
-        trigger.inputs,
-      );
-      if (invocation.status === "accepted") {
-        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) return [];
-      }
-      const environmentName =
-        invocation.status === "accepted"
-          ? interpolateInvocation(step.environment, invocation)
-          : step.environment;
-      const environment = readEnvironment(
-        stored.configuration.environments,
-        environmentName,
-        invocation.status === "rejected",
-      );
       const event: ManualMergeData = {
         manual: {
           actor: payload.actor,
@@ -87,6 +71,33 @@ export function createManualRunProvider(
             : { expected_version_id: payload.expectedVersionId }),
         },
       };
+      const triggerContext: ManualRunContext = {
+        provider: "manual",
+        deliveryId: external.deliveryId,
+        event,
+      };
+      const outputContext: ManualRunOutputContext = { provider: "manual", actor: payload.actor };
+      const invocation = parseInvocation(
+        typeof payload.input === "string" ? payload.input : "",
+        trigger.inputs,
+      );
+      if (invocation.status === "rejected") {
+        return [
+          {
+            triggerName: trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          },
+        ];
+      }
+      if (invocation.status === "accepted") {
+        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) return [];
+      }
+      const environmentName = interpolateInvocation(step.environment, invocation);
+      const environment = readEnvironment(stored.configuration.environments, environmentName);
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,
         stepId: step.id,
@@ -101,12 +112,8 @@ export function createManualRunProvider(
         runTimeoutMs: trigger.maxRuntimeMs,
         idleTimeoutMs: step.idleTimeoutMs,
         autoArchive: step.autoArchive,
-        triggerContext: {
-          provider: "manual",
-          deliveryId: external.deliveryId,
-          event,
-        },
-        outputContext: { provider: "manual", actor: payload.actor },
+        triggerContext,
+        outputContext,
         configurationRevisionId: stored.revision.id,
         hubConfig: stored.configuration,
         invocation,
@@ -119,13 +126,8 @@ export function createManualRunProvider(
 function readEnvironment(
   environments: CompiledProjectConfiguration["environments"],
   name: string,
-  allowRejectedFallback = false,
 ): DaemonEnvironmentTarget {
-  const environment =
-    environments.find((candidate) => candidate.name === name) ??
-    (allowRejectedFallback
-      ? environments.find((candidate) => candidate.kind === "daemon")
-      : undefined);
+  const environment = environments.find((candidate) => candidate.name === name);
   if (!environment || environment.kind !== "daemon")
     throw new Error("manual_environment_not_found");
   return {

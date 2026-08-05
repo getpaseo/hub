@@ -296,12 +296,14 @@ export const triggerRuns = pgTable(
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
     triggerId: uuid("trigger_id").notNull(),
     configuredTriggerName: text("configured_trigger_name").notNull(),
-    status: text().$type<"running" | "succeeded" | "failed" | "timed_out">().notNull(),
+    outcome: text().$type<"accepted" | "rejected">().notNull().default("accepted"),
+    status: text().$type<"running" | "succeeded" | "failed" | "timed_out" | "rejected">().notNull(),
     rawPrompt: text("raw_prompt").notNull(),
     prompt: text().notNull(),
     inputs: jsonb().notNull().default({}),
-    deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     failureReason: text("failure_reason"),
+    rejection: jsonb(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
@@ -314,7 +316,12 @@ export const triggerRuns = pgTable(
     index("trigger_runs_project_created_idx").on(table.projectId, table.createdAt.desc()),
     check(
       "trigger_runs_status_check",
-      sql`${table.status} in ('running', 'succeeded', 'failed', 'timed_out')`,
+      sql`${table.status} in ('running', 'succeeded', 'failed', 'timed_out', 'rejected')`,
+    ),
+    check(
+      "trigger_runs_outcome_check",
+      sql`(${table.outcome} = 'accepted' and ${table.status} <> 'rejected' and ${table.rejection} is null)
+        or (${table.outcome} = 'rejected' and ${table.status} = 'rejected' and ${table.rejection} is not null)`,
     ),
     foreignKey({
       columns: [table.organizationId],

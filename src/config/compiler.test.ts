@@ -130,6 +130,122 @@ describe("Phase 1 workflow compiler", () => {
     );
   });
 
+  it.each(["provider", "model", "mode", "thinkingOptionId"])(
+    "rejects prompt interpolation in authority-bearing agent.%s",
+    (field) => {
+      const trigger = configuration().triggers[0]!;
+      const step = trigger.steps[0]!;
+      assert.throws(
+        () =>
+          compileHubConfig({
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  {
+                    ...step,
+                    agent: { ...step.agent, [field]: "${{ paseo.prompt }}" },
+                  },
+                ],
+              },
+            ],
+          }),
+        /paseo\.prompt.*authority/iu,
+      );
+    },
+  );
+
+  it("rejects prompt interpolation in the authority-bearing environment", () => {
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...configuration().triggers[0],
+              steps: [
+                {
+                  ...configuration().triggers[0]!.steps[0],
+                  environment: "${{ paseo.prompt }}",
+                },
+              ],
+            },
+          ],
+        }),
+      /paseo\.prompt.*authority/iu,
+    );
+  });
+
+  it("allows finite-choice input interpolation in every authority-bearing agent field", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...trigger,
+          inputs: {
+            provider: { type: "string", choices: ["codex"] },
+            model: { type: "string", choices: ["small"] },
+            mode: { type: "string", choices: ["default"] },
+            thinking: { type: "string", choices: ["balanced"] },
+          },
+          steps: [
+            {
+              ...step,
+              agent: {
+                provider: "${{ paseo.inputs.provider }}",
+                model: "${{ paseo.inputs.model }}",
+                mode: "${{ paseo.inputs.mode }}",
+                thinkingOptionId: "${{ paseo.inputs.thinking }}",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(compiled.triggers[0]!.steps[0].agent, {
+      provider: "${{ paseo.inputs.provider }}",
+      model: "${{ paseo.inputs.model }}",
+      mode: "${{ paseo.inputs.mode }}",
+      thinkingOptionId: "${{ paseo.inputs.thinking }}",
+    });
+  });
+
+  it.each(["prefix", "infix", "suffix", "mixed"] as const)(
+    "rejects unsupported interpolation in the entire %s expression surface",
+    (position) => {
+      const trigger = configuration().triggers[0]!;
+      const step = trigger.steps[0]!;
+      const values = {
+        prefix: "${{ values.agent }} ${{ paseo.prompt }}",
+        infix: "${{ paseo.prompt }} ${{ values.agent }} ${{ paseo.inputs.repo }}",
+        suffix: "${{ paseo.prompt }} ${{ values.agent }}",
+        mixed: "${{ values.agent }} ${{ paseo.prompt }} ${{ values.other }}",
+      };
+      assert.throws(
+        () =>
+          compileHubConfig({
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                inputs: { repo: { type: "string" } },
+                steps: [
+                  {
+                    ...step,
+                    prompt: [{ text: values[position] }],
+                  },
+                ],
+              },
+            ],
+          }),
+        /unsupported expression/iu,
+      );
+    },
+  );
+
   it.each(["if", "output"])("rejects later-phase step field %s", (field) => {
     const trigger = configuration().triggers[0]!;
     const step = trigger.steps[0]!;

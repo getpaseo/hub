@@ -8,7 +8,7 @@ import type { AgentExecutionRecord, Database } from "./types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { DurableTrigger } from "../db/types.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
-import type { TriggerProviderMatch } from "../triggers/index.js";
+import type { RejectedTriggerProviderMatch, TriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 
 describe("agent execution PostgreSQL repository", () => {
@@ -80,7 +80,7 @@ describe("agent execution PostgreSQL repository", () => {
         fixture.execution.configurationRevisionId,
         "one-step",
       );
-      const created = await fixture.database.createTriggerRun({
+      const created = await fixture.database.createAcceptedTriggerRun({
         organizationId: "org-1",
         projectId: fixture.execution.projectId,
         configurationRevisionId: fixture.execution.configurationRevisionId,
@@ -179,6 +179,7 @@ describe("agent execution PostgreSQL repository", () => {
 
       const run = (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id))[0];
       assert.ok(run);
+      if (run.outcome !== "accepted") throw new Error("expected accepted trigger run");
       const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
       assert.ok(step);
       assert.equal(run.deadlineAt.toISOString(), "2026-08-05T12:00:05.000Z");
@@ -336,6 +337,124 @@ describe("agent execution PostgreSQL repository", () => {
       assert.equal(
         (await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id)).length,
         2,
+      );
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  it("persists accepted and rejected PostgreSQL fan-out branches independently", async () => {
+    const fixture = await executionFixture(postgres);
+    let dispatches = 0;
+    try {
+      const accepted = phaseOneMatch(
+        fixture.execution.configurationRevisionId,
+        "accepted-route",
+        "accepted-step",
+      );
+      const rejected: RejectedTriggerProviderMatch = {
+        triggerName: "rejected-route",
+        triggerContext: { provider: "slack" },
+        outputContext: {},
+        configurationRevisionId: fixture.execution.configurationRevisionId,
+        hubConfig: {},
+        invocation: {
+          status: "rejected" as const,
+          rawMessage: "repo=unknown investigate",
+          prompt: "investigate",
+          inputs: {},
+          reason: "input repo must be one of the declared choices",
+          rejection: {
+            code: "invalid_choice",
+            inputName: "repo",
+            value: "unknown",
+            choices: ["hub"],
+          },
+        },
+      };
+      const secondRejected: RejectedTriggerProviderMatch = {
+        ...rejected,
+        triggerName: "second-rejected-route",
+        invocation: {
+          ...rejected.invocation,
+          reason: "duplicate input repo",
+          rejection: { code: "duplicate_input" as const, inputName: "repo" },
+        },
+      };
+      const { handler, engine } = createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [
+          {
+            name: "test",
+            eventNames: ["test.event"],
+            async match() {
+              return [accepted, rejected, secondRejected];
+            },
+          },
+        ],
+        dispatchLaunchMachineIntent: async (intent) => {
+          dispatches += 1;
+          return {
+            execution: await fixture.database.insertAgentExecution({
+              id: durableExecutionId(intent),
+              organizationId: intent.organizationId,
+              projectId: intent.projectId,
+              machineId: fixture.execution.machineId,
+              triggerId: intent.triggerId,
+              triggerContext: intent.triggerContext,
+              outputContext: intent.outputContext,
+              configurationRevisionId: intent.configurationRevisionId,
+              workflowStepRunId: intent.workflowStepRunId!,
+              deadlineAt: intent.deadlineAt ?? null,
+              launchIntent: intent,
+            }),
+          };
+        },
+      });
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-mixed-fanout",
+      );
+      const durableTrigger = toDurableTrigger(trigger.trigger);
+
+      await Promise.all([handler(durableTrigger), handler(durableTrigger)]);
+      await engine.processAvailable();
+
+      const runs = await fixture.database.findTriggerRunsByTriggerId(trigger.trigger.id);
+      assert.equal(runs.length, 3);
+      assert.deepEqual(
+        runs
+          .map((run) => ({ name: run.configuredTriggerName, status: run.status }))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+        [
+          { name: "accepted-route", status: "running" },
+          { name: "rejected-route", status: "rejected" },
+          { name: "second-rejected-route", status: "rejected" },
+        ],
+      );
+      const rejectedRun = runs.find((run) => run.configuredTriggerName === "rejected-route");
+      assert.ok(rejectedRun);
+      if (rejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
+      assert.equal(rejectedRun.rejection.code, "invalid_choice");
+      assert.equal(
+        await fixture.database.findWorkflowStepRunByTriggerRun(rejectedRun.id),
+        undefined,
+      );
+      const secondRejectedRun = runs.find(
+        (run) => run.configuredTriggerName === "second-rejected-route",
+      );
+      assert.ok(secondRejectedRun);
+      if (secondRejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
+      assert.equal(secondRejectedRun.rejection.code, "duplicate_input");
+      assert.equal(
+        await fixture.database.findWorkflowStepRunByTriggerRun(secondRejectedRun.id),
+        undefined,
+      );
+      assert.equal(dispatches, 1);
+      assert.equal(
+        (await fixture.database.findTriggerById(trigger.trigger.id))?.droppedReason,
+        null,
       );
     } finally {
       await fixture.database.close();

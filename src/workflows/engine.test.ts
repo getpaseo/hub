@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { DurableTrigger } from "../db/types.js";
+import type { RejectedTriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable Phase 1 workflow engine", () => {
@@ -209,14 +210,24 @@ describe("durable Phase 1 workflow engine", () => {
     const database = createMemoryDatabase();
     const trigger = await insertTrigger(database, "delivery-invalid-input");
     const base = providerMatch();
-    const rejected = {
-      ...base.match,
+    const rejected: RejectedTriggerProviderMatch = {
+      triggerName: base.match.triggerName,
+      triggerContext: base.match.triggerContext,
+      outputContext: base.match.outputContext,
+      configurationRevisionId: base.match.configurationRevisionId,
+      hubConfig: base.match.hubConfig,
       invocation: {
         status: "rejected" as const,
         rawMessage: "repo=unknown investigate",
         prompt: "investigate",
         inputs: {},
         reason: "input repo must be one of the declared choices",
+        rejection: {
+          code: "invalid_choice" as const,
+          inputName: "repo",
+          value: "unknown",
+          choices: ["hub"],
+        },
       },
     };
     const { handler, engine } = createDurableWorkflowHandler({
@@ -234,12 +245,111 @@ describe("durable Phase 1 workflow engine", () => {
     await handler(trigger);
     await engine.processAvailable();
 
-    assert.deepEqual(await database.findTriggerRunsByTriggerId(trigger.triggerId), []);
+    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
+    assert.equal(runs.length, 1);
+    const rejectedRun = runs[0]!;
+    assert.equal(rejectedRun.status, "rejected");
+    assert.equal(rejectedRun.outcome, "rejected");
+    assert.equal(rejectedRun.rejection.code, "invalid_choice");
+    assert.equal(rejectedRun.rejection.inputName, "repo");
+    assert.equal(await database.findWorkflowStepRunByTriggerRun(runs[0]!.id), undefined);
     assert.deepEqual(await database.findAgentExecutionsByTriggerId(trigger.triggerId), []);
-    assert.match(
-      (await database.findTriggerById(trigger.triggerId))?.droppedReason ?? "",
-      /rejected_input.*declared choices/iu,
+    assert.equal((await database.findTriggerById(trigger.triggerId))?.droppedReason, null);
+  });
+
+  it("keeps accepted and independently rejected fan-out branches durable and idempotent", async () => {
+    const database = createMemoryDatabase();
+    const trigger = await insertTrigger(database, "delivery-mixed-fanout");
+    const accepted = providerMatch("accepted-trigger", "accepted-step").match;
+    const rejected: RejectedTriggerProviderMatch = {
+      triggerName: "rejected-trigger",
+      triggerContext: { provider: "test" },
+      outputContext: { provider: "test" },
+      configurationRevisionId: "config-1",
+      hubConfig: {},
+      invocation: {
+        status: "rejected" as const,
+        rawMessage: "repo=unknown investigate",
+        prompt: "investigate",
+        inputs: {},
+        reason: "input repo must be one of the declared choices",
+        rejection: {
+          code: "invalid_choice",
+          inputName: "repo",
+          value: "unknown",
+          choices: ["hub"],
+        },
+      },
+    };
+    const secondRejected: RejectedTriggerProviderMatch = {
+      ...rejected,
+      triggerName: "second-rejected-trigger",
+      invocation: {
+        ...rejected.invocation,
+        reason: "duplicate input repo",
+        rejection: { code: "duplicate_input" as const, inputName: "repo" },
+      },
+    };
+    let dispatches = 0;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database,
+      providers: [
+        {
+          name: "test",
+          eventNames: ["test.event"],
+          async match() {
+            return [accepted, rejected, secondRejected];
+          },
+        },
+      ],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches += 1;
+        return {
+          execution: await database.insertAgentExecution({
+            id: durableExecutionId(intent),
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            machineId: null,
+            triggerId: intent.triggerId,
+            triggerContext: intent.triggerContext,
+            outputContext: intent.outputContext,
+            configurationRevisionId: intent.configurationRevisionId,
+            workflowStepRunId: intent.workflowStepRunId!,
+            launchIntent: intent,
+          }),
+        };
+      },
+    });
+
+    await Promise.all([handler(trigger), handler(trigger)]);
+    await engine.processAvailable();
+
+    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
+    assert.equal(runs.length, 3);
+    assert.deepEqual(
+      runs
+        .map((run) => ({ name: run.configuredTriggerName, status: run.status }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+      [
+        { name: "accepted-trigger", status: "running" },
+        { name: "rejected-trigger", status: "rejected" },
+        { name: "second-rejected-trigger", status: "rejected" },
+      ],
     );
+    const rejectedRun = runs.find((run) => run.configuredTriggerName === "rejected-trigger");
+    assert.ok(rejectedRun);
+    if (rejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
+    assert.equal(rejectedRun.rejection.code, "invalid_choice");
+    assert.equal(await database.findWorkflowStepRunByTriggerRun(rejectedRun.id), undefined);
+    const secondRejectedRun = runs.find(
+      (run) => run.configuredTriggerName === "second-rejected-trigger",
+    );
+    assert.ok(secondRejectedRun);
+    if (secondRejectedRun.outcome !== "rejected") throw new Error("expected rejected branch");
+    assert.equal(secondRejectedRun.rejection.code, "duplicate_input");
+    assert.equal(await database.findWorkflowStepRunByTriggerRun(secondRejectedRun.id), undefined);
+    assert.equal(dispatches, 1);
+    assert.equal((await database.findTriggerById(trigger.triggerId))?.droppedReason, null);
   });
 
   it("deduplicates delivery, wakeup, and finish transitions", async () => {
@@ -291,7 +401,7 @@ describe("durable Phase 1 workflow engine", () => {
     const now = new Date("2026-08-05T12:00:00.000Z");
     const trigger = await insertTrigger(database, "delivery-lease");
     const intent = providerMatch().intent;
-    const created = await database.createTriggerRun({
+    const created = await database.createAcceptedTriggerRun({
       organizationId: trigger.organizationId,
       projectId: trigger.projectId,
       configurationRevisionId: "config-1",

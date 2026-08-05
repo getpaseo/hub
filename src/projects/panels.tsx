@@ -922,17 +922,27 @@ function ActivityTable({
             )}
           </DataCell>
           <DataCell>{event.source}</DataCell>
-          <DataCell>
-            {event.droppedReason ??
-              (event.configuredTriggerNames.length > 0
-                ? event.configuredTriggerNames.join(", ")
-                : (event.matchedTriggerName ?? "Accepted"))}
-          </DataCell>
+          <DataCell>{activityResult(event)}</DataCell>
           <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
         </DataRow>
       ))}
     </DataTable>
   );
+}
+
+function activityResult(event: ProjectSnapshot["activity"][number]): string {
+  if (event.droppedReason !== null) return event.droppedReason;
+  if (event.branchOutcomes.length > 0) {
+    return event.branchOutcomes
+      .map((branch) =>
+        branch.outcome === "rejected"
+          ? `rejected_input:${branch.configuredTriggerName}:${branch.rejectionReason}`
+          : `${branch.configuredTriggerName}:${branch.status}`,
+      )
+      .join(", ");
+  }
+  if (event.configuredTriggerNames.length > 0) return event.configuredTriggerNames.join(", ");
+  return event.matchedTriggerName ?? "Accepted";
 }
 
 function ExecutionTable({

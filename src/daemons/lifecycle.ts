@@ -719,6 +719,7 @@ export class DaemonDispatchLifecycle {
 
     const current = await this.options.database.findAgentExecutionById(execution.id);
     if (current === undefined || isTerminalExecutionStatus(current.status)) return;
+    if (this.stopping) return;
 
     const intent = current.launchIntent;
     if (intent === null || this.options.publicBaseUrl === undefined)

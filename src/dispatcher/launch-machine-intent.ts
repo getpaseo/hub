@@ -1,5 +1,5 @@
 import type { AllowedOutput } from "../execution-capabilities/outputs.js";
-import type { TriggerAgentConfig, TriggerProviderMatch } from "../triggers/index.js";
+import type { AcceptedTriggerProviderMatch, TriggerAgentConfig } from "../triggers/index.js";
 import type { WorktreeTarget } from "../config/index.js";
 
 export interface DaemonEnvironmentTarget {
@@ -39,7 +39,7 @@ export function buildLaunchMachineIntent(
     projectId: string;
     triggerId: string;
     configurationRevisionId: string;
-  } & Omit<TriggerProviderMatch, "configurationRevisionId">,
+  } & Omit<AcceptedTriggerProviderMatch, "configurationRevisionId">,
 ): LaunchMachineIntent {
   return {
     kind: "launch_machine",

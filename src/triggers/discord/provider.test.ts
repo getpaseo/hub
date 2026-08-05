@@ -5,6 +5,7 @@ import { createActiveProjectConfiguration } from "../../test-utils/project-confi
 import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordTriggerProvider } from "./provider.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Discord Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
@@ -20,7 +21,7 @@ describe("Discord Phase 1 trigger provider", () => {
       )
     )[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
       rawMessage: "<@900> repo=hub agent=opus investigate",
@@ -38,7 +39,7 @@ describe("Discord Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id, event())))[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.stepId, "discord-step");
     assert.equal(match.prompt, "Respond to the Discord mention.");
     assert.equal(match.configurationRevisionId, revision.id);
@@ -54,7 +55,7 @@ describe("Discord Phase 1 trigger provider", () => {
       bot,
     });
     const match = (await provider.match(external(project.id, event())))[0];
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.autoArchive, true);
 
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
@@ -138,7 +139,7 @@ describe("Discord Phase 1 trigger provider", () => {
       )
     )[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.triggerContext.event.discord.trigger_message.attachments[0], {
       id: "701",
       filename: "design.png",
@@ -175,7 +176,7 @@ describe("Discord Phase 1 trigger provider", () => {
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
     const match = (await provider.match(external(project.id, event())))[0];
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.environment.worktree, {
       mode: "branch-off",
       newBranch: "discord-recovery",
@@ -200,7 +201,7 @@ describe("Discord Phase 1 trigger provider", () => {
       bot,
     });
     const match = (await provider.match(external(project.id, event({ threadId: "207" }))))[0];
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);

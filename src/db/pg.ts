@@ -4,8 +4,10 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
+import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { TriggerAcceptanceRepository } from "./trigger-acceptance.js";
 import * as schema from "./schema.js";
@@ -64,7 +66,10 @@ import type {
   GitHubRepositoryRecord,
   GitHubConfigurationTarget,
   ProjectTriggerRoute,
-  CreateTriggerRunInput,
+  CreateAcceptedTriggerRunInput,
+  CreateRejectedTriggerRunInput,
+  AcceptedTriggerRunRecord,
+  RejectedTriggerRunRecord,
   TriggerRunRecord,
   WorkflowStepExecutionInput,
   WorkflowStepRunRecord,
@@ -523,16 +528,18 @@ class PgDatabase implements Database {
     }
   }
 
-  async createTriggerRun(input: CreateTriggerRunInput) {
+  async createAcceptedTriggerRun(
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
       const inserted = await client.query<TriggerRunRow>(
         `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, trigger_id,
-            configured_trigger_name, status,
-            raw_prompt, prompt, inputs, deadline_at, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'running', $7, $8, $9, $10, $11)
+            configured_trigger_name, outcome, status,
+            raw_prompt, prompt, inputs, deadline_at, rejection, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, $10, null, $11)
          on conflict (trigger_id, configured_trigger_name) do nothing
          returning *`,
         [
@@ -561,6 +568,7 @@ class PgDatabase implements Database {
         run = existing.rows[0];
       }
       if (run === undefined) throw new Error("trigger run insert returned no row");
+      if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
       await client.query(
         `insert into workflow_step_runs (id, trigger_run_id, step_id, ordinal, status, dispatch_intent)
          values (coalesce($1, gen_random_uuid()), $2, $3, 0, 'pending', $4)
@@ -574,7 +582,64 @@ class PgDatabase implements Database {
         [run.id, input.createdAt ?? new Date()],
       );
       await client.query("commit");
-      return { run: toTriggerRunRecord(run), created };
+      const record = toTriggerRunRecord(run);
+      if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+      return { run: record, created };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async createRejectedTriggerRun(
+    input: CreateRejectedTriggerRunInput,
+  ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const createdAt = input.createdAt ?? new Date();
+      const inserted = await client.query<TriggerRunRow>(
+        `insert into trigger_runs
+           (id, organization_id, project_id, configuration_revision_id, trigger_id,
+            configured_trigger_name, outcome, status,
+            raw_prompt, prompt, inputs, deadline_at, rejection, created_at, completed_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'rejected', 'rejected',
+                 $7, $8, $9, null, $11, $10, $10)
+         on conflict (trigger_id, configured_trigger_name) do nothing
+         returning *`,
+        [
+          input.id ?? null,
+          input.organizationId,
+          input.projectId,
+          input.configurationRevisionId,
+          input.triggerId,
+          input.configuredTriggerName,
+          input.rawPrompt,
+          input.prompt,
+          input.inputs,
+          createdAt,
+          input.rejection,
+        ],
+      );
+      let run = inserted.rows[0];
+      const created = run !== undefined;
+      if (run === undefined) {
+        const existing = await client.query<TriggerRunRow>(
+          `select * from trigger_runs
+           where trigger_id = $1 and configured_trigger_name = $2
+           for update`,
+          [input.triggerId, input.configuredTriggerName],
+        );
+        run = existing.rows[0];
+      }
+      if (run === undefined) throw new Error("trigger run insert returned no row");
+      if (run.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+      await client.query("commit");
+      const record = toTriggerRunRecord(run);
+      if (record.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+      return { run: record, created };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
@@ -593,8 +658,22 @@ class PgDatabase implements Database {
   async findTriggerRunsByTriggerId(triggerId: string) {
     const rows = await query<TriggerRunRow>(
       this.pool,
-      `select * from trigger_runs where trigger_id = $1 order by created_at, id`,
+      `select * from trigger_runs
+       where trigger_id = $1
+       order by created_at, configured_trigger_name, id`,
       [triggerId],
+    );
+    return rows.rows.map(toTriggerRunRecord);
+  }
+
+  async listTriggerRunsForProject(projectId: string, limit: number) {
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs
+       where project_id = $1
+       order by created_at desc, configured_trigger_name, id desc
+       limit $2`,
+      [projectId, limit],
     );
     return rows.rows.map(toTriggerRunRecord);
   }
@@ -791,7 +870,10 @@ class PgDatabase implements Database {
       if (run === undefined) throw new Error("workflow trigger run not found");
       if (["succeeded", "failed", "timed_out"].includes(step.status)) {
         await client.query("commit");
-        return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
+        return {
+          stepRun: toWorkflowStepRunRecord(step),
+          run: toTriggerRunRecord(run),
+        };
       }
       const completedAt = new Date();
       const updatedStep = await client.query<WorkflowStepRunRow>(
@@ -851,7 +933,10 @@ class PgDatabase implements Database {
       }
       if (run.status !== "running") {
         await client.query("commit");
-        return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
+        return {
+          stepRun: toWorkflowStepRunRecord(step),
+          run: toTriggerRunRecord(run),
+        };
       }
       const completedAt = new Date();
       const updatedStep = await client.query<WorkflowStepRunRow>(
@@ -922,45 +1007,48 @@ class PgDatabase implements Database {
       return true;
     }
 
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      const key = await client.query(
-        `select id
-         from organization_api_keys
-         where id = $1 and organization_id = $2 and revoked_at is null
-         for update`,
-        [input.issuedByApiKeyId, input.organizationId],
-      );
-      if (key.rowCount !== 1) {
-        await client.query("rollback");
-        return false;
+    return withApiKeySerialization(input.issuedByApiKeyId, async () => {
+      const client = await this.pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [input.issuedByApiKeyId]);
+        const key = await client.query(
+          `select id
+           from organization_api_keys
+           where id = $1 and organization_id = $2 and revoked_at is null
+           for update`,
+          [input.issuedByApiKeyId, input.organizationId],
+        );
+        if (key.rowCount !== 1) {
+          await client.query("rollback");
+          return false;
+        }
+        await client.query(
+          `insert into daemon_enrollment_tokens
+             (id, verifier, organization_id, authorization_id, display_name,
+              approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            input.id,
+            input.verifier,
+            input.organizationId,
+            input.authorizationId ?? null,
+            input.displayName ?? null,
+            input.approvedByUserId ?? null,
+            input.issuedByApiKeyId,
+            input.registrationMethod ?? "operator",
+            input.expiresAt,
+          ],
+        );
+        await client.query("commit");
+        return true;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
       }
-      await client.query(
-        `insert into daemon_enrollment_tokens
-           (id, verifier, organization_id, authorization_id, display_name,
-            approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          input.id,
-          input.verifier,
-          input.organizationId,
-          input.authorizationId ?? null,
-          input.displayName ?? null,
-          input.approvedByUserId ?? null,
-          input.issuedByApiKeyId,
-          input.registrationMethod ?? "operator",
-          input.expiresAt,
-        ],
-      );
-      await client.query("commit");
-      return true;
-    } catch (error) {
-      await client.query("rollback").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   async startDeviceAuthorization(
@@ -2846,12 +2934,14 @@ interface TriggerRunRow extends QueryResultRow {
   configuration_revision_id: string;
   trigger_id: string;
   configured_trigger_name: string;
+  outcome: TriggerRunRecord["outcome"];
   status: TriggerRunRecord["status"];
   raw_prompt: string;
   prompt: string;
   inputs: unknown;
-  deadline_at: Date;
+  deadline_at: Date | null;
   failure_reason: string | null;
+  rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
 }
@@ -2877,22 +2967,44 @@ interface WorkflowWakeupRow extends QueryResultRow {
 }
 
 function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
-  return {
+  const evidence = {
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
     configurationRevisionId: row.configuration_revision_id,
     triggerId: row.trigger_id,
     configuredTriggerName: row.configured_trigger_name,
-    status: row.status,
     rawPrompt: row.raw_prompt,
     prompt: row.prompt,
-    inputs: row.inputs,
+    inputs: parseInvocationInputs(row.inputs),
+    createdAt: row.created_at,
+  };
+  if (row.outcome === "rejected") {
+    if (row.status !== "rejected" || row.rejection === null || row.rejection === undefined) {
+      throw new Error(`invalid rejected trigger run ${row.id}`);
+    }
+    const rejected: RejectedTriggerRunRecord = {
+      ...evidence,
+      outcome: "rejected",
+      status: "rejected",
+      rejection: parseInvocationRejection(row.rejection),
+      completedAt: row.completed_at ?? row.created_at,
+    };
+    return rejected;
+  }
+  if (row.outcome !== "accepted" || row.status === "rejected" || row.rejection !== null) {
+    throw new Error(`invalid accepted trigger run ${row.id}`);
+  }
+  if (row.deadline_at === null) throw new Error(`invalid accepted trigger run ${row.id}`);
+  const accepted: AcceptedTriggerRunRecord = {
+    ...evidence,
+    outcome: "accepted",
+    status: row.status,
     deadlineAt: row.deadline_at,
     failureReason: row.failure_reason,
-    createdAt: row.created_at,
     completedAt: row.completed_at,
   };
+  return accepted;
 }
 
 function toWorkflowStepRunRecord(row: WorkflowStepRunRow): WorkflowStepRunRecord {

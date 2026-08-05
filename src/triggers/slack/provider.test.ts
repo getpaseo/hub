@@ -4,6 +4,7 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import type { SlackBotClient } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Slack Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
@@ -25,7 +26,7 @@ describe("Slack Phase 1 trigger provider", () => {
       )
     )[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
       rawMessage: "<@UBOT> repo=hub agent=opus investigate",
@@ -72,7 +73,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id)))[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.stepId, "slack-step");
     assert.equal(match.prompt, "Handle the Slack mention.");
     assert.equal(match.configurationRevisionId, revision.id);
@@ -93,7 +94,7 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
     const match = (await provider.match(external(project.id)))[0];
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
       status: "succeeded",
@@ -118,7 +119,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id, { threadTs: null })))[0];
 
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
     assert.equal(match.outputContext.threadTs, match.outputContext.messageTs);
     assert.equal(
@@ -139,7 +140,7 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
     const match = (await provider.match(external(project.id)))[0];
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
     assert.deepEqual(client.messages, [
