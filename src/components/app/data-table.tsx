@@ -86,6 +86,7 @@ export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onSelect();
