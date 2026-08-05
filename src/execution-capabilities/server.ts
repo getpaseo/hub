@@ -1,4 +1,4 @@
-import { Ajv, type ErrorObject } from "ajv";
+import type { ErrorObject } from "ajv";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -10,25 +10,23 @@ import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
-import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
+import {
+  compileFinishExecutionArguments,
+  compileJsonSchema,
+  formatJsonSchemaErrors,
+} from "../workflows/json-schema.js";
 import type { OutputExecutorRegistry } from "./outputs.js";
 
 interface JsonSchemaNode {
   readonly [key: string]: JsonValue;
 }
 
-interface JsonSchema {
-  type: "object";
-  properties?: Record<string, JsonSchemaNode>;
-  required?: string[];
-  [key: string]: unknown;
+interface JsonSchema extends JsonSchemaNode {
+  readonly type: "object";
+  readonly properties?: Record<string, JsonSchemaNode>;
+  readonly required?: string[];
 }
 
-const FinishArgumentsSchema: JsonSchema = {
-  type: "object" as const,
-  properties: {},
-  additionalProperties: false,
-};
 const ReplyArgumentsSchema: JsonSchema = {
   type: "object" as const,
   properties: { content: { type: "string", minLength: 1 } },
@@ -111,8 +109,7 @@ function createMcpServer(
     { name: "paseo-hub-execution", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
-  const ajv = new Ajv({ allErrors: true, strict: true });
-  const finishContract = finishExecutionContract(execution.launchIntent?.outputSchema, ajv);
+  const finishContract = finishExecutionContract(execution.launchIntent?.outputSchema);
   const tools: Tool[] = [
     {
       name: "finish_execution",
@@ -130,7 +127,7 @@ function createMcpServer(
   }
   const contracts = new Map<string, JsonSchemaContract>([["finish_execution", finishContract]]);
   if (replyOutput !== undefined) {
-    contracts.set("reply", jsonSchemaContract(ReplyArgumentsSchema, ajv));
+    contracts.set("reply", jsonSchemaContract(ReplyArgumentsSchema));
   }
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
@@ -187,48 +184,27 @@ interface JsonSchemaContract {
   validate(args: Record<string, unknown>): { valid: true } | { valid: false; message: string };
 }
 
-function finishExecutionContract(
-  outputSchema: JsonValue | undefined,
-  ajv: Ajv,
-): JsonSchemaContract {
-  if (outputSchema === undefined) return jsonSchemaContract(FinishArgumentsSchema, ajv);
-
-  const outputValidator = compileJsonSchema(outputSchema).validate;
-  const envelope = {
-    type: "object" as const,
-    required: ["output"],
-    properties: { output: {} },
-    additionalProperties: false,
-  };
-  const envelopeValidator = ajv.compile(envelope);
-  const schema = {
-    type: "object" as const,
-    required: ["output"],
-    properties: { output: schemaNode(structuredClone(outputSchema)) },
-    additionalProperties: false,
-  };
+function finishExecutionContract(outputSchema: JsonValue | undefined): JsonSchemaContract {
+  const compiled = compileFinishExecutionArguments(outputSchema);
+  const schema = toolSchema(compiled.schema);
   return {
     schema,
     validate(args) {
-      if (!envelopeValidator(args)) {
-        return { valid: false, message: validationMessage(envelopeValidator.errors) };
-      }
-      if (!outputValidator(args["output"])) {
-        return { valid: false, message: validationMessage(outputValidator.errors) };
-      }
-      return { valid: true };
+      return compiled.validate(args)
+        ? { valid: true }
+        : { valid: false, message: validationMessage(compiled.validate.errors) };
     },
   };
 }
 
-function jsonSchemaContract(schema: JsonSchema, ajv: Ajv): JsonSchemaContract {
-  const validator = ajv.compile(schema);
+function jsonSchemaContract(schema: JsonSchema): JsonSchemaContract {
+  const compiled = compileJsonSchema(schema);
   return {
     schema,
     validate(args) {
-      return validator(args)
+      return compiled.validate(args)
         ? { valid: true }
-        : { valid: false, message: validationMessage(validator.errors) };
+        : { valid: false, message: validationMessage(compiled.validate.errors) };
     },
   };
 }
@@ -240,12 +216,28 @@ function validationMessage(errors: readonly ErrorObject[] | null | undefined): s
     : `Invalid arguments for tool: ${messages.join("; ")}`;
 }
 
-function schemaNode(value: JsonValue): JsonSchemaNode {
-  if (!isSchemaNode(value)) throw new Error("JSON Schema must be an object");
+function isSchemaNode(value: JsonValue): value is JsonSchemaNode {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toolSchema(value: JsonValue): JsonSchema {
+  if (!isToolSchema(value)) throw new Error("JSON Schema tool arguments must be an object");
   return value;
 }
 
-function isSchemaNode(value: JsonValue): value is JsonSchemaNode {
+function isToolSchema(value: JsonValue): value is JsonSchema {
+  if (!isSchemaNode(value) || value["type"] !== "object") return false;
+  const properties = value["properties"];
+  const required = value["required"];
+  return (
+    (properties === undefined ||
+      (isRecord(properties) && Object.values(properties).every(isSchemaNode))) &&
+    (required === undefined ||
+      (Array.isArray(required) && required.every((item) => typeof item === "string")))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

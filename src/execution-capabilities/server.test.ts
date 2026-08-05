@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
+import { Ajv } from "ajv";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, it } from "vitest";
@@ -196,12 +197,35 @@ describe("execution capability MCP boundary", () => {
     const tool = ToolsListSchema.parse(tools.result).tools.find(
       (candidate) => candidate.name === "finish_execution",
     );
+    assert.ok(tool);
+    assert.ok(isRecord(tool.inputSchema));
+    const independentValidator = new Ajv({ allErrors: true, strict: true }).compile(
+      tool.inputSchema,
+    );
+    assert.equal(
+      independentValidator({
+        output: {
+          repo: "hub",
+          attempts: 2,
+          tags: ["ok"],
+          metadata: { source: "agent" },
+        },
+      }),
+      true,
+    );
+    assert.equal(
+      independentValidator({
+        output: { repo: "hub", attempts: 4, tags: ["ok"], metadata: null },
+      }),
+      false,
+    );
     assert.deepEqual(tool?.inputSchema, {
       type: "object",
       additionalProperties: false,
       required: ["output"],
       properties: {
         output: {
+          $id: "urn:paseo:hub:finish-execution-output",
           $schema: "http://json-schema.org/draft-07/schema#",
           $defs: {
             repo: { type: "string", minLength: 3, pattern: "^(paseo|hub)$" },
@@ -494,6 +518,10 @@ function mcpRequest(method: string, params?: unknown, id = 1): string {
     method,
     ...(params === undefined ? {} : { params }),
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {

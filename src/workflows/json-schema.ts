@@ -6,12 +6,38 @@ export interface CompiledJsonSchema {
   readonly schema: JsonValue;
 }
 
+const FINISH_EXECUTION_OUTPUT_ID = "urn:paseo:hub:finish-execution-output";
+
 export function compileJsonSchema(schema: JsonValue): CompiledJsonSchema {
   if (!isRecord(schema)) throw new Error("JSON Schema must be an object");
   const cloned = structuredClone(schema);
   return {
     schema: cloned,
     validate: new Ajv({ allErrors: true, strict: true }).compile(cloned),
+  };
+}
+
+export function compileFinishExecutionArguments(
+  outputSchema: JsonValue | undefined,
+): CompiledJsonSchema {
+  return compileJsonSchema(
+    outputSchema === undefined
+      ? { type: "object", properties: {}, additionalProperties: false }
+      : finishExecutionArgumentsSchema(outputSchema),
+  );
+}
+
+function finishExecutionArgumentsSchema(outputSchema: JsonValue): JsonValue {
+  if (!isRecord(outputSchema)) throw new Error("JSON Schema must be an object");
+  const embeddedOutput = { ...outputSchema };
+  if (embeddedOutput["$id"] === undefined) {
+    embeddedOutput["$id"] = FINISH_EXECUTION_OUTPUT_ID;
+  }
+  return {
+    type: "object",
+    required: ["output"],
+    properties: { output: embeddedOutput },
+    additionalProperties: false,
   };
 }
 
