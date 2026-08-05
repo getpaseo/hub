@@ -2,9 +2,10 @@ import { dump } from "js-yaml";
 import { z } from "zod";
 import {
   compileHubConfig,
-  compiledConfigurationHash,
   parseCompiledHubConfig,
+  rawConfigurationHash,
   type CompiledHubConfig,
+  type CompiledTriggerFilter,
   type CompiledTrigger,
 } from "../config/compiler.js";
 import type { EnvironmentConfig } from "../config/schema.js";
@@ -53,7 +54,7 @@ export class ProjectConfigurationStore {
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: configurationHash(prepared.normalizedConfiguration),
+      contentHash: rawConfigurationHash(prepared.normalizedConfiguration),
       createdByUserId: input.userId,
     });
   }
@@ -88,7 +89,7 @@ export class ProjectConfigurationStore {
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: configurationHash(prepared.normalizedConfiguration),
+      contentHash: rawConfigurationHash(prepared.normalizedConfiguration),
     });
   }
 
@@ -141,7 +142,7 @@ export class ProjectConfigurationStore {
       userId,
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
-      contentHash: configurationHash(active.normalizedConfiguration),
+      contentHash: rawConfigurationHash(active.normalizedConfiguration),
       formattingPreserved,
       routes,
     });
@@ -153,10 +154,6 @@ export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
   return toProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
-}
-
-export function configurationHash(configuration: unknown): string {
-  return compiledConfigurationHash(configuration);
 }
 
 function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProjectConfiguration {
@@ -318,11 +315,11 @@ async function compileTriggers(
         missing.push(`${provider}:${authored}`);
         continue;
       }
-      const nextFilter = {
+      const nextFilter: CompiledTriggerFilter = {
         ...filter,
         connectionId: resolved.connectionId,
         resourceId: resolved.resourceId,
-      } as CompiledTrigger["filters"] & { connectionId: string; resourceId: string };
+      };
       compiled.push({ ...trigger, filters: nextFilter });
       routes.push({
         provider,
@@ -333,9 +330,9 @@ async function compileTriggers(
       continue;
     }
 
-    const nextFilter =
-      typeof authoredConnection === "string"
-        ? ({ ...filter, connectionId: candidates[0]!.id } as CompiledTrigger["filters"])
+    const nextFilter: CompiledTriggerFilter | undefined =
+      typeof authoredConnection === "string" && filter !== undefined
+        ? { ...filter, connectionId: candidates[0]!.id }
         : filter;
     compiled.push({ ...trigger, ...(nextFilter === undefined ? {} : { filters: nextFilter }) });
     for (const connection of candidates) {

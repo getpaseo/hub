@@ -5,6 +5,7 @@ import {
   compiledConfigurationHash,
   parseCompiledHubConfig,
   parseExpression,
+  rawConfigurationHash,
   type AuthoredHubConfig,
   type CompiledHubConfig,
 } from "./compiler.js";
@@ -132,6 +133,18 @@ describe("Hub configuration compiler", () => {
     assert.throws(() => compileHubConfig(configuration), /from_users/iu);
   });
 
+  it("rejects organization routing IDs in authored filters", () => {
+    const configuration = cloneCanonicalConfiguration();
+    const filters = configuration["triggers"][0]!["filters"];
+    if (filters === undefined) throw new Error("canonical trigger filters are missing");
+    Object.assign(filters, {
+      connectionId: "00000000-0000-4000-8000-000000000001",
+      resourceId: "100",
+    });
+
+    assert.throws(() => compileHubConfig(configuration), /connectionId|resourceId/iu);
+  });
+
   it.each([
     [
       "duplicate step IDs",
@@ -196,6 +209,25 @@ describe("Hub configuration compiler", () => {
     assert.notEqual(compiledConfigurationHash(first), compiledConfigurationHash(second));
   });
 
+  it("keeps raw revision hashing separate from compiled contract hashing", () => {
+    const compiled = compileHubConfig(canonicalConfiguration);
+
+    assert.equal(
+      rawConfigurationHash(canonicalConfiguration),
+      rawConfigurationHash(cloneCanonicalConfiguration()),
+    );
+    assert.notEqual(
+      rawConfigurationHash(canonicalConfiguration),
+      compiledConfigurationHash(compiled),
+    );
+    const malformed = structuredClone(compiled);
+    Object.assign(malformed["triggers"][0]!, { maxRuntimeMs: "2h" });
+    assert.throws(
+      () => compiledConfigurationHash(malformed),
+      /invalid compiled workflow contract/iu,
+    );
+  });
+
   it("does not expose the removed trigger execution parser through the config module", () => {
     assert.equal("parseTriggerTimeoutMs" in configExports, false);
     assert.equal("TriggerSchema" in configExports, false);
@@ -207,6 +239,24 @@ describe("Hub configuration compiler", () => {
     Object.assign(malformed["triggers"][0]!, { maxRuntimeMs: "2h" });
 
     assert.throws(() => parseCompiledHubConfig(malformed), /invalid compiled workflow contract/iu);
+  });
+
+  it("parses resolved routing evidence in a compiled contract", () => {
+    const compiled = structuredClone(compileHubConfig(canonicalConfiguration));
+    const filter = compiled["triggers"][0]!["filters"];
+    if (filter === undefined) throw new Error("canonical trigger filters are missing");
+    compiled["triggers"][0]!["filters"] = {
+      ...filter,
+      connectionId: "00000000-0000-4000-8000-000000000001",
+      resourceId: "100",
+    };
+
+    const parsed = parseCompiledHubConfig(compiled);
+    assert.equal(
+      parsed["triggers"][0]!["filters"]?.connectionId,
+      "00000000-0000-4000-8000-000000000001",
+    );
+    assert.equal(parsed["triggers"][0]!["filters"]?.resourceId, "100");
   });
 
   it.each([
@@ -313,6 +363,26 @@ describe("Hub configuration compiler", () => {
       "missing external from_users",
       (configuration: CompiledHubConfig) => {
         delete configuration["triggers"][0]!["filters"];
+      },
+    ],
+    [
+      "resource ID without connection ID",
+      (configuration: CompiledHubConfig) => {
+        const filter = configuration["triggers"][0]!["filters"];
+        if (filter === undefined) throw new Error("canonical trigger filters are missing");
+        configuration["triggers"][0]!["filters"] = { ...filter, resourceId: "100" };
+      },
+    ],
+    [
+      "invalid compiled connection ID",
+      (configuration: CompiledHubConfig) => {
+        const filter = configuration["triggers"][0]!["filters"];
+        if (filter === undefined) throw new Error("canonical trigger filters are missing");
+        configuration["triggers"][0]!["filters"] = {
+          ...filter,
+          connectionId: "not-a-uuid",
+          resourceId: "100",
+        };
       },
     ],
     [

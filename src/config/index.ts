@@ -20,6 +20,7 @@ export {
   parseCompiledHubConfig,
   parseExpression,
   parsePromptText,
+  rawConfigurationHash,
   compileHubConfig,
   compiledConfigurationHash,
 } from "./schema.js";
@@ -46,6 +47,8 @@ export type {
   DockerEnvironment,
   EnvironmentConfig,
   FlyEnvironment,
+  AuthoredTriggerFilter,
+  CompiledTriggerFilter,
   Trigger,
   TriggerFilter,
   WorktreeTarget,

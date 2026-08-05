@@ -1,7 +1,8 @@
 import { load } from "js-yaml";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
-import { configurationHash, ProjectConfigurationStore } from "../configuration/store.js";
+import { ProjectConfigurationStore } from "../configuration/store.js";
+import { rawConfigurationHash } from "../config/compiler.js";
 import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
@@ -198,7 +199,7 @@ export class ProjectDashboard {
         validationErrors: {
           formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
         },
-        contentHash: configurationHash(rawYaml),
+        contentHash: rawConfigurationHash(rawYaml),
         createdByUserId: account.account.id,
       });
     }

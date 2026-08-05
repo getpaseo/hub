@@ -3,6 +3,7 @@ import {
   HubConfigSchema,
   compileHubConfig,
   compiledConfigurationHash,
+  rawConfigurationHash,
   parseDurationMs,
   parseCompiledHubConfig,
   parseExpression,
@@ -13,8 +14,10 @@ import {
   type AuthoredInputDefinition,
   type AuthoredStep,
   type AuthoredTrigger,
+  type AuthoredTriggerFilter,
   type CompiledHubConfig,
   type CompiledStep,
+  type CompiledTriggerFilter,
   type CompiledTrigger,
 } from "./compiler.js";
 
@@ -22,6 +25,7 @@ export {
   HubConfigSchema,
   compileHubConfig,
   compiledConfigurationHash,
+  rawConfigurationHash,
   parseDurationMs,
   parseCompiledHubConfig,
   parseExpression,
@@ -39,13 +43,14 @@ export type DaemonEnvironment = Extract<AuthoredEnvironment, { kind: "daemon" }>
 export type FlyEnvironment = Extract<AuthoredEnvironment, { kind: "fly" }>;
 export type DockerEnvironment = Extract<AuthoredEnvironment, { kind: "docker" }>;
 export type EnvironmentConfig = AuthoredEnvironment;
-export type TriggerFilter = NonNullable<AuthoredTrigger["filters"]>;
+export type TriggerFilter = CompiledTriggerFilter;
 export type Trigger = AuthoredTrigger;
 export type HubConfig = AuthoredHubConfig;
 export type CompiledConfiguration = CompiledHubConfig;
 export type CompiledTriggerConfig = CompiledTrigger;
 export type CompiledStepConfig = CompiledStep;
 export type WorktreeTarget = NonNullable<DaemonEnvironment["worktree"]>;
+export type { AuthoredTriggerFilter, CompiledTriggerFilter };
 
 export const ConfigRefSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("github"), repo: z.string().min(1) }),

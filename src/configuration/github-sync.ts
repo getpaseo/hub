@@ -1,6 +1,7 @@
 import { load } from "js-yaml";
+import { rawConfigurationHash } from "../config/compiler.js";
 import type { Database, ProjectConfigurationRevisionRecord } from "../db/types.js";
-import { configurationHash, ProjectConfigurationStore } from "./store.js";
+import { ProjectConfigurationStore } from "./store.js";
 
 export interface GitHubConfigurationProvider {
   listInstallationRepositories(input: {
@@ -71,7 +72,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
       validationErrors: {
         formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
       },
-      contentHash: configurationHash(file.rawYaml),
+      contentHash: rawConfigurationHash(file.rawYaml),
     });
     await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "yaml" });
     return { outcome: "invalid", revision };

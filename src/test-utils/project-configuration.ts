@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { compileHubConfig } from "../config/compiler.js";
+import { compileHubConfig, compiledConfigurationHash } from "../config/compiler.js";
 import {
   ProjectConfigurationStore,
-  configurationHash,
   type CompiledProjectConfiguration,
 } from "../configuration/store.js";
 import type { Database, ProjectConfigurationRevisionRecord, ProjectRecord } from "../db/types.js";
@@ -37,7 +36,7 @@ export async function createActiveProjectConfiguration(
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: configuration,
-    contentHash: configurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration),
     createdByUserId: userId,
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id);

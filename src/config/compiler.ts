@@ -42,7 +42,7 @@ const PromptBlockSchema = z.union([
 
 const OutputSchemaDeclaration = z.object({ schema: z.unknown() }).strict();
 
-const FilterSchema = z
+const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
@@ -55,10 +55,21 @@ const FilterSchema = z
       .string()
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
       .optional(),
-    connectionId: z.string().uuid().optional(),
-    resourceId: z.string().min(1).optional(),
   })
   .strict();
+
+const CompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend({
+  connectionId: z.string().uuid().optional(),
+  resourceId: z.string().min(1).optional(),
+}).superRefine((filter, context) => {
+  if (filter.resourceId !== undefined && filter.connectionId === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["resourceId"],
+      message: "resourceId requires connectionId",
+    });
+  }
+});
 
 export const WorktreeTargetSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -130,7 +141,7 @@ const AuthoredTriggerSchema = z
     inputs: z.record(z.string().min(1), InputSchema).optional(),
     values: z.record(z.string().min(1), z.string().min(1)).optional(),
     steps: z.array(StepSchema).min(1),
-    filters: FilterSchema.optional(),
+    filters: AuthoredTriggerFilterSchema.optional(),
   })
   .strict();
 
@@ -150,6 +161,7 @@ export type AuthoredInputDefinition = z.infer<typeof InputSchema>;
 export type AuthoredEnvironment = z.infer<typeof EnvironmentSchema>;
 export type AuthoredStep = z.infer<typeof StepSchema>;
 export type AuthoredTrigger = z.infer<typeof AuthoredTriggerSchema>;
+export type AuthoredTriggerFilter = z.infer<typeof AuthoredTriggerFilterSchema>;
 export type AuthoredHubConfig = z.infer<typeof AuthoredSchema>;
 
 export type ExpressionAst =
@@ -207,8 +219,17 @@ export interface CompiledTrigger {
   inputs: Readonly<Record<string, CompiledInputDefinition>>;
   values: Readonly<Record<string, ExpressionAst>>;
   steps: readonly CompiledStep[];
-  filters?: AuthoredTrigger["filters"] | undefined;
+  filters?: CompiledTriggerFilter | undefined;
 }
+
+export type CompiledTriggerFilter = Readonly<
+  Omit<AuthoredTriggerFilter, "channels" | "from_users"> & {
+    channels?: readonly string[] | undefined;
+    from_users?: readonly string[] | undefined;
+    connectionId?: string | undefined;
+    resourceId?: string | undefined;
+  }
+>;
 
 export type CompiledEnvironment =
   | (Extract<AuthoredEnvironment, { kind: "daemon" }> & { daemonId?: string | undefined })
@@ -337,7 +358,7 @@ const CompiledTriggerSchema: z.ZodType<CompiledTrigger> = z
     inputs: z.record(z.string().regex(IDENTIFIER), CompiledInputDefinitionSchema),
     values: z.record(z.string().regex(IDENTIFIER), ExpressionAstSchema),
     steps: z.array(CompiledStepSchema).min(1),
-    filters: FilterSchema.optional(),
+    filters: CompiledTriggerFilterSchema.optional(),
   })
   .strict();
 
@@ -384,7 +405,15 @@ export function parseCompiledHubConfig(value: unknown): CompiledHubConfig {
   return deepFreeze(parsed.data);
 }
 
-export function compiledConfigurationHash(configuration: unknown): string {
+export function compiledConfigurationHash(configuration: CompiledHubConfig): string {
+  return hashConfiguration(parseCompiledHubConfig(configuration));
+}
+
+export function rawConfigurationHash(configuration: unknown): string {
+  return hashConfiguration(configuration);
+}
+
+function hashConfiguration(configuration: unknown): string {
   return createHash("sha256").update(stableJson(configuration)).digest("hex");
 }
 
