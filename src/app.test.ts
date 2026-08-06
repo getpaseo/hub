@@ -6,7 +6,10 @@ import { createMemoryDatabase } from "./db/memory.js";
 
 describe("Hub application", () => {
   it("serves execution completion capabilities without reply executors", async () => {
-    const application = createHubApplication({ database: createMemoryDatabase() });
+    const application = createHubApplication({
+      database: createMemoryDatabase(),
+      publicApi: { status: "unavailable" },
+    });
 
     const response = await application.operations.handleExecutionCapabilities(
       new Request("https://hub.test/mcp", { method: "POST" }),

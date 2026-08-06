@@ -6,11 +6,7 @@ import {
   type AttachmentProvider,
   type AttachmentResolver,
 } from "./attachments/capabilities.js";
-import type { ApiKeyScope } from "./auth/api-key-contract.js";
-import { requireOperation, type OperationAuthenticator } from "./auth/operation-auth.js";
-import type { OperationAuthorization } from "./auth/api-keys.js";
 import { ProjectConfigurationStore } from "./configuration/store.js";
-import { installConfiguration } from "./config/admin-routes.js";
 import type { Database, TriggerRunRecord, WorkflowDeadlineRecovery } from "./db/types.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
 import {
@@ -18,7 +14,6 @@ import {
   createDaemonUpgradeHandler,
   createDaemonModule,
   enrollDaemon,
-  issueEnrollmentToken,
   revokeDaemon,
   type DaemonClock,
   type DaemonModule,
@@ -34,10 +29,16 @@ import type {
   TriggerProviderResources,
 } from "./providers/registration.js";
 import type { TriggerProvider, TriggerSource } from "./triggers/index.js";
-import { createManualTriggerSource, handleManualTriggerRequest } from "./triggers/manual/source.js";
+import {
+  createManualTriggerSource,
+  dispatchManualTrigger,
+  handleManualTriggerRequest,
+} from "./triggers/manual/source.js";
 import { createManualRunProvider } from "./triggers/manual/provider.js";
-import { runManualTrigger } from "./triggers/manual/routes.js";
 import { DaemonRegistration, type BrowserOrganizationAccess } from "./daemons/registration.js";
+import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
+import { createPublicOperations } from "./public-operations/index.js";
+import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
 
 export interface HubRuntimeOptions {
   database: Database | null;
@@ -48,7 +49,7 @@ export interface HubRuntimeOptions {
   connectionsForProject?: TriggerProviderResources["connectionsForProject"];
   configurationRevisionId?: string;
   outputRegistry?: OutputExecutorRegistry;
-  operationAuth?: OperationAuthenticator;
+  publicApi: PublicApiComposition;
   completionTokenSecret?: string;
   publicBaseUrl?: string;
   daemonClock?: DaemonClock;
@@ -94,6 +95,7 @@ export interface HubOperations {
 export interface HubApplication {
   hub: HubRuntime;
   operations: HubOperations;
+  publicApi: PublicApi;
 }
 
 export function createHubRuntime(options: HubRuntimeOptions): HubRuntime {
@@ -213,19 +215,11 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
     },
   };
+  const publicOperations = createAppPublicOperations(options, manualSource, storeForProject);
+  const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
     handleEnrollmentToken: (request) =>
-      machineOperation(request, "daemons:enroll", (authorization) =>
-        options.database === null
-          ? databaseUnavailable()
-          : issueEnrollmentToken(
-              request,
-              options.database,
-              authorization.organizationId,
-              authorization.keyId,
-              options.daemonClock ?? { nowDate: () => new Date() },
-            ),
-      ),
+      publicApi.handleLegacyOperation("issueEnrollmentToken", request),
     handleDaemonEnrollment: (request) =>
       options.database === null
         ? databaseUnavailable()
@@ -257,37 +251,30 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         ? databaseUnavailable()
         : attachments.handle(request, executionId, attachmentId),
     handleConfigurationInstall: (request) =>
-      machineOperation(request, "configuration:install", (authorization) =>
-        options.database === null
-          ? databaseUnavailable()
-          : installConfiguration(request, options.database, storeForProject, authorization),
-      ),
-    handleManualRun: (request) =>
-      machineOperation(request, "runs:dispatch", (authorization) =>
-        options.database === null || manualSource === undefined
-          ? databaseUnavailable()
-          : runManualTrigger(request, manualSource, options.database, authorization),
-      ),
+      publicApi.handleLegacyOperation("installConfiguration", request),
+    handleManualRun: (request) => publicApi.handleLegacyOperation("dispatchManualRun", request),
     handleManualTrigger: (request, entrypoint) =>
       manualSource === undefined
         ? databaseUnavailable()
         : handleManualTriggerRequest(request, manualSource, entrypoint),
   };
-  return { hub, operations };
+  return { hub, operations, publicApi };
+}
 
-  async function machineOperation(
-    request: Request,
-    scope: ApiKeyScope,
-    run: (authorization: OperationAuthorization) => Promise<Response>,
-  ): Promise<Response> {
-    if (options.database === null) return databaseUnavailable();
-    if (options.operationAuth === undefined) {
-      return Response.json({ error: "auth_unavailable" }, { status: 503 });
-    }
-    const authorization = await requireOperation(options.operationAuth, request, scope);
-    if (authorization instanceof Response) return authorization;
-    return run(authorization);
-  }
+function createAppPublicOperations(
+  options: HubRuntimeOptions,
+  manualSource: ReturnType<typeof createManualTriggerSource> | undefined,
+  configurationForProject: (projectId: string) => ProjectConfigurationStore,
+) {
+  if (options.database === null || manualSource === undefined) return null;
+  return createPublicOperations(
+    createDatabasePublicOperationRepository(options.database),
+    {
+      configurationForProject,
+      dispatchManualEvent: (input) => dispatchManualTrigger(manualSource, input),
+    },
+    options.daemonClock,
+  );
 }
 
 function createAppExecutionCapabilityServer(

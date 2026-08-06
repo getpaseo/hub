@@ -1,6 +1,6 @@
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
-import type { OperationAuthenticator } from "./auth/operation-auth.js";
+import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
@@ -17,7 +17,7 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 export interface ApplicationCompositionOptions {
   database: Database | null;
   auth: AuthServer | null;
-  operationAuth?: OperationAuthenticator;
+  publicApi: PublicApiComposition;
   registrations?: readonly ProviderRegistration[];
   publicBaseUrl?: string;
   completionTokenSecret?: string;
@@ -84,7 +84,7 @@ export async function createApplicationRuntime(
     ),
     connectionsForProject,
     ...(options.auth === null ? {} : { browserOrganizationAccess: options.auth }),
-    ...(options.operationAuth === undefined ? {} : { operationAuth: options.operationAuth }),
+    publicApi: options.publicApi,
     ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
     ...(options.completionTokenSecret === undefined
       ? {}
@@ -114,6 +114,7 @@ export async function createApplicationRuntime(
   return {
     hub: activeHub,
     operations: application.operations,
+    publicApi: application.publicApi,
     resources,
     projectDashboard:
       options.database === null || options.auth === null

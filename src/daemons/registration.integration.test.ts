@@ -171,6 +171,7 @@ describe("daemon registration authenticated application boundary", () => {
     });
     const application = createHubApplication({
       database,
+      publicApi: { status: "unavailable" },
       browserOrganizationAccess: auth,
       publicBaseUrl: "https://hub.paseo.test",
     });

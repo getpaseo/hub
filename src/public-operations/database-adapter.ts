@@ -1,0 +1,33 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { Database } from "../db/types.js";
+import type { PublicOperationRepository } from "./types.js";
+
+export function createDatabasePublicOperationRepository(
+  database: Database,
+): PublicOperationRepository {
+  return {
+    async findActiveProject(organizationId, projectSlug) {
+      const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
+      return project === undefined || project.status !== "active"
+        ? undefined
+        : { id: project.id, slug: project.slug };
+    },
+    async findManualRun(providerEventReceiptId, trigger) {
+      return (await database.findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)).find(
+        (candidate) => candidate.configuredTriggerName === trigger,
+      );
+    },
+    async issueEnrollmentToken(authorization, input) {
+      const issued = await database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier: createHash("sha256").update(input.token).digest("base64url"),
+        organizationId: authorization.organizationId,
+        issuedByApiKeyId: authorization.keyId,
+        registrationMethod: "operator",
+        expiresAt: input.expiresAt,
+        consumedAt: null,
+      });
+      return issued ? "issued" : "credential_revoked";
+    },
+  };
+}

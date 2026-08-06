@@ -38,7 +38,9 @@
     "docker:smoke": "scripts/docker-smoke.sh"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^9.1.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@scalar/api-reference-react": "^0.9.37",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "1.170.18",
     "@tanstack/react-start": "1.168.28",
@@ -64,6 +66,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "@axe-core/playwright": "4.10.2",
     "@playwright/test": "1.61.1",
     "@tailwindcss/vite": "4.3.3",
