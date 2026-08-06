@@ -13,6 +13,7 @@ const organizationScopeSchema = z
 const projectScopeSchema = organizationScopeSchema
   .extend({ projectSlug: z.string().trim().min(1).max(100) })
   .strict();
+const activityRunScopeSchema = projectScopeSchema.extend({ runId: z.string().uuid() }).strict();
 const createProjectSchema = organizationScopeSchema.extend({
   name: z.string().trim().min(1).max(100),
   slug: z
@@ -57,6 +58,15 @@ export const projectSnapshot = createServerFn({ method: "GET" })
   .handler(
     async ({ data }): Promise<Result<Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>>> =>
       read(data, (dashboard) => dashboard.projectSnapshot(getRequest(), data)),
+  );
+
+export const activityRunSnapshot = createServerFn({ method: "GET" })
+  .validator(activityRunScopeSchema)
+  .handler(
+    async ({
+      data,
+    }): Promise<Result<Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>>> =>
+      read(data, (dashboard) => dashboard.activityRunSnapshot(getRequest(), data)),
   );
 
 export const createProject = createServerFn({ method: "POST" })

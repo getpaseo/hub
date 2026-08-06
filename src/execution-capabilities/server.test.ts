@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import type { Server } from "node:http";
+import {
+  request as httpRequest,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { Ajv } from "ajv";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { describe, it } from "vitest";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { describe, it, vi } from "vitest";
 import { z } from "zod";
 import { hashAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import type { JsonValue } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
+import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
 import { OutputExecutorRegistry } from "./outputs.js";
 import { createExecutionCapabilityServer } from "./server.js";
 
@@ -149,12 +156,127 @@ describe("execution capability MCP boundary", () => {
         (await client.listTools()).tools.map((tool) => tool.name),
         ["finish_execution", "reply"],
       );
-      const result = await client.callTool({ name: "finish_execution", arguments: {} });
+      const result = await client.callTool({
+        name: "finish_execution",
+        arguments: {},
+      });
       assert.equal(result.isError, undefined);
       assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
     } finally {
       await client.close();
       await closeServer(endpoint.server);
+    }
+  });
+
+  it("flushes a successful MCP response without reconciling the pending archive", async () => {
+    let responseFinished = false;
+    const fixture = await capabilityFixture(undefined, "succeeded", 1, undefined, true);
+    const endpoint = await serveFixture(fixture);
+    const observeFinish = (_request: IncomingMessage, response: ServerResponse) => {
+      response.once("finish", () => {
+        responseFinished = true;
+      });
+    };
+    endpoint.server.on("request", observeFinish);
+    try {
+      const response = await fetch(endpoint.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer token",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: mcpRequest("tools/call", {
+          name: "finish_execution",
+          arguments: {},
+        }),
+      });
+      assert.equal(response.status, 200);
+      await response.text();
+      assert.equal(responseFinished, true);
+      assert.equal(
+        (await fixture.database.findAgentExecutionById(fixture.executionId))?.status,
+        "succeeded",
+      );
+      const execution = await fixture.database.findAgentExecutionById(fixture.executionId);
+      assert.equal(execution?.hubAction, "archive");
+      assert.equal(execution?.hubActionReadyAt, null);
+      assert.equal(execution?.hubActionCompletedAt, null);
+    } finally {
+      await closeServer(endpoint.server);
+    }
+  });
+
+  it("closes MCP transport on response abort while leaving the archive pending", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 1, undefined, true);
+    let releaseBody!: () => void;
+    const bodyRelease = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    let closeObserved!: () => void;
+    const transportClosed = new Promise<void>((resolve) => {
+      closeObserved = resolve;
+    });
+    const closeTransport = WebStandardStreamableHTTPServerTransport.prototype["close"];
+    const closeSpy = vi
+      .spyOn(WebStandardStreamableHTTPServerTransport.prototype, "close")
+      .mockImplementation(async function (this: WebStandardStreamableHTTPServerTransport) {
+        closeObserved();
+        await closeTransport.call(this);
+      });
+    const server = createFetchServer(async (request) => {
+      const response = await fixture.server.handle(request, fixture.executionId);
+      const lifecycle = takeResponseLifecycle(response);
+      if (lifecycle === undefined || response.body === null) return response;
+      const reader = response.body.getReader();
+      const delayedBody = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const first = await reader.read();
+          if (!first.done) controller.enqueue(first.value);
+          await bodyRelease;
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(next.value);
+          }
+        },
+        cancel(reason) {
+          void reader.cancel(reason);
+        },
+      });
+      return registerResponseLifecycle(
+        new Response(delayedBody, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        }),
+        lifecycle,
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("server did not bind");
+    try {
+      await abortHttpRequestAfterFirstResponseData({
+        port: address.port,
+        path: `/agent-executions/${fixture.executionId}/mcp`,
+        body: mcpRequest("tools/call", { name: "finish_execution", arguments: {} }),
+        onFirstData: releaseBody,
+      });
+      await transportClosed;
+      const execution = await fixture.database.findAgentExecutionById(fixture.executionId);
+      assert.equal(execution?.status, "succeeded");
+      assert.equal(execution?.hubAction, "archive");
+      assert.equal(execution?.hubActionReadyAt, null);
+      assert.equal(execution?.hubActionCompletedAt, null);
+      assert.ok(closeSpy.mock.calls.length >= 1);
+    } finally {
+      releaseBody();
+      closeSpy.mockRestore();
+      await closeServer(server);
     }
   });
 
@@ -199,9 +321,10 @@ describe("execution capability MCP boundary", () => {
     );
     assert.ok(tool);
     assert.ok(isRecord(tool.inputSchema));
-    const independentValidator = new Ajv({ allErrors: true, strict: true }).compile(
-      tool.inputSchema,
-    );
+    const independentValidator = new Ajv({
+      allErrors: true,
+      strict: true,
+    }).compile(tool.inputSchema);
     assert.equal(
       independentValidator({
         output: {
@@ -400,6 +523,7 @@ async function capabilityFixture(
   completionStatus: "succeeded" | "failed" = "succeeded",
   maxReplies = 1,
   outputSchema?: JsonValue,
+  autoArchive = false,
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
@@ -413,7 +537,7 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(maxReplies, outputSchema),
+    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive),
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
@@ -421,14 +545,23 @@ async function capabilityFixture(
     outbound.push(input);
     await execute();
   });
-  const completions: Array<{ executionId: string; token: string; output?: unknown }> = [];
+  const completions: Array<{
+    executionId: string;
+    token: string;
+    output?: unknown;
+  }> = [];
   const server = createExecutionCapabilityServer({
     database,
     outputs,
     async completeExecution(input) {
       completions.push(input);
-      return (await database.transitionAgentExecution(input.executionId, completionStatus))
-        .execution;
+      return (
+        await database.transitionAgentExecution(
+          input.executionId,
+          completionStatus,
+          autoArchive ? { hubAction: "archive" } : undefined,
+        )
+      ).execution;
     },
   });
   let id = 0;
@@ -485,12 +618,56 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-function launchIntent(maxReplies = 1, outputSchema?: JsonValue): LaunchMachineIntent {
+async function abortHttpRequestAfterFirstResponseData(options: {
+  port: number;
+  path: string;
+  body: string;
+  onFirstData: () => void;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let clientAborted = false;
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port: options.port,
+        path: options.path,
+        method: "POST",
+        headers: {
+          authorization: "Bearer token",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+      },
+      (response) => {
+        response.once("data", () => {
+          clientAborted = true;
+          request.destroy();
+          options.onFirstData();
+        });
+        response.once("close", resolve);
+        response.once("error", (error) => {
+          if (!clientAborted) reject(error);
+        });
+        response.resume();
+      },
+    );
+    request.once("error", (error) => {
+      if (!clientAborted) reject(error);
+    });
+    request.end(options.body);
+  });
+}
+
+function launchIntent(
+  maxReplies = 1,
+  outputSchema?: JsonValue,
+  autoArchive = false,
+): LaunchMachineIntent {
   return {
     kind: "launch_machine",
     organizationId: "org-1",
     projectId: "project-1",
-    triggerId: randomUUID(),
+    triggerRunId: randomUUID(),
     triggerName: "slack-mention",
     environmentName: "daemon",
     environment: {
@@ -502,7 +679,7 @@ function launchIntent(maxReplies = 1, outputSchema?: JsonValue): LaunchMachineIn
     prompt: "reply",
     agent: { provider: "codex", mode: "full-access" },
     allowOutputs: [{ type: "slack.reply", max: maxReplies }],
-    autoArchive: false,
+    autoArchive,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,
     ...(outputSchema === undefined ? {} : { outputSchema }),

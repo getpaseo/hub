@@ -155,6 +155,20 @@
       "when": 1785976341526,
       "tag": "0021_sticky_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785988132396,
+      "tag": "0022_yellow_the_call",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786001589250,
+      "tag": "0023_flawless_white_queen",
+      "breakpoints": true
     }
   ]
 }

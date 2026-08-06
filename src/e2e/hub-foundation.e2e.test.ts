@@ -94,7 +94,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const run = await hub.beginAmbiguousManualRun();
 
     assert.deepEqual(run.beforeRestart, {
-      triggers: 1,
+      receipts: 1,
       executions: 1,
       status: "running",
       daemonId: enrollment.daemonId,
@@ -105,7 +105,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const recovery = await hub.replayEvidence(run.executionId);
     assert.equal(recovery.executionAgentId, recovery.ownerMatchingAgentId);
     assert.deepEqual(recovery, {
-      deliveryTriggers: 1,
+      deliveryReceipts: 1,
       executions: 1,
       persistedDaemonAgents: 1,
       ownerMatchingAgentId: recovery.executionAgentId,

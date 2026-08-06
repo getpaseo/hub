@@ -409,9 +409,9 @@ function gatewayOptions(bot: MemoryDiscordBotClient) {
       Promise.resolve({
         status: "accepted" as const,
         receiptId: `receipt-${input.deliveryId}`,
-        triggers: [
+        events: [
           {
-            triggerId: `trigger-${input.deliveryId}`,
+            providerEventReceiptId: `trigger-${input.deliveryId}`,
             organizationId: "org_1",
             projectId: "project-1",
             deliveryId: input.deliveryId,

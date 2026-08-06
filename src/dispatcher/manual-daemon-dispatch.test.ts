@@ -27,7 +27,8 @@ describe("manual trigger durable workflow boundary", () => {
     await dispatchManualTrigger(source, manualTrigger("manual-no-match"));
 
     assert.equal(
-      (await database.findTriggerByDeliveryId("manual-no-match", "org_1"))?.droppedReason,
+      (await database.findProviderEventReceiptByDeliveryId("manual-no-match", "org_1"))
+        ?.droppedReason,
       "no_matching_trigger",
     );
   });
@@ -73,10 +74,10 @@ describe("manual trigger durable workflow boundary", () => {
     );
     await engine.processAvailable();
 
-    assert.equal(outcome?.triggerId !== undefined, true);
-    const triggerId = outcome?.triggerId;
+    assert.equal(outcome?.providerEventReceiptId !== undefined, true);
+    const triggerId = outcome?.providerEventReceiptId;
     assert.ok(triggerId);
-    const run = (await database.findTriggerRunsByTriggerId(triggerId))[0];
+    const run = (await database.findTriggerRunsByProviderEventReceiptId(triggerId))[0];
     assert.ok(run);
     const step = await database.findWorkflowStepRunByTriggerRun(run.id);
     assert.ok(step);

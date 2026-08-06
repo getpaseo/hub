@@ -38,6 +38,7 @@ import type { ProjectDashboard } from "./dashboard.js";
 import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
 import {
   archiveProject,
+  activityRunSnapshot,
   availableGitHubRepositories,
   createProject,
   organizationSnapshot,
@@ -370,9 +371,6 @@ export function ProjectOverviewPanel() {
       <Section title="Recent activity">
         <ActivityTable activity={data.activity.slice(0, 5)} label="Recent activity" />
       </Section>
-      <Section title="Recent executions">
-        <ExecutionTable executions={data.executions.slice(0, 5)} label="Recent executions" />
-      </Section>
     </>
   );
 }
@@ -655,23 +653,118 @@ function SourceModeButton({
 }
 
 export function ProjectActivityPanel() {
+  const tenant = useRouteTenant();
   const snapshot = useProjectSnapshot();
   if (!snapshot.ok) return snapshot.element;
   return (
     <>
       <PageHeader title="Activity" description="Provider events routed to this project." />
-      <ActivityTable activity={snapshot.data.activity} label="Project activity" />
+      <ActivityTable
+        activity={snapshot.data.activity}
+        label="Project activity"
+        detailBasePath={`/o/${tenant.organization.slug}/projects/${tenant.project?.slug}/activity`}
+      />
     </>
   );
 }
 
-export function ProjectExecutionsPanel() {
-  const snapshot = useProjectSnapshot();
+export function ProjectActivityRunPanel({ runId }: { runId: string }) {
+  const tenant = useRouteTenant();
+  const load = useServerFn(activityRunSnapshot);
+  const scope = {
+    organizationSlug: tenant.organization.slug,
+    projectSlug: tenant.project?.slug ?? "",
+    runId,
+  };
+  const query = useQuery({
+    queryKey: ["project-activity-run", tenant.account.id, tenant.organization.id, runId],
+    queryFn: () => load({ data: scope }),
+  });
+  const snapshot = queryState<Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>>(
+    query,
+    "Run unavailable",
+  );
   if (!snapshot.ok) return snapshot.element;
+  const activity = snapshot.data.activity;
   return (
     <>
-      <PageHeader title="Executions" description="Durable executions owned by this project." />
-      <ExecutionTable executions={snapshot.data.executions} label="Project executions" />
+      <PageHeader
+        title="Run detail"
+        description={`${activity.provider} · ${activity.configuredTriggerName}`}
+      />
+      <div className="grid gap-6">
+        <Section title="Invocation">
+          <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
+            <DetailField label="Raw message">
+              <pre className="whitespace-pre-wrap text-sm">{activity.rawMessage}</pre>
+            </DetailField>
+            <DetailField label="Clean prompt">
+              <pre className="whitespace-pre-wrap text-sm">{activity.cleanPrompt}</pre>
+            </DetailField>
+            <DetailField label="Typed inputs">
+              <JsonValue value={activity.inputs} />
+            </DetailField>
+            <DetailField label="Composed routing values">
+              <JsonValue value={activity.values} />
+            </DetailField>
+            <DetailField label="Run status">
+              <StatusPill tone={executionTone(activity.status)}>{activity.status}</StatusPill>
+            </DetailField>
+            <DetailField label="Run deadline">
+              <span className="font-mono text-xs">
+                {activity.deadlineAt === null ? "—" : formatDate(activity.deadlineAt)}
+                {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
+              </span>
+            </DetailField>
+            <DetailField label="Failure reason">
+              <span>{activity.failureReason ?? "—"}</span>
+            </DetailField>
+            <DetailField label="Delivery">
+              <span className="font-mono text-xs">{activity.deliveryId}</span>
+            </DetailField>
+          </dl>
+        </Section>
+        <Section title="Steps" description="Ordered durable step state and structured outputs.">
+          <DataTable
+            label="Run steps"
+            columns={[
+              { header: "Step" },
+              { header: "Status" },
+              { header: "Deadline" },
+              { header: "Structured output" },
+              { header: "Failure reason" },
+            ]}
+            isEmpty={activity.steps.length === 0}
+            empty={{ title: "No steps" }}
+          >
+            {activity.steps.map((step) => (
+              <DataRow key={step.id}>
+                <DataCell>
+                  <span className="font-medium">
+                    {step.ordinal + 1}. {step.stepId}
+                  </span>
+                </DataCell>
+                <DataCell>
+                  <StatusPill tone={executionTone(step.status)}>{step.status}</StatusPill>
+                </DataCell>
+                <DataCell muted>
+                  <span className="font-mono text-xs">
+                    {step.deadlineAt === null ? "—" : formatDate(step.deadlineAt)}
+                    {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
+                    {step.idleDeadlineAt === null
+                      ? ""
+                      : ` · idle ${formatDate(step.idleDeadlineAt)}`}
+                  </span>
+                </DataCell>
+                <DataCell>
+                  <JsonValue value={step.output} />
+                </DataCell>
+                <DataCell muted>{step.failureReason ?? "—"}</DataCell>
+              </DataRow>
+            ))}
+          </DataTable>
+        </Section>
+      </div>
     </>
   );
 }
@@ -894,20 +987,43 @@ function SetupCard({ label, ready, detail }: { label: string; ready: boolean; de
   );
 }
 
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </div>
+  );
+}
+
+function JsonValue({ value }: { value: unknown }) {
+  return (
+    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">
+      {JSON.stringify(value, null, 2) ?? "—"}
+    </pre>
+  );
+}
+
 function ActivityTable({
   activity,
   label,
+  detailBasePath,
 }: {
-  activity: ProjectSnapshot["activity"];
+  activity: ReadonlyArray<
+    | ProjectSnapshot["activity"][number]
+    | Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>["unroutedEvents"][number]
+  >;
   label: string;
+  detailBasePath?: string;
 }) {
   return (
     <DataTable
       label={label}
       columns={[
-        { header: "Event" },
+        { header: "Run" },
+        { header: "Provider" },
         { header: "Source" },
-        { header: "Result" },
+        { header: "Status" },
         { header: "Received" },
       ]}
       isEmpty={activity.length === 0}
@@ -916,68 +1032,26 @@ function ActivityTable({
       {activity.map((event) => (
         <DataRow key={event.id}>
           <DataCell>
-            <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
+            {detailBasePath &&
+            "configuredTriggerName" in event &&
+            event.configuredTriggerName !== null ? (
+              <Link
+                className="font-medium hover:underline"
+                to={`${detailBasePath}/${event.id}` as never}
+              >
+                {event.configuredTriggerName}
+              </Link>
+            ) : (
+              <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
+            )}
             {event.repo === null ? null : (
               <span className="block text-xs text-muted-foreground">{event.repo}</span>
             )}
           </DataCell>
+          <DataCell>{event.provider}</DataCell>
           <DataCell>{event.source}</DataCell>
-          <DataCell>{activityResult(event)}</DataCell>
+          <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
           <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
-        </DataRow>
-      ))}
-    </DataTable>
-  );
-}
-
-function activityResult(event: ProjectSnapshot["activity"][number]): string {
-  if (event.droppedReason !== null) return event.droppedReason;
-  if (event.branchOutcomes.length > 0) {
-    return event.branchOutcomes
-      .map((branch) =>
-        branch.outcome === "rejected"
-          ? `rejected_input:${branch.configuredTriggerName}:${branch.rejectionReason}`
-          : `${branch.configuredTriggerName}:${branch.status}${branch.deadlineKind === null ? "" : ` [deadline:${branch.deadlineKind}]`}${branch.steps.length === 0 ? "" : ` (${branch.steps.map((step) => `${step.stepId}:${step.status}${step.deadlineKind === null ? "" : ` [deadline:${step.deadlineKind}]`}`).join(", ")})`}`,
-      )
-      .join(", ");
-  }
-  if (event.configuredTriggerNames.length > 0) return event.configuredTriggerNames.join(", ");
-  return event.matchedTriggerName ?? "Accepted";
-}
-
-function ExecutionTable({
-  executions,
-  label,
-}: {
-  executions: ProjectSnapshot["executions"];
-  label: string;
-}) {
-  return (
-    <DataTable
-      label={label}
-      columns={[
-        { header: "Execution" },
-        { header: "Status" },
-        { header: "Revision" },
-        { header: "Started" },
-      ]}
-      isEmpty={executions.length === 0}
-      empty={{ title: "No executions" }}
-    >
-      {executions.map((execution) => (
-        <DataRow key={execution.id}>
-          <DataCell>
-            <span className="font-mono text-xs">{execution.id}</span>
-          </DataCell>
-          <DataCell>
-            <StatusPill tone={executionTone(execution.status)}>{execution.status}</StatusPill>
-          </DataCell>
-          <DataCell muted>
-            <span className="font-mono text-xs">
-              {execution.configurationRevisionId.slice(0, 12)}
-            </span>
-          </DataCell>
-          <DataCell muted>{formatDate(execution.startedAt)}</DataCell>
         </DataRow>
       ))}
     </DataTable>

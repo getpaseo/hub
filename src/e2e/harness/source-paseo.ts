@@ -163,6 +163,26 @@ export class SourcePaseo {
     return z.array(z.unknown()).parse(value);
   }
 
+  async agentProvider(agentId: string): Promise<string> {
+    const result = await this.run([
+      "agent",
+      "inspect",
+      agentId,
+      "--host",
+      this.paths.daemonHost,
+      "--json",
+    ]);
+    const provider = result["Provider"];
+    if (typeof provider !== "string" || provider.length === 0) {
+      throw new Error(`source agent ${agentId} did not report a provider`);
+    }
+    return provider;
+  }
+
+  async processDescriptions(): Promise<string[]> {
+    return describeProcesses(await processFamily(this.daemon?.pid));
+  }
+
   async status(): Promise<Record<string, unknown>> {
     return this.run(["hub", "status", "--host", this.paths.daemonHost, "--json"]);
   }

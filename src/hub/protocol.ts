@@ -21,8 +21,15 @@ const HubTimelineItemSchema = z
     type: z.string(),
     text: z.string().optional(),
     messageId: z.string().optional(),
+    callId: z.string().optional(),
+    name: z.string().optional(),
+    status: z.string().optional(),
   })
   .passthrough();
+
+export function isHubFinishExecutionToolName(name: string): boolean {
+  return name === "hub.finish_execution" || name === "mcp__hub__finish_execution";
+}
 
 export const HubExecutionAgentStreamEventSchema = z.discriminatedUnion("type", [
   z

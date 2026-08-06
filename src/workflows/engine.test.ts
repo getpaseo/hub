@@ -11,7 +11,7 @@ import {
   type ResolvedPromptPartials,
 } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { Database, DurableTrigger } from "../db/types.js";
+import type { Database, DurableProviderEvent } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
@@ -50,10 +50,19 @@ describe("durable multi-step workflow engine", () => {
     const dispatches: string[] = [];
     const { handler, engine } = engineFor(fixture, dispatches);
     await handler(fixture.trigger("repo=hub work"));
-    assert.equal((await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId)).length, 1);
+    assert.equal(
+      (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        )
+      ).length,
+      1,
+    );
     await engine.processAvailable();
 
-    let run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0];
+    let run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0];
     assert.ok(run && run.outcome === "accepted");
     let steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     assert.deepEqual(
@@ -93,7 +102,9 @@ describe("durable multi-step workflow engine", () => {
     await handler(fixture.trigger("investigate"));
     await engine.processAvailable();
     assert.deepEqual(dispatches, ["classify"]);
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
@@ -121,7 +132,9 @@ describe("durable multi-step workflow engine", () => {
     const { handler, engine } = engineFor(fixture, dispatches);
     await handler(fixture.trigger("repo=hub work"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.status, "failed");
     assert.match(run.failureReason ?? "", /unavailable|evaluation/iu);
     assert.deepEqual(dispatches, []);
@@ -133,7 +146,9 @@ describe("durable multi-step workflow engine", () => {
     const { handler, engine } = engineFor(fixture, dispatches);
     await handler(fixture.trigger("investigate"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.ok(classifier);
@@ -157,7 +172,9 @@ describe("durable multi-step workflow engine", () => {
     const { handler, engine } = engineFor(fixture, dispatches);
     await handler(fixture.trigger("investigate"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.ok(classifier);
@@ -181,7 +198,9 @@ describe("durable multi-step workflow engine", () => {
     const first = engineFor(fixture, dispatches);
     await first.handler(fixture.trigger("investigate"));
     await first.engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     const classifierStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(
       classifierStep.id,
@@ -221,7 +240,11 @@ describe("durable multi-step workflow engine", () => {
       await first.handler(fixture.trigger("repo=hub work"));
       await first.engine.processAvailable();
 
-      const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+      const run = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        )
+      )[0]!;
       const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
       const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
         firstStep.id,
@@ -267,7 +290,11 @@ describe("durable multi-step workflow engine", () => {
       const { handler, engine } = engineFor(fixture, dispatches);
       await handler(fixture.trigger("repo=hub work"));
       await engine.processAvailable();
-      const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+      const run = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        )
+      )[0]!;
       const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
       const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(firstStep.id);
       assert.ok(execution);
@@ -318,7 +345,9 @@ describe("durable multi-step workflow engine", () => {
     await handler(fixture.trigger("run"));
     await engine.processAvailable();
 
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
@@ -339,7 +368,9 @@ describe("durable multi-step workflow engine", () => {
 
     await handler(fixture.trigger("run"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
@@ -366,7 +397,9 @@ describe("durable multi-step workflow engine", () => {
     now = new Date("2026-08-06T12:01:00.000Z");
     await engine.processAvailable();
 
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     assert.equal(run.status, "failed");
@@ -384,7 +417,9 @@ describe("durable multi-step workflow engine", () => {
 
     await handler(fixture.trigger("run"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
@@ -414,7 +449,9 @@ describe("durable multi-step workflow engine", () => {
 
     await handler(fixture.trigger("run"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const first = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(first.id);
@@ -446,7 +483,9 @@ describe("durable multi-step workflow engine", () => {
 
     await handler(fixture.trigger("run"));
     await engine.processAvailable();
-    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
     assert.equal(run.outcome, "accepted");
     const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
@@ -468,10 +507,10 @@ describe("durable multi-step workflow engine", () => {
 
 interface Fixture {
   database: Database;
-  triggerId: string;
+  providerEventReceiptId: string;
   revisionId: string;
   configuration: CompiledHubConfig;
-  trigger(message: string): DurableTrigger;
+  trigger(message: string): DurableProviderEvent;
 }
 
 async function workflowFixture(
@@ -520,27 +559,27 @@ async function workflowFixture(
     contentHash: compiledConfigurationHash(configuration),
     createdByUserId: "user-1",
   });
-  const trigger = await database.insertTrigger({
+  const receipt = await database.persistManualEvent({
     organizationId: "org-1",
     projectId: project.id,
-    configurationRevisionId: revision.id,
     deliveryId: randomUUID(),
     source: "manual.run",
     payload: {},
     receivedAt: new Date(),
   });
+  if (receipt.status !== "accepted") throw new Error("workflow receipt was not accepted");
   return {
     database,
-    triggerId: trigger.trigger.id,
+    providerEventReceiptId: receipt.event.providerEventReceiptId,
     revisionId: revision.id,
     configuration,
     trigger(message) {
       return {
-        triggerId: trigger.trigger.id,
+        providerEventReceiptId: receipt.event.providerEventReceiptId,
         organizationId: "org-1",
         projectId: project.id,
         source: "manual.run",
-        deliveryId: trigger.trigger.deliveryId,
+        deliveryId: receipt.event.deliveryId,
         payload: { input: message },
         receivedAt: new Date(),
         connectionId: null,

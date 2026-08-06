@@ -10,6 +10,7 @@ import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
+import { registerResponseLifecycle } from "../http/response-lifecycle.js";
 import {
   compileFinishExecutionArguments,
   compileJsonSchema,
@@ -63,12 +64,24 @@ export function createExecutionCapabilityServer(options: {
         enableJsonResponse: true,
         enableDnsRebindingProtection: false,
       });
-      try {
-        await server.connect(transport);
-        return await transport.handleRequest(request);
-      } finally {
+      let responseLifecycleRegistered = false;
+      const closeMcp = async (): Promise<void> => {
         await server.close().catch(() => undefined);
         await transport.close().catch(() => undefined);
+      };
+      try {
+        await server.connect(transport);
+        const response = await transport.handleRequest(request);
+        responseLifecycleRegistered = true;
+        return registerResponseLifecycle(response, {
+          // HTTP finish only proves that Node flushed the MCP response. The
+          // provider still has to acknowledge its subsequent turn before a
+          // deferred Hub archive action can be reconciled.
+          onFinish: closeMcp,
+          onAbort: closeMcp,
+        });
+      } finally {
+        if (!responseLifecycleRegistered) await closeMcp();
       }
     },
   };
@@ -147,9 +160,8 @@ function createMcpServer(
           token,
           ...(output === undefined ? {} : { output }),
         });
-        return completed.status === "succeeded"
-          ? toolSuccess("Execution finished")
-          : toolFailure("Execution could not be finished");
+        if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
+        return toolSuccess("Execution finished");
       } catch (error) {
         return toolFailure(
           error instanceof Error ? error.message : "Execution could not be finished",
@@ -192,7 +204,10 @@ function finishExecutionContract(outputSchema: JsonValue | undefined): JsonSchem
     validate(args) {
       return compiled.validate(args)
         ? { valid: true }
-        : { valid: false, message: validationMessage(compiled.validate.errors) };
+        : {
+            valid: false,
+            message: validationMessage(compiled.validate.errors),
+          };
     },
   };
 }
@@ -204,7 +219,10 @@ function jsonSchemaContract(schema: JsonSchema): JsonSchemaContract {
     validate(args) {
       return compiled.validate(args)
         ? { valid: true }
-        : { valid: false, message: validationMessage(compiled.validate.errors) };
+        : {
+            valid: false,
+            message: validationMessage(compiled.validate.errors),
+          };
     },
   };
 }

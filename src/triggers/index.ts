@@ -1,4 +1,4 @@
-import type { DurableTrigger } from "../db/types.js";
+import type { DurableProviderEvent } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { InvocationParseResult } from "./invocation.js";
 
@@ -14,10 +14,12 @@ export interface ExternalTrigger {
 }
 
 export interface TriggerDispatchOutcome {
-  triggerId: string;
+  providerEventReceiptId: string;
 }
 
-export type TriggerHandler = (trigger: DurableTrigger) => Promise<TriggerDispatchOutcome | void>;
+export type TriggerHandler = (
+  trigger: DurableProviderEvent,
+) => Promise<TriggerDispatchOutcome | void>;
 
 export interface TriggerSource {
   start(handler: TriggerHandler): Promise<void>;

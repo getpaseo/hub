@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import { DatabaseUnavailableError } from "../../db/errors.js";
-import type { ProviderTriggerAcceptance } from "../../db/types.js";
+import type { ProviderEventAcceptance } from "../../db/types.js";
 import type { ExternalTrigger } from "../index.js";
 import {
   createWebhookSource,
@@ -325,13 +325,13 @@ function accepted(input: {
   source: string;
   payload: unknown;
   receivedAt: Date;
-}): ProviderTriggerAcceptance {
+}): ProviderEventAcceptance {
   return {
     status: "accepted",
     receiptId: `receipt-${input.deliveryId}`,
-    triggers: [
+    events: [
       {
-        triggerId: `trigger-${input.deliveryId}`,
+        providerEventReceiptId: `trigger-${input.deliveryId}`,
         organizationId: "org_1",
         projectId: "project-1",
         deliveryId: input.deliveryId,

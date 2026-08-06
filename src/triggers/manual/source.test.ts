@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "vitest";
-import type { DurableTrigger } from "../../db/types.js";
+import type { DurableProviderEvent } from "../../db/types.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createManualTriggerSource, handleManualTriggerRequest } from "./source.js";
 
@@ -68,7 +68,7 @@ interface ManualDelivery {
 }
 
 class ManualTriggers {
-  private readonly handled: DurableTrigger[] = [];
+  private readonly handled: DurableProviderEvent[] = [];
 
   private constructor(private readonly source: ReturnType<typeof createManualTriggerSource>) {}
 

@@ -3,16 +3,16 @@ import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
   AgentExecutionRecord,
+  AgentExecutionHubAcknowledgementInput,
+  AgentExecutionHubAcknowledgements,
   Database,
   InsertAgentExecutionInput,
   InsertMachineInput,
-  InsertTriggerInput,
-  InsertTriggerResult,
   MachineRecord,
   TerminateMachineFields,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
-  TriggerRecord,
+  ProviderEventReceiptRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -32,15 +32,15 @@ import type {
   SetProjectGitHubConfigurationSourceInput,
   RecordConfigurationSyncAttemptInput,
   ConfigurationSyncAttemptRecord,
-  AcceptDiscordTriggerInput,
-  AcceptGitHubTriggerInput,
-  AcceptSlackTriggerInput,
-  DurableTrigger,
-  GitHubLifecycleClaim,
-  GitHubLifecycleClaimInput,
+  AcceptDiscordEventInput,
+  AcceptGitHubEventInput,
+  AcceptSlackEventInput,
+  DurableProviderEvent,
+  GitHubLifecycleReceiptClaim,
+  GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
-  PersistManualTriggerInput,
-  ProviderTriggerAcceptance,
+  PersistManualEventInput,
+  ProviderEventAcceptance,
   CreateProjectInput,
   InsertProjectConfigurationRevisionInput,
   ProjectConfigurationRevisionRecord,
@@ -64,6 +64,7 @@ import type {
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
+  ProjectActivityRunRecord,
 } from "./types.js";
 
 export interface MemoryDatabaseOptions {
@@ -85,16 +86,13 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
-  private readonly triggers = new Map<string, TriggerRecord>();
-  private readonly triggersByDeliveryId = new Map<string, string>();
-  private readonly triggersBySignatureHash = new Map<string, string>();
-  private readonly receiptIdsByDelivery = new Map<string, string>();
-  private readonly triggerIdsByReceipt = new Map<string, string[]>();
-  private readonly providerReceiptActivities = new Map<string, TriggerRecord>();
+  private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
+  private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
+  private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
-  private readonly triggerRunIdsByTrigger = new Map<string, Map<string, string>>();
+  private readonly triggerRunIdsByProviderEventReceipt = new Map<string, Map<string, string>>();
   private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
   private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
@@ -133,7 +131,8 @@ class MemoryDatabase implements Database {
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     const triggerRuns =
-      this.triggerRunIdsByTrigger.get(input.triggerId) ?? new Map<string, string>();
+      this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
+      new Map<string, string>();
     const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
       const existing = this.triggerRuns.get(existingId);
@@ -148,13 +147,14 @@ class MemoryDatabase implements Database {
       organizationId: input.organizationId,
       projectId: input.projectId,
       configurationRevisionId: input.configurationRevisionId,
-      triggerId: input.triggerId,
+      providerEventReceiptId: input.providerEventReceiptId,
       configuredTriggerName: input.configuredTriggerName,
       outcome: "accepted",
       status: "running",
       rawPrompt: input.rawPrompt,
       prompt: input.prompt,
       inputs: freezeEvidence(input.inputs),
+      values: freezeEvidence(input.values ?? {}),
       triggerContext: freezeEvidence(input.triggerContext),
       outputContext: freezeEvidence(input.outputContext),
       deadlineAt: input.deadlineAt,
@@ -165,7 +165,7 @@ class MemoryDatabase implements Database {
     };
     this.triggerRuns.set(run.id, run);
     triggerRuns.set(input.configuredTriggerName, run.id);
-    this.triggerRunIdsByTrigger.set(input.triggerId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, triggerRuns);
     for (const [ordinal, stepId] of input.stepIds.entries()) {
       const step: WorkflowStepRunRecord = {
         id: randomUUID(),
@@ -197,7 +197,8 @@ class MemoryDatabase implements Database {
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
     const triggerRuns =
-      this.triggerRunIdsByTrigger.get(input.triggerId) ?? new Map<string, string>();
+      this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
+      new Map<string, string>();
     const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
       const existing = this.triggerRuns.get(existingId);
@@ -212,13 +213,14 @@ class MemoryDatabase implements Database {
       organizationId: input.organizationId,
       projectId: input.projectId,
       configurationRevisionId: input.configurationRevisionId,
-      triggerId: input.triggerId,
+      providerEventReceiptId: input.providerEventReceiptId,
       configuredTriggerName: input.configuredTriggerName,
       outcome: "rejected",
       status: "rejected",
       rawPrompt: input.rawPrompt,
       prompt: input.prompt,
       inputs: freezeEvidence(input.inputs),
+      values: freezeEvidence(input.values ?? {}),
       triggerContext: freezeEvidence(input.triggerContext),
       outputContext: freezeEvidence(input.outputContext),
       rejection: freezeEvidence(input.rejection),
@@ -227,7 +229,7 @@ class MemoryDatabase implements Database {
     };
     this.triggerRuns.set(run.id, run);
     triggerRuns.set(input.configuredTriggerName, run.id);
-    this.triggerRunIdsByTrigger.set(input.triggerId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, triggerRuns);
     return { run, created: true };
   }
 
@@ -235,8 +237,10 @@ class MemoryDatabase implements Database {
     return this.triggerRuns.get(id);
   }
 
-  async findTriggerRunsByTriggerId(triggerId: string) {
-    return [...(this.triggerRunIdsByTrigger.get(triggerId)?.values() ?? [])]
+  async findTriggerRunsByProviderEventReceiptId(providerEventReceiptId: string) {
+    return [
+      ...(this.triggerRunIdsByProviderEventReceipt.get(providerEventReceiptId)?.values() ?? []),
+    ]
       .map((id) => this.triggerRuns.get(id))
       .filter((run): run is TriggerRunRecord => run !== undefined)
       .sort(
@@ -535,6 +539,8 @@ class MemoryDatabase implements Database {
       idleDeadlineAt: null,
       hubAction,
       hubActionCompletedAt: hubAction === null ? null : null,
+      hubActionReadyAt: null,
+      hubActionAcknowledgements: emptyHubActionAcknowledgements(),
     };
     this.agentExecutions.set(execution.id, updatedExecution);
     const step =
@@ -590,14 +596,20 @@ class MemoryDatabase implements Database {
           execution !== undefined &&
           (execution.status === "spawning" || execution.status === "running")
         ) {
+          let hubAction: AgentExecutionRecord["hubAction"] = null;
+          if (execution.daemonId !== null) {
+            hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+          }
           const updatedExecution: AgentExecutionRecord = {
             ...execution,
             status: "failed",
             completedAt: now,
             result: { status: "failed", reason: "whole_run_timeout" },
             idleDeadlineAt: null,
-            hubAction: execution.daemonId === null ? null : "interrupt",
+            hubAction,
             hubActionCompletedAt: null,
+            hubActionReadyAt: null,
+            hubActionAcknowledgements: emptyHubActionAcknowledgements(),
           };
           this.agentExecutions.set(execution.id, updatedExecution);
           executionIds.push(execution.id);
@@ -766,94 +778,20 @@ class MemoryDatabase implements Database {
     }
   }
 
-  async insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult> {
-    let existingId: string | undefined;
-    if (input.receiptId === undefined) {
-      existingId =
-        input.signatureHash === null || input.signatureHash === undefined
-          ? this.triggersByDeliveryId.get(
-              triggerDeliveryKey(input.organizationId, input.deliveryId),
-            )
-          : (this.triggersBySignatureHash.get(input.signatureHash) ??
-            this.triggersByDeliveryId.get(
-              triggerDeliveryKey(input.organizationId, input.deliveryId),
-            ));
-    }
-
-    if (existingId !== undefined) {
-      const existing = this.triggers.get(existingId);
-
-      if (existing === undefined) {
-        throw new Error(`trigger index points at missing row: ${existingId}`);
-      }
-
-      return {
-        inserted: false,
-        trigger: existing,
-      };
-    }
-
-    const trigger: TriggerRecord = {
-      id: randomUUID(),
-      organizationId: input.organizationId,
-      projectId: input.projectId,
-      configurationRevisionId: input.configurationRevisionId ?? null,
-      receiptId: input.receiptId ?? this.receiptIdFor(input),
-      connectionId: input.connectionId ?? null,
-      resourceId: input.resourceId ?? null,
-      deliveryId: input.deliveryId,
-      signatureHash: input.signatureHash ?? null,
-      source: input.source,
-      repo: input.repo ?? null,
-      payload: input.payload,
-      receivedAt: input.receivedAt,
-      matchedTriggerName: input.matchedTriggerName ?? null,
-      configuredTriggerNames: [],
-      droppedReason: input.droppedReason ?? null,
-    };
-
-    this.triggers.set(trigger.id, trigger);
-    this.triggersByDeliveryId.set(
-      triggerDeliveryKey(trigger.organizationId, trigger.deliveryId),
-      trigger.id,
-    );
-    const receiptTriggers = this.triggerIdsByReceipt.get(trigger.receiptId) ?? [];
-    receiptTriggers.push(trigger.id);
-    this.triggerIdsByReceipt.set(trigger.receiptId, receiptTriggers);
-    if (trigger.signatureHash !== null) {
-      this.triggersBySignatureHash.set(trigger.signatureHash, trigger.id);
-    }
-
-    return {
-      inserted: true,
-      trigger,
-    };
+  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+    this.providerEventReceipts.set(providerEventReceiptId, {
+      ...receipt,
+      droppedReason: receipt.droppedReason ?? reason,
+    });
   }
 
-  private receiptIdFor(input: InsertTriggerInput): string {
-    const existing = this.receiptIdsByDelivery.get(
-      triggerDeliveryKey(input.organizationId, input.deliveryId),
-    );
-    if (existing !== undefined) return existing;
-    const id = randomUUID();
-    this.receiptIdsByDelivery.set(triggerDeliveryKey(input.organizationId, input.deliveryId), id);
-    return id;
-  }
-
-  async markTriggerDropped(id: string, reason: string): Promise<TriggerRecord> {
-    const trigger = this.readTrigger(id);
-    const updated = {
-      ...trigger,
-      droppedReason: trigger.droppedReason ?? reason,
-    };
-    this.triggers.set(id, updated);
-    return updated;
-  }
-
-  async acceptGitHubTrigger(input: AcceptGitHubTriggerInput): Promise<ProviderTriggerAcceptance> {
+  async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findGitHubConnection(input.installationId);
     const reason = githubDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -862,10 +800,10 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async acceptDiscordTrigger(input: AcceptDiscordTriggerInput): Promise<ProviderTriggerAcceptance> {
+  async acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findDiscordConnection(input.guildId);
     const reason = discordDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -874,10 +812,10 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async acceptSlackTrigger(input: AcceptSlackTriggerInput): Promise<ProviderTriggerAcceptance> {
+  async acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findSlackConnection(input.teamId);
     const reason = slackDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -886,38 +824,71 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async persistManualTrigger(input: PersistManualTriggerInput) {
-    const result = await this.insertTrigger(input);
-    return result.inserted
-      ? { status: "accepted" as const, trigger: durableTrigger(result.trigger) }
-      : { status: "duplicate" as const, triggerId: result.trigger.id };
+  async persistManualEvent(input: PersistManualEventInput) {
+    const existing = this.findReceiptId(
+      input.organizationId,
+      input.deliveryId,
+      input.signatureHash,
+    );
+    if (existing !== undefined)
+      return { status: "duplicate" as const, providerEventReceiptId: existing };
+    const receipt = this.insertProviderEventReceipt({
+      organizationId: input.organizationId,
+      provider: "manual",
+      connectionId: input.connectionId ?? null,
+      resourceId: input.resourceId ?? null,
+      input,
+    });
+    return {
+      status: "accepted" as const,
+      event: {
+        providerEventReceiptId: receipt.id,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        deliveryId: input.deliveryId,
+        source: input.source,
+        payload: input.payload,
+        receivedAt: input.receivedAt,
+        connectionId: input.connectionId ?? null,
+        resourceId: input.resourceId ?? null,
+      },
+    };
   }
 
-  async claimGitHubLifecycle(input: GitHubLifecycleClaimInput): Promise<GitHubLifecycleClaim> {
-    const result = await this.insertTrigger({
-      organizationId: "unbound",
-      projectId: null,
-      deliveryId: input.deliveryId,
-      signatureHash: input.signatureHash,
-      source: input.source,
-      payload: input.payload,
-      receivedAt: input.receivedAt,
-      droppedReason: "github_lifecycle",
+  async claimGitHubLifecycleReceipt(
+    input: GitHubLifecycleReceiptClaimInput,
+  ): Promise<GitHubLifecycleReceiptClaim> {
+    const connection = await this.findGitHubConnection(input.installationId);
+    if (connection === undefined) {
+      return { status: "duplicate", providerEventReceiptId: input.deliveryId };
+    }
+    const existing = this.findReceiptId(
+      connection.organizationId,
+      input.deliveryId,
+      input.signatureHash,
+    );
+    if (existing !== undefined) {
+      return { status: "duplicate", providerEventReceiptId: existing };
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId: connection.organizationId,
+      provider: "github",
+      connectionId: connection.id,
+      resourceId: null,
+      input: { ...input, dropReason: "github_lifecycle" },
     });
-    return result.inserted
-      ? {
-          status: "claimed",
-          triggerId: result.trigger.id,
-          installationId: input.installationId,
-        }
-      : { status: "duplicate", triggerId: result.trigger.id };
+    return {
+      status: "claimed",
+      providerEventReceiptId: receipt.id,
+      installationId: input.installationId,
+    };
   }
 
   async applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleClaim, { status: "claimed" }>,
+    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
     result: GitHubLifecycleResult,
   ): Promise<void> {
-    const evidence = this.triggers.get(claim.triggerId);
+    const evidence = this.providerEventReceipts.get(claim.providerEventReceiptId);
     if (evidence?.droppedReason !== "github_lifecycle") return;
     if (result.status !== "absent" || !result.removeBinding) return;
     const connection = this.githubConnections.get(claim.installationId);
@@ -946,24 +917,30 @@ class MemoryDatabase implements Database {
     }
   }
 
-  releaseGitHubLifecycleClaim(triggerId: string): Promise<void> {
-    return this.deleteLifecycleClaim(triggerId);
+  releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt?.droppedReason !== "github_lifecycle") return Promise.resolve();
+    this.providerEventReceipts.delete(providerEventReceiptId);
+    this.providerEventReceiptIdsByDelivery.delete(
+      triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
+    );
+    if (receipt.signatureHash !== null)
+      this.providerEventReceiptIdsBySignature.delete(receipt.signatureHash);
+    return Promise.resolve();
   }
 
-  async findTriggerByDeliveryId(
+  async findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
-  ): Promise<TriggerRecord | undefined> {
-    const id = this.triggersByDeliveryId.get(
+  ): Promise<ProviderEventReceiptRecord | undefined> {
+    const id = this.providerEventReceiptIdsByDelivery.get(
       organizationId === undefined ? deliveryId : `${organizationId}:${deliveryId}`,
     );
-    const trigger = id === undefined ? undefined : this.triggers.get(id);
-    return trigger === undefined ? undefined : this.triggerWithConfiguredNames(trigger);
+    return id === undefined ? undefined : this.providerEventReceipts.get(id);
   }
 
-  async findTriggerById(id: string): Promise<TriggerRecord | undefined> {
-    const trigger = this.triggers.get(id);
-    return trigger === undefined ? undefined : this.triggerWithConfiguredNames(trigger);
+  async findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined> {
+    return this.providerEventReceipts.get(id);
   }
 
   async insertMachine(input: InsertMachineInput): Promise<MachineRecord> {
@@ -1045,12 +1022,11 @@ class MemoryDatabase implements Database {
       launchIntent: input.launchIntent ?? null,
       daemonId: input.daemonId ?? null,
       daemonAgentId: null,
-      triggerId: input.triggerId ?? null,
-      triggerConnectionId: input.triggerConnectionId ?? null,
-      triggerResourceId: input.triggerResourceId ?? null,
       workflowStepRunId: input.workflowStepRunId ?? null,
       hubAction: null,
       hubActionCompletedAt: null,
+      hubActionReadyAt: null,
+      hubActionAcknowledgements: emptyHubActionAcknowledgements(),
     };
 
     this.agentExecutions.set(execution.id, execution);
@@ -1354,9 +1330,7 @@ class MemoryDatabase implements Database {
     if (execution === undefined) return undefined;
     const machine =
       execution.machineId === null ? undefined : this.machines.get(execution.machineId);
-    const trigger =
-      execution.triggerId === null ? undefined : this.triggers.get(execution.triggerId);
-    return machine?.orgId === organizationId || trigger?.organizationId === organizationId
+    return machine?.orgId === organizationId || execution.organizationId === organizationId
       ? execution
       : undefined;
   }
@@ -1364,40 +1338,37 @@ class MemoryDatabase implements Database {
     const execution = this.agentExecutions.get(id);
     return execution?.projectId === projectId ? execution : undefined;
   }
-  async findAgentExecutionByTriggerId(
-    triggerId: string,
-  ): Promise<AgentExecutionRecord | undefined> {
-    return Array.from(this.agentExecutions.values()).find(
-      (execution) => execution.triggerId === triggerId,
-    );
-  }
-  async findAgentExecutionsByTriggerId(triggerId: string): Promise<AgentExecutionRecord[]> {
-    return Array.from(this.agentExecutions.values()).filter(
-      (execution) => execution.triggerId === triggerId,
-    );
+  async updateTriggerRunValues(triggerRunId: string, values: unknown): Promise<TriggerRunRecord> {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined) throw new Error(`trigger run not found: ${triggerRunId}`);
+    const updated = { ...run, values: freezeEvidence(values) } as TriggerRunRecord;
+    this.triggerRuns.set(triggerRunId, updated);
+    return updated;
   }
 
-  async listAgentExecutionsForProject(projectId: string, limit: number) {
-    return Array.from(this.agentExecutions.values())
-      .filter((execution) => execution.projectId === projectId)
-      .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())
-      .slice(0, limit);
+  async listProjectActivityRuns(
+    projectId: string,
+    limit: number,
+  ): Promise<ProjectActivityRunRecord[]> {
+    return (await this.listTriggerRunsForProject(projectId, limit)).flatMap((run) => {
+      const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+      if (receipt === undefined) return [];
+      return [{ run, receipt, steps: this.listSteps(run.id) }];
+    });
   }
 
-  async listTriggersForProject(projectId: string, limit: number) {
-    return Array.from(this.triggers.values())
-      .filter((trigger) => trigger.projectId === projectId)
-      .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())
-      .slice(0, limit)
-      .map((trigger) => this.triggerWithConfiguredNames(trigger));
+  async findProjectActivityRun(projectId: string, runId: string) {
+    const run = this.triggerRuns.get(runId);
+    if (run === undefined || run.projectId !== projectId) return undefined;
+    const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+    if (receipt === undefined) return undefined;
+    return { run, receipt, steps: this.listSteps(run.id) };
   }
 
-  private triggerWithConfiguredNames(trigger: TriggerRecord): TriggerRecord {
-    const configuredTriggerNames = [...this.triggerRuns.values()]
-      .filter((run) => run.triggerId === trigger.id)
-      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
-      .map((run) => run.configuredTriggerName);
-    return { ...trigger, configuredTriggerNames };
+  private listSteps(triggerRunId: string): WorkflowStepRunRecord[] {
+    return [...this.workflowStepRuns.values()]
+      .filter((step) => step.triggerRunId === triggerRunId)
+      .sort((left, right) => left.ordinal - right.ordinal);
   }
 
   async claimAgentExecutionReply(
@@ -1441,8 +1412,10 @@ class MemoryDatabase implements Database {
     }
 
     let hubActionCompletedAt = execution.hubActionCompletedAt;
+    let hubActionReadyAt = execution.hubActionReadyAt;
     if (fields.hubAction !== undefined) {
       hubActionCompletedAt = fields.hubAction === null ? this.now() : null;
+      hubActionReadyAt = null;
     }
     const updated: AgentExecutionRecord = {
       ...execution,
@@ -1456,6 +1429,7 @@ class MemoryDatabase implements Database {
       idleDeadlineAt: isTerminalAgentExecutionStatus(toStatus) ? null : execution.idleDeadlineAt,
       hubAction: fields.hubAction === undefined ? execution.hubAction : fields.hubAction,
       hubActionCompletedAt,
+      hubActionReadyAt,
     };
 
     this.agentExecutions.set(id, updated);
@@ -1483,6 +1457,75 @@ class MemoryDatabase implements Database {
         execution.hubActionCompletedAt === null &&
         (daemonId === undefined || execution.daemonId === daemonId),
     );
+  }
+
+  async markAgentExecutionHubActionReady(
+    executionId: string,
+    observedAt = this.now(),
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (
+      execution === undefined ||
+      execution.status !== "succeeded" ||
+      execution.completedByAgentAt === null ||
+      execution.hubAction !== "archive" ||
+      execution.hubActionCompletedAt !== null ||
+      execution.hubActionReadyAt !== null ||
+      execution.hubActionAcknowledgements.terminalAt === null ||
+      execution.hubActionAcknowledgements.idleAt === null ||
+      execution.hubActionAcknowledgements.finishExecutionCall === null ||
+      execution.hubActionAcknowledgements.finishExecutionCall.status !== "completed"
+    ) {
+      return undefined;
+    }
+    const updated = { ...execution, hubActionReadyAt: observedAt };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
+  }
+
+  async recordAgentExecutionHubAcknowledgement(
+    executionId: string,
+    acknowledgement: AgentExecutionHubAcknowledgementInput,
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (execution === undefined) return undefined;
+    const current = execution.hubActionAcknowledgements;
+    const updatedAcknowledgements: AgentExecutionHubAcknowledgements = {
+      terminalAt: current.terminalAt,
+      idleAt: current.idleAt,
+      finishExecutionCall: current.finishExecutionCall,
+    };
+    if (acknowledgement.kind === "terminal") {
+      if (
+        updatedAcknowledgements.terminalAt === null ||
+        acknowledgement.observedAt.getTime() > updatedAcknowledgements.terminalAt.getTime()
+      ) {
+        updatedAcknowledgements.terminalAt = acknowledgement.observedAt;
+      }
+    } else if (acknowledgement.kind === "idle") {
+      if (
+        updatedAcknowledgements.idleAt === null ||
+        acknowledgement.observedAt.getTime() > updatedAcknowledgements.idleAt.getTime()
+      ) {
+        updatedAcknowledgements.idleAt = acknowledgement.observedAt;
+      }
+    } else {
+      const previous = updatedAcknowledgements.finishExecutionCall;
+      if (
+        previous === undefined ||
+        previous === null ||
+        acknowledgement.observedAt.getTime() > previous.observedAt.getTime()
+      ) {
+        updatedAcknowledgements.finishExecutionCall = {
+          callId: acknowledgement.callId,
+          status: acknowledgement.status,
+          observedAt: acknowledgement.observedAt,
+        };
+      }
+    }
+    const updated = { ...execution, hubActionAcknowledgements: updatedAcknowledgements };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
   }
 
   async completeHubAction(executionId: string, action: "interrupt" | "archive"): Promise<boolean> {
@@ -1884,20 +1927,18 @@ class MemoryDatabase implements Database {
     });
   }
 
-  async listUnroutedTriggersForOrganization(organizationId: string) {
-    return [
-      ...Array.from(this.triggers.values()).filter(
-        (trigger) => trigger.organizationId === organizationId && trigger.projectId === null,
-      ),
-      ...Array.from(this.providerReceiptActivities.values()).filter(
-        (receipt) =>
-          receipt.organizationId === organizationId &&
-          (this.triggerIdsByReceipt.get(receipt.receiptId)?.length ?? 0) === 0,
-      ),
-    ].sort(
-      (left, right) =>
-        right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
+  async listUnroutedProviderEventsForOrganization(organizationId: string) {
+    const routedReceiptIds = new Set(
+      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
     );
+    return [...this.providerEventReceipts.values()]
+      .filter(
+        (receipt) => receipt.organizationId === organizationId && !routedReceiptIds.has(receipt.id),
+      )
+      .sort(
+        (left, right) =>
+          right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
+      );
   }
 
   async isOrganizationMember(): Promise<boolean> {
@@ -1972,70 +2013,39 @@ class MemoryDatabase implements Database {
     return Promise.resolve();
   }
 
-  private async deleteLifecycleClaim(id: string): Promise<void> {
-    const trigger = this.triggers.get(id);
-    if (trigger?.droppedReason !== "github_lifecycle") return;
-    this.triggers.delete(id);
-    this.triggersByDeliveryId.delete(
-      triggerDeliveryKey(trigger.organizationId, trigger.deliveryId),
-    );
-    if (trigger.signatureHash !== null) this.triggersBySignatureHash.delete(trigger.signatureHash);
-  }
-
   async close(): Promise<void> {}
 
-  private readTrigger(id: string): TriggerRecord {
-    const trigger = this.triggers.get(id);
-
-    if (trigger === undefined) {
-      throw new Error(`trigger not found: ${id}`);
-    }
-
-    return trigger;
-  }
-
-  private async acceptMemoryTrigger(
-    input: AcceptGitHubTriggerInput | AcceptDiscordTriggerInput | AcceptSlackTriggerInput,
+  private async acceptMemoryEvent(
+    input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
     reason: string | undefined,
-  ): Promise<ProviderTriggerAcceptance> {
-    const receiptId = this.receiptIdsByDelivery.get(input.deliveryId);
+  ): Promise<ProviderEventAcceptance> {
+    const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
-      return {
-        status: "duplicate",
-        triggerIds: this.triggerIdsByReceipt.get(receiptId) ?? [],
-        receiptId,
-      };
+      return { status: "duplicate", receiptId };
     }
-    const newReceiptId = randomUUID();
-    this.receiptIdsByDelivery.set(input.deliveryId, newReceiptId);
-    if (organizationId !== undefined) {
-      this.providerReceiptActivities.set(newReceiptId, {
-        id: newReceiptId,
-        organizationId,
-        projectId: null,
-        configurationRevisionId: null,
-        receiptId: newReceiptId,
-        connectionId: connectionId ?? null,
-        resourceId,
-        deliveryId: input.deliveryId,
-        signatureHash: input.signatureHash ?? null,
-        source: input.source,
-        repo: input.repo ?? null,
-        payload: input.payload,
-        receivedAt: input.receivedAt,
-        matchedTriggerName: null,
-        configuredTriggerNames: [],
-        droppedReason: reason ?? null,
-      });
-    }
-    if (reason !== undefined || organizationId === undefined || connectionId === undefined) {
+    if (organizationId === undefined || connectionId === undefined) {
       return {
         status: "dropped",
-        receiptId: newReceiptId,
+        receiptId: input.deliveryId,
         reason: reason ?? "provider_unbound",
+      };
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId,
+      provider: providerForInput(input),
+      connectionId,
+      resourceId,
+      input,
+    });
+    if (reason !== undefined) {
+      this.providerEventReceipts.set(receipt.id, { ...receipt, droppedReason: reason });
+      return {
+        status: "dropped",
+        receiptId: receipt.id,
+        reason,
       };
     }
     const provider = providerForInput(input);
@@ -2055,40 +2065,83 @@ class MemoryDatabase implements Database {
       },
     );
     if (routes.length === 0) {
-      const activity = this.providerReceiptActivities.get(newReceiptId);
-      if (activity !== undefined) {
-        this.providerReceiptActivities.set(activity.id, {
-          ...activity,
-          droppedReason: "provider_unrouted",
-        });
-      }
-      return { status: "dropped", receiptId: newReceiptId, reason: "provider_unrouted" };
+      this.providerEventReceipts.set(receipt.id, {
+        ...receipt,
+        droppedReason: "provider_unrouted",
+      });
+      return { status: "dropped", receiptId: receipt.id, reason: "provider_unrouted" };
     }
     const projectRoutes = new Map<string, (typeof routes)[number]>();
     for (const route of routes) {
       if (!projectRoutes.has(route.projectId)) projectRoutes.set(route.projectId, route);
     }
 
-    const triggers: DurableTrigger[] = [];
-    for (const route of projectRoutes.values()) {
-      const result = await this.insertTrigger({
-        organizationId,
-        projectId: route.projectId,
-        configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId,
-        receiptId: newReceiptId,
-        connectionId,
-        resourceId,
-        deliveryId: input.deliveryId,
-        signatureHash: input.signatureHash ?? null,
-        source: input.source,
-        repo: input.repo ?? null,
-        payload: input.payload,
-        receivedAt: input.receivedAt,
-        matchedTriggerName: route.triggerName,
-      });
-      triggers.push(durableTrigger(result.trigger));
+    const events: DurableProviderEvent[] = [...projectRoutes.values()].map((route) => ({
+      providerEventReceiptId: receipt.id,
+      organizationId,
+      projectId: route.projectId,
+      deliveryId: input.deliveryId,
+      source: input.source,
+      payload: input.payload,
+      receivedAt: input.receivedAt,
+      connectionId,
+      resourceId: route.resourceId,
+    }));
+    return { status: "accepted", events, receiptId: receipt.id };
+  }
+
+  private findReceiptId(
+    organizationId: string | undefined,
+    deliveryId: string,
+    signatureHash: string | null | undefined,
+  ): string | undefined {
+    if (organizationId === undefined) return undefined;
+    return signatureHash === undefined || signatureHash === null
+      ? this.providerEventReceiptIdsByDelivery.get(triggerDeliveryKey(organizationId, deliveryId))
+      : (this.providerEventReceiptIdsBySignature.get(signatureHash) ??
+          this.providerEventReceiptIdsByDelivery.get(
+            triggerDeliveryKey(organizationId, deliveryId),
+          ));
+  }
+
+  private insertProviderEventReceipt(input: {
+    organizationId: string;
+    provider: ProviderEventReceiptRecord["provider"];
+    connectionId: string | null;
+    resourceId: string | null;
+    input: {
+      deliveryId: string;
+      signatureHash?: string | null;
+      source: string;
+      repo?: string | null;
+      payload: unknown;
+      receivedAt: Date;
+      dropReason?: string;
+    };
+  }): ProviderEventReceiptRecord {
+    const receipt: ProviderEventReceiptRecord = {
+      id: randomUUID(),
+      organizationId: input.organizationId,
+      provider: input.provider,
+      connectionId: input.connectionId,
+      resourceId: input.resourceId,
+      deliveryId: input.input.deliveryId,
+      signatureHash: input.input.signatureHash ?? null,
+      source: input.input.source,
+      repo: input.input.repo ?? null,
+      payload: input.input.payload,
+      receivedAt: input.input.receivedAt,
+      droppedReason: input.input.dropReason ?? null,
+    };
+    this.providerEventReceipts.set(receipt.id, receipt);
+    this.providerEventReceiptIdsByDelivery.set(
+      triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
+      receipt.id,
+    );
+    if (receipt.signatureHash !== null) {
+      this.providerEventReceiptIdsBySignature.set(receipt.signatureHash, receipt.id);
     }
-    return { status: "accepted", triggers, receiptId: newReceiptId };
+    return receipt;
   }
 
   private readMachine(id: string): MachineRecord {
@@ -2112,27 +2165,16 @@ class MemoryDatabase implements Database {
   }
 }
 
+function emptyHubActionAcknowledgements(): AgentExecutionHubAcknowledgements {
+  return { terminalAt: null, idleAt: null, finishExecutionCall: null };
+}
+
 function connectionPersistenceUnavailable(): never {
   throw new Error("connection persistence requires PostgreSQL");
 }
 
-function durableTrigger(trigger: TriggerRecord): DurableTrigger {
-  if (trigger.projectId === null) throw new Error("durable trigger has no project tenant");
-  return {
-    triggerId: trigger.id,
-    organizationId: trigger.organizationId,
-    projectId: trigger.projectId,
-    deliveryId: trigger.deliveryId,
-    source: trigger.source,
-    payload: trigger.payload,
-    receivedAt: trigger.receivedAt,
-    connectionId: trigger.connectionId,
-    resourceId: trigger.resourceId,
-  };
-}
-
 function providerForInput(
-  input: AcceptGitHubTriggerInput | AcceptDiscordTriggerInput | AcceptSlackTriggerInput,
+  input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
 ): "github" | "discord" | "slack" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
@@ -2140,7 +2182,7 @@ function providerForInput(
 }
 
 function githubDropReason(
-  input: AcceptGitHubTriggerInput,
+  input: AcceptGitHubEventInput,
   binding: GitHubConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
@@ -2150,7 +2192,7 @@ function githubDropReason(
 }
 
 function discordDropReason(
-  input: AcceptDiscordTriggerInput,
+  input: AcceptDiscordEventInput,
   binding: DiscordConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
@@ -2159,7 +2201,7 @@ function discordDropReason(
 }
 
 function slackDropReason(
-  input: AcceptSlackTriggerInput,
+  input: AcceptSlackEventInput,
   binding: SlackConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;

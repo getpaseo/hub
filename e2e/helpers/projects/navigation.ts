@@ -21,18 +21,14 @@ export class ProjectNavigation {
       .click();
   }
 
-  async openProjectSection(
-    name: "Overview" | "Configuration" | "Activity" | "Executions" | "Settings",
-  ) {
+  async openProjectSection(name: "Overview" | "Configuration" | "Activity" | "Settings") {
     await this.page
       .getByRole("navigation", { name: "Project" })
       .getByRole("link", { name })
       .click();
   }
 
-  async openMobileProjectSection(
-    name: "Overview" | "Configuration" | "Activity" | "Executions" | "Settings",
-  ) {
+  async openMobileProjectSection(name: "Overview" | "Configuration" | "Activity" | "Settings") {
     await this.page.getByRole("button", { name: "Toggle Sidebar" }).click();
     await this.openProjectSection(name);
   }

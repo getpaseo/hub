@@ -304,92 +304,88 @@ export class HubHarness {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     const requested = { ...this.intent(), ...overrides };
-    const trigger = await this.requireDatabase().insertTrigger({
-      organizationId: requested.organizationId,
-      projectId: requested.projectId,
-      deliveryId: randomUUID(),
-      source: "test.dispatch",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const intent = { ...requested, triggerId: trigger.trigger.id };
+    const intent = await this.attachDispatchRun(requested, await this.insertTestReceipt(requested));
     return dispatchLaunchMachineIntent(module, intent);
   }
   async handoff(
     overrides: Partial<LaunchMachineIntent> = {},
-    existingTriggerId?: string,
-  ): Promise<{ execution: AgentExecutionRecord; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ execution: AgentExecutionRecord; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     const requested = { ...this.intent(), ...overrides };
-    const triggerId =
-      existingTriggerId ??
-      (
-        await this.requireDatabase().insertTrigger({
-          organizationId: requested.organizationId,
-          projectId: requested.projectId,
-          deliveryId: randomUUID(),
-          source: "test.dispatch",
-          payload: {},
-          receivedAt: new Date(),
-        })
-      ).trigger.id;
-    const result = await module.lifecycle.handoffLaunchMachineIntent({
-      ...requested,
-      triggerId,
-    });
-    return { ...result, triggerId };
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(requested));
+    const intent = await this.attachDispatchRun(requested, providerEventReceiptId);
+    const result = await module.lifecycle.handoffLaunchMachineIntent(intent);
+    return { ...result, providerEventReceiptId };
   }
   async handoffBatch(
     triggerNames: readonly string[],
-    existingTriggerId?: string,
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
-    const triggerId = existingTriggerId ?? (await this.insertTestTrigger());
-    const intents = this.batchIntents(triggerId, triggerNames);
+    const first = this.intent(triggerNames[0]);
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(first));
+    const intents = await Promise.all(
+      this.batchIntents(providerEventReceiptId, triggerNames).map((intent) =>
+        this.attachDispatchRun(intent, providerEventReceiptId),
+      ),
+    );
     const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
-    return { ...result, triggerId };
+    return { ...result, providerEventReceiptId };
   }
   async handoffAuthoredSlugBatch(
     slugs: readonly string[],
-    existingTriggerId?: string,
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
-    const triggerId = existingTriggerId ?? (await this.insertTestTrigger());
-    const intents = slugs.map((slug, index) => ({
-      ...this.intent(slug === "<connected>" ? this.requireDaemon().slug : slug),
-      triggerId,
-      triggerName: `member-${index}`,
-    }));
+    const first = this.intent(slugs[0] === "<connected>" ? this.requireDaemon().slug : slugs[0]);
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(first));
+    const intents = await Promise.all(
+      slugs.map((slug, index) =>
+        this.attachDispatchRun(
+          {
+            ...this.intent(slug === "<connected>" ? this.requireDaemon().slug : slug),
+            triggerName: `member-${index}`,
+          },
+          providerEventReceiptId,
+        ),
+      ),
+    );
     const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
-    return { ...result, triggerId };
+    return { ...result, providerEventReceiptId };
   }
-  async triggerStatus(triggerId: string): Promise<string | null> {
-    const executions = await this.requireDatabase().findAgentExecutionsByTriggerId(triggerId);
-    if (executions.some((execution) => execution.status === "failed")) return "failed";
-    if (
-      executions.length > 0 &&
-      executions.every((execution) => execution.status === "succeeded")
-    ) {
-      return "succeeded";
-    }
-    return executions.length > 0 ? "running" : null;
+  async triggerStatus(providerEventReceiptId: string): Promise<string | null> {
+    const runs =
+      await this.requireDatabase().findTriggerRunsByProviderEventReceiptId(providerEventReceiptId);
+    const statuses = runs.map((run) => run.status);
+    if (statuses.length === 0) return null;
+    if (statuses.some((status) => status === "failed")) return "failed";
+    if (statuses.every((status) => status === "succeeded")) return "succeeded";
+    return "running";
   }
-  async triggerPrompt(triggerId: string): Promise<string | undefined> {
-    return (await this.requireDatabase().findAgentExecutionsByTriggerId(triggerId))[0]?.launchIntent
-      ?.prompt;
+  async triggerPrompt(providerEventReceiptId: string): Promise<string | undefined> {
+    return (
+      await this.requireDatabase().findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)
+    )[0]?.prompt;
   }
   async persistUnlaunchedBatch(
     triggerNames: readonly string[],
     persistedCount = triggerNames.length,
     overrides: Partial<LaunchMachineIntent> = {},
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const database = this.requireDatabase();
-    const triggerId = await this.insertTestTrigger();
-    const intents = this.batchIntents(triggerId, triggerNames).map((intent) =>
-      Object.assign({}, intent, overrides, { triggerId }),
+    const first = this.intent();
+    const providerEventReceiptId = await this.insertTestReceipt(first);
+    const intents = await Promise.all(
+      this.batchIntents(providerEventReceiptId, triggerNames).map((intent) =>
+        this.attachDispatchRun(Object.assign({}, intent, overrides), providerEventReceiptId),
+      ),
     );
     const daemon = await database.findDaemonForOrganization(
       intents[0]!.organizationId,
@@ -407,7 +403,6 @@ export class HubHarness {
         id,
         organizationId: intent.organizationId,
         projectId: intent.projectId,
-        triggerId,
         machineId: daemon.machineId,
         daemonId: daemon.id,
         triggerContext: intent.triggerContext,
@@ -420,7 +415,7 @@ export class HubHarness {
       if (execution === undefined) throw new Error(`Execution already exists: ${id}`);
       executions.push(execution);
     }
-    return { executions, triggerId };
+    return { executions, providerEventReceiptId };
   }
   dispatchFrom(provider: "github" | "discord"): Promise<DaemonDispatchResult> {
     return this.dispatch({
@@ -997,7 +992,7 @@ export class HubHarness {
   }): Promise<{
     status: number;
     error?: string;
-    triggerId?: string;
+    providerEventReceiptId?: string;
     triggerRunId?: string;
     configuredTriggerName?: string;
     workflowStatus?: string;
@@ -1023,7 +1018,7 @@ export class HubHarness {
       throw new Error("manual run was interrupted by application restart");
     const body = z
       .object({
-        triggerId: z.string().optional(),
+        providerEventReceiptId: z.string().optional(),
         triggerRunId: z.string().optional(),
         configuredTriggerName: z.string().optional(),
         workflowStatus: z.string().optional(),
@@ -1034,7 +1029,9 @@ export class HubHarness {
     return {
       status: response.status,
       ...(body.error === undefined ? {} : { error: body.error }),
-      ...(body.triggerId === undefined ? {} : { triggerId: body.triggerId }),
+      ...(body.providerEventReceiptId === undefined
+        ? {}
+        : { providerEventReceiptId: body.providerEventReceiptId }),
       ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
       ...(body.configuredTriggerName === undefined
         ? {}
@@ -1202,7 +1199,7 @@ export class HubHarness {
       kind: "launch_machine",
       organizationId: HUB_ORGANIZATION_ID,
       projectId: HUB_PROJECT_ID,
-      triggerId: randomUUID(),
+      triggerRunId: randomUUID(),
       triggerName: "discord-ping",
       environmentName: "hub-daemon",
       environment: {
@@ -1227,24 +1224,62 @@ export class HubHarness {
     };
   }
 
-  private async insertTestTrigger(): Promise<string> {
-    const trigger = await this.requireDatabase().insertTrigger({
-      organizationId: this.intent().organizationId,
-      projectId: this.intent().projectId,
+  private async insertTestReceipt(intent: LaunchMachineIntent): Promise<string> {
+    const result = await this.requireDatabase().persistManualEvent({
+      organizationId: intent.organizationId,
+      projectId: intent.projectId,
       deliveryId: randomUUID(),
-      source: "test.dispatch",
+      source: "manual.test_dispatch",
       payload: {},
       receivedAt: new Date(),
     });
-    return trigger.trigger.id;
+    if (result.status !== "accepted") throw new Error("test receipt was not accepted");
+    return result.event.providerEventReceiptId;
   }
 
-  private batchIntents(triggerId: string, triggerNames: readonly string[]): LaunchMachineIntent[] {
+  private batchIntents(
+    _providerEventReceiptId: string,
+    triggerNames: readonly string[],
+  ): LaunchMachineIntent[] {
     return triggerNames.map((triggerName) => ({
       ...this.intent(),
-      triggerId,
       triggerName,
     }));
+  }
+
+  private async attachDispatchRun(
+    intent: LaunchMachineIntent,
+    providerEventReceiptId: string,
+  ): Promise<LaunchMachineIntent> {
+    const database = this.requireDatabase();
+    const existing = (
+      await database.findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)
+    ).find((run) => run.configuredTriggerName === intent.triggerName);
+    const run =
+      existing ??
+      (
+        await database.createAcceptedTriggerRun({
+          organizationId: intent.organizationId,
+          projectId: intent.projectId,
+          configurationRevisionId: intent.configurationRevisionId,
+          providerEventReceiptId,
+          configuredTriggerName: intent.triggerName,
+          rawPrompt: intent.prompt,
+          prompt: intent.prompt,
+          inputs: {},
+          triggerContext: intent.triggerContext,
+          outputContext: intent.outputContext,
+          deadlineAt:
+            intent.deadlineAt ?? new Date(this.clock.now() + (intent.timeoutMs ?? 30 * 60_000)),
+          stepIds: ["dispatch"],
+        })
+      ).run;
+    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+    return {
+      ...intent,
+      triggerRunId: run.id,
+      ...(step === undefined ? {} : { workflowStepRunId: step.id }),
+    };
   }
 
   private requireDatabase(): Database {
@@ -1712,9 +1747,27 @@ class TestDaemon {
       payload: {
         executionId: this.executionId(agentId),
         agentId,
+        event: {
+          type: "timeline",
+          provider: "opencode",
+          item: {
+            type: "tool_call",
+            callId: `finish-${agentId}`,
+            name: "hub.finish_execution",
+            status: "completed",
+          },
+        },
+      },
+    });
+    this.send({
+      type: "hub.execution.agent.stream",
+      payload: {
+        executionId: this.executionId(agentId),
+        agentId,
         event: { type: "turn_completed", provider: "opencode" },
       },
     });
+    this.changesStatus(agentId, "idle");
   }
   async revoke(): Promise<number> {
     return (

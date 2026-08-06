@@ -209,7 +209,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     await store.activate(revision.id);
 
-    const accepted = await database.acceptDiscordTrigger({
+    const accepted = await database.acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-fan-out",
       source: "discord.mention",
@@ -219,7 +219,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.equal(accepted.status, "accepted");
     if (accepted.status !== "accepted") return;
-    assert.equal(accepted.triggers.length, 1);
+    assert.equal(accepted.events.length, 1);
   });
 
   it("restores the target revision's trigger routes during rollback", async () => {
@@ -253,7 +253,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     const rolledBack = await store.rollback();
     assert.equal(rolledBack.revision.id, first.id);
-    const accepted = await database.acceptDiscordTrigger({
+    const accepted = await database.acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-rollback-routes",
       source: "discord.mention",
@@ -263,8 +263,8 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.equal(accepted.status, "accepted");
     if (accepted.status !== "accepted") return;
-    const trigger = await database.findTriggerById(accepted.triggers[0]!.triggerId);
-    assert.equal(trigger?.matchedTriggerName, "discord-mention");
+    assert.equal(accepted.events[0]?.projectId, project.id);
+    assert.equal(accepted.events[0]?.source, "discord.mention");
   });
 });
 

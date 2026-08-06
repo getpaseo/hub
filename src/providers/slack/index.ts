@@ -74,34 +74,11 @@ export function createSlackRegistration(
   const accept =
     database === null
       ? () => Promise.reject(new DatabaseUnavailableError())
-      : (input: Parameters<Database["acceptSlackTrigger"]>[0]) =>
-          database.acceptSlackTrigger(input);
+      : (input: Parameters<Database["acceptSlackEvent"]>[0]) => database.acceptSlackEvent(input);
   const webhook = createSlackWebhookSource({
     appId: configuration.appId,
     signingSecret: configuration.signingSecret,
     accept,
-    ...(database === null
-      ? {}
-      : {
-          recoverDuplicate: async (triggerId: string) => {
-            const trigger = await database.findTriggerById(triggerId);
-            return trigger === undefined ||
-              trigger.projectId === null ||
-              trigger.droppedReason !== null
-              ? undefined
-              : {
-                  triggerId: trigger.id,
-                  organizationId: trigger.organizationId,
-                  projectId: trigger.projectId,
-                  deliveryId: trigger.deliveryId,
-                  source: trigger.source,
-                  payload: trigger.payload,
-                  receivedAt: trigger.receivedAt,
-                  connectionId: trigger.connectionId,
-                  resourceId: trigger.resourceId,
-                };
-          },
-        }),
   });
   if (database === null) {
     return {

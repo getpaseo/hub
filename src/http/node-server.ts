@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { isIP } from "node:net";
 import { logger } from "../logger.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "./client-address.js";
+import { takeResponseLifecycle } from "./response-lifecycle.js";
 
 export type FetchHandler = (request: Request) => Response | Promise<Response>;
 
@@ -33,12 +34,43 @@ async function forwardRequest(
     const clientAddress = resolveClientAddress(incoming, options.trustedClientIpHeader);
     const request = toRequest(incoming, clientAddress);
     const response = await fetchHandler(request);
+    const lifecycle = takeResponseLifecycle(response);
+    let responseForwarded = false;
+    let lifecycleSettled = false;
+    const runLifecycle = (callback: (() => void | Promise<void>) | undefined): void => {
+      if (callback === undefined || lifecycleSettled) return;
+      lifecycleSettled = true;
+      void Promise.resolve(callback()).catch((error: unknown) => {
+        logger.error({ err: error }, "response lifecycle cleanup failed");
+      });
+    };
+    const abortLifecycle = (): void => {
+      if (lifecycle === undefined) return;
+      runLifecycle(lifecycle.onAbort);
+    };
+    if (lifecycle !== undefined) {
+      outgoing.once("finish", () => {
+        if (!responseForwarded) {
+          abortLifecycle();
+          return;
+        }
+        runLifecycle(lifecycle.onFinish);
+      });
+      const markResponseAborted = () => {
+        if (outgoing.writableFinished) return;
+        responseForwarded = false;
+        abortLifecycle();
+      };
+      outgoing.once("close", markResponseAborted);
+      outgoing.once("error", markResponseAborted);
+    }
     outgoing.statusCode = response.status;
     outgoing.statusMessage = response.statusText;
     for (const [name, value] of response.headers) outgoing.setHeader(name, value);
     const cookies = response.headers.getSetCookie();
     if (cookies.length > 0) outgoing.setHeader("set-cookie", cookies);
     if (response.body === null) {
+      responseForwarded = true;
       outgoing.end();
       return;
     }
@@ -48,6 +80,7 @@ async function forwardRequest(
       if (chunk.done) break;
       if (!outgoing.write(chunk.value)) await once(outgoing, "drain");
     }
+    responseForwarded = true;
     outgoing.end();
   } catch (error) {
     logger.error({ err: error }, "request failed");

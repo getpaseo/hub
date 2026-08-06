@@ -33,7 +33,6 @@ export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const CONNECTION_PROVIDERS = ["github", "slack", "discord"] as const;
 
 export type MachineSource =
-  | { kind: "trigger"; triggerId: string }
   | { kind: "manual"; userId?: string }
   | { kind: "daemon"; daemonId: string };
 
@@ -84,71 +83,6 @@ export const providerEventReceipts = pgTable(
       "provider_event_receipts_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'manual')`,
     ),
-  ],
-);
-
-export const triggers = pgTable(
-  "triggers",
-  {
-    id: uuid().defaultRandom().primaryKey(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organizations.id, {
-        onDelete: "cascade",
-      }),
-    projectId: uuid("project_id"),
-    configurationRevisionId: uuid("configuration_revision_id"),
-    receiptId: uuid("receipt_id").notNull(),
-    connectionId: uuid("connection_id"),
-    resourceId: text("resource_id"),
-    deliveryId: text("delivery_id").notNull(),
-    signatureHash: text("signature_hash"),
-    source: text().notNull(),
-    repo: text(),
-    payload: jsonb().notNull(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
-    matchedTriggerName: text("matched_trigger_name"),
-    droppedReason: text("dropped_reason"),
-  },
-  (table) => [
-    uniqueIndex("triggers_receipt_project_unique").on(table.receiptId, table.projectId),
-    uniqueIndex("triggers_signature_hash_unique")
-      .on(table.signatureHash)
-      .where(sql`${table.signatureHash} is not null`),
-    uniqueIndex("triggers_id_project_organization_unique").on(
-      table.id,
-      table.projectId,
-      table.organizationId,
-    ),
-    index("triggers_received_at_idx").on(table.receivedAt.desc()),
-    index("triggers_organization_received_at_idx").on(
-      table.organizationId,
-      table.receivedAt.desc(),
-    ),
-    index("triggers_project_received_at_idx").on(table.projectId, table.receivedAt.desc()),
-    check(
-      "triggers_project_or_dropped_check",
-      sql`${table.projectId} is not null or ${table.droppedReason} is not null`,
-    ),
-    foreignKey({
-      columns: [table.projectId, table.organizationId],
-      foreignColumns: [projects.id, projects.organizationId],
-      name: "triggers_project_organization_fk",
-    }),
-    foreignKey({
-      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
-      foreignColumns: [
-        projectConfigurationRevisions.id,
-        projectConfigurationRevisions.projectId,
-        projectConfigurationRevisions.organizationId,
-      ],
-      name: "triggers_revision_project_organization_fk",
-    }),
-    foreignKey({
-      columns: [table.receiptId, table.organizationId],
-      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
-      name: "triggers_receipt_organization_fk",
-    }),
   ],
 );
 
@@ -294,13 +228,14 @@ export const triggerRuns = pgTable(
     organizationId: text("organization_id").notNull(),
     projectId: uuid("project_id").notNull(),
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
-    triggerId: uuid("trigger_id").notNull(),
+    providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
     configuredTriggerName: text("configured_trigger_name").notNull(),
     outcome: text().$type<"accepted" | "rejected">().notNull().default("accepted"),
     status: text().$type<"running" | "succeeded" | "failed" | "timed_out" | "rejected">().notNull(),
     rawPrompt: text("raw_prompt").notNull(),
     prompt: text().notNull(),
     inputs: jsonb().notNull().default({}),
+    values: jsonb().notNull().default({}),
     triggerContext: jsonb("trigger_context").notNull().default({}),
     outputContext: jsonb("output_context").notNull().default({}),
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
@@ -311,8 +246,9 @@ export const triggerRuns = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("trigger_runs_trigger_configured_unique").on(
-      table.triggerId,
+    uniqueIndex("trigger_runs_receipt_project_configured_unique").on(
+      table.providerEventReceiptId,
+      table.projectId,
       table.configuredTriggerName,
     ),
     index("trigger_runs_status_deadline_idx").on(table.status, table.deadlineAt),
@@ -355,9 +291,9 @@ export const triggerRuns = pgTable(
       name: "trigger_runs_revision_project_organization_fk",
     }),
     foreignKey({
-      columns: [table.triggerId, table.projectId, table.organizationId],
-      foreignColumns: [triggers.id, triggers.projectId, triggers.organizationId],
-      name: "trigger_runs_trigger_project_organization_fk",
+      columns: [table.providerEventReceiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "trigger_runs_receipt_organization_fk",
     }),
   ],
 );
@@ -569,14 +505,17 @@ export const agentExecutions = pgTable(
     launchIntent: jsonb("launch_intent"),
     daemonId: uuid("daemon_id"),
     daemonAgentId: text("daemon_agent_id"),
-    triggerId: uuid("trigger_id"),
-    triggerConnectionId: uuid("trigger_connection_id"),
-    triggerResourceId: text("trigger_resource_id"),
     workflowStepRunId: uuid("workflow_step_run_id"),
     hubAction: text("hub_action").$type<"interrupt" | "archive">(),
     hubActionCompletedAt: timestamp("hub_action_completed_at", {
       withTimezone: true,
     }),
+    hubActionReadyAt: timestamp("hub_action_ready_at", {
+      withTimezone: true,
+    }),
+    hubActionAcknowledgements: jsonb("hub_action_acknowledgements")
+      .notNull()
+      .default({ terminal_at: null, idle_at: null, finish_execution_call: null }),
   },
   (table) => [
     index("agent_executions_machine_id_idx").on(table.machineId),
@@ -609,11 +548,6 @@ export const agentExecutions = pgTable(
       columns: [table.daemonId, table.organizationId],
       foreignColumns: [daemons.id, daemons.organizationId],
       name: "agent_executions_daemon_organization_fk",
-    }),
-    foreignKey({
-      columns: [table.triggerId, table.projectId, table.organizationId],
-      foreignColumns: [triggers.id, triggers.projectId, triggers.organizationId],
-      name: "agent_executions_trigger_project_organization_fk",
     }),
     foreignKey({
       columns: [table.workflowStepRunId],

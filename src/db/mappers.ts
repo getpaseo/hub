@@ -3,23 +3,24 @@ import type {
   MachineRow,
   ProjectConfigurationRevisionRow,
   ProjectRow,
-  TriggerRow,
+  ProviderEventReceiptRow,
 } from "./pg.js";
 import type {
+  AgentExecutionHubAcknowledgements,
   AgentExecutionRecord,
   MachineRecord,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
-  TriggerRecord,
+  ProviderEventReceiptRecord,
 } from "./types.js";
 
-export function toTriggerRecord(row: TriggerRow): TriggerRecord {
+export function toProviderEventReceiptRecord(
+  row: ProviderEventReceiptRow,
+): ProviderEventReceiptRecord {
   return {
     id: row.id,
     organizationId: row.organization_id,
-    projectId: row.project_id,
-    configurationRevisionId: row.configuration_revision_id,
-    receiptId: row.receipt_id,
+    provider: row.provider,
     connectionId: row.connection_id,
     resourceId: row.resource_id,
     deliveryId: row.delivery_id,
@@ -28,8 +29,6 @@ export function toTriggerRecord(row: TriggerRow): TriggerRecord {
     repo: row.repo,
     payload: row.payload,
     receivedAt: row.received_at,
-    matchedTriggerName: row.matched_trigger_name,
-    configuredTriggerNames: row.configured_trigger_names ?? [],
     droppedReason: row.dropped_reason,
   };
 }
@@ -71,13 +70,51 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     launchIntent: row.launch_intent,
     daemonId: row.daemon_id,
     daemonAgentId: row.daemon_agent_id,
-    triggerId: row.trigger_id,
-    triggerConnectionId: row.trigger_connection_id,
-    triggerResourceId: row.trigger_resource_id,
     workflowStepRunId: row.workflow_step_run_id,
     hubAction: row.hub_action,
     hubActionCompletedAt: row.hub_action_completed_at,
+    hubActionReadyAt: row.hub_action_ready_at,
+    hubActionAcknowledgements: toAgentExecutionHubAcknowledgements(row.hub_action_acknowledgements),
   };
+}
+
+function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubAcknowledgements {
+  if (!isRecord(value)) return emptyAgentExecutionHubAcknowledgements();
+  const terminalAt = toDateOrNull(value["terminal_at"]);
+  const idleAt = toDateOrNull(value["idle_at"]);
+  const rawFinishExecutionCall = value["finish_execution_call"];
+  let finishExecutionCall: AgentExecutionHubAcknowledgements["finishExecutionCall"] = null;
+  if (isRecord(rawFinishExecutionCall)) {
+    const callId = rawFinishExecutionCall["call_id"];
+    const status = rawFinishExecutionCall["status"];
+    const observedAt = toDateOrNull(rawFinishExecutionCall["observed_at"]);
+    if (
+      typeof callId === "string" &&
+      (status === "running" ||
+        status === "completed" ||
+        status === "failed" ||
+        status === "canceled") &&
+      observedAt !== null
+    ) {
+      finishExecutionCall = { callId, status, observedAt };
+    }
+  }
+  return { terminalAt, idleAt, finishExecutionCall };
+}
+
+function emptyAgentExecutionHubAcknowledgements(): AgentExecutionHubAcknowledgements {
+  return { terminalAt: null, idleAt: null, finishExecutionCall: null };
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string") return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function toProjectRecord(row: ProjectRow): ProjectRecord {

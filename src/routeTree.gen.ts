@@ -38,10 +38,11 @@ import { Route as ShellOOrganizationSlugConnectionsRouteImport } from './routes/
 import { Route as ShellOOrganizationSlugApiKeysRouteImport } from './routes/_shell/o/$organizationSlug/api-keys'
 import { Route as ShellOOrganizationSlugProjectsIndexRouteImport } from './routes/_shell/o/$organizationSlug/projects/index'
 import { Route as ShellOOrganizationSlugProjectsProjectSlugOverviewRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/overview'
-import { Route as ShellOOrganizationSlugProjectsProjectSlugExecutionsRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/executions'
 import { Route as ShellOOrganizationSlugProjectsProjectSlugConfigurationRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/configuration'
 import { Route as ShellOOrganizationSlugProjectsProjectSlugActivityRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/activity'
+import { Route as ShellOOrganizationSlugProjectsProjectSlugActivityIndexRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/activity/index'
 import { Route as ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/settings/general'
+import { Route as ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/activity/$runId'
 
 const WebhookRoute = WebhookRouteImport.update({
   id: '/webhook',
@@ -204,12 +205,6 @@ const ShellOOrganizationSlugProjectsProjectSlugOverviewRoute =
     path: '/$projectSlug/overview',
     getParentRoute: () => ShellOOrganizationSlugProjectsRoute,
   } as any)
-const ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute =
-  ShellOOrganizationSlugProjectsProjectSlugExecutionsRouteImport.update({
-    id: '/$projectSlug/executions',
-    path: '/$projectSlug/executions',
-    getParentRoute: () => ShellOOrganizationSlugProjectsRoute,
-  } as any)
 const ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute =
   ShellOOrganizationSlugProjectsProjectSlugConfigurationRouteImport.update({
     id: '/$projectSlug/configuration',
@@ -222,11 +217,25 @@ const ShellOOrganizationSlugProjectsProjectSlugActivityRoute =
     path: '/$projectSlug/activity',
     getParentRoute: () => ShellOOrganizationSlugProjectsRoute,
   } as any)
+const ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute =
+  ShellOOrganizationSlugProjectsProjectSlugActivityIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () =>
+      ShellOOrganizationSlugProjectsProjectSlugActivityRoute,
+  } as any)
 const ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute =
   ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRouteImport.update({
     id: '/$projectSlug/settings/general',
     path: '/$projectSlug/settings/general',
     getParentRoute: () => ShellOOrganizationSlugProjectsRoute,
+  } as any)
+const ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute =
+  ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRouteImport.update({
+    id: '/$runId',
+    path: '/$runId',
+    getParentRoute: () =>
+      ShellOOrganizationSlugProjectsProjectSlugActivityRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -257,11 +266,12 @@ export interface FileRoutesByFullPath {
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
   '/o/$organizationSlug/projects/': typeof ShellOOrganizationSlugProjectsIndexRoute
-  '/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
+  '/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren
   '/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
-  '/o/$organizationSlug/projects/$projectSlug/executions': typeof ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute
   '/o/$organizationSlug/projects/$projectSlug/overview': typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRoute
+  '/o/$organizationSlug/projects/$projectSlug/activity/$runId': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute
   '/o/$organizationSlug/projects/$projectSlug/settings/general': typeof ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute
+  '/o/$organizationSlug/projects/$projectSlug/activity/': typeof ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute
 }
 export interface FileRoutesByTo {
   '/health': typeof HealthRoute
@@ -290,11 +300,11 @@ export interface FileRoutesByTo {
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsIndexRoute
-  '/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
   '/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
-  '/o/$organizationSlug/projects/$projectSlug/executions': typeof ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute
   '/o/$organizationSlug/projects/$projectSlug/overview': typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRoute
+  '/o/$organizationSlug/projects/$projectSlug/activity/$runId': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute
   '/o/$organizationSlug/projects/$projectSlug/settings/general': typeof ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute
+  '/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -326,11 +336,12 @@ export interface FileRoutesById {
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
   '/_shell/o/$organizationSlug/projects/': typeof ShellOOrganizationSlugProjectsIndexRoute
-  '/_shell/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
+  '/_shell/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren
   '/_shell/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
-  '/_shell/o/$organizationSlug/projects/$projectSlug/executions': typeof ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute
   '/_shell/o/$organizationSlug/projects/$projectSlug/overview': typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRoute
+  '/_shell/o/$organizationSlug/projects/$projectSlug/activity/$runId': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute
   '/_shell/o/$organizationSlug/projects/$projectSlug/settings/general': typeof ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute
+  '/_shell/o/$organizationSlug/projects/$projectSlug/activity/': typeof ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -364,9 +375,10 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/projects/'
     | '/o/$organizationSlug/projects/$projectSlug/activity'
     | '/o/$organizationSlug/projects/$projectSlug/configuration'
-    | '/o/$organizationSlug/projects/$projectSlug/executions'
     | '/o/$organizationSlug/projects/$projectSlug/overview'
+    | '/o/$organizationSlug/projects/$projectSlug/activity/$runId'
     | '/o/$organizationSlug/projects/$projectSlug/settings/general'
+    | '/o/$organizationSlug/projects/$projectSlug/activity/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/health'
@@ -395,11 +407,11 @@ export interface FileRouteTypes {
     | '/api/integrations/slack/callback'
     | '/api/integrations/slack/events'
     | '/o/$organizationSlug/projects'
-    | '/o/$organizationSlug/projects/$projectSlug/activity'
     | '/o/$organizationSlug/projects/$projectSlug/configuration'
-    | '/o/$organizationSlug/projects/$projectSlug/executions'
     | '/o/$organizationSlug/projects/$projectSlug/overview'
+    | '/o/$organizationSlug/projects/$projectSlug/activity/$runId'
     | '/o/$organizationSlug/projects/$projectSlug/settings/general'
+    | '/o/$organizationSlug/projects/$projectSlug/activity'
   id:
     | '__root__'
     | '/_shell'
@@ -432,9 +444,10 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/projects/'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/activity'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/configuration'
-    | '/_shell/o/$organizationSlug/projects/$projectSlug/executions'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/overview'
+    | '/_shell/o/$organizationSlug/projects/$projectSlug/activity/$runId'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/settings/general'
+    | '/_shell/o/$organizationSlug/projects/$projectSlug/activity/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -665,13 +678,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRouteImport
       parentRoute: typeof ShellOOrganizationSlugProjectsRoute
     }
-    '/_shell/o/$organizationSlug/projects/$projectSlug/executions': {
-      id: '/_shell/o/$organizationSlug/projects/$projectSlug/executions'
-      path: '/$projectSlug/executions'
-      fullPath: '/o/$organizationSlug/projects/$projectSlug/executions'
-      preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugExecutionsRouteImport
-      parentRoute: typeof ShellOOrganizationSlugProjectsRoute
-    }
     '/_shell/o/$organizationSlug/projects/$projectSlug/configuration': {
       id: '/_shell/o/$organizationSlug/projects/$projectSlug/configuration'
       path: '/$projectSlug/configuration'
@@ -686,6 +692,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteImport
       parentRoute: typeof ShellOOrganizationSlugProjectsRoute
     }
+    '/_shell/o/$organizationSlug/projects/$projectSlug/activity/': {
+      id: '/_shell/o/$organizationSlug/projects/$projectSlug/activity/'
+      path: '/'
+      fullPath: '/o/$organizationSlug/projects/$projectSlug/activity/'
+      preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityIndexRouteImport
+      parentRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
+    }
     '/_shell/o/$organizationSlug/projects/$projectSlug/settings/general': {
       id: '/_shell/o/$organizationSlug/projects/$projectSlug/settings/general'
       path: '/$projectSlug/settings/general'
@@ -693,14 +706,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRouteImport
       parentRoute: typeof ShellOOrganizationSlugProjectsRoute
     }
+    '/_shell/o/$organizationSlug/projects/$projectSlug/activity/$runId': {
+      id: '/_shell/o/$organizationSlug/projects/$projectSlug/activity/$runId'
+      path: '/$runId'
+      fullPath: '/o/$organizationSlug/projects/$projectSlug/activity/$runId'
+      preLoaderRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRouteImport
+      parentRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
+    }
   }
 }
 
+interface ShellOOrganizationSlugProjectsProjectSlugActivityRouteChildren {
+  ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute
+  ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute
+}
+
+const ShellOOrganizationSlugProjectsProjectSlugActivityRouteChildren: ShellOOrganizationSlugProjectsProjectSlugActivityRouteChildren =
+  {
+    ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute:
+      ShellOOrganizationSlugProjectsProjectSlugActivityRunIdRoute,
+    ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute:
+      ShellOOrganizationSlugProjectsProjectSlugActivityIndexRoute,
+  }
+
+const ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren =
+  ShellOOrganizationSlugProjectsProjectSlugActivityRoute._addFileChildren(
+    ShellOOrganizationSlugProjectsProjectSlugActivityRouteChildren,
+  )
+
 interface ShellOOrganizationSlugProjectsRouteChildren {
   ShellOOrganizationSlugProjectsIndexRoute: typeof ShellOOrganizationSlugProjectsIndexRoute
-  ShellOOrganizationSlugProjectsProjectSlugActivityRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRoute
+  ShellOOrganizationSlugProjectsProjectSlugActivityRoute: typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren
   ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute: typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
-  ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute: typeof ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute
   ShellOOrganizationSlugProjectsProjectSlugOverviewRoute: typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRoute
   ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute: typeof ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute
 }
@@ -710,11 +747,9 @@ const ShellOOrganizationSlugProjectsRouteChildren: ShellOOrganizationSlugProject
     ShellOOrganizationSlugProjectsIndexRoute:
       ShellOOrganizationSlugProjectsIndexRoute,
     ShellOOrganizationSlugProjectsProjectSlugActivityRoute:
-      ShellOOrganizationSlugProjectsProjectSlugActivityRoute,
+      ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren,
     ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute:
       ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute,
-    ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute:
-      ShellOOrganizationSlugProjectsProjectSlugExecutionsRoute,
     ShellOOrganizationSlugProjectsProjectSlugOverviewRoute:
       ShellOOrganizationSlugProjectsProjectSlugOverviewRoute,
     ShellOOrganizationSlugProjectsProjectSlugSettingsGeneralRoute:

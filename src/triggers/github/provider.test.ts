@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
-import type { DurableTrigger } from "../../db/types.js";
+import type { DurableProviderEvent } from "../../db/types.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { createDurableWorkflowHandler } from "../../workflows/engine.js";
 import type { GitHubExecutionTokenAuth } from "../../auth/github.js";
@@ -228,7 +228,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       },
     });
     const trigger = {
-      triggerId: "github-fanout-trigger",
+      providerEventReceiptId: "github-fanout-trigger",
       organizationId: "org_1",
       projectId: project.id,
       source: "github.issue_comment",
@@ -237,13 +237,15 @@ describe("GitHub Phase 1 trigger provider", () => {
       payload: createEvent(),
       connectionId: null,
       resourceId: null,
-    } satisfies DurableTrigger;
+    } satisfies DurableProviderEvent;
 
     await handler(trigger);
     await handler(trigger);
     await engine.processAvailable();
 
-    const runs = await database.findTriggerRunsByTriggerId(trigger.triggerId);
+    const runs = await database.findTriggerRunsByProviderEventReceiptId(
+      trigger.providerEventReceiptId,
+    );
     assert.equal(runs.length, 2);
     assert.equal(dispatches, 2);
     assert.equal(

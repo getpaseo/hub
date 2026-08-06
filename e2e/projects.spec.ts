@@ -1,10 +1,11 @@
 import { test } from "./app.js";
 import { expectAccessibleProjectRoute } from "./helpers/projects/assertions.js";
-import { expectNoProjectActivity, expectProjectActivity } from "./helpers/projects/activity.js";
 import {
-  expectNoProjectExecutions,
-  expectProjectExecution,
-} from "./helpers/projects/executions.js";
+  expectNoProjectActivity,
+  expectProjectActivity,
+  expectRunSteps,
+  openProjectRun,
+} from "./helpers/projects/activity.js";
 import { projectApp } from "./helpers/projects/index.js";
 
 const owner = {
@@ -87,7 +88,7 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await app.configuration.expectActiveRevision(2);
 });
 
-test("isolates activity and executions by project", async ({ hub, page }) => {
+test("isolates durable activity and step detail by project", async ({ hub, page }) => {
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
@@ -96,10 +97,9 @@ test("isolates activity and executions by project", async ({ hub, page }) => {
   await app.navigation.openProject("Default");
   await app.navigation.openProjectSection("Activity");
   await expectProjectActivity(page);
-  await app.navigation.openProjectSection("Executions");
-  await expectProjectExecution(page);
+  await openProjectRun(page, "Browser history");
+  await expectRunSteps(page, ["history", "succeeded"]);
   await app.navigation.switchProject("Second");
-  await expectNoProjectExecutions(page);
   await app.navigation.openProjectSection("Activity");
   await expectNoProjectActivity(page);
 });

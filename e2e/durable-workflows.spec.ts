@@ -1,6 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
-import { expectNoProjectExecutions } from "./helpers/projects/executions.js";
+import { expectRunDetail, openProjectRun } from "./helpers/projects/activity.js";
 import { projectApp } from "./helpers/projects/index.js";
 
 const owner = {
@@ -69,8 +69,11 @@ test("shows invalid typed manual input in Activity without creating an execution
 
   await app.navigation.openProjectSection("Activity");
   const activity = page.getByRole("table", { name: "Project activity" });
-  await expect(activity).toContainText("rejected_input:deploy");
-  await expect(activity).toContainText("declared choices");
-  await app.navigation.openProjectSection("Executions");
-  await expectNoProjectExecutions(page);
+  await expect(activity).toContainText("rejected");
+  await openProjectRun(page, "deploy");
+  await expectRunDetail(page, {
+    rawMessage: "repo=unknown investigate",
+    cleanPrompt: "investigate",
+    failureReason: "declared choices",
+  });
 });

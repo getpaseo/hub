@@ -8,7 +8,11 @@ import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
-import type { Database } from "../db/types.js";
+import type {
+  Database,
+  ProjectActivityRunRecord,
+  ProviderEventReceiptRecord,
+} from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { resolveRouteTenant } from "./access.js";
 
@@ -43,7 +47,7 @@ export class ProjectDashboard {
     const [projects, connections, unroutedEvents, daemons] = await Promise.all([
       this.database.listProjectsForOrganization(tenant.organization.id),
       this.database.organizationConnectionUsage(tenant.organization.id),
-      this.database.listUnroutedTriggersForOrganization(tenant.organization.id),
+      this.database.listUnroutedProviderEventsForOrganization(tenant.organization.id),
       this.database.listDaemonsForOrganization(tenant.organization.id),
     ]);
     return {
@@ -53,7 +57,7 @@ export class ProjectDashboard {
       capabilities: capabilitiesFor(tenant.membership.role),
       projects: projects.map(projectView),
       connections: connectionUsageView(connections),
-      unroutedEvents: unroutedEvents.map((trigger) => triggerView(trigger)),
+      unroutedEvents: unroutedEvents.map(unroutedEventView),
       daemons: daemons.map(daemonView),
     };
   }
@@ -61,31 +65,15 @@ export class ProjectDashboard {
   async projectSnapshot(request: Request, scope: ProjectRouteScope) {
     const { account, tenant } = await this.resolveProject(request, scope);
     const project = tenant.project;
-    const triggerRuns = await this.database.listTriggerRunsForProject(project.id, 200);
-    const [
-      projects,
-      configuration,
-      organizationDaemons,
-      connections,
-      repositories,
-      activity,
-      executions,
-      stepRuns,
-    ] = await Promise.all([
-      this.database.listProjectsForOrganization(tenant.organization.id),
-      this.database.projectConfigurationReadModel(project.id),
-      this.database.listDaemonsForOrganization(tenant.organization.id),
-      this.database.organizationConnectionUsage(tenant.organization.id),
-      this.database.listGitHubRepositories(tenant.organization.id),
-      this.database.listTriggersForProject(project.id, 50),
-      this.database.listAgentExecutionsForProject(project.id, 50),
-      Promise.all(
-        triggerRuns.map(
-          async (run) =>
-            [run.id, await this.database.listWorkflowStepRunsForTriggerRun(run.id)] as const,
-        ),
-      ),
-    ]);
+    const [projects, configuration, organizationDaemons, connections, repositories, activity] =
+      await Promise.all([
+        this.database.listProjectsForOrganization(tenant.organization.id),
+        this.database.projectConfigurationReadModel(project.id),
+        this.database.listDaemonsForOrganization(tenant.organization.id),
+        this.database.organizationConnectionUsage(tenant.organization.id),
+        this.database.listGitHubRepositories(tenant.organization.id),
+        this.database.listProjectActivityRuns(project.id, 50),
+      ]);
     return {
       account: account.account,
       organization: tenant.organization,
@@ -103,14 +91,21 @@ export class ProjectDashboard {
         fullName: repository.fullName,
         defaultBranch: repository.defaultBranch,
       })),
-      activity: activity.map((trigger) =>
-        triggerView(
-          trigger,
-          triggerRuns.filter((run) => run.triggerId === trigger.id),
-          new Map(stepRuns),
-        ),
-      ),
-      executions: executions.map(executionView),
+      activity: activity.map(activityRunView),
+    };
+  }
+
+  async activityRunSnapshot(request: Request, scope: ProjectRouteScope & { runId: string }) {
+    const { account, tenant } = await this.resolveProject(request, scope);
+    const activity = await this.database.findProjectActivityRun(tenant.project.id, scope.runId);
+    if (activity === undefined) throw new ProjectCommandError("run_unavailable");
+    return {
+      account: account.account,
+      organization: tenant.organization,
+      membership: tenant.membership,
+      capabilities: capabilitiesFor(tenant.membership.role),
+      project: projectView(tenant.project),
+      activity: activityRunView(activity),
     };
   }
 
@@ -371,56 +366,88 @@ function configurationView(
   };
 }
 
-function triggerView(
-  trigger: Awaited<ReturnType<Database["findTriggerById"]>> & {},
-  runs: Awaited<ReturnType<Database["findTriggerRunsByTriggerId"]>> = [],
-  stepRuns = new Map<string, Awaited<ReturnType<Database["listWorkflowStepRunsForTriggerRun"]>>>(),
-) {
-  if (trigger === undefined) throw new Error("trigger unavailable");
+function activityRunView(activity: ProjectActivityRunRecord) {
+  const { run, receipt, steps } = activity;
+  const base = {
+    id: run.id,
+    providerEventReceiptId: run.providerEventReceiptId,
+    provider: receipt.provider,
+    deliveryId: receipt.deliveryId,
+    source: receipt.source,
+    repo: receipt.repo,
+    receivedAt: receipt.receivedAt.toISOString(),
+    rawPayload: jsonValue(receipt.payload),
+    configuredTriggerName: run.configuredTriggerName,
+    rawMessage: run.rawPrompt,
+    cleanPrompt: run.prompt,
+    inputs: jsonValue(run.inputs),
+    values: jsonValue(run.values),
+    triggerContext: jsonValue(run.triggerContext),
+    outputContext: jsonValue(run.outputContext),
+    createdAt: run.createdAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
+    steps: steps.map((step) => ({
+      id: step.id,
+      stepId: step.stepId,
+      ordinal: step.ordinal,
+      status: step.status,
+      deadlineAt: step.deadlineAt?.toISOString() ?? null,
+      idleDeadlineAt: step.idleDeadlineAt?.toISOString() ?? null,
+      deadlineKind: step.deadlineKind,
+      startedAt: step.startedAt?.toISOString() ?? null,
+      output: step.output === null ? null : jsonValue(step.output),
+      failureReason: step.failureReason,
+      completedAt: step.completedAt?.toISOString() ?? null,
+    })),
+  };
+  if (run.outcome === "rejected") {
+    return {
+      ...base,
+      outcome: run.outcome,
+      status: run.status,
+      deadlineAt: null,
+      deadlineKind: null,
+      failureReason: formatInvocationRejection(run.rejection),
+      rejectionReason: formatInvocationRejection(run.rejection),
+    };
+  }
   return {
-    id: trigger.id,
-    source: trigger.source,
-    repo: trigger.repo,
-    receivedAt: trigger.receivedAt.toISOString(),
-    matchedTriggerName: trigger.matchedTriggerName,
-    configuredTriggerNames: [...trigger.configuredTriggerNames],
-    droppedReason: trigger.droppedReason,
-    branchOutcomes: runs.map((run) =>
-      run.outcome === "rejected"
-        ? {
-            configuredTriggerName: run.configuredTriggerName,
-            outcome: run.outcome,
-            status: run.status,
-            rejectionReason: formatInvocationRejection(run.rejection),
-            steps: [],
-          }
-        : {
-            configuredTriggerName: run.configuredTriggerName,
-            outcome: run.outcome,
-            status: run.status,
-            deadlineAt: run.deadlineAt.toISOString(),
-            deadlineKind: run.deadlineKind,
-            completedAt: run.completedAt?.toISOString() ?? null,
-            rejectionReason: null,
-            rawPrompt: run.rawPrompt,
-            prompt: run.prompt,
-            inputs: jsonValue(run.inputs),
-            failureReason: run.failureReason,
-            steps: (stepRuns.get(run.id) ?? []).map((step) => ({
-              id: step.id,
-              stepId: step.stepId,
-              ordinal: step.ordinal,
-              status: step.status,
-              deadlineAt: step.deadlineAt?.toISOString() ?? null,
-              idleDeadlineAt: step.idleDeadlineAt?.toISOString() ?? null,
-              deadlineKind: step.deadlineKind,
-              startedAt: step.startedAt?.toISOString() ?? null,
-              output: step.output === null ? null : jsonValue(step.output),
-              failureReason: step.failureReason,
-              completedAt: step.completedAt?.toISOString() ?? null,
-            })),
-          },
-    ),
+    ...base,
+    outcome: run.outcome,
+    status: run.status,
+    deadlineAt: run.deadlineAt.toISOString(),
+    deadlineKind: run.deadlineKind,
+    failureReason: run.failureReason,
+    rejectionReason: null,
+  };
+}
+
+function unroutedEventView(receipt: ProviderEventReceiptRecord) {
+  return {
+    id: receipt.id,
+    providerEventReceiptId: receipt.id,
+    provider: receipt.provider,
+    deliveryId: receipt.deliveryId,
+    source: receipt.source,
+    repo: receipt.repo,
+    receivedAt: receipt.receivedAt.toISOString(),
+    rawPayload: jsonValue(receipt.payload),
+    configuredTriggerName: null,
+    rawMessage: null,
+    cleanPrompt: null,
+    inputs: {},
+    values: {},
+    triggerContext: {},
+    outputContext: {},
+    createdAt: receipt.receivedAt.toISOString(),
+    completedAt: null,
+    outcome: "dropped" as const,
+    status: "dropped" as const,
+    deadlineAt: null,
+    deadlineKind: null,
+    failureReason: receipt.droppedReason,
+    rejectionReason: null,
+    steps: [],
   };
 }
 
@@ -432,26 +459,4 @@ function jsonValue(value: unknown): JsonValue {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonValue(child)]));
   }
   return null;
-}
-
-function executionView(execution: Awaited<ReturnType<Database["findAgentExecutionById"]>> & {}) {
-  if (execution === undefined) throw new Error("execution unavailable");
-  return {
-    id: execution.id,
-    status: execution.status,
-    startedAt: execution.startedAt.toISOString(),
-    completedAt: execution.completedAt?.toISOString() ?? null,
-    deadlineAt: execution.deadlineAt?.toISOString() ?? null,
-    idleDeadlineAt: execution.idleDeadlineAt?.toISOString() ?? null,
-    failureReason:
-      execution.status === "failed" &&
-      typeof execution.result === "object" &&
-      execution.result !== null &&
-      "reason" in execution.result &&
-      typeof execution.result.reason === "string"
-        ? execution.result.reason
-        : null,
-    configurationRevisionId: execution.configurationRevisionId,
-    daemonId: execution.daemonId,
-  };
 }

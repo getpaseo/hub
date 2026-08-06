@@ -51,12 +51,12 @@ describe("GitHub registration", () => {
     } as const;
     database.findGitHubConfigurationTarget = () => Promise.resolve(target);
     database.listGitHubConfigurationTargets = () => Promise.resolve([target]);
-    database.acceptGitHubTrigger = (input) =>
+    database.acceptGitHubEvent = (input) =>
       Promise.resolve({
         status: "accepted",
-        triggers: [
+        events: [
           {
-            triggerId: `trigger-${input.deliveryId}`,
+            providerEventReceiptId: `trigger-${input.deliveryId}`,
             organizationId: project.organizationId,
             projectId: project.id,
             deliveryId: input.deliveryId,
@@ -359,11 +359,11 @@ describe("GitHub registration", () => {
   it("claims lifecycle replay before provider I/O and applies verified evidence afterward", async () => {
     const database = createMemoryDatabase();
     const order: string[] = [];
-    database.claimGitHubLifecycle = (input) => {
+    database.claimGitHubLifecycleReceipt = (input) => {
       order.push(`claim:${input.deliveryId}`);
       return Promise.resolve({
         status: "claimed",
-        triggerId: "lifecycle-trigger",
+        providerEventReceiptId: "lifecycle-trigger",
         installationId: 42,
       });
     };

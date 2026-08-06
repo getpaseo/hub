@@ -9,14 +9,14 @@ import { logger } from "../logger.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
-import { TriggerAcceptanceRepository } from "./trigger-acceptance.js";
+import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import * as schema from "./schema.js";
 import {
   toAgentExecutionRecord,
   toMachineRecord,
   toProjectConfigurationRevisionRecord,
   toProjectRecord,
-  toTriggerRecord,
+  toProviderEventReceiptRecord,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type {
@@ -27,13 +27,11 @@ import type {
   InsertProjectConfigurationRevisionInput,
   InsertAgentExecutionInput,
   InsertMachineInput,
-  InsertTriggerInput,
-  InsertTriggerResult,
   MachineRecord,
   TerminateMachineFields,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
-  TriggerRecord,
+  ProviderEventReceiptRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -52,13 +50,13 @@ import type {
   ConnectionProvider,
   ReadConnectionAttemptInput,
   StartConnectionAttemptInput,
-  AcceptDiscordTriggerInput,
-  AcceptGitHubTriggerInput,
-  AcceptSlackTriggerInput,
-  GitHubLifecycleClaim,
-  GitHubLifecycleClaimInput,
+  AcceptDiscordEventInput,
+  AcceptGitHubEventInput,
+  AcceptSlackEventInput,
+  GitHubLifecycleReceiptClaim,
+  GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
-  PersistManualTriggerInput,
+  PersistManualEventInput,
   ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
@@ -68,6 +66,7 @@ import type {
   ProjectTriggerRoute,
   CreateAcceptedTriggerRunInput,
   CreateRejectedTriggerRunInput,
+  AgentExecutionHubAcknowledgementInput,
   AcceptedTriggerRunRecord,
   RejectedTriggerRunRecord,
   TriggerRunRecord,
@@ -77,6 +76,7 @@ import type {
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
+  ProjectActivityRunRecord,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -102,176 +102,64 @@ class PgDatabase implements Database {
   constructor(private readonly pool: Pool) {
     const database = drizzle(pool, { schema });
     this.connections = new ConnectionRepository(database);
-    this.triggerAcceptance = new TriggerAcceptanceRepository(database, this.connections);
+    this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
   }
 
-  acceptGitHubTrigger(input: AcceptGitHubTriggerInput) {
+  acceptGitHubEvent(input: AcceptGitHubEventInput) {
     return this.triggerAcceptance.acceptGitHub(input);
   }
 
-  acceptDiscordTrigger(input: AcceptDiscordTriggerInput) {
+  acceptDiscordEvent(input: AcceptDiscordEventInput) {
     return this.triggerAcceptance.acceptDiscord(input);
   }
 
-  acceptSlackTrigger(input: AcceptSlackTriggerInput) {
+  acceptSlackEvent(input: AcceptSlackEventInput) {
     return this.triggerAcceptance.acceptSlack(input);
   }
 
-  persistManualTrigger(input: PersistManualTriggerInput) {
+  persistManualEvent(input: PersistManualEventInput) {
     return this.triggerAcceptance.persistManual(input);
   }
 
-  claimGitHubLifecycle(input: GitHubLifecycleClaimInput) {
-    return this.triggerAcceptance.claimGitHubLifecycle(input);
+  claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
+    return this.triggerAcceptance.claimGitHubLifecycleReceipt(input);
   }
 
   applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleClaim, { status: "claimed" }>,
+    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
     result: GitHubLifecycleResult,
   ) {
     return this.triggerAcceptance.applyGitHubLifecycle(claim, result);
   }
 
-  releaseGitHubLifecycleClaim(triggerId: string) {
-    return this.triggerAcceptance.releaseGitHubLifecycleClaim(triggerId);
+  releaseGitHubLifecycleReceipt(providerEventReceiptId: string) {
+    return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
   }
 
-  async insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult> {
-    try {
-      const receiptId = input.receiptId ?? (await ensureTriggerReceipt(this.pool, input));
-      const insertedRows = await query<TriggerRow>(
-        this.pool,
-        `
-          insert into triggers (
-            organization_id,
-            project_id,
-            configuration_revision_id,
-            receipt_id,
-            connection_id,
-            resource_id,
-            delivery_id,
-            signature_hash,
-            source,
-            repo,
-            payload,
-            received_at,
-            matched_trigger_name,
-            dropped_reason
-          )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-          on conflict do nothing
-          returning *
-        `,
-        [
-          input.organizationId,
-          input.projectId,
-          input.configurationRevisionId ?? null,
-          receiptId,
-          input.connectionId ?? null,
-          input.resourceId ?? null,
-          input.deliveryId,
-          input.signatureHash ?? null,
-          input.source,
-          input.repo ?? null,
-          input.payload,
-          input.receivedAt,
-          input.matchedTriggerName ?? null,
-          input.droppedReason ?? null,
-        ],
-      );
-      const inserted = insertedRows.rows[0];
-
-      if (inserted !== undefined) {
-        return {
-          inserted: true,
-          trigger: toTriggerRecord(inserted),
-        };
-      }
-
-      const existing =
-        input.signatureHash === null || input.signatureHash === undefined
-          ? await this.findTriggerByDeliveryId(input.deliveryId, input.organizationId)
-          : ((await this.findTriggerBySignatureHash(input.signatureHash)) ??
-            (await this.findTriggerByDeliveryId(input.deliveryId, input.organizationId)));
-
-      if (existing === undefined) {
-        throw new Error(
-          `trigger insert conflicted but no row was found for delivery ${input.deliveryId}`,
-        );
-      }
-
-      return {
-        inserted: false,
-        trigger: existing,
-      };
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
+  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
+    const rows = await query(
+      this.pool,
+      `update provider_event_receipts
+      set dropped_reason = coalesce(dropped_reason, $2)
+      where id = $1`,
+      [providerEventReceiptId, reason],
+    );
+    if (rows.rowCount === 0)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
   }
 
-  async markTriggerDropped(id: string, reason: string): Promise<TriggerRecord> {
-    try {
-      const rows = await query<TriggerRow>(
-        this.pool,
-        `
-          update triggers
-          set dropped_reason = $2
-          where id = $1 and dropped_reason is null
-          returning *
-        `,
-        [id, reason],
-      );
-      const updated = rows.rows[0];
-
-      if (updated !== undefined) {
-        return toTriggerRecord(updated);
-      }
-
-      const existing = await this.findTriggerById(id);
-
-      if (existing === undefined) {
-        throw new Error(`trigger not found: ${id}`);
-      }
-
-      return existing;
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
-  }
-
-  async findTriggerByDeliveryId(
+  async findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
-  ): Promise<TriggerRecord | undefined> {
-    try {
-      const rows = await query<TriggerRow>(
-        this.pool,
-        organizationId === undefined
-          ? "select * from triggers where delivery_id = $1 limit 1"
-          : "select * from triggers where delivery_id = $1 and organization_id = $2 limit 1",
-        organizationId === undefined ? [deliveryId] : [deliveryId, organizationId],
-      );
-
-      return rows.rows[0] === undefined ? undefined : toTriggerRecord(rows.rows[0]);
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
-  }
-
-  private async findTriggerBySignatureHash(
-    signatureHash: string,
-  ): Promise<TriggerRecord | undefined> {
-    try {
-      const rows = await query<TriggerRow>(
-        this.pool,
-        "select * from triggers where signature_hash = $1 limit 1",
-        [signatureHash],
-      );
-
-      return rows.rows[0] === undefined ? undefined : toTriggerRecord(rows.rows[0]);
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
+  ): Promise<ProviderEventReceiptRecord | undefined> {
+    const rows = await query<ProviderEventReceiptRow>(
+      this.pool,
+      organizationId === undefined
+        ? "select * from provider_event_receipts where delivery_id = $1 limit 1"
+        : "select * from provider_event_receipts where delivery_id = $1 and organization_id = $2 limit 1",
+      organizationId === undefined ? [deliveryId] : [deliveryId, organizationId],
+    );
+    return rows.rows[0] === undefined ? undefined : toProviderEventReceiptRecord(rows.rows[0]);
   }
 
   async insertMachine(input: InsertMachineInput): Promise<MachineRecord> {
@@ -398,27 +286,25 @@ class PgDatabase implements Database {
             completion_token_hash,
             deadline_at,
             idle_deadline_at,
-            trigger_id,
-            trigger_connection_id,
-            trigger_resource_id,
             launch_intent,
             workflow_step_run_id,
             result,
             completed_at
           )
-          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6::agent_execution_status, coalesce($7, now()), $8, $9, $10, $11,
+                 $12,
                  case
-                   when $11::timestamptz is null then null
-                   when $10::timestamptz is null then $11::timestamptz
-                   else least($10::timestamptz, $11::timestamptz)
+                   when $13::timestamptz is null then null
+                   when $12::timestamptz is null then $13::timestamptz
+                   else least($12::timestamptz, $13::timestamptz)
                  end,
-                 $12, $13, $14, $15, $18, $17,
-                 case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
+                 $14, $15, $16,
+                 case when $6 = 'failed'::agent_execution_status then coalesce($7, now()) else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
             and exists (
               select 1 from project_configuration_revisions
-              where id = $8 and project_id = $3 and organization_id = $2
+              where id = $10 and project_id = $3 and organization_id = $2
             )
             and ($5::uuid is null or exists (
               select 1 from daemons daemon
@@ -436,20 +322,17 @@ class PgDatabase implements Database {
           input.projectId,
           input.machineId,
           input.daemonId ?? null,
+          input.status ?? "spawning",
+          input.startedAt ?? null,
           input.triggerContext,
           input.outputContext,
           input.configurationRevisionId,
           input.completionTokenHash ?? null,
           input.deadlineAt ?? null,
           input.idleDeadlineAt ?? null,
-          input.triggerId ?? null,
-          input.triggerConnectionId ?? null,
-          input.triggerResourceId ?? null,
           input.launchIntent ?? null,
-          input.status ?? "spawning",
-          input.result ?? null,
           input.workflowStepRunId ?? null,
-          input.startedAt ?? null,
+          input.result ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -485,27 +368,25 @@ class PgDatabase implements Database {
             completion_token_hash,
             deadline_at,
             idle_deadline_at,
-            trigger_id,
-            trigger_connection_id,
-            trigger_resource_id,
             launch_intent,
             workflow_step_run_id,
             result,
             completed_at
           )
-          select $1, $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+          select $1, $2, $3, $4, $5, $6::agent_execution_status, coalesce($7, now()), $8, $9, $10, $11,
+                 $12,
                  case
-                   when $11::timestamptz is null then null
-                   when $10::timestamptz is null then $11::timestamptz
-                   else least($10::timestamptz, $11::timestamptz)
+                   when $13::timestamptz is null then null
+                   when $12::timestamptz is null then $13::timestamptz
+                   else least($12::timestamptz, $13::timestamptz)
                  end,
-                 $12, $13, $14, $15, $18, $17,
-                 case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
+                 $14, $15, $16,
+                 case when $6 = 'failed'::agent_execution_status then coalesce($7, now()) else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
             and exists (
               select 1 from project_configuration_revisions
-              where id = $8 and project_id = $3 and organization_id = $2
+              where id = $10 and project_id = $3 and organization_id = $2
             )
             and ($5::uuid is null or exists (
               select 1 from daemons daemon
@@ -524,20 +405,17 @@ class PgDatabase implements Database {
           input.projectId,
           input.machineId,
           input.daemonId ?? null,
+          input.status ?? "spawning",
+          input.startedAt ?? null,
           input.triggerContext,
           input.outputContext,
           input.configurationRevisionId,
           input.completionTokenHash ?? null,
           input.deadlineAt ?? null,
           input.idleDeadlineAt ?? null,
-          input.triggerId ?? null,
-          input.triggerConnectionId ?? null,
-          input.triggerResourceId ?? null,
           input.launchIntent ?? null,
-          input.status ?? "spawning",
-          input.result ?? null,
           input.workflowStepRunId ?? null,
-          input.startedAt ?? null,
+          input.result ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -555,18 +433,18 @@ class PgDatabase implements Database {
       await client.query("begin");
       const inserted = await client.query<TriggerRunRow>(
         `insert into trigger_runs
-           (id, organization_id, project_id, configuration_revision_id, trigger_id,
+           (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, $10, $11, $12, null, null, $13)
-         on conflict (trigger_id, configured_trigger_name) do nothing
+            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, '{}'::jsonb, $10, $11, $12, null, null, $13)
+         on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
         [
           input.id ?? null,
           input.organizationId,
           input.projectId,
           input.configurationRevisionId,
-          input.triggerId,
+          input.providerEventReceiptId,
           input.configuredTriggerName,
           input.rawPrompt,
           input.prompt,
@@ -582,9 +460,9 @@ class PgDatabase implements Database {
       if (run === undefined) {
         const existing = await client.query<TriggerRunRow>(
           `select * from trigger_runs
-           where trigger_id = $1 and configured_trigger_name = $2
+           where provider_event_receipt_id = $1 and configured_trigger_name = $2
            for update`,
-          [input.triggerId, input.configuredTriggerName],
+          [input.providerEventReceiptId, input.configuredTriggerName],
         );
         run = existing.rows[0];
       }
@@ -626,19 +504,19 @@ class PgDatabase implements Database {
       const createdAt = input.createdAt ?? new Date();
       const inserted = await client.query<TriggerRunRow>(
         `insert into trigger_runs
-           (id, organization_id, project_id, configuration_revision_id, trigger_id,
+           (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
+            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'rejected', 'rejected',
-                 $7, $8, $9, $10, $11, null, $13, $12, $12)
-         on conflict (trigger_id, configured_trigger_name) do nothing
+                 $7, $8, $9, '{}'::jsonb, $10, $11, null, $13, $12, $12)
+         on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
         [
           input.id ?? null,
           input.organizationId,
           input.projectId,
           input.configurationRevisionId,
-          input.triggerId,
+          input.providerEventReceiptId,
           input.configuredTriggerName,
           input.rawPrompt,
           input.prompt,
@@ -654,9 +532,9 @@ class PgDatabase implements Database {
       if (run === undefined) {
         const existing = await client.query<TriggerRunRow>(
           `select * from trigger_runs
-           where trigger_id = $1 and configured_trigger_name = $2
+           where provider_event_receipt_id = $1 and configured_trigger_name = $2
            for update`,
-          [input.triggerId, input.configuredTriggerName],
+          [input.providerEventReceiptId, input.configuredTriggerName],
         );
         run = existing.rows[0];
       }
@@ -681,13 +559,13 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
   }
 
-  async findTriggerRunsByTriggerId(triggerId: string) {
+  async findTriggerRunsByProviderEventReceiptId(providerEventReceiptId: string) {
     const rows = await query<TriggerRunRow>(
       this.pool,
       `select * from trigger_runs
-       where trigger_id = $1
+       where provider_event_receipt_id = $1
        order by created_at, configured_trigger_name, id`,
-      [triggerId],
+      [providerEventReceiptId],
     );
     return rows.rows.map(toTriggerRunRecord);
   }
@@ -1928,54 +1806,69 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
   }
 
-  async findAgentExecutionByTriggerId(
-    triggerId: string,
-  ): Promise<AgentExecutionRecord | undefined> {
-    const rows = await query<AgentExecutionRow>(
+  async updateTriggerRunValues(triggerRunId: string, values: unknown): Promise<TriggerRunRecord> {
+    const rows = await query<TriggerRunRow>(
       this.pool,
-      "select * from agent_executions where trigger_id = $1 limit 1",
-      [triggerId],
+      `update trigger_runs set values = $2 where id = $1 returning *`,
+      [triggerRunId, values],
     );
-    return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
+    const row = rows.rows[0];
+    if (row === undefined) throw new Error(`trigger run not found: ${triggerRunId}`);
+    return toTriggerRunRecord(row);
   }
 
-  async findAgentExecutionsByTriggerId(triggerId: string): Promise<AgentExecutionRecord[]> {
-    const rows = await query<AgentExecutionRow>(
+  async listProjectActivityRuns(
+    projectId: string,
+    limit: number,
+  ): Promise<ProjectActivityRunRecord[]> {
+    const rows = await query<ProjectActivityRunRow>(
       this.pool,
-      "select * from agent_executions where trigger_id = $1 order by started_at, id",
-      [triggerId],
-    );
-    return rows.rows.map(toAgentExecutionRecord);
-  }
-
-  async listAgentExecutionsForProject(projectId: string, limit: number) {
-    const rows = await query<AgentExecutionRow>(
-      this.pool,
-      `select * from agent_executions where project_id = $1
-       order by started_at desc, id desc limit $2`,
-      [projectId, limit],
-    );
-    return rows.rows.map(toAgentExecutionRecord);
-  }
-
-  async listTriggersForProject(projectId: string, limit: number) {
-    const rows = await query<TriggerRow>(
-      this.pool,
-      `select t.*,
-              coalesce(
-                array_agg(r.configured_trigger_name order by r.created_at, r.id)
-                  filter (where r.id is not null),
-                '{}'::text[]
-              ) as configured_trigger_names
-       from triggers t
-       left join trigger_runs r on r.trigger_id = t.id
-       where t.project_id = $1
-       group by t.id
-       order by t.received_at desc, t.id desc
+      `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
+              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.payload, receipts.received_at, receipts.dropped_reason
+       from trigger_runs runs
+       join provider_event_receipts receipts
+         on receipts.id = runs.provider_event_receipt_id
+        and receipts.organization_id = runs.organization_id
+       where runs.project_id = $1
+       order by runs.created_at desc, runs.id desc
        limit $2`,
       [projectId, limit],
     );
-    return rows.rows.map(toTriggerRecord);
+    return Promise.all(rows.rows.map((row) => this.toProjectActivityRun(row)));
+  }
+
+  async findProjectActivityRun(projectId: string, runId: string) {
+    const rows = await query<ProjectActivityRunRow>(
+      this.pool,
+      `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
+              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.payload, receipts.received_at, receipts.dropped_reason
+       from trigger_runs runs
+       join provider_event_receipts receipts
+         on receipts.id = runs.provider_event_receipt_id
+        and receipts.organization_id = runs.organization_id
+       where runs.project_id = $1 and runs.id = $2
+       limit 1`,
+      [projectId, runId],
+    );
+    const row = rows.rows[0];
+    return row === undefined ? undefined : this.toProjectActivityRun(row);
+  }
+
+  private async toProjectActivityRun(
+    row: ProjectActivityRunRow,
+  ): Promise<ProjectActivityRunRecord> {
+    const steps = await query<WorkflowStepRunRow>(
+      this.pool,
+      `select * from workflow_step_runs where trigger_run_id = $1 order by ordinal`,
+      [row.id],
+    );
+    return {
+      run: toTriggerRunRecord(row),
+      receipt: toProviderEventReceiptRecord(row),
+      steps: steps.rows.map(toWorkflowStepRunRecord),
+    };
   }
 
   async claimAgentExecutionReply(
@@ -2115,6 +2008,96 @@ class PgDatabase implements Database {
         [daemonId ?? null],
       );
       return rows.rows.map(toAgentExecutionRecord);
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async markAgentExecutionHubActionReady(
+    executionId: string,
+    observedAt = new Date(),
+  ): Promise<AgentExecutionRecord | undefined> {
+    try {
+      const rows = await query<AgentExecutionRow>(
+        this.pool,
+        `update agent_executions
+           set hub_action_ready_at = $2
+           where id = $1
+             and status = 'succeeded'
+             and completed_by_agent_at is not null
+             and hub_action = 'archive'
+             and hub_action_completed_at is null
+             and hub_action_ready_at is null
+             and hub_action_acknowledgements->>'terminal_at' is not null
+             and hub_action_acknowledgements->>'idle_at' is not null
+             and hub_action_acknowledgements->'finish_execution_call'->>'status' = 'completed'
+         returning *`,
+        [executionId, observedAt],
+      );
+      return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async recordAgentExecutionHubAcknowledgement(
+    executionId: string,
+    acknowledgement: AgentExecutionHubAcknowledgementInput,
+  ): Promise<AgentExecutionRecord | undefined> {
+    try {
+      const state = `coalesce(hub_action_acknowledgements, '{"terminal_at":null,"idle_at":null,"finish_execution_call":null}'::jsonb)`;
+      let statement: string;
+      let parameters: unknown[];
+      if (acknowledgement.kind === "terminal" || acknowledgement.kind === "idle") {
+        const field = acknowledgement.kind === "terminal" ? "terminal_at" : "idle_at";
+        statement = `
+          update agent_executions
+          set hub_action_acknowledgements = jsonb_set(
+            ${state},
+            '{${field}}',
+            case
+              when ${state}->>'${field}' is null
+                or (${state}->>'${field}')::timestamptz < $2::timestamptz
+                then to_jsonb($2::timestamptz)
+              else ${state}->'${field}'
+            end,
+            true
+          )
+          where id = $1
+            and (
+              ${state}->>'${field}' is null
+              or (${state}->>'${field}')::timestamptz < $2::timestamptz
+            )
+          returning *`;
+        parameters = [executionId, acknowledgement.observedAt];
+      } else {
+        statement = `
+          update agent_executions
+          set hub_action_acknowledgements = jsonb_set(
+            ${state},
+            '{finish_execution_call}',
+            jsonb_build_object(
+              'call_id', $3::text,
+              'status', $4::text,
+              'observed_at', $2::timestamptz
+            ),
+            true
+          )
+          where id = $1
+            and (
+              ${state}->'finish_execution_call'->>'observed_at' is null
+              or (${state}->'finish_execution_call'->>'observed_at')::timestamptz < $2::timestamptz
+            )
+          returning *`;
+        parameters = [
+          executionId,
+          acknowledgement.observedAt,
+          acknowledgement.callId,
+          acknowledgement.status,
+        ];
+      }
+      const rows = await query<AgentExecutionRow>(this.pool, statement, parameters);
+      return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
     } catch (error) {
       throw toDatabaseError(error);
     }
@@ -2995,51 +2978,22 @@ class PgDatabase implements Database {
     );
   }
 
-  async listUnroutedTriggersForOrganization(organizationId: string): Promise<TriggerRecord[]> {
-    const [triggerRows, receiptRows] = await Promise.all([
-      query<TriggerRow>(
-        this.pool,
-        `select * from triggers
-         where organization_id = $1 and project_id is null
-         order by received_at desc, id desc`,
-        [organizationId],
-      ),
-      query<TriggerRow>(
-        this.pool,
-        `select receipt.id,
-                receipt.organization_id,
-                null::uuid as project_id,
-                null::uuid as configuration_revision_id,
-                receipt.id as receipt_id,
-                receipt.connection_id,
-                receipt.resource_id,
-                receipt.delivery_id,
-                receipt.signature_hash,
-                receipt.source,
-                receipt.repo,
-                receipt.payload,
-                receipt.received_at,
-                null::text as matched_trigger_name,
-                null::text[] as configured_trigger_names,
-                receipt.dropped_reason
-         from provider_event_receipts receipt
-         where receipt.organization_id = $1
-           and receipt.dropped_reason is not null
-           and not exists (
-             select 1 from triggers trigger
-             where trigger.receipt_id = receipt.id
-           )
-         order by receipt.received_at desc, receipt.id desc`,
-        [organizationId],
-      ),
-    ]);
-    return [...triggerRows.rows, ...receiptRows.rows]
-      .sort(
-        (left, right) =>
-          right.received_at.getTime() - left.received_at.getTime() ||
-          right.id.localeCompare(left.id),
-      )
-      .map(toTriggerRecord);
+  async listUnroutedProviderEventsForOrganization(
+    organizationId: string,
+  ): Promise<ProviderEventReceiptRecord[]> {
+    const rows = await query<ProviderEventReceiptRow>(
+      this.pool,
+      `select receipts.*
+       from provider_event_receipts receipts
+       where receipts.organization_id = $1
+         and not exists (
+           select 1 from trigger_runs runs
+           where runs.provider_event_receipt_id = receipts.id
+         )
+       order by receipts.received_at desc, receipts.id desc`,
+      [organizationId],
+    );
+    return rows.rows.map(toProviderEventReceiptRecord);
   }
 
   async isOrganizationMember(userId: string, organizationId: string): Promise<boolean> {
@@ -3115,14 +3069,14 @@ class PgDatabase implements Database {
     await this.pool.end();
   }
 
-  async findTriggerById(id: string): Promise<TriggerRecord | undefined> {
-    const rows = await query<TriggerRow>(
+  async findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined> {
+    const rows = await query<ProviderEventReceiptRow>(
       this.pool,
-      "select * from triggers where id = $1 limit 1",
+      "select * from provider_event_receipts where id = $1 limit 1",
       [id],
     );
 
-    return rows.rows[0] === undefined ? undefined : toTriggerRecord(rows.rows[0]);
+    return rows.rows[0] === undefined ? undefined : toProviderEventReceiptRecord(rows.rows[0]);
   }
 }
 
@@ -3196,35 +3150,6 @@ async function query<T extends QueryResultRow = QueryResultRow>(
   return withDatabaseDeadline(pool.query<T>(text, values));
 }
 
-async function ensureTriggerReceipt(pool: Pool, input: InsertTriggerInput): Promise<string> {
-  const inserted = await query<{ id: string }>(
-    pool,
-    `insert into provider_event_receipts
-       (organization_id, provider, delivery_id, signature_hash, source, repo, payload, received_at)
-     values ($1, 'manual', $2, $3, $4, $5, $6::jsonb, $7)
-     on conflict (organization_id, delivery_id) do nothing
-     returning id`,
-    [
-      input.organizationId,
-      input.deliveryId,
-      input.signatureHash ?? null,
-      input.source,
-      input.repo ?? null,
-      JSON.stringify(input.payload),
-      input.receivedAt,
-    ],
-  );
-  if (inserted.rows[0] !== undefined) return inserted.rows[0].id;
-  const existing = await query<{ id: string }>(
-    pool,
-    `select id from provider_event_receipts
-     where organization_id = $1 and delivery_id = $2 limit 1`,
-    [input.organizationId, input.deliveryId],
-  );
-  if (existing.rows[0] === undefined) throw new Error("provider receipt unavailable");
-  return existing.rows[0].id;
-}
-
 async function withDatabaseDeadline<T>(promise: Promise<T>): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
 
@@ -3260,21 +3185,21 @@ async function insertAgentExecutionOnClient(
     `insert into agent_executions
        (id, organization_id, project_id, machine_id, daemon_id, status, started_at,
         trigger_context, output_context, configuration_revision_id, completion_token_hash,
-        deadline_at, idle_deadline_at, trigger_id, trigger_connection_id, trigger_resource_id,
-        launch_intent, workflow_step_run_id, result, completed_at)
-     select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+        deadline_at, idle_deadline_at, launch_intent, workflow_step_run_id, result, completed_at)
+     select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6::agent_execution_status, coalesce($7, now()), $8, $9, $10, $11,
+            $12,
             case
-              when $11::timestamptz is null then null
-              when $10::timestamptz is null then $11::timestamptz
-              else least($10::timestamptz, $11::timestamptz)
+              when $13::timestamptz is null then null
+              when $12::timestamptz is null then $13::timestamptz
+              else least($12::timestamptz, $13::timestamptz)
             end,
-            $12, $13, $14, $15, $18, $17,
-            case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
+            $14, $15, $16,
+            case when $6 = 'failed'::agent_execution_status then coalesce($7, now()) else null end
      from projects
      where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
        and exists (
          select 1 from project_configuration_revisions
-         where id = $8 and project_id = $3 and organization_id = $2
+         where id = $10 and project_id = $3 and organization_id = $2
        )
        and ($5::uuid is null or exists (
          select 1 from daemons daemon
@@ -3289,20 +3214,17 @@ async function insertAgentExecutionOnClient(
       input.projectId,
       input.machineId,
       input.daemonId ?? null,
+      input.status ?? "spawning",
+      input.startedAt ?? null,
       input.triggerContext,
       input.outputContext,
       input.configurationRevisionId,
       input.completionTokenHash ?? null,
       input.deadlineAt ?? null,
       input.idleDeadlineAt ?? null,
-      input.triggerId ?? null,
-      input.triggerConnectionId ?? null,
-      input.triggerResourceId ?? null,
       input.launchIntent ?? null,
-      input.status ?? "spawning",
-      input.result ?? null,
       input.workflowStepRunId ?? null,
-      input.startedAt ?? null,
+      input.result ?? null,
     ],
   );
   const execution = rows.rows[0];
@@ -3312,12 +3234,10 @@ async function insertAgentExecutionOnClient(
 
 const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
 
-export interface TriggerRow extends QueryResultRow {
+export interface ProviderEventReceiptRow extends QueryResultRow {
   id: string;
   organization_id: string;
-  project_id: string | null;
-  configuration_revision_id: string | null;
-  receipt_id: string;
+  provider: ProviderEventReceiptRecord["provider"];
   connection_id: string | null;
   resource_id: string | null;
   delivery_id: string;
@@ -3326,8 +3246,6 @@ export interface TriggerRow extends QueryResultRow {
   repo: string | null;
   payload: unknown;
   received_at: Date;
-  matched_trigger_name: string | null;
-  configured_trigger_names?: string[] | null;
   dropped_reason: string | null;
 }
 
@@ -3336,13 +3254,14 @@ interface TriggerRunRow extends QueryResultRow {
   organization_id: string;
   project_id: string;
   configuration_revision_id: string;
-  trigger_id: string;
+  provider_event_receipt_id: string;
   configured_trigger_name: string;
   outcome: TriggerRunRecord["outcome"];
   status: TriggerRunRecord["status"];
   raw_prompt: string;
   prompt: string;
   inputs: unknown;
+  values: unknown;
   trigger_context: unknown;
   output_context: unknown;
   deadline_at: Date | null;
@@ -3351,6 +3270,19 @@ interface TriggerRunRow extends QueryResultRow {
   rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
+}
+
+interface ProjectActivityRunRow extends TriggerRunRow {
+  provider: ProviderEventReceiptRecord["provider"];
+  connection_id: string | null;
+  resource_id: string | null;
+  delivery_id: string;
+  signature_hash: string | null;
+  source: string;
+  repo: string | null;
+  payload: unknown;
+  received_at: Date;
+  dropped_reason: string | null;
 }
 
 interface WorkflowStepRunRow extends QueryResultRow {
@@ -3382,11 +3314,12 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     organizationId: row.organization_id,
     projectId: row.project_id,
     configurationRevisionId: row.configuration_revision_id,
-    triggerId: row.trigger_id,
+    providerEventReceiptId: row.provider_event_receipt_id,
     configuredTriggerName: row.configured_trigger_name,
     rawPrompt: row.raw_prompt,
     prompt: row.prompt,
     inputs: parseInvocationInputs(row.inputs),
+    values: row.values,
     triggerContext: row.trigger_context,
     outputContext: row.output_context,
     createdAt: row.created_at,
@@ -3481,12 +3414,11 @@ export interface AgentExecutionRow extends QueryResultRow {
   launch_intent: AgentExecutionRecord["launchIntent"];
   daemon_id: string | null;
   daemon_agent_id: string | null;
-  trigger_id: string | null;
-  trigger_connection_id: string | null;
-  trigger_resource_id: string | null;
   workflow_step_run_id: string | null;
   hub_action: "interrupt" | "archive" | null;
   hub_action_completed_at: Date | null;
+  hub_action_ready_at: Date | null;
+  hub_action_acknowledgements: unknown;
 }
 
 interface DaemonRow extends QueryResultRow {
@@ -3690,7 +3622,11 @@ async function timeoutWorkflowRunOnClient(
      set status = 'failed', completed_at = $2,
          result = jsonb_build_object('status', 'failed', 'reason', 'whole_run_timeout'),
          idle_deadline_at = null,
-         hub_action = case when daemon_id is null then null else 'interrupt' end,
+         hub_action = case
+           when daemon_id is null then null
+           when coalesce((launch_intent ->> 'autoArchive')::boolean, false) then 'archive'
+           else 'interrupt'
+         end,
          hub_action_completed_at = null::timestamptz
      where workflow_step_run_id in (
        select id from workflow_step_runs where trigger_run_id = $1

@@ -1,5 +1,5 @@
 import type { Message } from "discord.js";
-import type { ProviderTriggerAcceptance } from "../../db/types.js";
+import type { ProviderEventAcceptance } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
@@ -18,7 +18,7 @@ export interface CreateDiscordGatewaySourceOptions {
     payload: unknown;
     receivedAt: Date;
     dropReason?: string;
-  }): Promise<ProviderTriggerAcceptance>;
+  }): Promise<ProviderEventAcceptance>;
   applyGuildDelete(guildId: string, unavailable: boolean): Promise<void>;
 }
 
@@ -115,23 +115,23 @@ async function dispatchMessage(
     return;
   }
 
-  const event = NormalizedDiscordMessageEventSchema.parse({
+  const normalizedEvent = NormalizedDiscordMessageEventSchema.parse({
     ...normalized,
     threadContextMessages: await readThreadContextMessages(message, normalized),
   });
 
   const acceptance = await options.accept({
-    guildId: event.guildId,
+    guildId: normalizedEvent.guildId,
     source: "discord.mention",
-    deliveryId: `discord-${event.messageId}`,
-    receivedAt: new Date(event.createdAt),
-    payload: event,
+    deliveryId: `discord-${normalizedEvent.messageId}`,
+    receivedAt: new Date(normalizedEvent.createdAt),
+    payload: normalizedEvent,
     ...(handlers.size === 0 ? { dropReason: "discord_no_handler" } : {}),
   });
   if (acceptance.status !== "accepted") return;
 
-  for (const trigger of acceptance.triggers) {
-    for (const handler of handlers) await handler(trigger);
+  for (const acceptedEvent of acceptance.events) {
+    for (const handler of handlers) await handler(acceptedEvent);
   }
 }
 

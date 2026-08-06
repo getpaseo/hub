@@ -32,22 +32,25 @@ describe("manual trigger tenant idempotency", () => {
     `);
     await client.end();
 
-    const first = await database.persistManualTrigger(
+    const first = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
     );
-    const second = await database.persistManualTrigger(
+    const second = await database.persistManualEvent(
       input("manual-org-b", "20000000-0000-4000-8000-000000000001"),
     );
     assert.equal(first.status, "accepted");
     assert.equal(second.status, "accepted");
     if (first.status !== "accepted" || second.status !== "accepted")
       throw new Error("expected accepted triggers");
-    assert.notEqual(first.trigger.triggerId, second.trigger.triggerId);
+    assert.notEqual(first.event.providerEventReceiptId, second.event.providerEventReceiptId);
 
-    const duplicate = await database.persistManualTrigger(
+    const duplicate = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
     );
-    assert.deepEqual(duplicate, { status: "duplicate", triggerId: first.trigger.triggerId });
+    assert.deepEqual(duplicate, {
+      status: "duplicate",
+      providerEventReceiptId: first.event.providerEventReceiptId,
+    });
     await database.close();
   }, 120_000);
 });

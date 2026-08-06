@@ -390,20 +390,23 @@ export class PaseoHub {
          from revision
          returning id, delivery_id
        ), activity as (
-         insert into triggers
-           (organization_id, project_id, configuration_revision_id, receipt_id, delivery_id, source, payload,
-            matched_trigger_name)
+         insert into trigger_runs
+           (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
+            configured_trigger_name, status, raw_prompt, prompt, inputs, "values",
+            trigger_context, output_context, deadline_at, deadline_kind, outcome,
+            created_at, completed_at)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-               receipt.delivery_id,
-                'manual.run', '{}'::jsonb, 'Browser history'
+                'Browser history', 'succeeded', 'Browser history', 'Browser history',
+                '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                clock_timestamp(), 'whole_run', 'accepted', clock_timestamp(), clock_timestamp()
          from revision
          join receipt on receipt.delivery_id = concat('browser-history-', revision.project_id)
-         returning id, project_id, organization_id, configuration_revision_id
+         returning id
        )
-       insert into agent_executions
-         (organization_id, project_id, status, configuration_revision_id, trigger_id, completed_at)
-       select organization_id, project_id, 'succeeded', configuration_revision_id, id,
-              clock_timestamp()
+       insert into workflow_step_runs
+         (trigger_run_id, step_id, ordinal, status, output, started_at, completed_at)
+       select id, 'history', 0, 'succeeded', '{"status":"succeeded"}'::jsonb,
+              clock_timestamp(), clock_timestamp()
        from activity`,
       [this.requireUser(alias).accountEmail, projectSlug],
     );
@@ -551,20 +554,22 @@ export class PaseoHub {
         dispatchesSchema.parse(
           await this.queryDatabaseRows(
             this.primary.databaseUrl,
-            `select t.delivery_id,
-                    t.organization_id as trigger_organization_id,
+            `select r.delivery_id,
+                    r.organization_id as trigger_organization_id,
                     c.organization_id as config_organization_id,
                     m.org_id as machine_organization_id,
                     d.id::text as daemon_id,
                     d.slug as daemon_slug,
                     e.id::text as execution_id
-             from triggers t
-             join agent_executions e on e.trigger_id = t.id
+             from provider_event_receipts r
+             join trigger_runs run on run.provider_event_receipt_id = r.id
+             join workflow_step_runs step on step.trigger_run_id = run.id
+             join agent_executions e on e.workflow_step_run_id = step.id
              join project_configuration_revisions c on c.id = e.configuration_revision_id
              join machines m on m.id = e.machine_id
              join daemons d on d.machine_id = m.id
-             where t.delivery_id = any($1::text[])
-             order by t.delivery_id`,
+             where r.delivery_id = any($1::text[])
+             order by r.delivery_id`,
             [["acme-github", "discord-301", "orbit-github", "discord-302"]],
           ),
         ),
@@ -592,7 +597,7 @@ export class PaseoHub {
       .array(
         z.object({
           delivery_id: z.string(),
-          organization_id: z.null(),
+          organization_id: z.string(),
           dropped_reason: z.string(),
           executions: z.number(),
         }),
@@ -600,13 +605,13 @@ export class PaseoHub {
       .parse(
         await this.queryDatabaseRows(
           this.primary.databaseUrl,
-          `select t.delivery_id, t.organization_id, t.dropped_reason,
-                  count(e.id)::integer as executions
-           from triggers t
-           left join agent_executions e on e.trigger_id = t.id
-           where t.delivery_id = any($1::text[])
-           group by t.id
-           order by t.delivery_id`,
+          `select r.delivery_id, r.organization_id, r.dropped_reason,
+                  count(run.id)::integer as executions
+           from provider_event_receipts r
+           left join trigger_runs run on run.provider_event_receipt_id = r.id
+           where r.delivery_id = any($1::text[])
+           group by r.id
+           order by r.delivery_id`,
           [["acme-github-after-disconnect", "discord-303"]],
         ),
       );
@@ -1662,7 +1667,7 @@ export class PaseoHub {
     const body = z
       .object({
         deliveryKey: z.literal("built-contract-run"),
-        triggerId: z.string().uuid(),
+        providerEventReceiptId: z.string().uuid(),
         triggerRunId: z.string().uuid(),
         configuredTriggerName: z.literal("deploy"),
         workflowStatus: z.literal("running"),
@@ -1671,15 +1676,17 @@ export class PaseoHub {
       .parse(await response.json());
     const execution = await retryUntil(
       async () =>
-        z
-          .array(z.object({ id: z.string().uuid() }))
-          .parse(
-            await this.queryDatabaseRows(
-              application.databaseUrl,
-              "select id from agent_executions where trigger_id = $1",
-              [body.triggerId],
-            ),
+        z.array(z.object({ id: z.string().uuid() })).parse(
+          await this.queryDatabaseRows(
+            application.databaseUrl,
+            `select execution.id
+               from agent_executions execution
+               join workflow_step_runs step on step.agent_execution_id = execution.id
+               join trigger_runs run on run.id = step.trigger_run_id
+               where run.provider_event_receipt_id = $1`,
+            [body.providerEventReceiptId],
           ),
+        ),
       (rows) => rows.length === 1,
     );
     return { executionId: execution[0]!.id };

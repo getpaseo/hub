@@ -5,7 +5,7 @@ import { durableExecutionId } from "./lifecycle.js";
 describe("durable execution identity", () => {
   it("is stable per trigger configuration match and distinct across fan-out", () => {
     const first = {
-      triggerId: "trigger-1",
+      triggerRunId: "trigger-run-1",
       configurationRevisionId: "config-1",
       triggerName: "first",
     };

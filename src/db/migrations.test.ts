@@ -61,4 +61,15 @@ describe("database migrations", () => {
 
     assert.match(cleanup, /DROP TABLE IF EXISTS "registered_daemons" CASCADE/);
   });
+
+  it("destructively cuts superseded trigger and execution ownership paths", () => {
+    const cutover = readFileSync(join(here, "../../drizzle/0022_yellow_the_call.sql"), "utf8");
+
+    assert.match(cutover, /DROP TABLE "triggers" CASCADE/);
+    assert.match(cutover, /DROP COLUMN "trigger_id"/);
+    assert.match(cutover, /DROP COLUMN "trigger_connection_id"/);
+    assert.match(cutover, /DROP COLUMN "trigger_resource_id"/);
+    assert.match(cutover, /provider_event_receipt_id/);
+    assert.match(cutover, /preserve|disposition/iu);
+  });
 });

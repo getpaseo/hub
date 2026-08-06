@@ -267,7 +267,8 @@ function createAppExecutionCapabilityServer(
   return createExecutionCapabilityServer({
     database: options.database,
     outputs: options.outputRegistry ?? new OutputExecutorRegistry(),
-    completeExecution: (input) => daemonModule.lifecycle.completeAgentExecutionFromCallback(input),
+    completeExecution: (input) =>
+      daemonModule.lifecycle.completeAgentExecutionFromCallback(input, { deferHubAction: true }),
   });
 }
 

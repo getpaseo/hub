@@ -28,7 +28,7 @@ describe("production Phase 1 manual runs", () => {
     const run = await hub.runManual({ expectedVersionId: installed.versionId });
 
     assert.equal(run.status, 200);
-    assert.equal(typeof run.triggerId, "string");
+    assert.equal(typeof run.providerEventReceiptId, "string");
     assert.equal(typeof run.triggerRunId, "string");
     assert.equal(run.configuredTriggerName, "deploy");
     assert.equal(run.workflowStatus, "running");

@@ -16,7 +16,7 @@ export interface LaunchMachineIntent {
   kind: "launch_machine";
   organizationId: string;
   projectId: string;
-  triggerId: string;
+  triggerRunId: string;
   workflowStepRunId?: string;
   triggerName: string;
   environmentName: string;
@@ -38,7 +38,7 @@ export interface LaunchMachineIntent {
 export function buildLaunchMachineIntent(input: {
   organizationId: string;
   projectId: string;
-  triggerId: string;
+  triggerRunId: string;
   configurationRevisionId: string;
   triggerName: string;
   environmentName: string;
@@ -57,7 +57,7 @@ export function buildLaunchMachineIntent(input: {
     kind: "launch_machine",
     organizationId: input.organizationId,
     projectId: input.projectId,
-    triggerId: input.triggerId,
+    triggerRunId: input.triggerRunId,
     triggerName: input.triggerName,
     environmentName: input.environmentName,
     environment: input.environment,
