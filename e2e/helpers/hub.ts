@@ -211,6 +211,10 @@ export class PaseoHub {
     await this.requireUser(alias).expectApiKeyLifecycle();
   }
 
+  async createRunApiKey(alias: string): Promise<string> {
+    return await this.requireUser(alias).createRunApiKey();
+  }
+
   async proveInviteOnlyJourney(account: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -386,23 +390,66 @@ export class PaseoHub {
          from revision
          returning id, delivery_id
        ), activity as (
-         insert into triggers
-           (organization_id, project_id, configuration_revision_id, receipt_id, delivery_id, source, payload,
-            matched_trigger_name, lifecycle_state)
+         insert into trigger_runs
+           (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
+            configured_trigger_name, status, raw_prompt, prompt, inputs, "values",
+            trigger_context, output_context, deadline_at, deadline_kind, outcome,
+            created_at, completed_at)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-                receipt.delivery_id,
-                'manual.run', '{}'::jsonb, 'Browser history', 'succeeded'
+                'Browser history', 'succeeded', 'Browser history', 'Browser history',
+                '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                clock_timestamp(), 'whole_run', 'accepted', clock_timestamp(), clock_timestamp()
          from revision
          join receipt on receipt.delivery_id = concat('browser-history-', revision.project_id)
-         returning id, project_id, organization_id, configuration_revision_id
+         returning id
        )
-       insert into agent_executions
-         (organization_id, project_id, status, configuration_revision_id, trigger_id, completed_at)
-       select organization_id, project_id, 'succeeded', configuration_revision_id, id,
-              clock_timestamp()
+       insert into workflow_step_runs
+         (trigger_run_id, step_id, ordinal, status, output, started_at, completed_at)
+       select id, 'history', 0, 'succeeded', '{"status":"succeeded"}'::jsonb,
+              clock_timestamp(), clock_timestamp()
        from activity`,
       [this.requireUser(alias).accountEmail, projectSlug],
     );
+  }
+
+  async setDaemonSlug(daemonId: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      "update daemons set slug = $2 where id = $1",
+      [daemonId, slug],
+    );
+  }
+
+  async runManualInput(input: {
+    rawInput: string;
+    deliveryKey: string;
+    trigger?: string;
+    apiKey?: string;
+  }): Promise<{ status: number; error?: string; reason?: string }> {
+    const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
+      headers: {
+        ...(input.apiKey === undefined
+          ? machineHeaders()
+          : { authorization: `Bearer ${input.apiKey}` }),
+        "content-type": "application/json",
+      },
+      data: {
+        projectSlug: "default",
+        trigger: input.trigger ?? "deploy",
+        actor: "alice",
+        deliveryKey: input.deliveryKey,
+        input: input.rawInput,
+      },
+    });
+    const body = z
+      .object({ error: z.string().optional(), reason: z.string().optional() })
+      .passthrough()
+      .parse(await response.json());
+    return {
+      status: response.status(),
+      ...(body.error === undefined ? {} : { error: body.error }),
+      ...(body.reason === undefined ? {} : { reason: body.reason }),
+    };
   }
 
   async createAdminInvitationWithKeyboard(alias: string, email: string): Promise<void> {
@@ -491,38 +538,43 @@ export class PaseoHub {
     await this.deliverGitHub("orbit-github", 84, "orbit/widgets", "alice");
     await this.deliverDiscord("302", "200", "800");
 
-    const dispatches = z
-      .array(
-        z.object({
-          delivery_id: z.string(),
-          trigger_organization_id: z.string(),
-          config_organization_id: z.string(),
-          machine_organization_id: z.string(),
-          daemon_id: z.string(),
-          daemon_slug: z.literal("shared-dispatch"),
-          execution_id: z.string().uuid(),
-        }),
-      )
-      .parse(
-        await this.queryDatabaseRows(
-          this.primary.databaseUrl,
-          `select t.delivery_id,
-                  t.organization_id as trigger_organization_id,
-                  c.organization_id as config_organization_id,
-                  m.org_id as machine_organization_id,
-                  d.id::text as daemon_id,
-                  d.slug as daemon_slug,
-                  e.id::text as execution_id
-           from triggers t
-           join agent_executions e on e.trigger_id = t.id
-           join project_configuration_revisions c on c.id = e.configuration_revision_id
-           join machines m on m.id = e.machine_id
-           join daemons d on d.machine_id = m.id
-           where t.delivery_id = any($1::text[])
-           order by t.delivery_id`,
-          [["acme-github", "discord-301", "orbit-github", "discord-302"]],
+    const dispatchesSchema = z.array(
+      z.object({
+        delivery_id: z.string(),
+        trigger_organization_id: z.string(),
+        config_organization_id: z.string(),
+        machine_organization_id: z.string(),
+        daemon_id: z.string(),
+        daemon_slug: z.literal("shared-dispatch"),
+        execution_id: z.string().uuid(),
+      }),
+    );
+    const dispatches = await retryUntil(
+      async () =>
+        dispatchesSchema.parse(
+          await this.queryDatabaseRows(
+            this.primary.databaseUrl,
+            `select r.delivery_id,
+                    r.organization_id as trigger_organization_id,
+                    c.organization_id as config_organization_id,
+                    m.org_id as machine_organization_id,
+                    d.id::text as daemon_id,
+                    d.slug as daemon_slug,
+                    e.id::text as execution_id
+             from provider_event_receipts r
+             join trigger_runs run on run.provider_event_receipt_id = r.id
+             join workflow_step_runs step on step.trigger_run_id = run.id
+             join agent_executions e on e.workflow_step_run_id = step.id
+             join project_configuration_revisions c on c.id = e.configuration_revision_id
+             join machines m on m.id = e.machine_id
+             join daemons d on d.machine_id = m.id
+             where r.delivery_id = any($1::text[])
+             order by r.delivery_id`,
+            [["acme-github", "discord-301", "orbit-github", "discord-302"]],
+          ),
         ),
-      );
+      (rows) => rows.length === 4,
+    );
     expect(dispatches).toEqual([
       dispatchEvidence("acme-github", acmeId, acmeDaemon.daemonId),
       dispatchEvidence("discord-301", acmeId, acmeDaemon.daemonId),
@@ -545,7 +597,7 @@ export class PaseoHub {
       .array(
         z.object({
           delivery_id: z.string(),
-          organization_id: z.null(),
+          organization_id: z.string(),
           dropped_reason: z.string(),
           executions: z.number(),
         }),
@@ -553,13 +605,13 @@ export class PaseoHub {
       .parse(
         await this.queryDatabaseRows(
           this.primary.databaseUrl,
-          `select t.delivery_id, t.organization_id, t.dropped_reason,
-                  count(e.id)::integer as executions
-           from triggers t
-           left join agent_executions e on e.trigger_id = t.id
-           where t.delivery_id = any($1::text[])
-           group by t.id
-           order by t.delivery_id`,
+          `select r.delivery_id, r.organization_id, r.dropped_reason,
+                  count(run.id)::integer as executions
+           from provider_event_receipts r
+           left join trigger_runs run on run.provider_event_receipt_id = r.id
+           where r.delivery_id = any($1::text[])
+           group by r.id
+           order by r.delivery_id`,
           [["acme-github-after-disconnect", "discord-303"]],
         ),
       );
@@ -1615,15 +1667,29 @@ export class PaseoHub {
     const body = z
       .object({
         deliveryKey: z.literal("built-contract-run"),
-        triggerId: z.string().uuid(),
-        executionId: z.string().uuid(),
-        status: z.literal("running"),
-        daemonId: z.string().uuid(),
-        agentId: z.string().min(1),
+        providerEventReceiptId: z.string().uuid(),
+        triggerRunId: z.string().uuid(),
+        configuredTriggerName: z.literal("deploy"),
+        workflowStatus: z.literal("running"),
       })
       .strict()
       .parse(await response.json());
-    return { executionId: body.executionId };
+    const execution = await retryUntil(
+      async () =>
+        z.array(z.object({ id: z.string().uuid() })).parse(
+          await this.queryDatabaseRows(
+            application.databaseUrl,
+            `select execution.id
+               from agent_executions execution
+               join workflow_step_runs step on step.agent_execution_id = execution.id
+               join trigger_runs run on run.id = step.trigger_run_id
+               where run.provider_event_receipt_id = $1`,
+            [body.providerEventReceiptId],
+          ),
+        ),
+      (rows) => rows.length === 1,
+    );
+    return { executionId: execution[0]!.id };
   }
 
   private async completeExecution(
@@ -1785,6 +1851,21 @@ class HubUser {
         return response.status;
       }, revealedSecret),
     ).resolves.toBe(401);
+  }
+
+  async createRunApiKey(): Promise<string> {
+    await this.openOrganizationSection("API keys");
+    await expect(this.page.getByRole("heading", { name: "API keys", exact: true })).toBeVisible();
+    await this.page.getByRole("button", { name: "Create API key" }).click();
+    const dialog = this.page.getByRole("dialog");
+    const form = dialog.getByRole("form", { name: "Create API key" });
+    await form.getByLabel("Name").fill("Phase Two runner");
+    await form.getByLabel("Start runs").check();
+    await form.getByRole("button", { name: "Create API key" }).click();
+    await expect(dialog.getByRole("heading", { name: "Copy your API key" })).toBeVisible();
+    const secret = await dialog.getByLabel("Generated API key").inputValue();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    return secret;
   }
 
   async signUpForInvitation(account: Account): Promise<void> {
@@ -3819,18 +3900,34 @@ function providerDispatchConfiguration(repo: string, guildId: string) {
       {
         name: "github-dispatch",
         on: "github.issue_comment",
-        environment: "shared",
+        max_runtime: "1h",
         filters: { repo, from_users: ["alice"] },
-        agent: { provider: "opencode", mode: "full-access" },
-        prompt: "Handle GitHub tenant dispatch",
+        steps: [
+          {
+            id: "github-dispatch-step",
+            environment: "shared",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "opencode", mode: "full-access" },
+            prompt: [{ text: "Handle GitHub tenant dispatch" }],
+          },
+        ],
       },
       {
         name: "discord-dispatch",
         on: "discord.mention",
-        environment: "shared",
+        max_runtime: "1h",
         filters: { guild: guildId, from_users: ["800"] },
-        agent: { provider: "opencode", mode: "full-access" },
-        prompt: "Handle Discord tenant dispatch",
+        steps: [
+          {
+            id: "discord-dispatch-step",
+            environment: "shared",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "opencode", mode: "full-access" },
+            prompt: [{ text: "Handle Discord tenant dispatch" }],
+          },
+        ],
       },
     ],
   };
@@ -3869,13 +3966,18 @@ function manualConfiguration(daemonSlug: string): string {
     "triggers:",
     "  - name: deploy",
     "    on: manual.run",
-    "    environment: production",
+    "    max_runtime: 1h",
     "    filters:",
     "      from_users: [contract-operator]",
-    "    agent:",
-    "      provider: opencode",
-    "      mode: full-access",
-    '    prompt: "Deploy the contract"',
+    "    steps:",
+    "      - id: deploy-step",
+    "        environment: production",
+    "        max_runtime: 30m",
+    "        idle_timeout: 5m",
+    "        agent:",
+    "          provider: opencode",
+    "          mode: full-access",
+    '        prompt: [{ text: "Deploy the contract" }]',
   ].join("\n");
 }
 
@@ -3883,4 +3985,15 @@ function readSocketData(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString();
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString();
   return Buffer.from(data).toString();
+}
+
+async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const deadline = Date.now() + 15_000;
+  let value = await read();
+  while (!done(value)) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for durable provider dispatch");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    value = await read();
+  }
+  return value;
 }

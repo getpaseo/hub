@@ -13,6 +13,7 @@ const organizationScopeSchema = z
 const projectScopeSchema = organizationScopeSchema
   .extend({ projectSlug: z.string().trim().min(1).max(100) })
   .strict();
+const activityRunScopeSchema = projectScopeSchema.extend({ runId: z.string().uuid() }).strict();
 const createProjectSchema = organizationScopeSchema.extend({
   name: z.string().trim().min(1).max(100),
   slug: z
@@ -33,8 +34,6 @@ const configurationRepositorySchema = projectScopeSchema.extend({
   repositoryId: z.number().int().positive(),
 });
 const manualConfigurationSchema = projectScopeSchema.extend({ rawYaml: z.string().max(1_048_576) });
-const triggerPayloadSchema = projectScopeSchema.extend({ triggerId: z.string().uuid() });
-const executionResultSchema = projectScopeSchema.extend({ executionId: z.string().uuid() });
 
 export const tenantContext = createServerFn({ method: "GET" })
   .validator(
@@ -59,6 +58,15 @@ export const projectSnapshot = createServerFn({ method: "GET" })
   .handler(
     async ({ data }): Promise<Result<Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>>> =>
       read(data, (dashboard) => dashboard.projectSnapshot(getRequest(), data)),
+  );
+
+export const activityRunSnapshot = createServerFn({ method: "GET" })
+  .validator(activityRunScopeSchema)
+  .handler(
+    async ({
+      data,
+    }): Promise<Result<Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>>> =>
+      read(data, (dashboard) => dashboard.activityRunSnapshot(getRequest(), data)),
   );
 
 export const createProject = createServerFn({ method: "POST" })
@@ -110,18 +118,6 @@ export const saveManualConfiguration = createServerFn({ method: "POST" })
     command(data, (dashboard) =>
       dashboard.saveManualConfiguration(getRequest(), data, data.rawYaml),
     ),
-  );
-
-export const triggerPayload = createServerFn({ method: "GET" })
-  .validator(triggerPayloadSchema)
-  .handler(async ({ data }) =>
-    read(data, (dashboard) => dashboard.triggerPayload(getRequest(), data, data.triggerId)),
-  );
-
-export const executionResult = createServerFn({ method: "GET" })
-  .validator(executionResultSchema)
-  .handler(async ({ data }) =>
-    read(data, (dashboard) => dashboard.executionResult(getRequest(), data, data.executionId)),
   );
 
 export const syncProjectConfiguration = createServerFn({ method: "POST" })

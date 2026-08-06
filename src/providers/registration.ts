@@ -1,5 +1,5 @@
 import type { ProjectConfigurationStore } from "../configuration/store.js";
-import type { ConnectionResolutionContext, ConnectionResolver } from "../config/interpolation.js";
+import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
 import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";

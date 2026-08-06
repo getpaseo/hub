@@ -30,7 +30,8 @@ try {
   const timeline = await client.fetchAgentTimeline(agentId, {
     direction: "tail",
     projection: "canonical",
-    limit: 0,
+    limit: 200,
+    timeout: 10_000,
   });
   process.stdout.write(`${JSON.stringify(timeline.entries.map((entry) => entry.item))}\n`);
 } finally {

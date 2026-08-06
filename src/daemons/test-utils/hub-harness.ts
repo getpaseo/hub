@@ -108,6 +108,15 @@ export class HubHarness {
         release(): void;
       }
     | undefined;
+  private activityRefreshGate:
+    | {
+        executionId: string;
+        reached: Promise<void>;
+        markReached(): void;
+        released: Promise<void>;
+        release(): void;
+      }
+    | undefined;
   private materializations = 0;
   private acceptanceExecutionId: string | undefined;
   private failureHooks = 0;
@@ -298,94 +307,107 @@ export class HubHarness {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     const requested = { ...this.intent(), ...overrides };
-    const trigger = await this.requireDatabase().insertTrigger({
-      organizationId: requested.organizationId,
-      projectId: requested.projectId,
-      deliveryId: randomUUID(),
-      source: "test.dispatch",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const intent = { ...requested, triggerId: trigger.trigger.id };
+    const intent = await this.attachDispatchRun(requested, await this.insertTestReceipt(requested));
     return dispatchLaunchMachineIntent(module, intent);
   }
   async handoff(
     overrides: Partial<LaunchMachineIntent> = {},
-    existingTriggerId?: string,
-  ): Promise<{ execution: AgentExecutionRecord; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ execution: AgentExecutionRecord; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     const requested = { ...this.intent(), ...overrides };
-    const triggerId =
-      existingTriggerId ??
-      (
-        await this.requireDatabase().insertTrigger({
-          organizationId: requested.organizationId,
-          projectId: requested.projectId,
-          deliveryId: randomUUID(),
-          source: "test.dispatch",
-          payload: {},
-          receivedAt: new Date(),
-        })
-      ).trigger.id;
-    const result = await module.lifecycle.handoffLaunchMachineIntent({
-      ...requested,
-      triggerId,
-    });
-    return { ...result, triggerId };
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(requested));
+    const intent = await this.attachDispatchRun(requested, providerEventReceiptId);
+    const result = await module.lifecycle.handoffLaunchMachineIntent(intent);
+    return { ...result, providerEventReceiptId };
   }
   async handoffBatch(
     triggerNames: readonly string[],
-    existingTriggerId?: string,
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
-    const triggerId = existingTriggerId ?? (await this.insertTestTrigger());
-    const intents = this.batchIntents(triggerId, triggerNames);
-    const plan = (await this.requireDatabase().claimTriggerDispatchPlan(triggerId, intents)).plan;
-    const result = await module.lifecycle.handoffLaunchMachineIntents(plan);
-    return { ...result, triggerId };
+    const first = this.intent(triggerNames[0]);
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(first));
+    const intents = await Promise.all(
+      this.batchIntents(providerEventReceiptId, triggerNames).map((intent) =>
+        this.attachDispatchRun(intent, providerEventReceiptId),
+      ),
+    );
+    const executions = await Promise.all(
+      intents.map(
+        async (intent) => (await module.lifecycle.handoffLaunchMachineIntent(intent)).execution,
+      ),
+    );
+    return { executions, providerEventReceiptId };
   }
   async handoffAuthoredSlugBatch(
     slugs: readonly string[],
-    existingTriggerId?: string,
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+    existingProviderEventReceiptId?: string,
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
-    const triggerId = existingTriggerId ?? (await this.insertTestTrigger());
-    const intents = slugs.map((slug, index) => ({
-      ...this.intent(slug === "<connected>" ? this.requireDaemon().slug : slug),
-      triggerId,
-      triggerName: `member-${index}`,
-    }));
-    const plan = (await this.requireDatabase().claimTriggerDispatchPlan(triggerId, intents)).plan;
-    const result = await module.lifecycle.handoffLaunchMachineIntents(plan);
-    return { ...result, triggerId };
+    const first = this.intent(slugs[0] === "<connected>" ? this.requireDaemon().slug : slugs[0]);
+    const providerEventReceiptId =
+      existingProviderEventReceiptId ?? (await this.insertTestReceipt(first));
+    const intents = await Promise.all(
+      slugs.map((slug, index) =>
+        this.attachDispatchRun(
+          {
+            ...this.intent(slug === "<connected>" ? this.requireDaemon().slug : slug),
+            triggerName: `member-${index}`,
+          },
+          providerEventReceiptId,
+        ),
+      ),
+    );
+    const executions = await Promise.all(
+      intents.map(
+        async (intent) => (await module.lifecycle.handoffLaunchMachineIntent(intent)).execution,
+      ),
+    );
+    return { executions, providerEventReceiptId };
   }
-  async triggerLifecycleState(triggerId: string): Promise<string | null> {
-    return (await this.requireDatabase().findTriggerById(triggerId))?.lifecycleState ?? null;
+  async triggerStatus(providerEventReceiptId: string): Promise<string | null> {
+    const runs =
+      await this.requireDatabase().findTriggerRunsByProviderEventReceiptId(providerEventReceiptId);
+    const statuses = runs.map((run) => run.status);
+    if (statuses.length === 0) return null;
+    if (statuses.some((status) => status === "failed")) return "failed";
+    if (statuses.every((status) => status === "succeeded")) return "succeeded";
+    return "running";
   }
-  async triggerDispatchPlanPrompt(triggerId: string): Promise<string | undefined> {
-    return (await this.requireDatabase().findTriggerById(triggerId))?.dispatchPlan?.[0]?.prompt;
+  async triggerPrompt(providerEventReceiptId: string): Promise<string | undefined> {
+    return (
+      await this.requireDatabase().findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)
+    )[0]?.prompt;
+  }
+  async drainWorkflowOutbox(): Promise<void> {
+    await this.requireHub().processWorkflowOutbox();
   }
   async persistUnlaunchedBatch(
     triggerNames: readonly string[],
     persistedCount = triggerNames.length,
     overrides: Partial<LaunchMachineIntent> = {},
-  ): Promise<{ executions: AgentExecutionRecord[]; triggerId: string }> {
+  ): Promise<{ executions: AgentExecutionRecord[]; providerEventReceiptId: string }> {
     const database = this.requireDatabase();
-    const triggerId = await this.insertTestTrigger();
-    const intents = this.batchIntents(triggerId, triggerNames).map((intent) =>
-      Object.assign({}, intent, overrides, { triggerId }),
+    const first = this.intent();
+    const providerEventReceiptId = await this.insertTestReceipt(first);
+    const intents = await Promise.all(
+      this.batchIntents(providerEventReceiptId, triggerNames).map((intent) =>
+        this.attachDispatchRun(Object.assign({}, intent, overrides), providerEventReceiptId),
+      ),
     );
-    const plan = (await database.claimTriggerDispatchPlan(triggerId, intents)).plan;
     const daemon = await database.findDaemonForOrganization(
-      plan[0]!.organizationId,
-      plan[0]!.environment.daemonId,
+      intents[0]!.organizationId,
+      intents[0]!.environment.daemonId,
     );
     if (daemon === undefined) throw new Error("Daemon is unavailable");
     const executions = [];
-    for (const intent of plan.slice(0, persistedCount)) {
+    for (const intent of intents.slice(0, persistedCount)) {
       const id = durableExecutionId(intent);
       const completionToken = deriveAgentExecutionCompletionToken(
         "hub-harness-completion-secret",
@@ -395,7 +417,6 @@ export class HubHarness {
         id,
         organizationId: intent.organizationId,
         projectId: intent.projectId,
-        triggerId,
         machineId: daemon.machineId,
         daemonId: daemon.id,
         triggerContext: intent.triggerContext,
@@ -408,7 +429,7 @@ export class HubHarness {
       if (execution === undefined) throw new Error(`Execution already exists: ${id}`);
       executions.push(execution);
     }
-    return { executions, triggerId };
+    return { executions, providerEventReceiptId };
   }
   dispatchFrom(provider: "github" | "discord"): Promise<DaemonDispatchResult> {
     return this.dispatch({
@@ -437,6 +458,18 @@ export class HubHarness {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     return this.dispatch({
+      environment: {
+        ...this.intent().environment,
+        daemonId: randomUUID(),
+        authoredSlug: "missing-daemon",
+      },
+    });
+  }
+  handoffMissingDaemon(): Promise<{
+    execution: AgentExecutionRecord;
+    providerEventReceiptId: string;
+  }> {
+    return this.handoff({
       environment: {
         ...this.intent().environment,
         daemonId: randomUUID(),
@@ -494,6 +527,10 @@ export class HubHarness {
     if (!execution) throw new Error("Pending execution does not exist");
     return execution;
   }
+  async waitForPendingExecution(): Promise<AgentExecutionRecord> {
+    await waitFor(async () => (await this.pendingExecutionCount()) > 0);
+    return this.pendingExecution();
+  }
   async pendingExecutionCount(): Promise<number> {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
   }
@@ -503,6 +540,9 @@ export class HubHarness {
   }
   advanceDispatchTime(ms: number): Promise<void> {
     return this.clock.advanceBy(ms);
+  }
+  advanceDispatchClock(ms: number): void {
+    this.clock.advanceClockBy(ms);
   }
 
   createdAgent() {
@@ -523,6 +563,10 @@ export class HubHarness {
       worktree: agent["worktree"],
     };
   }
+  async waitForCreatedAgentLaunch() {
+    await waitFor(async () => this.requireDaemon().createdAgentCount() > 0);
+    return this.createdAgentLaunch();
+  }
   connectedDaemonSlug(): string {
     return this.requireDaemon().slug;
   }
@@ -536,10 +580,28 @@ export class HubHarness {
     await this.requireDaemon().starts(agentId);
   }
   async beginReplacementTurn(agentId: string): Promise<void> {
+    const execution = (await this.requireDatabase().findPendingAgentExecutions()).find(
+      (candidate) => candidate.daemonAgentId === agentId,
+    );
+    if (execution === undefined) throw new Error("Replacement execution does not exist");
+    const previousIdleDeadline = execution.idleDeadlineAt?.getTime() ?? null;
+    await this.requireDaemon().startsTurn(agentId);
+    if (previousIdleDeadline === null) return;
+    await waitFor(async () => {
+      const current = await this.execution(execution.id);
+      return (
+        current.idleDeadlineAt !== null && current.idleDeadlineAt.getTime() !== previousIdleDeadline
+      );
+    });
+  }
+  async emitReplacementTurn(agentId: string): Promise<void> {
     await this.requireDaemon().startsTurn(agentId);
   }
   async completeCurrentTurn(agentId: string): Promise<void> {
     await this.requireDaemon().completesTurn(agentId);
+  }
+  async completeCurrentTurnWithoutFinishTimeline(agentId: string): Promise<void> {
+    await this.requireDaemon().completesTurnWithoutFinishTimeline(agentId);
   }
   async failCurrentTurn(agentId: string): Promise<void> {
     await this.requireDaemon().failsTurn(agentId);
@@ -556,6 +618,9 @@ export class HubHarness {
   }
   completionHookBegins(): Promise<void> {
     return waitFor(async () => this.completedHooks.length > 0);
+  }
+  waitForCompletionHookCount(count: number): Promise<void> {
+    return waitFor(async () => this.completedHooks.length === count);
   }
   releaseCompletionHook(): void {
     this.completionGate?.release();
@@ -614,6 +679,29 @@ export class HubHarness {
   releaseRecoveryRefresh(): void {
     this.recoveryRefreshGate?.release();
     this.recoveryRefreshGate = undefined;
+  }
+  holdActivityRefresh(executionId: string): void {
+    let markReached!: () => void;
+    let release!: () => void;
+    this.activityRefreshGate = {
+      executionId,
+      reached: new Promise<void>((resolve) => {
+        markReached = resolve;
+      }),
+      markReached,
+      released: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release,
+    };
+  }
+  activityRefreshBegins(): Promise<void> {
+    if (this.activityRefreshGate === undefined) throw new Error("Activity refresh is not held");
+    return this.activityRefreshGate.reached;
+  }
+  releaseActivityRefresh(): void {
+    this.activityRefreshGate?.release();
+    this.activityRefreshGate = undefined;
   }
   async terminateExecutionDirectly(executionId: string): Promise<void> {
     const transition = await this.requireDatabase().transitionAgentExecution(
@@ -830,29 +918,37 @@ export class HubHarness {
       "    cwd: /workspace/manual",
       "    worktree:",
       "      mode: branch-off",
-      '      newBranch: "manual-${{ paseo.event.manual.input.service }}"',
+      '      newBranch: "manual-branch"',
       "      base: main",
       "triggers:",
       "  - name: deploy",
       "    on: manual.run",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [alice]",
-      "    env:",
-      '      MANUAL_ACTOR: "${{ paseo.event.manual.actor }}"',
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Deploy ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
+      "    steps:",
+      "      - id: deploy-step",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Deploy the requested service" }] ',
       "  - name: rollback",
       "    on: manual.run",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [alice]",
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Rollback ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
+      "    steps:",
+      "      - id: rollback-step",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Rollback the requested service" }] ',
     ].join("\n");
   }
 
@@ -900,13 +996,19 @@ export class HubHarness {
       "triggers:",
       "  - name: slack-mention",
       "    on: slack.mention",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [U1]",
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Review ${{ paseo.event.slack.trigger_message.body }} ${{ paseo.event.slack.trigger_message.attachments.0.filename }} ${{ paseo.event.slack.trigger_message.attachments.0.content_type }} ${{ paseo.event.slack.trigger_message.attachments.0.size }} ${{ paseo.event.slack.trigger_message.attachments.0.url }} after ${{ paseo.event.slack.trigger_thread_context.messages.0.content }}"',
+      "    steps:",
+      "      - id: inspect",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Review ${{ paseo.prompt }}" }]',
     ].join("\n");
   }
 
@@ -1002,9 +1104,10 @@ export class HubHarness {
   }): Promise<{
     status: number;
     error?: string;
-    executionId?: string;
-    daemonId?: string | null;
-    agentId?: string | null;
+    providerEventReceiptId?: string;
+    triggerRunId?: string;
+    configuredTriggerName?: string;
+    workflowStatus?: string;
   }> {
     const response = await fetch(`${this.origin}/api/manual-runs`, {
       method: "POST",
@@ -1027,19 +1130,25 @@ export class HubHarness {
       throw new Error("manual run was interrupted by application restart");
     const body = z
       .object({
-        executionId: z.string().optional(),
+        providerEventReceiptId: z.string().optional(),
+        triggerRunId: z.string().optional(),
+        configuredTriggerName: z.string().optional(),
+        workflowStatus: z.string().optional(),
         error: z.string().optional(),
-        daemonId: z.string().nullable().optional(),
-        agentId: z.string().nullable().optional(),
       })
       .passthrough()
       .parse(await response.json());
     return {
       status: response.status,
       ...(body.error === undefined ? {} : { error: body.error }),
-      ...(body.executionId === undefined ? {} : { executionId: body.executionId }),
-      ...(body.daemonId === undefined ? {} : { daemonId: body.daemonId }),
-      ...(body.agentId === undefined ? {} : { agentId: body.agentId }),
+      ...(body.providerEventReceiptId === undefined
+        ? {}
+        : { providerEventReceiptId: body.providerEventReceiptId }),
+      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
+      ...(body.configuredTriggerName === undefined
+        ? {}
+        : { configuredTriggerName: body.configuredTriggerName }),
+      ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
     };
   }
 
@@ -1106,20 +1215,46 @@ export class HubHarness {
     );
     await client.end();
     const store = new ProjectConfigurationStore(this.database, HUB_PROJECT_ID);
+    await this.database.issueEnrollmentToken({
+      id: "00000000-0000-4000-8000-0000000000ee",
+      verifier: "seed-daemon-token",
+      organizationId: HUB_ORGANIZATION_ID,
+      issuedByApiKeyId: HUB_API_KEY_ID,
+      expiresAt: new Date(Date.now() + ENROLLMENT_LIFETIME_MS),
+      consumedAt: null,
+    });
+    await this.database.enrollDaemon({
+      tokenVerifier: "seed-daemon-token",
+      daemonId: "00000000-0000-4000-8000-0000000000dd",
+      idempotencyKey: "seed-daemon-idempotency",
+      serverId: "seed-server",
+      daemonPublicKey: "seed-public-key",
+      credentialVerifier: "seed-credential-verifier",
+      scopes: ["hub.execution.*"],
+      now: new Date(),
+    });
     const config = await store.insertManualRevision({
       rawYaml: null,
       rawConfiguration: {
-        environments: [{ name: "test", kind: "docker", image: "paseo/test" }],
-        triggers: [
-          {
-            name: "discord-ping",
-            on: "discord.mention",
-            environment: "test",
-            filters: { from_users: ["test-user"] },
-            agent: { provider: "opencode", mode: "full-access" },
-            prompt: "Reply pong.",
-          },
+        environments: [
+          { name: "test", kind: "daemon", daemon: "daemon-00000000", cwd: "/workspace" },
         ],
+        triggers: ["discord-ping", "first", "second", "member-0", "member-1"].map((name) => ({
+          name,
+          on: "discord.mention",
+          max_runtime: "2h",
+          filters: { from_users: ["test-user"] },
+          steps: [
+            {
+              id: "discord-step",
+              environment: "test",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "full-access" },
+              prompt: [{ text: "Reply pong." }],
+            },
+          ],
+        })),
       },
       userId: null,
       sourceEvidence: { kind: "admin-seed", userId: HUB_USER_ID },
@@ -1204,7 +1339,7 @@ export class HubHarness {
       kind: "launch_machine",
       organizationId: HUB_ORGANIZATION_ID,
       projectId: HUB_PROJECT_ID,
-      triggerId: randomUUID(),
+      triggerRunId: randomUUID(),
       triggerName: "discord-ping",
       environmentName: "hub-daemon",
       environment: {
@@ -1229,24 +1364,62 @@ export class HubHarness {
     };
   }
 
-  private async insertTestTrigger(): Promise<string> {
-    const trigger = await this.requireDatabase().insertTrigger({
-      organizationId: this.intent().organizationId,
-      projectId: this.intent().projectId,
+  private async insertTestReceipt(intent: LaunchMachineIntent): Promise<string> {
+    const result = await this.requireDatabase().persistManualEvent({
+      organizationId: intent.organizationId,
+      projectId: intent.projectId,
       deliveryId: randomUUID(),
-      source: "test.dispatch",
+      source: "manual.test_dispatch",
       payload: {},
       receivedAt: new Date(),
     });
-    return trigger.trigger.id;
+    if (result.status !== "accepted") throw new Error("test receipt was not accepted");
+    return result.event.providerEventReceiptId;
   }
 
-  private batchIntents(triggerId: string, triggerNames: readonly string[]): LaunchMachineIntent[] {
+  private batchIntents(
+    _providerEventReceiptId: string,
+    triggerNames: readonly string[],
+  ): LaunchMachineIntent[] {
     return triggerNames.map((triggerName) => ({
       ...this.intent(),
-      triggerId,
       triggerName,
     }));
+  }
+
+  private async attachDispatchRun(
+    intent: LaunchMachineIntent,
+    providerEventReceiptId: string,
+  ): Promise<LaunchMachineIntent> {
+    const database = this.requireDatabase();
+    const existing = (
+      await database.findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)
+    ).find((run) => run.configuredTriggerName === intent.triggerName);
+    const run =
+      existing ??
+      (
+        await database.createAcceptedTriggerRun({
+          organizationId: intent.organizationId,
+          projectId: intent.projectId,
+          configurationRevisionId: intent.configurationRevisionId,
+          providerEventReceiptId,
+          configuredTriggerName: intent.triggerName,
+          rawPrompt: intent.prompt,
+          prompt: intent.prompt,
+          inputs: {},
+          triggerContext: intent.triggerContext,
+          outputContext: intent.outputContext,
+          deadlineAt:
+            intent.deadlineAt ?? new Date(this.clock.now() + (intent.timeoutMs ?? 30 * 60_000)),
+          stepIds: ["dispatch"],
+        })
+      ).run;
+    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+    return {
+      ...intent,
+      triggerRunId: run.id,
+      ...(step === undefined ? {} : { workflowStepRunId: step.id }),
+    };
   }
 
   private requireDatabase(): Database {
@@ -1263,6 +1436,11 @@ export class HubHarness {
             if (gate?.executionId === executionId) {
               gate.markReached();
               await gate.released;
+            }
+            const activityGate = this.activityRefreshGate;
+            if (activityGate?.executionId === executionId) {
+              activityGate.markReached();
+              await activityGate.released;
             }
             return target.findAgentExecutionById(executionId);
           };
@@ -1412,13 +1590,16 @@ class HubClock implements DaemonClock, ExecutionDeadlineClock {
   nowDate(): Date {
     return new Date(this.nowMs);
   }
+  advanceClockBy(ms: number): void {
+    this.nowMs += ms;
+  }
   schedule(callback: () => Promise<void>, delayMs: number): () => void {
     const id = this.nextId++;
     this.timers.set(id, { dueAt: this.nowMs + delayMs, callback });
     return () => this.timers.delete(id);
   }
   async advanceBy(ms: number): Promise<void> {
-    this.nowMs += ms;
+    this.advanceClockBy(ms);
     for (const [id, timer] of this.timers) {
       if (timer.dueAt <= this.nowMs) {
         this.timers.delete(id);
@@ -1726,6 +1907,7 @@ class TestDaemon {
         event: { type: "turn_started", provider: "opencode" },
       },
     });
+    await new Promise((resolve) => setImmediate(resolve));
   }
   async failsTurn(agentId: string): Promise<void> {
     this.send({
@@ -1747,9 +1929,38 @@ class TestDaemon {
       payload: {
         executionId: this.executionId(agentId),
         agentId,
+        event: {
+          type: "timeline",
+          provider: "opencode",
+          item: {
+            type: "tool_call",
+            callId: `finish-${agentId}`,
+            name: "hub.finish_execution",
+            status: "completed",
+          },
+        },
+      },
+    });
+    this.send({
+      type: "hub.execution.agent.stream",
+      payload: {
+        executionId: this.executionId(agentId),
+        agentId,
         event: { type: "turn_completed", provider: "opencode" },
       },
     });
+    this.changesStatus(agentId, "idle");
+  }
+  async completesTurnWithoutFinishTimeline(agentId: string): Promise<void> {
+    this.send({
+      type: "hub.execution.agent.stream",
+      payload: {
+        executionId: this.executionId(agentId),
+        agentId,
+        event: { type: "turn_completed", provider: "opencode" },
+      },
+    });
+    this.changesStatus(agentId, "idle");
   }
   async revoke(): Promise<number> {
     return (

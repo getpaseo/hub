@@ -3,7 +3,7 @@ import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { WebhookPayloadSchema } from "../../auth/github-events.js";
 import type { WebhookPayload } from "../../auth/github-events.js";
 import { isDatabaseUnavailableError } from "../../db/errors.js";
-import type { ProviderTriggerAcceptance } from "../../db/types.js";
+import type { ProviderEventAcceptance } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
@@ -22,7 +22,7 @@ export interface WebhookSourceOptions {
     payload: unknown;
     receivedAt: Date;
     dropReason?: string;
-  }): Promise<ProviderTriggerAcceptance>;
+  }): Promise<ProviderEventAcceptance>;
   applyLifecycle(input: {
     installationId: number;
     event: "installation" | "installation_repositories";
@@ -140,7 +140,7 @@ async function handleVerifiedWebhook(
 
   if (acceptance.status !== "accepted") return new Response("OK", { status: 200 });
 
-  return dispatchWebhook(handlers, acceptance.triggers, verified);
+  return dispatchWebhook(handlers, acceptance.events, verified);
 }
 
 async function verifyWebhookRequest(

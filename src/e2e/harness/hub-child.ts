@@ -10,7 +10,7 @@ import { loadBuiltStartServer } from "../../server/build.js";
 import { createAuthServer } from "../../auth/server.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
-import { ProjectConfigurationStore } from "../../configuration/store.js";
+import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -44,25 +44,6 @@ async function main(): Promise<void> {
   );
   await client.end();
   const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
-  const config = await configuration.insertManualRevision({
-    rawYaml: null,
-    rawConfiguration: {
-      environments: [{ name: "hub-e2e", kind: "docker", image: "paseo/e2e" }],
-      triggers: [
-        {
-          name: "e2e-discord",
-          on: "e2e.discord",
-          environment: "hub-e2e",
-          filters: { from_users: ["phase-five-operator"] },
-          agent: { provider: "hub-e2e", mode: "default" },
-          prompt: "Deploy mcp-capability for phase-five-operator",
-        },
-      ],
-    },
-    userId: "hub-e2e",
-    sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
-  });
-  await configuration.activate(config.id);
   const outputs = new OutputExecutorRegistry();
   outputs.register("discord.reply", async (output) => {
     await appendFile(outputFile, `${JSON.stringify(output)}\n`);
@@ -82,6 +63,56 @@ async function main(): Promise<void> {
   );
   if (createdApiKey === undefined) throw new Error("API key service unavailable");
   await writeFile(requiredEnvironment("HUB_E2E_MACHINE_KEY_FILE"), createdApiKey.secret, "utf8");
+  const seededDaemonId = "00000000-0000-4000-8000-0000000000dd";
+  let daemon = await database.findDaemonById(seededDaemonId);
+  if (daemon === undefined) {
+    await database.issueEnrollmentToken({
+      id: "00000000-0000-4000-8000-0000000000ee",
+      verifier: "hub-e2e-seed-daemon-token",
+      organizationId,
+      issuedByApiKeyId: createdApiKey.summary.id,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      consumedAt: null,
+    });
+    daemon = await database.enrollDaemon({
+      tokenVerifier: "hub-e2e-seed-daemon-token",
+      daemonId: seededDaemonId,
+      idempotencyKey: "hub-e2e-seed-daemon-idempotency",
+      serverId: "hub-e2e-seed-server",
+      daemonPublicKey: "hub-e2e-seed-public-key",
+      credentialVerifier: "hub-e2e-seed-credential-verifier",
+      scopes: ["hub.execution.*"],
+      now: new Date(),
+    });
+  }
+  if (daemon === undefined) throw new Error("Hub E2E seed daemon enrollment failed");
+  const config = await configuration.insertManualRevision({
+    rawYaml: null,
+    rawConfiguration: {
+      environments: [{ name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() }],
+      triggers: [
+        {
+          name: "e2e-discord",
+          on: "e2e.discord",
+          max_runtime: "2h",
+          filters: { from_users: ["phase-five-operator"] },
+          steps: [
+            {
+              id: "e2e-step",
+              environment: "hub-e2e",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "hub-e2e", mode: "default" },
+              prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
+            },
+          ],
+        },
+      ],
+    },
+    userId: "hub-e2e",
+    sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
+  });
+  await configuration.activate(config.id);
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,
@@ -93,22 +124,22 @@ async function main(): Promise<void> {
         eventNames: ["e2e.discord"],
         async match(trigger) {
           const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
-          const daemon = (await database.listDaemonsForOrganization(trigger.organizationId))[0];
-          if (daemon === undefined || activeConfiguration === undefined) return [];
+          const compiledConfiguration =
+            activeConfiguration === undefined
+              ? undefined
+              : parseProjectConfiguration(activeConfiguration);
+          const dispatchDaemon = (
+            await database.listDaemonsForOrganization(trigger.organizationId)
+          )[0];
+          if (
+            dispatchDaemon === undefined ||
+            activeConfiguration === undefined ||
+            compiledConfiguration === undefined
+          )
+            return [];
           return [
             {
               triggerName: "e2e-discord",
-              environmentName: "hub-e2e",
-              environment: {
-                kind: "daemon" as const,
-                daemonId: daemon.id,
-                authoredSlug: daemon.slug,
-                cwd: process.cwd(),
-              },
-              prompt: "Deploy mcp-capability for phase-five-operator",
-              agent: { provider: "hub-e2e", mode: "default" },
-              allowOutputs: [{ type: "discord.reply", max: 1 }],
-              autoArchive: false,
               triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
               outputContext: {
                 provider: "discord",
@@ -119,7 +150,13 @@ async function main(): Promise<void> {
               },
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
-              hubConfig: {},
+              hubConfig: compiledConfiguration,
+              invocation: {
+                status: "accepted",
+                rawMessage: "Deploy mcp-capability for phase-five-operator",
+                prompt: "Deploy mcp-capability for phase-five-operator",
+                inputs: {},
+              },
             },
           ];
         },

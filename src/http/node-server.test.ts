@@ -1,9 +1,11 @@
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import { DaemonRegistration } from "../daemons/registration.js";
 import { ActiveDaemonRegistry } from "../daemons/registry.js";
 import { createFetchServer } from "./node-server.js";
+import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 
 describe("device issuance client address", () => {
   it("uses the socket peer regardless of caller-supplied proxy headers or user agents", async () => {
@@ -73,6 +75,65 @@ describe("device issuance client address", () => {
     }
   });
 });
+
+describe("fetch response lifecycle", () => {
+  it("runs completion cleanup only after the Node response finishes", async () => {
+    let responseFinished = false;
+    let cleanupRanAfterFinish = false;
+    let resolveCleanup: (() => void) | undefined;
+    const cleanup = new Promise<void>((resolve) => {
+      resolveCleanup = resolve;
+    });
+    const cleanupResponse = new Response("ok");
+    const onCleanup = () => {
+      cleanupRanAfterFinish = responseFinished;
+      resolveCleanup?.();
+    };
+    const server = createFetchServer(() =>
+      registerResponseFinishCleanup(cleanupResponse, onCleanup),
+    );
+    const onResponseFinish = () => {
+      responseFinished = true;
+    };
+    const observeResponse = (_incoming: IncomingMessage, response: ServerResponse) => {
+      response.once("finish", onResponseFinish);
+    };
+    server.on("request", observeResponse);
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("server did not bind");
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const response = httpRequest(
+          { host: "127.0.0.1", port: address.port, path: "/", method: "GET" },
+          (incoming) => drainIncomingResponse(incoming, resolve),
+        );
+        response.once("error", reject);
+        response.end();
+      });
+      await cleanup;
+      assert.equal(responseFinished, true);
+      assert.equal(cleanupRanAfterFinish, true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+function drainIncomingResponse(incoming: IncomingMessage, resolve: () => void): void {
+  incoming.resume();
+  incoming.once("end", resolve);
+}
+
+function closeServer(server: ReturnType<typeof createFetchServer>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined) resolve();
+      else reject(error);
+    });
+  });
+}
 
 class DeviceIssuanceServer {
   private constructor(

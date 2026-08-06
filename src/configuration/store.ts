@@ -1,13 +1,16 @@
-import { createHash } from "node:crypto";
 import { dump } from "js-yaml";
 import { z } from "zod";
 import {
-  HubConfigSchema,
-  DEFAULT_TRIGGER_IDLE_TIMEOUT,
-  DEFAULT_TRIGGER_TIMEOUT,
-  type HubConfig,
-} from "../config/schema.js";
-import type { EnvironmentConfig, Trigger } from "../config/schema.js";
+  compileHubConfig,
+  compiledConfigurationHash,
+  parseCompiledHubConfig,
+  rawConfigurationHash,
+  type CompiledHubConfig,
+  type CompiledTriggerFilter,
+  type CompiledTrigger,
+} from "../config/compiler.js";
+import type { EnvironmentConfig } from "../config/schema.js";
+import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
 import type {
   ConnectionProvider,
   Database,
@@ -20,12 +23,12 @@ export interface StoredProjectConfiguration {
   configuration: CompiledProjectConfiguration;
 }
 
-export type CompiledProjectConfiguration = Omit<HubConfig, "environments" | "triggers"> & {
-  environments: Array<
+export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments" | "triggers"> & {
+  environments: readonly (
     | Exclude<EnvironmentConfig, { kind: "daemon" }>
     | (Extract<EnvironmentConfig, { kind: "daemon" }> & { daemonId: string })
-  >;
-  triggers: Trigger[];
+  )[];
+  triggers: readonly CompiledTrigger[];
 };
 
 export class ProjectConfigurationStore {
@@ -53,7 +56,7 @@ export class ProjectConfigurationStore {
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: configurationHash(prepared.normalizedConfiguration),
+      contentHash: prepared.contentHash,
       createdByUserId: input.userId,
     });
   }
@@ -68,8 +71,22 @@ export class ProjectConfigurationStore {
     commitSha: string;
     path: string;
     webhookDeliveryId: string | null;
+    resolvedPromptPartials?: ResolvedPromptPartials;
+    validationErrors?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
-    const prepared = await prepareRevision(this.database, this.projectId, input.rawConfiguration);
+    const prepared =
+      input.validationErrors === undefined
+        ? await prepareRevision(
+            this.database,
+            this.projectId,
+            input.rawConfiguration,
+            input.resolvedPromptPartials,
+          )
+        : {
+            normalizedConfiguration: input.rawConfiguration,
+            contentHash: rawConfigurationHash(input.rawConfiguration),
+            validationErrors: input.validationErrors,
+          };
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
       sourceKind: "github",
@@ -82,13 +99,22 @@ export class ProjectConfigurationStore {
         commitSha: input.commitSha,
         path: input.path,
         webhookDeliveryId: input.webhookDeliveryId,
+        ...(input.resolvedPromptPartials === undefined
+          ? {}
+          : {
+              partials: [...input.resolvedPromptPartials.values()].map((partial) => ({
+                path: partial.path,
+                content: partial.content,
+                contentHash: partial.contentHash,
+              })),
+            }),
       },
       rawYaml: input.rawYaml,
       normalizedConfiguration: prepared.normalizedConfiguration,
       ...(prepared.validationErrors === undefined
         ? {}
         : { validationErrors: prepared.validationErrors }),
-      contentHash: configurationHash(prepared.normalizedConfiguration),
+      contentHash: prepared.contentHash,
     });
   }
 
@@ -128,6 +154,16 @@ export class ProjectConfigurationStore {
       : { revision, configuration: parseProjectConfiguration(revision) };
   }
 
+  async getRevision(revisionId: string): Promise<StoredProjectConfiguration | undefined> {
+    const revision = await this.database.findProjectConfigurationRevision(
+      this.projectId,
+      revisionId,
+    );
+    return revision === undefined
+      ? undefined
+      : { revision, configuration: parseProjectConfiguration(revision) };
+  }
+
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
     const active = await this.database.findActiveProjectConfiguration(this.projectId);
     if (active === undefined) throw new Error("active configuration not found");
@@ -141,7 +177,7 @@ export class ProjectConfigurationStore {
       userId,
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
-      contentHash: configurationHash(active.normalizedConfiguration),
+      contentHash: compiledConfigurationHash(configuration),
       formattingPreserved,
       routes,
     });
@@ -152,117 +188,113 @@ export class ProjectConfigurationStore {
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
-  const hydrated = hydrateStoredDefaults(revision.normalizedConfiguration);
-  const configuration = HubConfigSchema.parse(restoreAuthoredTemplates(hydrated));
-  if (!isRecord(hydrated) || !isUnknownArray(hydrated["environments"])) {
-    throw new Error("active configuration contains invalid environments");
-  }
-  const storedEnvironments = hydrated["environments"];
-  const environments = configuration.environments.map((environment, index) => {
+  return toProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
+}
+
+function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProjectConfiguration {
+  const environments = configuration.environments.map((environment) => {
     if (environment.kind !== "daemon") return environment;
-    const stored = storedEnvironments[index];
-    if (!isRecord(stored) || !isNonEmptyString(stored["daemonId"])) {
+    if (environment.daemonId === undefined) {
       throw new Error("active configuration contains an uncompiled daemon reference");
     }
-    return Object.assign({}, environment, { daemonId: stored["daemonId"] });
+    return { ...environment, daemonId: environment.daemonId };
   });
-  return Object.assign({}, configuration, { environments });
-}
-
-export function configurationHash(configuration: unknown): string {
-  return createHash("sha256").update(stableJson(configuration)).digest("hex");
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (typeof value !== "object" || value === null) return JSON.stringify(value);
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
-    .join(",")}}`;
-}
-
-function hydrateStoredDefaults(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value["triggers"])) return value;
-  return {
-    ...value,
-    triggers: value["triggers"].map(hydrateTriggerDefaults),
-  };
-}
-
-function hydrateTriggerDefaults(trigger: unknown): unknown {
-  if (!isRecord(trigger)) return trigger;
-  return {
-    ...trigger,
-    ...(trigger["timeout"] === undefined ? { timeout: DEFAULT_TRIGGER_TIMEOUT } : {}),
-    ...(trigger["idle_timeout"] === undefined
-      ? { idle_timeout: DEFAULT_TRIGGER_IDLE_TIMEOUT }
-      : {}),
-  };
-}
-
-function restoreAuthoredTemplates(value: unknown): unknown {
-  if (!isRecord(value) || !isUnknownArray(value["triggers"])) return value;
-  return {
-    ...value,
-    triggers: value["triggers"].map((trigger) => {
-      if (!isRecord(trigger)) return trigger;
-      return {
-        ...trigger,
-        prompt: restoreAuthoredTemplate(trigger["prompt"]),
-        ...(isRecord(trigger["env"]) ? { env: restoreAuthoredTemplateRecord(trigger["env"]) } : {}),
-        ...(isRecord(trigger["files"])
-          ? { files: restoreAuthoredTemplateRecord(trigger["files"]) }
-          : {}),
-      };
-    }),
-  };
-}
-
-function restoreAuthoredTemplateRecord(record: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(record).map(([key, template]) => [key, restoreAuthoredTemplate(template)]),
-  );
-}
-
-function restoreAuthoredTemplate(value: unknown): unknown {
-  return isRecord(value) && isNonEmptyString(value["value"]) ? value["value"] : value;
+  return { environments, triggers: configuration.triggers };
 }
 
 async function prepareRevision(
   database: Database,
   projectId: string,
   rawConfiguration: unknown,
-): Promise<{ normalizedConfiguration: unknown; validationErrors?: unknown }> {
-  const parsed = HubConfigSchema.safeParse(rawConfiguration);
-  if (!parsed.success) {
-    return {
-      normalizedConfiguration: rawConfiguration,
-      validationErrors: z.treeifyError(parsed.error),
-    };
-  }
-  const compiled = await compileConfiguration(database, projectId, parsed.data);
+  resolvedPromptPartials?: ResolvedPromptPartials,
+): Promise<PreparedRevision> {
+  const compiled = await compileConfiguration(
+    database,
+    projectId,
+    rawConfiguration,
+    resolvedPromptPartials,
+  );
   if (!compiled.success) {
+    if (compiled.kind === "compiled") {
+      return {
+        kind: "compiled",
+        normalizedConfiguration: compiled.configuration,
+        contentHash: compiledConfigurationHash(compiled.configuration),
+        validationErrors: compiled.validationErrors ?? {
+          formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
+        },
+      };
+    }
     return {
+      kind: "raw",
       normalizedConfiguration: rawConfiguration,
-      validationErrors: {
-        formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
-      },
+      contentHash: rawConfigurationHash(rawConfiguration),
+      validationErrors: compiled.validationErrors,
     };
   }
-  return { normalizedConfiguration: compiled.configuration };
+  return {
+    kind: "compiled",
+    normalizedConfiguration: compiled.configuration,
+    contentHash: compiledConfigurationHash(compiled.configuration),
+  };
 }
+
+type PreparedRevision =
+  | {
+      kind: "compiled";
+      normalizedConfiguration: CompiledHubConfig;
+      contentHash: string;
+      validationErrors?: unknown;
+    }
+  | {
+      kind: "raw";
+      normalizedConfiguration: unknown;
+      contentHash: string;
+      validationErrors: unknown;
+    };
+
+type CompileConfigurationResult =
+  | { success: true; configuration: CompiledProjectConfiguration }
+  | {
+      success: false;
+      kind: "compiled";
+      configuration: CompiledHubConfig;
+      missing: string[];
+      validationErrors?: unknown;
+    }
+  | {
+      success: false;
+      kind: "raw";
+      missing: string[];
+      validationErrors: unknown;
+    };
 
 async function compileConfiguration(
   database: Database,
   projectId: string,
-  configuration: HubConfig,
-): Promise<
-  | { success: true; configuration: CompiledProjectConfiguration }
-  | { success: false; missing: string[] }
-> {
+  rawConfiguration: unknown,
+  resolvedPromptPartials?: ResolvedPromptPartials,
+): Promise<CompileConfigurationResult> {
+  let configuration: CompiledHubConfig;
+  try {
+    configuration = compileHubConfig(
+      rawConfiguration,
+      resolvedPromptPartials === undefined ? {} : { resolvedPromptPartials },
+    );
+  } catch (error) {
+    return {
+      success: false,
+      kind: "raw",
+      missing: [],
+      validationErrors: {
+        formErrors: [formatConfigurationError(error)],
+      },
+    };
+  }
   const project = await database.findProjectById(projectId);
-  if (project === undefined) return { success: false, missing: ["project"] };
+  if (project === undefined) {
+    return { success: false, kind: "compiled", missing: ["project"], configuration };
+  }
   const resolutions = await Promise.all(
     configuration.environments.map(async (environment) =>
       environment.kind === "daemon"
@@ -286,20 +318,36 @@ async function compileConfiguration(
   );
   const unresolved = [...missing, ...triggerCompilation.missing];
   if (unresolved.length > 0) {
-    return { success: false, missing: unresolved };
+    return { success: false, kind: "compiled", missing: unresolved, configuration };
   }
+  const resolvedConfiguration: CompiledHubConfig = {
+    ...configuration,
+    environments: resolutions.map(resolveEnvironment),
+    triggers: triggerCompilation.triggers,
+  };
   return {
     success: true,
-    configuration: {
-      ...configuration,
-      environments: resolutions.map(({ environment, daemon }) =>
-        environment.kind === "daemon"
-          ? Object.assign({}, environment, { daemonId: daemon!.id })
-          : environment,
-      ),
-      triggers: triggerCompilation.triggers,
-    },
+    configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration)),
   };
+}
+
+function formatConfigurationError(error: unknown): unknown {
+  if (error instanceof z.ZodError) return z.treeifyError(error);
+  if (error instanceof Error) return error.message;
+  return "invalid configuration";
+}
+
+function resolveEnvironment(
+  resolution: EnvironmentResolution,
+): CompiledHubConfig["environments"][number] {
+  const { environment, daemon } = resolution;
+  if (environment.kind !== "daemon" || daemon === undefined) return environment;
+  return Object.assign({}, environment, { daemonId: daemon.id });
+}
+
+interface EnvironmentResolution {
+  environment: CompiledHubConfig["environments"][number];
+  daemon: { id: string } | undefined;
 }
 
 async function compileTriggerRoutes(
@@ -318,10 +366,10 @@ async function compileTriggerRoutes(
 async function compileTriggers(
   database: Database,
   organizationId: string,
-  triggers: readonly Trigger[],
-): Promise<{ triggers: Trigger[]; routes: ProjectTriggerRoute[]; missing: string[] }> {
+  triggers: readonly CompiledTrigger[],
+): Promise<{ triggers: CompiledTrigger[]; routes: ProjectTriggerRoute[]; missing: string[] }> {
   const usage = await database.organizationConnectionUsage(organizationId);
-  const compiled: Trigger[] = [];
+  const compiled: CompiledTrigger[] = [];
   const routes: ProjectTriggerRoute[] = [];
   const missing: string[] = [];
 
@@ -351,11 +399,11 @@ async function compileTriggers(
         missing.push(`${provider}:${authored}`);
         continue;
       }
-      const nextFilter = {
+      const nextFilter: CompiledTriggerFilter = {
         ...filter,
         connectionId: resolved.connectionId,
         resourceId: resolved.resourceId,
-      } as Trigger["filters"] & { connectionId: string; resourceId: string };
+      };
       compiled.push({ ...trigger, filters: nextFilter });
       routes.push({
         provider,
@@ -366,9 +414,9 @@ async function compileTriggers(
       continue;
     }
 
-    const nextFilter =
-      typeof authoredConnection === "string"
-        ? ({ ...filter, connectionId: candidates[0]!.id } as Trigger["filters"])
+    const nextFilter: CompiledTriggerFilter | undefined =
+      typeof authoredConnection === "string" && filter !== undefined
+        ? { ...filter, connectionId: candidates[0]!.id }
         : filter;
     compiled.push({ ...trigger, ...(nextFilter === undefined ? {} : { filters: nextFilter }) });
     for (const connection of candidates) {
@@ -392,7 +440,7 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
 
 function readAuthoredResource(
   provider: ConnectionProvider,
-  filters: Trigger["filters"] | undefined,
+  filters: CompiledTrigger["filters"] | undefined,
 ): string | undefined {
   if (filters === undefined) return undefined;
   let value: string | undefined;
@@ -405,7 +453,7 @@ function readAuthoredResource(
 function connectionCandidates(
   provider: ConnectionProvider,
   usage: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
-  filters: Trigger["filters"] | undefined,
+  filters: CompiledTrigger["filters"] | undefined,
 ) {
   const connections = usage[provider];
   const authoredSlug = filters?.["connection"];
@@ -439,16 +487,4 @@ async function resolveResource(
   return connection === undefined || !allowedConnectionIds.has(connection.id)
     ? undefined
     : { connectionId: connection.id, resourceId: resource };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isUnknownArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
 }

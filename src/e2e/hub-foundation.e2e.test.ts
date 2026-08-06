@@ -46,8 +46,8 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
 
     assert.equal(connected.state, "connected");
     assert.deepEqual(completed, {
-      prompt: "Deploy payments for phase-five-operator",
-      output: "phase-five:payments",
+      prompt: "Deploy requested for phase-five-operator",
+      output: "phase-five:requested",
       status: "succeeded",
       daemonId: enrollment.daemonId,
       agentId: run.agentId,
@@ -94,7 +94,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const run = await hub.beginAmbiguousManualRun();
 
     assert.deepEqual(run.beforeRestart, {
-      triggers: 1,
+      receipts: 1,
       executions: 1,
       status: "running",
       daemonId: enrollment.daemonId,
@@ -105,7 +105,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const recovery = await hub.replayEvidence(run.executionId);
     assert.equal(recovery.executionAgentId, recovery.ownerMatchingAgentId);
     assert.deepEqual(recovery, {
-      deliveryTriggers: 1,
+      deliveryReceipts: 1,
       executions: 1,
       persistedDaemonAgents: 1,
       ownerMatchingAgentId: recovery.executionAgentId,
@@ -122,8 +122,8 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const recovered = await hub.completedRun(run.executionId);
 
     assert.deepEqual(recovered, {
-      prompt: "Deploy recovery for phase-five-operator",
-      output: "phase-five:recovery",
+      prompt: "Deploy requested for phase-five-operator",
+      output: "phase-five:requested",
       status: "succeeded",
       daemonId: enrollment.daemonId,
       agentId: recovery.ownerMatchingAgentId,

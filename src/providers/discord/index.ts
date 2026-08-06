@@ -92,7 +92,7 @@ export function createDiscordRegistration(
         );
   const gateway = createDiscordGatewaySource({
     bot,
-    accept: (input) => database.acceptDiscordTrigger(input),
+    accept: (input) => database.acceptDiscordEvent(input),
     applyGuildDelete: (guildId, unavailable) =>
       applyGuildRemoval(database, client, guildId, unavailable),
   });

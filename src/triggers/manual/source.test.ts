@@ -1,10 +1,8 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "vitest";
-import type { DurableTrigger } from "../../db/types.js";
+import type { DurableProviderEvent } from "../../db/types.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createManualTriggerSource, handleManualTriggerRequest } from "./source.js";
-
-const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
 describe("manual trigger source", () => {
   it("passes arbitrary provider-namespaced payloads to the handler", async () => {
@@ -13,7 +11,7 @@ describe("manual trigger source", () => {
     assert.deepEqual(
       await manual.deliver({
         organizationId: "org_1",
-        projectId: PROJECT_ID,
+        projectId: manual.projectId,
         source: "discord.mention",
         deliveryId: "manual-discord-1",
         payload: {
@@ -27,7 +25,7 @@ describe("manual trigger source", () => {
     assert.deepEqual(manual.received(), [
       {
         organizationId: "org_1",
-        projectId: PROJECT_ID,
+        projectId: manual.projectId,
         source: "discord.mention",
         deliveryId: "manual-discord-1",
         payload: {
@@ -46,7 +44,7 @@ describe("manual trigger source", () => {
     assert.deepEqual(
       await manual.deliver({
         organizationId: "org_1",
-        projectId: PROJECT_ID,
+        projectId: manual.projectId,
         source: "manual",
         deliveryId: "manual-legacy-1",
         payload: {},
@@ -68,12 +66,30 @@ interface ManualDelivery {
 }
 
 class ManualTriggers {
-  private readonly handled: DurableTrigger[] = [];
+  private readonly handled: DurableProviderEvent[] = [];
 
-  private constructor(private readonly source: ReturnType<typeof createManualTriggerSource>) {}
+  private constructor(
+    private readonly source: ReturnType<typeof createManualTriggerSource>,
+    readonly projectId: string,
+  ) {}
 
   static async recording(): Promise<ManualTriggers> {
-    const manual = new ManualTriggers(createManualTriggerSource(createMemoryDatabase()));
+    const database = createMemoryDatabase();
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Manual project",
+      slug: "manual-project",
+      createdByUserId: "test-user",
+    });
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "manual-source-test-configuration",
+    });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
+    const manual = new ManualTriggers(createManualTriggerSource(database), project.id);
     await manual.source.start(async (trigger) => {
       manual.handled.push(trigger);
     });

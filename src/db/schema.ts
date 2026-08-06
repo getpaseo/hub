@@ -33,7 +33,6 @@ export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const CONNECTION_PROVIDERS = ["github", "slack", "discord"] as const;
 
 export type MachineSource =
-  | { kind: "trigger"; triggerId: string }
   | { kind: "manual"; userId?: string }
   | { kind: "daemon"; daemonId: string };
 
@@ -57,6 +56,7 @@ export const providerEventReceipts = pgTable(
     payload: jsonb().notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
+    acceptedRoutes: jsonb("accepted_routes"),
   },
   (table) => [
     uniqueIndex("provider_event_receipts_id_organization_unique").on(
@@ -87,86 +87,11 @@ export const providerEventReceipts = pgTable(
   ],
 );
 
-export const triggers = pgTable(
-  "triggers",
-  {
-    id: uuid().defaultRandom().primaryKey(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organizations.id, {
-        onDelete: "cascade",
-      }),
-    projectId: uuid("project_id"),
-    configurationRevisionId: uuid("configuration_revision_id"),
-    receiptId: uuid("receipt_id").notNull(),
-    connectionId: uuid("connection_id"),
-    resourceId: text("resource_id"),
-    deliveryId: text("delivery_id").notNull(),
-    signatureHash: text("signature_hash"),
-    source: text().notNull(),
-    repo: text(),
-    payload: jsonb().notNull(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
-    matchedTriggerName: text("matched_trigger_name"),
-    droppedReason: text("dropped_reason"),
-    dispatchPlan: jsonb("dispatch_plan").$type<readonly LaunchMachineIntent[]>(),
-    lifecycleState: text("lifecycle_state").$type<
-      "accepted" | "running" | "succeeded" | "failed"
-    >(),
-  },
-  (table) => [
-    uniqueIndex("triggers_receipt_project_unique").on(table.receiptId, table.projectId),
-    uniqueIndex("triggers_signature_hash_unique")
-      .on(table.signatureHash)
-      .where(sql`${table.signatureHash} is not null`),
-    uniqueIndex("triggers_id_project_organization_unique").on(
-      table.id,
-      table.projectId,
-      table.organizationId,
-    ),
-    index("triggers_received_at_idx").on(table.receivedAt.desc()),
-    index("triggers_organization_received_at_idx").on(
-      table.organizationId,
-      table.receivedAt.desc(),
-    ),
-    index("triggers_project_received_at_idx").on(table.projectId, table.receivedAt.desc()),
-    check(
-      "triggers_project_or_dropped_check",
-      sql`${table.projectId} is not null or ${table.droppedReason} is not null`,
-    ),
-    check(
-      "triggers_lifecycle_state_check",
-      sql`${table.lifecycleState} is null or ${table.lifecycleState} in ('accepted', 'running', 'succeeded', 'failed')`,
-    ),
-    foreignKey({
-      columns: [table.projectId, table.organizationId],
-      foreignColumns: [projects.id, projects.organizationId],
-      name: "triggers_project_organization_fk",
-    }),
-    foreignKey({
-      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
-      foreignColumns: [
-        projectConfigurationRevisions.id,
-        projectConfigurationRevisions.projectId,
-        projectConfigurationRevisions.organizationId,
-      ],
-      name: "triggers_revision_project_organization_fk",
-    }),
-    foreignKey({
-      columns: [table.receiptId, table.organizationId],
-      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
-      name: "triggers_receipt_organization_fk",
-    }),
-  ],
-);
-
 export const attachmentCapabilities = pgTable(
   "attachment_capabilities",
   {
     id: uuid().defaultRandom().primaryKey(),
-    triggerId: uuid("trigger_id")
-      .notNull()
-      .references(() => triggers.id, { onDelete: "cascade" }),
+    providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
     organizationId: text("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -180,13 +105,18 @@ export const attachmentCapabilities = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    uniqueIndex("attachment_capabilities_trigger_provider_source_unique").on(
-      table.triggerId,
+    uniqueIndex("attachment_capabilities_receipt_provider_source_unique").on(
+      table.providerEventReceiptId,
       table.provider,
       table.sourceId,
     ),
-    index("attachment_capabilities_trigger_idx").on(table.triggerId),
+    index("attachment_capabilities_receipt_idx").on(table.providerEventReceiptId),
     check("attachment_capabilities_provider_check", sql`${table.provider} in ('slack', 'discord')`),
+    foreignKey({
+      columns: [table.providerEventReceiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "attachment_capabilities_receipt_organization_fk",
+    }).onDelete("cascade"),
   ],
 );
 
@@ -322,6 +252,156 @@ export const projectTriggerRoutes = pgTable(
       "project_trigger_routes_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord')`,
     ),
+  ],
+);
+
+export const triggerRuns = pgTable(
+  "trigger_runs",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    configurationRevisionId: uuid("configuration_revision_id").notNull(),
+    providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
+    configuredTriggerName: text("configured_trigger_name").notNull(),
+    outcome: text().$type<"accepted" | "rejected">().notNull().default("accepted"),
+    status: text().$type<"running" | "succeeded" | "failed" | "timed_out" | "rejected">().notNull(),
+    rawPrompt: text("raw_prompt").notNull(),
+    prompt: text().notNull(),
+    inputs: jsonb().notNull().default({}),
+    values: jsonb().notNull().default({}),
+    triggerContext: jsonb("trigger_context").notNull().default({}),
+    outputContext: jsonb("output_context").notNull().default({}),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
+    failureReason: text("failure_reason"),
+    terminalNotificationPendingAt: timestamp("terminal_notification_pending_at", {
+      withTimezone: true,
+    }),
+    terminalNotificationDeliveredAt: timestamp("terminal_notification_delivered_at", {
+      withTimezone: true,
+    }),
+    terminalNotificationLeaseExpiresAt: timestamp("terminal_notification_lease_expires_at", {
+      withTimezone: true,
+    }),
+    rejection: jsonb(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("trigger_runs_receipt_project_configured_unique").on(
+      table.providerEventReceiptId,
+      table.projectId,
+      table.configuredTriggerName,
+    ),
+    index("trigger_runs_status_deadline_idx").on(table.status, table.deadlineAt),
+    index("trigger_runs_project_created_idx").on(table.projectId, table.createdAt.desc()),
+    index("trigger_runs_terminal_notification_idx").on(
+      table.terminalNotificationDeliveredAt,
+      table.terminalNotificationLeaseExpiresAt,
+    ),
+    check(
+      "trigger_runs_status_check",
+      sql`${table.status} in ('running', 'succeeded', 'failed', 'timed_out', 'rejected')`,
+    ),
+    check(
+      "trigger_runs_outcome_check",
+      sql`(${table.outcome} = 'accepted' and ${table.status} <> 'rejected' and ${table.rejection} is null)
+        or (${table.outcome} = 'rejected' and ${table.status} = 'rejected' and ${table.rejection} is not null)`,
+    ),
+    check(
+      "trigger_runs_deadline_kind_check",
+      sql`${table.deadlineKind} is null or ${table.deadlineKind} in ('step_hard', 'step_idle', 'whole_run')`,
+    ),
+    check(
+      "trigger_runs_deadline_shape_check",
+      sql`(${table.outcome} = 'accepted' and ${table.deadlineAt} is not null)
+        or (${table.outcome} = 'rejected' and ${table.deadlineAt} is null)`,
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organizations.id],
+      name: "trigger_runs_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "trigger_runs_project_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "trigger_runs_revision_project_organization_fk",
+    }),
+    foreignKey({
+      columns: [table.providerEventReceiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "trigger_runs_receipt_organization_fk",
+    }),
+  ],
+);
+
+export const workflowStepRuns = pgTable(
+  "workflow_step_runs",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    triggerRunId: uuid("trigger_run_id").notNull(),
+    stepId: text("step_id").notNull(),
+    ordinal: integer().notNull(),
+    status: text()
+      .$type<"pending" | "running" | "succeeded" | "skipped" | "failed" | "timed_out">()
+      .notNull(),
+    agentExecutionId: uuid("agent_execution_id"),
+    output: jsonb(),
+    failureReason: text("failure_reason"),
+    deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    idleDeadlineAt: timestamp("idle_deadline_at", { withTimezone: true }),
+    dispatchIntent: jsonb("dispatch_intent").$type<LaunchMachineIntent>(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("workflow_step_runs_trigger_ordinal_unique").on(table.triggerRunId, table.ordinal),
+    uniqueIndex("workflow_step_runs_trigger_step_unique").on(table.triggerRunId, table.stepId),
+    uniqueIndex("workflow_step_runs_agent_execution_unique")
+      .on(table.agentExecutionId)
+      .where(sql`${table.agentExecutionId} is not null`),
+    index("workflow_step_runs_trigger_status_idx").on(table.triggerRunId, table.status),
+    check(
+      "workflow_step_runs_status_check",
+      sql`${table.status} in ('pending', 'running', 'succeeded', 'skipped', 'failed', 'timed_out')`,
+    ),
+    check(
+      "workflow_step_runs_deadline_kind_check",
+      sql`${table.deadlineKind} is null or ${table.deadlineKind} in ('step_hard', 'step_idle', 'whole_run')`,
+    ),
+    foreignKey({
+      columns: [table.triggerRunId],
+      foreignColumns: [triggerRuns.id],
+      name: "workflow_step_runs_trigger_run_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const workflowWakeups = pgTable(
+  "workflow_wakeups",
+  {
+    triggerRunId: uuid("trigger_run_id").primaryKey(),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("workflow_wakeups_available_lease_idx").on(table.availableAt, table.leaseExpiresAt),
+    foreignKey({
+      columns: [table.triggerRunId],
+      foreignColumns: [triggerRuns.id],
+      name: "workflow_wakeups_trigger_run_fk",
+    }).onDelete("cascade"),
   ],
 );
 
@@ -472,13 +552,17 @@ export const agentExecutions = pgTable(
     launchIntent: jsonb("launch_intent"),
     daemonId: uuid("daemon_id"),
     daemonAgentId: text("daemon_agent_id"),
-    triggerId: uuid("trigger_id"),
-    triggerConnectionId: uuid("trigger_connection_id"),
-    triggerResourceId: text("trigger_resource_id"),
+    workflowStepRunId: uuid("workflow_step_run_id"),
     hubAction: text("hub_action").$type<"interrupt" | "archive">(),
     hubActionCompletedAt: timestamp("hub_action_completed_at", {
       withTimezone: true,
     }),
+    hubActionReadyAt: timestamp("hub_action_ready_at", {
+      withTimezone: true,
+    }),
+    hubActionAcknowledgements: jsonb("hub_action_acknowledgements")
+      .notNull()
+      .default({ terminal_at: null, idle_at: null, finish_execution_call: null }),
   },
   (table) => [
     index("agent_executions_machine_id_idx").on(table.machineId),
@@ -513,9 +597,9 @@ export const agentExecutions = pgTable(
       name: "agent_executions_daemon_organization_fk",
     }),
     foreignKey({
-      columns: [table.triggerId, table.projectId, table.organizationId],
-      foreignColumns: [triggers.id, triggers.projectId, triggers.organizationId],
-      name: "agent_executions_trigger_project_organization_fk",
+      columns: [table.workflowStepRunId],
+      foreignColumns: [workflowStepRuns.id],
+      name: "agent_executions_workflow_step_run_fk",
     }),
   ],
 );

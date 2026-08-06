@@ -31,23 +31,40 @@ describe("manual trigger tenant idempotency", () => {
         ('20000000-0000-4000-8000-000000000001', 'manual-org-b', 'Default', 'same-project');
     `);
     await client.end();
+    for (const [projectId, contentHash] of [
+      ["10000000-0000-4000-8000-000000000001", "manual-org-a-config"],
+      ["20000000-0000-4000-8000-000000000001", "manual-org-b-config"],
+    ] as const) {
+      const revision = await database.insertProjectConfigurationRevision({
+        projectId,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash,
+      });
+      await database.activateProjectConfigurationRevision(projectId, revision.id);
+    }
 
-    const first = await database.persistManualTrigger(
+    const first = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
     );
-    const second = await database.persistManualTrigger(
+    const second = await database.persistManualEvent(
       input("manual-org-b", "20000000-0000-4000-8000-000000000001"),
     );
     assert.equal(first.status, "accepted");
     assert.equal(second.status, "accepted");
     if (first.status !== "accepted" || second.status !== "accepted")
       throw new Error("expected accepted triggers");
-    assert.notEqual(first.trigger.triggerId, second.trigger.triggerId);
+    assert.notEqual(first.event.providerEventReceiptId, second.event.providerEventReceiptId);
 
-    const duplicate = await database.persistManualTrigger(
+    const duplicate = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
     );
-    assert.deepEqual(duplicate, { status: "duplicate", triggerId: first.trigger.triggerId });
+    assert.equal(duplicate.status, "accepted");
+    if (duplicate.status !== "accepted") throw new Error("expected replayed accepted trigger");
+    assert.equal(duplicate.event.providerEventReceiptId, first.event.providerEventReceiptId);
+    assert.equal(duplicate.event.organizationId, "manual-org-a");
+    assert.equal(duplicate.event.projectId, "10000000-0000-4000-8000-000000000001");
     await database.close();
   }, 120_000);
 });

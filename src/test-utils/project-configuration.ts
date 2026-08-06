@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { HubConfigSchema } from "../config/schema.js";
+import { compileHubConfig, compiledConfigurationHash } from "../config/compiler.js";
 import {
   ProjectConfigurationStore,
-  configurationHash,
   type CompiledProjectConfiguration,
 } from "../configuration/store.js";
 import type { Database, ProjectConfigurationRevisionRecord, ProjectRecord } from "../db/types.js";
+
+export const TEST_DAEMON_ID = "10000000-0000-4000-8000-000000000001";
+export const TEST_DAEMON_SLUG = "daemon-10000000";
 
 export interface ActiveProjectConfigurationFixture {
   project: ProjectRecord;
@@ -37,7 +39,7 @@ export async function createActiveProjectConfiguration(
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: configuration,
-    contentHash: configurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration),
     createdByUserId: userId,
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id);
@@ -49,13 +51,41 @@ export async function createActiveProjectConfiguration(
 }
 
 function compileTestDaemonReferences(rawConfiguration: unknown): CompiledProjectConfiguration {
-  const configuration = HubConfigSchema.parse(rawConfiguration);
+  const configuration = compileHubConfig(rawConfiguration);
   return {
     ...configuration,
     environments: configuration.environments.map((environment) =>
       environment.kind === "daemon"
-        ? Object.assign({}, environment, { daemonId: `daemon-${environment.daemon}` })
+        ? Object.assign({}, environment, {
+            daemonId:
+              environment.daemon === TEST_DAEMON_SLUG
+                ? TEST_DAEMON_ID
+                : `daemon-${environment.daemon}`,
+          })
         : environment,
     ),
   };
+}
+
+export async function enrollTestDaemon(
+  database: Database,
+  organizationId = "org_1",
+): Promise<void> {
+  await database.issueEnrollmentToken({
+    id: `token-${organizationId}`,
+    verifier: `token-verifier-${organizationId}`,
+    organizationId,
+    expiresAt: new Date("2026-08-06T12:00:00.000Z"),
+    consumedAt: null,
+  });
+  await database.enrollDaemon({
+    tokenVerifier: `token-verifier-${organizationId}`,
+    daemonId: TEST_DAEMON_ID,
+    idempotencyKey: `runner-idempotency-${organizationId}`,
+    serverId: "server-1",
+    daemonPublicKey: "public-key",
+    credentialVerifier: "credential-verifier",
+    scopes: ["hub.execution.*"],
+    now: new Date("2026-08-06T11:00:00.000Z"),
+  });
 }

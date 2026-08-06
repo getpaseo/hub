@@ -2,10 +2,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
-import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
@@ -24,13 +24,6 @@ import {
 } from "../components/ui/dialog.js";
 import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import {
@@ -40,21 +33,12 @@ import {
   type ConnectionDisconnectResult,
   type ConnectionStatus,
 } from "../connections/functions.js";
-import {
-  EventRow,
-  ExecutionDetailSheet,
-  ExecutionRow,
-  outcomeKey,
-  TriggerDetailSheet,
-  type ExecutionItem,
-  type OutcomeKey,
-  type TriggerItem,
-} from "./activity-rows.js";
 import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
 import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
 import {
   archiveProject,
+  activityRunSnapshot,
   availableGitHubRepositories,
   createProject,
   organizationSnapshot,
@@ -195,7 +179,6 @@ export function OrganizationConnectionsPanel() {
     queryFn: () => loadStatus({ data: scope }),
   });
   const [result, setResult] = useState(consumeConnectionResult);
-  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -351,18 +334,8 @@ export function OrganizationConnectionsPanel() {
         title="Known unrouted events"
         description="Events whose credential belongs to this organization but no project route was available."
       >
-        <ActivityTable
-          activity={data.unroutedEvents}
-          label="Unrouted events"
-          onSelect={setSelectedTrigger}
-        />
+        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" />
       </Section>
-      <TriggerDetailSheet
-        trigger={selectedTrigger}
-        onOpenChange={(open) => {
-          if (!open) setSelectedTrigger(undefined);
-        }}
-      />
     </>
   );
 }
@@ -381,12 +354,9 @@ export function OrganizationDaemonsPanel() {
 export function ProjectOverviewPanel() {
   const tenant = useRouteTenant();
   const snapshot = useProjectSnapshot();
-  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
-  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem>();
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const base = `/o/${tenant.organization.slug}/projects/${data.project.slug}`;
-  const scope = { organizationSlug: tenant.organization.slug, projectSlug: data.project.slug };
   return (
     <>
       <PageHeader
@@ -425,39 +395,9 @@ export function ProjectOverviewPanel() {
         <ActivityTable
           activity={data.activity.slice(0, 5)}
           label="Recent activity"
-          onSelect={setSelectedTrigger}
+          detailBasePath={`${base}/activity`}
         />
       </Section>
-      <Section
-        title="Recent executions"
-        action={
-          <Link className="text-sm hover:underline" to={`${base}/executions` as never}>
-            View all
-          </Link>
-        }
-      >
-        <ExecutionTable
-          executions={data.executions.slice(0, 5)}
-          activity={data.activity}
-          label="Recent executions"
-          onSelect={setSelectedExecution}
-          onSelectTrigger={setSelectedTrigger}
-        />
-      </Section>
-      <TriggerDetailSheet
-        trigger={selectedTrigger}
-        scope={scope}
-        onOpenChange={(open) => {
-          if (!open) setSelectedTrigger(undefined);
-        }}
-      />
-      <ExecutionDetailSheet
-        execution={selectedExecution}
-        scope={scope}
-        onOpenChange={(open) => {
-          if (!open) setSelectedExecution(undefined);
-        }}
-      />
     </>
   );
 }
@@ -739,140 +679,119 @@ function SourceModeButton({
   );
 }
 
-const ACTIVITY_SOURCE_OPTIONS: readonly {
-  value: "all" | TriggerItem["summary"]["provider"];
-  label: string;
-}[] = [
-  { value: "all", label: "All sources" },
-  { value: "github", label: "GitHub" },
-  { value: "slack", label: "Slack" },
-  { value: "discord", label: "Discord" },
-  { value: "manual", label: "Manual" },
-];
-
-const ACTIVITY_OUTCOME_OPTIONS: readonly { value: "all" | OutcomeKey; label: string }[] = [
-  { value: "all", label: "All outcomes" },
-  { value: "accepted", label: "Accepted" },
-  { value: "dropped", label: "Dropped" },
-  { value: "running", label: "Running" },
-  { value: "succeeded", label: "Succeeded" },
-  { value: "failed", label: "Failed" },
-];
-
 export function ProjectActivityPanel() {
   const tenant = useRouteTenant();
-  const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
-  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
-  const [source, setSource] = useState<"all" | TriggerItem["summary"]["provider"]>("all");
-  const [outcome, setOutcome] = useState<"all" | OutcomeKey>("all");
   if (!snapshot.ok) return snapshot.element;
-  const activity = snapshot.data.activity.filter(
-    (event) =>
-      (source === "all" || event.summary.provider === source) &&
-      (outcome === "all" || outcomeKey(event) === outcome),
-  );
   return (
     <>
       <PageHeader title="Activity" description="Provider events routed to this project." />
-      <div className="mb-4 flex flex-wrap gap-2">
-        <Select value={source} onValueChange={(value) => setSource(value as typeof source)}>
-          <SelectTrigger size="sm" aria-label="Filter activity by source">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {ACTIVITY_SOURCE_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={outcome} onValueChange={(value) => setOutcome(value as typeof outcome)}>
-          <SelectTrigger size="sm" aria-label="Filter activity by outcome">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {ACTIVITY_OUTCOME_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <ActivityTable activity={activity} label="Project activity" onSelect={setSelectedTrigger} />
-      <TriggerDetailSheet
-        trigger={selectedTrigger}
-        scope={scope}
-        onOpenChange={(open) => {
-          if (!open) setSelectedTrigger(undefined);
-        }}
+      <ActivityTable
+        activity={snapshot.data.activity}
+        label="Project activity"
+        detailBasePath={`/o/${tenant.organization.slug}/projects/${tenant.project?.slug}/activity`}
       />
     </>
   );
 }
 
-const EXECUTION_STATUS_OPTIONS: readonly {
-  value: "all" | ExecutionItem["status"];
-  label: string;
-}[] = [
-  { value: "all", label: "All statuses" },
-  { value: "spawning", label: "Spawning" },
-  { value: "running", label: "Running" },
-  { value: "succeeded", label: "Succeeded" },
-  { value: "failed", label: "Failed" },
-];
-
-export function ProjectExecutionsPanel() {
+export function ProjectActivityRunPanel({ runId }: { runId: string }) {
   const tenant = useRouteTenant();
-  const scope = projectScope(tenant);
-  const snapshot = useProjectSnapshot();
-  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem>();
-  const [selectedTrigger, setSelectedTrigger] = useState<TriggerItem>();
-  const [status, setStatus] = useState<"all" | ExecutionItem["status"]>("all");
-  if (!snapshot.ok) return snapshot.element;
-  const executions = snapshot.data.executions.filter(
-    (execution) => status === "all" || execution.status === status,
+  const load = useServerFn(activityRunSnapshot);
+  const scope = {
+    organizationSlug: tenant.organization.slug,
+    projectSlug: tenant.project?.slug ?? "",
+    runId,
+  };
+  const query = useQuery({
+    queryKey: ["project-activity-run", tenant.account.id, tenant.organization.id, runId],
+    queryFn: () => load({ data: scope }),
+  });
+  const snapshot = queryState<Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>>(
+    query,
+    "Run unavailable",
   );
+  if (!snapshot.ok) return snapshot.element;
+  const activity = snapshot.data.activity;
   return (
     <>
-      <PageHeader title="Executions" description="Durable executions owned by this project." />
-      <div className="mb-4 flex flex-wrap gap-2">
-        <Select value={status} onValueChange={(value) => setStatus(value as typeof status)}>
-          <SelectTrigger size="sm" aria-label="Filter executions by status">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {EXECUTION_STATUS_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
+      <PageHeader
+        title="Run detail"
+        description={`${activity.provider} · ${activity.configuredTriggerName}`}
+      />
+      <div className="grid gap-6">
+        <Section title="Invocation">
+          <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
+            <DetailField label="Raw message">
+              <pre className="whitespace-pre-wrap text-sm">{activity.rawMessage}</pre>
+            </DetailField>
+            <DetailField label="Clean prompt">
+              <pre className="whitespace-pre-wrap text-sm">{activity.cleanPrompt}</pre>
+            </DetailField>
+            <DetailField label="Typed inputs">
+              <JsonValue value={activity.inputs} />
+            </DetailField>
+            <DetailField label="Composed routing values">
+              <JsonValue value={activity.values} />
+            </DetailField>
+            <DetailField label="Run status">
+              <StatusPill tone={executionTone(activity.status)}>{activity.status}</StatusPill>
+            </DetailField>
+            <DetailField label="Run deadline">
+              <span className="font-mono text-xs">
+                {activity.deadlineAt === null ? "—" : formatDate(activity.deadlineAt)}
+                {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
+              </span>
+            </DetailField>
+            <DetailField label="Failure reason">
+              <span>{activity.failureReason ?? "—"}</span>
+            </DetailField>
+            <DetailField label="Delivery">
+              <span className="font-mono text-xs">{activity.deliveryId}</span>
+            </DetailField>
+          </dl>
+        </Section>
+        <Section title="Steps" description="Ordered durable step state and structured outputs.">
+          <DataTable
+            label="Run steps"
+            columns={[
+              { header: "Step" },
+              { header: "Status" },
+              { header: "Deadline" },
+              { header: "Structured output" },
+              { header: "Failure reason" },
+            ]}
+            isEmpty={activity.steps.length === 0}
+            empty={{ title: "No steps" }}
+          >
+            {activity.steps.map((step) => (
+              <DataRow key={step.id}>
+                <DataCell>
+                  <span className="font-medium">
+                    {step.ordinal + 1}. {step.stepId}
+                  </span>
+                </DataCell>
+                <DataCell>
+                  <StatusPill tone={executionTone(step.status)}>{step.status}</StatusPill>
+                </DataCell>
+                <DataCell muted>
+                  <span className="font-mono text-xs">
+                    {step.deadlineAt === null ? "—" : formatDate(step.deadlineAt)}
+                    {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
+                    {step.idleDeadlineAt === null
+                      ? ""
+                      : ` · idle ${formatDate(step.idleDeadlineAt)}`}
+                  </span>
+                </DataCell>
+                <DataCell>
+                  <JsonValue value={step.output} />
+                </DataCell>
+                <DataCell muted>{step.failureReason ?? "—"}</DataCell>
+              </DataRow>
             ))}
-          </SelectContent>
-        </Select>
+          </DataTable>
+        </Section>
       </div>
-      <ExecutionTable
-        executions={executions}
-        activity={snapshot.data.activity}
-        label="Project executions"
-        onSelect={setSelectedExecution}
-        onSelectTrigger={setSelectedTrigger}
-      />
-      <ExecutionDetailSheet
-        execution={selectedExecution}
-        scope={scope}
-        onOpenChange={(open) => {
-          if (!open) setSelectedExecution(undefined);
-        }}
-      />
-      <TriggerDetailSheet
-        trigger={selectedTrigger}
-        scope={scope}
-        onOpenChange={(open) => {
-          if (!open) setSelectedTrigger(undefined);
-        }}
-      />
     </>
   );
 }
@@ -1095,79 +1014,79 @@ function SetupCard({ label, ready, detail }: { label: string; ready: boolean; de
   );
 }
 
-const ACTIVITY_COLUMNS: readonly DataColumn[] = [
-  { header: "Event" },
-  { header: "Outcome" },
-  { header: "Received", align: "end" },
-];
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </div>
+  );
+}
+
+function JsonValue({ value }: { value: unknown }) {
+  return (
+    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">
+      {JSON.stringify(value, null, 2) ?? "—"}
+    </pre>
+  );
+}
+
+function executionTone(status: string): "success" | "danger" | "neutral" {
+  if (status === "succeeded") return "success";
+  if (status === "failed" || status === "timed_out") return "danger";
+  return "neutral";
+}
 
 function ActivityTable({
   activity,
   label,
-  onSelect,
+  detailBasePath,
 }: {
-  activity: readonly TriggerItem[];
+  activity: ReadonlyArray<
+    | ProjectSnapshot["activity"][number]
+    | Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>["unroutedEvents"][number]
+  >;
   label: string;
-  onSelect: (event: TriggerItem) => void;
+  detailBasePath?: string;
 }) {
   return (
     <DataTable
       label={label}
-      columns={ACTIVITY_COLUMNS}
+      columns={[
+        { header: "Run" },
+        { header: "Provider" },
+        { header: "Source" },
+        { header: "Status" },
+        { header: "Received" },
+      ]}
       isEmpty={activity.length === 0}
       empty={{ title: "No activity" }}
     >
       {activity.map((event) => (
-        <EventRow key={event.id} event={event} onSelect={() => onSelect(event)} />
+        <DataRow key={event.id}>
+          <DataCell>
+            {detailBasePath &&
+            "configuredTriggerName" in event &&
+            event.configuredTriggerName !== null ? (
+              <Link
+                className="font-medium hover:underline"
+                to={`${detailBasePath}/${event.id}` as never}
+              >
+                {event.configuredTriggerName}
+              </Link>
+            ) : (
+              <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
+            )}
+            {event.repo === null ? null : (
+              <span className="block text-xs text-muted-foreground">{event.repo}</span>
+            )}
+          </DataCell>
+          <DataCell>{event.provider}</DataCell>
+          <DataCell>{event.source}</DataCell>
+          <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
+          <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
+        </DataRow>
       ))}
-    </DataTable>
-  );
-}
-
-const EXECUTION_COLUMNS: readonly DataColumn[] = [
-  { header: "Run" },
-  { header: "Status" },
-  { header: "Daemon" },
-  { header: "Started", align: "end" },
-];
-
-function ExecutionTable({
-  executions,
-  activity,
-  label,
-  onSelect,
-  onSelectTrigger,
-}: {
-  executions: readonly ExecutionItem[];
-  activity: readonly TriggerItem[];
-  label: string;
-  onSelect: (execution: ExecutionItem) => void;
-  onSelectTrigger: (trigger: TriggerItem) => void;
-}) {
-  const activityById = useMemo(
-    () => new Map(activity.map((event) => [event.id, event])),
-    [activity],
-  );
-  return (
-    <DataTable
-      label={label}
-      columns={EXECUTION_COLUMNS}
-      isEmpty={executions.length === 0}
-      empty={{ title: "No executions" }}
-    >
-      {executions.map((execution) => {
-        const trigger =
-          execution.triggerId === null ? undefined : activityById.get(execution.triggerId);
-        return (
-          <ExecutionRow
-            key={execution.id}
-            execution={execution}
-            trigger={trigger}
-            onSelect={() => onSelect(execution)}
-            {...(trigger === undefined ? {} : { onSelectTrigger: () => onSelectTrigger(trigger) })}
-          />
-        );
-      })}
     </DataTable>
   );
 }

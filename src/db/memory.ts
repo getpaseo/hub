@@ -1,19 +1,18 @@
 import { randomUUID } from "node:crypto";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
   AgentExecutionRecord,
+  AgentExecutionHubAcknowledgementInput,
+  AgentExecutionHubAcknowledgements,
   Database,
   InsertAgentExecutionInput,
   InsertMachineInput,
-  InsertTriggerInput,
-  InsertTriggerResult,
   MachineRecord,
   TerminateMachineFields,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
-  TriggerRecord,
-  TriggerLifecycleState,
+  ProviderEventReceiptRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -33,17 +32,17 @@ import type {
   SetProjectGitHubConfigurationSourceInput,
   RecordConfigurationSyncAttemptInput,
   ConfigurationSyncAttemptRecord,
-  AcceptDiscordTriggerInput,
-  AcceptGitHubTriggerInput,
-  AcceptSlackTriggerInput,
+  AcceptDiscordEventInput,
+  AcceptGitHubEventInput,
+  AcceptSlackEventInput,
+  DurableProviderEvent,
+  GitHubLifecycleReceiptClaim,
+  GitHubLifecycleReceiptClaimInput,
   AttachmentProvider,
   AttachmentRecord,
-  DurableTrigger,
-  GitHubLifecycleClaim,
-  GitHubLifecycleClaimInput,
   GitHubLifecycleResult,
-  PersistManualTriggerInput,
-  ProviderTriggerAcceptance,
+  PersistManualEventInput,
+  ProviderEventAcceptance,
   CreateProjectInput,
   InsertProjectConfigurationRevisionInput,
   InsertAttachmentInput,
@@ -57,7 +56,20 @@ import type {
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
+  CreateAcceptedTriggerRunInput,
+  CreateRejectedTriggerRunInput,
+  AcceptedTriggerRunRecord,
+  RejectedTriggerRunRecord,
+  TriggerRunRecord,
+  WorkflowStepExecutionInput,
+  WorkflowStepRunRecord,
+  WorkflowWakeupRecord,
+  WorkflowAgentCompletionInput,
+  WorkflowDeadlineKind,
+  WorkflowDeadlineRecovery,
+  ProjectActivityRunListRecord,
 } from "./types.js";
+import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
 export interface MemoryDatabaseOptions {
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
@@ -73,19 +85,32 @@ export interface MemoryDatabaseOptions {
   now?: () => Date;
 }
 
+function transitionWithTerminalRun(
+  transition: TransitionAgentExecutionResult,
+  run: TriggerRunRecord | undefined,
+): TransitionAgentExecutionResult {
+  return !transition.transitioned || run === undefined || run.status === "running"
+    ? transition
+    : { ...transition, terminalRun: run };
+}
+
 export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Database {
   return new MemoryDatabase(options);
 }
 
 class MemoryDatabase implements Database {
-  private readonly triggers = new Map<string, TriggerRecord>();
-  private readonly triggersByDeliveryId = new Map<string, string>();
-  private readonly triggersBySignatureHash = new Map<string, string>();
-  private readonly receiptIdsByDelivery = new Map<string, string>();
-  private readonly triggerIdsByReceipt = new Map<string, string[]>();
-  private readonly providerReceiptActivities = new Map<string, TriggerRecord>();
+  private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
+  private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
+  private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
+  private readonly triggerRuns = new Map<string, TriggerRunRecord>();
+  private readonly triggerRunIdsByProviderEventReceipt = new Map<
+    string,
+    Map<string, Map<string, string>>
+  >();
+  private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
+  private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
   private readonly attachments = new Map<string, AttachmentRecord>();
   private readonly attachmentIdsBySource = new Map<string, string>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
@@ -116,113 +141,761 @@ class MemoryDatabase implements Database {
     this.organizationIds = new Set(options.organizationIds);
   }
 
-  async insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult> {
-    let existingId: string | undefined;
-    if (input.receiptId === undefined) {
-      existingId =
-        input.signatureHash === null || input.signatureHash === undefined
-          ? this.triggersByDeliveryId.get(
-              triggerDeliveryKey(input.organizationId, input.deliveryId),
-            )
-          : (this.triggersBySignatureHash.get(input.signatureHash) ??
-            this.triggersByDeliveryId.get(
-              triggerDeliveryKey(input.organizationId, input.deliveryId),
-            ));
-    }
+  private now(): Date {
+    return this.options.now?.() ?? new Date();
+  }
 
+  private pendingTerminalNotification(
+    run: AcceptedTriggerRunRecord,
+    terminalAt: Date,
+  ): AcceptedTriggerRunRecord {
+    return {
+      ...run,
+      terminalNotificationPendingAt: run.terminalNotificationPendingAt ?? terminalAt,
+      terminalNotificationLeaseExpiresAt: null,
+    };
+  }
+
+  async createAcceptedTriggerRun(
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
+    const projectRuns =
+      this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
+      new Map<string, Map<string, string>>();
+    const triggerRuns = projectRuns.get(input.projectId) ?? new Map<string, string>();
+    const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
-      const existing = this.triggers.get(existingId);
-
-      if (existing === undefined) {
-        throw new Error(`trigger index points at missing row: ${existingId}`);
-      }
-
-      return {
-        inserted: false,
-        trigger: existing,
-      };
+      const existing = this.triggerRuns.get(existingId);
+      if (existing === undefined)
+        throw new Error(`trigger run index points at missing row: ${existingId}`);
+      if (existing.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+      return { run: existing, created: false };
     }
-
-    const trigger: TriggerRecord = {
-      id: randomUUID(),
+    const now = input.createdAt ?? this.options.now?.() ?? new Date();
+    const run: AcceptedTriggerRunRecord = {
+      id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
-      configurationRevisionId: input.configurationRevisionId ?? null,
-      receiptId: input.receiptId ?? this.receiptIdFor(input),
-      connectionId: input.connectionId ?? null,
-      resourceId: input.resourceId ?? null,
-      deliveryId: input.deliveryId,
-      signatureHash: input.signatureHash ?? null,
-      source: input.source,
-      repo: input.repo ?? null,
-      payload: input.payload,
-      receivedAt: input.receivedAt,
-      matchedTriggerName: input.matchedTriggerName ?? null,
-      droppedReason: input.droppedReason ?? null,
-      dispatchPlan: null,
-      lifecycleState: null,
+      configurationRevisionId: input.configurationRevisionId,
+      providerEventReceiptId: input.providerEventReceiptId,
+      configuredTriggerName: input.configuredTriggerName,
+      outcome: "accepted",
+      status: "running",
+      rawPrompt: input.rawPrompt,
+      prompt: input.prompt,
+      inputs: freezeEvidence(input.inputs),
+      values: freezeEvidence(input.values ?? {}),
+      triggerContext: freezeEvidence(input.triggerContext),
+      outputContext: freezeEvidence(input.outputContext),
+      deadlineAt: input.deadlineAt,
+      deadlineKind: null,
+      failureReason: null,
+      terminalNotificationPendingAt: null,
+      terminalNotificationDeliveredAt: null,
+      terminalNotificationLeaseExpiresAt: null,
+      createdAt: now,
+      completedAt: null,
     };
-
-    this.triggers.set(trigger.id, trigger);
-    this.triggersByDeliveryId.set(
-      triggerDeliveryKey(trigger.organizationId, trigger.deliveryId),
-      trigger.id,
-    );
-    const receiptTriggers = this.triggerIdsByReceipt.get(trigger.receiptId) ?? [];
-    receiptTriggers.push(trigger.id);
-    this.triggerIdsByReceipt.set(trigger.receiptId, receiptTriggers);
-    if (trigger.signatureHash !== null) {
-      this.triggersBySignatureHash.set(trigger.signatureHash, trigger.id);
+    this.triggerRuns.set(run.id, run);
+    triggerRuns.set(input.configuredTriggerName, run.id);
+    projectRuns.set(input.projectId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, projectRuns);
+    for (const [ordinal, stepId] of input.stepIds.entries()) {
+      const step: WorkflowStepRunRecord = {
+        id: randomUUID(),
+        triggerRunId: run.id,
+        stepId,
+        ordinal,
+        status: "pending",
+        agentExecutionId: null,
+        output: null,
+        failureReason: null,
+        deadlineKind: null,
+        deadlineAt: null,
+        idleDeadlineAt: null,
+        startedAt: null,
+        completedAt: null,
+        dispatchIntent: null,
+      };
+      this.workflowStepRuns.set(step.id, step);
     }
-
-    return {
-      inserted: true,
-      trigger,
-    };
+    this.workflowWakeups.set(run.id, {
+      triggerRunId: run.id,
+      availableAt: now,
+      leaseExpiresAt: null,
+      leasedBeforeClaim: false,
+    });
+    return { run, created: true };
   }
 
-  private receiptIdFor(input: InsertTriggerInput): string {
-    const existing = this.receiptIdsByDelivery.get(
-      triggerDeliveryKey(input.organizationId, input.deliveryId),
+  async createRejectedTriggerRun(
+    input: CreateRejectedTriggerRunInput,
+  ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
+    const projectRuns =
+      this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
+      new Map<string, Map<string, string>>();
+    const triggerRuns = projectRuns.get(input.projectId) ?? new Map<string, string>();
+    const existingId = triggerRuns.get(input.configuredTriggerName);
+    if (existingId !== undefined) {
+      const existing = this.triggerRuns.get(existingId);
+      if (existing === undefined)
+        throw new Error(`trigger run index points at missing row: ${existingId}`);
+      if (existing.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+      return { run: existing, created: false };
+    }
+    const now = input.createdAt ?? this.options.now?.() ?? new Date();
+    const run: RejectedTriggerRunRecord = {
+      id: input.id ?? randomUUID(),
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      configurationRevisionId: input.configurationRevisionId,
+      providerEventReceiptId: input.providerEventReceiptId,
+      configuredTriggerName: input.configuredTriggerName,
+      outcome: "rejected",
+      status: "rejected",
+      rawPrompt: input.rawPrompt,
+      prompt: input.prompt,
+      inputs: freezeEvidence(input.inputs),
+      values: freezeEvidence(input.values ?? {}),
+      triggerContext: freezeEvidence(input.triggerContext),
+      outputContext: freezeEvidence(input.outputContext),
+      rejection: freezeEvidence(input.rejection),
+      createdAt: now,
+      completedAt: now,
+    };
+    this.triggerRuns.set(run.id, run);
+    triggerRuns.set(input.configuredTriggerName, run.id);
+    projectRuns.set(input.projectId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, projectRuns);
+    return { run, created: true };
+  }
+
+  async findTriggerRunById(id: string) {
+    return this.triggerRuns.get(id);
+  }
+
+  async findTriggerRunsByProviderEventReceiptId(providerEventReceiptId: string) {
+    const projectRuns = this.triggerRunIdsByProviderEventReceipt.get(providerEventReceiptId);
+    const ids =
+      projectRuns === undefined
+        ? []
+        : Array.from(projectRuns.values()).flatMap((triggerRuns) =>
+            Array.from(triggerRuns.values()),
+          );
+    return ids
+      .map((id) => this.triggerRuns.get(id))
+      .filter((run): run is TriggerRunRecord => run !== undefined)
+      .sort(
+        (left, right) =>
+          left.createdAt.getTime() - right.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      );
+  }
+
+  async listTriggerRunsForProject(projectId: string, limit: number) {
+    return [...this.triggerRuns.values()]
+      .filter((run) => run.projectId === projectId)
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      )
+      .slice(0, limit);
+  }
+
+  async findWorkflowStepRunById(id: string) {
+    return this.workflowStepRuns.get(id);
+  }
+
+  async findWorkflowStepRunByTriggerRun(triggerRunId: string) {
+    return (await this.listWorkflowStepRunsForTriggerRun(triggerRunId))[0];
+  }
+
+  async listWorkflowStepRunsForTriggerRun(triggerRunId: string) {
+    return Array.from(this.workflowStepRuns.values())
+      .filter((step) => step.triggerRunId === triggerRunId)
+      .sort((left, right) => left.ordinal - right.ordinal);
+  }
+
+  async findAgentExecutionByWorkflowStepRunId(stepRunId: string) {
+    return Array.from(this.agentExecutions.values()).find(
+      (execution) => execution.workflowStepRunId === stepRunId,
     );
-    if (existing !== undefined) return existing;
-    const id = randomUUID();
-    this.receiptIdsByDelivery.set(triggerDeliveryKey(input.organizationId, input.deliveryId), id);
-    return id;
   }
 
-  async markTriggerDropped(id: string, reason: string): Promise<TriggerRecord> {
-    const trigger = this.readTrigger(id);
-    const updated = {
-      ...trigger,
-      droppedReason: trigger.droppedReason ?? reason,
+  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+    const candidate = Array.from(this.workflowWakeups.values())
+      .filter(
+        (wakeup) =>
+          wakeup.availableAt <= now &&
+          (wakeup.leaseExpiresAt === null || wakeup.leaseExpiresAt <= now),
+      )
+      .sort((left, right) => left.availableAt.getTime() - right.availableAt.getTime())[0];
+    if (candidate === undefined) return undefined;
+    const claimed = {
+      ...candidate,
+      leaseExpiresAt: new Date(now.getTime() + leaseMs),
+      leasedBeforeClaim: candidate.leaseExpiresAt !== null,
     };
-    this.triggers.set(id, updated);
+    this.workflowWakeups.set(candidate.triggerRunId, claimed);
+    return claimed;
+  }
+
+  async wakeWorkflowRun(triggerRunId: string, availableAt: Date) {
+    const current = this.workflowWakeups.get(triggerRunId);
+    this.workflowWakeups.set(triggerRunId, {
+      triggerRunId,
+      availableAt:
+        current === undefined || current.availableAt > availableAt
+          ? availableAt
+          : current.availableAt,
+      leaseExpiresAt: null,
+      leasedBeforeClaim: false,
+    });
+  }
+
+  async deleteWorkflowWakeup(triggerRunId: string) {
+    this.workflowWakeups.delete(triggerRunId);
+  }
+
+  async createWorkflowStepExecution(input: WorkflowStepExecutionInput) {
+    let step = (await this.listWorkflowStepRunsForTriggerRun(input.triggerRunId)).find(
+      (candidate) => candidate.stepId === input.stepId && candidate.ordinal === input.ordinal,
+    );
+    if (step === undefined) {
+      throw new Error("workflow step run not found");
+    }
+    if (step.agentExecutionId !== null) {
+      return {
+        stepRun: step,
+        execution: await this.findAgentExecutionById(step.agentExecutionId),
+        created: false,
+      };
+    }
+    const run = this.triggerRuns.get(input.triggerRunId);
+    const startedAt = input.execution.startedAt;
+    if (run === undefined || run.outcome !== "accepted" || run.status !== "running") {
+      return { stepRun: step, execution: undefined, created: false };
+    }
+    if (run.deadlineAt <= startedAt) {
+      this.timeoutWorkflowRun(run.id, startedAt);
+      return {
+        stepRun: this.workflowStepRuns.get(step.id) ?? step,
+        execution: undefined,
+        created: false,
+      };
+    }
+    const deadlineAt = new Date(
+      Math.min(input.execution.deadlineAt.getTime(), run.deadlineAt.getTime()),
+    );
+    const idleDeadlineAt = new Date(
+      Math.min(input.execution.idleDeadlineAt.getTime(), deadlineAt.getTime()),
+    );
+    const execution = await this.insertAgentExecution({
+      ...input.execution,
+      id: input.executionId,
+      startedAt,
+      deadlineAt,
+      idleDeadlineAt,
+      workflowStepRunId: step.id,
+    });
+    step = {
+      ...step,
+      status: "running",
+      agentExecutionId: execution.id,
+      deadlineAt: execution.deadlineAt,
+      idleDeadlineAt: execution.idleDeadlineAt,
+      dispatchIntent: input.execution.launchIntent ?? step.dispatchIntent,
+      startedAt: execution.startedAt,
+    };
+    this.workflowStepRuns.set(step.id, step);
+    return { stepRun: step, execution, created: true };
+  }
+
+  async linkWorkflowStepRunExecution(
+    stepRunId: string,
+    executionId: string,
+    dispatchIntent?: LaunchMachineIntent,
+  ) {
+    const step = this.workflowStepRuns.get(stepRunId);
+    if (step === undefined) throw new Error(`workflow step run not found: ${stepRunId}`);
+    if (step.agentExecutionId !== null && step.agentExecutionId !== executionId) {
+      throw new Error(`workflow step run already linked: ${stepRunId}`);
+    }
+    if (step.agentExecutionId === executionId) return step;
+    const execution = await this.findAgentExecutionById(executionId);
+    if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    const updated = {
+      ...step,
+      status:
+        step.status === "succeeded" || step.status === "failed" || step.status === "timed_out"
+          ? step.status
+          : ("running" as const),
+      agentExecutionId: executionId,
+      startedAt: step.startedAt ?? execution.startedAt,
+      ...(dispatchIntent === undefined ? {} : { dispatchIntent }),
+    };
+    this.workflowStepRuns.set(stepRunId, updated);
     return updated;
   }
 
-  async claimTriggerDispatchPlan(id: string, plan: readonly LaunchMachineIntent[]) {
-    const trigger = this.readTrigger(id);
-    if (trigger.dispatchPlan !== null) return { plan: trigger.dispatchPlan, claimed: false };
-    const updated = { ...trigger, dispatchPlan: plan };
-    this.triggers.set(id, updated);
-    return { plan, claimed: true };
+  async completeWorkflowStep(
+    executionId: string,
+    status: "succeeded" | "failed" | "timed_out",
+    result: unknown,
+    failureReason?: string,
+  ) {
+    const execution = await this.findAgentExecutionById(executionId);
+    if (execution === undefined || execution.workflowStepRunId === null) return undefined;
+    await this.completeWorkflowAgentExecution({
+      executionId,
+      executionStatus: execution.status === "succeeded" ? "succeeded" : "failed",
+      stepStatus: status,
+      result,
+      stepOutput: result,
+      ...(failureReason === undefined ? {} : { failureReason }),
+    });
+    const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+    return step === undefined
+      ? undefined
+      : { stepRun: step, run: this.triggerRuns.get(step.triggerRunId)! };
   }
 
-  async transitionTriggerLifecycle(id: string, lifecycleState: TriggerLifecycleState) {
-    const trigger = this.readTrigger(id);
-    if (!canTransitionTriggerLifecycle(trigger.lifecycleState, lifecycleState)) {
-      return { trigger, transitioned: false };
+  async completeWorkflowAgentExecution(input: WorkflowAgentCompletionInput) {
+    const execution = this.readAgentExecution(input.executionId);
+    if (execution.workflowStepRunId === null) {
+      return this.transitionAgentExecution(execution.id, input.executionStatus, {
+        result: input.result,
+        ...(input.completedByAgent === undefined
+          ? {}
+          : { completedByAgent: input.completedByAgent }),
+        ...(input.deadlineCondition === undefined
+          ? {}
+          : { deadlineCondition: input.deadlineCondition }),
+        ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+      });
     }
-    const updated = { ...trigger, lifecycleState };
-    this.triggers.set(id, updated);
-    return { trigger: updated, transitioned: true };
+    const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+    if (step === undefined)
+      throw new Error(`workflow step run not found: ${execution.workflowStepRunId}`);
+    const run = this.triggerRuns.get(step.triggerRunId);
+    if (run === undefined) throw new Error(`workflow trigger run not found: ${step.triggerRunId}`);
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+
+    const observedAt = input.observedAt ?? this.now();
+    if (execution.status === "spawning" || execution.status === "running") {
+      const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+      if (deadlineKind === "whole_run") {
+        this.timeoutWorkflowRun(run.id, observedAt);
+        const terminalRun = this.triggerRuns.get(run.id);
+        return transitionWithTerminalRun(
+          {
+            execution: this.readAgentExecution(execution.id),
+            transitioned: true,
+            deadlineKind,
+          },
+          terminalRun,
+        );
+      }
+      if (deadlineKind !== undefined) {
+        const timedOut = this.timeoutWorkflowStep(execution.id, deadlineKind, observedAt);
+        const terminalRun = this.triggerRuns.get(run.id);
+        return transitionWithTerminalRun(timedOut, terminalRun);
+      }
+    }
+
+    const transitioned =
+      execution.status === "spawning" || execution.status === "running"
+        ? await this.transitionAgentExecution(execution.id, input.executionStatus, {
+            result: input.result,
+            ...(input.completedByAgent === undefined
+              ? {}
+              : { completedByAgent: input.completedByAgent }),
+            ...(input.deadlineCondition === undefined
+              ? {}
+              : { deadlineCondition: input.deadlineCondition }),
+            ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+          })
+        : { execution, transitioned: false };
+    if (transitioned.transitioned || isTerminalAgentExecutionStatus(execution.status)) {
+      this.finishWorkflowStep(step, run, input);
+    }
+    const terminalRun = this.triggerRuns.get(run.id);
+    return transitionWithTerminalRun(transitioned, terminalRun);
   }
 
-  async acceptGitHubTrigger(input: AcceptGitHubTriggerInput): Promise<ProviderTriggerAcceptance> {
+  private finishWorkflowStep(
+    step: WorkflowStepRunRecord,
+    run: TriggerRunRecord,
+    input: WorkflowAgentCompletionInput,
+  ): void {
+    if (step.status === "succeeded" || step.status === "failed" || step.status === "timed_out") {
+      return;
+    }
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+    const now = this.options.now?.() ?? new Date();
+    const updatedStep: WorkflowStepRunRecord = {
+      ...step,
+      status: input.stepStatus,
+      output: freezeEvidence(input.stepOutput !== undefined ? input.stepOutput : input.result),
+      failureReason: input.failureReason ?? null,
+      deadlineKind: input.deadlineKind ?? step.deadlineKind,
+      completedAt: now,
+    };
+    this.workflowStepRuns.set(step.id, updatedStep);
+    if (input.stepStatus === "succeeded") {
+      if (run.status === "running") {
+        this.workflowWakeups.set(run.id, {
+          triggerRunId: run.id,
+          availableAt: now,
+          leaseExpiresAt: null,
+          leasedBeforeClaim: false,
+        });
+      }
+      return;
+    }
+    if (run.status === "running") {
+      let runStatus: TriggerRunRecord["status"] = input.stepStatus;
+      if (input.deadlineKind === "whole_run") {
+        runStatus = "timed_out";
+      } else if (input.deadlineKind !== undefined) {
+        runStatus = "failed";
+      }
+      this.triggerRuns.set(run.id, {
+        ...this.pendingTerminalNotification(run, now),
+        status: runStatus,
+        deadlineKind: input.deadlineKind ?? run.deadlineKind,
+        failureReason: input.failureReason ?? null,
+        completedAt: now,
+      });
+    }
+    this.workflowWakeups.delete(run.id);
+  }
+
+  private timeoutWorkflowStep(
+    executionId: string,
+    deadlineKind: Exclude<WorkflowDeadlineKind, "whole_run">,
+    now: Date,
+  ): TransitionAgentExecutionResult {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) {
+      return { execution, transitioned: false };
+    }
+    const failureReason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+    let hubAction: "interrupt" | "archive" | null = null;
+    if (execution.daemonId !== null) {
+      hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+    }
+    const updatedExecution: AgentExecutionRecord = {
+      ...execution,
+      status: "failed",
+      completedAt: now,
+      result: { status: "failed", reason: failureReason },
+      idleDeadlineAt: null,
+      hubAction,
+      hubActionCompletedAt: hubAction === null ? null : null,
+      hubActionReadyAt: null,
+      hubActionAcknowledgements: emptyHubActionAcknowledgements(),
+    };
+    this.agentExecutions.set(execution.id, updatedExecution);
+    const step =
+      execution.workflowStepRunId === null
+        ? undefined
+        : this.workflowStepRuns.get(execution.workflowStepRunId);
+    if (
+      step === undefined ||
+      step.status === "succeeded" ||
+      step.status === "failed" ||
+      step.status === "timed_out"
+    ) {
+      return { execution: updatedExecution, transitioned: true, deadlineKind };
+    }
+    const run = this.triggerRuns.get(step.triggerRunId);
+    if (run === undefined || run.outcome !== "accepted") {
+      return { execution: updatedExecution, transitioned: true, deadlineKind };
+    }
+    this.workflowStepRuns.set(step.id, {
+      ...step,
+      status: "timed_out",
+      failureReason,
+      deadlineKind,
+      completedAt: now,
+    });
+    if (run.status === "running") {
+      this.triggerRuns.set(run.id, {
+        ...this.pendingTerminalNotification(run, now),
+        status: "failed",
+        deadlineKind,
+        failureReason,
+        completedAt: now,
+      });
+    }
+    this.workflowWakeups.delete(run.id);
+    return { execution: updatedExecution, transitioned: true, deadlineKind };
+  }
+
+  private timeoutWorkflowRun(
+    triggerRunId: string,
+    now: Date,
+  ): WorkflowDeadlineRecovery | undefined {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined || run.outcome !== "accepted" || run.status !== "running") {
+      return undefined;
+    }
+    const executionIds: string[] = [];
+    for (const step of this.workflowStepRuns.values()) {
+      if (step.triggerRunId !== triggerRunId) continue;
+      if (step.agentExecutionId !== null) {
+        const execution = this.agentExecutions.get(step.agentExecutionId);
+        if (
+          execution !== undefined &&
+          (execution.status === "spawning" || execution.status === "running")
+        ) {
+          let hubAction: AgentExecutionRecord["hubAction"] = null;
+          if (execution.daemonId !== null) {
+            hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+          }
+          const updatedExecution: AgentExecutionRecord = {
+            ...execution,
+            status: "failed",
+            completedAt: now,
+            result: { status: "failed", reason: "whole_run_timeout" },
+            idleDeadlineAt: null,
+            hubAction,
+            hubActionCompletedAt: null,
+            hubActionReadyAt: null,
+            hubActionAcknowledgements: emptyHubActionAcknowledgements(),
+          };
+          this.agentExecutions.set(execution.id, updatedExecution);
+          executionIds.push(execution.id);
+        }
+      }
+      if (step.status === "pending" || step.status === "running") {
+        this.workflowStepRuns.set(step.id, {
+          ...step,
+          status: "timed_out",
+          failureReason: "whole_run_timeout",
+          deadlineKind: "whole_run",
+          completedAt: now,
+        });
+      }
+    }
+    const updatedRun: AcceptedTriggerRunRecord = {
+      ...this.pendingTerminalNotification(run, now),
+      status: "timed_out",
+      deadlineKind: "whole_run",
+      failureReason: "whole_run_timeout",
+      completedAt: now,
+    };
+    this.triggerRuns.set(run.id, updatedRun);
+    this.workflowWakeups.delete(run.id);
+    return { triggerRunId: run.id, executionIds };
+  }
+
+  async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
+    const recoveries: WorkflowDeadlineRecovery[] = [];
+    for (const run of this.triggerRuns.values()) {
+      if (run.outcome !== "accepted" || run.status !== "running") continue;
+      if (run.deadlineAt <= now) {
+        const recovery = this.timeoutWorkflowRun(run.id, now);
+        if (recovery !== undefined) recoveries.push(recovery);
+        continue;
+      }
+      const steps = await this.listWorkflowStepRunsForTriggerRun(run.id);
+      for (const step of steps) {
+        if (step.status !== "running") continue;
+        const execution =
+          step.agentExecutionId === null
+            ? undefined
+            : this.agentExecutions.get(step.agentExecutionId);
+        if (execution !== undefined && isTerminalAgentExecutionStatus(execution.status)) continue;
+        const deadlineKind = workflowDeadlineKind(execution, step, run, now);
+        if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
+        if (execution !== undefined) {
+          const recovery = this.timeoutWorkflowStep(execution.id, deadlineKind, now);
+          recoveries.push({ triggerRunId: run.id, executionIds: [recovery.execution.id] });
+        } else {
+          this.workflowStepRuns.set(step.id, {
+            ...step,
+            status: "timed_out",
+            failureReason: deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout",
+            deadlineKind,
+            completedAt: now,
+          });
+          this.triggerRuns.set(run.id, {
+            ...this.pendingTerminalNotification(run, now),
+            status: "failed",
+            deadlineKind,
+            failureReason: deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout",
+            completedAt: now,
+          });
+          this.workflowWakeups.delete(run.id);
+          recoveries.push({ triggerRunId: run.id, executionIds: [] });
+        }
+      }
+    }
+    return recoveries;
+  }
+
+  async markWorkflowStepSkipped(triggerRunId: string, stepId: string, reason: string) {
+    const run = this.triggerRuns.get(triggerRunId);
+    const step = (await this.listWorkflowStepRunsForTriggerRun(triggerRunId)).find(
+      (candidate) => candidate.stepId === stepId,
+    );
+    if (run === undefined || step === undefined || run.outcome !== "accepted") return undefined;
+    if (step.status !== "pending") return { stepRun: step, run };
+    const now = this.options.now?.() ?? new Date();
+    const updatedStep = {
+      ...step,
+      status: "skipped" as const,
+      failureReason: reason,
+      completedAt: now,
+    };
+    this.workflowStepRuns.set(step.id, updatedStep);
+    this.workflowWakeups.set(run.id, {
+      triggerRunId: run.id,
+      availableAt: now,
+      leaseExpiresAt: null,
+      leasedBeforeClaim: false,
+    });
+    return { stepRun: updatedStep, run };
+  }
+
+  async succeedTriggerRun(triggerRunId: string) {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined || run.outcome !== "accepted") return undefined;
+    if (run.status !== "running") return { run, transitioned: false };
+    const now = this.options.now?.() ?? new Date();
+    const updated = {
+      ...this.pendingTerminalNotification(run, now),
+      status: "succeeded" as const,
+      completedAt: now,
+    };
+    this.triggerRuns.set(run.id, updated);
+    this.workflowWakeups.delete(run.id);
+    return { run: updated, transitioned: true };
+  }
+
+  async failWorkflowRun(
+    triggerRunId: string,
+    status: "failed" | "timed_out",
+    failureReason: string,
+    stepId?: string,
+  ) {
+    const run = this.triggerRuns.get(triggerRunId);
+    const steps = await this.listWorkflowStepRunsForTriggerRun(triggerRunId);
+    const step =
+      (stepId === undefined
+        ? steps.find(
+            (candidate) => candidate.status === "pending" || candidate.status === "running",
+          )
+        : steps.find((candidate) => candidate.stepId === stepId)) ?? steps[0];
+    if (run === undefined || step === undefined) return undefined;
+    if (run.status !== "running") return { stepRun: step, run, transitioned: false };
+    const now = this.options.now?.() ?? new Date();
+    const updatedStep =
+      step.status === "pending" || step.status === "running"
+        ? { ...step, status, failureReason, completedAt: now }
+        : step;
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+    const updatedRun: AcceptedTriggerRunRecord = {
+      ...this.pendingTerminalNotification(run, now),
+      status,
+      failureReason,
+      completedAt: now,
+    };
+    this.workflowStepRuns.set(step.id, updatedStep);
+    this.triggerRuns.set(run.id, updatedRun);
+    this.workflowWakeups.delete(run.id);
+    return { stepRun: updatedStep, run: updatedRun, transitioned: true };
+  }
+
+  async recoverWorkflowWakeups(now: Date) {
+    for (const run of this.triggerRuns.values()) {
+      if (run.status !== "running" || run.deadlineAt <= now) continue;
+      const wakeup = this.workflowWakeups.get(run.id);
+      const steps = await this.listWorkflowStepRunsForTriggerRun(run.id);
+      const execution = (
+        await Promise.all(
+          steps.map(async (step) =>
+            step.agentExecutionId === null
+              ? undefined
+              : this.findAgentExecutionById(step.agentExecutionId),
+          ),
+        )
+      ).find(
+        (candidate) =>
+          candidate !== undefined &&
+          (candidate.status === "spawning" || candidate.status === "running"),
+      );
+      if (wakeup === undefined && execution === undefined) {
+        this.workflowWakeups.set(run.id, {
+          triggerRunId: run.id,
+          availableAt: now,
+          leaseExpiresAt: null,
+          leasedBeforeClaim: false,
+        });
+      }
+    }
+  }
+
+  async claimPendingWorkflowRunTerminalNotification(now: Date, leaseMs: number) {
+    const candidate = Array.from(this.triggerRuns.values())
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.outcome === "accepted" &&
+          run.status !== "running" &&
+          run.terminalNotificationPendingAt !== null &&
+          run.terminalNotificationDeliveredAt === null &&
+          (run.terminalNotificationLeaseExpiresAt === null ||
+            run.terminalNotificationLeaseExpiresAt <= now),
+      )
+      .sort((left, right) => {
+        const time =
+          left.terminalNotificationPendingAt!.getTime() -
+          right.terminalNotificationPendingAt!.getTime();
+        return time === 0 ? left.id.localeCompare(right.id) : time;
+      })[0];
+    if (candidate === undefined) return undefined;
+    const updated = {
+      ...candidate,
+      terminalNotificationLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+    };
+    this.triggerRuns.set(updated.id, updated);
+    return updated;
+  }
+
+  async markWorkflowRunTerminalNotificationDelivered(triggerRunId: string, deliveredAt: Date) {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (
+      run === undefined ||
+      run.outcome !== "accepted" ||
+      run.terminalNotificationPendingAt === null ||
+      run.terminalNotificationDeliveredAt !== null
+    ) {
+      return;
+    }
+    this.triggerRuns.set(run.id, {
+      ...run,
+      terminalNotificationDeliveredAt: deliveredAt,
+      terminalNotificationLeaseExpiresAt: null,
+    });
+  }
+
+  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+    this.providerEventReceipts.set(providerEventReceiptId, {
+      ...receipt,
+      droppedReason: receipt.droppedReason ?? reason,
+    });
+  }
+
+  async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findGitHubConnection(input.installationId);
     const reason = githubDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -231,10 +904,10 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async acceptDiscordTrigger(input: AcceptDiscordTriggerInput): Promise<ProviderTriggerAcceptance> {
+  async acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findDiscordConnection(input.guildId);
     const reason = discordDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -243,10 +916,10 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async acceptSlackTrigger(input: AcceptSlackTriggerInput): Promise<ProviderTriggerAcceptance> {
+  async acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findSlackConnection(input.teamId);
     const reason = slackDropReason(input, binding);
-    return this.acceptMemoryTrigger(
+    return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
@@ -255,38 +928,106 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async persistManualTrigger(input: PersistManualTriggerInput) {
-    const result = await this.insertTrigger(input);
-    return result.inserted
-      ? { status: "accepted" as const, trigger: durableTrigger(result.trigger) }
-      : { status: "duplicate" as const, triggerId: result.trigger.id };
+  async persistManualEvent(input: PersistManualEventInput) {
+    const existing = this.findReceiptId(
+      input.organizationId,
+      input.deliveryId,
+      input.signatureHash,
+    );
+    if (existing !== undefined) {
+      const receipt = this.providerEventReceipts.get(existing);
+      const route = receipt?.acceptedRoutes?.[0];
+      if (receipt === undefined || route === undefined) {
+        return { status: "duplicate" as const, providerEventReceiptId: existing };
+      }
+      return {
+        status: "accepted" as const,
+        event: {
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        },
+      };
+    }
+    const project = this.projects.get(input.projectId);
+    if (
+      project?.organizationId !== input.organizationId ||
+      project.activeConfigurationRevisionId === null
+    ) {
+      throw new Error("manual project configuration unavailable");
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId: input.organizationId,
+      provider: "manual",
+      connectionId: input.connectionId ?? null,
+      resourceId: input.resourceId ?? null,
+      input,
+    });
+    const route = {
+      projectId: input.projectId,
+      configurationRevisionId: project.activeConfigurationRevisionId,
+      connectionId: input.connectionId ?? null,
+      resourceId: input.resourceId ?? null,
+    };
+    this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes: [route] });
+    return {
+      status: "accepted" as const,
+      event: {
+        providerEventReceiptId: receipt.id,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        configurationRevisionId: route.configurationRevisionId,
+        deliveryId: input.deliveryId,
+        source: input.source,
+        payload: input.payload,
+        receivedAt: input.receivedAt,
+        connectionId: input.connectionId ?? null,
+        resourceId: input.resourceId ?? null,
+      },
+    };
   }
 
-  async claimGitHubLifecycle(input: GitHubLifecycleClaimInput): Promise<GitHubLifecycleClaim> {
-    const result = await this.insertTrigger({
-      organizationId: "unbound",
-      projectId: null,
-      deliveryId: input.deliveryId,
-      signatureHash: input.signatureHash,
-      source: input.source,
-      payload: input.payload,
-      receivedAt: input.receivedAt,
-      droppedReason: "github_lifecycle",
+  async claimGitHubLifecycleReceipt(
+    input: GitHubLifecycleReceiptClaimInput,
+  ): Promise<GitHubLifecycleReceiptClaim> {
+    const connection = await this.findGitHubConnection(input.installationId);
+    if (connection === undefined) {
+      return { status: "duplicate", providerEventReceiptId: input.deliveryId };
+    }
+    const existing = this.findReceiptId(
+      connection.organizationId,
+      input.deliveryId,
+      input.signatureHash,
+    );
+    if (existing !== undefined) {
+      return { status: "duplicate", providerEventReceiptId: existing };
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId: connection.organizationId,
+      provider: "github",
+      connectionId: connection.id,
+      resourceId: null,
+      input: { ...input, dropReason: "github_lifecycle" },
     });
-    return result.inserted
-      ? {
-          status: "claimed",
-          triggerId: result.trigger.id,
-          installationId: input.installationId,
-        }
-      : { status: "duplicate", triggerId: result.trigger.id };
+    return {
+      status: "claimed",
+      providerEventReceiptId: receipt.id,
+      installationId: input.installationId,
+    };
   }
 
   async applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleClaim, { status: "claimed" }>,
+    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
     result: GitHubLifecycleResult,
   ): Promise<void> {
-    const evidence = this.triggers.get(claim.triggerId);
+    const evidence = this.providerEventReceipts.get(claim.providerEventReceiptId);
     if (evidence?.droppedReason !== "github_lifecycle") return;
     if (result.status !== "absent" || !result.removeBinding) return;
     const connection = this.githubConnections.get(claim.installationId);
@@ -315,31 +1056,43 @@ class MemoryDatabase implements Database {
     }
   }
 
-  releaseGitHubLifecycleClaim(triggerId: string): Promise<void> {
-    return this.deleteLifecycleClaim(triggerId);
+  releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt?.droppedReason !== "github_lifecycle") return Promise.resolve();
+    this.providerEventReceipts.delete(providerEventReceiptId);
+    this.providerEventReceiptIdsByDelivery.delete(
+      triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
+    );
+    if (receipt.signatureHash !== null)
+      this.providerEventReceiptIdsBySignature.delete(receipt.signatureHash);
+    return Promise.resolve();
   }
 
-  async findTriggerByDeliveryId(
+  async findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
-  ): Promise<TriggerRecord | undefined> {
-    const id = this.triggersByDeliveryId.get(
+  ): Promise<ProviderEventReceiptRecord | undefined> {
+    const id = this.providerEventReceiptIdsByDelivery.get(
       organizationId === undefined ? deliveryId : `${organizationId}:${deliveryId}`,
     );
-    return id === undefined ? undefined : this.triggers.get(id);
+    return id === undefined ? undefined : this.providerEventReceipts.get(id);
   }
 
-  async findTriggerById(id: string): Promise<TriggerRecord | undefined> {
-    return this.triggers.get(id);
+  async findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined> {
+    return this.providerEventReceipts.get(id);
   }
 
   async insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord> {
-    const sourceKey = attachmentSourceKey(input.triggerId, input.provider, input.sourceId);
+    const sourceKey = attachmentSourceKey(
+      input.providerEventReceiptId,
+      input.provider,
+      input.sourceId,
+    );
     const existingId = this.attachmentIdsBySource.get(sourceKey);
     if (existingId !== undefined) return this.readAttachment(existingId);
     const attachment: AttachmentRecord = {
       id: randomUUID(),
-      triggerId: input.triggerId,
+      providerEventReceiptId: input.providerEventReceiptId,
       organizationId: input.organizationId,
       connectionId: input.connectionId,
       provider: input.provider,
@@ -356,11 +1109,13 @@ class MemoryDatabase implements Database {
   }
 
   async findAttachmentBySource(
-    triggerId: string,
+    providerEventReceiptId: string,
     provider: AttachmentProvider,
     sourceId: string,
   ): Promise<AttachmentRecord | undefined> {
-    const id = this.attachmentIdsBySource.get(attachmentSourceKey(triggerId, provider, sourceId));
+    const id = this.attachmentIdsBySource.get(
+      attachmentSourceKey(providerEventReceiptId, provider, sourceId),
+    );
     return id === undefined ? undefined : this.attachments.get(id);
   }
 
@@ -370,9 +1125,15 @@ class MemoryDatabase implements Database {
   ): Promise<AttachmentRecord | undefined> {
     const execution = this.agentExecutions.get(executionId);
     const attachment = this.attachments.get(attachmentId);
-    return execution?.triggerId !== null &&
-      execution?.organizationId === attachment?.organizationId &&
-      execution?.triggerId === attachment?.triggerId
+    if (execution === undefined || attachment === undefined) return undefined;
+    const stepRun =
+      execution.workflowStepRunId === null
+        ? undefined
+        : this.workflowStepRuns.get(execution.workflowStepRunId);
+    const triggerRun =
+      stepRun === undefined ? undefined : this.triggerRuns.get(stepRun.triggerRunId);
+    return execution.organizationId === attachment.organizationId &&
+      triggerRun?.providerEventReceiptId === attachment.providerEventReceiptId
       ? attachment
       : undefined;
   }
@@ -431,7 +1192,9 @@ class MemoryDatabase implements Database {
     }
 
     const status = input.status ?? "spawning";
-    const completedAt = status === "failed" ? new Date() : null;
+    const completedAt = status === "failed" ? this.now() : null;
+    const deadlineAt = input.deadlineAt ?? null;
+    const idleDeadlineAt = capIdleDeadline(input.idleDeadlineAt, deadlineAt);
 
     const execution: AgentExecutionRecord = {
       id: input.id ?? randomUUID(),
@@ -439,11 +1202,11 @@ class MemoryDatabase implements Database {
       projectId: input.projectId,
       machineId: input.machineId,
       status,
-      startedAt: new Date(),
+      startedAt: input.startedAt ?? this.now(),
       completedAt,
       completedByAgentAt: null,
-      deadlineAt: input.deadlineAt ?? null,
-      idleDeadlineAt: input.idleDeadlineAt ?? null,
+      deadlineAt,
+      idleDeadlineAt,
       result: input.result ?? null,
       triggerContext: input.triggerContext,
       outputContext: input.outputContext,
@@ -454,11 +1217,11 @@ class MemoryDatabase implements Database {
       launchIntent: input.launchIntent ?? null,
       daemonId: input.daemonId ?? null,
       daemonAgentId: null,
-      triggerId: input.triggerId ?? null,
-      triggerConnectionId: input.triggerConnectionId ?? null,
-      triggerResourceId: input.triggerResourceId ?? null,
+      workflowStepRunId: input.workflowStepRunId ?? null,
       hubAction: null,
       hubActionCompletedAt: null,
+      hubActionReadyAt: null,
+      hubActionAcknowledgements: emptyHubActionAcknowledgements(),
     };
 
     this.agentExecutions.set(execution.id, execution);
@@ -693,10 +1456,60 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
-  async setAgentExecutionIdleDeadline(executionId: string, idleDeadlineAt: Date | null) {
+  async setAgentExecutionIdleDeadline(
+    executionId: string,
+    idleDeadlineAt: Date | null,
+    observedAt: Date,
+    processedAt: Date,
+  ) {
     const execution = this.readAgentExecution(executionId);
     if (isTerminalAgentExecutionStatus(execution.status)) return execution;
-    const updated = { ...execution, idleDeadlineAt };
+    if (
+      (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= processedAt.getTime()) ||
+      (execution.idleDeadlineAt !== null &&
+        execution.idleDeadlineAt.getTime() <= observedAt.getTime())
+    ) {
+      return execution;
+    }
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      const run = step === undefined ? undefined : this.triggerRuns.get(step.triggerRunId);
+      if (
+        step === undefined ||
+        step.status !== "running" ||
+        run === undefined ||
+        run.status !== "running" ||
+        run.deadlineAt.getTime() <= processedAt.getTime()
+      ) {
+        return execution;
+      }
+    }
+    const boundedIdleDeadlineAt = capIdleDeadline(idleDeadlineAt, execution.deadlineAt);
+    const updated = { ...execution, idleDeadlineAt: boundedIdleDeadlineAt };
+    this.agentExecutions.set(executionId, updated);
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      if (step !== undefined) {
+        this.workflowStepRuns.set(step.id, { ...step, idleDeadlineAt: boundedIdleDeadlineAt });
+      }
+    }
+    return updated;
+  }
+
+  async prepareAgentExecutionForDispatch(
+    executionId: string,
+    daemonId: string,
+    machineId: string,
+    completionTokenHash: string,
+  ) {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) return execution;
+    const updated = {
+      ...execution,
+      daemonId,
+      machineId,
+      completionTokenHash: execution.completionTokenHash ?? completionTokenHash,
+    };
     this.agentExecutions.set(executionId, updated);
     return updated;
   }
@@ -712,9 +1525,7 @@ class MemoryDatabase implements Database {
     if (execution === undefined) return undefined;
     const machine =
       execution.machineId === null ? undefined : this.machines.get(execution.machineId);
-    const trigger =
-      execution.triggerId === null ? undefined : this.triggers.get(execution.triggerId);
-    return machine?.orgId === organizationId || trigger?.organizationId === organizationId
+    return machine?.orgId === organizationId || execution.organizationId === organizationId
       ? execution
       : undefined;
   }
@@ -722,31 +1533,37 @@ class MemoryDatabase implements Database {
     const execution = this.agentExecutions.get(id);
     return execution?.projectId === projectId ? execution : undefined;
   }
-  async findAgentExecutionByTriggerId(
-    triggerId: string,
-  ): Promise<AgentExecutionRecord | undefined> {
-    return Array.from(this.agentExecutions.values()).find(
-      (execution) => execution.triggerId === triggerId,
-    );
-  }
-  async findAgentExecutionsByTriggerId(triggerId: string): Promise<AgentExecutionRecord[]> {
-    return Array.from(this.agentExecutions.values()).filter(
-      (execution) => execution.triggerId === triggerId,
-    );
+  async updateTriggerRunValues(triggerRunId: string, values: unknown): Promise<TriggerRunRecord> {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined) throw new Error(`trigger run not found: ${triggerRunId}`);
+    const updated = { ...run, values: freezeEvidence(values) } as TriggerRunRecord;
+    this.triggerRuns.set(triggerRunId, updated);
+    return updated;
   }
 
-  async listAgentExecutionsForProject(projectId: string, limit: number) {
-    return Array.from(this.agentExecutions.values())
-      .filter((execution) => execution.projectId === projectId)
-      .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())
-      .slice(0, limit);
+  async listProjectActivityRuns(
+    projectId: string,
+    limit: number,
+  ): Promise<ProjectActivityRunListRecord[]> {
+    return (await this.listTriggerRunsForProject(projectId, limit)).flatMap((run) => {
+      const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+      if (receipt === undefined) return [];
+      return [{ run, receipt: toProviderEventReceiptRecordSummary(receipt) }];
+    });
   }
 
-  async listTriggersForProject(projectId: string, limit: number) {
-    return Array.from(this.triggers.values())
-      .filter((trigger) => trigger.projectId === projectId)
-      .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())
-      .slice(0, limit);
+  async findProjectActivityRun(projectId: string, runId: string) {
+    const run = this.triggerRuns.get(runId);
+    if (run === undefined || run.projectId !== projectId) return undefined;
+    const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+    if (receipt === undefined) return undefined;
+    return { run, receipt, steps: this.listSteps(run.id) };
+  }
+
+  private listSteps(triggerRunId: string): WorkflowStepRunRecord[] {
+    return [...this.workflowStepRuns.values()]
+      .filter((step) => step.triggerRunId === triggerRunId)
+      .sort((left, right) => left.ordinal - right.ordinal);
   }
 
   async claimAgentExecutionReply(
@@ -790,21 +1607,24 @@ class MemoryDatabase implements Database {
     }
 
     let hubActionCompletedAt = execution.hubActionCompletedAt;
+    let hubActionReadyAt = execution.hubActionReadyAt;
     if (fields.hubAction !== undefined) {
-      hubActionCompletedAt = fields.hubAction === null ? new Date() : null;
+      hubActionCompletedAt = fields.hubAction === null ? this.now() : null;
+      hubActionReadyAt = null;
     }
     const updated: AgentExecutionRecord = {
       ...execution,
       status: toStatus,
-      completedAt: isTerminalAgentExecutionStatus(toStatus) ? new Date() : execution.completedAt,
+      completedAt: isTerminalAgentExecutionStatus(toStatus) ? this.now() : execution.completedAt,
       completedByAgentAt:
         fields.completedByAgent === true && toStatus === "succeeded"
-          ? new Date()
+          ? this.now()
           : execution.completedByAgentAt,
       result: fields.result !== undefined ? fields.result : execution.result,
       idleDeadlineAt: isTerminalAgentExecutionStatus(toStatus) ? null : execution.idleDeadlineAt,
       hubAction: fields.hubAction === undefined ? execution.hubAction : fields.hubAction,
       hubActionCompletedAt,
+      hubActionReadyAt,
     };
 
     this.agentExecutions.set(id, updated);
@@ -832,6 +1652,77 @@ class MemoryDatabase implements Database {
         execution.hubActionCompletedAt === null &&
         (daemonId === undefined || execution.daemonId === daemonId),
     );
+  }
+
+  async markAgentExecutionHubActionReady(
+    executionId: string,
+    observedAt = this.now(),
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (
+      execution === undefined ||
+      execution.status !== "succeeded" ||
+      execution.completedByAgentAt === null ||
+      execution.hubAction !== "archive" ||
+      execution.hubActionCompletedAt !== null ||
+      execution.hubActionReadyAt !== null ||
+      execution.hubActionAcknowledgements.terminalAt === null ||
+      execution.hubActionAcknowledgements.idleAt === null ||
+      execution.hubActionAcknowledgements.finishExecutionCall === null ||
+      execution.hubActionAcknowledgements.finishExecutionCall.status !== "completed"
+    ) {
+      return undefined;
+    }
+    const updated = { ...execution, hubActionReadyAt: observedAt };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
+  }
+
+  async recordAgentExecutionHubAcknowledgement(
+    executionId: string,
+    acknowledgement: AgentExecutionHubAcknowledgementInput,
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (execution === undefined) return undefined;
+    const current = execution.hubActionAcknowledgements;
+    const updatedAcknowledgements: AgentExecutionHubAcknowledgements = {
+      terminalAt: current.terminalAt,
+      idleAt: current.idleAt,
+      finishExecutionCall: current.finishExecutionCall,
+    };
+    if (acknowledgement.kind === "terminal") {
+      if (
+        updatedAcknowledgements.terminalAt === null ||
+        acknowledgement.observedAt.getTime() > updatedAcknowledgements.terminalAt.getTime()
+      ) {
+        updatedAcknowledgements.terminalAt = acknowledgement.observedAt;
+      }
+    } else if (acknowledgement.kind === "idle") {
+      if (
+        updatedAcknowledgements.idleAt === null ||
+        acknowledgement.observedAt.getTime() > updatedAcknowledgements.idleAt.getTime()
+      ) {
+        updatedAcknowledgements.idleAt = acknowledgement.observedAt;
+      }
+    } else {
+      const previous = updatedAcknowledgements.finishExecutionCall;
+      if (
+        previous === undefined ||
+        previous === null ||
+        (previous.status !== "completed" &&
+          (acknowledgement.status === "completed" ||
+            acknowledgement.observedAt.getTime() > previous.observedAt.getTime()))
+      ) {
+        updatedAcknowledgements.finishExecutionCall = {
+          callId: acknowledgement.callId ?? null,
+          status: acknowledgement.status,
+          observedAt: acknowledgement.observedAt,
+        };
+      }
+    }
+    const updated = { ...execution, hubActionAcknowledgements: updatedAcknowledgements };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
   }
 
   async completeHubAction(executionId: string, action: "interrupt" | "archive"): Promise<boolean> {
@@ -1233,20 +2124,20 @@ class MemoryDatabase implements Database {
     });
   }
 
-  async listUnroutedTriggersForOrganization(organizationId: string) {
-    return [
-      ...Array.from(this.triggers.values()).filter(
-        (trigger) => trigger.organizationId === organizationId && trigger.projectId === null,
-      ),
-      ...Array.from(this.providerReceiptActivities.values()).filter(
-        (receipt) =>
-          receipt.organizationId === organizationId &&
-          (this.triggerIdsByReceipt.get(receipt.receiptId)?.length ?? 0) === 0,
-      ),
-    ].sort(
-      (left, right) =>
-        right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
+  async listUnroutedProviderEventsForOrganization(organizationId: string) {
+    const routedReceiptIds = new Set(
+      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
     );
+    return [...this.providerEventReceipts.values()]
+      .filter(
+        (receipt) => receipt.organizationId === organizationId && !routedReceiptIds.has(receipt.id),
+      )
+      .sort(
+        (left, right) =>
+          right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
+      )
+      .slice(0, 50)
+      .map(toProviderEventReceiptRecordSummary);
   }
 
   async isOrganizationMember(): Promise<boolean> {
@@ -1321,27 +2212,7 @@ class MemoryDatabase implements Database {
     return Promise.resolve();
   }
 
-  private async deleteLifecycleClaim(id: string): Promise<void> {
-    const trigger = this.triggers.get(id);
-    if (trigger?.droppedReason !== "github_lifecycle") return;
-    this.triggers.delete(id);
-    this.triggersByDeliveryId.delete(
-      triggerDeliveryKey(trigger.organizationId, trigger.deliveryId),
-    );
-    if (trigger.signatureHash !== null) this.triggersBySignatureHash.delete(trigger.signatureHash);
-  }
-
   async close(): Promise<void> {}
-
-  private readTrigger(id: string): TriggerRecord {
-    const trigger = this.triggers.get(id);
-
-    if (trigger === undefined) {
-      throw new Error(`trigger not found: ${id}`);
-    }
-
-    return trigger;
-  }
 
   private readAttachment(id: string): AttachmentRecord {
     const attachment = this.attachments.get(id);
@@ -1349,49 +2220,58 @@ class MemoryDatabase implements Database {
     return attachment;
   }
 
-  private async acceptMemoryTrigger(
-    input: AcceptGitHubTriggerInput | AcceptDiscordTriggerInput | AcceptSlackTriggerInput,
+  private async acceptMemoryEvent(
+    input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
     reason: string | undefined,
-  ): Promise<ProviderTriggerAcceptance> {
-    const receiptId = this.receiptIdsByDelivery.get(input.deliveryId);
+  ): Promise<ProviderEventAcceptance> {
+    const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
+      const receipt = this.providerEventReceipts.get(receiptId);
+      if (receipt === undefined) throw new Error("provider receipt unavailable");
+      if (receipt.droppedReason !== null) {
+        return { status: "dropped", receiptId, reason: receipt.droppedReason };
+      }
+      if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId };
       return {
-        status: "duplicate",
-        triggerIds: this.triggerIdsByReceipt.get(receiptId) ?? [],
+        status: "accepted",
         receiptId,
+        events: receipt.acceptedRoutes.map((route) => ({
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        })),
       };
     }
-    const newReceiptId = randomUUID();
-    this.receiptIdsByDelivery.set(input.deliveryId, newReceiptId);
-    if (organizationId !== undefined) {
-      this.providerReceiptActivities.set(newReceiptId, {
-        id: newReceiptId,
-        organizationId,
-        projectId: null,
-        configurationRevisionId: null,
-        receiptId: newReceiptId,
-        connectionId: connectionId ?? null,
-        resourceId,
-        deliveryId: input.deliveryId,
-        signatureHash: input.signatureHash ?? null,
-        source: input.source,
-        repo: input.repo ?? null,
-        payload: input.payload,
-        receivedAt: input.receivedAt,
-        matchedTriggerName: null,
-        droppedReason: reason ?? null,
-        dispatchPlan: null,
-        lifecycleState: null,
-      });
-    }
-    if (reason !== undefined || organizationId === undefined || connectionId === undefined) {
+    if (organizationId === undefined || connectionId === undefined) {
       return {
         status: "dropped",
-        receiptId: newReceiptId,
+        receiptId: input.deliveryId,
         reason: reason ?? "provider_unbound",
+      };
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId,
+      provider: providerForInput(input),
+      connectionId,
+      resourceId,
+      input,
+    });
+    if (reason !== undefined) {
+      this.providerEventReceipts.set(receipt.id, { ...receipt, droppedReason: reason });
+      return {
+        status: "dropped",
+        receiptId: receipt.id,
+        reason,
       };
     }
     const provider = providerForInput(input);
@@ -1411,40 +2291,92 @@ class MemoryDatabase implements Database {
       },
     );
     if (routes.length === 0) {
-      const activity = this.providerReceiptActivities.get(newReceiptId);
-      if (activity !== undefined) {
-        this.providerReceiptActivities.set(activity.id, {
-          ...activity,
-          droppedReason: "provider_unrouted",
-        });
-      }
-      return { status: "dropped", receiptId: newReceiptId, reason: "provider_unrouted" };
+      this.providerEventReceipts.set(receipt.id, {
+        ...receipt,
+        droppedReason: "provider_unrouted",
+      });
+      return { status: "dropped", receiptId: receipt.id, reason: "provider_unrouted" };
     }
     const projectRoutes = new Map<string, (typeof routes)[number]>();
     for (const route of routes) {
       if (!projectRoutes.has(route.projectId)) projectRoutes.set(route.projectId, route);
     }
 
-    const triggers: DurableTrigger[] = [];
-    for (const route of projectRoutes.values()) {
-      const result = await this.insertTrigger({
-        organizationId,
-        projectId: route.projectId,
-        configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId,
-        receiptId: newReceiptId,
-        connectionId,
-        resourceId,
-        deliveryId: input.deliveryId,
-        signatureHash: input.signatureHash ?? null,
-        source: input.source,
-        repo: input.repo ?? null,
-        payload: input.payload,
-        receivedAt: input.receivedAt,
-        matchedTriggerName: route.triggerName,
-      });
-      triggers.push(durableTrigger(result.trigger));
+    const events: DurableProviderEvent[] = [...projectRoutes.values()].map((route) => ({
+      providerEventReceiptId: receipt.id,
+      organizationId,
+      projectId: route.projectId,
+      configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId!,
+      deliveryId: input.deliveryId,
+      source: input.source,
+      payload: input.payload,
+      receivedAt: input.receivedAt,
+      connectionId,
+      resourceId: route.resourceId,
+    }));
+    const acceptedRoutes = events.map((event) => ({
+      projectId: event.projectId,
+      configurationRevisionId: event.configurationRevisionId,
+      connectionId: event.connectionId,
+      resourceId: event.resourceId,
+    }));
+    this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes });
+    return { status: "accepted", events, receiptId: receipt.id };
+  }
+
+  private findReceiptId(
+    organizationId: string | undefined,
+    deliveryId: string,
+    signatureHash: string | null | undefined,
+  ): string | undefined {
+    if (organizationId === undefined) return undefined;
+    return signatureHash === undefined || signatureHash === null
+      ? this.providerEventReceiptIdsByDelivery.get(triggerDeliveryKey(organizationId, deliveryId))
+      : (this.providerEventReceiptIdsBySignature.get(signatureHash) ??
+          this.providerEventReceiptIdsByDelivery.get(
+            triggerDeliveryKey(organizationId, deliveryId),
+          ));
+  }
+
+  private insertProviderEventReceipt(input: {
+    organizationId: string;
+    provider: ProviderEventReceiptRecord["provider"];
+    connectionId: string | null;
+    resourceId: string | null;
+    input: {
+      deliveryId: string;
+      signatureHash?: string | null;
+      source: string;
+      repo?: string | null;
+      payload: unknown;
+      receivedAt: Date;
+      dropReason?: string;
+    };
+  }): ProviderEventReceiptRecord {
+    const receipt: ProviderEventReceiptRecord = {
+      id: randomUUID(),
+      organizationId: input.organizationId,
+      provider: input.provider,
+      connectionId: input.connectionId,
+      resourceId: input.resourceId,
+      deliveryId: input.input.deliveryId,
+      signatureHash: input.input.signatureHash ?? null,
+      source: input.input.source,
+      repo: input.input.repo ?? null,
+      payload: input.input.payload,
+      receivedAt: input.input.receivedAt,
+      droppedReason: input.input.dropReason ?? null,
+      acceptedRoutes: null,
+    };
+    this.providerEventReceipts.set(receipt.id, receipt);
+    this.providerEventReceiptIdsByDelivery.set(
+      triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
+      receipt.id,
+    );
+    if (receipt.signatureHash !== null) {
+      this.providerEventReceiptIdsBySignature.set(receipt.signatureHash, receipt.id);
     }
-    return { status: "accepted", triggers, receiptId: newReceiptId };
+    return receipt;
   }
 
   private readMachine(id: string): MachineRecord {
@@ -1468,37 +2400,16 @@ class MemoryDatabase implements Database {
   }
 }
 
+function emptyHubActionAcknowledgements(): AgentExecutionHubAcknowledgements {
+  return { terminalAt: null, idleAt: null, finishExecutionCall: null };
+}
+
 function connectionPersistenceUnavailable(): never {
   throw new Error("connection persistence requires PostgreSQL");
 }
 
-function canTransitionTriggerLifecycle(
-  from: TriggerLifecycleState | null,
-  to: TriggerLifecycleState,
-): boolean {
-  if (from === null) return true;
-  if (from === "accepted") return to === "running" || to === "succeeded" || to === "failed";
-  if (from === "running") return to === "succeeded" || to === "failed";
-  return false;
-}
-
-function durableTrigger(trigger: TriggerRecord): DurableTrigger {
-  if (trigger.projectId === null) throw new Error("durable trigger has no project tenant");
-  return {
-    triggerId: trigger.id,
-    organizationId: trigger.organizationId,
-    projectId: trigger.projectId,
-    deliveryId: trigger.deliveryId,
-    source: trigger.source,
-    payload: trigger.payload,
-    receivedAt: trigger.receivedAt,
-    connectionId: trigger.connectionId,
-    resourceId: trigger.resourceId,
-  };
-}
-
 function providerForInput(
-  input: AcceptGitHubTriggerInput | AcceptDiscordTriggerInput | AcceptSlackTriggerInput,
+  input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
 ): "github" | "discord" | "slack" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
@@ -1506,7 +2417,7 @@ function providerForInput(
 }
 
 function githubDropReason(
-  input: AcceptGitHubTriggerInput,
+  input: AcceptGitHubEventInput,
   binding: GitHubConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
@@ -1516,7 +2427,7 @@ function githubDropReason(
 }
 
 function discordDropReason(
-  input: AcceptDiscordTriggerInput,
+  input: AcceptDiscordEventInput,
   binding: DiscordConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
@@ -1525,7 +2436,7 @@ function discordDropReason(
 }
 
 function slackDropReason(
-  input: AcceptSlackTriggerInput,
+  input: AcceptSlackEventInput,
   binding: SlackConnectionRecord | undefined,
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
@@ -1541,6 +2452,42 @@ interface MemoryDeviceAuthorization extends DeviceAuthorizationRecord {
   enrollmentTokenVerifier: string | null;
 }
 
+function workflowDeadlineKind(
+  execution: AgentExecutionRecord | undefined,
+  step: WorkflowStepRunRecord,
+  run: AcceptedTriggerRunRecord,
+  observedAt: Date,
+): WorkflowDeadlineKind | undefined {
+  if (run.status === "running" && run.deadlineAt <= observedAt) return "whole_run";
+  const hardDeadline = execution?.deadlineAt ?? step.deadlineAt;
+  const idleDeadline = execution?.idleDeadlineAt ?? step.idleDeadlineAt;
+  if (hardDeadline !== null && hardDeadline !== undefined && hardDeadline <= observedAt) {
+    if (
+      idleDeadline !== null &&
+      idleDeadline !== undefined &&
+      idleDeadline <= observedAt &&
+      idleDeadline < hardDeadline
+    ) {
+      return "step_idle";
+    }
+    return "step_hard";
+  }
+  if (idleDeadline !== null && idleDeadline !== undefined && idleDeadline <= observedAt) {
+    return "step_idle";
+  }
+  return undefined;
+}
+
+function capIdleDeadline(
+  idleDeadlineAt: Date | null | undefined,
+  deadlineAt: Date | null,
+): Date | null {
+  if (idleDeadlineAt === null || idleDeadlineAt === undefined || deadlineAt === null) {
+    return idleDeadlineAt ?? null;
+  }
+  return new Date(Math.min(idleDeadlineAt.getTime(), deadlineAt.getTime()));
+}
+
 function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
   return status === "succeeded" || status === "failed";
 }
@@ -1549,10 +2496,17 @@ function triggerDeliveryKey(organizationId: string, deliveryId: string): string 
   return `${organizationId}:${deliveryId}`;
 }
 
+function freezeEvidence<T>(value: T): T {
+  if (typeof value !== "object" || value === null) return value;
+  if (Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeEvidence(child);
+  return Object.freeze(value);
+}
+
 function attachmentSourceKey(
-  triggerId: string,
+  providerEventReceiptId: string,
   provider: AttachmentProvider,
   sourceId: string,
 ): string {
-  return `${triggerId}:${provider}:${sourceId}`;
+  return `${providerEventReceiptId}:${provider}:${sourceId}`;
 }

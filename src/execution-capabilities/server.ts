@@ -1,12 +1,39 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ErrorObject } from "ajv";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
+import type { JsonValue } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
+import { registerResponseLifecycle } from "../http/response-lifecycle.js";
+import {
+  compileFinishExecutionArguments,
+  compileJsonSchema,
+  formatJsonSchemaErrors,
+} from "../workflows/json-schema.js";
 import type { OutputExecutorRegistry } from "./outputs.js";
 
-const FinishArgumentsSchema = z.object({}).strict();
-const ReplyArgumentsSchema = z.object({ content: z.string().min(1) }).strict();
+interface JsonSchemaNode {
+  readonly [key: string]: JsonValue;
+}
+
+interface JsonSchema extends JsonSchemaNode {
+  readonly type: "object";
+  readonly properties?: Record<string, JsonSchemaNode>;
+  readonly required?: string[];
+}
+
+const ReplyArgumentsSchema: JsonSchema = {
+  type: "object" as const,
+  properties: { content: { type: "string", minLength: 1 } },
+  required: ["content"],
+  additionalProperties: false,
+};
 
 export interface ExecutionCapabilityServer {
   handle(request: Request, executionId: string): Promise<Response>;
@@ -15,7 +42,11 @@ export interface ExecutionCapabilityServer {
 export function createExecutionCapabilityServer(options: {
   database: Database;
   outputs: OutputExecutorRegistry;
-  completeExecution(input: { executionId: string; token: string }): Promise<AgentExecutionRecord>;
+  completeExecution(input: {
+    executionId: string;
+    token: string;
+    output?: unknown;
+  }): Promise<AgentExecutionRecord>;
   now?: () => Date;
 }): ExecutionCapabilityServer {
   return {
@@ -33,12 +64,24 @@ export function createExecutionCapabilityServer(options: {
         enableJsonResponse: true,
         enableDnsRebindingProtection: false,
       });
-      try {
-        await server.connect(transport);
-        return await transport.handleRequest(request);
-      } finally {
+      let responseLifecycleRegistered = false;
+      const closeMcp = async (): Promise<void> => {
         await server.close().catch(() => undefined);
         await transport.close().catch(() => undefined);
+      };
+      try {
+        await server.connect(transport);
+        const response = await transport.handleRequest(request);
+        responseLifecycleRegistered = true;
+        return registerResponseLifecycle(response, {
+          // HTTP finish only proves that Node flushed the MCP response. The
+          // provider still has to acknowledge its subsequent turn before a
+          // deferred Hub archive action can be reconciled.
+          onFinish: closeMcp,
+          onAbort: closeMcp,
+        });
+      } finally {
+        if (!responseLifecycleRegistered) await closeMcp();
       }
     },
   };
@@ -65,61 +108,160 @@ function createMcpServer(
   options: {
     database: Database;
     outputs: OutputExecutorRegistry;
-    completeExecution(input: { executionId: string; token: string }): Promise<AgentExecutionRecord>;
+    completeExecution(input: {
+      executionId: string;
+      token: string;
+      output?: unknown;
+    }): Promise<AgentExecutionRecord>;
     now?: () => Date;
   },
   execution: AgentExecutionRecord,
   token: string,
-): McpServer {
-  const server = new McpServer({ name: "paseo-hub-execution", version: "1.0.0" });
-  server.registerTool(
-    "finish_execution",
-    {
-      description: "Mark this Hub execution complete after the task is fully finished.",
-      inputSchema: FinishArgumentsSchema,
-    },
-    async () => {
-      try {
-        const completed = await options.completeExecution({ executionId: execution.id, token });
-        return completed.status === "succeeded"
-          ? toolSuccess("Execution finished")
-          : toolFailure("Execution could not be finished");
-      } catch {
-        return toolFailure("Execution could not be finished");
-      }
-    },
+): Server {
+  const server = new Server(
+    { name: "paseo-hub-execution", version: "1.0.0" },
+    { capabilities: { tools: {} } },
   );
-
+  const finishContract = finishExecutionContract(execution.launchIntent?.outputSchema);
+  const tools: Tool[] = [
+    {
+      name: "finish_execution",
+      description: "Mark this Hub execution complete after the task is fully finished.",
+      inputSchema: finishContract.schema,
+    },
+  ];
   const replyOutput = allowedReplyOutput(execution);
   if (replyOutput !== undefined) {
-    server.registerTool(
-      "reply",
-      {
-        description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
-        inputSchema: ReplyArgumentsSchema,
-      },
-      async (args) => {
-        const claimed = await options.database.claimAgentExecutionReply(
-          execution.id,
-          replyOutput.max,
-          options.now?.() ?? new Date(),
-        );
-        if (!claimed) return toolFailure("Reply limit reached");
-        try {
-          await options.outputs.execute({
-            agentExecutionId: execution.id,
-            toolType: replyOutput.type,
-            args,
-            outputContext: execution.outputContext,
-          });
-          return toolSuccess("Reply sent");
-        } catch {
-          return toolFailure("Reply delivery failed; the reply claim remains consumed");
-        }
-      },
-    );
+    tools.push({
+      name: "reply",
+      description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
+      inputSchema: ReplyArgumentsSchema,
+    });
   }
+  const contracts = new Map<string, JsonSchemaContract>([["finish_execution", finishContract]]);
+  if (replyOutput !== undefined) {
+    contracts.set("reply", jsonSchemaContract(ReplyArgumentsSchema));
+  }
+
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const contract = contracts.get(toolName);
+    if (contract === undefined) return toolFailure(`Tool ${toolName} not found`);
+    const args = request.params.arguments ?? {};
+    const validation = contract.validate(args);
+    if (!validation.valid) return toolFailure(validation.message);
+
+    if (toolName === "finish_execution") {
+      try {
+        const output = Object.hasOwn(args, "output") ? args["output"] : undefined;
+        const completed = await options.completeExecution({
+          executionId: execution.id,
+          token,
+          ...(output === undefined ? {} : { output }),
+        });
+        if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
+        await options.database.recordAgentExecutionHubAcknowledgement(execution.id, {
+          kind: "finish_execution",
+          status: "completed",
+          observedAt: options.now?.() ?? new Date(),
+        });
+        return toolSuccess("Execution finished");
+      } catch (error) {
+        return toolFailure(
+          error instanceof Error ? error.message : "Execution could not be finished",
+        );
+      }
+    }
+
+    if (replyOutput === undefined) return toolFailure(`Tool ${toolName} not found`);
+    const claimed = await options.database.claimAgentExecutionReply(
+      execution.id,
+      replyOutput.max,
+      options.now?.() ?? new Date(),
+    );
+    if (!claimed) return toolFailure("Reply limit reached");
+    try {
+      await options.outputs.execute({
+        agentExecutionId: execution.id,
+        toolType: replyOutput.type,
+        args,
+        outputContext: execution.outputContext,
+      });
+      return toolSuccess("Reply sent");
+    } catch {
+      return toolFailure("Reply delivery failed; the reply claim remains consumed");
+    }
+  });
   return server;
+}
+
+interface JsonSchemaContract {
+  schema: JsonSchema;
+  validate(args: Record<string, unknown>): { valid: true } | { valid: false; message: string };
+}
+
+function finishExecutionContract(outputSchema: JsonValue | undefined): JsonSchemaContract {
+  const compiled = compileFinishExecutionArguments(outputSchema);
+  const schema = toolSchema(compiled.schema);
+  return {
+    schema,
+    validate(args) {
+      return compiled.validate(args)
+        ? { valid: true }
+        : {
+            valid: false,
+            message: validationMessage(compiled.validate.errors),
+          };
+    },
+  };
+}
+
+function jsonSchemaContract(schema: JsonSchema): JsonSchemaContract {
+  const compiled = compileJsonSchema(schema);
+  return {
+    schema,
+    validate(args) {
+      return compiled.validate(args)
+        ? { valid: true }
+        : {
+            valid: false,
+            message: validationMessage(compiled.validate.errors),
+          };
+    },
+  };
+}
+
+function validationMessage(errors: readonly ErrorObject[] | null | undefined): string {
+  const messages = formatJsonSchemaErrors(errors, "arguments");
+  return messages.length === 0
+    ? "Invalid arguments for tool"
+    : `Invalid arguments for tool: ${messages.join("; ")}`;
+}
+
+function isSchemaNode(value: JsonValue): value is JsonSchemaNode {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toolSchema(value: JsonValue): JsonSchema {
+  if (!isToolSchema(value)) throw new Error("JSON Schema tool arguments must be an object");
+  return value;
+}
+
+function isToolSchema(value: JsonValue): value is JsonSchema {
+  if (!isSchemaNode(value) || value["type"] !== "object") return false;
+  const properties = value["properties"];
+  const required = value["required"];
+  return (
+    (properties === undefined ||
+      (isRecord(properties) && Object.values(properties).every(isSchemaNode))) &&
+    (required === undefined ||
+      (Array.isArray(required) && required.every((item) => typeof item === "string")))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function allowedReplyOutput(

@@ -1,24 +1,29 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import type { NormalizedSlackMentionEvent } from "./events.js";
+
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedSlackTrigger {
   event: NormalizedSlackMentionEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
 }
 
 export function matchSlackTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedSlackMentionEvent,
   botUserId: string,
   connectionId?: string | null,
 ): MatchedSlackTrigger[] {
   if (event.author.id === botUserId) return [];
-  return config.triggers.flatMap((trigger) =>
-    trigger.on === "slack.mention" &&
-    matchesFilters(event, trigger.filters, botUserId, connectionId)
+  return config.triggers.flatMap((trigger) => {
+    return trigger.on === "slack.mention" &&
+      matchesFilters(event, trigger.filters, botUserId, connectionId)
       ? [{ event, trigger }]
-      : [],
-  );
+      : [];
+  });
 }
 
 function matchesFilters(
@@ -47,6 +52,30 @@ export function readSlackPromptBody(event: NormalizedSlackMentionEvent, botUserI
   const mention = `<@${botUserId}>`;
   const index = event.content.indexOf(mention);
   return index < 0 ? event.content : event.content.slice(index + mention.length).trimStart();
+}
+
+export function readSlackInvocationParserMessage(
+  event: NormalizedSlackMentionEvent,
+  botUserId: string,
+  filters: TriggerFilter | undefined,
+): string {
+  const body = readSlackPromptBody(event, botUserId);
+  const marker = filters === undefined ? undefined : readPatternMarker(filters);
+  if (
+    marker === undefined ||
+    marker.length === 0 ||
+    marker.includes("=") ||
+    !body.startsWith(marker)
+  )
+    return body;
+  const nextCharacter = body.at(marker.length);
+  return nextCharacter === undefined || /\s/u.test(nextCharacter)
+    ? body.slice(marker.length).trimStart()
+    : body;
+}
+
+function readPatternMarker(filters: TriggerFilter): string | undefined {
+  return readString(filters, "pattern") ?? readString(filters, "contains");
 }
 
 function readString(

@@ -1,27 +1,20 @@
-import type { ConnectionResolver, InterpolationContext } from "../../config/index.js";
+import type { ConnectionResolver } from "../../config/connections.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
   AttachmentReference,
 } from "../../attachments/capabilities.js";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import {
-  createInterpolationContext,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  parseTemplate,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
 import { logger } from "../../logger.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { SlackBotClient } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
-import { matchSlackTriggers, readSlackPromptBody } from "./match.js";
+import {
+  matchSlackTriggers,
+  readSlackInvocationParserMessage,
+  readSlackPromptBody,
+} from "./match.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
 export interface SlackMergeData {
   slack: {
@@ -86,7 +79,9 @@ export function createSlackTriggerProvider(options: {
         rawEvent.teamId,
       );
       if (botUserId === undefined) return [];
-      const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
+      const stored = await options
+        .configurationStoreForProject(trigger.projectId)
+        .getRevision(trigger.configurationRevisionId);
       if (stored === undefined) return [];
       const matchedTriggers = matchSlackTriggers(
         stored.configuration,
@@ -99,10 +94,11 @@ export function createSlackTriggerProvider(options: {
       const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
 
       for (const match of matchedTriggers) {
-        const baseEnvironment = readDaemonEnvironment(
-          stored.configuration,
-          match.trigger.environment,
+        const compiledTrigger = stored.configuration.triggers.find(
+          (candidate) => candidate.name === match.trigger.name,
         );
+        if (compiledTrigger === undefined)
+          throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const outputContext: SlackOutputContext = {
           provider: "slack",
           organizationId: trigger.organizationId,
@@ -117,36 +113,40 @@ export function createSlackTriggerProvider(options: {
           event: await buildSlackMergeData(
             event,
             botUserId,
-            trigger.triggerId,
+            trigger.providerEventReceiptId,
             trigger.organizationId,
             event.teamId,
             trigger.connectionId,
             options.attachments,
           ),
         };
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          undefined,
+          readSlackInvocationParserMessage(event, botUserId, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
+        if (invocation.status === "rejected") {
+          matches.push({
+            triggerName: match.trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          });
+          continue;
+        }
         matches.push({
           triggerName: match.trigger.name,
-          environmentName: match.trigger.environment,
-          environment: {
-            ...baseEnvironment,
-            ...(match.trigger.env === undefined
-              ? {}
-              : {
-                  env: Object.fromEntries(
-                    Object.entries(match.trigger.env).map(([key, value]) => [key, value.value]),
-                  ),
-                }),
-          },
-          prompt: match.trigger.prompt.value,
-          agent: cleanTriggerAgent(match.trigger.agent),
-          allowOutputs: cleanAllowedOutputs(match.trigger.allow_outputs ?? []),
-          timeoutMs: parseTriggerTimeoutMs(match.trigger.timeout),
-          idleTimeoutMs: parseTriggerTimeoutMs(match.trigger.idle_timeout),
-          autoArchive: match.trigger.auto_archive,
           triggerContext,
           outputContext,
           configurationRevisionId: stored.revision.id,
           hubConfig: stored.configuration,
+          invocation,
         });
       }
       return matches;
@@ -157,43 +157,20 @@ export function createSlackTriggerProvider(options: {
         launch.executionId,
         options.attachments,
       );
-      const context = buildInterpolationContext(
-        event,
-        withExecutionContext(options.connectionsForProject?.(launch.projectId), launch.executionId),
-      );
-      const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
-        interpolateTemplate(parseTemplate(launch.prompt), context),
-        interpolateRecord(
-          launch.environmentEnv === undefined
-            ? undefined
-            : Object.fromEntries(
-                Object.entries(launch.environmentEnv).map(([key, value]) => [
-                  key,
-                  parseTemplate(value),
-                ]),
-              ),
-          context,
-        ),
-        launch.environmentWorktree === undefined
-          ? undefined
-          : interpolateWorktree(launch.environmentWorktree, context),
-      ]);
       return {
-        prompt,
-        ...(Object.keys(environmentEnv).length === 0 ? {} : { environmentEnv }),
-        ...(environmentWorktree === undefined ? {} : { environmentWorktree }),
+        prompt: appendSlackAttachmentContext(launch.prompt, event),
+        ...(launch.environmentEnv === undefined ? {} : { environmentEnv: launch.environmentEnv }),
+        ...(launch.environmentWorktree === undefined
+          ? {}
+          : { environmentWorktree: launch.environmentWorktree }),
       };
     },
     async onAgentExecutionStarted(context) {
       await replaceReaction(options.client, context.target, "eyes", "hourglass_flowing_sand");
     },
     async onAgentExecutionCompleted(context) {
-      await replaceReaction(
-        options.client,
-        context.target,
-        "hourglass_flowing_sand",
-        "white_check_mark",
-      );
+      await removeReactionSafely(options.client, context.target, "hourglass_flowing_sand");
+      await addReaction(options.client, context.target, "white_check_mark");
     },
     async onAgentExecutionFailed(context, _output, reason) {
       await failWithNotice(options.client, context.target, reason);
@@ -204,21 +181,6 @@ export function createSlackTriggerProvider(options: {
       }
     },
   };
-}
-
-function buildInterpolationContext(
-  event: SlackMergeData,
-  connections: ConnectionResolver | undefined,
-): InterpolationContext {
-  return createInterpolationContext(event, connections);
-}
-
-function withExecutionContext(
-  connections: ConnectionResolver | undefined,
-  executionId: string,
-): ConnectionResolver | undefined {
-  if (connections === undefined) return undefined;
-  return (connectionSlug, value) => connections(connectionSlug, value, { executionId });
 }
 
 async function hydrateSlackEvent(
@@ -257,7 +219,7 @@ async function hydrateSlackEvent(
 async function buildSlackMergeData(
   event: NormalizedSlackMentionEvent,
   botUserId: string,
-  triggerId: string | undefined,
+  providerEventReceiptId: string,
   organizationId: string,
   teamId: string,
   connectionId: string | null | undefined,
@@ -265,7 +227,7 @@ async function buildSlackMergeData(
 ): Promise<SlackMergeData> {
   const triggerAttachments = await registerAttachments(
     event.attachments,
-    triggerId,
+    providerEventReceiptId,
     organizationId,
     teamId,
     connectionId,
@@ -280,7 +242,7 @@ async function buildSlackMergeData(
       created_at: message.createdAt,
       attachments: await registerAttachments(
         message.attachments,
-        triggerId,
+        providerEventReceiptId,
         organizationId,
         teamId,
         connectionId,
@@ -313,7 +275,7 @@ async function buildSlackMergeData(
 
 async function registerAttachments(
   source: NormalizedSlackMentionEvent["attachments"],
-  triggerId: string | undefined,
+  providerEventReceiptId: string,
   organizationId: string,
   teamId: string,
   connectionId: string | null | undefined,
@@ -321,13 +283,13 @@ async function registerAttachments(
 ): Promise<AttachmentReference[]> {
   if (source.length === 0) return [];
   if (attachments === undefined) throw new Error("attachment capability unavailable");
-  if (triggerId === undefined || connectionId === null || connectionId === undefined) {
+  if (connectionId === null || connectionId === undefined) {
     throw new Error("attachment ownership unavailable");
   }
   return Promise.all(
     source.map((file) =>
       attachments.register({
-        triggerId,
+        providerEventReceiptId,
         organizationId,
         connectionId,
         provider: "slack",
@@ -339,6 +301,20 @@ async function registerAttachments(
       }),
     ),
   );
+}
+
+function appendSlackAttachmentContext(prompt: string, event: SlackMergeData): string {
+  const attachments = [
+    ...event.slack.trigger_message.attachments,
+    ...event.slack.trigger_thread_context.messages.flatMap((message) => message.attachments),
+  ];
+  if (attachments.length === 0) return prompt;
+  return `${prompt}\n\nSlack attachments:\n${attachments
+    .map(
+      (attachment) =>
+        `- ${attachment.filename} (${attachment.content_type ?? "unknown type"}, ${attachment.size ?? "unknown size"} bytes): ${"url" in attachment && typeof attachment.url === "string" ? attachment.url : "unavailable"}`,
+    )
+    .join("\n")}`;
 }
 
 async function materializeSlackMergeData(
@@ -368,28 +344,6 @@ async function materializeSlackMergeData(
   };
 }
 
-function readDaemonEnvironment(
-  config: CompiledProjectConfiguration,
-  name: string,
-): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === name);
-  if (environment === undefined) throw new Error(`environment not found: ${name}`);
-  if (environment.kind !== "daemon") {
-    throw new Error(`environment kind is not implemented: ${environment.kind}`);
-  }
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
-  };
-}
-
-function cleanAllowedOutputs(outputs: readonly { type: string; max: number }[]) {
-  return outputs.map((output) => ({ type: output.type, max: output.max }));
-}
-
 async function replaceReaction(
   client: SlackBotClient,
   event: SlackOutputContext,
@@ -407,18 +361,28 @@ async function failWithNotice(
 ): Promise<void> {
   await removeReactionSafely(client, event, "eyes");
   await removeReactionSafely(client, event, "hourglass_flowing_sand");
-  await addReactionSafely(client, event, "x");
-  try {
-    await client.sendMessage({
-      organizationId: event.organizationId,
-      teamId: event.teamId,
-      channelId: event.channelId,
-      threadTs: event.threadTs,
-      content: `Paseo agent failed: ${reason}`,
-    });
-  } catch (error) {
-    logger.warn({ err: error, teamId: event.teamId }, "Slack failure notice failed");
-  }
+  await addReaction(client, event, "x");
+  await client.sendMessage({
+    organizationId: event.organizationId,
+    teamId: event.teamId,
+    channelId: event.channelId,
+    threadTs: event.threadTs,
+    content: `Paseo agent failed: ${reason}`,
+  });
+}
+
+async function addReaction(
+  client: SlackBotClient,
+  event: SlackOutputContext,
+  name: string,
+): Promise<void> {
+  await client.addReaction({
+    organizationId: event.organizationId,
+    teamId: event.teamId,
+    channelId: event.channelId,
+    messageTs: event.messageTs,
+    name,
+  });
 }
 
 async function addReactionSafely(

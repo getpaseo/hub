@@ -7,7 +7,7 @@ describe("LaunchMachineIntent", () => {
     const intent = buildLaunchMachineIntent({
       organizationId: "org_1",
       projectId: "project-1",
-      triggerId: "trigger-row-1",
+      triggerRunId: "trigger-run-1",
       configurationRevisionId: "config-version-1",
       triggerName: "discord-ping",
       environmentName: "hetzner-faro",
@@ -37,7 +37,7 @@ describe("LaunchMachineIntent", () => {
       kind: "launch_machine",
       organizationId: "org_1",
       projectId: "project-1",
-      triggerId: "trigger-row-1",
+      triggerRunId: "trigger-run-1",
       triggerName: "discord-ping",
       environmentName: "hetzner-faro",
       environment: {

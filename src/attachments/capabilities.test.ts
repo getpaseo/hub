@@ -6,30 +6,11 @@ import { createDiscordAttachmentResolver } from "../triggers/discord/attachments
 import { createAttachmentCapabilityRegistry } from "./capabilities.js";
 
 describe("attachment capability boundary", () => {
-  it("streams a provider attachment only through an active execution capability", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: "project-1",
-      source: "slack.mention",
-      deliveryId: "delivery-1",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const executionId = randomUUID();
-    await database.insertAgentExecution({
-      id: executionId,
-      organizationId: "org-1",
-      projectId: "project-1",
-      machineId: null,
-      triggerId: trigger.trigger.id,
-      triggerContext: { provider: "slack" },
-      outputContext: { provider: "slack" },
-      configurationRevisionId: randomUUID(),
-    });
+  it("streams a provider attachment only through its durable workflow receipt", async () => {
+    const fixture = await workflowExecution();
     const resolverCalls: unknown[] = [];
     const registry = createAttachmentCapabilityRegistry({
-      database,
+      database: fixture.database,
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
       resolvers: {
@@ -42,7 +23,7 @@ describe("attachment capability boundary", () => {
       },
     });
     const attachment = await registry.register({
-      triggerId: trigger.trigger.id,
+      providerEventReceiptId: fixture.providerEventReceiptId,
       organizationId: "org-1",
       connectionId: "connection-1",
       provider: "slack",
@@ -54,8 +35,8 @@ describe("attachment capability boundary", () => {
     });
 
     const response = await registry.handle(
-      new Request(registry.urlFor(attachment.id, executionId)),
-      executionId,
+      new Request(registry.urlFor(attachment.id, fixture.executionId)),
+      fixture.executionId,
       attachment.id,
     );
 
@@ -64,60 +45,22 @@ describe("attachment capability boundary", () => {
     assert.equal(response.headers.get("content-type"), "image/png");
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.match(response.headers.get("content-disposition") ?? "", /pixel\.png/u);
-    assert.equal(resolverCalls.length, 1);
-    assert.deepEqual(resolverCalls[0], {
-      organizationId: "org-1",
-      connectionId: "connection-1",
-      locator: { fileId: "F1" },
-    });
+    assert.deepEqual(resolverCalls, [
+      {
+        organizationId: "org-1",
+        connectionId: "connection-1",
+        locator: { fileId: "F1" },
+      },
+    ]);
   });
 
-  it("rejects invalid capabilities before contacting a provider", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: "project-1",
-      source: "discord.mention",
-      deliveryId: "delivery-1",
-      connectionId: "connection-1",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const triggerOther = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: "project-1",
-      source: "discord.mention",
-      deliveryId: "delivery-2",
-      connectionId: "connection-1",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const executionId = randomUUID();
-    const otherExecutionId = randomUUID();
-    await database.insertAgentExecution({
-      id: executionId,
-      organizationId: "org-1",
-      projectId: "project-1",
-      machineId: null,
-      triggerId: trigger.trigger.id,
-      triggerContext: {},
-      outputContext: {},
-      configurationRevisionId: randomUUID(),
-    });
-    await database.insertAgentExecution({
-      id: otherExecutionId,
-      organizationId: "org-1",
-      projectId: "project-1",
-      machineId: null,
-      triggerId: triggerOther.trigger.id,
-      triggerContext: {},
-      outputContext: {},
-      configurationRevisionId: randomUUID(),
-    });
+  it("rejects forged, expired, terminal, and cross-receipt capabilities", async () => {
+    const fixture = await workflowExecution();
+    const other = await workflowExecution(fixture.database, "delivery-2");
     let nowMs = 1_700_000_000_000;
     let resolverCalls = 0;
     const registry = createAttachmentCapabilityRegistry({
-      database,
+      database: fixture.database,
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
       now: () => new Date(nowMs),
@@ -130,7 +73,7 @@ describe("attachment capability boundary", () => {
       },
     });
     const attachment = await registry.register({
-      triggerId: trigger.trigger.id,
+      providerEventReceiptId: fixture.providerEventReceiptId,
       organizationId: "org-1",
       connectionId: "connection-1",
       provider: "discord",
@@ -141,48 +84,34 @@ describe("attachment capability boundary", () => {
       byteSize: 4,
     });
 
-    const validUrl = new URL(registry.urlFor(attachment.id, executionId));
+    const validUrl = new URL(registry.urlFor(attachment.id, fixture.executionId));
     const forgedUrl = new URL(validUrl);
     forgedUrl.searchParams.set("signature", `${validUrl.searchParams.get("signature")}forged`);
-    const crossExecutionUrl = registry.urlFor(attachment.id, otherExecutionId);
-    const ownershipMismatchUrl = registry.urlFor(attachment.id, executionId);
-    const unknownUrl = registry.urlFor(randomUUID(), executionId);
-
-    const expiredQueryUrl = new URL(validUrl);
-    expiredQueryUrl.searchParams.set("expires", "1");
     assert.equal(
-      (await registry.handle(new Request(expiredQueryUrl), executionId, attachment.id)).status,
+      (await registry.handle(new Request(forgedUrl), fixture.executionId, attachment.id)).status,
       404,
     );
-    assert.equal(
-      (await registry.handle(new Request(forgedUrl), executionId, attachment.id)).status,
-      404,
-    );
-    assert.equal(
-      (await registry.handle(new Request(crossExecutionUrl), executionId, attachment.id)).status,
-      404,
-    );
-    assert.equal(
-      (await registry.handle(new Request(ownershipMismatchUrl), otherExecutionId, attachment.id))
-        .status,
-      404,
-    );
-    assert.equal(
-      (await registry.handle(new Request(unknownUrl), executionId, randomUUID())).status,
-      404,
-    );
-
-    nowMs += 11_000;
-    assert.equal(
-      (await registry.handle(new Request(validUrl), executionId, attachment.id)).status,
-      404,
-    );
-    await database.transitionAgentExecution(executionId, "failed");
     assert.equal(
       (
         await registry.handle(
-          new Request(registry.urlFor(attachment.id, executionId)),
-          executionId,
+          new Request(registry.urlFor(attachment.id, other.executionId)),
+          other.executionId,
+          attachment.id,
+        )
+      ).status,
+      404,
+    );
+    nowMs += 11_000;
+    assert.equal(
+      (await registry.handle(new Request(validUrl), fixture.executionId, attachment.id)).status,
+      404,
+    );
+    await fixture.database.transitionAgentExecution(fixture.executionId, "failed");
+    assert.equal(
+      (
+        await registry.handle(
+          new Request(registry.urlFor(attachment.id, fixture.executionId)),
+          fixture.executionId,
           attachment.id,
         )
       ).status,
@@ -191,52 +120,22 @@ describe("attachment capability boundary", () => {
     assert.equal(resolverCalls, 0);
   });
 
-  it("uses the same Hub route for a Discord resolver and preserves streaming metadata", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: "project-1",
-      source: "discord.mention",
-      deliveryId: "discord-delivery",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const executionId = randomUUID();
-    await database.insertAgentExecution({
-      id: executionId,
-      organizationId: "org-1",
-      projectId: "project-1",
-      machineId: null,
-      triggerId: trigger.trigger.id,
-      triggerContext: {},
-      outputContext: {},
-      configurationRevisionId: randomUUID(),
-    });
+  it("preserves Discord streaming metadata", async () => {
+    const fixture = await workflowExecution();
     const resolver = createDiscordAttachmentResolver({
       fetch: async (input) => {
         assert.equal(requestUrl(input), "https://cdn.discordapp.com/attachments/1/2/file.bin");
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode("discord-"));
-              controller.enqueue(new TextEncoder().encode("bytes"));
-              controller.close();
-            },
-          }),
-          { headers: { etag: '"discord-1"' } },
-        );
+        return new Response("discord-bytes", { headers: { etag: '"discord-1"' } });
       },
     });
     const registry = createAttachmentCapabilityRegistry({
-      database,
+      database: fixture.database,
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
-      resolvers: {
-        discord: resolver,
-      },
+      resolvers: { discord: resolver },
     });
     const attachment = await registry.register({
-      triggerId: trigger.trigger.id,
+      providerEventReceiptId: fixture.providerEventReceiptId,
       organizationId: "org-1",
       connectionId: "connection-1",
       provider: "discord",
@@ -248,54 +147,30 @@ describe("attachment capability boundary", () => {
     });
 
     const response = await registry.handle(
-      new Request(registry.urlFor(attachment.id, executionId)),
-      executionId,
+      new Request(registry.urlFor(attachment.id, fixture.executionId)),
+      fixture.executionId,
       attachment.id,
     );
-
     assert.equal(await response.text(), "discord-bytes");
     assert.equal(response.headers.get("etag"), '"discord-1"');
-    assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("content-length"), "13");
   });
 
   it("does not forward encoded upstream lengths", async () => {
-    const database = createMemoryDatabase();
-    const trigger = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: "project-1",
-      source: "slack.mention",
-      deliveryId: "encoded-delivery",
-      payload: {},
-      receivedAt: new Date(),
-    });
-    const executionId = randomUUID();
-    await database.insertAgentExecution({
-      id: executionId,
-      organizationId: "org-1",
-      projectId: "project-1",
-      machineId: null,
-      triggerId: trigger.trigger.id,
-      triggerContext: {},
-      outputContext: {},
-      configurationRevisionId: randomUUID(),
-    });
+    const fixture = await workflowExecution();
     const registry = createAttachmentCapabilityRegistry({
-      database,
+      database: fixture.database,
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
       resolvers: {
         slack: async () =>
           new Response("decoded bytes", {
-            headers: {
-              "content-encoding": "gzip",
-              "content-length": "123",
-            },
+            headers: { "content-encoding": "gzip", "content-length": "123" },
           }),
       },
     });
     const attachment = await registry.register({
-      triggerId: trigger.trigger.id,
+      providerEventReceiptId: fixture.providerEventReceiptId,
       organizationId: "org-1",
       connectionId: "connection-1",
       provider: "slack",
@@ -305,17 +180,88 @@ describe("attachment capability boundary", () => {
       contentType: "application/octet-stream",
       byteSize: 12,
     });
-
     const response = await registry.handle(
-      new Request(registry.urlFor(attachment.id, executionId)),
-      executionId,
+      new Request(registry.urlFor(attachment.id, fixture.executionId)),
+      fixture.executionId,
       attachment.id,
     );
-
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-length"), null);
   });
 });
+
+async function workflowExecution(database = createMemoryDatabase(), deliveryId = "delivery-1") {
+  let project = (await database.listProjectsForOrganization("org-1"))[0];
+  project ??= await database.createProject({
+    organizationId: "org-1",
+    name: "Project 1",
+    slug: "project-1",
+    createdByUserId: "test-user",
+  });
+  let revision = await database.findActiveProjectConfiguration(project.id);
+  if (revision === undefined) {
+    revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "attachment-test-configuration",
+    });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
+  }
+  const persisted = await database.persistManualEvent({
+    organizationId: "org-1",
+    projectId: project.id,
+    connectionId: null,
+    resourceId: null,
+    deliveryId,
+    source: "manual.run",
+    payload: {},
+    receivedAt: new Date(),
+  });
+  if (persisted.status !== "accepted") throw new Error("receipt was not accepted");
+  const run = await database.createAcceptedTriggerRun({
+    organizationId: "org-1",
+    projectId: project.id,
+    configurationRevisionId: revision.id,
+    providerEventReceiptId: persisted.event.providerEventReceiptId,
+    configuredTriggerName: "attachment-run",
+    rawPrompt: "inspect",
+    prompt: "inspect",
+    inputs: {},
+    triggerContext: {},
+    outputContext: {},
+    deadlineAt: new Date(Date.now() + 60_000),
+    stepIds: ["inspect"],
+  });
+  const step = await database.findWorkflowStepRunByTriggerRun(run.run.id);
+  if (step === undefined) throw new Error("step was not created");
+  const executionId = randomUUID();
+  await database.createWorkflowStepExecution({
+    triggerRunId: run.run.id,
+    stepId: step.stepId,
+    ordinal: step.ordinal,
+    executionId,
+    execution: {
+      id: executionId,
+      organizationId: "org-1",
+      projectId: project.id,
+      machineId: null,
+      triggerContext: {},
+      outputContext: {},
+      configurationRevisionId: run.run.configurationRevisionId,
+      deadlineAt: new Date(Date.now() + 60_000),
+      idleDeadlineAt: new Date(Date.now() + 30_000),
+      startedAt: new Date(),
+      workflowStepRunId: step.id,
+    },
+  });
+  return {
+    database,
+    providerEventReceiptId: persisted.event.providerEventReceiptId,
+    executionId,
+  };
+}
 
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;

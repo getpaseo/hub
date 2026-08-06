@@ -8,6 +8,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { chromium } from "@playwright/test";
 import { Pool } from "pg";
 import { z } from "zod";
+import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
 import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
@@ -42,12 +43,14 @@ interface Enrollment {
 interface ManualRun {
   executionId: string;
   agentId: string;
+  provider?: string;
+  processDescriptions?: string[];
 }
 
 interface AmbiguousRunEvidence {
   executionId: string;
   beforeRestart: {
-    triggers: number;
+    receipts: number;
     executions: number;
     status: string;
     daemonId: string | null;
@@ -65,6 +68,8 @@ interface ManagedChild {
 interface HubE2EOptions {
   realAgent?: boolean;
 }
+
+type RealAgentProvider = "claude" | "codex";
 
 export interface ShutdownEvidence {
   durationMs: number;
@@ -92,6 +97,10 @@ export class HubE2E {
   private completionJobs = "";
   private hubPort = 0;
   private stopped = false;
+  private readonly realAgentLaunchEvidence = new Map<
+    string,
+    { provider: string; processDescriptions: string[] }
+  >();
 
   private constructor(private readonly options: HubE2EOptions = {}) {}
 
@@ -152,7 +161,9 @@ export class HubE2E {
       const userCode = new URL(registration.verificationUrl).searchParams.get("code");
       if (userCode === null) throw new Error("Source registration did not contain a user code");
       await this.approveDeviceAuthorization(userCode, displayName);
-      return { daemonId: requiredString(await registration.complete(), "daemonId") };
+      return {
+        daemonId: requiredString(await registration.complete(), "daemonId"),
+      };
     } catch (error) {
       throw new Error("Browser-approved Hub connection failed; sensitive CLI output discarded", {
         cause: error,
@@ -162,10 +173,10 @@ export class HubE2E {
 
   async daemonIsConnected(): Promise<void> {
     await this.observe(async () => {
-      const result = await this.requirePool().query<{ presence: string }>(
-        "select presence from daemons limit 1",
+      const result = await this.requirePool().query<{ connected: string }>(
+        "select count(*)::text as connected from daemons where presence = 'connected'",
       );
-      return result.rows[0]?.presence === "connected" && this.requireProxy().hubConnectionIsOpen();
+      return result.rows[0]?.connected !== "0" && this.requireProxy().hubConnectionIsOpen();
     }, "daemon to become connected");
   }
 
@@ -194,7 +205,7 @@ export class HubE2E {
 
   async installProductionConfiguration(): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons limit 1",
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
@@ -207,15 +218,53 @@ export class HubE2E {
       "triggers:",
       "  - name: deploy",
       "    on: manual.run",
-      "    environment: phase-five",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [phase-five-operator]",
-      "    agent:",
-      "      provider: hub-e2e",
-      "      mode: default",
-      '    prompt: "Deploy ${{ paseo.event.manual.input.service }} for ${{ paseo.event.manual.actor }}"',
-      "    allow_outputs:",
-      "      - type: hub.e2e.result",
+      "    steps:",
+      "      - id: deploy-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
+      "        allow_outputs:",
+      "          - type: hub.e2e",
+      "  - name: e2e-discord",
+      "    on: e2e.discord",
+      "    max_runtime: 2h",
+      "    filters:",
+      "      from_users: [phase-five-operator]",
+      "    steps:",
+      "      - id: e2e-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }] ',
+      "        allow_outputs:",
+      "          - type: discord.reply",
+      "  - name: restart",
+      "    on: manual.run",
+      "    max_runtime: 2h",
+      "    filters:",
+      "      from_users: [phase-five-operator]",
+      "    steps:",
+      "      - id: restart-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      "          provider: hub-e2e",
+      "          mode: default",
+      '        prompt: [{ text: "daemon-restart" }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",
@@ -225,15 +274,20 @@ export class HubE2E {
       },
       body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
     });
-    assertStatus(response, 201, "install production configuration");
+    if (response.status !== 201) {
+      throw new Error(
+        `install production configuration returned HTTP ${response.status}: ${await response.text()}`,
+      );
+    }
   }
 
-  async installRealAgentConfiguration(): Promise<void> {
+  async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons limit 1",
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const mode = provider === "claude" ? "bypassPermissions" : "full-access";
     const yaml = [
       "environments:",
       "  - name: real-agent",
@@ -243,13 +297,19 @@ export class HubE2E {
       "triggers:",
       "  - name: finalize",
       "    on: manual.run",
-      "    environment: real-agent",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [real-agent-operator]",
-      "    agent:",
-      "      provider: codex",
-      "      mode: full-access",
-      '    prompt: "Call the hub.finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP."',
+      "    steps:",
+      "      - id: finalize-step",
+      "        environment: real-agent",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      `          provider: ${provider}`,
+      `          mode: ${mode}`,
+      '        prompt: [{ text: "Call the hub.finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",
@@ -262,7 +322,84 @@ export class HubE2E {
     assertStatus(response, 201, "install real-agent configuration");
   }
 
-  async runManual(deliveryKey: string, service: string): Promise<ManualRun> {
+  async installRealAgentRoutingConfiguration(provider: RealAgentProvider): Promise<void> {
+    const daemon = await this.requirePool().query<{ slug: string }>(
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
+    );
+    const slug = daemon.rows[0]?.slug;
+    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const mode = provider === "claude" ? "bypassPermissions" : "full-access";
+    const yaml = [
+      "environments:",
+      "  - name: real-agent-routing",
+      "    kind: daemon",
+      `    daemon: ${slug}`,
+      `    cwd: ${JSON.stringify(this.workspace)}`,
+      "triggers:",
+      "  - name: route",
+      "    on: manual.run",
+      "    max_runtime: 2h",
+      "    inputs:",
+      "      repo:",
+      "        type: string",
+      "        choices: [paseo, hub]",
+      "    values:",
+      "      selected: '${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}'",
+      "    filters:",
+      "      from_users: [real-agent-routing-operator]",
+      "    steps:",
+      "      - id: classify",
+      "        if: '${{ paseo.inputs.repo == null }}'",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      `          provider: ${provider}`,
+      `          mode: ${mode}`,
+      '        prompt: [{ text: "Classify the request and call hub.finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP. Request: ${{ paseo.prompt }}" }] ',
+      "        output:",
+      "          schema:",
+      "            type: object",
+      "            additionalProperties: false",
+      "            required: [repo]",
+      "            properties:",
+      "              repo:",
+      "                type: string",
+      "                enum: [paseo, hub]",
+      "      - id: work-paseo",
+      "        if: \"${{ values.selected == 'paseo' }}\"",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      `          provider: ${provider}`,
+      `          mode: ${mode}`,
+      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      "      - id: work-hub",
+      "        if: \"${{ values.selected == 'hub' }}\"",
+      "        environment: real-agent-routing",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      `          provider: ${provider}`,
+      `          mode: ${mode}`,
+      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+    ].join("\n");
+    const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${MACHINE_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
+    });
+    assertStatus(response, 201, "install real-agent routing configuration");
+  }
+
+  async runManual(deliveryKey: string, service: string, trigger = "deploy"): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
       method: "POST",
       headers: {
@@ -271,7 +408,7 @@ export class HubE2E {
       },
       body: JSON.stringify({
         projectSlug: PROJECT_SLUG,
-        trigger: "deploy",
+        trigger,
         actor: "phase-five-operator",
         deliveryKey,
         input: { service },
@@ -282,7 +419,7 @@ export class HubE2E {
         id: string;
         slug: string;
         presence: string;
-      }>("select id, slug, presence from daemons limit 1");
+      }>("select id, slug, presence from daemons order by presence = 'connected' desc limit 1");
       throw new Error(
         `run manual trigger returned HTTP ${
           response.status
@@ -291,14 +428,24 @@ export class HubE2E {
         )}\n${this.failureArtifacts()}`,
       );
     }
-    const body = asRecord(await response.json());
-    return {
-      executionId: requiredString(body, "executionId"),
-      agentId: requiredString(body, "agentId"),
-    };
+    await response.json();
+    return this.waitForManualRun(deliveryKey);
   }
 
   async runRealAgentManual(deliveryKey: string): Promise<ManualRun> {
+    return this.runRealAgentWorkflow(deliveryKey, "", "finalize", "real-agent-operator");
+  }
+
+  async runRealAgentRouting(deliveryKey: string, input: string): Promise<ManualRun> {
+    return this.runRealAgentWorkflow(deliveryKey, input, "route", "real-agent-routing-operator");
+  }
+
+  private async runRealAgentWorkflow(
+    deliveryKey: string,
+    input: string,
+    trigger: string,
+    actor: string,
+  ): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
       method: "POST",
       headers: {
@@ -307,10 +454,10 @@ export class HubE2E {
       },
       body: JSON.stringify({
         projectSlug: PROJECT_SLUG,
-        trigger: "finalize",
-        actor: "real-agent-operator",
+        trigger,
+        actor,
         deliveryKey,
-        input: {},
+        input,
       }),
     });
     if (response.status !== 200) {
@@ -318,43 +465,201 @@ export class HubE2E {
         `run real-agent manual trigger returned HTTP ${response.status}: ${await response.text()}`,
       );
     }
-    const body = asRecord(await response.json());
+    await response.json();
+    const run = await this.waitForManualRun(deliveryKey);
+    const source = this.requireSource();
+    const [provider, processDescriptions] = await Promise.all([
+      source.agentProvider(run.agentId),
+      source.processDescriptions(),
+    ]);
+    this.realAgentLaunchEvidence.set(deliveryKey, {
+      provider,
+      processDescriptions,
+    });
+    return { ...run, provider, processDescriptions };
+  }
+
+  async realAgentRoutingEvidence(
+    deliveryKey: string,
+    provider: RealAgentProvider = "codex",
+  ): Promise<{
+    runStatus: string;
+    steps: Array<{ stepId: string; status: string; output: unknown }>;
+    providerEvidence: Array<{
+      stepId: string;
+      requestedProvider: string;
+      sourceProvider: string;
+      completedToolCall: boolean;
+      processDescriptions: string[];
+    }>;
+  }> {
+    let evidence:
+      | {
+          runStatus: string;
+          steps: Array<{
+            stepId: string;
+            status: string;
+            output: unknown;
+            agentId: string | null;
+            requestedProvider: string | null;
+          }>;
+        }
+      | undefined;
+    await this.observe(
+      async () => {
+        const result = await this.requirePool().query<{
+          run_status: string;
+          step_id: string;
+          step_status: string;
+          output: unknown;
+          agent_id: string | null;
+          requested_provider: string | null;
+        }>(
+          `select runs.status as run_status,
+                  steps.step_id,
+                  steps.status as step_status,
+                  steps.output,
+                  executions.daemon_agent_id as agent_id,
+                  executions.launch_intent->'agent'->>'provider' as requested_provider
+         from trigger_runs runs
+         join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+         join workflow_step_runs steps on steps.trigger_run_id = runs.id
+         left join agent_executions executions on executions.id = steps.agent_execution_id
+         where receipts.delivery_id = $1
+         order by steps.ordinal`,
+          [deliveryKey],
+        );
+        if (result.rows.length !== 3 || result.rows[0]?.run_status !== "succeeded") return false;
+        evidence = {
+          runStatus: result.rows[0].run_status,
+          steps: result.rows.map((row) => ({
+            stepId: row.step_id,
+            status: row.step_status,
+            output: row.output,
+            agentId: row.agent_id,
+            requestedProvider: row.requested_provider,
+          })),
+        };
+        return true;
+      },
+      `${provider} routing workflow to finish`,
+      300_000,
+    );
+    if (evidence === undefined) throw new Error("routing evidence unavailable");
+    const providerEvidence = await Promise.all(
+      evidence.steps
+        .filter(
+          (
+            step,
+          ): step is typeof step & {
+            agentId: string;
+            requestedProvider: string;
+          } =>
+            step.status === "succeeded" && step.agentId !== null && step.requestedProvider !== null,
+        )
+        .map(async (step) => {
+          const source = this.requireSource();
+          const sourceProvider = await source.agentProvider(step.agentId);
+          const rawTimeline = await source.canonicalAgentTimeline(step.agentId);
+          const processDescriptions =
+            this.realAgentLaunchEvidence.get(deliveryKey)?.processDescriptions ??
+            (await source.processDescriptions());
+          const timeline = rawTimeline.flatMap((item) => {
+            const parsed = CanonicalToolCallSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          });
+          return {
+            stepId: step.stepId,
+            requestedProvider: step.requestedProvider,
+            sourceProvider,
+            completedToolCall: timeline.some(
+              (item) => isHubFinishExecutionToolName(item.name) && item.status === "completed",
+            ),
+            processDescriptions,
+          };
+        }),
+    );
+    for (const item of providerEvidence) {
+      if (item.requestedProvider !== provider || item.sourceProvider !== provider) {
+        throw new Error(`real ${provider} provider selection mismatch: ${JSON.stringify(item)}`);
+      }
+      if (!item.completedToolCall) {
+        throw new Error(`real ${provider} step ${item.stepId} has no completed finish tool call`);
+      }
+      const binary = provider === "codex" ? /(?:^|\/)codex(?:\s|$)/u : /(?:^|\/)claude(?:\s|$)/u;
+      if (!item.processDescriptions.some((description) => binary.test(description))) {
+        throw new Error(
+          `real ${provider} process evidence missing for step ${item.stepId}: ${JSON.stringify(item.processDescriptions)}`,
+        );
+      }
+    }
     return {
-      executionId: requiredString(body, "executionId"),
-      agentId: requiredString(body, "agentId"),
+      runStatus: evidence.runStatus,
+      steps: evidence.steps.map(({ stepId, status, output }) => ({
+        stepId,
+        status,
+        output,
+      })),
+      providerEvidence,
     };
   }
 
-  async realAgentCompletionEvidence(run: ManualRun): Promise<{
+  async realAgentCompletionEvidence(
+    run: ManualRun,
+    provider: RealAgentProvider = "codex",
+  ): Promise<{
     status: string;
     completedByAgent: boolean;
     completedToolCall: boolean;
     completionHelperLaunched: boolean;
+    sourceProvider: string;
+    processDescriptions: string[];
   }> {
     let completedToolCall = false;
-    await this.observe(
-      async () => {
-        const result = await this.requirePool().query<{
-          status: string;
-          completed_by_agent_at: Date | null;
-        }>("select status, completed_by_agent_at from agent_executions where id = $1", [
-          run.executionId,
-        ]);
-        if (result.rows[0]?.status !== "succeeded" || result.rows[0].completed_by_agent_at === null)
-          return false;
-        const rawTimeline = await this.requireSource().canonicalAgentTimeline(run.agentId);
-        const timeline = rawTimeline.flatMap((item) => {
-          const parsed = CanonicalToolCallSchema.safeParse(item);
-          return parsed.success ? [parsed.data] : [];
-        });
-        completedToolCall = timeline.some(
-          (item) => item.name === "hub.finish_execution" && item.status === "completed",
-        );
-        return completedToolCall;
-      },
-      "real Codex agent to finish through Hub MCP",
-      240_000,
-    );
+    let lastObserved: {
+      status: string | null;
+      completedByAgentAt: string | null;
+    } = {
+      status: null,
+      completedByAgentAt: null,
+    };
+    try {
+      await this.observe(
+        async () => {
+          const result = await this.requirePool().query<{
+            status: string;
+            completed_by_agent_at: Date | null;
+          }>("select status, completed_by_agent_at from agent_executions where id = $1", [
+            run.executionId,
+          ]);
+          lastObserved = {
+            status: result.rows[0]?.status ?? null,
+            completedByAgentAt: result.rows[0]?.completed_by_agent_at?.toISOString() ?? null,
+          };
+          if (
+            result.rows[0]?.status !== "succeeded" ||
+            result.rows[0].completed_by_agent_at === null
+          )
+            return false;
+          const rawTimeline = await this.requireSource().canonicalAgentTimeline(run.agentId);
+          const timeline = rawTimeline.flatMap((item) => {
+            const parsed = CanonicalToolCallSchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          });
+          completedToolCall = timeline.some(
+            (item) => isHubFinishExecutionToolName(item.name) && item.status === "completed",
+          );
+          return completedToolCall;
+        },
+        `real ${provider} agent to finish through Hub MCP`,
+        240_000,
+      );
+    } catch (error) {
+      throw new Error(
+        `real ${provider} completion evidence missing: ${JSON.stringify(lastObserved)}`,
+        { cause: error },
+      );
+    }
     const result = await this.requirePool().query<{
       status: string;
       completed_by_agent_at: Date | null;
@@ -362,11 +667,30 @@ export class HubE2E {
       run.executionId,
     ]);
     const row = result.rows[0] ?? {};
+    const sourceProvider = await this.requireSource().agentProvider(run.agentId);
+    if (sourceProvider !== provider || run.provider !== provider) {
+      throw new Error(
+        `real ${provider} provider selection mismatch: ${JSON.stringify({
+          requestedProvider: provider,
+          hubProvider: run.provider,
+          sourceProvider,
+        })}`,
+      );
+    }
+    const processDescriptions = run.processDescriptions ?? [];
+    const binary = provider === "codex" ? /(?:^|\/)codex(?:\s|$)/u : /(?:^|\/)claude(?:\s|$)/u;
+    if (!processDescriptions.some((description) => binary.test(description))) {
+      throw new Error(
+        `real ${provider} process evidence missing: ${JSON.stringify(processDescriptions)}`,
+      );
+    }
     return {
       status: requiredString(row, "status"),
       completedByAgent: result.rows[0]?.completed_by_agent_at instanceof Date,
       completedToolCall,
       completionHelperLaunched: this.completionRunner !== undefined,
+      sourceProvider,
+      processDescriptions,
     };
   }
 
@@ -389,16 +713,14 @@ export class HubE2E {
     }
     const executionId = await this.executionForDelivery(deliveryKey);
     await this.observe(async () => {
-      const execution = await this.requirePool().query<{ daemon_agent_id: string | null }>(
-        "select daemon_agent_id from agent_executions where id = $1",
-        [executionId],
-      );
+      const execution = await this.requirePool().query<{
+        daemon_agent_id: string | null;
+      }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
       return execution.rows[0]?.daemon_agent_id !== null;
     }, "capability execution association");
-    const execution = await this.requirePool().query<{ daemon_agent_id: string }>(
-      "select daemon_agent_id from agent_executions where id = $1",
-      [executionId],
-    );
+    const execution = await this.requirePool().query<{
+      daemon_agent_id: string;
+    }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
     return {
       executionId,
       agentId: requiredString({ agentId: execution.rows[0]?.daemon_agent_id }, "agentId"),
@@ -564,7 +886,7 @@ export class HubE2E {
 
   async beginDaemonRestartRun(): Promise<ManualRun> {
     await rm(this.completionGate, { force: true });
-    const run = await this.runManual("daemon-restart-delivery", "daemon-restart");
+    const run = await this.runManual("daemon-restart-delivery", "daemon-restart", "restart");
     await this.observe(
       async () =>
         (await readJsonLines(this.acpRecordFile)).some(
@@ -653,7 +975,7 @@ export class HubE2E {
       [executionId],
     );
     return {
-      deliveryTriggers: delivery.triggers,
+      deliveryReceipts: delivery.receipts,
       executions: delivery.executions,
       persistedDaemonAgents: persistedAgents.length,
       ownerMatchingAgentId: persistedAgent.id,
@@ -668,9 +990,9 @@ export class HubE2E {
   }
 
   private async deliveryEvidence(deliveryId: string) {
-    const [triggers, executions] = await Promise.all([
+    const [receipts, executions] = await Promise.all([
       this.requirePool().query<{ count: number }>(
-        "select count(*)::int as count from triggers where delivery_id = $1",
+        "select count(*)::int as count from provider_event_receipts where delivery_id = $1",
         [deliveryId],
       ),
       this.requirePool().query<{
@@ -678,14 +1000,19 @@ export class HubE2E {
         daemon_id: string | null;
         daemon_agent_id: string | null;
       }>(
-        "select ae.status, ae.daemon_id, ae.daemon_agent_id from agent_executions ae join triggers t on t.id = ae.trigger_id where t.delivery_id = $1",
+        `select distinct ae.status, ae.daemon_id, ae.daemon_agent_id
+         from agent_executions ae
+         join workflow_step_runs steps on steps.agent_execution_id = ae.id
+         join trigger_runs runs on runs.id = steps.trigger_run_id
+         join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+         where receipts.delivery_id = $1`,
         [deliveryId],
       ),
     ]);
     const execution = executions.rows[0];
     if (!execution) throw new Error(`Delivery ${deliveryId} has no execution`);
     return {
-      triggers: triggers.rows[0]?.count ?? 0,
+      receipts: receipts.rows[0]?.count ?? 0,
       executions: executions.rows.length,
       status: execution.status,
       daemonId: execution.daemon_id,
@@ -870,7 +1197,11 @@ export class HubE2E {
 
   private async approveDeviceAuthorization(userCode: string, displayName: string): Promise<void> {
     const origin = this.requireProxy().origin;
-    const headers = { "content-type": "application/json", origin, "sec-fetch-site": "same-origin" };
+    const headers = {
+      "content-type": "application/json",
+      origin,
+      "sec-fetch-site": "same-origin",
+    };
     const signUp = await fetch(`${origin}/api/auth/sign-up/email`, {
       method: "POST",
       headers,
@@ -934,7 +1265,6 @@ export class HubE2E {
         listen: daemonHost,
         relay: { enabled: false },
         mcp: { enabled: false, injectIntoAgents: false },
-        browserTools: { enabled: false },
         cors: { allowedOrigins: [] },
       },
       ...(this.options.realAgent === true
@@ -974,16 +1304,43 @@ export class HubE2E {
   private async executionForDelivery(deliveryId: string): Promise<string> {
     await this.observe(async () => {
       const row = await this.requirePool().query<{ id: string }>(
-        "select ae.id from agent_executions ae join triggers t on t.id = ae.trigger_id where t.delivery_id = $1",
+        `select distinct ae.id
+         from agent_executions ae
+         join workflow_step_runs steps on steps.agent_execution_id = ae.id
+         join trigger_runs runs on runs.id = steps.trigger_run_id
+         join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+         where receipts.delivery_id = $1`,
         [deliveryId],
       );
       return row.rows[0] !== undefined;
     }, "ambiguous execution to persist");
     const row = await this.requirePool().query<{ id: string }>(
-      "select ae.id from agent_executions ae join triggers t on t.id = ae.trigger_id where t.delivery_id = $1",
+      `select distinct ae.id
+       from agent_executions ae
+       join workflow_step_runs steps on steps.agent_execution_id = ae.id
+       join trigger_runs runs on runs.id = steps.trigger_run_id
+       join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+       where receipts.delivery_id = $1`,
       [deliveryId],
     );
     return row.rows[0]!.id;
+  }
+
+  private async waitForManualRun(deliveryId: string): Promise<ManualRun> {
+    const executionId = await this.executionForDelivery(deliveryId);
+    await this.observe(async () => {
+      const row = await this.requirePool().query<{
+        daemon_agent_id: string | null;
+      }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
+      return row.rows[0]?.daemon_agent_id !== null;
+    }, "manual execution association");
+    const row = await this.requirePool().query<{
+      daemon_agent_id: string | null;
+    }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
+    return {
+      executionId,
+      agentId: requiredString({ agentId: row.rows[0]?.daemon_agent_id }, "agentId"),
+    };
   }
 
   private async outputIsPersisted(executionId: string): Promise<boolean> {

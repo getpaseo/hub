@@ -63,11 +63,12 @@ describe.skipIf(!SHOULD_RUN)("Discord real E2E", () => {
           accept: (input) =>
             Promise.resolve({
               status: "accepted",
-              triggers: [
+              events: [
                 {
-                  triggerId: `real-${input.deliveryId}`,
+                  providerEventReceiptId: `real-${input.deliveryId}`,
                   organizationId: "real-e2e",
                   projectId: "project-1",
+                  configurationRevisionId: "11111111-1111-4111-8111-111111111134",
                   deliveryId: input.deliveryId,
                   source: input.source,
                   payload: input.payload,

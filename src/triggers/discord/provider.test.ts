@@ -3,160 +3,129 @@ import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
-import { buildLaunchMachineIntent } from "../../dispatcher/launch-machine-intent.js";
-import type { TriggerProviderMatch } from "../index.js";
-import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { MemoryDiscordBotClient } from "./memory-bot.js";
-import {
-  createDiscordTriggerProvider,
-  type DiscordOutputContext,
-  type DiscordTriggerContext,
-} from "./provider.js";
+import { createDiscordTriggerProvider } from "./provider.js";
+import type { NormalizedDiscordMessageEvent } from "./events.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
 
-describe("Discord trigger provider", () => {
-  it("matches without side effects and acknowledges only after dispatch acceptance", async () => {
-    const {
-      project,
-      revision: version,
-      store,
-    } = await activeConfiguration(createConfig({ autoArchive: true }));
-    const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot,
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-1",
-      receivedAt: new Date(),
-      payload: createEvent(),
-    });
-    assert.equal(bot.reactions.length, 0);
-    const match = matches[0];
-    assert.ok(match);
-    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
-
-    assert.equal(matches.length, 1);
-    assert.equal(matches[0]?.configurationRevisionId, version.id);
-    assert.equal(matches[0]?.environment.kind, "daemon");
-    assert.equal(matches[0]?.environment.authoredSlug, "mob-hetzner");
-    assert.equal(matches[0]?.autoArchive, true);
-    assert.deepEqual(
-      bot.reactions.map((reaction) => ({
-        channelId: reaction.channelId,
-        messageId: reaction.messageId,
-        emoji: reaction.emoji,
-      })),
-      [{ channelId: "200", messageId: "300", emoji: "👀" }],
-    );
-  });
-
-  it("dispatches only the trigger compiled for the durable incoming connection", async () => {
-    const { project, store } = await activeConfiguration(createConfigWithConnectionFilters());
+describe("Discord Phase 1 trigger provider", () => {
+  it("normalizes typed inputs identically at the provider boundary", async () => {
+    const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
 
-    const matches = await provider.match(
-      Object.assign(
-        {
-          organizationId: "org_1",
-          projectId: project.id,
-          source: "discord.mention",
-          deliveryId: "delivery-connection-filter",
-          receivedAt: new Date(),
-          payload: createEvent(),
-        },
-        { connectionId: "22222222-2222-4222-8222-222222222222" },
-      ),
-    );
+    const match = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          event({ content: "<@900> repo=hub agent=opus investigate" }),
+        ),
+      )
+    )[0];
 
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "<@900> repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
+  it("parses typed inputs after a matched command marker", async () => {
+    const { project, revision, store } = await activeConfiguration(inputMarkerConfiguration());
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, event({ content: "<@900> run repo=hub investigate" })),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
+  it("matches a literal one-step prompt and keeps the mention allowlist fail-closed", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot,
+    });
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.configurationRevisionId, revision.id);
+    assert.deepEqual(
+      await provider.match(external(project.id, revision.id, event({ authorId: "401" }))),
+      [],
+    );
+  });
+
+  it("preserves reply lifecycle actions and auto-archive in the provider match", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot,
+    });
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
+      status: "succeeded",
+    });
+    assert.deepEqual(
+      bot.reactions.map((reaction) => reaction.emoji),
+      ["👀", "⏳", "✅"],
+    );
+  });
+
+  it("routes a durable Discord receipt to the configured connection", async () => {
+    const database = createMemoryDatabase();
+    const connection = {
+      id: "22222222-2222-4222-8222-222222222222",
+      organizationId: "org_1",
+      slug: "secondary",
+      guildId: "100",
+      guildName: "Secondary",
+    };
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({ github: [], slack: [], discord: [connection] });
+    database.findDiscordConnectionForOrganization = () => Promise.resolve(connection);
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      discordConnectionConfiguration(),
+    );
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+
+    const matches = await provider.match({
+      ...external(project.id, revision.id, event()),
+      connectionId: "22222222-2222-4222-8222-222222222222",
+    });
     assert.deepEqual(
       matches.map((match) => match.triggerName),
       ["secondary-connection"],
     );
   });
 
-  it("interpolates rich Discord trigger-message fields", async () => {
-    const { project, store } = await activeConfiguration(createConfig());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-2",
-      receivedAt: new Date(),
-      payload: createEvent({ content: "<@900> ping deploy please" }),
-    });
-
-    const match = matches[0];
-    assert.ok(match);
-    assert.equal(
-      (await materialize(provider, match, project.id)).prompt,
-      "respond from tester: ping deploy please",
-    );
-  });
-
-  it("interpolates typed Discord thread context messages", async () => {
-    const { project, store } = await activeConfiguration(
-      createConfig({
-        prompt:
-          "context: ${{ paseo.event.discord.trigger_thread_context.messages.0.author.username }} said ${{ paseo.event.discord.trigger_thread_context.messages.0.content }}",
-      }),
-    );
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-thread-context",
-      receivedAt: new Date(),
-      payload: createEvent({
-        channelId: "207",
-        threadId: "207",
-        parentChannelId: "200",
-        threadContextMessages: [
-          {
-            id: "299",
-            channelId: "207",
-            content: "ship the release",
-            author: { id: "401", username: "maintainer", bot: false },
-            createdAt: "2026-05-18T23:59:00.000Z",
-            attachments: [],
-            referencedMessage: null,
-          },
-        ],
-      }),
-    });
-
-    const match = matches[0];
-    assert.ok(match);
-    assert.equal(
-      (await materialize(provider, match, project.id)).prompt,
-      "context: maintainer said ship the release",
-    );
-  });
-
-  it("preserves Discord attachments and referenced-message identity", async () => {
+  it("preserves Discord attachments, references, and thread context as durable evidence", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
+    const { project, revision, store } = await createActiveProjectConfiguration(
       database,
-      createConfig({
-        prompt:
-          "trigger=${{ paseo.event.discord.trigger_message.attachments.0.filename }} reply=${{ paseo.event.discord.trigger_message.referenced_message.id }} context=${{ paseo.event.discord.trigger_thread_context.messages.0.attachments.0.url }}",
-      }),
+      discordConfiguration(),
     );
     const attachments = createAttachmentCapabilityRegistry({
       database,
@@ -176,631 +145,353 @@ describe("Discord trigger provider", () => {
       contentType: "image/png",
       size: 42,
     };
-    const [match] = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      triggerId: "trigger-discord-media",
-      connectionId: "11111111-1111-4111-8111-111111111111",
-      source: "discord.mention",
-      deliveryId: "delivery-discord-media",
-      receivedAt: new Date(),
-      payload: createEvent({
-        attachments: [attachment],
-        referencedMessage: { id: "298", channelId: "200", guildId: "100" },
-        threadContextMessages: [
-          {
-            id: "299",
-            channelId: "200",
-            content: "see image",
-            author: { id: "401", username: "maintainer", bot: false },
-            createdAt: "2026-05-18T23:59:00.000Z",
+    const match = (
+      await provider.match({
+        ...external(
+          project.id,
+          revision.id,
+          event({
+            channelId: "207",
+            threadId: "207",
+            parentChannelId: "200",
             attachments: [attachment],
-            referencedMessage: null,
-          },
-        ],
-      }),
-    });
+            referencedMessage: { id: "298", channelId: "200", guildId: "100" },
+            threadContextMessages: [
+              {
+                id: "299",
+                channelId: "207",
+                content: "see image",
+                author: { id: "401", username: "maintainer", bot: false },
+                createdAt: "2026-05-18T23:59:00.000Z",
+                attachments: [attachment],
+                referencedMessage: null,
+              },
+            ],
+          }),
+        ),
+        connectionId: "22222222-2222-4222-8222-222222222222",
+      })
+    )[0];
 
-    assert.ok(match);
-    const reference =
-      match.triggerContext.event.discord.trigger_thread_context.messages[0]?.attachments[0];
-    assert.ok(reference);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const triggerAttachment = match.triggerContext.event.discord.trigger_message.attachments[0];
+    assert.ok(triggerAttachment);
+    assert.equal("url" in triggerAttachment, false);
+    assert.deepEqual(match.triggerContext.event.discord.trigger_message.referenced_message, {
+      id: "298",
+      channel_id: "200",
+      guild_id: "100",
+    });
     assert.equal(
-      (await materialize(provider, match, project.id)).prompt,
-      `trigger=design.png reply=298 context=${attachments.urlFor(reference.id, "execution-discord-materialize")}`,
+      match.triggerContext.event.discord.trigger_thread_context.messages[0]?.content,
+      "see image",
     );
-  });
-
-  it("keeps integration secrets out of durable dispatch and resolves them at launch", async () => {
-    const {
-      project,
-      revision: version,
-      store,
-    } = await activeConfiguration(createConfigWithIntegrationTemplates());
-    const calls: Array<{ organizationId: string; value: string }> = [];
-    let executionId: string | undefined;
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      connectionsForProject: (projectId) => (_slug, value, context) => {
-        executionId = context?.executionId;
-        calls.push({ organizationId: projectId, value });
-        return Promise.resolve("ghs_org_token");
-      },
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
+    const materialized = await provider.materializeLaunch?.({
+      executionId: "execution-discord-materialize",
       organizationId: "org_1",
       projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-github-identity",
-      receivedAt: new Date(),
-      payload: createEvent(),
+      prompt: "Inspect the Discord request.",
+      triggerContext: match.triggerContext,
     });
-
-    const match = matches[0];
-    assert.ok(match);
-    const intent = buildLaunchMachineIntent({
-      ...match,
-      organizationId: "org_1",
-      projectId: project.id,
-      triggerId: "trigger-discord-secret",
-      configurationRevisionId: version.id,
-    });
-
-    assert.deepEqual(
-      {
-        prompt: intent.prompt,
-        env: intent.environment.env,
-        worktree: intent.environment.worktree,
-      },
-      {
-        prompt:
-          "secret ${{ paseo.connections.getpaseo-github.token }} for ${{ paseo.event.discord.trigger_message.body }}",
-        env: { GH_TOKEN: "${{ paseo.connections.getpaseo-github.token }}" },
-        worktree: {
-          mode: "branch-off",
-          newBranch: "discord-${{ paseo.connections.getpaseo-github.token }}",
-          base: "body-${{ paseo.event.discord.trigger_message.body }}",
-        },
-      },
-    );
-    assert.equal(JSON.stringify(intent).includes("ghs_org_token"), false);
-    assert.deepEqual(calls, []);
-    assert.deepEqual(await materialize(provider, match, project.id), {
-      prompt: "secret ghs_org_token for ping",
-      environmentEnv: { GH_TOKEN: "ghs_org_token" },
-      environmentWorktree: {
-        mode: "branch-off",
-        newBranch: "discord-ghs_org_token",
-        base: "body-ping",
-      },
-    });
-    assert.deepEqual(calls, [{ organizationId: project.id, value: "token" }]);
-    assert.equal(executionId, "execution-discord-materialize");
-  });
-
-  it("uses only the explicitly named organization GitHub connection", async () => {
-    const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
-      database,
-      createConfigWithIntegrationTemplates("github-primary"),
-      { organizationId: "org-1" },
-    );
-    const installations = [
-      { slug: "github-primary", installationId: 142 },
-      { slug: "github-secondary", installationId: 284 },
-    ];
-    const used: number[] = [];
-    const resolveConnection = async (slug: string, value: string) => {
-      assert.equal(value, "token");
-      const connection = installations.find((candidate) => candidate.slug === slug);
-      if (connection === undefined) throw new Error(`connection slug is unavailable: ${slug}`);
-      used.push(connection.installationId);
-      return `github-token-${connection.installationId}`;
-    };
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      connectionsForProject: () => resolveConnection,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-    const [match] = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-explicit-github-connection",
-      receivedAt: new Date(),
-      payload: createEvent(),
-    });
-    assert.ok(match);
-
-    assert.deepEqual((await materialize(provider, match, project.id)).environmentEnv, {
-      GH_TOKEN: "github-token-142",
-    });
-    assert.deepEqual(used, [142]);
-    await assert.rejects(
-      () => resolveConnection("github-missing", "token"),
-      /connection slug is unavailable/u,
-    );
-    await assert.rejects(
-      () => resolveConnection("org-2-github", "token"),
-      /connection slug is unavailable/u,
-    );
-  });
-
-  it("exposes typed Discord message identity in the interpolation context", async () => {
-    const {
-      project,
-      revision: _version,
-      store,
-    } = await activeConfiguration(
-      createConfig({
-        prompt:
-          "respond to ${{ paseo.event.discord.trigger_message.id }} in ${{ paseo.event.discord.trigger_message.channel.id }}",
-      }),
-    );
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-id",
-      receivedAt: new Date(),
-      payload: createEvent({ messageId: "323" }),
-    });
-
-    const match = matches[0];
-    assert.ok(match);
-    assert.equal((await materialize(provider, match, project.id)).prompt, "respond to 323 in 200");
-  });
-
-  it("exposes the typed Discord trigger-message URL", async () => {
-    const {
-      project,
-      revision: _version,
-      store,
-    } = await activeConfiguration(
-      createConfig({
-        prompt: "inspect ${{ paseo.event.discord.trigger_message.url }}",
-      }),
-    );
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-url",
-      receivedAt: new Date(),
-      payload: createEvent({ messageId: "323" }),
-    });
-
-    const match = matches[0];
-    assert.ok(match);
     assert.equal(
-      (await materialize(provider, match, project.id)).prompt,
-      "inspect https://discord.com/channels/100/200/323",
+      (materialized?.prompt ?? "").includes(
+        attachments.urlFor(triggerAttachment.id, "execution-discord-materialize"),
+      ),
+      true,
     );
-  });
-
-  it("interpolates typed Discord fields in trigger env values", async () => {
-    const {
-      project,
-      revision: _version,
-      store,
-    } = await activeConfiguration(
-      createConfig({
-        env: {
-          DISCORD_EVENT_ID: "${{ paseo.event.discord.trigger_message.id }}",
-        },
-      }),
-    );
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-env-id",
-      receivedAt: new Date(),
-      payload: createEvent({ messageId: "324" }),
-    });
-
-    const match = matches[0];
-    assert.ok(match);
-    assert.deepEqual(match.environment, {
-      kind: "daemon",
-      daemonId: "daemon-mob-hetzner",
-      authoredSlug: "mob-hetzner",
-      cwd: "/home/moboudra/dev/faro",
-      env: {
-        DISCORD_EVENT_ID: "${{ paseo.event.discord.trigger_message.id }}",
-      },
-    });
-    assert.deepEqual((await materialize(provider, match, project.id)).environmentEnv, {
-      DISCORD_EVENT_ID: "324",
-    });
-  });
-
-  it("passes daemon worktree targets through matched trigger environments", async () => {
-    const {
-      project,
-      revision: _version,
-      store,
-    } = await activeConfiguration(createConfigWithWorktree());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-worktree",
-      receivedAt: new Date(),
-      payload: createEvent(),
-    });
-
-    assert.deepEqual(matches[0]?.environment, {
-      kind: "daemon",
-      daemonId: "daemon-mob-hetzner",
-      authoredSlug: "mob-hetzner",
-      cwd: "/home/moboudra/dev/faro",
-      worktree: {
-        mode: "branch-off",
-        newBranch: "trigger-${{ paseo.event.discord.trigger_message.id }}",
-        base: "main",
-      },
-    });
-    const match = matches[0];
-    assert.ok(match);
-    assert.deepEqual((await materialize(provider, match, project.id)).environmentWorktree, {
-      mode: "branch-off",
-      newBranch: "trigger-300",
-      base: "main",
-    });
-  });
-
-  it("emits a DiscordOutputContext with guild, channel, thread, and message IDs", async () => {
-    const { project, store } = await activeConfiguration(createConfig());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-3",
-      receivedAt: new Date(),
-      payload: createEvent({ threadId: "207", parentChannelId: "200" }),
-    });
-
-    assert.deepEqual(matches[0]?.outputContext, {
+    assert.deepEqual(match.outputContext, {
       provider: "discord",
       guildId: "100",
-      channelId: "200",
+      channelId: "207",
       threadId: "207",
       messageId: "300",
     });
   });
 
-  it("does not inject Discord provider context into daemon env", async () => {
-    const { project, store } = await activeConfiguration(createConfig());
+  it("persists a static Discord worktree target across launch recovery", async () => {
+    const { project, revision, store } = await activeConfiguration(discordWorktreeConfiguration());
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
-
-    const matches = await provider.match({
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const worktree = {
+      mode: "branch-off",
+      newBranch: "discord-recovery",
+      base: "main",
+    } as const;
+    const materialized = await provider.materializeLaunch?.({
+      executionId: "discord-worktree-recovery",
       organizationId: "org_1",
       projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-agent-env",
-      receivedAt: new Date(),
-      payload: createEvent({
-        channelId: "207",
-        threadId: "207",
-        parentChannelId: "200",
-        messageId: "323",
-      }),
+      prompt: "Respond to the Discord mention.",
+      environmentWorktree: worktree,
+      triggerContext: match.triggerContext,
     });
-
-    assert.equal("agentEnv" in Object(matches[0]), false);
+    assert.deepEqual(materialized?.environmentWorktree, worktree);
   });
 
-  it("returns no matches when no HubConfig indexes the message's guild", async () => {
-    const { project, store } = await activeConfiguration(emptyConfiguration());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-4",
-      receivedAt: new Date(),
-      payload: createEvent(),
-    });
-
-    assert.equal(matches.length, 0);
-  });
-
-  it("matches guildless discord triggers from any guild", async () => {
-    const {
-      project,
-      revision: version,
-      store,
-    } = await activeConfiguration(createConfigWithoutGuild());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-
-    const matches = await provider.match({
-      organizationId: "org_1",
-      projectId: project.id,
-      source: "discord.mention",
-      deliveryId: "delivery-5",
-      receivedAt: new Date(),
-      payload: createEvent({ guildId: "101" }),
-    });
-
-    assert.equal(matches.length, 1);
-    assert.equal(matches[0]?.configurationRevisionId, version.id);
-  });
-
-  it("posts spawn-status lifecycle reactions against the original message", async () => {
-    const { store } = await activeConfiguration(emptyConfiguration());
+  it("targets lifecycle reactions and termination notices at the original Discord message", async () => {
+    const { project, revision, store } = await activeConfiguration();
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot,
     });
-    const event = createEvent();
-    const triggerContext = createTriggerContext(event);
-    const outputContext: DiscordOutputContext = {
-      provider: "discord",
-      guildId: event.guildId,
-      channelId: event.channelId,
-      threadId: event.threadId,
-      messageId: event.messageId,
-    };
+    const match = (
+      await provider.match(external(project.id, revision.id, event({ threadId: "207" })))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
-    await provider.onAgentExecutionStarted?.(triggerContext, outputContext);
-    await provider.onAgentExecutionCompleted?.(triggerContext, outputContext, {
-      status: "succeeded",
-    });
-    await provider.onAgentExecutionFailed?.(triggerContext, outputContext, "boom");
+    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
+    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+    await provider.onMachineTerminated?.(match.triggerContext, "launch_failed");
+    await provider.onMachineTerminated?.(match.triggerContext, "completed");
 
-    assert.deepEqual(
-      bot.deletedOwnReactions.map((reaction) => reaction.emoji),
-      ["👀", "⏳", "👀", "⏳"],
-    );
     assert.deepEqual(
       bot.reactions.map((reaction) => reaction.emoji),
-      ["⏳", "✅", "❌"],
+      ["👀", "⏳", "❌", "❌"],
     );
     assert.deepEqual(
-      bot.messages.map((message) => message.content),
-      ["Paseo agent failed: boom"],
+      bot.deletedOwnReactions.map((reaction) => reaction.emoji),
+      ["👀", "👀", "⏳", "👀", "⏳"],
+    );
+    assert.deepEqual(
+      bot.messages.map((message) => ({
+        channelId: message.channelId,
+        threadId: message.threadId,
+        content: message.content,
+      })),
+      [
+        {
+          channelId: "200",
+          threadId: "207",
+          content: "Paseo agent failed: boom",
+        },
+        {
+          channelId: "200",
+          threadId: "207",
+          content: "Paseo machine terminated before the agent could complete: launch_failed",
+        },
+      ],
     );
   });
 
-  it("posts an explanatory thread message when the machine terminates before completion", async () => {
-    const { store } = await activeConfiguration(emptyConfiguration());
-    const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot,
+  it("propagates terminal Discord reaction and notice failures", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const reactionBot = new FailingDiscordBotClient({
+      selfUserId: "900",
+      failReactionEmoji: "✅",
     });
-    const event = createEvent();
-    const triggerContext = createTriggerContext(event);
+    const reactionProvider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: reactionBot,
+    });
+    const match = (await reactionProvider.match(external(project.id, revision.id, event())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
-    await provider.onMachineTerminated?.(triggerContext, "launch_failed");
-    await provider.onMachineTerminated?.(triggerContext, "completed");
-
+    await assert.rejects(async () => {
+      await reactionProvider.onAgentExecutionCompleted!(match.triggerContext, match.outputContext, {
+        status: "succeeded",
+      });
+    }, /discord reaction failed/u);
     assert.deepEqual(
-      bot.deletedOwnReactions.map((reaction) => reaction.emoji),
-      ["👀", "⏳"],
+      reactionBot.deletedOwnReactions.map((reaction) => reaction.emoji),
+      ["⏳"],
     );
+
+    const noticeBot = new FailingDiscordBotClient({
+      selfUserId: "900",
+      failMessages: true,
+    });
+    const noticeProvider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: noticeBot,
+    });
+    await assert.rejects(async () => {
+      await noticeProvider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        "boom",
+      );
+    }, /discord message failed/u);
     assert.deepEqual(
-      bot.reactions.map((reaction) => reaction.emoji),
+      noticeBot.reactions.map((reaction) => reaction.emoji),
       ["❌"],
     );
-    assert.equal(bot.messages.length, 1);
-    assert.match(bot.messages[0]?.content ?? "", /launch_failed/u);
   });
 });
 
-function createConfig(
-  overrides: {
-    prompt?: string;
-    env?: Record<string, string>;
-    autoArchive?: boolean;
-  } = {},
-): unknown {
+async function activeConfiguration(rawConfiguration = discordConfiguration()) {
+  return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
+}
+
+class FailingDiscordBotClient extends MemoryDiscordBotClient {
+  constructor(
+    options: ConstructorParameters<typeof MemoryDiscordBotClient>[0] & {
+      failReactionEmoji?: string;
+      failMessages?: boolean;
+    },
+  ) {
+    super(options);
+    this.failReactionEmoji = options.failReactionEmoji;
+    this.failMessages = options.failMessages ?? false;
+  }
+
+  private readonly failReactionEmoji: string | undefined;
+  private readonly failMessages: boolean;
+
+  override async createReaction(input: Parameters<MemoryDiscordBotClient["createReaction"]>[0]) {
+    if (input.emoji === this.failReactionEmoji) throw new Error("discord reaction failed");
+    await super.createReaction(input);
+  }
+
+  override async sendChannelMessage(
+    input: Parameters<MemoryDiscordBotClient["sendChannelMessage"]>[0],
+  ) {
+    if (this.failMessages) throw new Error("discord message failed");
+    await super.sendChannelMessage(input);
+  }
+}
+
+function discordConfiguration() {
   return {
     environments: [
       {
-        name: "hetzner",
+        name: "discord-runner",
         kind: "daemon",
         daemon: "mob-hetzner",
-        cwd: "/home/moboudra/dev/faro",
+        cwd: "/repo",
       },
     ],
     triggers: [
       {
         name: "discord-mention",
         on: "discord.mention",
-        environment: "hetzner",
-        filters: {
-          guild: "100",
-          contains: "ping",
-          from_users: ["400"],
-        },
-        env: overrides.env ?? {},
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt:
-          overrides.prompt ??
-          "respond from ${{ paseo.event.discord.trigger_message.author.username }}: ${{ paseo.event.discord.trigger_message.body }}",
-        auto_archive: overrides.autoArchive ?? false,
-      },
-    ],
-  };
-}
-
-function createConfigWithConnectionFilters(): unknown {
-  const environment = {
-    name: "hetzner",
-    kind: "daemon",
-    daemon: "mob-hetzner",
-    cwd: "/home/moboudra/dev/faro",
-  };
-  const agent = { provider: "claude/opus", mode: "bypassPermissions" };
-  return {
-    environments: [environment],
-    triggers: [
-      {
-        name: "primary-connection",
-        on: "discord.mention",
-        environment: "hetzner",
-        filters: {
-          guild: "100",
-          from_users: ["400"],
-          connectionId: "11111111-1111-4111-8111-111111111111",
-        },
-        agent,
-        prompt: "primary",
-      },
-      {
-        name: "secondary-connection",
-        on: "discord.mention",
-        environment: "hetzner",
-        filters: {
-          guild: "100",
-          from_users: ["400"],
-          connectionId: "22222222-2222-4222-8222-222222222222",
-        },
-        agent,
-        prompt: "secondary",
-      },
-    ],
-  };
-}
-
-function createConfigWithoutGuild(): unknown {
-  return {
-    environments: [
-      {
-        name: "hetzner",
-        kind: "daemon",
-        daemon: "mob-hetzner",
-        cwd: "/home/moboudra/dev/faro",
-      },
-    ],
-    triggers: [
-      {
-        name: "discord-mention",
-        on: "discord.mention",
-        environment: "hetzner",
-        filters: {
-          contains: "ping",
-          from_users: ["400"],
-        },
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt:
-          "respond from ${{ paseo.event.discord.trigger_message.author.username }}: ${{ paseo.event.discord.trigger_message.body }}",
-      },
-    ],
-  };
-}
-
-function createConfigWithIntegrationTemplates(connectionSlug = "getpaseo-github"): unknown {
-  const token = `\${{ paseo.connections.${connectionSlug}.token }}`;
-  return {
-    environments: [
-      {
-        name: "hetzner",
-        kind: "daemon",
-        daemon: "mob-hetzner",
-        cwd: "/home/moboudra/dev/faro",
-        worktree: {
-          mode: "branch-off",
-          newBranch: `discord-${token}`,
-          base: "body-${{ paseo.event.discord.trigger_message.body }}",
-        },
-      },
-    ],
-    triggers: [
-      {
-        name: "discord-mention",
-        on: "discord.mention",
-        environment: "hetzner",
+        max_runtime: "2h",
         filters: { guild: "100", contains: "ping", from_users: ["400"] },
-        env: { GH_TOKEN: token },
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt: `secret ${token} for \${{ paseo.event.discord.trigger_message.body }}`,
+        steps: [
+          {
+            id: "discord-step",
+            environment: "discord-runner",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "claude/opus", mode: "bypassPermissions" },
+            prompt: [{ text: "Respond to the Discord mention." }],
+            allow_outputs: [{ type: "discord.reply" }],
+            auto_archive: true,
+          },
+        ],
       },
     ],
   };
 }
 
-function createConfigWithWorktree(): unknown {
+function inputConfiguration() {
+  const base = discordConfiguration();
+  const trigger = base.triggers[0]!;
   return {
-    environments: [
-      {
-        name: "hetzner",
-        kind: "daemon",
-        daemon: "mob-hetzner",
-        cwd: "/home/moboudra/dev/faro",
-        worktree: {
-          mode: "branch-off",
-          newBranch: "trigger-${{ paseo.event.discord.trigger_message.id }}",
-          base: "main",
-        },
-      },
-    ],
+    ...base,
     triggers: [
       {
-        name: "discord-mention",
-        on: "discord.mention",
-        environment: "hetzner",
+        ...trigger,
+        inputs: {
+          repo: { type: "string", choices: ["paseo", "hub"] },
+          agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+        },
         filters: {
           guild: "100",
-          contains: "ping",
+          contains: "repo=hub",
           from_users: ["400"],
+          inputs: { repo: "hub" },
         },
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt:
-          "respond from ${{ paseo.event.discord.trigger_message.author.username }}: ${{ paseo.event.discord.trigger_message.body }}",
+        steps: [
+          {
+            ...trigger.steps[0]!,
+            agent: { provider: "${{ paseo.inputs.agent }}", mode: "bypassPermissions" },
+            prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+          },
+        ],
       },
     ],
   };
 }
 
-function createEvent(
+function inputMarkerConfiguration() {
+  const base = inputConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        filters: {
+          ...trigger.filters,
+          contains: "run",
+        },
+      },
+    ],
+  };
+}
+
+function discordWorktreeConfiguration() {
+  const configuration = discordConfiguration();
+  return {
+    ...configuration,
+    environments: [
+      {
+        ...configuration.environments[0]!,
+        worktree: { mode: "branch-off" as const, newBranch: "discord-recovery", base: "main" },
+      },
+    ],
+  };
+}
+
+function discordConnectionConfiguration() {
+  const base = discordConfiguration();
+  return {
+    ...base,
+    triggers: [
+      {
+        ...base.triggers[0]!,
+        name: "secondary-connection",
+        filters: {
+          guild: "100",
+          from_users: ["400"],
+          connection: "secondary",
+        },
+      },
+    ],
+  };
+}
+
+function external(
+  projectId: string,
+  configurationRevisionId: string,
+  payload: NormalizedDiscordMessageEvent,
+) {
+  return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
+    organizationId: "org_1",
+    projectId,
+    configurationRevisionId,
+    source: "discord.mention",
+    deliveryId: payload.id,
+    receivedAt: new Date(),
+    payload,
+  };
+}
+
+function event(
   overrides: {
+    authorId?: string;
     content?: string;
-    guildId?: string;
     channelId?: string;
-    messageId?: string;
     threadId?: string | null;
     parentChannelId?: string | null;
+    messageId?: string;
     attachments?: NormalizedDiscordMessageEvent["attachments"];
     referencedMessage?: NormalizedDiscordMessageEvent["referencedMessage"];
     threadContextMessages?: NormalizedDiscordMessageEvent["threadContextMessages"];
@@ -808,85 +499,18 @@ function createEvent(
 ): NormalizedDiscordMessageEvent {
   return {
     type: "mention",
-    id: overrides.messageId ?? "300",
-    guildId: overrides.guildId ?? "100",
+    id: "300",
+    guildId: "100",
     channelId: overrides.channelId ?? "200",
     threadId: overrides.threadId ?? null,
     parentChannelId: overrides.parentChannelId ?? null,
     messageId: overrides.messageId ?? "300",
     content: overrides.content ?? "<@900> ping",
     mentionedUserIds: ["900"],
-    author: { id: "400", username: "tester", bot: false },
+    author: { id: overrides.authorId ?? "400", username: "tester", bot: false },
     createdAt: "2026-05-19T00:00:00.000Z",
     attachments: overrides.attachments ?? [],
     referencedMessage: overrides.referencedMessage ?? null,
     threadContextMessages: overrides.threadContextMessages ?? [],
-  };
-}
-
-function createTriggerContext(source: NormalizedDiscordMessageEvent): DiscordTriggerContext {
-  return {
-    provider: "discord",
-    target: {
-      provider: "discord",
-      guildId: source.guildId,
-      channelId: source.channelId,
-      threadId: source.threadId,
-      messageId: source.messageId,
-    },
-    event: {
-      discord: {
-        event_type: "mention",
-        guild: { id: source.guildId },
-        trigger_message: {
-          id: source.id,
-          content: source.content,
-          body: source.content,
-          url: `https://discord.com/channels/${source.guildId}/${source.channelId}/${source.id}`,
-          author: {
-            id: source.author.id,
-            username: source.author.username,
-            ...(source.author.bot === undefined ? {} : { bot: source.author.bot }),
-          },
-          channel: { id: source.channelId },
-          thread: null,
-          created_at: source.createdAt,
-          attachments: [],
-          referenced_message: null,
-        },
-        trigger_thread_context: { messages: [] },
-      },
-    },
-  };
-}
-
-async function materialize(
-  provider: ReturnType<typeof createDiscordTriggerProvider>,
-  match: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>,
-  projectId: string,
-) {
-  const materialized = await provider.materializeLaunch?.({
-    executionId: "execution-discord-materialize",
-    organizationId: "org_1",
-    projectId,
-    prompt: match.prompt,
-    ...(match.environment.env === undefined ? {} : { environmentEnv: match.environment.env }),
-    ...(match.environment.worktree === undefined
-      ? {}
-      : { environmentWorktree: match.environment.worktree }),
-    triggerContext: structuredClone(match.triggerContext),
-  });
-  assert.ok(materialized);
-  return materialized;
-}
-
-async function activeConfiguration(rawConfiguration: unknown) {
-  return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
-}
-
-function emptyConfiguration() {
-  return {
-    environments: [{ name: "unused", kind: "docker", image: "paseo/runner" }],
-    triggers: [],
   };
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { GitHubAuth } from "../../auth/github.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import type { PromptPartialReadResult } from "../../config/prompt-partials.js";
 
 const repositorySchema = z
   .object({
@@ -11,9 +12,14 @@ const repositorySchema = z
   .passthrough();
 const repositoryListSchema = z.object({ repositories: z.array(repositorySchema) }).passthrough();
 const referenceSchema = z.object({ object: z.object({ sha: z.string().min(1) }) }).passthrough();
-const contentSchema = z
-  .object({ type: z.literal("file"), encoding: z.literal("base64"), content: z.string() })
-  .passthrough();
+const contentSchema = z.discriminatedUnion("type", [
+  z
+    .object({ type: z.literal("file"), encoding: z.literal("base64"), content: z.string() })
+    .passthrough(),
+  z.object({ type: z.literal("dir") }).passthrough(),
+  z.object({ type: z.literal("symlink") }).passthrough(),
+  z.object({ type: z.literal("submodule") }).passthrough(),
+]);
 
 export function createGitHubConfigurationProvider(auth: GitHubAuth): GitHubConfigurationProvider {
   async function repository(installationId: number, repositoryId: number) {
@@ -69,15 +75,25 @@ export function createGitHubConfigurationProvider(auth: GitHubAuth): GitHubConfi
           },
         );
         const content = contentSchema.parse(response.data);
-        return {
-          rawYaml: Buffer.from(content.content.replaceAll("\n", ""), "base64").toString("utf8"),
-        };
+        return toFileAtCommit(content);
       } catch (error) {
         if (hasStatus(error, 404)) return undefined;
         throw error;
       }
     },
   };
+}
+
+function toFileAtCommit(content: z.infer<typeof contentSchema>): PromptPartialReadResult {
+  if (content.type === "file") {
+    return {
+      kind: "file",
+      content: Buffer.from(content.content.replaceAll("\n", ""), "base64").toString("utf8"),
+    };
+  }
+  if (content.type === "dir") return { kind: "directory" };
+  if (content.type === "symlink") return { kind: "symlink" };
+  return { kind: "submodule" };
 }
 
 function splitFullName(fullName: string): [string, string] {

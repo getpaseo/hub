@@ -324,7 +324,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.equal(github.installationReads, 2);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "suspended" });
     const ledger = await pool.query<{ count: number }>(
-      `select count(*)::integer as count from triggers where delivery_id = 'lifecycle-retry'`,
+      `select count(*)::integer as count from provider_event_receipts where delivery_id = 'lifecycle-retry'`,
     );
     assert.equal(ledger.rows[0]?.count, 1);
   });

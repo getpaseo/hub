@@ -24,7 +24,9 @@ describe("production Hub runtime", () => {
     const run = await hub.runManual({ service: "bootstrap" });
 
     assert.equal(run.status, 200);
-    assert.equal(hub.createdAgentLaunch().prompt, "Deploy bootstrap for alice");
+    const execution = await hub.waitForPendingExecution();
+    await hub.waitForRecoveredExecution(execution.id);
+    assert.equal(hub.createdAgentLaunch().prompt, "Deploy the requested service");
   });
 });
 

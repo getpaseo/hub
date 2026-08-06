@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import {
+  compiledConfigurationHash,
+  parseCompiledHubConfig,
+  rawConfigurationHash,
+} from "../config/compiler.js";
 import { ProjectConfigurationStore } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import type { DiscordConnectionRecord } from "../db/types.js";
 
 const primary: DiscordConnectionRecord = {
@@ -23,6 +29,7 @@ const secondary: DiscordConnectionRecord = {
 describe("ProjectConfigurationStore resource compilation", () => {
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     const connections = [primary, secondary];
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: connections });
@@ -44,15 +51,28 @@ describe("ProjectConfigurationStore resource compilation", () => {
       }),
       userId: "user-1",
     });
+    assert.equal(
+      revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+    );
     const active = await store.activate(revision.id);
 
+    assert.equal(revision.validationErrors, null);
     assert.equal(active.configuration.triggers[0]?.filters?.guild, "100");
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, primary.id);
     assert.deepEqual(active.configuration.triggers[0]?.filters?.resourceId, "100");
+    assert.equal(Object.isFrozen(active.configuration.triggers[0]?.filters), true);
+
+    const switched = await store.switchToManual("user-1");
+    assert.equal(
+      switched.revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(switched.revision.normalizedConfiguration)),
+    );
   });
 
   it("resolves a unique guild without requiring a connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary, secondary] });
     database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
@@ -77,6 +97,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("rejects an unknown explicit connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     const project = await database.createProject({
@@ -92,10 +113,9 @@ describe("ProjectConfigurationStore resource compilation", () => {
       userId: "user-1",
     });
 
-    await assert.rejects(
-      store.activate(revision.id),
-      /unresolved organization resources: discord:connection:missing-discord/u,
-    );
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: ["unresolved organization resources: discord:connection:missing-discord"],
+    });
   });
 
   it("records a missing daemon as an invalid revision instead of dereferencing it", async () => {
@@ -127,10 +147,48 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.deepEqual(revision.validationErrors, {
       formErrors: ["unresolved organization resources: missing-daemon"],
     });
+    assert.equal(
+      revision.contentHash,
+      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+    );
+  });
+
+  it("records invalid authored configuration with its raw configuration hash", async () => {
+    const database = createMemoryDatabase();
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Invalid configuration project",
+      slug: "invalid-configuration-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const rawConfiguration = {
+      environments: [],
+      triggers: [
+        {
+          name: "legacy",
+          on: "manual.run",
+          environment: "docker",
+          agent: { provider: "test", mode: "default" },
+          prompt: [{ text: "Run" }],
+          steps: [],
+        },
+      ],
+    };
+
+    const revision = await store.insertManualRevision({
+      rawYaml: "triggers:\n  - name: legacy\n",
+      rawConfiguration,
+      userId: "user-1",
+    });
+
+    assert.notEqual(revision.validationErrors, null);
+    assert.equal(revision.contentHash, rawConfigurationHash(rawConfiguration));
   });
 
   it("accepts one durable trigger per project when multiple routes match", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     database.findDiscordConnection = () => Promise.resolve(primary);
@@ -155,7 +213,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     await store.activate(revision.id);
 
-    const accepted = await database.acceptDiscordTrigger({
+    const accepted = await database.acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-fan-out",
       source: "discord.mention",
@@ -165,11 +223,12 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.equal(accepted.status, "accepted");
     if (accepted.status !== "accepted") return;
-    assert.equal(accepted.triggers.length, 1);
+    assert.equal(accepted.events.length, 1);
   });
 
   it("restores the target revision's trigger routes during rollback", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     database.findDiscordConnection = () => Promise.resolve(primary);
@@ -199,7 +258,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     const rolledBack = await store.rollback();
     assert.equal(rolledBack.revision.id, first.id);
-    const accepted = await database.acceptDiscordTrigger({
+    const accepted = await database.acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-rollback-routes",
       source: "discord.mention",
@@ -209,22 +268,30 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.equal(accepted.status, "accepted");
     if (accepted.status !== "accepted") return;
-    const trigger = await database.findTriggerById(accepted.triggers[0]!.triggerId);
-    assert.equal(trigger?.matchedTriggerName, "discord-mention");
+    assert.equal(accepted.events[0]?.projectId, project.id);
+    assert.equal(accepted.events[0]?.source, "discord.mention");
   });
 });
 
 function discordConfiguration(filters: Record<string, string>) {
   return {
-    environments: [{ name: "docker", kind: "docker", image: "paseo/test" }],
+    environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
     triggers: [
       {
         name: "discord-mention",
         on: "discord.mention",
-        environment: "docker",
+        max_runtime: "1h",
         filters: { ...filters, from_users: ["user-1"] },
-        agent: { provider: "test", mode: "default" },
-        prompt: "Handle the mention",
+        steps: [
+          {
+            id: "run",
+            environment: "runner",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "test", mode: "default" },
+            prompt: [{ text: "Handle the mention" }],
+          },
+        ],
       },
     ],
   };

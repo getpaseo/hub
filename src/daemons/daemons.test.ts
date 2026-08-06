@@ -136,8 +136,8 @@ describe("daemon enrollment and execution", () => {
 
     const first = await hub.handoff({ triggerName: "first" });
     await hub.spawnBegins();
-    const duplicate = await hub.handoff({ triggerName: "first" }, first.triggerId);
-    const second = await hub.handoff({ triggerName: "second" }, first.triggerId);
+    const duplicate = await hub.handoff({ triggerName: "first" }, first.providerEventReceiptId);
+    const second = await hub.handoff({ triggerName: "second" }, first.providerEventReceiptId);
     await hub.waitForRecoveredExecution(second.execution.id);
 
     assert.equal(duplicate.execution.id, first.execution.id);
@@ -152,30 +152,34 @@ describe("daemon enrollment and execution", () => {
     const persisted = await hub.persistUnlaunchedBatch(["first", "second"], 1);
 
     assert.equal(hub.createdAgentRequestCount(), 0);
-    const retried = await hub.handoffBatch(["first", "second"], persisted.triggerId);
+    const retried = await hub.handoffBatch(["first", "second"], persisted.providerEventReceiptId);
     await Promise.all(
       retried.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
     );
 
     assert.equal(await hub.pendingExecutionCount(), 2);
     assert.equal(hub.createdAgentRequestCount(), 2);
-    await hub.handoffBatch(["first", "second"], persisted.triggerId);
+    await hub.handoffBatch(["first", "second"], persisted.providerEventReceiptId);
     assert.equal(hub.createdAgentRequestCount(), 2);
   });
 
-  it("hands off and starts durable fan-out without waiting for provider notification", async () => {
+  it("registers durable fan-out before provider notification and waits to spawn", async () => {
     await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
     hub.holdAcceptanceHook();
 
     try {
       const batch = await hub.handoffBatch(["first", "second"]);
-      await Promise.all(
-        batch.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
-      );
 
       assert.equal(batch.executions.length, 2);
       assert.equal(await hub.pendingExecutionCount(), 2);
+      assert.equal(hub.createdAgentRequestCount(), 0);
+      assert.equal(hub.terminalHookCount(), 0);
+
+      hub.releaseAcceptanceHook();
+      await Promise.all(
+        batch.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
+      );
       assert.equal(hub.createdAgentRequestCount(), 2);
     } finally {
       hub.releaseAcceptanceHook();
@@ -225,7 +229,7 @@ describe("daemon enrollment and execution", () => {
     }
   });
 
-  it("materializes templates from durable trigger context during restart recovery", async () => {
+  it("preserves literal worktree evidence during restart recovery", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
     const persisted = await hub.persistUnlaunchedBatch(["recovery"], 1, {
@@ -238,7 +242,7 @@ describe("daemon enrollment and execution", () => {
         env: { TOKEN: "<secret>" },
         worktree: {
           mode: "checkout-branch",
-          branch: "branch-${{ paseo.event.manual.delivery_id }}",
+          branch: "branch-static",
         },
       },
       triggerContext: {
@@ -248,10 +252,10 @@ describe("daemon enrollment and execution", () => {
       },
     });
     assert.equal(persisted.executions[0]?.launchIntent?.prompt, "token=<secret>");
-    assert.equal(await hub.triggerDispatchPlanPrompt(persisted.triggerId), "token=<secret>");
+    assert.equal(await hub.triggerPrompt(persisted.providerEventReceiptId), "token=<secret>");
     assert.deepEqual(persisted.executions[0]?.launchIntent?.environment.worktree, {
       mode: "checkout-branch",
-      branch: "branch-${{ paseo.event.manual.delivery_id }}",
+      branch: "branch-static",
     });
     assert.equal(
       JSON.stringify(persisted.executions[0]?.launchIntent).includes("mcpServers"),
@@ -268,7 +272,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",
-      branch: "branch-durable-delivery",
+      branch: "branch-static",
     });
     assert.deepEqual(hub.createdAgentLaunch().mcpServers, {
       hub: {
@@ -319,7 +323,7 @@ describe("daemon enrollment and execution", () => {
       assert.equal(hub.createdAgentRequestCount(), 2);
       assert.equal(hub.failureHookCount(), 0);
 
-      const retried = await hub.handoffAuthoredSlugBatch(slugs, batch.triggerId);
+      const retried = await hub.handoffAuthoredSlugBatch(slugs, batch.providerEventReceiptId);
       assert.equal(retried.executions.length, 2);
       assert.equal(hub.createdAgentRequestCount(), 2);
       assert.equal(hub.failureHookCount(), 0);
@@ -339,12 +343,14 @@ describe("daemon enrollment and execution", () => {
 
     await hub.startExecution(first.daemonAgentId);
     await hub.completeExecution(first.id);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    await hub.waitForCompletionHookCount(1);
+    assert.equal(hub.hookContexts().completed.length, 1);
 
     await hub.startExecution(second.daemonAgentId);
-    assert.equal(hub.hookContexts().started.length, 1);
+    assert.equal(hub.hookContexts().started.length, 2);
     await hub.completeExecution(second.id);
-    assert.equal(hub.hookContexts().completed.length, 1);
+    await hub.waitForCompletionHookCount(2);
+    assert.equal(hub.hookContexts().completed.length, 2);
     assert.equal(hub.failureHookCount(), 0);
   });
 
@@ -360,19 +366,20 @@ describe("daemon enrollment and execution", () => {
     assert(second?.daemonAgentId !== null && second?.daemonAgentId !== undefined);
 
     await hub.completeExecution(first.id);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    await hub.waitForCompletionHookCount(1);
+    assert.equal(hub.hookContexts().completed.length, 1);
     await hub.agentTerminates(second.id, second.daemonAgentId, "error");
     await hub.failureNotified();
 
     assert.equal(hub.failureHookCount(), 1);
-    assert.equal(hub.hookContexts().completed.length, 0);
+    assert.equal(hub.hookContexts().completed.length, 1);
   });
 
   it.each([
     [
       {
         mode: "branch-off",
-        newBranch: "hub-${{ paseo.event.manual.delivery_id }}",
+        newBranch: "hub-delivery-1",
         base: "main",
       },
       { mode: "branch-off", newBranch: "hub-delivery-1", base: "main" },
@@ -381,7 +388,7 @@ describe("daemon enrollment and execution", () => {
     [
       {
         mode: "checkout-branch",
-        branch: "release-${{ paseo.event.manual.delivery_id }}",
+        branch: "release-delivery-1",
       },
       { mode: "checkout-branch", branch: "release-delivery-1" },
       true,
@@ -463,6 +470,10 @@ describe("daemon enrollment and execution", () => {
     const pending = await hub.pendingExecution();
 
     assert.equal(await hub.completeExecution(pending.id), 200);
+    assert.deepEqual(hub.controlActions(), []);
+    await hub.completeCurrentTurn(`agent-${pending.id}`);
+    await hub.pendingControlAction(pending.id);
+    await hub.completePendingCleanup();
 
     const completed = await hub.execution(pending.id);
     assert.deepEqual(
@@ -579,7 +590,7 @@ describe("daemon enrollment and execution", () => {
     );
 
     await hub.restartApp();
-    await assert.rejects(dispatch);
+    await dispatch;
 
     const recovered = await hub.waitForRecoveredExecution(pending.id);
     assert.deepEqual(
@@ -678,6 +689,13 @@ describe("daemon enrollment and execution", () => {
 
     assert.equal(await hub.completeExecution(result.execution.id), 200);
     assert.equal(await hub.completeExecution(result.execution.id), 409);
+    assert.deepEqual(hub.controlActions(), []);
+    assert.equal((await hub.execution(result.execution.id)).hubActionReadyAt, null);
+    await hub.completeCurrentTurn(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
+    await hub.completeCurrentTurn(result.agentId);
+    await hub.waitForCompletionHookCount(1);
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(hub.controlActions(), ["archive"]);
@@ -686,19 +704,49 @@ describe("daemon enrollment and execution", () => {
     assert.notEqual(execution.hubActionCompletedAt, null);
   });
 
-  it("archives an associated run before a slow provider completion hook finishes", async () => {
+  it("waits for the provider turn acknowledgement after the MCP completion response", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: true });
     hub.holdCompletionHook();
 
     const completion = hub.completeExecution(result.execution.id);
-    await hub.completionHookBegins();
+    await hub.waitForCompletionHookCount(1);
 
-    assert.deepEqual(hub.controlActions(), ["archive"]);
-    assert.notEqual((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
+    assert.deepEqual(hub.controlActions(), []);
+    assert.equal((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
 
     hub.releaseCompletionHook();
     assert.equal(await completion, 200);
+    assert.deepEqual(hub.controlActions(), []);
+    await hub.completeCurrentTurn(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
+    assert.deepEqual(hub.controlActions(), ["archive"]);
+    assert.notEqual((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
+  });
+
+  it("keeps MCP finish completion durable when the response acknowledgement is lost", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({ autoArchive: true });
+
+    assert.equal(await hub.completeExecution(result.execution.id), 200);
+    const completed = await hub.execution(result.execution.id);
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.hubActionAcknowledgements.finishExecutionCall?.callId, null);
+    assert.equal(completed.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+    assert.equal(completed.hubActionReadyAt, null);
+    assert.equal(completed.hubActionCompletedAt, null);
+    assert.equal(await hub.completeExecution(result.execution.id), 409);
+
+    await hub.completeCurrentTurnWithoutFinishTimeline(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
+
+    const archived = await hub.execution(result.execution.id);
+    assert.deepEqual(hub.controlActions(), ["archive"]);
+    assert.equal(archived.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+    assert.notEqual(archived.hubActionReadyAt, null);
+    assert.notEqual(archived.hubActionCompletedAt, null);
   });
 
   it("completes successful non-archived runs without daemon control", async () => {
@@ -706,6 +754,7 @@ describe("daemon enrollment and execution", () => {
     const result = await hub.dispatch({ autoArchive: false });
 
     assert.equal(await hub.completeExecution(result.execution.id), 200);
+    await hub.completionHookBegins();
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(hub.controlActions(), []);
@@ -713,23 +762,28 @@ describe("daemon enrollment and execution", () => {
     assert.notEqual(execution.hubActionCompletedAt, null);
   });
 
-  it("keeps offline archival pending until the daemon reconnects", async () => {
+  it("keeps archival pending until a provider acknowledgement after daemon reconnect", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: true });
     await hub.disconnectDaemon();
 
     assert.equal(await hub.completeExecution(result.execution.id), 200);
     assert.equal((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
+    assert.equal((await hub.execution(result.execution.id)).hubActionReadyAt, null);
 
-    const action = await hub.reconnectDaemonAndCompleteHubAction(result.execution.id);
+    await hub.reconnectDaemon();
+    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
+    await hub.completeCurrentTurn(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
     const execution = await hub.execution(result.execution.id);
-    assert.equal(action, "archive");
     assert.deepEqual(hub.controlActions(), ["archive"]);
     assert.equal(execution.hubAction, "archive");
+    assert.notEqual(execution.hubActionReadyAt, null);
     assert.notEqual(execution.hubActionCompletedAt, null);
   });
 
-  it("recovers authenticated terminal MCP archival after Hub restarts", async () => {
+  it("recovers a pending archive after restart and a missed provider acknowledgement", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: true });
     await hub.disconnectDaemon();
@@ -738,17 +792,23 @@ describe("daemon enrollment and execution", () => {
     const pending = await hub.execution(result.execution.id);
     assert.equal(pending.status, "succeeded");
     assert.equal(pending.hubAction, "archive");
+    assert.equal(pending.hubActionReadyAt, null);
     assert.equal(pending.hubActionCompletedAt, null);
 
     await hub.restartAppWithoutDaemonReconnect();
     const recovered = await hub.execution(result.execution.id);
     assert.equal(recovered.hubAction, "archive");
+    assert.equal(recovered.hubActionReadyAt, null);
     assert.equal(recovered.hubActionCompletedAt, null);
 
-    const action = await hub.reconnectDaemonAndCompleteHubAction(result.execution.id);
+    await hub.reconnectDaemon();
+    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
+    await hub.completeCurrentTurn(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
     const execution = await hub.execution(result.execution.id);
-    assert.equal(action, "archive");
     assert.deepEqual(hub.controlActions(), ["archive"]);
+    assert.notEqual(execution.hubActionReadyAt, null);
     assert.notEqual(execution.hubActionCompletedAt, null);
   });
 
@@ -761,6 +821,8 @@ describe("daemon enrollment and execution", () => {
     hub.holdControlAcknowledgements();
 
     await hub.restartApp();
+    await hub.runtimeResources({ recoveredExecutionSubscriptions: 2 });
+    await hub.completeCurrentTurn(cleanup.agentId);
     assert.equal(await hub.pendingControlAction(cleanup.execution.id), "archive");
     await hub.spawnBegins();
     hub.interruptAgent(live.agentId);
@@ -802,6 +864,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     await hub.startExecution(result.agentId);
     assert.equal(await hub.completeExecution(result.execution.id), 200);
+    await hub.waitForCompletionHookCount(1);
 
     assert.deepEqual(hub.hookContexts(), {
       started: [
@@ -837,6 +900,7 @@ describe("daemon enrollment and execution", () => {
         result: { status: "failed", reason: "daemon_unreachable" },
       },
     );
+    await hub.drainWorkflowOutbox();
     assert.equal(hub.failureHookCount(), 1);
     assert.equal(hub.createdAgentCount(), 0);
   });
@@ -844,15 +908,20 @@ describe("daemon enrollment and execution", () => {
   it("re-arms future deadlines after restart and expires exactly once", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ timeoutMs: 10_000 });
+    const beforeRestart = await hub.execution(result.execution.id);
     await hub.restartApp();
+    const afterRestart = await hub.execution(result.execution.id);
+    assert.equal(afterRestart.deadlineAt?.getTime(), beforeRestart.deadlineAt?.getTime());
+    assert.equal(afterRestart.idleDeadlineAt?.getTime(), beforeRestart.idleDeadlineAt?.getTime());
     await hub.advanceDispatchTime(10_000);
     await hub.advanceDispatchTime(10_000);
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(
       { status: execution.status, result: execution.result },
-      { status: "failed", result: { status: "failed", reason: "timeout" } },
+      { status: "failed", result: { status: "failed", reason: "whole_run_timeout" } },
     );
+    await hub.drainWorkflowOutbox();
     assert.equal(hub.failureHookCount(), 1);
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
     assert.equal(await hub.completeExecution(result.execution.id), 409);
@@ -871,10 +940,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(
       { status: execution.status, result: execution.result },
-      {
-        status: "failed",
-        result: { status: "failed", reason: "idle_timeout" },
-      },
+      { status: "failed", result: { status: "failed", reason: "step_idle_timeout" } },
     );
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
   });
@@ -922,6 +988,120 @@ describe("daemon enrollment and execution", () => {
     assert.equal((await hub.execution(result.execution.id)).status, "failed");
   });
 
+  it("refreshes the idle deadline on meaningful daemon activity", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+
+    const beforeActivity = await hub.execution(result.execution.id);
+    await hub.beginReplacementTurn(result.agentId);
+    await hub.advanceDispatchTime(0);
+    await hub.advanceDispatchTime(2 * 60_000);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.equal(afterActivity.status, "running");
+    assert.ok(afterActivity.idleDeadlineAt! > beforeActivity.idleDeadlineAt!);
+
+    await hub.advanceDispatchTime(5 * 60_000);
+    assert.equal((await hub.execution(result.execution.id)).status, "failed");
+  });
+
+  it("uses the activity receipt time when processing follows the idle deadline", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+
+    const beforeActivity = await hub.execution(result.execution.id);
+    hub.holdActivityRefresh(result.execution.id);
+    const activity = hub.emitReplacementTurn(result.agentId);
+    await hub.activityRefreshBegins();
+
+    const lateProcessing = hub.advanceDispatchTime(2 * 60_000);
+    hub.releaseActivityRefresh();
+    await Promise.all([activity, lateProcessing]);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.equal(afterActivity.status, "running");
+    assert.equal(
+      afterActivity.idleDeadlineAt?.getTime(),
+      beforeActivity.idleDeadlineAt!.getTime() + 4 * 60_000,
+    );
+  });
+
+  it("does not resurrect activity received at the idle deadline", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+    hub.advanceDispatchClock(60_000);
+
+    hub.holdActivityRefresh(result.execution.id);
+    const activity = hub.emitReplacementTurn(result.agentId);
+    await hub.activityRefreshBegins();
+
+    const timeout = hub.advanceDispatchTime(0);
+    hub.releaseActivityRefresh();
+    await Promise.all([activity, timeout]);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.deepEqual(
+      { status: afterActivity.status, result: afterActivity.result },
+      { status: "failed", result: { status: "failed", reason: "step_idle_timeout" } },
+    );
+  });
+
+  it("interrupts a live workflow execution when the whole-run deadline expires", async () => {
+    await hub.connectDaemon();
+    const daemonSlug = hub.connectedDaemonSlug();
+    await hub.installConfiguration({
+      yaml: [
+        "environments:",
+        "  - name: production",
+        "    kind: daemon",
+        `    daemon: ${daemonSlug}`,
+        "    cwd: /workspace/manual",
+        "triggers:",
+        "  - name: deadline",
+        "    on: manual.run",
+        "    max_runtime: 10s",
+        "    filters:",
+        "      from_users: [alice]",
+        "    steps:",
+        "      - id: deadline-step",
+        "        environment: production",
+        "        max_runtime: 1m",
+        "        idle_timeout: 1m",
+        "        agent:",
+        "          provider: opencode",
+        "          mode: full-access",
+        '        prompt: [{ text: "Deadline" }]',
+      ].join("\n"),
+    });
+    hub.holdSpawnAcknowledgement();
+    const dispatch = hub.beginManual({ trigger: "deadline", deliveryKey: "whole-run-live" });
+    await hub.spawnBegins();
+    const pending = await hub.pendingExecution();
+    hub.acceptSpawn();
+    const result = await dispatch;
+    assert.equal(result.status, 200);
+
+    await hub.advanceDispatchTime(10_000);
+
+    assert.equal((await hub.execution(pending.id)).status, "failed");
+    assert.deepEqual(hub.controlActions(), ["interrupt"]);
+  });
+
   it("ignores a stale inactivity deadline after a later idle report", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({
@@ -962,7 +1142,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(execution.result, {
       status: "failed",
-      reason: "idle_timeout",
+      reason: "step_idle_timeout",
     });
   });
 
@@ -979,7 +1159,7 @@ describe("daemon enrollment and execution", () => {
     await hub.advanceDispatchTime(60_000);
 
     const execution = await hub.execution(result.execution.id);
-    assert.deepEqual(execution.result, { status: "failed", reason: "timeout" });
+    assert.deepEqual(execution.result, { status: "failed", reason: "whole_run_timeout" });
   });
 
   it("keeps authenticated completion authoritative while idle", async () => {
@@ -1005,13 +1185,17 @@ describe("daemon enrollment and execution", () => {
     await hub.agentBecomesIdle(result.execution.id, result.agentId);
     await hub.advanceDispatchTime(4 * 60_000);
 
+    const beforeRestart = await hub.execution(result.execution.id);
     await hub.restartApp();
+    const afterRestart = await hub.execution(result.execution.id);
+    assert.equal(afterRestart.deadlineAt?.getTime(), beforeRestart.deadlineAt?.getTime());
+    assert.equal(afterRestart.idleDeadlineAt?.getTime(), beforeRestart.idleDeadlineAt?.getTime());
     await hub.advanceDispatchTime(60_000);
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(execution.result, {
       status: "failed",
-      reason: "idle_timeout",
+      reason: "step_idle_timeout",
     });
   });
 
@@ -1108,7 +1292,7 @@ describe("daemon enrollment and execution", () => {
     );
   });
 
-  it("returns recovered execution resources to baseline after repeated completions", async () => {
+  it("returns workflow resources to baseline after repeated enqueue/restart boundaries", async () => {
     await hub.connectDaemon();
     await hub.installConfiguration({
       yaml: hub.manualConfigurationYaml(),
@@ -1119,18 +1303,8 @@ describe("daemon enrollment and execution", () => {
         deliveryKey: `resource-cycle-${cycle}`,
       });
       assert.equal(result.status, 200);
-      assert.ok(result.executionId);
+      assert.ok(result.triggerRunId);
       await hub.restartApp();
-      assert.deepEqual(
-        await hub.runtimeResources({
-          recoveredExecutionSubscriptions: 1,
-        }),
-        {
-          recoveredExecutionSubscriptions: 1,
-        },
-      );
-
-      assert.equal(await hub.completeExecution(result.executionId), 200);
       assert.deepEqual(
         await hub.runtimeResources({
           recoveredExecutionSubscriptions: 0,
@@ -1146,9 +1320,6 @@ describe("daemon enrollment and execution", () => {
     });
     assert.equal(stopped.status, 200);
     await hub.restartApp();
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 1,
-    });
     assert.deepEqual(await hub.stopRuntimeResources(), {
       recoveredExecutionSubscriptions: 0,
     });
@@ -1170,22 +1341,6 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(await hub.runtimeResources(), {
       recoveredExecutionSubscriptions: 0,
     });
-
-    await hub.installConfiguration({
-      yaml: hub.manualConfigurationYaml(),
-    });
-    const revoked = await hub.runManual({ deliveryKey: "resource-revocation" });
-    assert.equal(revoked.status, 200);
-    assert.ok(revoked.executionId);
-    await hub.restartApp();
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 1,
-    });
-    assert.equal(await hub.revokeDaemon(), 4403);
-    await hub.runtimeResources({
-      recoveredExecutionSubscriptions: 0,
-    });
-    assert.equal((await hub.execution(revoked.executionId)).status, "failed");
   });
 
   it("fails offline daemons without attempting outbound acquisition", async () => {
@@ -1197,6 +1352,19 @@ describe("daemon enrollment and execution", () => {
       (error: unknown) =>
         error instanceof DaemonDispatchFailure && error.reason === "daemon_unreachable",
     );
+  });
+
+  it("claims singular durable handoff failures immediately", async () => {
+    await hub.connectDaemon();
+
+    const handedOff = await hub.handoffMissingDaemon();
+
+    assert.equal(handedOff.execution.status, "failed");
+    assert.deepEqual(handedOff.execution.result, {
+      status: "failed",
+      reason: "daemon_not_registered",
+    });
+    assert.equal(hub.createdAgentRequestCount(), 0);
   });
 
   it("distinguishes a missing daemon from an enrolled daemon that is offline", async () => {

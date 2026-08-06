@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { OperationAuthorization } from "../../auth/api-keys.js";
 import type { Database } from "../../db/types.js";
 import type { TriggerSource } from "../index.js";
+import { formatInvocationRejection } from "../invocation.js";
 import { dispatchManualTrigger } from "./source.js";
 
 const ManualRunRequestSchema = z
@@ -30,7 +31,7 @@ export async function runManualTrigger(
   if (project === undefined || project.status !== "active") {
     return Response.json({ error: "project_not_found" }, { status: 404 });
   }
-  let triggerId: string | undefined;
+  let providerEventReceiptId: string | undefined;
   try {
     const outcome = await dispatchManualTrigger(source, {
       organizationId: authorization.organizationId,
@@ -48,7 +49,7 @@ export async function runManualTrigger(
         authenticatedBy: { kind: "api-key", keyId: authorization.keyId },
       },
     });
-    triggerId = outcome?.triggerId;
+    providerEventReceiptId = outcome?.providerEventReceiptId;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "manual_run_failed";
     if (reason.includes("manual_actor_forbidden"))
@@ -63,18 +64,33 @@ export async function runManualTrigger(
     }
     throw error;
   }
-  if (triggerId === undefined)
+  if (providerEventReceiptId === undefined)
     return Response.json({ error: "manual_run_not_dispatched" }, { status: 409 });
-  const execution = await database.findAgentExecutionByTriggerId(triggerId);
-  if (!execution) return Response.json({ error: "manual_run_not_dispatched" }, { status: 409 });
+  const run = (await database.findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)).find(
+    (candidate) => candidate.configuredTriggerName === body.data.trigger,
+  );
+  if (!run) {
+    return Response.json({ error: "manual_run_not_enqueued" }, { status: 409 });
+  }
+  if (run.outcome === "rejected") {
+    return Response.json(
+      {
+        error: "invalid_input",
+        reason: `rejected_input:${run.configuredTriggerName}:${formatInvocationRejection(run.rejection)}`,
+        providerEventReceiptId,
+        triggerRunId: run.id,
+        configuredTriggerName: run.configuredTriggerName,
+      },
+      { status: 400 },
+    );
+  }
   return Response.json(
     {
       deliveryKey: body.data.deliveryKey,
-      triggerId,
-      executionId: execution.id,
-      status: execution.status,
-      daemonId: execution.daemonId,
-      agentId: execution.daemonAgentId,
+      providerEventReceiptId,
+      triggerRunId: run.id,
+      configuredTriggerName: run.configuredTriggerName,
+      workflowStatus: run.status,
     },
     { status: 200 },
   );

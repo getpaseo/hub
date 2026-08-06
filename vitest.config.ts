@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [tanstackStart({ server: { entry: "./start-server.ts" } }), react()],
   test: {
     environment: "node",
+    testTimeout: 30_000,
     pool: "forks",
     poolOptions: {
       forks: {

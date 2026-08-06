@@ -59,7 +59,7 @@ export function createAttachmentCapabilityRegistry(options: {
     async register(input) {
       validateRegistration(input);
       const existing = await options.database.findAttachmentBySource(
-        input.triggerId,
+        input.providerEventReceiptId,
         input.provider,
         input.sourceId,
       );
@@ -145,7 +145,7 @@ function toReference(record: AttachmentRecord): AttachmentReference {
 }
 
 function validateRegistration(input: AttachmentCapabilityRegistration): void {
-  if (input.triggerId.length === 0 || input.organizationId.length === 0) {
+  if (input.providerEventReceiptId.length === 0 || input.organizationId.length === 0) {
     throw new Error("attachment ownership is required");
   }
   if (input.connectionId.length === 0) throw new Error("attachment connection is required");

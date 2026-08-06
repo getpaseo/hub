@@ -163,6 +163,26 @@ export class SourcePaseo {
     return z.array(z.unknown()).parse(value);
   }
 
+  async agentProvider(agentId: string): Promise<string> {
+    const result = await this.run([
+      "agent",
+      "inspect",
+      agentId,
+      "--host",
+      this.paths.daemonHost,
+      "--json",
+    ]);
+    const provider = result["Provider"];
+    if (typeof provider !== "string" || provider.length === 0) {
+      throw new Error(`source agent ${agentId} did not report a provider`);
+    }
+    return provider;
+  }
+
+  async processDescriptions(): Promise<string[]> {
+    return describeProcesses(await processFamily(this.daemon?.pid));
+  }
+
   async status(): Promise<Record<string, unknown>> {
     return this.run(["hub", "status", "--host", this.paths.daemonHost, "--json"]);
   }
@@ -570,7 +590,6 @@ function defaultConfig(daemonHost: string): unknown {
       listen: daemonHost,
       relay: { enabled: false },
       mcp: { enabled: false, injectIntoAgents: false },
-      browserTools: { enabled: false },
       cors: { allowedOrigins: [] },
     },
     features: { dictation: { enabled: false }, voiceMode: { enabled: false } },
@@ -623,7 +642,7 @@ async function availablePort(): Promise<number> {
 }
 
 async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   let timer: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
@@ -637,20 +656,53 @@ async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void
   }
 }
 
-async function stopProcess(child: ChildProcess | undefined, processGroup = false): Promise<void> {
-  if (child === undefined || child.exitCode !== null || child.pid === undefined) return;
-  try {
-    process.kill(processGroup ? -child.pid : child.pid, "SIGTERM");
-  } catch {
-    return;
+export async function stopProcess(
+  child: ChildProcess | undefined,
+  processGroup = false,
+): Promise<void> {
+  if (child === undefined || child.pid === undefined) return;
+  const rootPid = child.pid;
+  const family = await processFamily(rootPid);
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      process.kill(processGroup ? -rootPid : rootPid, "SIGTERM");
+    } catch {
+      // The process exited between the family snapshot and the signal.
+    }
   }
   await waitForExit(child, 10_000).catch(() => {
     try {
-      process.kill(processGroup ? -child.pid! : child.pid!, "SIGKILL");
+      process.kill(processGroup ? -rootPid : rootPid, "SIGKILL");
     } catch {
       // The process exited between the timeout and cleanup.
     }
   });
+  await stopOwnedDescendants(family.filter((pid) => pid !== rootPid));
+}
+
+async function stopOwnedDescendants(pids: readonly number[]): Promise<void> {
+  const live = pids.filter(isProcessAlive);
+  if (live.length === 0) return;
+
+  for (const pid of live) signalProcess(pid, "SIGTERM");
+  await waitForProcessFamilyExit(live, 10_000);
+
+  const remaining = live.filter(isProcessAlive);
+  for (const pid of remaining) signalProcess(pid, "SIGKILL");
+  await waitForProcessFamilyExit(remaining, 1_000);
+
+  const leaked = remaining.filter(isProcessAlive);
+  if (leaked.length > 0) {
+    throw new Error(`Owned process descendants did not exit: ${leaked.join(", ")}`);
+  }
+}
+
+function signalProcess(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // The process exited between the liveness check and the signal.
+  }
 }
 
 async function processFamily(rootPid: number | undefined): Promise<number[]> {

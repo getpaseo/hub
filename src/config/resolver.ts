@@ -1,4 +1,4 @@
-import type { HubConfig, ConfigRef } from "./schema.js";
+import type { ConfigRef, CompiledConfiguration } from "./schema.js";
 export type { ConfigRef } from "./schema.js";
 
 export interface ResolveHubConfig {
@@ -7,7 +7,7 @@ export interface ResolveHubConfig {
 
 export interface ResolvedHubConfig {
   ref: ConfigRef;
-  config: HubConfig;
+  config: CompiledConfiguration;
   repoFullName: string | null;
 }
 

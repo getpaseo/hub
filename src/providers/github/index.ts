@@ -37,7 +37,7 @@ import { PushPayloadSchema } from "../../auth/github-events.js";
 import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
-import type { ConnectionResolutionContext } from "../../config/interpolation.js";
+import type { ConnectionResolutionContext } from "../../config/connections.js";
 import { createGitHubExecutionTokenRegistry } from "./execution-token-registry.js";
 
 export interface GitHubRegistrationConfiguration {
@@ -106,7 +106,7 @@ export function createGitHubRegistration(
           client,
         );
   const webhook = createWebhookSource(configuration.webhookSecret, {
-    accept: (input) => database.acceptGitHubTrigger(input),
+    accept: (input) => database.acceptGitHubEvent(input),
     applyLifecycle: (delivery) => applyLifecycle(database, client, delivery),
     async synchronizePush(input) {
       const payload = PushPayloadSchema.safeParse(input.payload);
@@ -417,7 +417,7 @@ async function applyLifecycle(
   client: GitHubConnectionClient,
   delivery: GitHubLifecycleDelivery,
 ): Promise<void> {
-  const claim = await database.claimGitHubLifecycle(delivery);
+  const claim = await database.claimGitHubLifecycleReceipt(delivery);
   if (claim.status === "duplicate") return;
   try {
     const evidence = await client.getInstallation(delivery.installationId);
@@ -433,7 +433,7 @@ async function applyLifecycle(
       identity: evidence.identity,
     });
   } catch (error) {
-    await database.releaseGitHubLifecycleClaim(claim.triggerId);
+    await database.releaseGitHubLifecycleReceipt(claim.providerEventReceiptId);
     throw error;
   }
 }

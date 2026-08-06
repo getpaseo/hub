@@ -4,24 +4,77 @@ import type {
   MachineRow,
   ProjectConfigurationRevisionRow,
   ProjectRow,
-  TriggerRow,
+  ProviderEventReceiptRow,
 } from "./pg.js";
 import type {
+  AgentExecutionHubAcknowledgements,
   AgentExecutionRecord,
   AttachmentRecord,
   MachineRecord,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
-  TriggerRecord,
+  ProviderEventReceiptSummary,
+  ProviderEventReceiptRecord,
 } from "./types.js";
 
-export function toTriggerRecord(row: TriggerRow): TriggerRecord {
+type ProviderEventReceiptSummaryRow = Pick<
+  ProviderEventReceiptRow,
+  | "id"
+  | "organization_id"
+  | "provider"
+  | "connection_id"
+  | "resource_id"
+  | "delivery_id"
+  | "signature_hash"
+  | "source"
+  | "repo"
+  | "received_at"
+  | "dropped_reason"
+>;
+
+export function toProviderEventReceiptSummary(
+  row: ProviderEventReceiptSummaryRow,
+): ProviderEventReceiptSummary {
   return {
     id: row.id,
     organizationId: row.organization_id,
-    projectId: row.project_id,
-    configurationRevisionId: row.configuration_revision_id,
-    receiptId: row.receipt_id,
+    provider: row.provider,
+    connectionId: row.connection_id,
+    resourceId: row.resource_id,
+    deliveryId: row.delivery_id,
+    signatureHash: row.signature_hash,
+    source: row.source,
+    repo: row.repo,
+    receivedAt: row.received_at,
+    droppedReason: row.dropped_reason,
+  };
+}
+
+export function toProviderEventReceiptRecordSummary(
+  receipt: ProviderEventReceiptRecord,
+): ProviderEventReceiptSummary {
+  return {
+    id: receipt.id,
+    organizationId: receipt.organizationId,
+    provider: receipt.provider,
+    connectionId: receipt.connectionId,
+    resourceId: receipt.resourceId,
+    deliveryId: receipt.deliveryId,
+    signatureHash: receipt.signatureHash,
+    source: receipt.source,
+    repo: receipt.repo,
+    receivedAt: receipt.receivedAt,
+    droppedReason: receipt.droppedReason,
+  };
+}
+
+export function toProviderEventReceiptRecord(
+  row: ProviderEventReceiptRow,
+): ProviderEventReceiptRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    provider: row.provider,
     connectionId: row.connection_id,
     resourceId: row.resource_id,
     deliveryId: row.delivery_id,
@@ -30,11 +83,34 @@ export function toTriggerRecord(row: TriggerRow): TriggerRecord {
     repo: row.repo,
     payload: row.payload,
     receivedAt: row.received_at,
-    matchedTriggerName: row.matched_trigger_name,
     droppedReason: row.dropped_reason,
-    dispatchPlan: row.dispatch_plan,
-    lifecycleState: row.lifecycle_state,
+    acceptedRoutes: parseProviderEventRouteSnapshots(row.accepted_routes),
   };
+}
+
+function parseProviderEventRouteSnapshots(
+  value: unknown,
+): ProviderEventReceiptRecord["acceptedRoutes"] {
+  if (value === null) return null;
+  if (!Array.isArray(value)) throw new Error("invalid provider event route snapshot");
+  return value.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error("invalid provider event route snapshot");
+    const route = candidate;
+    if (
+      typeof route["projectId"] !== "string" ||
+      typeof route["configurationRevisionId"] !== "string" ||
+      (route["connectionId"] !== null && typeof route["connectionId"] !== "string") ||
+      (route["resourceId"] !== null && typeof route["resourceId"] !== "string")
+    ) {
+      throw new Error("invalid provider event route snapshot");
+    }
+    return {
+      projectId: route["projectId"],
+      configurationRevisionId: route["configurationRevisionId"],
+      connectionId: route["connectionId"],
+      resourceId: route["resourceId"],
+    };
+  });
 }
 
 export function toMachineRecord(row: MachineRow): MachineRecord {
@@ -74,18 +150,57 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     launchIntent: row.launch_intent,
     daemonId: row.daemon_id,
     daemonAgentId: row.daemon_agent_id,
-    triggerId: row.trigger_id,
-    triggerConnectionId: row.trigger_connection_id,
-    triggerResourceId: row.trigger_resource_id,
+    workflowStepRunId: row.workflow_step_run_id,
     hubAction: row.hub_action,
     hubActionCompletedAt: row.hub_action_completed_at,
+    hubActionReadyAt: row.hub_action_ready_at,
+    hubActionAcknowledgements: toAgentExecutionHubAcknowledgements(row.hub_action_acknowledgements),
   };
+}
+
+function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubAcknowledgements {
+  if (!isRecord(value)) return emptyAgentExecutionHubAcknowledgements();
+  const terminalAt = toDateOrNull(value["terminal_at"]);
+  const idleAt = toDateOrNull(value["idle_at"]);
+  const rawFinishExecutionCall = value["finish_execution_call"];
+  let finishExecutionCall: AgentExecutionHubAcknowledgements["finishExecutionCall"] = null;
+  if (isRecord(rawFinishExecutionCall)) {
+    const callId = rawFinishExecutionCall["call_id"];
+    const status = rawFinishExecutionCall["status"];
+    const observedAt = toDateOrNull(rawFinishExecutionCall["observed_at"]);
+    if (
+      (typeof callId === "string" || callId === null || callId === undefined) &&
+      (status === "running" ||
+        status === "completed" ||
+        status === "failed" ||
+        status === "canceled") &&
+      observedAt !== null
+    ) {
+      finishExecutionCall = { callId: callId ?? null, status, observedAt };
+    }
+  }
+  return { terminalAt, idleAt, finishExecutionCall };
+}
+
+function emptyAgentExecutionHubAcknowledgements(): AgentExecutionHubAcknowledgements {
+  return { terminalAt: null, idleAt: null, finishExecutionCall: null };
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string") return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function toAttachmentRecord(row: AttachmentRow): AttachmentRecord {
   return {
     id: row.id,
-    triggerId: row.trigger_id,
+    providerEventReceiptId: row.provider_event_receipt_id,
     organizationId: row.organization_id,
     connectionId: row.connection_id,
     provider: row.provider,

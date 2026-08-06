@@ -62,158 +62,178 @@ describe("database migration application", () => {
     });
   }, 120_000);
 
-  it("marks historical terminal executions complete without scheduling Hub actions", async () => {
+  it("destructively cuts over legacy execution evidence while preserving attachments and authorities", async () => {
     const url = await createHistoricalBaseline({
       postgres,
-      prefix: "hub_action_backfill",
-      through: "0005_keen_microbe",
-    });
-    await poolQuery(
-      url,
-      `insert into organization (id, name, slug) values
-         ('organization-actions', 'Organization Actions', 'organization-actions');
-       insert into hub_configs (id, org_id, name, version, source, config, is_current) values
-         ('20000000-0000-4000-8000-000000000010', 'organization-actions', 'main', 1,
-          '{"kind":"admin-seed","userId":"legacy"}', '{}', true);
-       insert into machines (id, org_id, source, status, hub_config_version_id) values
-         ('30000000-0000-4000-8000-000000000010', 'organization-actions', '{}', 'alive',
-          '20000000-0000-4000-8000-000000000010');
-       insert into agent_executions (id, machine_id, status, hub_config_version_id) values
-         ('50000000-0000-4000-8000-000000000010',
-          '30000000-0000-4000-8000-000000000010', 'succeeded',
-          '20000000-0000-4000-8000-000000000010'),
-         ('50000000-0000-4000-8000-000000000011',
-          '30000000-0000-4000-8000-000000000010', 'running',
-          '20000000-0000-4000-8000-000000000010')`,
-    );
-
-    const database = await createDatabase(url);
-    await database.close();
-
-    const actions = await poolQuery<{
-      id: string;
-      hub_action: string | null;
-      action_completed: boolean;
-    }>(
-      url,
-      `select id::text,
-              hub_action,
-              hub_action_completed_at is not null as action_completed
-       from agent_executions
-       order by id`,
-    );
-    assert.deepEqual(actions.rows, [
-      {
-        id: "50000000-0000-4000-8000-000000000010",
-        hub_action: null,
-        action_completed: true,
-      },
-      {
-        id: "50000000-0000-4000-8000-000000000011",
-        hub_action: null,
-        action_completed: false,
-      },
-    ]);
-  }, 120_000);
-
-  it("fails loudly when a tenantless trigger retains project evidence", async () => {
-    const url = await createHistoricalBaseline({
-      postgres,
-      prefix: "phase_three_authorities",
-      through: "0011_dazzling_robin_chapel",
-    });
-    await poolQuery(
-      url,
-      `insert into triggers
-         (id, delivery_id, source, payload, project_id, dropped_reason)
-       values
-         ('40000000-0000-4000-8000-000000000003', 'project-evidence',
-          'github.issue_comment', '{}', '60000000-0000-4000-8000-000000000003',
-          'no_matching_trigger')`,
-    );
-
-    await assert.rejects(createDatabase(url), /ambiguous or unowned trigger/u);
-  });
-
-  it("drops unowned legacy trigger evidence while preserving owned history", async () => {
-    const url = await createHistoricalBaseline({
-      postgres,
-      prefix: "legacy_unscoped_trigger_evidence",
-      through: "0010_classy_strong_guy",
+      prefix: "phase_six_destructive_cutover",
+      through: "0017_clever_sasquatch",
     });
     await poolQuery(
       url,
       `insert into organization (id, name, slug)
-         values ('organization-production', 'Production', 'production');
-       insert into hub_configs (id, org_id, name, version, source, config, is_current)
-         values ('20000000-0000-4000-8000-000000000010', 'organization-production', 'main', 1,
-                 '{}', '{}', true);
-       insert into machines
-         (id, org_id, source, status, hub_config_version_id)
+         values ('phase-six-org', 'Phase Six', 'phase-six');
+       insert into projects
+         (id, organization_id, name, slug, status, created_at, updated_at)
        values
-         ('30000000-0000-4000-8000-000000000010', 'organization-production', '{}', 'alive',
-          '20000000-0000-4000-8000-000000000010');
+         ('60000000-0000-4000-8000-000000000001', 'phase-six-org', 'Phase Six', 'phase-six',
+          'active', now(), now());
+       insert into project_configuration_revisions
+         (id, project_id, organization_id, version, source_kind, source_evidence,
+          normalized_configuration, content_hash)
+       values
+         ('70000000-0000-4000-8000-000000000001',
+          '60000000-0000-4000-8000-000000000001', 'phase-six-org', 1, 'manual', '{}',
+          '{"environments":[],"triggers":[]}', 'phase-six-config');
+       update projects
+       set active_configuration_revision_id = '70000000-0000-4000-8000-000000000001'
+       where id = '60000000-0000-4000-8000-000000000001';
+       insert into project_configuration_sources
+         (organization_id, project_id, kind, automatic_deployment_enabled)
+       values
+         ('phase-six-org', '60000000-0000-4000-8000-000000000001', 'manual', false);
+       insert into github_connections
+         (id, organization_id, installation_id, slug, account_id, account_login,
+          account_type, status)
+       values
+         ('80000000-0000-4000-8000-000000000001', 'phase-six-org', 960001,
+          'phase-six-github', 'phase-six-account', 'phase-six', 'Organization', 'active');
+       insert into machines (id, org_id, source, status)
+       values
+         ('90000000-0000-4000-8000-000000000001', 'phase-six-org',
+          '{"kind":"daemon","daemonId":"90000000-0000-4000-8000-000000000002"}', 'alive');
+       insert into daemons
+         (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id,
+          server_id, daemon_public_key, credential_verifier, scopes, status)
+       values
+         ('90000000-0000-4000-8000-000000000002', 'phase-six-enrollment',
+          'phase-six-enrollment-verifier', 'phase-six-daemon',
+          '90000000-0000-4000-8000-000000000001', 'phase-six-org', 'phase-six-server',
+          'phase-six-public-key', 'phase-six-credential', '["hub.execution.*"]', 'active');
+       insert into daemon_enrollment_tokens
+         (id, verifier, organization_id, expires_at)
+       values
+         ('90000000-0000-4000-8000-000000000003', 'phase-six-token-verifier',
+          'phase-six-org', now() + interval '1 day');
+       insert into provider_event_receipts
+         (id, organization_id, provider, connection_id, resource_id, delivery_id,
+          source, payload)
+       values
+         ('a0000000-0000-4000-8000-000000000001', 'phase-six-org', 'github',
+          '80000000-0000-4000-8000-000000000001', '960002', 'phase-six-delivery',
+          'github.push', '{}');
        insert into triggers
-         (id, delivery_id, source, repo, payload, organization_id, dropped_reason)
+         (id, delivery_id, source, repo, payload, received_at, organization_id,
+          project_id, configuration_revision_id, connection_id, resource_id, receipt_id)
        values
-         ('40000000-0000-4000-8000-000000000010', 'production-owned', 'github.push',
-          'getpaseo/paseo', '{}', 'organization-production', null),
-         ('40000000-0000-4000-8000-000000000011', 'legacy-github', 'github.push',
-          'boudra/paseo-internal-config', '{}', null, 'legacy_unscoped'),
-         ('40000000-0000-4000-8000-000000000012', 'legacy-discord', 'discord.mention',
-          null, '{}', null, 'github_unbound'),
-         ('40000000-0000-4000-8000-000000000013', 'legacy-no-match', 'github.issue_comment',
-          null, '{}', null, 'no_matching_trigger'),
-         ('40000000-0000-4000-8000-000000000014', 'legacy-discord-unbound', 'discord.mention',
-          null, '{}', null, 'discord_unbound'),
-         ('40000000-0000-4000-8000-000000000015', 'legacy-lifecycle', 'github.installation',
-          null, '{"installation":{"id":"9001"}}', null, 'github_lifecycle'),
-         ('40000000-0000-4000-8000-000000000016', 'referenced-history', 'github.issue_comment',
-          null, '{}', null, 'github_unbound');
+         ('a1000000-0000-4000-8000-000000000001', 'phase-six-delivery', 'github.push',
+          'getpaseo/hub', '{}', now(), 'phase-six-org',
+          '60000000-0000-4000-8000-000000000001',
+          '70000000-0000-4000-8000-000000000001',
+          '80000000-0000-4000-8000-000000000001', '960002',
+          'a0000000-0000-4000-8000-000000000001');
+       insert into attachment_capabilities
+         (id, trigger_id, organization_id, connection_id, provider, source_id, locator, filename)
+       values
+         ('a2000000-0000-4000-8000-000000000001',
+          'a1000000-0000-4000-8000-000000000001', 'phase-six-org',
+          '80000000-0000-4000-8000-000000000001', 'slack', 'file-1', '{}', 'file.txt');
        insert into agent_executions
-         (id, machine_id, status, hub_config_version_id, trigger_id)
+         (id, organization_id, project_id, status, configuration_revision_id,
+          trigger_id, trigger_connection_id, trigger_resource_id)
        values
-         ('50000000-0000-4000-8000-000000000010',
-          '30000000-0000-4000-8000-000000000010', 'succeeded',
-          '20000000-0000-4000-8000-000000000010',
-          '40000000-0000-4000-8000-000000000016')`,
+         ('a4000000-0000-4000-8000-000000000001', 'phase-six-org',
+          '60000000-0000-4000-8000-000000000001', 'running',
+          '70000000-0000-4000-8000-000000000001',
+          'a1000000-0000-4000-8000-000000000001',
+          '80000000-0000-4000-8000-000000000001', '960002')`,
+    );
+
+    const before = await poolQuery<{
+      project_id: string;
+      connection_id: string;
+      daemon_id: string;
+      machine_id: string;
+      enrollment_id: string;
+    }>(
+      url,
+      `select project.id::text as project_id,
+              (select id::text from github_connections where organization_id = project.organization_id) as connection_id,
+              (select id::text from daemons where organization_id = project.organization_id) as daemon_id,
+              (select id::text from machines where org_id = project.organization_id) as machine_id,
+              (select id::text from daemon_enrollment_tokens where organization_id = project.organization_id) as enrollment_id
+       from projects project
+       where project.id = '60000000-0000-4000-8000-000000000001'`,
     );
 
     const database = await createDatabase(url);
     await database.close();
 
-    const triggers = await poolQuery<{
-      delivery_id: string;
-      organization_id: string;
-      has_receipt: boolean;
-    }>(
-      url,
-      `select delivery_id, organization_id, receipt_id is not null as has_receipt
-       from triggers
-       order by delivery_id`,
-    );
-    assert.deepEqual(triggers.rows, [
-      {
-        delivery_id: "production-owned",
-        organization_id: "organization-production",
-        has_receipt: true,
-      },
-      {
-        delivery_id: "referenced-history",
-        organization_id: "organization-production",
-        has_receipt: true,
-      },
-    ]);
-    assert.equal(
+    assert.deepEqual(
       (
-        await poolQuery<{ count: number }>(
+        await poolQuery<{
+          triggers: string | null;
+          trigger_id: string | null;
+          trigger_connection_id: string | null;
+          trigger_resource_id: string | null;
+          provider_receipts: number;
+          attachments: number;
+          runs: number;
+          steps: number;
+          wakeups: number;
+          executions: number;
+        }>(
           url,
-          `select count(*)::integer as count
-           from provider_event_receipts
-           where delivery_id in ('production-owned', 'referenced-history')`,
+          `select to_regclass('public.triggers')::text as triggers,
+                  (select column_name from information_schema.columns
+                   where table_name = 'trigger_runs' and column_name = 'trigger_id') as trigger_id,
+                  (select column_name from information_schema.columns
+                   where table_name = 'agent_executions' and column_name = 'trigger_connection_id') as trigger_connection_id,
+                  (select column_name from information_schema.columns
+                   where table_name = 'agent_executions' and column_name = 'trigger_resource_id') as trigger_resource_id,
+                  (select count(*)::integer from provider_event_receipts) as provider_receipts,
+                  (select count(*)::integer from attachment_capabilities
+                   where provider_event_receipt_id = 'a0000000-0000-4000-8000-000000000001') as attachments,
+                  (select count(*)::integer from trigger_runs) as runs,
+                  (select count(*)::integer from workflow_step_runs) as steps,
+                  (select count(*)::integer from workflow_wakeups) as wakeups,
+                  (select count(*)::integer from agent_executions) as executions`,
         )
-      ).rows[0]?.count,
-      2,
+      ).rows,
+      [
+        {
+          triggers: null,
+          trigger_id: null,
+          trigger_connection_id: null,
+          trigger_resource_id: null,
+          provider_receipts: 1,
+          attachments: 1,
+          runs: 0,
+          steps: 0,
+          wakeups: 0,
+          executions: 0,
+        },
+      ],
+    );
+    assert.deepEqual(
+      (
+        await poolQuery<{
+          project_id: string;
+          connection_id: string;
+          daemon_id: string;
+          machine_id: string;
+          enrollment_id: string;
+        }>(
+          url,
+          `select project.id::text as project_id,
+                  (select id::text from github_connections where organization_id = project.organization_id) as connection_id,
+                  (select id::text from daemons where organization_id = project.organization_id) as daemon_id,
+                  (select id::text from machines where org_id = project.organization_id) as machine_id,
+                  (select id::text from daemon_enrollment_tokens where organization_id = project.organization_id) as enrollment_id
+           from projects project
+           where project.id = '60000000-0000-4000-8000-000000000001'`,
+        )
+      ).rows,
+      before.rows,
     );
   }, 120_000);
 
@@ -228,7 +248,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 18,
+      drizzleMigrations: 21,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -332,7 +352,6 @@ describe("database migration application", () => {
     const activeId = randomUUID();
     const historicalId = randomUUID();
     const machineId = randomUUID();
-    const executionId = randomUUID();
     await client.query(
       `insert into organization (id, name, slug)
        values
@@ -358,12 +377,6 @@ describe("database migration application", () => {
        values ($1, 'organization-bootstrap', '{}', 'terminated', $2)`,
       [machineId, activeId],
     );
-    await client.query(
-      `insert into agent_executions
-         (id, machine_id, status, hub_config_version_id)
-       values ($1, $2, 'succeeded', $3)`,
-      [executionId, machineId, activeId],
-    );
     await client.end();
 
     const database = await createDatabase(url);
@@ -371,7 +384,6 @@ describe("database migration application", () => {
 
     const migrated = await poolQuery<{
       active_configuration_revision_id: string;
-      execution_machine_id: string;
       historical_configuration: unknown;
       historical_source_evidence: unknown;
       machine_organization_id: string;
@@ -383,11 +395,9 @@ describe("database migration application", () => {
               historical.normalized_configuration as historical_configuration,
               historical.source_evidence as historical_source_evidence,
               (select count(*)::integer from github_repositories) as repositories,
-              (select kind from project_configuration_sources
+               (select kind from project_configuration_sources
                where project_id = project.id) as source_kind,
-              (select org_id from machines where id = '${machineId}') as machine_organization_id,
-              (select machine_id::text from agent_executions
-               where id = '${executionId}') as execution_machine_id
+              (select org_id from machines where id = '${machineId}') as machine_organization_id
        from projects project
        join project_configuration_revisions historical on historical.id = '${historicalId}'
        where project.organization_id = 'organization-retired'`,
@@ -395,7 +405,6 @@ describe("database migration application", () => {
     assert.deepEqual(migrated.rows, [
       {
         active_configuration_revision_id: activeId,
-        execution_machine_id: machineId,
         historical_configuration: {
           environments: [{ daemon: "retired-daemon", kind: "daemon", name: "retired" }],
           triggers: [],
@@ -413,28 +422,6 @@ describe("database migration application", () => {
         source_kind: "manual",
       },
     ]);
-  }, 120_000);
-
-  it("keeps contradictory machine evidence and fails closed for live executions", async () => {
-    const terminal = await contradictoryMachineFixture(postgres, "terminal", "succeeded");
-    const migrated = await createDatabase(terminal.url);
-    await migrated.close();
-    assert.deepEqual(
-      await poolQuery<{ machine_id: string | null; machine_org_id: string }>(
-        terminal.url,
-        `select execution.machine_id::text, machine.org_id as machine_org_id
-         from machines machine
-         cross join agent_executions execution
-         where machine.id = '${terminal.machineId}' and execution.id = '${terminal.executionId}'`,
-      ).then(({ rows }) => rows),
-      [{ machine_id: null, machine_org_id: "organization-b" }],
-    );
-
-    const live = await contradictoryMachineFixture(postgres, "live", "running");
-    await assert.rejects(
-      createDatabase(live.url),
-      /inconsistent live execution resource ownership/,
-    );
   }, 120_000);
 
   it("migrates an empty database and reruns as a no-op", async () => {
@@ -520,7 +507,7 @@ describe("database migration application", () => {
         second.id,
         secondRoutes,
       );
-      const accepted = await database.acceptGitHubTrigger({
+      const accepted = await database.acceptGitHubEvent({
         installationId: 9101,
         repositoryId: 9001,
         deliveryId: "github-duplicate-project-routes",
@@ -530,13 +517,24 @@ describe("database migration application", () => {
       });
       assert.equal(accepted.status, "accepted");
       if (accepted.status !== "accepted") return;
-      assert.equal(accepted.triggers.length, 1);
+      assert.equal(accepted.events.length, 1);
       const rolledBack = await database.rollbackProjectConfiguration(project.id, first.id, [
         firstRoute,
       ]);
+      const replayed = await database.acceptGitHubEvent({
+        installationId: 9101,
+        repositoryId: 9001,
+        deliveryId: "github-duplicate-project-routes",
+        source: "github.push",
+        payload: {},
+        receivedAt: new Date(0),
+      });
 
       assert.equal(activated.id, second.id);
       assert.equal(rolledBack.id, first.id);
+      assert.equal(replayed.status, "accepted");
+      if (replayed.status !== "accepted") return;
+      assert.equal(replayed.events[0]?.configurationRevisionId, second.id);
       assert.deepEqual(
         (
           await poolQuery<{ configuration_revision_id: string; trigger_name: string }>(
@@ -590,11 +588,17 @@ describe("database migration application", () => {
       };
 
       const results = await Promise.all([
-        database.acceptGitHubTrigger(input),
-        database.acceptGitHubTrigger(input),
+        database.acceptGitHubEvent(input),
+        database.acceptGitHubEvent(input),
       ]);
 
-      assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "duplicate"]);
+      assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "accepted"]);
+      assert.deepEqual(
+        results.map((result) =>
+          result.status === "accepted" ? result.events[0]?.configurationRevisionId : undefined,
+        ),
+        [revisionRecord.id, revisionRecord.id],
+      );
     } finally {
       await database.close();
     }
@@ -605,6 +609,7 @@ describe("database migration application", () => {
     const database = await createDatabase(url);
     try {
       const [project] = await createProjectFixtures(database, url);
+      await seedTestDaemon(url, "organization-a");
       const connectionId = randomUUID();
       await poolQuery(
         url,
@@ -615,15 +620,23 @@ describe("database migration application", () => {
       );
       const store = new ProjectConfigurationStore(database, project.id);
       const configuration = {
-        environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
+        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
         triggers: [
           {
             name: "github-trigger",
             on: "github.push",
-            environment: "runner",
+            max_runtime: "2h",
             filters: { from_users: ["user-1"] },
-            agent: { provider: "test", mode: "default" },
-            prompt: "Handle the push",
+            steps: [
+              {
+                id: "push-step",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "test", mode: "default" },
+                prompt: [{ text: "Handle the push" }],
+              },
+            ],
           },
         ],
       };
@@ -635,7 +648,7 @@ describe("database migration application", () => {
       await store.activate(initial.id);
 
       const switched = await store.switchToManual("project-user");
-      const accepted = await database.acceptGitHubTrigger({
+      const accepted = await database.acceptGitHubEvent({
         installationId: 9251,
         repositoryId: 9252,
         deliveryId: "manual-authority-route",
@@ -647,7 +660,7 @@ describe("database migration application", () => {
       assert.equal(switched.revision.sourceKind, "manual");
       assert.equal(accepted.status, "accepted");
       if (accepted.status !== "accepted") return;
-      assert.equal(accepted.triggers[0]?.projectId, project.id);
+      assert.equal(accepted.events[0]?.projectId, project.id);
     } finally {
       await database.close();
     }
@@ -658,6 +671,10 @@ describe("database migration application", () => {
     const database = await createDatabase(url);
     try {
       const [project] = await createProjectFixtures(database, url);
+      const revisionRecord = await database.insertProjectConfigurationRevision(
+        revision(project.id),
+      );
+      await database.activateProjectConfigurationRevision(project.id, revisionRecord.id);
       const manualInput = {
         organizationId: "organization-a",
         projectId: project.id,
@@ -668,12 +685,12 @@ describe("database migration application", () => {
         receivedAt: new Date(0),
       };
       const manualResults = await Promise.all([
-        database.persistManualTrigger(manualInput),
-        database.persistManualTrigger(manualInput),
+        database.persistManualEvent(manualInput),
+        database.persistManualEvent(manualInput),
       ]);
       assert.deepEqual(manualResults.map((result) => result.status).sort(), [
         "accepted",
-        "duplicate",
+        "accepted",
       ]);
     } finally {
       await database.close();
@@ -702,8 +719,8 @@ describe("database migration application", () => {
         receivedAt: new Date(0),
       };
       const lifecycleResults = await Promise.all([
-        database.claimGitHubLifecycle(lifecycleInput),
-        database.claimGitHubLifecycle(lifecycleInput),
+        database.claimGitHubLifecycleReceipt(lifecycleInput),
+        database.claimGitHubLifecycleReceipt(lifecycleInput),
       ]);
       assert.deepEqual(lifecycleResults.map((result) => result.status).sort(), [
         "claimed",
@@ -750,7 +767,7 @@ describe("database migration application", () => {
         },
       ]);
 
-      const claim = await database.claimGitHubLifecycle({
+      const claim = await database.claimGitHubLifecycleReceipt({
         installationId: 9271,
         deliveryId: "lifecycle-removal",
         signatureHash: "lifecycle-removal-signature",
@@ -806,7 +823,7 @@ describe("database migration application", () => {
          values ('${connectionId}', 'organization-a', 9301, 'activity-github', 'account-9301',
                  'activity', 'Organization', 'active')`,
       );
-      const result = await database.acceptGitHubTrigger({
+      const result = await database.acceptGitHubEvent({
         installationId: 9301,
         repositoryId: 9302,
         deliveryId: "unrouted-activity-receipt",
@@ -818,7 +835,7 @@ describe("database migration application", () => {
 
       assert.equal(result.status, "dropped");
       assert.equal(
-        (await database.listUnroutedTriggersForOrganization("organization-a")).some(
+        (await database.listUnroutedProviderEventsForOrganization("organization-a")).some(
           (event) => event.deliveryId === "unrouted-activity-receipt",
         ),
         true,
@@ -1019,6 +1036,28 @@ function revision(projectId: string, validationErrors?: unknown) {
   };
 }
 
+async function seedTestDaemon(url: string, organizationId: string): Promise<void> {
+  await poolQuery(
+    url,
+    `insert into machines (id, org_id, source, status)
+       values ('10000000-0000-4000-8000-000000000002', $1,
+               '{"kind":"daemon","daemonId":"10000000-0000-4000-8000-000000000001"}', 'alive')`,
+    [organizationId],
+  );
+  await poolQuery(
+    url,
+    `insert into daemons
+       (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id,
+        server_id, daemon_public_key, credential_verifier, scopes, status)
+     values
+       ('10000000-0000-4000-8000-000000000001', 'runner-idempotency',
+        'runner-enrollment-verifier', 'daemon-10000000',
+        '10000000-0000-4000-8000-000000000002', $1, 'server-1',
+        'public-key', 'credential-verifier', '["hub.execution.*"]', 'active')`,
+    [organizationId],
+  );
+}
+
 async function createProjectFixtures(
   database: Awaited<ReturnType<typeof createDatabase>>,
   url: string,
@@ -1135,50 +1174,6 @@ async function createPendingEnrollmentDatabase(postgres: StartedPostgreSqlContai
   return { url, token };
 }
 
-async function contradictoryMachineFixture(
-  postgres: StartedPostgreSqlContainer,
-  prefix: string,
-  executionStatus: "running" | "succeeded",
-) {
-  const url = await createHistoricalBaseline({
-    postgres,
-    prefix: `contradictory_machine_${prefix}`,
-    through: "0010_classy_strong_guy",
-  });
-  const client = new Client({ connectionString: url });
-  await client.connect();
-  const configA = randomUUID();
-  const configB = randomUUID();
-  const machineId = randomUUID();
-  const executionId = randomUUID();
-  try {
-    await client.query(
-      `insert into organization (id, name, slug)
-       values ('organization-a', 'A', 'a'), ('organization-b', 'B', 'b')`,
-    );
-    await client.query(
-      `insert into hub_configs (id, org_id, name, version, source, config, is_current)
-       values
-         ($1, 'organization-a', 'a', 1, '{}', '{"environments":[],"triggers":[]}', true),
-         ($2, 'organization-b', 'b', 1, '{}', '{"environments":[],"triggers":[]}', true)`,
-      [configA, configB],
-    );
-    await client.query(
-      `insert into machines (id, org_id, source, status, hub_config_version_id)
-       values ($1, 'organization-b', '{}', 'alive', $2)`,
-      [machineId, configB],
-    );
-    await client.query(
-      `insert into agent_executions (id, machine_id, status, hub_config_version_id)
-       values ($1, $2, $3, $4)`,
-      [executionId, machineId, executionStatus, configA],
-    );
-  } finally {
-    await client.end();
-  }
-  return { url, machineId, executionId };
-}
-
 async function createLegacySchema(postgres: StartedPostgreSqlContainer, prefix: string) {
   const url = databaseUrl(postgres, prefix);
   const databaseName = new URL(url).pathname.slice(1);
@@ -1282,14 +1277,11 @@ async function durableSnapshot(url: string) {
       : "project_configuration_revisions";
     const rows = await client.query<DurableSnapshot>(`
       select
-        (select count(*)::integer from triggers) as triggers,
         (select count(*)::integer from machines) as machines,
-        (select count(*)::integer from agent_executions) as executions,
         (select count(*)::integer from ${configurationTable}) as configs,
         (select count(*)::integer from daemons) as daemons,
         (select count(*)::integer from daemon_enrollment_tokens) as enrollment_tokens,
         (select id::text from machines limit 1) as machine_id,
-        (select id::text from agent_executions limit 1) as execution_id,
         (select id::text from ${configurationTable} limit 1) as config_id,
         (select id::text from daemons limit 1) as daemon_id,
         (select credential_verifier from daemons limit 1) as credential_verifier,
@@ -1305,14 +1297,11 @@ async function durableSnapshot(url: string) {
 }
 
 interface DurableSnapshot extends QueryResultRow {
-  triggers: number;
   machines: number;
-  executions: number;
   configs: number;
   daemons: number;
   enrollment_tokens: number;
   machine_id: string;
-  execution_id: string;
   config_id: string;
   daemon_id: string;
   credential_verifier: string;
@@ -1387,6 +1376,8 @@ async function historicalShape(url: string) {
 }
 
 class LegacyUpgrade {
+  private readonly legacyDaemonId = "10000000-0000-4000-8000-000000000099";
+
   private constructor(
     private readonly database: Awaited<ReturnType<typeof createDatabase>>,
     private readonly operations: ReturnType<typeof createHubApplication>["operations"],
@@ -1461,7 +1452,7 @@ class LegacyUpgrade {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          daemonId: randomUUID(),
+          daemonId: this.legacyDaemonId,
           idempotencyKey: "legacy-upgrade-proof",
           serverId: "legacy-server",
           daemonPublicKey: "legacy-public-key",
@@ -1479,7 +1470,7 @@ class LegacyUpgrade {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectSlug: "default",
-          yaml: "environments:\n  - name: production\n    kind: docker\n    image: paseo/runner\ntriggers: []",
+          yaml: `environments:\n  - name: production\n    kind: daemon\n    daemon: daemon-${this.legacyDaemonId.slice(0, 8)}\n    cwd: /repo\ntriggers: []`,
         }),
       }),
     );

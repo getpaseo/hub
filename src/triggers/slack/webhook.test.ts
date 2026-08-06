@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
-import type { DurableTrigger, ProviderTriggerAcceptance } from "../../db/types.js";
+import type { DurableProviderEvent, ProviderEventAcceptance } from "../../db/types.js";
 import { createSlackWebhookSource, verifySlackSignature } from "./webhook.js";
 
 const SECRET = "slack-signing-secret";
@@ -48,17 +48,18 @@ describe("Slack webhook", () => {
 
   it("normalizes, durably accepts, and dispatches an app mention once", async () => {
     const accepted: unknown[] = [];
-    const dispatched: DurableTrigger[] = [];
+    const dispatched: DurableProviderEvent[] = [];
     const endpoint = source((input) => {
       accepted.push(input);
       return Promise.resolve({
         status: "accepted",
         receiptId: `receipt-${input.deliveryId}`,
-        triggers: [
+        events: [
           {
-            triggerId: "trigger-1",
+            providerEventReceiptId: "trigger-1",
             organizationId: "org-1",
             projectId: "project-1",
+            configurationRevisionId: "11111111-1111-4111-8111-111111111132",
             deliveryId: input.deliveryId,
             source: input.source,
             payload: input.payload,
@@ -71,7 +72,7 @@ describe("Slack webhook", () => {
     });
     await endpoint.start((trigger) => {
       dispatched.push(trigger);
-      return Promise.resolve({ triggerId: trigger.triggerId });
+      return Promise.resolve({ providerEventReceiptId: trigger.providerEventReceiptId });
     });
 
     const response = await endpoint.handle(request(mentionEnvelope()));
@@ -129,10 +130,11 @@ describe("Slack webhook", () => {
   });
 
   it("replays a duplicate durable trigger through idempotent dispatch", async () => {
-    const trigger: DurableTrigger = {
-      triggerId: "trigger-1",
+    const trigger: DurableProviderEvent = {
+      providerEventReceiptId: "trigger-1",
       organizationId: "org-1",
       projectId: "project-1",
+      configurationRevisionId: "11111111-1111-4111-8111-111111111132",
       deliveryId: "slack-Ev123",
       source: "slack.mention",
       payload: {},
@@ -146,47 +148,22 @@ describe("Slack webhook", () => {
       now: () => NOW,
       accept: () =>
         Promise.resolve({
-          status: "duplicate",
-          triggerIds: [trigger.triggerId],
+          status: "accepted",
+          events: [trigger],
           receiptId: trigger.deliveryId,
         }),
-      recoverDuplicate: () => Promise.resolve(trigger),
     });
     let dispatches = 0;
     await endpoint.start(() => {
       dispatches += 1;
-      return Promise.resolve({ triggerId: trigger.triggerId });
+      return Promise.resolve({ providerEventReceiptId: trigger.providerEventReceiptId });
     });
 
     assert.equal((await endpoint.handle(request(mentionEnvelope()))).status, 200);
     assert.equal(dispatches, 1);
   });
 
-  it("replays every trigger in a duplicate fan-out acceptance", async () => {
-    const triggers = [
-      {
-        triggerId: "trigger-1",
-        organizationId: "org-1",
-        projectId: "project-1",
-        deliveryId: "slack-Ev123",
-        source: "slack.mention",
-        payload: {},
-        receivedAt: new Date(NOW),
-        connectionId: "slack-connection",
-        resourceId: "T123",
-      },
-      {
-        triggerId: "trigger-2",
-        organizationId: "org-1",
-        projectId: "project-2",
-        deliveryId: "slack-Ev123",
-        source: "slack.mention",
-        payload: {},
-        receivedAt: new Date(NOW),
-        connectionId: "slack-connection",
-        resourceId: "T123",
-      },
-    ] satisfies DurableTrigger[];
+  it("does not dispatch duplicate acceptance", async () => {
     const endpoint = createSlackWebhookSource({
       appId: APP_ID,
       signingSecret: SECRET,
@@ -194,20 +171,17 @@ describe("Slack webhook", () => {
       accept: () =>
         Promise.resolve({
           status: "duplicate" as const,
-          triggerIds: triggers.map((trigger) => trigger.triggerId),
           receiptId: "slack-Ev123",
         }),
-      recoverDuplicate: (triggerId) =>
-        Promise.resolve(triggers.find((trigger) => trigger.triggerId === triggerId)),
     });
-    const dispatches: string[] = [];
+    let dispatches = 0;
     await endpoint.start((trigger) => {
-      dispatches.push(trigger.triggerId);
-      return Promise.resolve({ triggerId: trigger.triggerId });
+      dispatches += 1;
+      return Promise.resolve({ providerEventReceiptId: trigger.providerEventReceiptId });
     });
 
     assert.equal((await endpoint.handle(request(mentionEnvelope()))).status, 200);
-    assert.deepEqual(dispatches, ["trigger-1", "trigger-2"]);
+    assert.equal(dispatches, 0);
   });
 
   it("rejects unauthenticated, wrong-app, oversized, and unavailable handoffs", async () => {
@@ -239,7 +213,7 @@ describe("Slack webhook", () => {
 function source(
   accept: (
     input: Parameters<Parameters<typeof createSlackWebhookSource>[0]["accept"]>[0],
-  ) => Promise<ProviderTriggerAcceptance>,
+  ) => Promise<ProviderEventAcceptance>,
 ) {
   return createSlackWebhookSource({ appId: APP_ID, signingSecret: SECRET, now: () => NOW, accept });
 }

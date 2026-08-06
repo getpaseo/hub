@@ -2,161 +2,98 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { Database } from "../db/types.js";
-import { ProjectCommandError, ProjectDashboard } from "./dashboard.js";
+import { ProjectDashboard } from "./dashboard.js";
 
-describe("project dashboard trigger/execution payload access", () => {
-  it("excludes raw trigger payload and execution result from the project snapshot", async () => {
-    const { dashboard, database, project } = await seededProject();
-    await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: project.id,
-      deliveryId: "delivery-1",
-      source: "manual.run",
-      payload: { secret: "should not appear in the snapshot" },
-      receivedAt: new Date(),
+describe("project dashboard activity read models", () => {
+  it("omits payload-bearing evidence from lists and retains it in detail", async () => {
+    const database = createMemoryDatabase({
+      memberships: [
+        {
+          userId: "user-1",
+          organizationId: "org-1",
+          organizationName: "Acme",
+          organizationSlug: "acme",
+          membershipId: "membership-1",
+          role: "owner",
+        },
+      ],
     });
-
-    const snapshot = await dashboard.projectSnapshot(new Request("https://hub.test"), {
-      organizationSlug: "acme",
-      projectSlug: "default",
-    });
-
-    assert.equal(snapshot.activity.length, 1);
-    assert.equal("payload" in snapshot.activity[0]!, false);
-  });
-
-  it("fetches a trigger's raw payload only when it belongs to the requested project", async () => {
-    const { dashboard, database, project } = await seededProject();
-    const otherProject = await database.createProject({
+    const project = await database.createProject({
       organizationId: "org-1",
-      name: "Other",
-      slug: "other",
+      name: "Hub",
+      slug: "hub",
       createdByUserId: "user-1",
     });
-    const owned = await database.insertTrigger({
-      organizationId: "org-1",
+    const revision = await database.insertProjectConfigurationRevision({
       projectId: project.id,
-      deliveryId: "delivery-owned",
-      source: "manual.run",
-      payload: { trigger: "deploy" },
-      receivedAt: new Date(),
-    });
-    const foreign = await database.insertTrigger({
-      organizationId: "org-1",
-      projectId: otherProject.id,
-      deliveryId: "delivery-foreign",
-      source: "manual.run",
-      payload: { trigger: "rollback" },
-      receivedAt: new Date(),
-    });
-
-    const payload = await dashboard.triggerPayload(
-      new Request("https://hub.test"),
-      { organizationSlug: "acme", projectSlug: "default" },
-      owned.trigger.id,
-    );
-    assert.deepEqual(payload, { trigger: "deploy" });
-
-    await assert.rejects(
-      dashboard.triggerPayload(
-        new Request("https://hub.test"),
-        { organizationSlug: "acme", projectSlug: "default" },
-        foreign.trigger.id,
-      ),
-      (error: unknown) =>
-        error instanceof ProjectCommandError && error.code === "trigger_unavailable",
-    );
-  });
-
-  it("fetches an execution's raw result only when it belongs to the requested project", async () => {
-    const { dashboard, database, project, revisionId } = await seededProject();
-    const otherProject = await database.createProject({
-      organizationId: "org-1",
-      name: "Other",
-      slug: "other",
-      createdByUserId: "user-1",
-    });
-    const otherRevision = await database.insertProjectConfigurationRevision({
-      projectId: otherProject.id,
       sourceKind: "manual",
       sourceEvidence: { kind: "test" },
-      normalizedConfiguration: {},
-      contentHash: "other-config",
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "dashboard-read-model",
     });
-    const owned = await database.insertAgentExecution({
+    await database.activateProjectConfigurationRevision(project.id, revision.id, []);
+    const rawPayload = { body: "payload-".repeat(20_000) };
+    const triggerContext = { provider: "manual", body: "trigger-".repeat(20_000) };
+    const receipt = await database.persistManualEvent({
       organizationId: "org-1",
       projectId: project.id,
-      machineId: null,
-      triggerContext: null,
-      outputContext: null,
-      configurationRevisionId: revisionId,
+      deliveryId: "dashboard-large-payload",
+      source: "manual.dashboard",
+      payload: rawPayload,
+      receivedAt: new Date("2026-08-06T12:00:00.000Z"),
     });
-    await database.transitionAgentExecution(owned.id, "succeeded", {
-      result: { status: "succeeded" },
-    });
-    const foreign = await database.insertAgentExecution({
+    if (receipt.status !== "accepted") throw new Error("dashboard receipt was not accepted");
+    const run = await database.createAcceptedTriggerRun({
       organizationId: "org-1",
-      projectId: otherProject.id,
-      machineId: null,
-      triggerContext: null,
-      outputContext: null,
-      configurationRevisionId: otherRevision.id,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: receipt.event.providerEventReceiptId,
+      configuredTriggerName: "dashboard-run",
+      rawPrompt: "run",
+      prompt: "run",
+      inputs: {},
+      triggerContext,
+      outputContext: {},
+      deadlineAt: new Date("2026-08-06T13:00:00.000Z"),
+      stepIds: ["step"],
     });
+    const unroutedPayload = { body: "unrouted-".repeat(20_000) };
+    await database.persistManualEvent({
+      organizationId: "org-1",
+      projectId: project.id,
+      deliveryId: "dashboard-unrouted-large-payload",
+      source: "manual.dashboard",
+      payload: unroutedPayload,
+      receivedAt: new Date("2026-08-06T12:01:00.000Z"),
+    });
+    const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
+    const request = new Request("https://hub.test/o/acme/projects/hub");
+    const list = await dashboard.projectSnapshot(request, {
+      organizationSlug: "acme",
+      projectSlug: "hub",
+    });
+    assert.equal("rawPayload" in list.activity[0]!, false);
+    assert.equal("triggerContext" in list.activity[0]!, false);
 
-    const result = await dashboard.executionResult(
-      new Request("https://hub.test"),
-      { organizationSlug: "acme", projectSlug: "default" },
-      owned.id,
-    );
-    assert.deepEqual(result, { status: "succeeded" });
+    const detail = await dashboard.activityRunSnapshot(request, {
+      organizationSlug: "acme",
+      projectSlug: "hub",
+      runId: run.run.id,
+    });
+    assert.deepEqual(detail.activity.rawPayload, rawPayload);
+    assert.deepEqual(detail.activity.triggerContext, triggerContext);
 
-    await assert.rejects(
-      dashboard.executionResult(
-        new Request("https://hub.test"),
-        { organizationSlug: "acme", projectSlug: "default" },
-        foreign.id,
-      ),
-      (error: unknown) =>
-        error instanceof ProjectCommandError && error.code === "execution_unavailable",
-    );
+    const organization = await dashboard.organizationSnapshot(request, {
+      organizationSlug: "acme",
+    });
+    const unroutedEvent = organization.unroutedEvents[0];
+    assert.ok(unroutedEvent);
+    assert.equal(unroutedEvent.deliveryId, "dashboard-unrouted-large-payload");
+    assert.equal(unroutedEvent.status, "dropped");
+    assert.equal(unroutedEvent.providerEventReceiptId, unroutedEvent.id);
+    assert.equal("rawPayload" in unroutedEvent, false);
   });
 });
-
-async function seededProject(): Promise<{
-  dashboard: ProjectDashboard;
-  database: Database;
-  project: Awaited<ReturnType<Database["createProject"]>>;
-  revisionId: string;
-}> {
-  const database = createMemoryDatabase({
-    memberships: [
-      {
-        userId: "user-1",
-        organizationId: "org-1",
-        organizationName: "Acme",
-        organizationSlug: "acme",
-        membershipId: "member-1",
-        role: "owner",
-      },
-    ],
-  });
-  const project = await database.createProject({
-    organizationId: "org-1",
-    name: "Default",
-    slug: "default",
-    createdByUserId: "user-1",
-  });
-  const revision = await database.insertProjectConfigurationRevision({
-    projectId: project.id,
-    sourceKind: "manual",
-    sourceEvidence: { kind: "test" },
-    normalizedConfiguration: {},
-    contentHash: "test-config",
-  });
-  const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
-  return { dashboard, database, project, revisionId: revision.id };
-}
 
 function accountAuth(): AuthServer {
   return {

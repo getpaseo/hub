@@ -1,13 +1,18 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
+
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedDiscordTrigger {
   event: NormalizedDiscordMessageEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
 }
 
 export function matchDiscordTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
   connectionId?: string | null,
@@ -77,6 +82,33 @@ export function readDiscordPromptBody(
   return mention === undefined
     ? event.content
     : event.content.slice(mention.index + mention.token.length).trimStart();
+}
+
+export function readDiscordMentionToken(
+  event: NormalizedDiscordMessageEvent,
+  botClientId: string,
+): string | undefined {
+  return findBotMention(event, botClientId)?.token;
+}
+
+export function readDiscordInvocationParserMessage(
+  event: NormalizedDiscordMessageEvent,
+  botClientId: string,
+  filter: TriggerFilter | undefined,
+): string {
+  const body = readDiscordPromptBody(event, botClientId);
+  const marker = filter === undefined ? undefined : readPatternFilter(filter);
+  if (
+    marker === undefined ||
+    marker.length === 0 ||
+    marker.includes("=") ||
+    !body.startsWith(marker)
+  )
+    return body;
+  const nextCharacter = body.at(marker.length);
+  return nextCharacter === undefined || /\s/u.test(nextCharacter)
+    ? body.slice(marker.length).trimStart()
+    : body;
 }
 
 function matchesBotMentionPattern(

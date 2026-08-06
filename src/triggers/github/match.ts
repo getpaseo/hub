@@ -1,4 +1,7 @@
-import type { HubConfig, Trigger, TriggerFilter } from "../../config/index.js";
+import type {
+  CompiledTriggerConfig as CompiledTrigger,
+  TriggerFilter,
+} from "../../config/index.js";
 import {
   IssueCommentPayloadSchema,
   IssuesPayloadSchema,
@@ -7,13 +10,40 @@ import {
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 
+type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
+
 export interface MatchedTriggerEvent {
   event: NormalizedGitHubEvent;
-  trigger: Trigger;
+  trigger: MatchedTriggerDefinition;
+}
+
+export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): string {
+  return getFilterText(event);
+}
+
+export function readGitHubInvocationParserMessage(
+  event: NormalizedGitHubEvent,
+  filter: TriggerFilter | undefined,
+): string {
+  const message = readGitHubInvocationMessage(event);
+  if (filter === undefined) return message;
+  const contains = readStringFilter(filter, "contains");
+  if (contains === undefined) return message;
+  const index = message.indexOf(contains);
+  return index === -1 ? message : message.slice(index);
+}
+
+export function readGitHubMention(
+  event: NormalizedGitHubEvent,
+  filter: TriggerFilter | undefined,
+): string | undefined {
+  const message = readGitHubInvocationMessage(event);
+  const candidate = filter?.pattern ?? filter?.contains;
+  return candidate !== undefined && message.includes(candidate) ? candidate : undefined;
 }
 
 export function matchTriggers(
-  config: HubConfig,
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
 ): MatchedTriggerEvent[] {

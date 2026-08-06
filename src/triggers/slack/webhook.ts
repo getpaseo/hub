@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import type { ProviderTriggerAcceptance } from "../../db/types.js";
+import type { ProviderEventAcceptance } from "../../db/types.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
@@ -26,8 +26,7 @@ export interface SlackWebhookSourceOptions {
     payload: unknown;
     receivedAt: Date;
     dropReason?: string;
-  }): Promise<ProviderTriggerAcceptance>;
-  recoverDuplicate?(triggerId: string): Promise<Parameters<TriggerHandler>[0] | undefined>;
+  }): Promise<ProviderEventAcceptance>;
 }
 
 export interface SlackWebhookEndpoint extends TriggerSource {
@@ -43,7 +42,6 @@ export function createSlackWebhookSource(options: SlackWebhookSourceOptions): Sl
   const handlers = new Set<TriggerHandler>();
 
   return {
-    dispatchMode: "durable-handoff",
     async handle(request) {
       const verified = await verifySlackRequest(request, options);
       if (verified instanceof Response) return verified;
@@ -105,35 +103,23 @@ async function handleVerifiedSlackRequest(
   if (!callback.success || callback.data.api_app_id !== options.appId) {
     return new Response("Bad Request", { status: 400 });
   }
-  const event = normalizeSlackEvent(callback.data);
-  if (event === undefined) return new Response("OK", { status: 200 });
+  const normalizedEvent = normalizeSlackEvent(callback.data);
+  if (normalizedEvent === undefined) return new Response("OK", { status: 200 });
 
-  const deliveryId = `slack-${event.id}`;
+  const deliveryId = `slack-${normalizedEvent.id}`;
   try {
     const acceptance = await options.accept({
-      teamId: event.teamId,
+      teamId: normalizedEvent.teamId,
       deliveryId,
       signatureHash: verified.signatureHash,
       source: "slack.mention",
-      payload: event,
-      receivedAt: new Date(event.eventTime * 1_000),
+      payload: normalizedEvent,
+      receivedAt: new Date(normalizedEvent.eventTime * 1_000),
       ...(handlers.size === 0 ? { dropReason: "slack_no_handler" } : {}),
     });
-    let triggers: Parameters<TriggerHandler>[0][] = [];
-    if (acceptance.status === "accepted") {
-      triggers = acceptance.triggers;
-    } else if (acceptance.status === "duplicate") {
-      const recovered = await Promise.all(
-        acceptance.triggerIds.map((triggerId) =>
-          Promise.resolve(options.recoverDuplicate?.(triggerId)),
-        ),
-      );
-      triggers = recovered.filter(
-        (trigger): trigger is NonNullable<typeof trigger> => trigger !== undefined,
-      );
-    }
+    const events = acceptance.status === "accepted" ? acceptance.events : [];
     await Promise.all(
-      triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
+      events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
     );
     return new Response("OK", { status: 200 });
   } catch (error) {

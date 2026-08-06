@@ -11,7 +11,7 @@ import { requireOperation, type OperationAuthenticator } from "./auth/operation-
 import type { OperationAuthorization } from "./auth/api-keys.js";
 import { ProjectConfigurationStore } from "./configuration/store.js";
 import { installConfiguration } from "./config/admin-routes.js";
-import type { Database } from "./db/types.js";
+import type { Database, TriggerRunRecord, WorkflowDeadlineRecovery } from "./db/types.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
 import {
   ActiveDaemonRegistry,
@@ -23,8 +23,7 @@ import {
   type DaemonClock,
   type DaemonModule,
 } from "./daemons/index.js";
-import { createDispatcher } from "./dispatcher/index.js";
-import type { LaunchMachineIntent } from "./dispatcher/launch-machine-intent.js";
+import { createDispatcherWithEngine } from "./dispatcher/index.js";
 import type {
   DaemonDispatchLifecycleOptions,
   ExecutionDeadlineClock,
@@ -64,6 +63,7 @@ export interface HubRuntime {
   resourceCounts(): {
     recoveredExecutionSubscriptions: number;
   };
+  processWorkflowOutbox(): Promise<void>;
   handleUpgrade: ReturnType<typeof createDaemonUpgradeHandler> | null;
   start(sources?: readonly TriggerSource[]): Promise<void>;
   stop(): Promise<void>;
@@ -101,7 +101,10 @@ export function createHubRuntime(options: HubRuntimeOptions): HubRuntime {
 }
 
 export function createHubApplication(options: HubRuntimeOptions): HubApplication {
-  const daemons = options.database === null ? null : new ActiveDaemonRegistry(options.database);
+  const daemons =
+    options.database === null
+      ? null
+      : new ActiveDaemonRegistry(options.database, options.daemonClock);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
     return new ProjectConfigurationStore(options.database, projectId);
@@ -142,34 +145,35 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
 
   const manualSource =
     options.database === null ? undefined : createManualTriggerSource(options.database);
-  const synchronousDispatchHandler =
-    options.database === null || daemonModule === null
-      ? undefined
-      : (intent: LaunchMachineIntent) => daemonModule.lifecycle.dispatchLaunchMachineIntent(intent);
   const durableDispatchHandler =
     options.database === null || daemonModule === null
       ? undefined
-      : (intents: readonly LaunchMachineIntent[]) =>
-          daemonModule.lifecycle.handoffLaunchMachineIntents(intents);
+      : (intent: Parameters<DaemonModule["lifecycle"]["handoffLaunchMachineIntent"]>[0]) =>
+          daemonModule.lifecycle.handoffLaunchMachineIntent(intent);
   const dispatcherOptions = {
     database: options.database,
     providers,
     ...(options.configurationRevisionId === undefined
       ? {}
       : { configurationRevisionId: options.configurationRevisionId }),
-  };
-  const synchronousDispatcher = createDispatcher({
-    ...dispatcherOptions,
-    ...(synchronousDispatchHandler === undefined
+    ...(options.executionDeadlineClock === undefined
       ? {}
-      : { dispatchLaunchMachineIntent: synchronousDispatchHandler }),
-  });
-  const durableDispatcher = createDispatcher({
+      : { now: () => new Date(options.executionDeadlineClock!.now()) }),
+    ...(daemonModule === null
+      ? {}
+      : {
+          onWorkflowDeadlineExceeded: async (recovery: WorkflowDeadlineRecovery) => {
+            await daemonModule.lifecycle.recoverWorkflowDeadlineExecutions(recovery.executionIds);
+          },
+          onWorkflowRunTerminal: (run: TriggerRunRecord) =>
+            daemonModule.lifecycle.notifyWorkflowRunTerminal(run),
+        }),
+  };
+  const { handler: workflowDispatcher, engine: workflowEngine } = createDispatcherWithEngine({
     ...dispatcherOptions,
-    freezeDispatchPlan: true,
     ...(durableDispatchHandler === undefined
       ? {}
-      : { dispatchLaunchMachineIntents: durableDispatchHandler }),
+      : { dispatchLaunchMachineIntent: durableDispatchHandler }),
   });
   connectDaemonLifecycle(daemons, daemonModule);
   let activeSources: readonly TriggerSource[] = [];
@@ -180,6 +184,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       recoveredExecutionSubscriptions:
         daemonModule?.lifecycle.activeRecoveryObservationCount() ?? 0,
     }),
+    processWorkflowOutbox: () => workflowEngine.processAvailable(),
     handleUpgrade:
       options.database === null ? null : createDaemonUpgradeHandler(options.database, daemons!),
     async start(sources = []) {
@@ -187,19 +192,14 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         daemonModule?.lifecycle.recoverAgentExecutionDeadlines(),
         daemonModule?.lifecycle.recoverPendingHubActions(),
       ]);
+      workflowEngine.start();
       activeSources = [...(manualSource === undefined ? [] : [manualSource]), ...sources];
-      await Promise.all(
-        activeSources.map(async (source) =>
-          source.start(
-            source.dispatchMode === "durable-handoff" ? durableDispatcher : synchronousDispatcher,
-          ),
-        ),
-      );
+      await Promise.all(activeSources.map(async (source) => source.start(workflowDispatcher)));
     },
     async stop() {
       await Promise.all(activeSources.map(async (source) => source.stop()));
       activeSources = [];
-      await Promise.all([daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
     },
   };
   const operations: HubOperations = {
@@ -289,7 +289,8 @@ function createAppExecutionCapabilityServer(
   return createExecutionCapabilityServer({
     database: options.database,
     outputs: options.outputRegistry ?? new OutputExecutorRegistry(),
-    completeExecution: (input) => daemonModule.lifecycle.completeAgentExecutionFromCallback(input),
+    completeExecution: (input) =>
+      daemonModule.lifecycle.completeAgentExecutionFromCallback(input, { deferHubAction: true }),
   });
 }
 

@@ -1,12 +1,13 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import type { InvocationRejection } from "../triggers/invocation.js";
 
-export interface TriggerRecord {
+export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
+
+export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  projectId: string | null;
-  configurationRevisionId: string | null;
-  receiptId: string;
+  provider: "github" | "slack" | "discord" | "manual";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -15,29 +16,36 @@ export interface TriggerRecord {
   repo: string | null;
   payload: unknown;
   receivedAt: Date;
-  matchedTriggerName: string | null;
   droppedReason: string | null;
-  dispatchPlan: readonly LaunchMachineIntent[] | null;
-  lifecycleState: TriggerLifecycleState | null;
+  acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
 }
 
-export type TriggerLifecycleState = "accepted" | "running" | "succeeded" | "failed";
-
-export interface TriggerDispatchPlanClaim {
-  plan: readonly LaunchMachineIntent[];
-  claimed: boolean;
+export interface ProviderEventReceiptSummary {
+  id: string;
+  organizationId: string;
+  provider: ProviderEventReceiptRecord["provider"];
+  connectionId: string | null;
+  resourceId: string | null;
+  deliveryId: string;
+  signatureHash: string | null;
+  source: string;
+  repo: string | null;
+  receivedAt: Date;
+  droppedReason: string | null;
 }
 
-export interface TriggerLifecycleTransition {
-  trigger: TriggerRecord;
-  transitioned: boolean;
+export interface ProviderEventRouteSnapshot {
+  projectId: string;
+  configurationRevisionId: string;
+  connectionId: string | null;
+  resourceId: string | null;
 }
 
 export type AttachmentProvider = "slack" | "discord";
 
 export interface AttachmentRecord {
   id: string;
-  triggerId: string;
+  providerEventReceiptId: string;
   organizationId: string;
   connectionId: string;
   provider: AttachmentProvider;
@@ -50,7 +58,7 @@ export interface AttachmentRecord {
 }
 
 export interface InsertAttachmentInput {
-  triggerId: string;
+  providerEventReceiptId: string;
   organizationId: string;
   connectionId: string;
   provider: AttachmentProvider;
@@ -95,14 +103,42 @@ export interface AgentExecutionRecord {
   launchIntent: LaunchMachineIntent | null;
   daemonId: string | null;
   daemonAgentId: string | null;
-  triggerId: string | null;
-  triggerConnectionId: string | null;
-  triggerResourceId: string | null;
+  workflowStepRunId: string | null;
   hubAction: HubAction | null;
   hubActionCompletedAt: Date | null;
+  hubActionReadyAt: Date | null;
+  hubActionAcknowledgements: AgentExecutionHubAcknowledgements;
 }
 
 export type HubAction = "interrupt" | "archive";
+
+export type AgentExecutionHubFinishExecutionStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+export interface AgentExecutionHubFinishExecutionAcknowledgement {
+  callId: string | null;
+  status: AgentExecutionHubFinishExecutionStatus;
+  observedAt: Date;
+}
+
+export interface AgentExecutionHubAcknowledgements {
+  terminalAt: Date | null;
+  idleAt: Date | null;
+  finishExecutionCall: AgentExecutionHubFinishExecutionAcknowledgement | null;
+}
+
+export type AgentExecutionHubAcknowledgementInput =
+  | { kind: "terminal"; observedAt: Date }
+  | { kind: "idle"; observedAt: Date }
+  | {
+      kind: "finish_execution";
+      callId?: string | null;
+      status: AgentExecutionHubFinishExecutionStatus;
+      observedAt: Date;
+    };
 
 export interface DaemonRecord {
   id: string;
@@ -379,7 +415,7 @@ export type GitHubLifecycleIdentity = Omit<
   "id" | "organizationId" | "installationId" | "slug"
 >;
 
-export interface InsertTriggerInput {
+export interface InsertProviderEventInput {
   organizationId: string;
   projectId: string | null;
   configurationRevisionId?: string | null;
@@ -396,15 +432,16 @@ export interface InsertTriggerInput {
   droppedReason?: string | null;
 }
 
-export interface InsertTriggerResult {
+export interface InsertProviderEventResult {
   inserted: boolean;
-  trigger: TriggerRecord;
+  receipt: ProviderEventReceiptRecord;
 }
 
-export interface DurableTrigger {
-  triggerId: string;
+export interface DurableProviderEvent {
+  providerEventReceiptId: string;
   organizationId: string;
   projectId: string;
+  configurationRevisionId: string;
   deliveryId: string;
   source: string;
   payload: unknown;
@@ -413,12 +450,12 @@ export interface DurableTrigger {
   resourceId: string | null;
 }
 
-export type ProviderTriggerAcceptance =
-  | { status: "accepted"; triggers: DurableTrigger[]; receiptId: string }
-  | { status: "duplicate"; triggerIds: string[]; receiptId: string }
+export type ProviderEventAcceptance =
+  | { status: "accepted"; events: DurableProviderEvent[]; receiptId: string }
+  | { status: "duplicate"; receiptId: string }
   | { status: "dropped"; receiptId: string; reason: string };
 
-export interface ProviderTriggerEvidence {
+export interface ProviderEventEvidence {
   deliveryId: string;
   signatureHash?: string | null;
   source: string;
@@ -428,29 +465,29 @@ export interface ProviderTriggerEvidence {
   dropReason?: string;
 }
 
-export interface AcceptGitHubTriggerInput extends ProviderTriggerEvidence {
+export interface AcceptGitHubEventInput extends ProviderEventEvidence {
   installationId: number;
   repositoryId?: number;
 }
 
-export interface AcceptDiscordTriggerInput extends ProviderTriggerEvidence {
+export interface AcceptDiscordEventInput extends ProviderEventEvidence {
   guildId: string;
 }
 
-export interface AcceptSlackTriggerInput extends ProviderTriggerEvidence {
+export interface AcceptSlackEventInput extends ProviderEventEvidence {
   teamId: string;
 }
 
-export interface PersistManualTriggerInput extends InsertTriggerInput {
+export interface PersistManualEventInput extends InsertProviderEventInput {
   organizationId: string;
   projectId: string;
 }
 
-export type ManualTriggerPersistence =
-  | { status: "accepted"; trigger: DurableTrigger }
-  | { status: "duplicate"; triggerId: string };
+export type ManualEventPersistence =
+  | { status: "accepted"; event: DurableProviderEvent }
+  | { status: "duplicate"; providerEventReceiptId: string };
 
-export interface GitHubLifecycleClaimInput {
+export interface GitHubLifecycleReceiptClaimInput {
   installationId: number;
   deliveryId: string;
   signatureHash: string;
@@ -459,9 +496,9 @@ export interface GitHubLifecycleClaimInput {
   receivedAt: Date;
 }
 
-export type GitHubLifecycleClaim =
-  | { status: "claimed"; triggerId: string; installationId: number }
-  | { status: "duplicate"; triggerId: string };
+export type GitHubLifecycleReceiptClaim =
+  | { status: "claimed"; providerEventReceiptId: string; installationId: number }
+  | { status: "duplicate"; providerEventReceiptId: string };
 
 export type GitHubLifecycleResult =
   | { status: "absent"; removeBinding: boolean }
@@ -482,18 +519,150 @@ export interface InsertAgentExecutionInput {
   projectId: string;
   machineId: string | null;
   daemonId?: string | null;
+  startedAt?: Date;
   triggerContext: unknown;
   outputContext: unknown;
   configurationRevisionId: string;
   completionTokenHash?: string | null;
   deadlineAt?: Date | null;
   idleDeadlineAt?: Date | null;
-  triggerId?: string | null;
-  triggerConnectionId?: string | null;
-  triggerResourceId?: string | null;
+  workflowStepRunId?: string | null;
   launchIntent?: LaunchMachineIntent | null;
   status?: "spawning" | "failed";
   result?: unknown;
+}
+
+interface TriggerRunEvidence {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  providerEventReceiptId: string;
+  configuredTriggerName: string;
+  rawPrompt: string;
+  prompt: string;
+  inputs: unknown;
+  values: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
+  createdAt: Date;
+}
+
+export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
+  outcome: "accepted";
+  status: "running" | "succeeded" | "failed" | "timed_out";
+  deadlineAt: Date;
+  deadlineKind: WorkflowDeadlineKind | null;
+  failureReason: string | null;
+  terminalNotificationPendingAt: Date | null;
+  terminalNotificationDeliveredAt: Date | null;
+  terminalNotificationLeaseExpiresAt: Date | null;
+  completedAt: Date | null;
+}
+
+export interface RejectedTriggerRunRecord extends TriggerRunEvidence {
+  outcome: "rejected";
+  status: "rejected";
+  rejection: InvocationRejection;
+  completedAt: Date;
+}
+
+export type TriggerRunRecord = AcceptedTriggerRunRecord | RejectedTriggerRunRecord;
+
+export interface ProjectActivityRunRecord {
+  run: TriggerRunRecord;
+  receipt: ProviderEventReceiptRecord;
+  steps: readonly WorkflowStepRunRecord[];
+}
+
+export interface ProjectActivityRunListRecord {
+  run: TriggerRunRecord;
+  receipt: ProviderEventReceiptSummary;
+}
+
+export interface WorkflowStepRunRecord {
+  id: string;
+  triggerRunId: string;
+  stepId: string;
+  ordinal: number;
+  status: "pending" | "running" | "succeeded" | "skipped" | "failed" | "timed_out";
+  agentExecutionId: string | null;
+  output: unknown;
+  failureReason: string | null;
+  deadlineKind: WorkflowDeadlineKind | null;
+  deadlineAt: Date | null;
+  idleDeadlineAt: Date | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  dispatchIntent: LaunchMachineIntent | null;
+}
+
+export interface WorkflowWakeupRecord {
+  triggerRunId: string;
+  availableAt: Date;
+  leaseExpiresAt: Date | null;
+  leasedBeforeClaim: boolean;
+}
+
+export interface CreateAcceptedTriggerRunInput {
+  id?: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  providerEventReceiptId: string;
+  configuredTriggerName: string;
+  rawPrompt: string;
+  prompt: string;
+  inputs: unknown;
+  values?: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
+  deadlineAt: Date;
+  stepIds: readonly string[];
+  createdAt?: Date;
+}
+
+export interface CreateRejectedTriggerRunInput {
+  id?: string;
+  organizationId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  providerEventReceiptId: string;
+  configuredTriggerName: string;
+  rawPrompt: string;
+  prompt: string;
+  inputs: unknown;
+  values?: unknown;
+  triggerContext: unknown;
+  outputContext: unknown;
+  rejection: InvocationRejection;
+  createdAt?: Date;
+}
+
+export interface WorkflowStepExecutionInput {
+  triggerRunId: string;
+  stepId: string;
+  ordinal: number;
+  executionId: string;
+  execution: Omit<InsertAgentExecutionInput, "deadlineAt" | "idleDeadlineAt" | "startedAt"> & {
+    deadlineAt: Date;
+    idleDeadlineAt: Date;
+    startedAt: Date;
+  };
+}
+
+export interface WorkflowAgentCompletionInput {
+  executionId: string;
+  executionStatus: "succeeded" | "failed";
+  stepStatus: "succeeded" | "failed" | "timed_out";
+  result?: unknown;
+  stepOutput?: unknown;
+  failureReason?: string;
+  deadlineKind?: WorkflowDeadlineKind;
+  observedAt?: Date;
+  completedByAgent?: boolean;
+  deadlineCondition?: TransitionAgentExecutionFields["deadlineCondition"];
+  hubAction?: HubAction | null;
 }
 
 export interface EnrollDaemonInput {
@@ -576,6 +745,18 @@ export interface TransitionAgentExecutionFields {
 export interface TransitionAgentExecutionResult {
   execution: AgentExecutionRecord;
   transitioned: boolean;
+  deadlineKind?: WorkflowDeadlineKind;
+  terminalRun?: TriggerRunRecord;
+}
+
+export interface TransitionTriggerRunResult {
+  run: TriggerRunRecord;
+  transitioned: boolean;
+}
+
+export interface WorkflowDeadlineRecovery {
+  triggerRunId: string;
+  executionIds: readonly string[];
 }
 
 export interface TerminateMachineFields {
@@ -583,34 +764,99 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
-  insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult>;
-  markTriggerDropped(id: string, reason: string): Promise<TriggerRecord>;
-  claimTriggerDispatchPlan(
-    id: string,
-    plan: readonly LaunchMachineIntent[],
-  ): Promise<TriggerDispatchPlanClaim>;
-  transitionTriggerLifecycle(
-    id: string,
-    state: TriggerLifecycleState,
-  ): Promise<TriggerLifecycleTransition>;
-  acceptGitHubTrigger(input: AcceptGitHubTriggerInput): Promise<ProviderTriggerAcceptance>;
-  acceptDiscordTrigger(input: AcceptDiscordTriggerInput): Promise<ProviderTriggerAcceptance>;
-  acceptSlackTrigger(input: AcceptSlackTriggerInput): Promise<ProviderTriggerAcceptance>;
-  persistManualTrigger(input: PersistManualTriggerInput): Promise<ManualTriggerPersistence>;
-  claimGitHubLifecycle(input: GitHubLifecycleClaimInput): Promise<GitHubLifecycleClaim>;
+  createAcceptedTriggerRun(
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
+  createRejectedTriggerRun(
+    input: CreateRejectedTriggerRunInput,
+  ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;
+  findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
+  findTriggerRunsByProviderEventReceiptId(
+    providerEventReceiptId: string,
+  ): Promise<TriggerRunRecord[]>;
+  listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
+  listProjectActivityRuns(
+    projectId: string,
+    limit: number,
+  ): Promise<ProjectActivityRunListRecord[]>;
+  findProjectActivityRun(
+    projectId: string,
+    runId: string,
+  ): Promise<ProjectActivityRunRecord | undefined>;
+  updateTriggerRunValues(triggerRunId: string, values: unknown): Promise<TriggerRunRecord>;
+  findWorkflowStepRunById(id: string): Promise<WorkflowStepRunRecord | undefined>;
+  findWorkflowStepRunByTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord | undefined>;
+  listWorkflowStepRunsForTriggerRun(triggerRunId: string): Promise<WorkflowStepRunRecord[]>;
+  findAgentExecutionByWorkflowStepRunId(
+    stepRunId: string,
+  ): Promise<AgentExecutionRecord | undefined>;
+  claimWorkflowWakeup(now: Date, leaseMs: number): Promise<WorkflowWakeupRecord | undefined>;
+  wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
+  deleteWorkflowWakeup(triggerRunId: string): Promise<void>;
+  createWorkflowStepExecution(input: WorkflowStepExecutionInput): Promise<{
+    stepRun: WorkflowStepRunRecord;
+    execution: AgentExecutionRecord | undefined;
+    created: boolean;
+  }>;
+  linkWorkflowStepRunExecution(
+    stepRunId: string,
+    executionId: string,
+    dispatchIntent?: LaunchMachineIntent,
+  ): Promise<WorkflowStepRunRecord>;
+  completeWorkflowStep(
+    executionId: string,
+    status: "succeeded" | "failed" | "timed_out",
+    result: unknown,
+    failureReason?: string,
+  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  completeWorkflowAgentExecution(
+    input: WorkflowAgentCompletionInput,
+  ): Promise<TransitionAgentExecutionResult>;
+  markWorkflowStepSkipped(
+    triggerRunId: string,
+    stepId: string,
+    reason: string,
+  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  succeedTriggerRun(triggerRunId: string): Promise<TransitionTriggerRunResult | undefined>;
+  failWorkflowRun(
+    triggerRunId: string,
+    status: "failed" | "timed_out",
+    failureReason: string,
+    stepId?: string,
+  ): Promise<
+    { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
+  >;
+  claimPendingWorkflowRunTerminalNotification(
+    now: Date,
+    leaseMs: number,
+  ): Promise<TriggerRunRecord | undefined>;
+  markWorkflowRunTerminalNotificationDelivered(
+    triggerRunId: string,
+    deliveredAt: Date,
+  ): Promise<void>;
+  recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
+  recoverWorkflowWakeups(now: Date): Promise<void>;
+  markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;
+  acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
+  acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
+  acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
+  persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
+  claimGitHubLifecycleReceipt(
+    input: GitHubLifecycleReceiptClaimInput,
+  ): Promise<GitHubLifecycleReceiptClaim>;
   applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleClaim, { status: "claimed" }>,
+    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
     result: GitHubLifecycleResult,
   ): Promise<void>;
-  releaseGitHubLifecycleClaim(triggerId: string): Promise<void>;
-  findTriggerByDeliveryId(
+  releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void>;
+  findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
-  ): Promise<TriggerRecord | undefined>;
-  findTriggerById(id: string): Promise<TriggerRecord | undefined>;
+  ): Promise<ProviderEventReceiptRecord | undefined>;
+  findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined>;
   insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord>;
   findAttachmentBySource(
-    triggerId: string,
+    providerEventReceiptId: string,
     provider: AttachmentProvider,
     sourceId: string,
   ): Promise<AttachmentRecord | undefined>;
@@ -671,6 +917,14 @@ export interface Database {
   setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
+    observedAt: Date,
+    processedAt: Date,
+  ): Promise<AgentExecutionRecord>;
+  prepareAgentExecutionForDispatch(
+    executionId: string,
+    daemonId: string,
+    machineId: string,
+    completionTokenHash: string,
   ): Promise<AgentExecutionRecord>;
   findAgentExecutionById(id: string): Promise<AgentExecutionRecord | undefined>;
   findAgentExecutionForOrganization(
@@ -681,10 +935,6 @@ export interface Database {
     projectId: string,
     id: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  findAgentExecutionByTriggerId(triggerId: string): Promise<AgentExecutionRecord | undefined>;
-  findAgentExecutionsByTriggerId(triggerId: string): Promise<AgentExecutionRecord[]>;
-  listAgentExecutionsForProject(projectId: string, limit: number): Promise<AgentExecutionRecord[]>;
-  listTriggersForProject(projectId: string, limit: number): Promise<TriggerRecord[]>;
   claimAgentExecutionReply(
     executionId: string,
     maxReplies: number,
@@ -698,6 +948,14 @@ export interface Database {
   findRunningAgentExecutionsForMachine(machineId: string): Promise<AgentExecutionRecord[]>;
   findPendingAgentExecutions(): Promise<AgentExecutionRecord[]>;
   findPendingHubActions(daemonId?: string): Promise<AgentExecutionRecord[]>;
+  markAgentExecutionHubActionReady(
+    executionId: string,
+    observedAt?: Date,
+  ): Promise<AgentExecutionRecord | undefined>;
+  recordAgentExecutionHubAcknowledgement(
+    executionId: string,
+    acknowledgement: AgentExecutionHubAcknowledgementInput,
+  ): Promise<AgentExecutionRecord | undefined>;
   completeHubAction(executionId: string, action: HubAction): Promise<boolean>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
@@ -777,7 +1035,9 @@ export interface Database {
     connectionId: string,
     repositoryId: number,
   ): Promise<GitHubConfigurationTarget[]>;
-  listUnroutedTriggersForOrganization(organizationId: string): Promise<TriggerRecord[]>;
+  listUnroutedProviderEventsForOrganization(
+    organizationId: string,
+  ): Promise<ProviderEventReceiptSummary[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
   readConnectionAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord>;

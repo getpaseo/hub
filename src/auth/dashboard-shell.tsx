@@ -8,7 +8,6 @@ import {
   Gauge,
   History,
   KeyRound,
-  ListChecks,
   LogOut,
   Plus,
   Settings,
@@ -301,7 +300,6 @@ const PROJECT_DESTINATIONS = [
   { section: "overview", label: "Overview", icon: Gauge },
   { section: "configuration", label: "Configuration", icon: SlidersHorizontal },
   { section: "activity", label: "Activity", icon: History },
-  { section: "executions", label: "Executions", icon: ListChecks },
   { section: "settings/general", label: "Settings", icon: Settings },
 ] as const;
 
@@ -623,7 +621,6 @@ const ROUTE_SECTIONS = [
   { suffix: "/settings/general", label: "Settings", projectSection: "settings/general" },
   { suffix: "/configuration", label: "Configuration", projectSection: "configuration" },
   { suffix: "/activity", label: "Activity", projectSection: "activity" },
-  { suffix: "/executions", label: "Executions", projectSection: "executions" },
   { suffix: "/overview", label: "Overview", projectSection: "overview" },
   { suffix: "/projects", label: "Projects" },
   { suffix: "/daemons", label: "Daemons" },

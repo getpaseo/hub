@@ -1,12 +1,12 @@
-import type { AllowedOutput } from "../execution-capabilities/outputs.js";
-import type { DaemonEnvironmentTarget } from "../dispatcher/launch-machine-intent.js";
-import type { DurableTrigger } from "../db/types.js";
+import type { DurableProviderEvent } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { InvocationParseResult } from "./invocation.js";
 
 export interface ExternalTrigger {
-  triggerId?: string;
+  providerEventReceiptId: string;
   organizationId: string;
   projectId: string;
+  configurationRevisionId: string;
   source: string;
   deliveryId: string;
   receivedAt: Date;
@@ -16,13 +16,14 @@ export interface ExternalTrigger {
 }
 
 export interface TriggerDispatchOutcome {
-  triggerId: string;
+  providerEventReceiptId: string;
 }
 
-export type TriggerHandler = (trigger: DurableTrigger) => Promise<TriggerDispatchOutcome | void>;
+export type TriggerHandler = (
+  trigger: DurableProviderEvent,
+) => Promise<TriggerDispatchOutcome | void>;
 
 export interface TriggerSource {
-  dispatchMode?: "synchronous" | "durable-handoff";
   start(handler: TriggerHandler): Promise<void>;
   stop(): Promise<void>;
 }
@@ -36,29 +37,53 @@ export interface TriggerAgentConfig {
   thinkingOptionId?: string | undefined;
 }
 
-export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig {
+export function cleanTriggerAgent(
+  agent: Omit<TriggerAgentConfig, "mode"> & { mode?: string | undefined },
+): TriggerAgentConfig {
   return {
     provider: agent.provider,
-    mode: agent.mode,
+    mode: agent.mode ?? "default",
     ...(agent.model === undefined ? {} : { model: agent.model }),
     ...(agent.thinkingOptionId === undefined ? {} : { thinkingOptionId: agent.thinkingOptionId }),
   };
 }
 
-export interface TriggerProviderMatch<TriggerContext = unknown, OutputContext = TriggerContext> {
+interface TriggerProviderMatchBase<TriggerContext, OutputContext> {
   triggerName: string;
-  environmentName: string;
-  environment: DaemonEnvironmentTarget;
-  prompt: string;
-  agent: TriggerAgentConfig;
-  allowOutputs: readonly AllowedOutput[];
-  timeoutMs?: number;
-  idleTimeoutMs?: number;
-  autoArchive: boolean;
   triggerContext: TriggerContext;
   outputContext: OutputContext;
   configurationRevisionId?: string;
   hubConfig: unknown;
+}
+
+export interface AcceptedTriggerProviderMatch<
+  TriggerContext = unknown,
+  OutputContext = TriggerContext,
+> extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
+  invocation: Extract<InvocationParseResult, { status: "accepted" }>;
+}
+
+export interface RejectedTriggerProviderMatch<
+  TriggerContext = unknown,
+  OutputContext = TriggerContext,
+> extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
+  invocation: Extract<InvocationParseResult, { status: "rejected" }>;
+}
+
+export type TriggerProviderMatch<TriggerContext = unknown, OutputContext = TriggerContext> =
+  | AcceptedTriggerProviderMatch<TriggerContext, OutputContext>
+  | RejectedTriggerProviderMatch<TriggerContext, OutputContext>;
+
+export function isAcceptedTriggerProviderMatch<TriggerContext, OutputContext>(
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+): match is AcceptedTriggerProviderMatch<TriggerContext, OutputContext> {
+  return match !== undefined && match.invocation.status === "accepted";
+}
+
+export function isRejectedTriggerProviderMatch<TriggerContext, OutputContext>(
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+): match is RejectedTriggerProviderMatch<TriggerContext, OutputContext> {
+  return match !== undefined && match.invocation.status === "rejected";
 }
 
 export interface TriggerProviderLifecycleResult {

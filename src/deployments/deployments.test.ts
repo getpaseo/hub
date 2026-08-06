@@ -46,7 +46,10 @@ describe("project configuration lifecycle", () => {
       userId: "operator",
     });
 
-    await assert.rejects(projectA.store.activate(invalid.id), /Invalid input/u);
+    await assert.rejects(
+      projectA.store.activate(invalid.id),
+      /invalid compiled workflow contract/u,
+    );
     await assert.rejects(
       new ProjectConfigurationStore(database, projectA.project.id).activate(projectB.revision.id),
       /configuration revision not found/u,

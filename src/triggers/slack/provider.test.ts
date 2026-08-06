@@ -4,126 +4,122 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import type { SlackBotClient, SlackThreadMessage } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
 
-describe("Slack trigger provider", () => {
-  it("keeps Slack context inside the provider while producing a generic dispatch match", async () => {
+describe("Slack Phase 1 trigger provider", () => {
+  it("normalizes typed inputs identically at the provider boundary", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, config(), {
-      organizationId: "org-1",
-    });
-    const client = new RecordingSlackClient();
-    let integrationResolutions = 0;
-    let resolutionContext: { executionId?: string } | undefined;
-    let workspaceAvailable = true;
-    const botUserLookups: Array<[string, string]> = [];
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      inputConfiguration(),
+      { organizationId: "org-1" },
+    );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
-      connectionsForProject: () => (_slug, value, context) => {
-        integrationResolutions += 1;
-        resolutionContext = context;
-        assert.equal(value, "token");
-        return "secret-token";
-      },
-      botUserIdForWorkspace: (organizationId, teamId) => {
-        if (!workspaceAvailable) throw new Error("workspace lookup must not run during recovery");
-        botUserLookups.push([organizationId, teamId]);
-        return Promise.resolve("UBOT");
-      },
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, { content: "<@UBOT> repo=hub agent=opus investigate" }),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "<@UBOT> repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
+  it("parses typed inputs after a matched command marker", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      inputMarkerConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, { content: "<@UBOT> run repo=hub investigate" }),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
+  it("uses exact input filters to select one configured trigger", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      inputFilterFanoutConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const matches = await provider.match(
+      external(project.id, revision.id, { content: "<@UBOT> repo=hub investigate" }),
+    );
+
+    assert.deepEqual(
+      matches.map((match) => match.triggerName),
+      ["hub-only"],
+    );
+  });
+
+  it("matches the literal step and preserves the message reply target", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
 
-    const [match] = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "slack.mention",
-      deliveryId: "slack-Ev1",
-      receivedAt: new Date(),
-      payload: event(),
-    });
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.configurationRevisionId, revision.id);
+    assert.equal(match.outputContext.threadTs, "1700000000.000001");
+    assert.equal(match.outputContext.messageTs, "1700000000.000001");
+  });
 
-    assert.equal(
-      match?.prompt,
-      "Handle ${{ paseo.event.slack.trigger_message.body }} from ${{ paseo.event.slack.trigger_message.author.id }} with ${{ paseo.connections.getpaseo-github.token }}",
-    );
-    assert.deepEqual(match?.environment, {
-      kind: "daemon",
-      daemonId: "daemon-main",
-      authoredSlug: "main",
-      cwd: "/repo",
-      env: { GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}" },
-      worktree: {
-        mode: "branch-off",
-        newBranch:
-          "slack-${{ paseo.event.slack.trigger_message.ts }}-${{ paseo.connections.getpaseo-github.token }}",
-        base: "body-${{ paseo.event.slack.trigger_message.body }}",
-      },
-    });
-    assert.equal(integrationResolutions, 0);
-    assert.deepEqual(match?.triggerContext, {
-      provider: "slack",
-      target: {
-        provider: "slack",
+  it("keeps provider reactions idempotent across the durable lifecycle hooks", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
         organizationId: "org-1",
-        teamId: "T1",
-        channelId: "C1",
-        threadTs: "1700000000.000001",
-        messageTs: "1700000000.000001",
       },
-      event: {
-        slack: {
-          event_type: "app_mention",
-          event_id: "Ev1",
-          event_ts: "1700000000.000001",
-          event_time: 1_700_000_001,
-          team: { id: "T1" },
-          app: { id: "A1" },
-          trigger_message: {
-            ts: "1700000000.000001",
-            content: "<@UBOT> deploy now",
-            body: "deploy now",
-            author: { id: "U1" },
-            channel: { id: "C1" },
-            thread: { ts: "1700000000.000001" },
-            created_at: new Date(1_700_000_000_000).toISOString(),
-            attachments: [],
-          },
-          trigger_thread_context: { messages: [] },
-        },
-      },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
     });
-    assert.deepEqual(match?.outputContext, {
-      provider: "slack",
-      organizationId: "org-1",
-      teamId: "T1",
-      channelId: "C1",
-      threadTs: "1700000000.000001",
-      messageTs: "1700000000.000001",
-    });
-    assert.deepEqual(match?.allowOutputs, [{ type: "slack.reply", max: 1 }]);
-
-    assert(match !== undefined);
-    workspaceAvailable = false;
-    const materialized = await provider.materializeLaunch?.({
-      executionId: "execution-1",
-      organizationId: "org-1",
-      projectId: project.id,
-      prompt: match.prompt,
-      environmentEnv: match.environment.env,
-      environmentWorktree: match.environment.worktree,
-      triggerContext: structuredClone(match.triggerContext),
-    });
-    assert.deepEqual(materialized, {
-      prompt: "Handle deploy now from U1 with secret-token",
-      environmentEnv: { GITHUB_TOKEN: "secret-token" },
-      environmentWorktree: {
-        mode: "branch-off",
-        newBranch: "slack-1700000000.000001-secret-token",
-        base: "body-deploy now",
-      },
-    });
-    assert.equal(integrationResolutions, 1);
-    assert.equal(resolutionContext?.executionId, "execution-1");
-    assert.deepEqual(botUserLookups, [["org-1", "T1"]]);
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
       status: "succeeded",
@@ -136,28 +132,23 @@ describe("Slack trigger provider", () => {
     ]);
   });
 
-  it("preserves a root message as root while routing replies to its message thread", async () => {
-    const { project, store } = await createActiveProjectConfiguration(
-      createMemoryDatabase(),
-      config(),
-      { organizationId: "org-1" },
+  it("keeps a root Slack mention as the reply thread root", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
     );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
+    const match = (await provider.match(external(project.id, revision.id, { threadTs: null })))[0];
 
-    const [match] = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "slack.mention",
-      deliveryId: "slack-root",
-      receivedAt: new Date(),
-      payload: event({ threadTs: null }),
-    });
-
-    assert.ok(match);
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
     assert.equal(match.outputContext.threadTs, match.outputContext.messageTs);
     assert.equal(
@@ -166,11 +157,91 @@ describe("Slack trigger provider", () => {
     );
   });
 
-  it("hydrates only the preceding thread replies and leaves top-level mentions alone", async () => {
+  it("targets Slack failure output at the originating message thread", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, config(), {
-      organizationId: "org-1",
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
     });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+    assert.deepEqual(client.messages, [
+      {
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1700000000.000001",
+        content: "Paseo agent failed: boom",
+      },
+    ]);
+  });
+
+  it("propagates terminal Slack reaction and notice failures", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const reactionFailure = new RecordingSlackClient({ failAddReaction: "white_check_mark" });
+    const reactionProvider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: reactionFailure,
+    });
+    const match = (await reactionProvider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    await assert.rejects(async () => {
+      await reactionProvider.onAgentExecutionCompleted!(match.triggerContext, match.outputContext, {
+        status: "succeeded",
+      });
+    }, /slack add reaction failed/u);
+    assert.deepEqual(reactionFailure.reactions, [
+      "org-1:T1:remove:hourglass_flowing_sand",
+      "org-1:T1:add:white_check_mark",
+    ]);
+
+    const noticeFailure = new RecordingSlackClient({ failMessages: true });
+    const noticeProvider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: noticeFailure,
+    });
+    await assert.rejects(async () => {
+      await noticeProvider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        "boom",
+      );
+    }, /slack message failed/u);
+    assert.deepEqual(noticeFailure.reactions, [
+      "org-1:T1:remove:eyes",
+      "org-1:T1:remove:hourglass_flowing_sand",
+      "org-1:T1:add:x",
+    ]);
+  });
+
+  it("hydrates only routed thread replies and leaves top-level mentions alone", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient({
       threadMessages: Array.from({ length: 50 }, (_, index) => ({
         ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
@@ -186,131 +257,191 @@ describe("Slack trigger provider", () => {
       client,
     });
 
-    const [threadMatch] = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "slack.mention",
-      deliveryId: "slack-thread",
-      receivedAt: new Date(),
-      payload: event(),
-    });
+    const threadMatch = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(threadMatch)) throw new Error("expected accepted match");
+    assert.equal(threadMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 50);
     assert.equal(
-      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages.length,
-      50,
-    );
-    assert.equal(
-      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages[0]?.content,
+      threadMatch.triggerContext.event.slack.trigger_thread_context.messages[0]?.content,
       "reply-1",
     );
     assert.equal(
-      threadMatch?.triggerContext.event.slack.trigger_thread_context.messages.at(-1)?.author.id,
+      threadMatch.triggerContext.event.slack.trigger_thread_context.messages.at(-1)?.author.id,
       "B1",
     );
 
-    const [rootMatch] = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "slack.mention",
-      deliveryId: "slack-root-no-history",
-      receivedAt: new Date(),
-      payload: event({ threadTs: null }),
-    });
-    assert.equal(rootMatch?.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
+    const rootMatch = (
+      await provider.match(external(project.id, revision.id, { threadTs: null }))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(rootMatch)) throw new Error("expected accepted match");
+    assert.equal(rootMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
   });
 
   it("does not hydrate an unrouted Slack thread", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, config(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-
-    const matches = await provider.match({
-      organizationId: "org-1",
-      projectId: project.id,
-      source: "slack.mention",
-      deliveryId: "slack-unrouted-thread",
-      receivedAt: new Date(),
-      payload: event({ authorId: "U2" }),
-    });
-
+    const matches = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
     assert.deepEqual(matches, []);
     assert.deepEqual(client.threadReads, []);
   });
 });
 
-function config() {
+function configuration() {
   return {
-    environments: [
-      {
-        name: "work",
-        kind: "daemon",
-        daemon: "main",
-        cwd: "/repo",
-        worktree: {
-          mode: "branch-off",
-          newBranch:
-            "slack-${{ paseo.event.slack.trigger_message.ts }}-${{ paseo.connections.getpaseo-github.token }}",
-          base: "body-${{ paseo.event.slack.trigger_message.body }}",
-        },
-      },
-    ],
+    environments: [{ name: "slack-runner", kind: "daemon", daemon: "main", cwd: "/repo" }],
     triggers: [
       {
         name: "slack-run",
         on: "slack.mention",
-        environment: "work",
+        max_runtime: "2h",
         filters: { workspace: "T1", channels: ["C1"], from_users: ["U1"] },
-        agent: { provider: "test", mode: "full-access" },
-        prompt:
-          "Handle ${{ paseo.event.slack.trigger_message.body }} from ${{ paseo.event.slack.trigger_message.author.id }} with ${{ paseo.connections.getpaseo-github.token }}",
-        env: { GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}" },
-        allow_outputs: [{ type: "slack.reply" }],
+        steps: [
+          {
+            id: "slack-step",
+            environment: "slack-runner",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "test", mode: "full-access" },
+            prompt: [{ text: "Handle the Slack mention." }],
+            allow_outputs: [{ type: "slack.reply" }],
+          },
+        ],
       },
     ],
   };
 }
 
-function event(overrides: { threadTs?: string | null; authorId?: string } = {}) {
+function inputConfiguration() {
+  const base = configuration();
+  const trigger = base.triggers[0]!;
   return {
-    type: "mention",
-    id: "Ev1",
-    teamId: "T1",
-    appId: "A1",
-    channelId: "C1",
-    messageTs: "1700000000.000001",
-    threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
-    eventTs: "1700000000.000001",
-    eventTime: 1_700_000_001,
-    content: "<@UBOT> deploy now",
-    author: { id: overrides.authorId ?? "U1" },
-    createdAt: new Date(1_700_000_000_000).toISOString(),
-    attachments: [],
-    threadContextMessages: [],
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          repo: { type: "string", choices: ["paseo", "hub"] },
+          agent: { type: "string", default: "codex", choices: ["codex", "opus"] },
+        },
+        filters: { ...trigger.filters, inputs: { repo: "hub" } },
+        steps: [
+          {
+            ...trigger.steps[0]!,
+            agent: { provider: "${{ paseo.inputs.agent }}", mode: "full-access" },
+            prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function inputFilterFanoutConfiguration() {
+  const base = inputConfiguration();
+  const first = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      { ...first, name: "hub-only" },
+      { ...first, name: "paseo-only", filters: { ...first.filters, inputs: { repo: "paseo" } } },
+    ],
+  };
+}
+
+function inputMarkerConfiguration() {
+  const base = inputConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        filters: { ...trigger.filters, pattern: "run" },
+      },
+    ],
+  };
+}
+
+function external(
+  projectId: string,
+  configurationRevisionId: string,
+  overrides: { threadTs?: string | null; content?: string; authorId?: string } = {},
+) {
+  return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+    organizationId: "org-1",
+    projectId,
+    configurationRevisionId,
+    source: "slack.mention",
+    deliveryId: "slack-delivery-1",
+    receivedAt: new Date(),
+    payload: {
+      type: "mention",
+      id: "Ev1",
+      teamId: "T1",
+      appId: "A1",
+      channelId: "C1",
+      messageTs: "1700000000.000001",
+      threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
+      eventTs: "1700000000.000001",
+      eventTime: 1_700_000_001,
+      content: overrides.content ?? "<@UBOT> deploy now",
+      author: { id: overrides.authorId ?? "U1" },
+      createdAt: new Date(1_700_000_000_000).toISOString(),
+      attachments: [],
+      threadContextMessages: [],
+    },
   };
 }
 
 class RecordingSlackClient implements SlackBotClient {
   reactions: string[] = [];
+  messages: Array<{
+    organizationId: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    content: string;
+  }> = [];
   threadReads: string[] = [];
   private readonly threadMessages: SlackThreadMessage[];
 
-  constructor(options: { threadMessages?: SlackThreadMessage[] } = {}) {
+  constructor(
+    private readonly options: {
+      threadMessages?: SlackThreadMessage[];
+      failAddReaction?: string;
+      failMessages?: boolean;
+    } = {},
+  ) {
     this.threadMessages = options.threadMessages ?? [];
   }
-  sendMessage(): Promise<void> {
+
+  sendMessage(input: (typeof this.messages)[number]): Promise<void> {
+    this.messages.push(input);
+    if (this.options.failMessages === true)
+      return Promise.reject(new Error("slack message failed"));
     return Promise.resolve();
   }
+
   addReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
     this.reactions.push(`${input.organizationId}:${input.teamId}:add:${input.name}`);
+    if (this.options.failAddReaction === input.name)
+      return Promise.reject(new Error("slack add reaction failed"));
     return Promise.resolve();
   }
+
   removeReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
     this.reactions.push(`${input.organizationId}:${input.teamId}:remove:${input.name}`);
     return Promise.resolve();

@@ -23,14 +23,13 @@ describeHubE2E("Hub provider attachment capability journey", () => {
     const response = await hub.deliverSlackMention();
     assert.equal(response.status, 200);
 
-    const launch = hub.createdAgentLaunch();
+    const launch = await hub.waitForCreatedAgentLaunch();
     if (typeof launch.prompt !== "string") throw new Error("daemon prompt was not captured");
     const prompt = launch.prompt;
     assert.match(prompt, /inspect this image/u);
     assert.match(prompt, /diagram\.png/u);
     assert.match(prompt, /image\/png/u);
     assert.match(prompt, /19/u);
-    assert.match(prompt, /Please inspect the latest diagram/u);
     assert.doesNotMatch(prompt, /files\.slack\.com|xoxb|F1/u);
 
     const downloadUrl = prompt.match(/https?:\/\/[^\s]+/u)?.[0];

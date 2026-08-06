@@ -1,16 +1,7 @@
 import { z } from "zod";
-import {
-  interpolateRecord,
-  interpolateTemplate,
-  createInterpolationContext,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
 export const ManualRunPayloadSchema = z.object({
   expectedVersionId: z.string().uuid().optional(),
@@ -48,7 +39,7 @@ export function createManualRunProvider(
     async match(external) {
       const store = configurationStoreForProject(external.projectId);
       const payload = ManualRunPayloadSchema.parse(external.payload);
-      const stored = await store.getActive();
+      const stored = await store.getRevision(external.configurationRevisionId);
       if (!stored) {
         throw new Error("manual_config_not_found");
       }
@@ -64,7 +55,6 @@ export function createManualRunProvider(
       if (!trigger) throw new Error("manual_trigger_not_found");
       if (!trigger.filters?.from_users?.includes(payload.actor))
         throw new Error("manual_actor_forbidden");
-      const environment = readEnvironment(stored.configuration.environments, trigger.environment);
       const event: ManualMergeData = {
         manual: {
           actor: payload.actor,
@@ -76,50 +66,40 @@ export function createManualRunProvider(
             : { expected_version_id: payload.expectedVersionId }),
         },
       };
-      const context = createInterpolationContext(event);
-      const [prompt, env] = await Promise.all([
-        interpolateTemplate(trigger.prompt, context),
-        interpolateRecord(trigger.env, context),
-      ]);
+      const triggerContext: ManualRunContext = {
+        provider: "manual",
+        deliveryId: external.deliveryId,
+        event,
+      };
+      const outputContext: ManualRunOutputContext = { provider: "manual", actor: payload.actor };
+      const invocation = parseInvocation(
+        typeof payload.input === "string" ? payload.input : "",
+        trigger.inputs,
+      );
+      if (invocation.status === "rejected") {
+        return [
+          {
+            triggerName: trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          },
+        ];
+      }
+      if (invocation.status === "accepted") {
+        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) return [];
+      }
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,
-        environmentName: trigger.environment,
-        environment: {
-          ...environment,
-          ...(Object.keys(env).length === 0 ? {} : { env }),
-        },
-        prompt,
-        agent: cleanTriggerAgent(trigger.agent),
-        allowOutputs: trigger.allow_outputs ?? [],
-        timeoutMs: parseTriggerTimeoutMs(trigger.timeout),
-        idleTimeoutMs: parseTriggerTimeoutMs(trigger.idle_timeout),
-        autoArchive: trigger.auto_archive,
-        triggerContext: {
-          provider: "manual",
-          deliveryId: external.deliveryId,
-          event,
-        },
-        outputContext: { provider: "manual", actor: payload.actor },
+        triggerContext,
+        outputContext,
         configurationRevisionId: stored.revision.id,
         hubConfig: stored.configuration,
+        invocation,
       };
       return [match];
     },
-  };
-}
-
-function readEnvironment(
-  environments: CompiledProjectConfiguration["environments"],
-  name: string,
-): DaemonEnvironmentTarget {
-  const environment = environments.find((candidate) => candidate.name === name);
-  if (!environment || environment.kind !== "daemon")
-    throw new Error("manual_environment_not_found");
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
   };
 }

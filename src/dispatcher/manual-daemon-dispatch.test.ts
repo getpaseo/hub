@@ -1,238 +1,196 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { createMemoryDatabase } from "../db/memory.js";
-import type { Database } from "../db/types.js";
-import type { ExternalTrigger, TriggerProvider } from "../triggers/index.js";
 import {
-  createManualTriggerSource,
-  dispatchManualTrigger,
-  handleManualTriggerRequest,
-} from "../triggers/manual/source.js";
-import type { LaunchMachineIntent } from "./launch-machine-intent.js";
-import { createDispatcher } from "./index.js";
+  compileHubConfig,
+  compiledConfigurationHash,
+  type CompiledHubConfig,
+} from "../config/compiler.js";
+import { createMemoryDatabase } from "../db/memory.js";
+import type { ManualTriggerInput } from "../triggers/manual/schema.js";
+import type { TriggerProvider } from "../triggers/index.js";
+import { createManualTriggerSource, dispatchManualTrigger } from "../triggers/manual/source.js";
+import { createDispatcherWithEngine } from "./index.js";
 
-describe("manual trigger to daemon dispatch", () => {
-  it("drops provider events when no configured trigger matches", async () => {
-    const manual = await ManualDaemonDispatch.start(noMatchingProvider());
+const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
-    await manual.receive({
-      organizationId: "org_1",
-      projectId: "00000000-0000-4000-8000-000000000001",
-      source: "discord.mention",
-      deliveryId: "manual-discord-no-match",
-      receivedAt: new Date("2026-07-09T12:00:00.000Z"),
-      payload: { message: "@paseo ping" },
-    });
-
-    assert.equal(await manual.droppedReason("manual-discord-no-match"), "no_matching_trigger");
-  });
-
-  it("turns a synthetic manual event into a daemon launch intent", async () => {
-    const manual = await ManualDaemonDispatch.start(matchingProvider());
-
-    assert.equal(
-      await manual.deliver({
-        organizationId: "org_1",
-        projectId: "00000000-0000-4000-8000-000000000001",
-        source: "discord.mention",
-        deliveryId: "manual-discord-1",
-        payload: { message: "@paseo ping" },
-      }),
-      200,
-    );
-    assert.deepEqual(manual.launches(), [
-      { environmentKind: "daemon", daemon: "hetzner-faro", configVersionId: "config-1" },
-    ]);
-  });
-
-  it("replays the original durable plan after configuration changes", async () => {
+describe("manual trigger durable workflow boundary", () => {
+  it("records a manual delivery as dropped when no provider matches", async () => {
     const database = createMemoryDatabase();
-    let version = "config-v1";
-    const provider: TriggerProvider = {
-      name: "mutable",
-      eventNames: ["slack.mention"],
-      async match(trigger) {
-        const names = version === "config-v1" ? ["first", "second"] : ["first", "third"];
-        return names.map((triggerName) => versionedProviderMatch(trigger, triggerName, version));
-      },
-    };
-    const batches: LaunchMachineIntent[][] = [];
-    let fail = true;
-    const dispatch = createDispatcher({
+    const { project, revision } = await createManualProject(database);
+    const source = createManualTriggerSource(database);
+    const { handler } = createDispatcherWithEngine({
       database,
-      providers: [provider],
-      freezeDispatchPlan: true,
-      async dispatchLaunchMachineIntents(intents) {
-        batches.push([...intents]);
-        if (fail) throw new Error("handoff interrupted");
+      providers: [noMatchingProvider()],
+      configurationRevisionId: revision.id,
+    });
+    await source.start(handler);
+
+    await dispatchManualTrigger(source, manualTrigger("manual-no-match", project.id));
+
+    const receipt = await database.findProviderEventReceiptByDeliveryId("manual-no-match", "org_1");
+    assert.equal(receipt?.droppedReason, null);
+    assert.deepEqual(
+      receipt === undefined
+        ? []
+        : await database.findTriggerRunsByProviderEventReceiptId(receipt.id),
+      [],
+    );
+  });
+
+  it("persists one manual run and lets the workflow worker own the step dispatch", async () => {
+    const database = createMemoryDatabase();
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Manual",
+      slug: "manual",
+      createdByUserId: "user-1",
+    });
+    const configuration = manualWorkflowConfiguration();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: configuration,
+      contentHash: compiledConfigurationHash(configuration),
+      createdByUserId: "user-1",
+    });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
+    const source = createManualTriggerSource(database);
+    const dispatches: string[] = [];
+    const { handler, engine } = createDispatcherWithEngine({
+      database,
+      providers: [matchingProvider(configuration, revision.id)],
+      configurationRevisionId: revision.id,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches.push(intent.workflowStepRunId ?? "");
+        if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
+        const execution = await database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
       },
     });
-    const persisted = await database.insertTrigger({
-      organizationId: "org_1",
-      projectId: "00000000-0000-4000-8000-000000000001",
-      deliveryId: "slack-Ev-frozen",
-      source: "slack.mention",
-      payload: { message: "@paseo ping" },
-      receivedAt: new Date("2026-07-09T12:00:00.000Z"),
-    });
-    const trigger = {
-      triggerId: persisted.trigger.id,
-      organizationId: "org_1",
-      projectId: "00000000-0000-4000-8000-000000000001",
-      deliveryId: persisted.trigger.deliveryId,
-      source: persisted.trigger.source,
-      payload: persisted.trigger.payload,
-      receivedAt: persisted.trigger.receivedAt,
-      connectionId: null,
-      resourceId: null,
-    };
+    await source.start(handler);
 
-    await assert.rejects(dispatch(trigger), /handoff interrupted/);
-    version = "config-v2";
-    fail = false;
-    await dispatch(trigger);
+    const outcome = await dispatchManualTrigger(
+      source,
+      manualTrigger("manual-durable", project.id),
+    );
+    await engine.processAvailable();
 
-    assert.deepEqual(batches.map(planIdentity), [
-      [
-        ["first", "config-v1"],
-        ["second", "config-v1"],
-      ],
-      [
-        ["first", "config-v1"],
-        ["second", "config-v1"],
-      ],
-    ]);
+    assert.equal(outcome?.providerEventReceiptId !== undefined, true);
+    const triggerId = outcome?.providerEventReceiptId;
+    assert.ok(triggerId);
+    const run = (await database.findTriggerRunsByProviderEventReceiptId(triggerId))[0];
+    assert.ok(run);
+    const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+    assert.ok(step);
+    assert.deepEqual(dispatches, [step.id]);
+    assert.equal(
+      (await database.findAgentExecutionByWorkflowStepRunId(step.id))?.workflowStepRunId,
+      step.id,
+    );
   });
 });
 
-class ManualDaemonDispatch {
-  private readonly intents: LaunchMachineIntent[] = [];
-  private readonly source;
+async function createManualProject(database: ReturnType<typeof createMemoryDatabase>) {
+  const project = await database.createProject({
+    organizationId: "org_1",
+    name: "Manual",
+    slug: "manual",
+    createdByUserId: "user-1",
+  });
+  const configuration = manualWorkflowConfiguration();
+  const revision = await database.insertProjectConfigurationRevision({
+    projectId: project.id,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "test" },
+    normalizedConfiguration: configuration,
+    contentHash: compiledConfigurationHash(configuration),
+    createdByUserId: "user-1",
+  });
+  await database.activateProjectConfigurationRevision(project.id, revision.id);
+  return { project, revision };
+}
 
-  private constructor(private readonly database: Database) {
-    this.source = createManualTriggerSource(database);
-  }
-
-  static async start(provider: TriggerProvider): Promise<ManualDaemonDispatch> {
-    const manual = new ManualDaemonDispatch(createMemoryDatabase());
-    const dispatch = createDispatcher({
-      database: manual.database,
-      providers: [provider],
-      configurationRevisionId: "config-1",
-      dispatchLaunchMachineIntent: async (intent) => {
-        manual.intents.push(intent);
-      },
-    });
-    await manual.source.start(dispatch);
-    return manual;
-  }
-
-  receive(trigger: ExternalTrigger): Promise<unknown> {
-    return dispatchManualTrigger(this.source, trigger);
-  }
-
-  async deliver(delivery: {
-    organizationId: string;
-    projectId: string;
-    source: string;
-    deliveryId: string;
-    payload: unknown;
-  }): Promise<number> {
-    const response = await handleManualTriggerRequest(
-      new Request("http://localhost/test/trigger", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(delivery),
-      }),
-      this.source,
-      "trigger",
-    );
-    return response.status;
-  }
-
-  async droppedReason(deliveryId: string): Promise<string | null | undefined> {
-    return (await this.database.findTriggerByDeliveryId(deliveryId, "org_1"))?.droppedReason;
-  }
-
-  launches() {
-    return this.intents.map((intent) => ({
-      environmentKind: intent.environment.kind,
-      daemon: intent.environment.kind === "daemon" ? intent.environment.authoredSlug : undefined,
-      configVersionId: intent.configurationRevisionId,
-    }));
-  }
+function manualTrigger(deliveryId: string, projectId = PROJECT_ID): ManualTriggerInput {
+  return {
+    organizationId: "org_1",
+    projectId,
+    source: "manual.run",
+    deliveryId,
+    receivedAt: new Date("2026-08-05T12:00:00.000Z"),
+    payload: { trigger: "deploy", actor: "operator", input: "run" },
+  };
 }
 
 function noMatchingProvider(): TriggerProvider {
   return {
-    name: "manual-discord",
-    eventNames: ["discord.mention"],
+    name: "manual",
+    eventNames: ["manual.run"],
     async match() {
       return [];
     },
   };
 }
 
-function matchingProvider(): TriggerProvider {
+function matchingProvider(configuration: CompiledHubConfig, revisionId: string): TriggerProvider {
   return {
-    name: "manual-discord",
-    eventNames: ["discord.mention"],
+    name: "manual",
+    eventNames: ["manual.run"],
     async match(trigger) {
       return [
         {
-          triggerName: "discord-ping",
-          environmentName: "hetzner-faro",
-          environment: {
-            kind: "daemon",
-            daemonId: "daemon-1",
-            authoredSlug: "hetzner-faro",
-            cwd: "/home/moboudra/dev/faro",
-          },
-          prompt: `Reply to ${JSON.stringify(trigger.payload)}`,
-          agent: { provider: "opencode", mode: "opencode/big-pickle" },
-          allowOutputs: [{ type: "discord.reply", max: 1 }],
-          autoArchive: false,
+          triggerName: "deploy",
           triggerContext: trigger.payload,
-          outputContext: { channelId: "channel-1" },
-          hubConfig: { triggers: [{ name: "discord-ping" }] },
+          outputContext: { provider: "manual" },
+          configurationRevisionId: revisionId,
+          hubConfig: configuration,
+          invocation: {
+            status: "accepted",
+            rawMessage: "run",
+            prompt: "run",
+            inputs: {},
+          },
         },
       ];
     },
   };
 }
 
-function matchingProviderMatch(trigger: ExternalTrigger) {
+function manualWorkflowConfiguration(): CompiledHubConfig {
+  const compiled = compileHubConfig({
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+    triggers: [
+      {
+        name: "deploy",
+        on: "manual.run",
+        max_runtime: "1m",
+        filters: { from_users: ["operator"] },
+        steps: [
+          {
+            id: "deploy-agent",
+            environment: "runner",
+            max_runtime: "30s",
+            idle_timeout: "5s",
+            agent: { provider: "opencode" },
+            prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  });
   return {
-    triggerName: "discord-ping",
-    environmentName: "hetzner-faro",
-    environment: {
-      kind: "daemon" as const,
-      daemonId: "daemon-1",
-      authoredSlug: "hetzner-faro",
-      cwd: "/home/moboudra/dev/faro",
-    },
-    prompt: `Reply to ${JSON.stringify(trigger.payload)}`,
-    agent: { provider: "opencode", mode: "opencode/big-pickle" },
-    allowOutputs: [{ type: "discord.reply" as const, max: 1 }],
-    autoArchive: false,
-    triggerContext: trigger.payload,
-    outputContext: { channelId: "channel-1" },
-    hubConfig: { triggers: [{ name: "discord-ping" }] },
+    environments: [
+      {
+        name: "runner",
+        kind: "daemon",
+        daemon: "runner",
+        daemonId: "daemon-1",
+        cwd: "/repo",
+      },
+    ],
+    triggers: compiled.triggers,
   };
-}
-
-function versionedProviderMatch(
-  trigger: ExternalTrigger,
-  triggerName: string,
-  configurationRevisionId: string,
-) {
-  return Object.assign(matchingProviderMatch(trigger), { triggerName, configurationRevisionId });
-}
-
-function planIdentity(batch: readonly LaunchMachineIntent[]) {
-  return batch.map(intentIdentity);
-}
-
-function intentIdentity(intent: LaunchMachineIntent) {
-  return [intent.triggerName, intent.configurationRevisionId];
 }

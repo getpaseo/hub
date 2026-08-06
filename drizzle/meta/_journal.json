@@ -127,6 +127,27 @@
       "when": 1785930920062,
       "tag": "0017_clever_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786007639877,
+      "tag": "0018_silky_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786008980236,
+      "tag": "0019_cuddly_sunspot",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786015214454,
+      "tag": "0020_lean_king_bedlam",
+      "breakpoints": true
     }
   ]
 }

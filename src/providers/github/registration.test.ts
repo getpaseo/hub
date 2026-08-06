@@ -8,7 +8,7 @@ import { createActiveProjectConfiguration } from "../../test-utils/project-confi
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
-import type { TriggerProviderMatch } from "../../triggers/index.js";
+import { isAcceptedTriggerProviderMatch, type TriggerProviderMatch } from "../../triggers/index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 
 describe("GitHub registration", () => {
@@ -51,14 +51,15 @@ describe("GitHub registration", () => {
     } as const;
     database.findGitHubConfigurationTarget = () => Promise.resolve(target);
     database.listGitHubConfigurationTargets = () => Promise.resolve([target]);
-    database.acceptGitHubTrigger = (input) =>
+    database.acceptGitHubEvent = (input) =>
       Promise.resolve({
         status: "accepted",
-        triggers: [
+        events: [
           {
-            triggerId: `trigger-${input.deliveryId}`,
+            providerEventReceiptId: `trigger-${input.deliveryId}`,
             organizationId: project.organizationId,
             projectId: project.id,
+            configurationRevisionId: "11111111-1111-4111-8111-111111111130",
             deliveryId: input.deliveryId,
             source: input.source,
             payload: input.payload,
@@ -247,51 +248,31 @@ describe("GitHub registration", () => {
   });
 
   it("mints a distinct GitHub installation token for each execution", async () => {
-    const { provider, appAuth } = await createExecutionProvider(githubTokenConfig());
+    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
 
-    const first = await provider.match(githubExecution("delivery-1"));
-    const second = await provider.match(githubExecution("delivery-2"));
+    const first = await provider.match(githubExecution("delivery-1", revision.id));
+    const second = await provider.match(githubExecution("delivery-2", revision.id));
     const firstLaunch = await materialize(provider, first[0], "execution-1");
     const secondLaunch = await materialize(provider, second[0], "execution-2");
 
     assert.deepEqual(
-      [firstLaunch.environmentEnv?.["GITHUB_TOKEN"], secondLaunch.environmentEnv?.["GITHUB_TOKEN"]],
-      ["test-execution-token-2", "test-execution-token-4"],
-    );
-    assert.deepEqual(
       [firstLaunch.environmentEnv?.["GH_TOKEN"], secondLaunch.environmentEnv?.["GH_TOKEN"]],
-      ["test-execution-token-1", "test-execution-token-3"],
+      ["test-execution-token-1", "test-execution-token-2"],
     );
-    assert.deepEqual(appAuth.installationTokenMints, [142, 142, 142, 142]);
-  });
-
-  it("reuses one freshly minted GitHub token across placeholders in one execution", async () => {
-    const { provider, appAuth } = await createExecutionProvider(
-      githubTokenConfig({
-        GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}",
-        GH_TOKEN: "prefix-${{ paseo.connections.getpaseo-github.token }}",
-      }),
-    );
-
-    const [execution] = await provider.match(githubExecution("delivery-repeated-token"));
-    const launch = await materialize(provider, execution, "execution-repeated-token");
-
-    assert.deepEqual(launch.environmentEnv, {
-      GITHUB_TOKEN: "test-execution-token-2",
-      GH_TOKEN: "test-execution-token-1",
-    });
     assert.deepEqual(appAuth.installationTokenMints, [142, 142]);
   });
 
   it("revokes explicitly resolved GitHub tokens with the execution token", async () => {
-    const { provider, appAuth } = await createExecutionProvider(githubTokenConfig());
-    const [execution] = await provider.match(githubExecution("delivery-explicit-token"));
+    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
+    const [execution] = await provider.match(
+      githubExecution("delivery-explicit-token", revision.id),
+    );
     assert.ok(execution);
     await materialize(provider, execution, "execution-explicit-token");
 
     await provider.onAgentExecutionTerminal?.("execution-explicit-token", execution.triggerContext);
 
-    assert.deepEqual(appAuth.revocations, ["test-execution-token-1", "test-execution-token-2"]);
+    assert.deepEqual(appAuth.revocations, ["test-execution-token-1"]);
   });
 
   it("revokes a GitHub token resolved by a cross-provider execution", async () => {
@@ -381,11 +362,11 @@ describe("GitHub registration", () => {
   it("claims lifecycle replay before provider I/O and applies verified evidence afterward", async () => {
     const database = createMemoryDatabase();
     const order: string[] = [];
-    database.claimGitHubLifecycle = (input) => {
+    database.claimGitHubLifecycleReceipt = (input) => {
       order.push(`claim:${input.deliveryId}`);
       return Promise.resolve({
         status: "claimed",
-        triggerId: "lifecycle-trigger",
+        providerEventReceiptId: "lifecycle-trigger",
         installationId: 42,
       });
     };
@@ -465,7 +446,9 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   readFileAtCommit(input: { repositoryId: number; commitSha: string; path: string }) {
     this.reads.push(input);
     const rawYaml = this.files[input.commitSha];
-    return Promise.resolve(rawYaml === undefined ? undefined : { rawYaml });
+    return Promise.resolve(
+      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
+    );
   }
   async push(
     registration: ReturnType<typeof createGitHubRegistration>,
@@ -584,9 +567,7 @@ function githubConfiguration() {
   };
 }
 
-function githubTokenConfig(
-  env: Record<string, string> = { GITHUB_TOKEN: "${{ paseo.connections.getpaseo-github.token }}" },
-) {
+function githubTokenConfig(_env: Record<string, string> = {}) {
   return {
     environments: [
       {
@@ -600,11 +581,18 @@ function githubTokenConfig(
       {
         name: "github-token",
         on: "github.issue_comment",
-        environment: "daemon",
+        max_runtime: "2h",
         filters: { repo: "acme/app", contains: "@paseo", from_users: ["octocat"] },
-        agent: { provider: "claude/opus", mode: "bypassPermissions" },
-        prompt: "run",
-        env,
+        steps: [
+          {
+            id: "github-step",
+            environment: "daemon",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "claude/opus", mode: "bypassPermissions" },
+            prompt: [{ text: "run" }],
+          },
+        ],
       },
     ],
   };
@@ -629,7 +617,7 @@ async function createExecutionProvider(rawConfig: unknown) {
     discord: [],
     slack: [],
   });
-  const { store } = await createActiveProjectConfiguration(database, rawConfig);
+  const { store, revision } = await createActiveProjectConfiguration(database, rawConfig);
   const appAuth = new ExecutionGitHubAuth();
   const registration = createGitHubRegistration({
     database,
@@ -650,7 +638,7 @@ async function createExecutionProvider(rawConfig: unknown) {
       registration.integration!.resolve(projectId, slug, value, context),
   });
   assert.ok(provider);
-  return { provider, appAuth };
+  return { provider, appAuth, revision };
 }
 
 function testProject(id: string, organizationId: string): ProjectRecord {
@@ -674,22 +662,23 @@ async function materialize(
   match: TriggerProviderMatch | undefined,
   executionId: string,
 ) {
-  assert.ok(match);
+  if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
   if (provider.materializeLaunch === undefined) throw new Error("materializer is unavailable");
   return provider.materializeLaunch({
     executionId,
     organizationId: "org_1",
     projectId: "project-1",
-    prompt: match.prompt,
-    ...(match.environment.env === undefined ? {} : { environmentEnv: match.environment.env }),
+    prompt: "Handle the GitHub issue comment.",
     triggerContext: match.triggerContext,
   });
 }
 
-function githubExecution(deliveryId: string) {
+function githubExecution(deliveryId: string, configurationRevisionId: string) {
   return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
     organizationId: "org_1",
     projectId: "project-1",
+    configurationRevisionId,
     source: "github.issue_comment",
     deliveryId,
     receivedAt: new Date("2026-07-28T00:00:00.000Z"),

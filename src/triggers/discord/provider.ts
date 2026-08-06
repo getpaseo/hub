@@ -1,26 +1,19 @@
-import type { ConnectionResolver } from "../../config/index.js";
+import type { ConnectionResolver } from "../../config/connections.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
   AttachmentReference,
 } from "../../attachments/capabilities.js";
-import type {
-  CompiledProjectConfiguration,
-  ProjectConfigurationStore,
-} from "../../configuration/store.js";
-import {
-  createInterpolationContext,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  parseTemplate,
-  parseTriggerTimeoutMs,
-} from "../../config/index.js";
-import type { DaemonEnvironmentTarget } from "../../dispatcher/launch-machine-intent.js";
 import { logger } from "../../logger.js";
-import { cleanTriggerAgent, type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
-import { matchDiscordTriggers, readDiscordPromptBody } from "./match.js";
+import {
+  matchDiscordTriggers,
+  readDiscordInvocationParserMessage,
+  readDiscordPromptBody,
+} from "./match.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 
@@ -70,9 +63,11 @@ export function createDiscordTriggerProvider(options: {
   return {
     name: "discord",
     eventNames: ["discord.mention"],
-    async match(trigger) {
-      const event = NormalizedDiscordMessageEventSchema.parse(trigger.payload);
-      const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
+    async match(externalTrigger) {
+      const event = NormalizedDiscordMessageEventSchema.parse(externalTrigger.payload);
+      const stored = await options
+        .configurationStoreForProject(externalTrigger.projectId)
+        .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return [];
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
@@ -81,12 +76,13 @@ export function createDiscordTriggerProvider(options: {
         stored.configuration,
         event,
         botClientId,
-        trigger.connectionId,
+        externalTrigger.connectionId,
       )) {
-        const baseEnvironment = readDaemonEnvironment(
-          stored.configuration,
-          match.trigger.environment,
+        const compiledTrigger = stored.configuration.triggers.find(
+          (candidate) => candidate.name === match.trigger.name,
         );
+        if (compiledTrigger === undefined)
+          throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -100,38 +96,39 @@ export function createDiscordTriggerProvider(options: {
           event: await buildDiscordMergeData(
             event,
             botClientId,
-            trigger.triggerId,
-            trigger.organizationId,
-            trigger.connectionId,
+            externalTrigger.providerEventReceiptId,
+            externalTrigger.organizationId,
+            externalTrigger.connectionId,
             options.attachments,
           ),
         };
-
-        const environment: DaemonEnvironmentTarget = {
-          ...baseEnvironment,
-          ...(match.trigger.env === undefined
-            ? {}
-            : {
-                env: Object.fromEntries(
-                  Object.entries(match.trigger.env).map(([key, value]) => [key, value.value]),
-                ),
-              }),
-        };
-
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          undefined,
+          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
+        if (invocation.status === "rejected") {
+          matches.push({
+            triggerName: match.trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          });
+          continue;
+        }
         matches.push({
           triggerName: match.trigger.name,
-          environmentName: match.trigger.environment,
-          environment,
-          prompt: match.trigger.prompt.value,
-          agent: cleanTriggerAgent(match.trigger.agent),
-          allowOutputs: cleanAllowedOutputs(match.trigger.allow_outputs ?? []),
-          timeoutMs: parseTriggerTimeoutMs(match.trigger.timeout),
-          idleTimeoutMs: parseTriggerTimeoutMs(match.trigger.idle_timeout),
-          autoArchive: match.trigger.auto_archive,
           triggerContext,
           outputContext,
           configurationRevisionId: stored.revision.id,
           hubConfig: stored.configuration,
+          invocation,
         });
       }
 
@@ -143,31 +140,12 @@ export function createDiscordTriggerProvider(options: {
         launch.executionId,
         options.attachments,
       );
-      const context = createInterpolationContext(
-        event,
-        withExecutionContext(options.connectionsForProject?.(launch.projectId), launch.executionId),
-      );
-      const [prompt, environmentEnv, environmentWorktree] = await Promise.all([
-        interpolateTemplate(parseTemplate(launch.prompt), context),
-        interpolateRecord(
-          launch.environmentEnv === undefined
-            ? undefined
-            : Object.fromEntries(
-                Object.entries(launch.environmentEnv).map(([key, value]) => [
-                  key,
-                  parseTemplate(value),
-                ]),
-              ),
-          context,
-        ),
-        launch.environmentWorktree === undefined
-          ? undefined
-          : interpolateWorktree(launch.environmentWorktree, context),
-      ]);
       return {
-        prompt,
-        ...(Object.keys(environmentEnv).length === 0 ? {} : { environmentEnv }),
-        ...(environmentWorktree === undefined ? {} : { environmentWorktree }),
+        prompt: appendDiscordAttachmentContext(launch.prompt, event),
+        ...(launch.environmentEnv === undefined ? {} : { environmentEnv: launch.environmentEnv }),
+        ...(launch.environmentWorktree === undefined
+          ? {}
+          : { environmentWorktree: launch.environmentWorktree }),
       };
     },
     async onDispatchAccepted(triggerContext) {
@@ -179,24 +157,20 @@ export function createDiscordTriggerProvider(options: {
     },
     async onAgentExecutionCompleted(triggerContext) {
       await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-      await reactSafely(options.bot, triggerContext.target, "white_check_mark");
+      await react(options.bot, triggerContext.target, "white_check_mark");
     },
     async onAgentExecutionFailed(triggerContext, _outputContext, reason) {
       await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
       await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-      await reactSafely(options.bot, triggerContext.target, "x");
-      await postThreadNoticeSafely(
-        options.bot,
-        triggerContext.target,
-        `Paseo agent failed: ${reason}`,
-      );
+      await react(options.bot, triggerContext.target, "x");
+      await postThreadNotice(options.bot, triggerContext.target, `Paseo agent failed: ${reason}`);
     },
     async onMachineTerminated(triggerContext, reason) {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
         await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
         await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-        await reactSafely(options.bot, triggerContext.target, "x");
-        await postThreadNoticeSafely(
+        await react(options.bot, triggerContext.target, "x");
+        await postThreadNotice(
           options.bot,
           triggerContext.target,
           `Paseo machine terminated before the agent could complete: ${reason}`,
@@ -206,25 +180,17 @@ export function createDiscordTriggerProvider(options: {
   };
 }
 
-function withExecutionContext(
-  connections: ConnectionResolver | undefined,
-  executionId: string,
-): ConnectionResolver | undefined {
-  if (connections === undefined) return undefined;
-  return (connectionSlug, value) => connections(connectionSlug, value, { executionId });
-}
-
 async function buildDiscordMergeData(
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
-  triggerId: string | undefined,
+  providerEventReceiptId: string,
   organizationId: string,
   connectionId: string | null | undefined,
   attachments: AttachmentCapabilityRegistry | undefined,
 ): Promise<DiscordMergeData> {
   const triggerAttachments = await registerAttachments(
     event.attachments,
-    triggerId,
+    providerEventReceiptId,
     organizationId,
     connectionId,
     attachments,
@@ -234,7 +200,7 @@ async function buildDiscordMergeData(
       ...buildDiscordMergeMessage(message),
       attachments: await registerAttachments(
         message.attachments,
-        triggerId,
+        providerEventReceiptId,
         organizationId,
         connectionId,
         attachments,
@@ -297,20 +263,20 @@ function buildDiscordMergeMessage(
 
 async function registerAttachments(
   source: NormalizedDiscordMessageEvent["attachments"],
-  triggerId: string | undefined,
+  providerEventReceiptId: string,
   organizationId: string,
   connectionId: string | null | undefined,
   attachments: AttachmentCapabilityRegistry | undefined,
 ): Promise<AttachmentReference[]> {
   if (source.length === 0) return [];
   if (attachments === undefined) throw new Error("attachment capability unavailable");
-  if (triggerId === undefined || connectionId === null || connectionId === undefined) {
+  if (connectionId === null || connectionId === undefined) {
     throw new Error("attachment ownership unavailable");
   }
   return Promise.all(
     source.map((file) =>
       attachments.register({
-        triggerId,
+        providerEventReceiptId,
         organizationId,
         connectionId,
         provider: "discord",
@@ -322,6 +288,20 @@ async function registerAttachments(
       }),
     ),
   );
+}
+
+function appendDiscordAttachmentContext(prompt: string, event: DiscordMergeData): string {
+  const attachments = [
+    ...event.discord.trigger_message.attachments,
+    ...event.discord.trigger_thread_context.messages.flatMap((message) => message.attachments),
+  ];
+  if (attachments.length === 0) return prompt;
+  return `${prompt}\n\nDiscord attachments:\n${attachments
+    .map(
+      (attachment) =>
+        `- ${attachment.filename} (${attachment.content_type ?? "unknown type"}, ${attachment.size ?? "unknown size"} bytes): ${"url" in attachment && typeof attachment.url === "string" ? attachment.url : "unavailable"}`,
+    )
+    .join("\n")}`;
 }
 
 async function materializeDiscordMergeData(
@@ -359,40 +339,12 @@ function buildDiscordContextUrl(event: NormalizedDiscordMessageEvent): string {
   return `https://discord.com/channels/${event.guildId}/${event.threadId ?? event.channelId}`;
 }
 
-function readDaemonEnvironment(
-  config: CompiledProjectConfiguration,
-  environmentName: string,
-): DaemonEnvironmentTarget {
-  const environment = config.environments.find((item) => item.name === environmentName);
-
-  if (environment === undefined) {
-    throw new Error(`environment not found: ${environmentName}`);
-  }
-
-  if (environment.kind !== "daemon") {
-    throw new Error(`environment kind is not implemented: ${environment.kind}`);
-  }
-
-  return {
-    kind: "daemon",
-    daemonId: environment.daemonId,
-    authoredSlug: environment.daemon,
-    cwd: environment.cwd,
-    ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
-  };
-}
-
-function cleanAllowedOutputs(outputs: readonly { type: string; max: number }[]) {
-  return outputs.map((output) => ({ type: output.type, max: output.max }));
-}
-
 async function reactSafely(
   bot: DiscordBotClient,
   event: DiscordOutputContext,
   emoji: string,
 ): Promise<void> {
   const discordEmoji = toDiscordReactionEmoji(emoji);
-
   try {
     await bot.createReaction({
       channelId: event.channelId,
@@ -410,6 +362,18 @@ async function reactSafely(
       "discord reaction failed",
     );
   }
+}
+
+async function react(
+  bot: DiscordBotClient,
+  event: DiscordOutputContext,
+  emoji: string,
+): Promise<void> {
+  await bot.createReaction({
+    channelId: event.channelId,
+    messageId: event.messageId,
+    emoji: toDiscordReactionEmoji(emoji),
+  });
 }
 
 async function deleteReactionSafely(
@@ -455,25 +419,14 @@ function toDiscordReactionEmoji(emoji: string): string {
   }
 }
 
-async function postThreadNoticeSafely(
+async function postThreadNotice(
   bot: DiscordBotClient,
   event: DiscordOutputContext,
   content: string,
 ): Promise<void> {
-  try {
-    await bot.sendChannelMessage({
-      channelId: event.channelId,
-      threadId: event.threadId,
-      content,
-    });
-  } catch (error) {
-    logger.warn(
-      {
-        err: error,
-        channelId: event.channelId,
-        threadId: event.threadId,
-      },
-      "discord thread notice failed",
-    );
-  }
+  await bot.sendChannelMessage({
+    channelId: event.channelId,
+    threadId: event.threadId,
+    content,
+  });
 }

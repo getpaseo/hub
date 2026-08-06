@@ -16,24 +16,12 @@ export {
   HubConfigSchema,
   ConfigRefSchema,
   WorktreeTargetSchema,
-  DEFAULT_TRIGGER_IDLE_TIMEOUT,
-  DEFAULT_TRIGGER_TIMEOUT,
-  parseTriggerTimeoutMs,
-  parseTemplate,
-  type MergeTemplateAst,
-  type MergeVariableAst,
-  type ParsedTemplate,
+  parseDurationMs,
+  parseCompiledHubConfig,
+  rawConfigurationHash,
+  compileHubConfig,
+  compiledConfigurationHash,
 } from "./schema.js";
-export {
-  createInterpolationContext,
-  interpolateAst,
-  interpolateRecord,
-  interpolateTemplate,
-  interpolateWorktree,
-  type ConnectionResolutionContext,
-  type ConnectionResolver,
-  type InterpolationContext,
-} from "./interpolation.js";
 export type {
   AgentConfig,
   HubConfig,
@@ -42,9 +30,14 @@ export type {
   DockerEnvironment,
   EnvironmentConfig,
   FlyEnvironment,
+  AuthoredTriggerFilter,
+  CompiledTriggerFilter,
   Trigger,
   TriggerFilter,
   WorktreeTarget,
+  CompiledConfiguration,
+  CompiledStepConfig,
+  CompiledTriggerConfig,
 } from "./schema.js";
 
 export interface RuntimeConfig {

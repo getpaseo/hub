@@ -1,6 +1,13 @@
 import { load } from "js-yaml";
+import { rawConfigurationHash } from "../config/compiler.js";
+import {
+  PromptPartialResolutionError,
+  resolvePromptPartials,
+  type PromptPartialReadResult,
+  type ResolvedPromptPartials,
+} from "../config/prompt-partials.js";
 import type { Database, ProjectConfigurationRevisionRecord } from "../db/types.js";
-import { configurationHash, ProjectConfigurationStore } from "./store.js";
+import { ProjectConfigurationStore } from "./store.js";
 
 export interface GitHubConfigurationProvider {
   listInstallationRepositories(input: {
@@ -16,7 +23,7 @@ export interface GitHubConfigurationProvider {
     repositoryId: number;
     commitSha: string;
     path: string;
-  }): Promise<{ rawYaml: string } | undefined>;
+  }): Promise<PromptPartialReadResult | undefined>;
 }
 
 export type GitHubConfigurationSyncResult =
@@ -39,7 +46,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
   path: string;
   webhookDeliveryId: string | null;
 }): Promise<GitHubConfigurationSyncResult> {
-  let file: { rawYaml: string } | undefined;
+  let file: PromptPartialReadResult | undefined;
   try {
     file = await input.client.readFileAtCommit({
       installationId: input.installationId,
@@ -57,29 +64,70 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     await recordAttempt(input, "fetch_failed", { reason: "file_not_found_at_commit" });
     return { outcome: "fetch_failed" };
   }
+  if (file.kind !== "file") {
+    await recordAttempt(input, "fetch_failed", {
+      reason: `configuration_file_is_not_regular_file:${file.kind}`,
+    });
+    return { outcome: "fetch_failed" };
+  }
 
   let rawConfiguration: unknown;
   try {
-    rawConfiguration = load(file.rawYaml);
+    rawConfiguration = load(file.content);
   } catch (error) {
     const revision = await input.database.insertProjectConfigurationRevision({
       projectId: input.projectId,
       sourceKind: "github",
       sourceEvidence: sourceEvidence(input),
-      rawYaml: file.rawYaml,
+      rawYaml: file.content,
       normalizedConfiguration: null,
       validationErrors: {
         formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
       },
-      contentHash: configurationHash(file.rawYaml),
+      contentHash: rawConfigurationHash(file.content),
     });
     await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "yaml" });
     return { outcome: "invalid", revision };
   }
 
   const store = new ProjectConfigurationStore(input.database, input.projectId);
+  let resolvedPromptPartials: ResolvedPromptPartials;
+  try {
+    resolvedPromptPartials = await resolvePromptPartials({
+      configuration: rawConfiguration,
+      read: async (path) =>
+        input.client.readFileAtCommit({
+          installationId: input.installationId,
+          repositoryId: input.repositoryId,
+          commitSha: input.commitSha,
+          path,
+        }),
+    });
+  } catch (error) {
+    if (!(error instanceof PromptPartialResolutionError)) {
+      await recordAttempt(input, "fetch_failed", {
+        stage: "partial",
+        reason: formatSyncError(error),
+      });
+      return { outcome: "fetch_failed" };
+    }
+    const revision = await store.insertGitHubRevision({
+      rawYaml: file.content,
+      rawConfiguration,
+      githubConnectionId: input.githubConnectionId,
+      githubRepositoryId: input.repositoryId,
+      githubRepositoryFullName: input.githubRepositoryFullName,
+      githubDefaultBranch: input.githubDefaultBranch,
+      commitSha: input.commitSha,
+      path: input.path,
+      webhookDeliveryId: input.webhookDeliveryId,
+      validationErrors: { formErrors: [formatSyncError(error)] },
+    });
+    await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "partials" });
+    return { outcome: "invalid", revision };
+  }
   const revision = await store.insertGitHubRevision({
-    rawYaml: file.rawYaml,
+    rawYaml: file.content,
     rawConfiguration,
     githubConnectionId: input.githubConnectionId,
     githubRepositoryId: input.repositoryId,
@@ -88,6 +136,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     commitSha: input.commitSha,
     path: input.path,
     webhookDeliveryId: input.webhookDeliveryId,
+    resolvedPromptPartials,
   });
   if (revision.validationErrors !== null) {
     await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "validation" });
@@ -96,6 +145,10 @@ export async function synchronizeGitHubProjectConfiguration(input: {
   const activated = await store.activate(revision.id);
   await recordAttempt(input, "activated", { revisionId: activated.revision.id });
   return { outcome: "activated", revision: activated.revision };
+}
+
+function formatSyncError(error: unknown): string {
+  return error instanceof Error ? error.message : "invalid GitHub configuration content";
 }
 
 export async function synchronizeGitHubDefaultBranch(input: {
