@@ -1,0 +1,31 @@
+# Public API
+
+Hub exposes three organization-scoped machine operations under `/api/v1`:
+
+| Operation                                   | Scope                   | Endpoint                                 |
+| ------------------------------------------- | ----------------------- | ---------------------------------------- |
+| Install and activate configuration          | `configuration:install` | `POST /api/v1/configurations/install`    |
+| Dispatch a durable manual run               | `runs:dispatch`         | `POST /api/v1/manual-runs`               |
+| Issue a short-lived daemon enrollment token | `daemons:enroll`        | `POST /api/v1/daemons/enrollment-tokens` |
+
+Create a scoped API key in the Hub dashboard and send it as `Authorization: Bearer <key>`. The canonical, executable operation and schema reference is served by each Hub instance at `/api/reference`; its OpenAPI 3.1 document is `/api/openapi.json`.
+
+The earlier `/api/configurations/install`, `/api/manual-runs`, and `/api/daemons/enrollment-tokens` paths are compatibility aliases. Thin edge adapters preserve their legacy `application/json` error envelopes while both route families execute the same application operations. New clients should use `/api/v1`.
+
+Every canonical `/api/v1` response, including unknown paths and wrong methods, uses RFC 9457 `application/problem+json` on failure and includes `X-Request-ID`; callers may supply that header to correlate a request. Wrong methods return `405` with `Allow`, while unknown paths return `404`. Every `401` response also includes `WWW-Authenticate: Bearer`.
+
+Configuration YAML may include an optional non-empty top-level string `project` as deployment metadata. The authenticated request's `projectSlug` is always authoritative, so an explicit CLI `--project` can override the file. Hub validates and removes the metadata before strict workflow compilation without resolving or comparing it, while preserving the original YAML as revision evidence.
+
+`deliveryKey` is caller-supplied request identity for the existing durable manual-event path. Hub namespaces it by the authenticated organization and resolved project before persistence, so the same caller key can be used independently in different tenants or projects. Existing receipt/run de-duplication applies, but this API does not promise exactly-once execution or guaranteed response replay; retries can still fail or conflict during restart and timing races. A successful representation contains `deliveryKey`, `providerEventReceiptId`, `triggerRunId`, `configuredTriggerName`, and the durable `workflowStatus`.
+
+The self-hosted Scalar reference is served with a restrictive Content Security Policy and does not require external fonts, scripts, telemetry, registries, or proxies.
+
+## Public documentation follow-up
+
+The public Hub docs live in the separate `getpaseo/paseo` repository under `public-docs/`. Update its Hub API guide in a separate PR to:
+
+1. Make `/api/v1/**` canonical and label the three unversioned paths temporary aliases.
+2. Link self-hosted `/api/reference` and `/api/openapi.json` as the canonical operation/schema source.
+3. Document bearer scopes, the Bearer challenge, and the `401`/`403`/`500`/`503` distinction.
+4. Replace the manual-run success example with the five durable fields listed above.
+5. Describe RFC 9457 errors, structured `issues`, `requestId`, `X-Request-ID`, and narrow delivery-key semantics.

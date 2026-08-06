@@ -126,7 +126,10 @@ async function main(): Promise<void> {
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,
-    ...(auth.apiKeys === undefined ? {} : { operationAuth: auth.apiKeys }),
+    publicApi:
+      auth.apiKeys === undefined
+        ? { status: "unavailable" }
+        : { status: "enabled", authenticator: auth.apiKeys },
     outputRegistry: outputs,
     providers: [
       {
@@ -182,6 +185,7 @@ async function main(): Promise<void> {
   await start.startApplication(() => ({
     hub,
     operations: application.operations,
+    publicApi: application.publicApi,
     resources,
     projectDashboard: null,
     testTriggerRoutes: true,

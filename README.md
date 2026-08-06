@@ -64,6 +64,10 @@ The image is published as `ghcr.io/getpaseo/hub:latest`.
 
 See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, `.paseo/hub.yml`, Docker, and Fly deployment.
 
+## Public API
+
+Each Hub serves a self-hosted API reference at `/api/reference` and its generated OpenAPI 3.1 contract at `/api/openapi.json`. The short [public API guide](docs/public-api.md) covers versioning, API-key scopes, compatibility aliases, and request correlation.
+
 ## License
 
 Apache-2.0

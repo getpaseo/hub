@@ -6,6 +6,7 @@ import { Client } from "pg";
 import { createDatabase } from "../db/pg.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { z } from "zod";
+import { createHubApplication } from "../app.js";
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
@@ -143,6 +144,104 @@ describe("organization API-key boundary", () => {
     );
     assert.notEqual(used?.lastUsedAt, null);
   });
+
+  it("authenticates every public v1 operation across the real PostgreSQL key matrix", async () => {
+    const database = await createDatabase(databaseUrl);
+    const projectSlug = `public-api-${randomUUID()}`;
+    await database.createProject({
+      organizationId: "organization-a",
+      name: "Public API project",
+      slug: projectSlug,
+      createdByUserId: "user-a",
+    });
+    const application = createHubApplication({
+      database,
+      publicApi: { status: "enabled", authenticator: auth.apiKeys! },
+    });
+    await application.hub.start();
+    try {
+      const cases = [
+        {
+          path: "/api/v1/configurations/install",
+          scope: "configuration:install" as const,
+          validStatus: 201,
+          body: {
+            projectSlug,
+            yaml: "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+          },
+        },
+        {
+          path: "/api/v1/manual-runs",
+          scope: "runs:dispatch" as const,
+          validStatus: 404,
+          body: {
+            projectSlug,
+            trigger: "not-configured",
+            actor: "automation",
+            deliveryKey: randomUUID(),
+            input: {},
+          },
+        },
+        {
+          path: "/api/v1/daemons/enrollment-tokens",
+          scope: "daemons:enroll" as const,
+          validStatus: 201,
+        },
+      ];
+      for (const operation of cases) {
+        const valid = await auth.apiKeys!.create(
+          "organization-a",
+          "user-a",
+          `valid-${operation.scope}-${randomUUID()}`,
+          [operation.scope],
+        );
+        const insufficientScope =
+          operation.scope === "configuration:install" ? "runs:dispatch" : "configuration:install";
+        const insufficient = await auth.apiKeys!.create(
+          "organization-a",
+          "user-a",
+          `insufficient-${operation.scope}-${randomUUID()}`,
+          [insufficientScope],
+        );
+        const revoked = await auth.apiKeys!.create(
+          "organization-a",
+          "user-a",
+          `revoked-${operation.scope}-${randomUUID()}`,
+          [operation.scope],
+        );
+        assert.equal(await auth.apiKeys!.revoke("organization-a", revoked.summary.id), true);
+        for (const [name, credential, expected] of [
+          ["missing", undefined, 401],
+          ["malformed", "not-a-paseo-key", 401],
+          ["revoked", revoked.secret, 401],
+          ["insufficient", insufficient.secret, 403],
+          ["valid", valid.secret, operation.validStatus],
+        ] as const) {
+          const response = await application.publicApi.handle(
+            new Request(`http://localhost:3000${operation.path}`, {
+              method: "POST",
+              headers: {
+                ...(credential === undefined ? {} : { authorization: `Bearer ${credential}` }),
+                ...(operation.body === undefined ? {} : { "content-type": "application/json" }),
+              },
+              ...(operation.body === undefined ? {} : { body: JSON.stringify(operation.body) }),
+            }),
+          );
+          assert.equal(response.status, expected, `${operation.scope}: ${name}`);
+          if (expected === 401) {
+            assert.equal(
+              response.headers.get("www-authenticate"),
+              "Bearer",
+              `${operation.scope}: ${name}`,
+            );
+          }
+        }
+      }
+    } finally {
+      await application.hub.stop();
+      await database.close();
+    }
+  }, 120_000);
 
   it("serializes enrollment issuance with API-key revocation", async () => {
     const database = await createDatabase(databaseUrl);

@@ -279,28 +279,6 @@ export function normalizeUserCode(value: string): string {
     .replace(/[^A-Z2-7]/gu, "");
 }
 
-export async function issueEnrollmentToken(
-  _request: Request,
-  database: Database,
-  organizationId: string,
-  issuedByApiKeyId: string,
-  clock: DaemonClock,
-): Promise<Response> {
-  const token = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(clock.nowDate().getTime() + ENROLLMENT_LIFETIME_MS);
-  const issued = await database.issueEnrollmentToken({
-    id: randomUUID(),
-    verifier: verifier(token),
-    organizationId,
-    issuedByApiKeyId,
-    registrationMethod: "operator",
-    expiresAt,
-    consumedAt: null,
-  });
-  if (!issued) return Response.json({ error: "unauthorized" }, { status: 401 });
-  return Response.json({ token, expiresAt: expiresAt.toISOString() }, { status: 201 });
-}
-
 export async function enrollDaemon(
   request: Request,
   database: Database,

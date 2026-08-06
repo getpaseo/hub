@@ -16,9 +16,12 @@ import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
+import { Route as ApiReferenceRouteImport } from './routes/api/reference'
+import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
 import { Route as ApiManualRunsRouteImport } from './routes/api/manual-runs'
 import { Route as ShellActivateRouteImport } from './routes/_shell/activate'
 import { Route as ApiDeviceAuthorizationsIndexRouteImport } from './routes/api/device-authorizations/index'
+import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDeviceAuthorizationsPollRouteImport } from './routes/api/device-authorizations/poll'
 import { Route as ApiDaemonsEnrollmentTokensRouteImport } from './routes/api/daemons/enrollment-tokens'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -79,6 +82,16 @@ const AssetsSplatRoute = AssetsSplatRouteImport.update({
   path: '/assets/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiReferenceRoute = ApiReferenceRouteImport.update({
+  id: '/api/reference',
+  path: '/api/reference',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
+  id: '/api/openapi.json',
+  path: '/api/openapi.json',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiManualRunsRoute = ApiManualRunsRouteImport.update({
   id: '/api/manual-runs',
   path: '/api/manual-runs',
@@ -95,6 +108,11 @@ const ApiDeviceAuthorizationsIndexRoute =
     path: '/api/device-authorizations/',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiV1SplatRoute = ApiV1SplatRouteImport.update({
+  id: '/api/v1/$',
+  path: '/api/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDeviceAuthorizationsPollRoute =
   ApiDeviceAuthorizationsPollRouteImport.update({
     id: '/api/device-authorizations/poll',
@@ -251,6 +269,8 @@ export interface FileRoutesByFullPath {
   '/webhook': typeof WebhookRoute
   '/activate': typeof ShellActivateRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
+  '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -261,6 +281,7 @@ export interface FileRoutesByFullPath {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
   '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -286,6 +307,8 @@ export interface FileRoutesByTo {
   '/webhook': typeof WebhookRoute
   '/activate': typeof ShellActivateRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
+  '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -297,6 +320,7 @@ export interface FileRoutesByTo {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
   '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations': typeof ApiDeviceAuthorizationsIndexRoute
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -322,6 +346,8 @@ export interface FileRoutesById {
   '/webhook': typeof WebhookRoute
   '/_shell/activate': typeof ShellActivateRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
+  '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
+  '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -333,6 +359,7 @@ export interface FileRoutesById {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
   '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
   '/_shell/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/_shell/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -361,6 +388,8 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/activate'
     | '/api/manual-runs'
+    | '/api/openapi.json'
+    | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
     | '/test/trigger'
@@ -371,6 +400,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/daemons/enrollment-tokens'
     | '/api/device-authorizations/poll'
+    | '/api/v1/$'
     | '/api/device-authorizations/'
     | '/o/$organizationSlug/api-keys'
     | '/o/$organizationSlug/connections'
@@ -396,6 +426,8 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/activate'
     | '/api/manual-runs'
+    | '/api/openapi.json'
+    | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
     | '/test/trigger'
@@ -407,6 +439,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/daemons/enrollment-tokens'
     | '/api/device-authorizations/poll'
+    | '/api/v1/$'
     | '/api/device-authorizations'
     | '/o/$organizationSlug/api-keys'
     | '/o/$organizationSlug/connections'
@@ -431,6 +464,8 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/_shell/activate'
     | '/api/manual-runs'
+    | '/api/openapi.json'
+    | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
     | '/test/trigger'
@@ -442,6 +477,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/daemons/enrollment-tokens'
     | '/api/device-authorizations/poll'
+    | '/api/v1/$'
     | '/api/device-authorizations/'
     | '/_shell/o/$organizationSlug/api-keys'
     | '/_shell/o/$organizationSlug/connections'
@@ -468,6 +504,8 @@ export interface RootRouteChildren {
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
   ApiManualRunsRoute: typeof ApiManualRunsRoute
+  ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
+  ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
   TestSmokeRoute: typeof TestSmokeRoute
   TestTriggerRoute: typeof TestTriggerRoute
@@ -478,6 +516,7 @@ export interface RootRouteChildren {
   ApiDaemonsEnrollRoute: typeof ApiDaemonsEnrollRoute
   ApiDaemonsEnrollmentTokensRoute: typeof ApiDaemonsEnrollmentTokensRoute
   ApiDeviceAuthorizationsPollRoute: typeof ApiDeviceAuthorizationsPollRoute
+  ApiV1SplatRoute: typeof ApiV1SplatRoute
   ApiDeviceAuthorizationsIndexRoute: typeof ApiDeviceAuthorizationsIndexRoute
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
@@ -538,6 +577,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AssetsSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/reference': {
+      id: '/api/reference'
+      path: '/api/reference'
+      fullPath: '/api/reference'
+      preLoaderRoute: typeof ApiReferenceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/openapi.json': {
+      id: '/api/openapi.json'
+      path: '/api/openapi.json'
+      fullPath: '/api/openapi.json'
+      preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/manual-runs': {
       id: '/api/manual-runs'
       path: '/api/manual-runs'
@@ -557,6 +610,13 @@ declare module '@tanstack/react-router' {
       path: '/api/device-authorizations'
       fullPath: '/api/device-authorizations/'
       preLoaderRoute: typeof ApiDeviceAuthorizationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/v1/$': {
+      id: '/api/v1/$'
+      path: '/api/v1/$'
+      fullPath: '/api/v1/$'
+      preLoaderRoute: typeof ApiV1SplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/device-authorizations/poll': {
@@ -811,6 +871,8 @@ const rootRouteChildren: RootRouteChildren = {
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
   ApiManualRunsRoute: ApiManualRunsRoute,
+  ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
+  ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,
   TestSmokeRoute: TestSmokeRoute,
   TestTriggerRoute: TestTriggerRoute,
@@ -821,6 +883,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDaemonsEnrollRoute: ApiDaemonsEnrollRoute,
   ApiDaemonsEnrollmentTokensRoute: ApiDaemonsEnrollmentTokensRoute,
   ApiDeviceAuthorizationsPollRoute: ApiDeviceAuthorizationsPollRoute,
+  ApiV1SplatRoute: ApiV1SplatRoute,
   ApiDeviceAuthorizationsIndexRoute: ApiDeviceAuthorizationsIndexRoute,
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
     AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,

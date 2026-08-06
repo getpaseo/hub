@@ -4,10 +4,12 @@ import type {
   OrganizationResources,
 } from "../organizations/resources.js";
 import type { ProjectDashboard } from "../projects/dashboard.js";
+import type { PublicApi } from "../public-api/index.js";
 
 export interface ApplicationRuntime {
   hub: HubRuntime;
   operations: HubOperations;
+  publicApi: PublicApi;
   resources: OrganizationResources | null;
   projectDashboard: ProjectDashboard | null;
   testTriggerRoutes: boolean;

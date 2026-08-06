@@ -4,6 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Client } from "pg";
 import { HubHarness } from "./daemons/test-utils/hub-harness.js";
 import { createDatabase } from "./db/pg.js";
+import { createAuthServer } from "./auth/server.js";
 import { startProductionRuntime, stopProductionRuntime } from "./index.js";
 
 describe("production Hub runtime", () => {
@@ -32,22 +33,30 @@ describe("production Hub runtime", () => {
 
 describe("production Hub cold start", () => {
   let postgres: StartedPostgreSqlContainer;
-  let previousDatabaseUrl: string | undefined;
-  let previousRegistrationMode: string | undefined;
+  let previousEnvironment: Map<string, string | undefined>;
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
   }, 120_000);
 
   beforeEach(() => {
-    previousDatabaseUrl = process.env["DATABASE_URL"];
-    previousRegistrationMode = process.env["PASEO_REGISTRATION_MODE"];
+    previousEnvironment = new Map(
+      [
+        "DATABASE_URL",
+        "PASEO_HUB_AUTH_SECRET",
+        "PASEO_HUB_APP_URL",
+        "PASEO_REGISTRATION_MODE",
+        "PASEO_ORGANIZATION_CREATION",
+        "PASEO_BOOTSTRAP_ORGANIZATION",
+        "PASEO_BOOTSTRAP_OWNER_EMAIL",
+        "PASEO_BOOTSTRAP_OWNER_PASSWORD",
+      ].map((name) => [name, process.env[name]]),
+    );
   });
 
   afterEach(async () => {
     await stopProductionRuntime();
-    restoreEnvironment("DATABASE_URL", previousDatabaseUrl);
-    restoreEnvironment("PASEO_REGISTRATION_MODE", previousRegistrationMode);
+    for (const [name, value] of previousEnvironment) restoreEnvironment(name, value);
   });
 
   afterAll(async () => {
@@ -68,6 +77,9 @@ describe("production Hub cold start", () => {
 
     process.env["DATABASE_URL"] = databaseUrl;
     process.env["PASEO_REGISTRATION_MODE"] = "disabled";
+    delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+    delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+    delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
 
     const runtime = await startProductionRuntime();
     const verification = new Client({ connectionString: databaseUrl });
@@ -123,6 +135,79 @@ describe("production Hub cold start", () => {
       await client.end();
       assert.deepEqual(result.rows[0], { organizations: 1, owners: 1, bootstrap: 1 });
     } finally {
+      for (const [name, value] of previous) restoreEnvironment(name, value);
+    }
+  }, 120_000);
+
+  it("keeps the production public-operation authenticator attached to UI-created API keys", async () => {
+    const databaseUrl = await isolatedDatabaseUrl(
+      postgres.getConnectionUri(),
+      "production_public_api_auth",
+    );
+    const previous = new Map(
+      [
+        "DATABASE_URL",
+        "PASEO_HUB_AUTH_SECRET",
+        "PASEO_HUB_APP_URL",
+        "PASEO_REGISTRATION_MODE",
+        "PASEO_ORGANIZATION_CREATION",
+        "PASEO_BOOTSTRAP_ORGANIZATION",
+        "PASEO_BOOTSTRAP_OWNER_EMAIL",
+        "PASEO_BOOTSTRAP_OWNER_PASSWORD",
+      ].map((name) => [name, process.env[name]]),
+    );
+    const secret = "production-public-api-secret-at-least-32-characters";
+    process.env["DATABASE_URL"] = databaseUrl;
+    process.env["PASEO_HUB_AUTH_SECRET"] = secret;
+    process.env["PASEO_HUB_APP_URL"] = "http://localhost:3000";
+    process.env["PASEO_REGISTRATION_MODE"] = "invite_only";
+    process.env["PASEO_ORGANIZATION_CREATION"] = "disabled";
+    process.env["PASEO_BOOTSTRAP_ORGANIZATION"] = "API Customer";
+    process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"] = "api-owner@example.test";
+    process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"] = "production-temporary-password";
+    let keyAuthority: ReturnType<typeof createAuthServer> | undefined;
+    try {
+      const runtime = await startProductionRuntime();
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      const owner = await client.query<{ organization_id: string; user_id: string }>(
+        `select organization_id, user_id from member where role = 'owner'`,
+      );
+      await client.end();
+      const identity = owner.rows[0];
+      assert.ok(identity);
+      keyAuthority = createAuthServer({
+        databaseUrl,
+        secret,
+        baseURL: "http://localhost:3000",
+        policy: {
+          registrationMode: "invite_only",
+          organizationCreation: "disabled",
+          bootstrap: undefined,
+        },
+      });
+      const key = await keyAuthority.apiKeys!.create(
+        identity.organization_id,
+        identity.user_id,
+        "production contract test",
+        ["configuration:install"],
+      );
+
+      const response = await runtime.operations.handleConfigurationInstall(
+        new Request("http://localhost:3000/api/configurations/install", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${key.secret}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ projectSlug: "not-present", yaml: "version: 1" }),
+        }),
+      );
+
+      assert.equal(response.status, 404);
+    } finally {
+      await keyAuthority?.close();
+      await stopProductionRuntime();
       for (const [name, value] of previous) restoreEnvironment(name, value);
     }
   }, 120_000);

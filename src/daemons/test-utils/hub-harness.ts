@@ -25,7 +25,12 @@ import {
 import { createDatabase } from "../../db/pg.js";
 import type { ApiKeyScope } from "../../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../../auth/operation-auth.js";
-import type { AgentExecutionRecord, Database, DaemonRecord } from "../../db/types.js";
+import type {
+  AgentExecutionRecord,
+  Database,
+  DaemonRecord,
+  TriggerRunRecord,
+} from "../../db/types.js";
 import { dispatchLaunchMachineIntent } from "../../daemons/index.js";
 import {
   durableExecutionId,
@@ -970,7 +975,11 @@ export class HubHarness {
       }),
     });
     const body = z
-      .object({ versionId: z.string().optional(), error: z.string().optional() })
+      .object({
+        versionId: z.string().optional(),
+        error: z.string().optional(),
+        code: z.string().optional(),
+      })
       .passthrough()
       .parse(await response.json());
     const validationErrors =
@@ -982,10 +991,11 @@ export class HubHarness {
               body.versionId,
             )
           )?.validationErrors;
+    const errorCode = body.error ?? body.code;
     return {
       status: response.status,
       ...(body.versionId === undefined ? {} : { versionId: body.versionId }),
-      ...(body.error === undefined ? {} : { error: body.error }),
+      ...(errorCode === undefined ? {} : { error: errorCode }),
       ...(validationErrors === undefined || validationErrors === null ? {} : { validationErrors }),
     };
   }
@@ -1139,12 +1149,14 @@ export class HubHarness {
         configuredTriggerName: z.string().optional(),
         workflowStatus: z.string().optional(),
         error: z.string().optional(),
+        code: z.string().optional(),
       })
       .passthrough()
       .parse(await response.json());
+    const errorCode = body.error ?? body.code;
     return {
       status: response.status,
-      ...(body.error === undefined ? {} : { error: body.error }),
+      ...(errorCode === undefined ? {} : { error: errorCode }),
       ...(body.providerEventReceiptId === undefined
         ? {}
         : { providerEventReceiptId: body.providerEventReceiptId }),
@@ -1154,6 +1166,39 @@ export class HubHarness {
         : { configuredTriggerName: body.configuredTriggerName }),
       ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
     };
+  }
+
+  async runCanonicalManual(input: {
+    deliveryKey: string;
+  }): Promise<{ status: number; triggerRunId?: string }> {
+    const response = await fetch(`${this.origin}/api/v1/manual-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...machineHeaders("valid") },
+      body: JSON.stringify({
+        projectSlug: HUB_PROJECT_SLUG,
+        trigger: "deploy",
+        actor: "alice",
+        deliveryKey: input.deliveryKey,
+        input: {},
+      }),
+    });
+    const body = z
+      .object({ triggerRunId: z.string().optional() })
+      .passthrough()
+      .parse(await response.json());
+    return {
+      status: response.status,
+      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
+    };
+  }
+
+  async failedTriggerRun(id: string): Promise<TriggerRunRecord> {
+    await waitFor(
+      async () => (await this.requireDatabase().findTriggerRunById(id))?.status === "failed",
+    );
+    const run = await this.requireDatabase().findTriggerRunById(id);
+    if (run === undefined) throw new Error("Trigger run does not exist");
+    return run;
   }
 
   beginManual(
@@ -1292,7 +1337,7 @@ export class HubHarness {
       ],
       attachmentResolvers: { slack: createSlackAttachmentResolver(new HarnessSlackClient()) },
       outputRegistry: registry,
-      operationAuth: hubOperationAuth,
+      publicApi: { status: "enabled", authenticator: hubOperationAuth },
       ...(this.completionTokenSecretEnabled
         ? { completionTokenSecret: "hub-harness-completion-secret" }
         : {}),
@@ -1306,6 +1351,7 @@ export class HubHarness {
     await startApplication(() => ({
       hub,
       operations: application.operations,
+      publicApi: application.publicApi,
       resources: null,
       projectDashboard: null,
       testTriggerRoutes: true,

@@ -51,6 +51,7 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database: await runtimeDatabase("owner"),
       auth: new RuntimeAuth(),
+      publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => {
         closed = true;
@@ -104,6 +105,7 @@ describe("application runtime provider composition", () => {
         createApplicationRuntime({
           database: createMemoryDatabase(),
           auth: new RuntimeAuth(),
+          publicApi: { status: "unavailable" },
           registrations: [first, second],
           close: () => Promise.resolve(),
         }),
@@ -115,6 +117,7 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database: await runtimeDatabase("member"),
       auth: new RuntimeAuth("member"),
+      publicApi: { status: "unavailable" },
       registrations: [fakeRegistration()],
       close: () => Promise.resolve(),
     });
@@ -186,6 +189,7 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database,
       auth: new RuntimeAuth(),
+      publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => Promise.resolve(),
     });
@@ -223,6 +227,7 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database,
       auth: new RuntimeAuth(),
+      publicApi: { status: "unavailable" },
       registrations: [
         {
           ...fakeRegistration("github"),

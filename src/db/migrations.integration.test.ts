@@ -1476,7 +1476,7 @@ class LegacyUpgrade {
     };
     const application = createHubApplication({
       database,
-      operationAuth,
+      publicApi: { status: "enabled", authenticator: operationAuth },
     });
     await application.hub.start();
     return new LegacyUpgrade(

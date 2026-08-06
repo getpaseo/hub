@@ -58,7 +58,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const providerOptions = {
     database,
     auth,
-    ...(auth?.apiKeys === undefined ? {} : { operationAuth: auth.apiKeys }),
     applicationBaseUrl: identity.appUrl,
     publicBaseUrl: identity.appUrl,
   };
@@ -70,6 +69,10 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   return createApplicationRuntime({
     database,
     auth,
+    publicApi:
+      auth?.apiKeys === undefined
+        ? { status: "unavailable" }
+        : { status: "enabled", authenticator: auth.apiKeys },
     registrations,
     publicBaseUrl: identity.appUrl,
     ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),

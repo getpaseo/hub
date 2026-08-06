@@ -43,6 +43,33 @@ describe("production Phase 1 manual runs", () => {
     assert.deepEqual(duplicate, first);
   });
 
+  it("carries required-output validation through canonical manual public dispatch", async () => {
+    await hub.connectDaemon();
+    const yaml = hub
+      .manualConfigurationYaml()
+      .replace(
+        '        prompt: [{ text: "Deploy the requested service" }] ',
+        [
+          '        prompt: [{ text: "Deploy the requested service" }] ',
+          "        allow_outputs:",
+          "          - type: discord.reply",
+          "            max: 1",
+          "            required: true",
+        ].join("\n"),
+      );
+    await hub.installConfiguration({ yaml });
+    const run = await hub.runCanonicalManual({ deliveryKey: "required-output-public-dispatch" });
+    assert.equal(run.status, 200);
+    assert.ok(run.triggerRunId);
+    const rejected = await hub.failedTriggerRun(run.triggerRunId);
+    assert.equal(rejected.outcome, "accepted");
+    assert.match(
+      rejected.outcome === "accepted" ? (rejected.failureReason ?? "") : "",
+      /required output capability unavailable.*discord\.reply/iu,
+    );
+    assert.equal(await hub.pendingExecutionCount(), 0);
+  });
+
   it("selects the requested trigger and preserves the version guard", async () => {
     await hub.connectDaemon();
     const first = await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });

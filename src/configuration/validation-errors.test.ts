@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import { z } from "zod";
 import {
   configurationValidationErrors,
+  configurationValidationIssues,
   configurationValidationMessages,
 } from "./validation-errors.js";
 
@@ -18,6 +19,12 @@ describe("configuration validation errors", () => {
 
     assert.deepEqual(configurationValidationMessages(errors), [
       "Environments: Invalid input: expected array, received string",
+    ]);
+    assert.deepEqual(configurationValidationIssues(errors), [
+      {
+        path: ["environments"],
+        message: "Invalid input: expected array, received string",
+      },
     ]);
   });
 

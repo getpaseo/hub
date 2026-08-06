@@ -126,9 +126,10 @@ async function main(): Promise<void> {
   const runtime = await createApplicationRuntime({
     database,
     auth,
-    ...(machineKey === undefined || auth?.apiKeys === undefined
-      ? {}
-      : { operationAuth: auth.apiKeys }),
+    publicApi:
+      machineKey === undefined || auth?.apiKeys === undefined
+        ? { status: "unavailable" }
+        : { status: "enabled", authenticator: auth.apiKeys },
     registrations,
     publicBaseUrl,
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
