@@ -7,6 +7,7 @@ import {
 } from "../config/compiler.js";
 import { ProjectConfigurationStore } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import type { DiscordConnectionRecord } from "../db/types.js";
 
 const primary: DiscordConnectionRecord = {
@@ -28,6 +29,7 @@ const secondary: DiscordConnectionRecord = {
 describe("ProjectConfigurationStore resource compilation", () => {
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     const connections = [primary, secondary];
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: connections });
@@ -70,6 +72,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("resolves a unique guild without requiring a connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary, secondary] });
     database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
@@ -94,6 +97,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("rejects an unknown explicit connection slug", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     const project = await database.createProject({
@@ -109,10 +113,9 @@ describe("ProjectConfigurationStore resource compilation", () => {
       userId: "user-1",
     });
 
-    await assert.rejects(
-      store.activate(revision.id),
-      /unresolved organization resources: discord:connection:missing-discord/u,
-    );
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: ["unresolved organization resources: discord:connection:missing-discord"],
+    });
   });
 
   it("records a missing daemon as an invalid revision instead of dereferencing it", async () => {
@@ -185,6 +188,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("accepts one durable trigger per project when multiple routes match", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     database.findDiscordConnection = () => Promise.resolve(primary);
@@ -224,6 +228,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("restores the target revision's trigger routes during rollback", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary] });
     database.findDiscordConnection = () => Promise.resolve(primary);
@@ -270,7 +275,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
 function discordConfiguration(filters: Record<string, string>) {
   return {
-    environments: [{ name: "docker", kind: "docker", image: "paseo/test" }],
+    environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
     triggers: [
       {
         name: "discord-mention",
@@ -280,7 +285,7 @@ function discordConfiguration(filters: Record<string, string>) {
         steps: [
           {
             id: "run",
-            environment: "docker",
+            environment: "runner",
             max_runtime: "30m",
             idle_timeout: "5m",
             agent: { provider: "test", mode: "default" },

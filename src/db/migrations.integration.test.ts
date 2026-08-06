@@ -609,6 +609,7 @@ describe("database migration application", () => {
     const database = await createDatabase(url);
     try {
       const [project] = await createProjectFixtures(database, url);
+      await seedTestDaemon(url, "organization-a");
       const connectionId = randomUUID();
       await poolQuery(
         url,
@@ -619,7 +620,7 @@ describe("database migration application", () => {
       );
       const store = new ProjectConfigurationStore(database, project.id);
       const configuration = {
-        environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
+        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
         triggers: [
           {
             name: "github-trigger",
@@ -1035,6 +1036,28 @@ function revision(projectId: string, validationErrors?: unknown) {
   };
 }
 
+async function seedTestDaemon(url: string, organizationId: string): Promise<void> {
+  await poolQuery(
+    url,
+    `insert into machines (id, org_id, source, status)
+       values ('10000000-0000-4000-8000-000000000002', $1,
+               '{"kind":"daemon","daemonId":"10000000-0000-4000-8000-000000000001"}', 'alive')`,
+    [organizationId],
+  );
+  await poolQuery(
+    url,
+    `insert into daemons
+       (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id,
+        server_id, daemon_public_key, credential_verifier, scopes, status)
+     values
+       ('10000000-0000-4000-8000-000000000001', 'runner-idempotency',
+        'runner-enrollment-verifier', 'daemon-10000000',
+        '10000000-0000-4000-8000-000000000002', $1, 'server-1',
+        'public-key', 'credential-verifier', '["hub.execution.*"]', 'active')`,
+    [organizationId],
+  );
+}
+
 async function createProjectFixtures(
   database: Awaited<ReturnType<typeof createDatabase>>,
   url: string,
@@ -1353,6 +1376,8 @@ async function historicalShape(url: string) {
 }
 
 class LegacyUpgrade {
+  private readonly legacyDaemonId = "10000000-0000-4000-8000-000000000099";
+
   private constructor(
     private readonly database: Awaited<ReturnType<typeof createDatabase>>,
     private readonly operations: ReturnType<typeof createHubApplication>["operations"],
@@ -1427,7 +1452,7 @@ class LegacyUpgrade {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          daemonId: randomUUID(),
+          daemonId: this.legacyDaemonId,
           idempotencyKey: "legacy-upgrade-proof",
           serverId: "legacy-server",
           daemonPublicKey: "legacy-public-key",
@@ -1445,7 +1470,7 @@ class LegacyUpgrade {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectSlug: "default",
-          yaml: "environments:\n  - name: production\n    kind: docker\n    image: paseo/runner\ntriggers: []",
+          yaml: `environments:\n  - name: production\n    kind: daemon\n    daemon: daemon-${this.legacyDaemonId.slice(0, 8)}\n    cwd: /repo\ntriggers: []`,
         }),
       }),
     );

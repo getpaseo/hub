@@ -8,7 +8,11 @@ import type {
 import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
-import { matchDiscordTriggers, readDiscordPromptBody } from "./match.js";
+import {
+  matchDiscordTriggers,
+  readDiscordInvocationParserMessage,
+  readDiscordPromptBody,
+} from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
@@ -102,7 +106,7 @@ export function createDiscordTriggerProvider(options: {
           event.content,
           compiledTrigger.inputs,
           undefined,
-          readDiscordPromptBody(event, botClientId),
+          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;

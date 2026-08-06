@@ -128,9 +128,11 @@ async function main(): Promise<void> {
             activeConfiguration === undefined
               ? undefined
               : parseProjectConfiguration(activeConfiguration);
-          const daemon = (await database.listDaemonsForOrganization(trigger.organizationId))[0];
+          const dispatchDaemon = (
+            await database.listDaemonsForOrganization(trigger.organizationId)
+          )[0];
           if (
-            daemon === undefined ||
+            dispatchDaemon === undefined ||
             activeConfiguration === undefined ||
             compiledConfiguration === undefined
           )

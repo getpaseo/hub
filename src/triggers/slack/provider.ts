@@ -9,7 +9,11 @@ import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { SlackBotClient } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
-import { matchSlackTriggers, readSlackPromptBody } from "./match.js";
+import {
+  matchSlackTriggers,
+  readSlackInvocationParserMessage,
+  readSlackPromptBody,
+} from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
 export interface SlackMergeData {
@@ -120,7 +124,7 @@ export function createSlackTriggerProvider(options: {
           event.content,
           compiledTrigger.inputs,
           undefined,
-          readSlackPromptBody(event, botUserId),
+          readSlackInvocationParserMessage(event, botUserId, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;

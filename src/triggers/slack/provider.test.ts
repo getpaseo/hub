@@ -35,6 +35,30 @@ describe("Slack Phase 1 trigger provider", () => {
     });
   });
 
+  it("parses typed inputs after a matched command marker", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      inputMarkerConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, { content: "<@UBOT> run repo=hub investigate" }),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
   it("uses exact input filters to select one configured trigger", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -332,6 +356,20 @@ function inputFilterFanoutConfiguration() {
     triggers: [
       { ...first, name: "hub-only" },
       { ...first, name: "paseo-only", filters: { ...first.filters, inputs: { repo: "paseo" } } },
+    ],
+  };
+}
+
+function inputMarkerConfiguration() {
+  const base = inputConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        filters: { ...trigger.filters, pattern: "run" },
+      },
     ],
   };
 }

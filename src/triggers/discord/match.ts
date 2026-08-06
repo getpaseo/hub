@@ -91,6 +91,26 @@ export function readDiscordMentionToken(
   return findBotMention(event, botClientId)?.token;
 }
 
+export function readDiscordInvocationParserMessage(
+  event: NormalizedDiscordMessageEvent,
+  botClientId: string,
+  filter: TriggerFilter | undefined,
+): string {
+  const body = readDiscordPromptBody(event, botClientId);
+  const marker = filter === undefined ? undefined : readPatternFilter(filter);
+  if (
+    marker === undefined ||
+    marker.length === 0 ||
+    marker.includes("=") ||
+    !body.startsWith(marker)
+  )
+    return body;
+  const nextCharacter = body.at(marker.length);
+  return nextCharacter === undefined || /\s/u.test(nextCharacter)
+    ? body.slice(marker.length).trimStart()
+    : body;
+}
+
 function matchesBotMentionPattern(
   event: NormalizedDiscordMessageEvent,
   botClientId: string,

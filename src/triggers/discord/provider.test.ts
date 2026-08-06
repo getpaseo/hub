@@ -35,6 +35,24 @@ describe("Discord Phase 1 trigger provider", () => {
     });
   });
 
+  it("parses typed inputs after a matched command marker", async () => {
+    const { project, revision, store } = await activeConfiguration(inputMarkerConfiguration());
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+
+    const match = (
+      await provider.match(
+        external(project.id, revision.id, event({ content: "<@900> run repo=hub investigate" })),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
   it("matches a literal one-step prompt and keeps the mention allowlist fail-closed", async () => {
     const { project, revision, store } = await activeConfiguration();
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
@@ -396,6 +414,23 @@ function inputConfiguration() {
             prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
           },
         ],
+      },
+    ],
+  };
+}
+
+function inputMarkerConfiguration() {
+  const base = inputConfiguration();
+  const trigger = base.triggers[0]!;
+  return {
+    ...base,
+    triggers: [
+      {
+        ...trigger,
+        filters: {
+          ...trigger.filters,
+          contains: "run",
+        },
       },
     ],
   };

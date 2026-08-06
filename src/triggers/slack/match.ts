@@ -54,6 +54,30 @@ export function readSlackPromptBody(event: NormalizedSlackMentionEvent, botUserI
   return index < 0 ? event.content : event.content.slice(index + mention.length).trimStart();
 }
 
+export function readSlackInvocationParserMessage(
+  event: NormalizedSlackMentionEvent,
+  botUserId: string,
+  filters: TriggerFilter | undefined,
+): string {
+  const body = readSlackPromptBody(event, botUserId);
+  const marker = filters === undefined ? undefined : readPatternMarker(filters);
+  if (
+    marker === undefined ||
+    marker.length === 0 ||
+    marker.includes("=") ||
+    !body.startsWith(marker)
+  )
+    return body;
+  const nextCharacter = body.at(marker.length);
+  return nextCharacter === undefined || /\s/u.test(nextCharacter)
+    ? body.slice(marker.length).trimStart()
+    : body;
+}
+
+function readPatternMarker(filters: TriggerFilter): string | undefined {
+  return readString(filters, "pattern") ?? readString(filters, "contains");
+}
+
 function readString(
   filters: TriggerFilter,
   key: "workspace" | "pattern" | "contains",

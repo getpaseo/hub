@@ -4,14 +4,18 @@ import { parseCompiledHubConfig } from "../config/compiler.js";
 import { hashPromptPartialContent } from "../config/prompt-partials.js";
 import type { PromptPartialReadResult } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { createActiveProjectConfiguration } from "../test-utils/project-configuration.js";
+import {
+  createActiveProjectConfiguration,
+  enrollTestDaemon,
+  TEST_DAEMON_SLUG,
+} from "../test-utils/project-configuration.js";
 import {
   synchronizeGitHubProjectConfiguration,
   type GitHubConfigurationProvider,
 } from "./github-sync.js";
 
 const INITIAL = {
-  environments: [{ name: "runner", kind: "docker", image: "paseo/initial" }],
+  environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
   triggers: [],
 };
 
@@ -19,12 +23,14 @@ describe("exact-commit GitHub configuration sync", () => {
   it("resolves mixed inline and partial prompt blocks at the configuration commit", async () => {
     const database = createMemoryDatabase();
     const { project } = await createActiveProjectConfiguration(database, INITIAL);
+    await enrollTestDaemon(database);
     const client = new ExactCommitGitHubConfigurationFake({
       "partial-sha:hub.yml": [
         "environments:",
         "  - name: runner",
-        "    kind: docker",
-        "    image: paseo/valid",
+        "    kind: daemon",
+        `    daemon: ${TEST_DAEMON_SLUG}`,
+        "    cwd: /repo",
         "triggers:",
         "  - name: request",
         "    on: manual.run",
@@ -73,6 +79,7 @@ describe("exact-commit GitHub configuration sync", () => {
       database,
       INITIAL,
     );
+    await enrollTestDaemon(database);
     await database.setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: "github-connection-1",
@@ -86,8 +93,9 @@ describe("exact-commit GitHub configuration sync", () => {
       "valid-sha": [
         "environments:",
         "  - name: runner",
-        "    kind: docker",
-        "    image: paseo/valid",
+        "    kind: daemon",
+        `    daemon: ${TEST_DAEMON_SLUG}`,
+        "    cwd: /repo",
         "triggers: []",
       ].join("\n"),
       "invalid-sha": "environments: []\ntriggers: invalid",
@@ -120,6 +128,7 @@ describe("exact-commit GitHub configuration sync", () => {
   it("records missing exact-SHA content without reading a branch head or moving the pointer", async () => {
     const database = createMemoryDatabase();
     const { project, revision } = await createActiveProjectConfiguration(database, INITIAL);
+    await enrollTestDaemon(database);
     await database.setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: "github-connection-1",
@@ -143,6 +152,7 @@ describe("exact-commit GitHub configuration sync", () => {
   it("creates a distinct compiled revision when only a partial changes", async () => {
     const database = createMemoryDatabase();
     const { project } = await createActiveProjectConfiguration(database, INITIAL);
+    await enrollTestDaemon(database);
     const client = new ExactCommitGitHubConfigurationFake({
       "sha-one:hub.yml": partialConfigurationYaml(),
       "sha-one:.paseo/partials/safety.md": "First exact instructions",
@@ -198,6 +208,7 @@ describe("exact-commit GitHub configuration sync", () => {
       database,
       INITIAL,
     );
+    await enrollTestDaemon(database);
     const client = new ExactCommitGitHubConfigurationFake({
       "unsafe-sha:hub.yml": partialConfigurationYaml(include),
       ...(file === undefined ? {} : { [`unsafe-sha:.paseo/partials/${include}`]: file }),
@@ -219,6 +230,7 @@ describe("exact-commit GitHub configuration sync", () => {
       database,
       INITIAL,
     );
+    await enrollTestDaemon(database);
     const client = new ExactCommitGitHubConfigurationFake(
       { "fetch-failure:hub.yml": partialConfigurationYaml() },
       { "fetch-failure:.paseo/partials/safety.md": new Error("GitHub unavailable") },
@@ -272,8 +284,9 @@ function partialConfigurationYaml(include = "safety.md"): string {
   return [
     "environments:",
     "  - name: runner",
-    "    kind: docker",
-    "    image: paseo/valid",
+    "    kind: daemon",
+    `    daemon: ${TEST_DAEMON_SLUG}`,
+    "    cwd: /repo",
     "triggers:",
     "  - name: request",
     "    on: manual.run",

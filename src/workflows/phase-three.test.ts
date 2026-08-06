@@ -30,7 +30,7 @@ describe("Phase 3 structured routing contract", () => {
 
   it("compiles ordered conditional steps, values, and a structured output", () => {
     const configuration = compileHubConfig({
-      environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
         {
           name: "route-request",

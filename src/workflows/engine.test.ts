@@ -175,6 +175,65 @@ describe("durable multi-step workflow engine", () => {
     );
   });
 
+  it("keeps processing ready wakeups while a terminal provider hook is held", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    let releaseTerminalHook: (() => void) | undefined;
+    const terminalHookStarted = new Promise<void>((resolve) => {
+      releaseTerminalHook = resolve;
+    });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, undefined, async () => {
+      await terminalHookStarted;
+    });
+
+    try {
+      await handler(fixture.trigger("run"));
+      await engine.processAvailable();
+      const firstRun = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        )
+      )[0]!;
+      const firstSteps = await fixture.database.listWorkflowStepRunsForTriggerRun(firstRun.id);
+      const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+        firstSteps[0]!.id,
+      );
+      assert.ok(firstExecution);
+      await fixture.database.completeWorkflowAgentExecution({
+        executionId: firstExecution.id,
+        executionStatus: "failed",
+        stepStatus: "failed",
+        result: { status: "failed" },
+        observedAt: new Date(),
+      });
+      await fixture.database.wakeWorkflowRun(firstRun.id, new Date());
+
+      const terminalPassCompleted = engine.processAvailable().then(() => true);
+      assert.equal(await settlesQuickly(terminalPassCompleted), true);
+
+      const secondReceipt = await fixture.database.persistManualEvent({
+        organizationId: "org-1",
+        projectId: fixture.projectId,
+        deliveryId: randomUUID(),
+        source: "manual.run",
+        payload: {},
+        receivedAt: new Date(),
+      });
+      if (secondReceipt.status !== "accepted") throw new Error("second receipt was not accepted");
+      await handler({
+        ...fixture.trigger("run"),
+        providerEventReceiptId: secondReceipt.event.providerEventReceiptId,
+        deliveryId: secondReceipt.event.deliveryId,
+      });
+      await engine.processAvailable();
+
+      assert.equal(dispatches.length, 2);
+    } finally {
+      releaseTerminalHook?.();
+      await engine.stop();
+    }
+  });
+
   it("keeps a shared accepted receipt replayable when one project route has no workflow match", async () => {
     const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
     const secondProject = await fixture.database.createProject({
@@ -1180,6 +1239,13 @@ function dispatchLabel(intent: {
   if (intent.triggerName !== "route-request") return "unknown";
   if (intent.prompt.startsWith("Classify")) return "classify";
   return intent.prompt.includes("paseo") ? "work-paseo" : "work-hub";
+}
+
+async function settlesQuickly<T>(promise: Promise<T>): Promise<boolean> {
+  return Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 25)),
+  ]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

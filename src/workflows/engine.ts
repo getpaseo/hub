@@ -70,6 +70,7 @@ export class DurableWorkflowEngine {
   private readonly now: () => Date;
   private workerTimer: NodeJS.Timeout | undefined;
   private processing: Promise<void> | undefined;
+  private terminalNotificationProcessing: Promise<void> | undefined;
   private stopped = false;
 
   constructor(private readonly options: DurableWorkflowEngineOptions) {
@@ -97,6 +98,7 @@ export class DurableWorkflowEngine {
     if (this.workerTimer !== undefined) clearInterval(this.workerTimer);
     this.workerTimer = undefined;
     await this.processing;
+    await this.terminalNotificationProcessing;
   }
 
   async enqueue(trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome> {
@@ -174,7 +176,7 @@ export class DurableWorkflowEngine {
     const database = this.options.database;
     if (database === null) return;
     await this.recoverWorkflowDeadlines(this.now());
-    await this.recoverPendingWorkflowRunTerminalNotifications();
+    this.kickTerminalNotificationRecovery();
     await database.recoverWorkflowWakeups(this.now());
     while (!this.stopped) {
       const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs);
@@ -436,7 +438,20 @@ export class DurableWorkflowEngine {
 
   private notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<void> {
     if (run.outcome !== "accepted" || run.status === "running") return Promise.resolve();
-    return this.recoverPendingWorkflowRunTerminalNotifications();
+    this.kickTerminalNotificationRecovery();
+    return Promise.resolve();
+  }
+
+  private kickTerminalNotificationRecovery(): void {
+    if (this.options.database === null || this.stopped) return;
+    if (this.terminalNotificationProcessing !== undefined) return;
+    this.terminalNotificationProcessing = this.recoverPendingWorkflowRunTerminalNotifications()
+      .catch((error: unknown) => {
+        this.logger.error({ err: error }, "workflow terminal notification recovery failed");
+      })
+      .finally(() => {
+        this.terminalNotificationProcessing = undefined;
+      });
   }
 
   private async recoverPendingWorkflowRunTerminalNotifications(): Promise<void> {
