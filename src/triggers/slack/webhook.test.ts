@@ -59,6 +59,7 @@ describe("Slack webhook", () => {
             providerEventReceiptId: "trigger-1",
             organizationId: "org-1",
             projectId: "project-1",
+            configurationRevisionId: "11111111-1111-4111-8111-111111111132",
             deliveryId: input.deliveryId,
             source: input.source,
             payload: input.payload,
@@ -133,6 +134,7 @@ describe("Slack webhook", () => {
       providerEventReceiptId: "trigger-1",
       organizationId: "org-1",
       projectId: "project-1",
+      configurationRevisionId: "11111111-1111-4111-8111-111111111132",
       deliveryId: "slack-Ev123",
       source: "slack.mention",
       payload: {},
@@ -146,7 +148,8 @@ describe("Slack webhook", () => {
       now: () => NOW,
       accept: () =>
         Promise.resolve({
-          status: "duplicate",
+          status: "accepted",
+          events: [trigger],
           receiptId: trigger.deliveryId,
         }),
     });
@@ -157,7 +160,7 @@ describe("Slack webhook", () => {
     });
 
     assert.equal((await endpoint.handle(request(mentionEnvelope()))).status, 200);
-    assert.equal(dispatches, 0);
+    assert.equal(dispatches, 1);
   });
 
   it("does not dispatch duplicate acceptance", async () => {

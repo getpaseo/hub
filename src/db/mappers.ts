@@ -32,7 +32,33 @@ export function toProviderEventReceiptRecord(
     payload: row.payload,
     receivedAt: row.received_at,
     droppedReason: row.dropped_reason,
+    acceptedRoutes: parseProviderEventRouteSnapshots(row.accepted_routes),
   };
+}
+
+function parseProviderEventRouteSnapshots(
+  value: unknown,
+): ProviderEventReceiptRecord["acceptedRoutes"] {
+  if (value === null) return null;
+  if (!Array.isArray(value)) throw new Error("invalid provider event route snapshot");
+  return value.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error("invalid provider event route snapshot");
+    const route = candidate;
+    if (
+      typeof route["projectId"] !== "string" ||
+      typeof route["configurationRevisionId"] !== "string" ||
+      (route["connectionId"] !== null && typeof route["connectionId"] !== "string") ||
+      (route["resourceId"] !== null && typeof route["resourceId"] !== "string")
+    ) {
+      throw new Error("invalid provider event route snapshot");
+    }
+    return {
+      projectId: route["projectId"],
+      configurationRevisionId: route["configurationRevisionId"],
+      connectionId: route["connectionId"],
+      resourceId: route["resourceId"],
+    };
+  });
 }
 
 export function toMachineRecord(row: MachineRow): MachineRecord {

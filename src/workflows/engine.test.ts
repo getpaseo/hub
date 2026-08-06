@@ -11,12 +11,52 @@ import {
   type ResolvedPromptPartials,
 } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { Database, DurableProviderEvent } from "../db/types.js";
+import type { Database, DurableProviderEvent, TriggerRunRecord } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
+  it.each([
+    ["succeeded", "succeeded"],
+    ["failed", "failed"],
+  ] as const)(
+    "notifies the provider once when the whole workflow %s",
+    async (stepStatus, expected) => {
+      const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+      const terminalStatuses: string[] = [];
+      const { handler, engine } = engineFor(fixture, [], undefined, undefined, async (run) => {
+        terminalStatuses.push(run.status);
+      });
+      await handler(fixture.trigger("run"));
+      await engine.processAvailable();
+      const run = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        )
+      )[0]!;
+      let steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+      const first = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+      assert.ok(first);
+      await fixture.database.transitionAgentExecution(first.id, stepStatus, {
+        result: { status: stepStatus },
+      });
+      await engine.processAvailable();
+      if (stepStatus === "succeeded") {
+        assert.deepEqual(terminalStatuses, []);
+        steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+        const second = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[1]!.id);
+        assert.ok(second);
+        await fixture.database.transitionAgentExecution(second.id, "succeeded", {
+          result: { status: "succeeded" },
+        });
+        await engine.processAvailable();
+      }
+      await engine.processAvailable();
+      assert.deepEqual(terminalStatuses, [expected]);
+    },
+  );
+
   it("launches the exact committed partial content with inline-equivalent interpolation", async () => {
     const content = "Committed partial for ${{ paseo.prompt }} / ${{ paseo.inputs.repo }}";
     const fixture = await workflowFixture({
@@ -559,6 +599,7 @@ async function workflowFixture(
     contentHash: compiledConfigurationHash(configuration),
     createdByUserId: "user-1",
   });
+  await database.activateProjectConfigurationRevision(project.id, revision.id, []);
   const receipt = await database.persistManualEvent({
     organizationId: "org-1",
     projectId: project.id,
@@ -578,6 +619,7 @@ async function workflowFixture(
         providerEventReceiptId: receipt.event.providerEventReceiptId,
         organizationId: "org-1",
         projectId: project.id,
+        configurationRevisionId: revision.id,
         source: "manual.run",
         deliveryId: receipt.event.deliveryId,
         payload: { input: message },
@@ -621,11 +663,13 @@ function engineFor(
   dispatches: string[],
   beforeDispatch?: (intent: { prompt: string }) => Promise<void>,
   now?: () => Date,
+  onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<void>,
 ) {
   return createDurableWorkflowHandler({
     database: fixture.database,
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],
     ...(now === undefined ? {} : { now }),
+    ...(onWorkflowRunTerminal === undefined ? {} : { onWorkflowRunTerminal }),
     dispatchLaunchMachineIntent: async (intent) => {
       await beforeDispatch?.(intent);
       dispatches.push(dispatchLabel(intent));

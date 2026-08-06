@@ -17,6 +17,14 @@ export interface ProviderEventReceiptRecord {
   payload: unknown;
   receivedAt: Date;
   droppedReason: string | null;
+  acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
+}
+
+export interface ProviderEventRouteSnapshot {
+  projectId: string;
+  configurationRevisionId: string;
+  connectionId: string | null;
+  resourceId: string | null;
 }
 
 export type AttachmentProvider = "slack" | "discord";
@@ -419,6 +427,7 @@ export interface DurableProviderEvent {
   providerEventReceiptId: string;
   organizationId: string;
   projectId: string;
+  configurationRevisionId: string;
   deliveryId: string;
   source: string;
   payload: unknown;
@@ -714,6 +723,12 @@ export interface TransitionAgentExecutionResult {
   execution: AgentExecutionRecord;
   transitioned: boolean;
   deadlineKind?: WorkflowDeadlineKind;
+  terminalRun?: TriggerRunRecord;
+}
+
+export interface TransitionTriggerRunResult {
+  run: TriggerRunRecord;
+  transitioned: boolean;
 }
 
 export interface WorkflowDeadlineRecovery {
@@ -776,13 +791,15 @@ export interface Database {
     stepId: string,
     reason: string,
   ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
-  succeedTriggerRun(triggerRunId: string): Promise<TriggerRunRecord | undefined>;
+  succeedTriggerRun(triggerRunId: string): Promise<TransitionTriggerRunResult | undefined>;
   failWorkflowRun(
     triggerRunId: string,
     status: "failed" | "timed_out",
     failureReason: string,
     stepId?: string,
-  ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  ): Promise<
+    { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
+  >;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;

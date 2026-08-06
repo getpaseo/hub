@@ -39,7 +39,7 @@ export function createManualRunProvider(
     async match(external) {
       const store = configurationStoreForProject(external.projectId);
       const payload = ManualRunPayloadSchema.parse(external.payload);
-      const stored = await store.getActive();
+      const stored = await store.getRevision(external.configurationRevisionId);
       if (!stored) {
         throw new Error("manual_config_not_found");
       }

@@ -248,7 +248,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 19,
+      drizzleMigrations: 20,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -521,9 +521,20 @@ describe("database migration application", () => {
       const rolledBack = await database.rollbackProjectConfiguration(project.id, first.id, [
         firstRoute,
       ]);
+      const replayed = await database.acceptGitHubEvent({
+        installationId: 9101,
+        repositoryId: 9001,
+        deliveryId: "github-duplicate-project-routes",
+        source: "github.push",
+        payload: {},
+        receivedAt: new Date(0),
+      });
 
       assert.equal(activated.id, second.id);
       assert.equal(rolledBack.id, first.id);
+      assert.equal(replayed.status, "accepted");
+      if (replayed.status !== "accepted") return;
+      assert.equal(replayed.events[0]?.configurationRevisionId, second.id);
       assert.deepEqual(
         (
           await poolQuery<{ configuration_revision_id: string; trigger_name: string }>(
@@ -581,7 +592,13 @@ describe("database migration application", () => {
         database.acceptGitHubEvent(input),
       ]);
 
-      assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "duplicate"]);
+      assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "accepted"]);
+      assert.deepEqual(
+        results.map((result) =>
+          result.status === "accepted" ? result.events[0]?.configurationRevisionId : undefined,
+        ),
+        [revisionRecord.id, revisionRecord.id],
+      );
     } finally {
       await database.close();
     }
@@ -653,6 +670,10 @@ describe("database migration application", () => {
     const database = await createDatabase(url);
     try {
       const [project] = await createProjectFixtures(database, url);
+      const revisionRecord = await database.insertProjectConfigurationRevision(
+        revision(project.id),
+      );
+      await database.activateProjectConfigurationRevision(project.id, revisionRecord.id);
       const manualInput = {
         organizationId: "organization-a",
         projectId: project.id,
@@ -668,7 +689,7 @@ describe("database migration application", () => {
       ]);
       assert.deepEqual(manualResults.map((result) => result.status).sort(), [
         "accepted",
-        "duplicate",
+        "accepted",
       ]);
     } finally {
       await database.close();

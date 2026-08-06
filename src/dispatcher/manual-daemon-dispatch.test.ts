@@ -7,7 +7,7 @@ import {
 } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { ManualTriggerInput } from "../triggers/manual/schema.js";
-import type { ExternalTrigger, TriggerProvider } from "../triggers/index.js";
+import type { TriggerProvider } from "../triggers/index.js";
 import { createManualTriggerSource, dispatchManualTrigger } from "../triggers/manual/source.js";
 import { createDispatcherWithEngine } from "./index.js";
 
@@ -16,15 +16,16 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 describe("manual trigger durable workflow boundary", () => {
   it("records a manual delivery as dropped when no provider matches", async () => {
     const database = createMemoryDatabase();
+    const { project, revision } = await createManualProject(database);
     const source = createManualTriggerSource(database);
     const { handler } = createDispatcherWithEngine({
       database,
       providers: [noMatchingProvider()],
-      configurationRevisionId: "config-1",
+      configurationRevisionId: revision.id,
     });
     await source.start(handler);
 
-    await dispatchManualTrigger(source, manualTrigger("manual-no-match"));
+    await dispatchManualTrigger(source, manualTrigger("manual-no-match", project.id));
 
     assert.equal(
       (await database.findProviderEventReceiptByDeliveryId("manual-no-match", "org_1"))
@@ -50,6 +51,7 @@ describe("manual trigger durable workflow boundary", () => {
       contentHash: compiledConfigurationHash(configuration),
       createdByUserId: "user-1",
     });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
     const source = createManualTriggerSource(database);
     const dispatches: string[] = [];
     const { handler, engine } = createDispatcherWithEngine({
@@ -89,9 +91,28 @@ describe("manual trigger durable workflow boundary", () => {
   });
 });
 
+async function createManualProject(database: ReturnType<typeof createMemoryDatabase>) {
+  const project = await database.createProject({
+    organizationId: "org_1",
+    name: "Manual",
+    slug: "manual",
+    createdByUserId: "user-1",
+  });
+  const configuration = manualWorkflowConfiguration();
+  const revision = await database.insertProjectConfigurationRevision({
+    projectId: project.id,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "test" },
+    normalizedConfiguration: configuration,
+    contentHash: compiledConfigurationHash(configuration),
+    createdByUserId: "user-1",
+  });
+  await database.activateProjectConfigurationRevision(project.id, revision.id);
+  return { project, revision };
+}
+
 function manualTrigger(deliveryId: string, projectId = PROJECT_ID): ManualTriggerInput {
-  const trigger: ExternalTrigger = {
-    providerEventReceiptId: "11111111-1111-4111-8111-111111111121",
+  return {
     organizationId: "org_1",
     projectId,
     source: "manual.run",
@@ -99,7 +120,6 @@ function manualTrigger(deliveryId: string, projectId = PROJECT_ID): ManualTrigge
     receivedAt: new Date("2026-08-05T12:00:00.000Z"),
     payload: { trigger: "deploy", actor: "operator", input: "run" },
   };
-  return trigger;
 }
 
 function noMatchingProvider(): TriggerProvider {

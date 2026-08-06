@@ -3,7 +3,9 @@ export async function expectNoProjectActivity(page: Page) {
   await expect(page.getByText("No activity", { exact: true })).toBeVisible();
 }
 export async function expectProjectActivity(page: Page) {
-  await expect(page.getByRole("table", { name: "Project activity" })).toContainText("Manual run");
+  await expect(page.getByRole("table", { name: "Project activity" })).toContainText(
+    "Browser history",
+  );
 }
 
 export async function openProjectRun(page: Page, triggerName: string) {

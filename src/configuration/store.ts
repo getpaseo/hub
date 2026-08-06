@@ -154,6 +154,16 @@ export class ProjectConfigurationStore {
       : { revision, configuration: parseProjectConfiguration(revision) };
   }
 
+  async getRevision(revisionId: string): Promise<StoredProjectConfiguration | undefined> {
+    const revision = await this.database.findProjectConfigurationRevision(
+      this.projectId,
+      revisionId,
+    );
+    return revision === undefined
+      ? undefined
+      : { revision, configuration: parseProjectConfiguration(revision) };
+  }
+
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
     const active = await this.database.findActiveProjectConfiguration(this.projectId);
     if (active === undefined) throw new Error("active configuration not found");

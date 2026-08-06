@@ -66,6 +66,7 @@ UPDATE "attachment_capabilities" AS "attachment"
 SET "provider_event_receipt_id" = "trigger"."receipt_id"
 FROM "triggers" AS "trigger"
 WHERE "attachment"."trigger_id" = "trigger"."id";--> statement-breakpoint
+-- Destructive cutover disposition: legacy executions cannot express workflow-step ownership and are deleted.
 DELETE FROM "agent_executions";--> statement-breakpoint
 ALTER TABLE "triggers" DISABLE ROW LEVEL SECURITY;--> statement-breakpoint
 DROP TABLE "triggers" CASCADE;--> statement-breakpoint

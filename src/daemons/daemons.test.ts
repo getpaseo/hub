@@ -339,11 +339,13 @@ describe("daemon enrollment and execution", () => {
 
     await hub.startExecution(first.daemonAgentId);
     await hub.completeExecution(first.id);
+    await hub.waitForCompletionHookCount(1);
     assert.equal(hub.hookContexts().completed.length, 1);
 
     await hub.startExecution(second.daemonAgentId);
     assert.equal(hub.hookContexts().started.length, 2);
     await hub.completeExecution(second.id);
+    await hub.waitForCompletionHookCount(2);
     assert.equal(hub.hookContexts().completed.length, 2);
     assert.equal(hub.failureHookCount(), 0);
   });
@@ -360,6 +362,7 @@ describe("daemon enrollment and execution", () => {
     assert(second?.daemonAgentId !== null && second?.daemonAgentId !== undefined);
 
     await hub.completeExecution(first.id);
+    await hub.waitForCompletionHookCount(1);
     assert.equal(hub.hookContexts().completed.length, 1);
     await hub.agentTerminates(second.id, second.daemonAgentId, "error");
     await hub.failureNotified();
@@ -688,6 +691,7 @@ describe("daemon enrollment and execution", () => {
     await hub.pendingControlAction(result.execution.id);
     await hub.completePendingCleanup();
     await hub.completeCurrentTurn(result.agentId);
+    await hub.waitForCompletionHookCount(1);
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(hub.controlActions(), ["archive"]);
@@ -702,7 +706,7 @@ describe("daemon enrollment and execution", () => {
     hub.holdCompletionHook();
 
     const completion = hub.completeExecution(result.execution.id);
-    await hub.completionHookBegins();
+    await hub.waitForCompletionHookCount(1);
 
     assert.deepEqual(hub.controlActions(), []);
     assert.equal((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
@@ -722,6 +726,7 @@ describe("daemon enrollment and execution", () => {
     const result = await hub.dispatch({ autoArchive: false });
 
     assert.equal(await hub.completeExecution(result.execution.id), 200);
+    await hub.completionHookBegins();
 
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(hub.controlActions(), []);
@@ -831,6 +836,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     await hub.startExecution(result.agentId);
     assert.equal(await hub.completeExecution(result.execution.id), 200);
+    await hub.waitForCompletionHookCount(1);
 
     assert.deepEqual(hub.hookContexts(), {
       started: [
@@ -1316,6 +1322,19 @@ describe("daemon enrollment and execution", () => {
       (error: unknown) =>
         error instanceof DaemonDispatchFailure && error.reason === "daemon_unreachable",
     );
+  });
+
+  it("claims singular durable handoff failures immediately", async () => {
+    await hub.connectDaemon();
+
+    const handedOff = await hub.handoffMissingDaemon();
+
+    assert.equal(handedOff.execution.status, "failed");
+    assert.deepEqual(handedOff.execution.result, {
+      status: "failed",
+      reason: "daemon_not_registered",
+    });
+    assert.equal(hub.createdAgentRequestCount(), 0);
   });
 
   it("distinguishes a missing daemon from an enrolled daemon that is offline", async () => {

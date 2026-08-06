@@ -1134,9 +1134,13 @@ function activateWorkflowConfiguration(configuration: CompiledHubConfig): Compil
 
 async function insertWorkflowTrigger(
   database: Database,
-  _configurationRevisionId: string,
+  configurationRevisionId: string,
   deliveryId: string,
 ) {
+  await database.activateProjectConfigurationRevision(
+    "00000000-0000-4000-8000-000000000001",
+    configurationRevisionId,
+  );
   const result = await database.persistManualEvent({
     organizationId: "org-1",
     projectId: "00000000-0000-4000-8000-000000000001",
@@ -1188,6 +1192,10 @@ async function executionFixture(
     normalizedConfiguration: revisionConfiguration,
     contentHash: compiledConfigurationHash(revisionConfiguration),
   });
+  await database.activateProjectConfigurationRevision(
+    "00000000-0000-4000-8000-000000000001",
+    config.id,
+  );
   const machine = await database.insertMachine({
     orgId: "org-1",
     source: { kind: "daemon", daemonId: "daemon-1" },

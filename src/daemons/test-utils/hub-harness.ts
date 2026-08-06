@@ -337,8 +337,12 @@ export class HubHarness {
         this.attachDispatchRun(intent, providerEventReceiptId),
       ),
     );
-    const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
-    return { ...result, providerEventReceiptId };
+    const executions = await Promise.all(
+      intents.map(
+        async (intent) => (await module.lifecycle.handoffLaunchMachineIntent(intent)).execution,
+      ),
+    );
+    return { executions, providerEventReceiptId };
   }
   async handoffAuthoredSlugBatch(
     slugs: readonly string[],
@@ -360,8 +364,12 @@ export class HubHarness {
         ),
       ),
     );
-    const result = await module.lifecycle.handoffLaunchMachineIntents(intents);
-    return { ...result, providerEventReceiptId };
+    const executions = await Promise.all(
+      intents.map(
+        async (intent) => (await module.lifecycle.handoffLaunchMachineIntent(intent)).execution,
+      ),
+    );
+    return { executions, providerEventReceiptId };
   }
   async triggerStatus(providerEventReceiptId: string): Promise<string | null> {
     const runs =
@@ -447,6 +455,18 @@ export class HubHarness {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     return this.dispatch({
+      environment: {
+        ...this.intent().environment,
+        daemonId: randomUUID(),
+        authoredSlug: "missing-daemon",
+      },
+    });
+  }
+  handoffMissingDaemon(): Promise<{
+    execution: AgentExecutionRecord;
+    providerEventReceiptId: string;
+  }> {
+    return this.handoff({
       environment: {
         ...this.intent().environment,
         daemonId: randomUUID(),
@@ -540,6 +560,10 @@ export class HubHarness {
       worktree: agent["worktree"],
     };
   }
+  async waitForCreatedAgentLaunch() {
+    await waitFor(async () => this.requireDaemon().createdAgentCount() > 0);
+    return this.createdAgentLaunch();
+  }
   connectedDaemonSlug(): string {
     return this.requireDaemon().slug;
   }
@@ -588,6 +612,9 @@ export class HubHarness {
   }
   completionHookBegins(): Promise<void> {
     return waitFor(async () => this.completedHooks.length > 0);
+  }
+  waitForCompletionHookCount(count: number): Promise<void> {
+    return waitFor(async () => this.completedHooks.length === count);
   }
   releaseCompletionHook(): void {
     this.completionGate?.release();
@@ -963,13 +990,19 @@ export class HubHarness {
       "triggers:",
       "  - name: slack-mention",
       "    on: slack.mention",
-      "    environment: production",
+      "    max_runtime: 2h",
       "    filters:",
       "      from_users: [U1]",
-      "    agent:",
-      "      provider: opencode",
-      "      mode: full-access",
-      '    prompt: "Review ${{ paseo.event.slack.trigger_message.body }} ${{ paseo.event.slack.trigger_message.attachments.0.filename }} ${{ paseo.event.slack.trigger_message.attachments.0.content_type }} ${{ paseo.event.slack.trigger_message.attachments.0.size }} ${{ paseo.event.slack.trigger_message.attachments.0.url }} after ${{ paseo.event.slack.trigger_thread_context.messages.0.content }}"',
+      "    steps:",
+      "      - id: inspect",
+      "        environment: production",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        agent:",
+      "          provider: opencode",
+      "          mode: full-access",
+      '        prompt: [{ text: "Review ${{ paseo.prompt }}" }]',
     ].join("\n");
   }
 
@@ -1180,24 +1213,22 @@ export class HubHarness {
       rawYaml: null,
       rawConfiguration: {
         environments: [{ name: "test", kind: "docker", image: "paseo/test" }],
-        triggers: [
-          {
-            name: "discord-ping",
-            on: "discord.mention",
-            max_runtime: "2h",
-            filters: { from_users: ["test-user"] },
-            steps: [
-              {
-                id: "discord-step",
-                environment: "test",
-                max_runtime: "1h",
-                idle_timeout: "5m",
-                agent: { provider: "opencode", mode: "full-access" },
-                prompt: [{ text: "Reply pong." }],
-              },
-            ],
-          },
-        ],
+        triggers: ["discord-ping", "first", "second", "member-0", "member-1"].map((name) => ({
+          name,
+          on: "discord.mention",
+          max_runtime: "2h",
+          filters: { from_users: ["test-user"] },
+          steps: [
+            {
+              id: "discord-step",
+              environment: "test",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "full-access" },
+              prompt: [{ text: "Reply pong." }],
+            },
+          ],
+        })),
       },
       userId: null,
       sourceEvidence: { kind: "admin-seed", userId: HUB_USER_ID },

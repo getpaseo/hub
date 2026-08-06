@@ -13,6 +13,7 @@ import type {
   HubAction,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
+  TriggerRunRecord,
   WorkflowDeadlineKind,
   WorkflowAgentCompletionInput,
 } from "../db/types.js";
@@ -182,71 +183,60 @@ export class DaemonDispatchLifecycle {
     intent: LaunchMachineIntent,
   ): Promise<{ execution: AgentExecutionRecord }> {
     const executionId = durableExecutionId(intent);
-    const prepared = await this.prepareDispatch(intent, executionId);
+    let prepared: PreparedDaemonDispatch | undefined;
+    try {
+      prepared = await this.prepareDispatch(intent, executionId);
+    } catch (error) {
+      if (!isDurablePrelaunchFailure(error)) throw error;
+      const failure = await this.claimFailedDurableDispatch(intent, executionId, error.reason);
+      this.notifyPrelaunchFailure(failure, this.notifyDispatchAccepted(intent));
+      return { execution: failure.execution };
+    }
     if (prepared === undefined) {
       const execution = await this.options.database.findAgentExecutionById(executionId);
       if (execution === undefined) {
         throw new Error(`claimed durable execution not found: ${executionId}`);
       }
       const resumable = await this.prepareClaimedDurableDispatch(execution);
-      if (resumable !== undefined) this.startDurableDispatch(resumable, true);
+      if (resumable !== undefined) {
+        this.startDurableDispatch(resumable, false);
+        void this.notifyDispatchAccepted(intent);
+      }
       return { execution };
     }
-    this.startDurableDispatch(prepared, true);
+    this.startDurableDispatch(prepared, false);
+    void this.notifyDispatchAccepted(intent);
     return { execution: prepared.execution };
   }
 
-  async handoffLaunchMachineIntents(
-    intents: readonly LaunchMachineIntent[],
-  ): Promise<{ executions: AgentExecutionRecord[] }> {
-    if (intents.length === 0) return { executions: [] };
-    const prepared: PreparedDaemonDispatch[] = [];
-    const executions: AgentExecutionRecord[] = [];
-    const prelaunchFailures: AgentExecutionRecord[] = [];
-    for (const intent of intents) {
-      const executionId = durableExecutionId(intent);
-      let candidate: PreparedDaemonDispatch | undefined;
-      try {
-        candidate = await this.prepareDispatch(intent, executionId);
-      } catch (error) {
-        if (!isDurablePrelaunchFailure(error)) throw error;
-        const execution = await this.claimFailedDurableDispatch(intent, executionId, error.reason);
-        executions.push(execution);
-        prelaunchFailures.push(execution);
-        continue;
-      }
-      if (candidate === undefined) {
-        const execution = await this.options.database.findAgentExecutionById(executionId);
-        if (execution === undefined) {
-          throw new Error(`claimed durable execution not found: ${executionId}`);
-        }
-        const resumable = await this.prepareClaimedDurableDispatch(execution);
-        if (resumable !== undefined) prepared.push(resumable);
-        executions.push(execution);
-      } else {
-        prepared.push(candidate);
-        executions.push(candidate.execution);
-      }
+  async notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<void> {
+    if (run.outcome !== "accepted" || run.status === "running") return;
+    const provider = this.findProviderForTriggerContext(run.triggerContext);
+    if (provider === undefined) return;
+    if (run.status === "succeeded") {
+      await notifyAgentExecutionCompleted({
+        provider,
+        triggerContext: run.triggerContext,
+        outputContext: run.outputContext,
+        result: { status: "succeeded" },
+      });
+      return;
     }
-
-    const notifyAccepted = true;
-    for (const candidate of prepared) {
-      this.startDurableDispatch(candidate, false);
-    }
-    const acceptanceNotification = notifyAccepted
-      ? this.notifyDispatchAccepted(intents[0]!)
-      : Promise.resolve();
-    for (const execution of prelaunchFailures) {
-      this.notifyPrelaunchFailure(execution, acceptanceNotification);
-    }
-    return { executions };
+    await notifyAgentExecutionFailed({
+      provider,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      reason:
+        run.failureReason ??
+        (run.status === "timed_out" ? "workflow_timed_out" : "workflow_failed"),
+    });
   }
 
   private async claimFailedDurableDispatch(
     intent: LaunchMachineIntent,
     executionId: string,
     reason: string,
-  ): Promise<AgentExecutionRecord> {
+  ): Promise<TransitionAgentExecutionResult> {
     const inserted = await this.options.database.insertAgentExecutionIfAbsent({
       id: executionId,
       organizationId: intent.organizationId,
@@ -260,17 +250,16 @@ export class DaemonDispatchLifecycle {
       workflowStepRunId: intent.workflowStepRunId ?? null,
     });
     if (inserted !== undefined) {
-      return (
-        await this.options.database.completeWorkflowAgentExecution({
-          executionId,
-          executionStatus: "failed",
-          stepStatus: "failed",
-          result: { status: "failed", reason },
-          stepOutput: { status: "failed", reason },
-          failureReason: reason,
-          hubAction: null,
-        })
-      ).execution;
+      return this.options.database.completeWorkflowAgentExecution({
+        executionId,
+        executionStatus: "failed",
+        stepStatus: "failed",
+        result: { status: "failed", reason },
+        stepOutput: { status: "failed", reason },
+        failureReason: reason,
+        observedAt: new Date(this.now()),
+        hubAction: null,
+      });
     }
 
     const existing = await this.options.database.findAgentExecutionById(executionId);
@@ -279,32 +268,39 @@ export class DaemonDispatchLifecycle {
     }
     if (existing.status === "spawning") {
       if (existing.workflowStepRunId !== null) {
-        return (
-          await this.options.database.completeWorkflowAgentExecution({
-            executionId,
-            executionStatus: "failed",
-            stepStatus: "failed",
-            result: { status: "failed", reason },
-            stepOutput: { status: "failed", reason },
-            failureReason: reason,
-            hubAction: null,
-          })
-        ).execution;
-      }
-      return (
-        await this.options.database.transitionAgentExecution(executionId, "failed", {
-          result: { reason },
+        return this.options.database.completeWorkflowAgentExecution({
+          executionId,
+          executionStatus: "failed",
+          stepStatus: "failed",
+          result: { status: "failed", reason },
+          stepOutput: { status: "failed", reason },
+          failureReason: reason,
+          observedAt: new Date(this.now()),
           hubAction: null,
-        })
-      ).execution;
+        });
+      }
+      return this.options.database.transitionAgentExecution(executionId, "failed", {
+        result: { reason },
+        hubAction: null,
+      });
     }
-    return existing;
+    return { execution: existing, transitioned: false };
   }
 
-  private notifyPrelaunchFailure(execution: AgentExecutionRecord, after: Promise<void>): void {
+  private notifyPrelaunchFailure(
+    failure: TransitionAgentExecutionResult,
+    after: Promise<void>,
+  ): void {
+    const { execution } = failure;
     if (this.activeExecutionDispatches.has(execution.id)) return;
     const tracked = after
-      .then(() => this.notifyExecutionLifecycle(execution, executionFailureReason(execution)))
+      .then(async () => {
+        await this.notifyExecutionLifecycle(execution, executionFailureReason(execution));
+        if (failure.terminalRun !== undefined) {
+          await this.notifyWorkflowRunTerminal(failure.terminalRun);
+        }
+        return undefined;
+      })
       .catch((error: unknown) => {
         this.logger.error(
           {
@@ -1104,6 +1100,9 @@ export class DaemonDispatchLifecycle {
     await this.notifyExecutionLifecycle(execution).catch((error: unknown) => {
       this.logger.error({ err: error }, "provider completion hook failed");
     });
+    if (transition.terminalRun !== undefined) {
+      await this.notifyWorkflowRunTerminal(transition.terminalRun);
+    }
 
     return execution;
   }
@@ -1174,6 +1173,9 @@ export class DaemonDispatchLifecycle {
       await this.notifyExecutionLifecycle(execution, reason).catch((error: unknown) => {
         this.logger.error({ err: error }, "provider failure hook failed");
       });
+      if (transition.terminalRun !== undefined) {
+        await this.notifyWorkflowRunTerminal(transition.terminalRun);
+      }
     }
 
     return execution;
@@ -1311,20 +1313,6 @@ export class DaemonDispatchLifecycle {
           provider,
           triggerContext: execution.triggerContext,
           outputContext: execution.outputContext,
-        });
-      } else if (execution.status === "succeeded") {
-        await notifyAgentExecutionCompleted({
-          provider,
-          triggerContext: execution.triggerContext,
-          outputContext: execution.outputContext,
-          result: { status: "succeeded" },
-        });
-      } else if (execution.status === "failed") {
-        await notifyAgentExecutionFailed({
-          provider,
-          triggerContext: execution.triggerContext,
-          outputContext: execution.outputContext,
-          reason: failureReason ?? executionFailureReason(execution) ?? "agent_execution_failed",
         });
       }
       return;

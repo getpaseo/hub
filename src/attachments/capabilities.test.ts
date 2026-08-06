@@ -191,9 +191,27 @@ describe("attachment capability boundary", () => {
 });
 
 async function workflowExecution(database = createMemoryDatabase(), deliveryId = "delivery-1") {
+  let project = (await database.listProjectsForOrganization("org-1"))[0];
+  project ??= await database.createProject({
+    organizationId: "org-1",
+    name: "Project 1",
+    slug: "project-1",
+    createdByUserId: "test-user",
+  });
+  let revision = await database.findActiveProjectConfiguration(project.id);
+  if (revision === undefined) {
+    revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "attachment-test-configuration",
+    });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
+  }
   const persisted = await database.persistManualEvent({
     organizationId: "org-1",
-    projectId: "project-1",
+    projectId: project.id,
     connectionId: null,
     resourceId: null,
     deliveryId,
@@ -204,8 +222,8 @@ async function workflowExecution(database = createMemoryDatabase(), deliveryId =
   if (persisted.status !== "accepted") throw new Error("receipt was not accepted");
   const run = await database.createAcceptedTriggerRun({
     organizationId: "org-1",
-    projectId: "project-1",
-    configurationRevisionId: randomUUID(),
+    projectId: project.id,
+    configurationRevisionId: revision.id,
     providerEventReceiptId: persisted.event.providerEventReceiptId,
     configuredTriggerName: "attachment-run",
     rawPrompt: "inspect",
@@ -227,7 +245,7 @@ async function workflowExecution(database = createMemoryDatabase(), deliveryId =
     execution: {
       id: executionId,
       organizationId: "org-1",
-      projectId: "project-1",
+      projectId: project.id,
       machineId: null,
       triggerContext: {},
       outputContext: {},

@@ -59,6 +59,7 @@ describe("GitHub registration", () => {
             providerEventReceiptId: `trigger-${input.deliveryId}`,
             organizationId: project.organizationId,
             projectId: project.id,
+            configurationRevisionId: "11111111-1111-4111-8111-111111111130",
             deliveryId: input.deliveryId,
             source: input.source,
             payload: input.payload,
@@ -247,10 +248,10 @@ describe("GitHub registration", () => {
   });
 
   it("mints a distinct GitHub installation token for each execution", async () => {
-    const { provider, appAuth } = await createExecutionProvider(githubTokenConfig());
+    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
 
-    const first = await provider.match(githubExecution("delivery-1"));
-    const second = await provider.match(githubExecution("delivery-2"));
+    const first = await provider.match(githubExecution("delivery-1", revision.id));
+    const second = await provider.match(githubExecution("delivery-2", revision.id));
     const firstLaunch = await materialize(provider, first[0], "execution-1");
     const secondLaunch = await materialize(provider, second[0], "execution-2");
 
@@ -262,8 +263,10 @@ describe("GitHub registration", () => {
   });
 
   it("revokes explicitly resolved GitHub tokens with the execution token", async () => {
-    const { provider, appAuth } = await createExecutionProvider(githubTokenConfig());
-    const [execution] = await provider.match(githubExecution("delivery-explicit-token"));
+    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
+    const [execution] = await provider.match(
+      githubExecution("delivery-explicit-token", revision.id),
+    );
     assert.ok(execution);
     await materialize(provider, execution, "execution-explicit-token");
 
@@ -614,7 +617,7 @@ async function createExecutionProvider(rawConfig: unknown) {
     discord: [],
     slack: [],
   });
-  const { store } = await createActiveProjectConfiguration(database, rawConfig);
+  const { store, revision } = await createActiveProjectConfiguration(database, rawConfig);
   const appAuth = new ExecutionGitHubAuth();
   const registration = createGitHubRegistration({
     database,
@@ -635,7 +638,7 @@ async function createExecutionProvider(rawConfig: unknown) {
       registration.integration!.resolve(projectId, slug, value, context),
   });
   assert.ok(provider);
-  return { provider, appAuth };
+  return { provider, appAuth, revision };
 }
 
 function testProject(id: string, organizationId: string): ProjectRecord {
@@ -670,11 +673,12 @@ async function materialize(
   });
 }
 
-function githubExecution(deliveryId: string) {
+function githubExecution(deliveryId: string, configurationRevisionId: string) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
     organizationId: "org_1",
     projectId: "project-1",
+    configurationRevisionId,
     source: "github.issue_comment",
     deliveryId,
     receivedAt: new Date("2026-07-28T00:00:00.000Z"),

@@ -84,6 +84,15 @@ export interface MemoryDatabaseOptions {
   now?: () => Date;
 }
 
+function transitionWithTerminalRun(
+  transition: TransitionAgentExecutionResult,
+  run: TriggerRunRecord | undefined,
+): TransitionAgentExecutionResult {
+  return !transition.transitioned || run === undefined || run.status === "running"
+    ? transition
+    : { ...transition, terminalRun: run };
+}
+
 export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Database {
   return new MemoryDatabase(options);
 }
@@ -445,14 +454,20 @@ class MemoryDatabase implements Database {
       const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
       if (deadlineKind === "whole_run") {
         this.timeoutWorkflowRun(run.id, observedAt);
-        return {
-          execution: this.readAgentExecution(execution.id),
-          transitioned: true,
-          deadlineKind,
-        };
+        const terminalRun = this.triggerRuns.get(run.id);
+        return transitionWithTerminalRun(
+          {
+            execution: this.readAgentExecution(execution.id),
+            transitioned: true,
+            deadlineKind,
+          },
+          terminalRun,
+        );
       }
       if (deadlineKind !== undefined) {
-        return this.timeoutWorkflowStep(execution.id, deadlineKind, observedAt);
+        const timedOut = this.timeoutWorkflowStep(execution.id, deadlineKind, observedAt);
+        const terminalRun = this.triggerRuns.get(run.id);
+        return transitionWithTerminalRun(timedOut, terminalRun);
       }
     }
 
@@ -472,7 +487,8 @@ class MemoryDatabase implements Database {
     if (transitioned.transitioned || isTerminalAgentExecutionStatus(execution.status)) {
       this.finishWorkflowStep(step, run, input);
     }
-    return transitioned;
+    const terminalRun = this.triggerRuns.get(run.id);
+    return transitionWithTerminalRun(transitioned, terminalRun);
   }
 
   private finishWorkflowStep(
@@ -713,12 +729,12 @@ class MemoryDatabase implements Database {
   async succeedTriggerRun(triggerRunId: string) {
     const run = this.triggerRuns.get(triggerRunId);
     if (run === undefined || run.outcome !== "accepted") return undefined;
-    if (run.status !== "running") return run;
+    if (run.status !== "running") return { run, transitioned: false };
     const now = this.options.now?.() ?? new Date();
     const updated = { ...run, status: "succeeded" as const, completedAt: now };
     this.triggerRuns.set(run.id, updated);
     this.workflowWakeups.delete(run.id);
-    return updated;
+    return { run: updated, transitioned: true };
   }
 
   async failWorkflowRun(
@@ -736,7 +752,7 @@ class MemoryDatabase implements Database {
           )
         : steps.find((candidate) => candidate.stepId === stepId)) ?? steps[0];
     if (run === undefined || step === undefined) return undefined;
-    if (run.status !== "running") return { stepRun: step, run };
+    if (run.status !== "running") return { stepRun: step, run, transitioned: false };
     const now = this.options.now?.() ?? new Date();
     const updatedStep =
       step.status === "pending" || step.status === "running"
@@ -752,7 +768,7 @@ class MemoryDatabase implements Database {
     this.workflowStepRuns.set(step.id, updatedStep);
     this.triggerRuns.set(run.id, updatedRun);
     this.workflowWakeups.delete(run.id);
-    return { stepRun: updatedStep, run: updatedRun };
+    return { stepRun: updatedStep, run: updatedRun, transitioned: true };
   }
 
   async recoverWorkflowWakeups(now: Date) {
@@ -835,8 +851,35 @@ class MemoryDatabase implements Database {
       input.deliveryId,
       input.signatureHash,
     );
-    if (existing !== undefined)
-      return { status: "duplicate" as const, providerEventReceiptId: existing };
+    if (existing !== undefined) {
+      const receipt = this.providerEventReceipts.get(existing);
+      const route = receipt?.acceptedRoutes?.[0];
+      if (receipt === undefined || route === undefined) {
+        return { status: "duplicate" as const, providerEventReceiptId: existing };
+      }
+      return {
+        status: "accepted" as const,
+        event: {
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        },
+      };
+    }
+    const project = this.projects.get(input.projectId);
+    if (
+      project?.organizationId !== input.organizationId ||
+      project.activeConfigurationRevisionId === null
+    ) {
+      throw new Error("manual project configuration unavailable");
+    }
     const receipt = this.insertProviderEventReceipt({
       organizationId: input.organizationId,
       provider: "manual",
@@ -844,12 +887,20 @@ class MemoryDatabase implements Database {
       resourceId: input.resourceId ?? null,
       input,
     });
+    const route = {
+      projectId: input.projectId,
+      configurationRevisionId: project.activeConfigurationRevisionId,
+      connectionId: input.connectionId ?? null,
+      resourceId: input.resourceId ?? null,
+    };
+    this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes: [route] });
     return {
       status: "accepted" as const,
       event: {
         providerEventReceiptId: receipt.id,
         organizationId: input.organizationId,
         projectId: input.projectId,
+        configurationRevisionId: route.configurationRevisionId,
         deliveryId: input.deliveryId,
         source: input.source,
         payload: input.payload,
@@ -2091,7 +2142,28 @@ class MemoryDatabase implements Database {
   ): Promise<ProviderEventAcceptance> {
     const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
-      return { status: "duplicate", receiptId };
+      const receipt = this.providerEventReceipts.get(receiptId);
+      if (receipt === undefined) throw new Error("provider receipt unavailable");
+      if (receipt.droppedReason !== null) {
+        return { status: "dropped", receiptId, reason: receipt.droppedReason };
+      }
+      if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId };
+      return {
+        status: "accepted",
+        receiptId,
+        events: receipt.acceptedRoutes.map((route) => ({
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        })),
+      };
     }
     if (organizationId === undefined || connectionId === undefined) {
       return {
@@ -2147,6 +2219,7 @@ class MemoryDatabase implements Database {
       providerEventReceiptId: receipt.id,
       organizationId,
       projectId: route.projectId,
+      configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId!,
       deliveryId: input.deliveryId,
       source: input.source,
       payload: input.payload,
@@ -2154,6 +2227,13 @@ class MemoryDatabase implements Database {
       connectionId,
       resourceId: route.resourceId,
     }));
+    const acceptedRoutes = events.map((event) => ({
+      projectId: event.projectId,
+      configurationRevisionId: event.configurationRevisionId,
+      connectionId: event.connectionId,
+      resourceId: event.resourceId,
+    }));
+    this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes });
     return { status: "accepted", events, receiptId: receipt.id };
   }
 
@@ -2199,6 +2279,7 @@ class MemoryDatabase implements Database {
       payload: input.input.payload,
       receivedAt: input.input.receivedAt,
       droppedReason: input.input.dropReason ?? null,
+      acceptedRoutes: null,
     };
     this.providerEventReceipts.set(receipt.id, receipt);
     this.providerEventReceiptIdsByDelivery.set(

@@ -12,12 +12,16 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
-    const { project, store } = await activeConfiguration(inputConfiguration());
+    const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createProvider(store, new TestReactions());
 
     const match = (
       await provider.match(
-        external(project.id, createEvent({ body: "@paseo repo=hub agent=opus investigate" })),
+        external(
+          project.id,
+          revision.id,
+          createEvent({ body: "@paseo repo=hub agent=opus investigate" }),
+        ),
       )
     )[0];
 
@@ -34,24 +38,24 @@ describe("GitHub Phase 1 trigger provider", () => {
     const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
     const provider = createProvider(store, reactions);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
     assert.equal(reactions.created.length, 0);
 
     const wrongActor = await provider.match(
-      external(project.id, createEvent({ actor: "untrusted" })),
+      external(project.id, revision.id, createEvent({ actor: "untrusted" })),
     );
     assert.deepEqual(wrongActor, []);
   });
 
   it("injects and revokes the execution-scoped GitHub token at launch cleanup", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
     const tokens = new TestExecutionTokens();
     const provider = createProvider(store, reactions, tokens);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     const materialized = await provider.materializeLaunch?.({
@@ -71,10 +75,10 @@ describe("GitHub Phase 1 trigger provider", () => {
   });
 
   it("preserves lifecycle reactions and reply-capability configuration", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
     const provider = createProvider(store, reactions);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
@@ -88,10 +92,10 @@ describe("GitHub Phase 1 trigger provider", () => {
   });
 
   it("replaces GitHub in-progress reactions on terminal failure at the event target", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
     const provider = createProvider(store, reactions);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
@@ -114,9 +118,9 @@ describe("GitHub Phase 1 trigger provider", () => {
   });
 
   it("passes a static worktree target through durable launch recovery", async () => {
-    const { project, store } = await activeConfiguration(githubWorktreeConfiguration());
+    const { project, revision, store } = await activeConfiguration(githubWorktreeConfiguration());
     const provider = createProvider(store, new TestReactions());
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const worktree = {
       mode: "branch-off",
@@ -135,10 +139,10 @@ describe("GitHub Phase 1 trigger provider", () => {
   });
 
   it("revokes every token minted before terminal cleanup", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const tokens = new TestExecutionTokens();
     const provider = createProvider(store, new TestReactions(), tokens);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const launch = {
       executionId: "00000000-0000-4000-8000-000000000003",
@@ -155,10 +159,10 @@ describe("GitHub Phase 1 trigger provider", () => {
   });
 
   it("rejects materialization when the execution becomes terminal mid-flight", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const tokens = new DeferredExecutionTokens();
     const provider = createProvider(store, new TestReactions(), tokens);
-    const match = (await provider.match(external(project.id, createEvent())))[0];
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const executionId = "00000000-0000-4000-8000-000000000004";
     const materialization = provider.materializeLaunch?.({
@@ -178,10 +182,10 @@ describe("GitHub Phase 1 trigger provider", () => {
   it("bounds cleanup when GitHub token revocation hangs", async () => {
     vi.useFakeTimers();
     try {
-      const { project, store } = await activeConfiguration();
+      const { project, revision, store } = await activeConfiguration();
       const tokens = new TestExecutionTokens(true);
       const provider = createProvider(store, new TestReactions(), tokens);
-      const match = (await provider.match(external(project.id, createEvent())))[0];
+      const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
       if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
       const executionId = "00000000-0000-4000-8000-000000000005";
       await provider.materializeLaunch?.({
@@ -203,9 +207,9 @@ describe("GitHub Phase 1 trigger provider", () => {
 
   it("hands every matching configured GitHub trigger to the durable fan-out boundary", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await activeFanoutConfiguration(database);
+    const { project, revision, store } = await activeFanoutConfiguration(database);
     const provider = createProvider(store, new TestReactions());
-    const matches = await provider.match(external(project.id, createEvent()));
+    const matches = await provider.match(external(project.id, revision.id, createEvent()));
     assert.deepEqual(
       matches.map((match) => match.triggerName),
       ["github-mention", "github-mention-secondary"],
@@ -231,6 +235,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       providerEventReceiptId: "github-fanout-trigger",
       organizationId: "org_1",
       projectId: project.id,
+      configurationRevisionId: revision.id,
       source: "github.issue_comment",
       deliveryId: "github-fanout-delivery",
       receivedAt: new Date(),
@@ -363,11 +368,16 @@ function githubConfiguration() {
   };
 }
 
-function external(projectId: string, payload: NormalizedGitHubEvent) {
+function external(
+  projectId: string,
+  configurationRevisionId: string,
+  payload: NormalizedGitHubEvent,
+) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
     organizationId: "org_1",
     projectId,
+    configurationRevisionId,
     source: `github.${payload.type}`,
     deliveryId: payload.id,
     receivedAt: new Date(),

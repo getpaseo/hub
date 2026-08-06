@@ -7,7 +7,7 @@ import { createManualRunProvider } from "./provider.js";
 describe("manual invocation provider", () => {
   it("uses the same typed invocation evidence as message providers", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, {
+    const { project, revision, store } = await createActiveProjectConfiguration(database, {
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
         {
@@ -38,6 +38,7 @@ describe("manual invocation provider", () => {
         providerEventReceiptId: "11111111-1111-4111-8111-111111111122",
         organizationId: "org-1",
         projectId: project.id,
+        configurationRevisionId: revision.id,
         source: "manual.run",
         deliveryId: "manual-1",
         receivedAt: new Date(),
@@ -60,7 +61,7 @@ describe("manual invocation provider", () => {
 
   it("returns a rejected branch before resolving an unusable launch environment", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, {
+    const { project, revision, store } = await createActiveProjectConfiguration(database, {
       environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
       triggers: [
         {
@@ -87,6 +88,7 @@ describe("manual invocation provider", () => {
       providerEventReceiptId: "11111111-1111-4111-8111-111111111123",
       organizationId: "org-1",
       projectId: project.id,
+      configurationRevisionId: revision.id,
       source: "manual.run",
       deliveryId: "manual-invalid-environment",
       receivedAt: new Date(),

@@ -9,7 +9,7 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 describe("Slack Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
+    const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       inputConfiguration(),
       { organizationId: "org-1" },
@@ -22,7 +22,7 @@ describe("Slack Phase 1 trigger provider", () => {
 
     const match = (
       await provider.match(
-        external(project.id, { content: "<@UBOT> repo=hub agent=opus investigate" }),
+        external(project.id, revision.id, { content: "<@UBOT> repo=hub agent=opus investigate" }),
       )
     )[0];
 
@@ -37,7 +37,7 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("uses exact input filters to select one configured trigger", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
+    const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       inputFilterFanoutConfiguration(),
       { organizationId: "org-1" },
@@ -49,7 +49,7 @@ describe("Slack Phase 1 trigger provider", () => {
     });
 
     const matches = await provider.match(
-      external(project.id, { content: "<@UBOT> repo=hub investigate" }),
+      external(project.id, revision.id, { content: "<@UBOT> repo=hub investigate" }),
     );
 
     assert.deepEqual(
@@ -71,7 +71,7 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id)))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
@@ -81,16 +81,20 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("keeps provider reactions idempotent across the durable lifecycle hooks", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id)))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
@@ -106,15 +110,19 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("keeps a root Slack mention as the reply thread root", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
-    const match = (await provider.match(external(project.id, { threadTs: null })))[0];
+    const match = (await provider.match(external(project.id, revision.id, { threadTs: null })))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
@@ -127,16 +135,20 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("targets Slack failure output at the originating message thread", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id)))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
@@ -153,9 +165,13 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("hydrates only routed thread replies and leaves top-level mentions alone", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient({
       threadMessages: Array.from({ length: 50 }, (_, index) => ({
         ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
@@ -171,7 +187,7 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
 
-    const threadMatch = (await provider.match(external(project.id)))[0];
+    const threadMatch = (await provider.match(external(project.id, revision.id)))[0];
     if (!isAcceptedTriggerProviderMatch(threadMatch)) throw new Error("expected accepted match");
     assert.equal(threadMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 50);
     assert.equal(
@@ -183,7 +199,9 @@ describe("Slack Phase 1 trigger provider", () => {
       "B1",
     );
 
-    const rootMatch = (await provider.match(external(project.id, { threadTs: null })))[0];
+    const rootMatch = (
+      await provider.match(external(project.id, revision.id, { threadTs: null }))
+    )[0];
     if (!isAcceptedTriggerProviderMatch(rootMatch)) throw new Error("expected accepted match");
     assert.equal(rootMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
@@ -191,16 +209,20 @@ describe("Slack Phase 1 trigger provider", () => {
 
   it("does not hydrate an unrouted Slack thread", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(database, configuration(), {
-      organizationId: "org-1",
-    });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      {
+        organizationId: "org-1",
+      },
+    );
     const client = new RecordingSlackClient();
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const matches = await provider.match(external(project.id, { authorId: "U2" }));
+    const matches = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
     assert.deepEqual(matches, []);
     assert.deepEqual(client.threadReads, []);
   });
@@ -270,12 +292,14 @@ function inputFilterFanoutConfiguration() {
 
 function external(
   projectId: string,
+  configurationRevisionId: string,
   overrides: { threadTs?: string | null; content?: string; authorId?: string } = {},
 ) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
     organizationId: "org-1",
     projectId,
+    configurationRevisionId,
     source: "slack.mention",
     deliveryId: "slack-delivery-1",
     receivedAt: new Date(),

@@ -129,7 +129,7 @@ export function createGitHubTriggerProvider(options: {
       const event = NormalizedGitHubEventSchema.parse(externalTrigger.payload);
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
-        .getActive();
+        .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return [];
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
 

@@ -10,7 +10,7 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Discord Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
-    const { project, store } = await activeConfiguration(inputConfiguration());
+    const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
@@ -18,7 +18,11 @@ describe("Discord Phase 1 trigger provider", () => {
 
     const match = (
       await provider.match(
-        external(project.id, event({ content: "<@900> repo=hub agent=opus investigate" })),
+        external(
+          project.id,
+          revision.id,
+          event({ content: "<@900> repo=hub agent=opus investigate" }),
+        ),
       )
     )[0];
 
@@ -38,21 +42,24 @@ describe("Discord Phase 1 trigger provider", () => {
       configurationStoreForProject: () => store,
       bot,
     });
-    const match = (await provider.match(external(project.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
-    assert.deepEqual(await provider.match(external(project.id, event({ authorId: "401" }))), []);
+    assert.deepEqual(
+      await provider.match(external(project.id, revision.id, event({ authorId: "401" }))),
+      [],
+    );
   });
 
   it("preserves reply lifecycle actions and auto-archive in the provider match", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot,
     });
-    const match = (await provider.match(external(project.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
@@ -77,7 +84,7 @@ describe("Discord Phase 1 trigger provider", () => {
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [connection] });
     database.findDiscordConnectionForOrganization = () => Promise.resolve(connection);
-    const { project, store } = await createActiveProjectConfiguration(
+    const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       discordConnectionConfiguration(),
     );
@@ -87,7 +94,7 @@ describe("Discord Phase 1 trigger provider", () => {
     });
 
     const matches = await provider.match({
-      ...external(project.id, event()),
+      ...external(project.id, revision.id, event()),
       connectionId: "22222222-2222-4222-8222-222222222222",
     });
     assert.deepEqual(
@@ -98,7 +105,7 @@ describe("Discord Phase 1 trigger provider", () => {
 
   it("preserves Discord attachments, references, and thread context as durable evidence", async () => {
     const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
+    const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       discordConfiguration(),
     );
@@ -124,6 +131,7 @@ describe("Discord Phase 1 trigger provider", () => {
       await provider.match({
         ...external(
           project.id,
+          revision.id,
           event({
             channelId: "207",
             threadId: "207",
@@ -183,12 +191,12 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 
   it("persists a static Discord worktree target across launch recovery", async () => {
-    const { project, store } = await activeConfiguration(discordWorktreeConfiguration());
+    const { project, revision, store } = await activeConfiguration(discordWorktreeConfiguration());
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
-    const match = (await provider.match(external(project.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const worktree = {
       mode: "branch-off",
@@ -207,13 +215,15 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 
   it("targets lifecycle reactions and termination notices at the original Discord message", async () => {
-    const { project, store } = await activeConfiguration();
+    const { project, revision, store } = await activeConfiguration();
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot,
     });
-    const match = (await provider.match(external(project.id, event({ threadId: "207" }))))[0];
+    const match = (
+      await provider.match(external(project.id, revision.id, event({ threadId: "207" })))
+    )[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
@@ -350,11 +360,16 @@ function discordConnectionConfiguration() {
   };
 }
 
-function external(projectId: string, payload: NormalizedDiscordMessageEvent) {
+function external(
+  projectId: string,
+  configurationRevisionId: string,
+  payload: NormalizedDiscordMessageEvent,
+) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
     organizationId: "org_1",
     projectId,
+    configurationRevisionId,
     source: "discord.mention",
     deliveryId: payload.id,
     receivedAt: new Date(),

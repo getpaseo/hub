@@ -3,6 +3,7 @@ import type {
   AgentExecutionRecord,
   Database,
   DurableProviderEvent,
+  TriggerRunRecord,
   WorkflowDeadlineRecovery,
 } from "../db/types.js";
 import type { AgentExecutionStatus } from "../db/schema.js";
@@ -57,6 +58,7 @@ export interface DurableWorkflowEngineOptions {
   workerIntervalMs?: number;
   now?: () => Date;
   onWorkflowDeadlineExceeded?: (recovery: WorkflowDeadlineRecovery) => Promise<void>;
+  onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<void>;
 }
 
 export class DurableWorkflowEngine {
@@ -196,7 +198,8 @@ export class DurableWorkflowEngine {
     } catch (error) {
       const reason =
         error instanceof Error ? error.message : "workflow_condition_evaluation_failed";
-      await database.failWorkflowRun(run.id, "failed", reason, step.id);
+      const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
     }
     try {
@@ -206,7 +209,8 @@ export class DurableWorkflowEngine {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
-      await database.failWorkflowRun(run.id, "failed", reason, step.id);
+      const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
     }
     if (!shouldRun) {
@@ -294,13 +298,17 @@ export class DurableWorkflowEngine {
     if (steps.length !== trigger.steps.length)
       throw new Error(`workflow steps missing for ${run.id}`);
 
-    await this.reconcileTerminalStepExecutions(steps);
+    const recoveredTerminalRun = await this.reconcileTerminalStepExecutions(steps);
+    if (recoveredTerminalRun !== undefined) {
+      await this.notifyWorkflowRunTerminal(recoveredTerminalRun);
+    }
     const reconciledRun = await database.findTriggerRunById(run.id);
     if (reconciledRun === undefined || reconciledRun.status !== "running") {
       await database.deleteWorkflowWakeup(run.id);
       return undefined;
     }
     steps = await database.listWorkflowStepRunsForTriggerRun(run.id);
+    if (await this.failTerminalWorkflowStep(run.id, steps)) return undefined;
     const liveExecution = await this.findLiveExecution(steps);
     if (liveExecution !== undefined) {
       await database.deleteWorkflowWakeup(run.id);
@@ -308,7 +316,8 @@ export class DurableWorkflowEngine {
     }
     const next = steps.find((candidate) => candidate.status === "pending");
     if (next === undefined) {
-      await database.succeedTriggerRun(run.id);
+      const succeeded = await database.succeedTriggerRun(run.id);
+      if (succeeded?.transitioned === true) await this.notifyWorkflowRunTerminal(succeeded.run);
       return undefined;
     }
     const step = trigger.steps[next.ordinal];
@@ -328,9 +337,19 @@ export class DurableWorkflowEngine {
     const database = this.options.database;
     if (database === null) return;
     for (const recovery of await database.recoverWorkflowDeadlines(now)) {
-      if (this.options.onWorkflowDeadlineExceeded === undefined) continue;
-      await this.options.onWorkflowDeadlineExceeded(recovery);
+      if (this.options.onWorkflowDeadlineExceeded !== undefined) {
+        await this.options.onWorkflowDeadlineExceeded(recovery);
+      }
+      const run = await database.findTriggerRunById(recovery.triggerRunId);
+      if (run?.outcome === "accepted" && run.status !== "running") {
+        await this.notifyWorkflowRunTerminal(run);
+      }
     }
+  }
+
+  private notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<void> {
+    if (run.outcome !== "accepted" || run.status === "running") return Promise.resolve();
+    return this.options.onWorkflowRunTerminal?.(run) ?? Promise.resolve();
   }
 
   private async finishPersistedExecution(
@@ -366,9 +385,9 @@ export class DurableWorkflowEngine {
 
   private async reconcileTerminalStepExecutions(
     steps: readonly { status: string; agentExecutionId: string | null }[],
-  ): Promise<void> {
+  ): Promise<TriggerRunRecord | undefined> {
     const database = this.options.database;
-    if (database === null) return;
+    if (database === null) return undefined;
     for (const step of steps) {
       if (step.status !== "running" || step.agentExecutionId === null) continue;
       const execution = await database.findAgentExecutionById(step.agentExecutionId);
@@ -378,13 +397,36 @@ export class DurableWorkflowEngine {
       ) {
         continue;
       }
-      await database.completeWorkflowStep(
+      const completed = await database.completeWorkflowStep(
         execution.id,
         execution.status === "succeeded" ? "succeeded" : "failed",
         execution.result,
         readFailureReason(execution.result),
       );
+      if (completed !== undefined && completed.run.status !== "running") return completed.run;
     }
+    return undefined;
+  }
+
+  private async failTerminalWorkflowStep(
+    triggerRunId: string,
+    steps: readonly WorkflowStepRun[],
+  ): Promise<boolean> {
+    const database = this.options.database;
+    if (database === null) return false;
+    const terminalFailure = steps.find(
+      (candidate) => candidate.status === "failed" || candidate.status === "timed_out",
+    );
+    if (terminalFailure === undefined) return false;
+    const status = terminalFailure.status === "timed_out" ? "timed_out" : "failed";
+    const failed = await database.failWorkflowRun(
+      triggerRunId,
+      status,
+      terminalFailure.failureReason ?? `workflow_step_${status}`,
+      terminalFailure.stepId,
+    );
+    if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+    return true;
   }
 
   private async configurationForRun(

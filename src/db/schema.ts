@@ -56,6 +56,7 @@ export const providerEventReceipts = pgTable(
     payload: jsonb().notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
+    acceptedRoutes: jsonb("accepted_routes"),
   },
   (table) => [
     uniqueIndex("provider_event_receipts_id_organization_unique").on(

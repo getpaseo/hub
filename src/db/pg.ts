@@ -87,6 +87,15 @@ const QUERY_DEADLINE_MS = 3_000;
 const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
 
+function transitionWithTerminalRun(
+  transition: TransitionAgentExecutionResult,
+  run: TriggerRunRecord | undefined,
+): TransitionAgentExecutionResult {
+  return !transition.transitioned || run === undefined || run.status === "running"
+    ? transition
+    : { ...transition, terminalRun: run };
+}
+
 export async function createDatabase(url: string): Promise<Database> {
   await ensureDatabaseExists(url);
   const pool = createPostgresPool(url);
@@ -895,13 +904,17 @@ class PgDatabase implements Database {
         const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
         if (deadlineKind === "whole_run") {
           const recovery = await timeoutWorkflowRunOnClient(client, run, observedAt);
+          const terminalRun = await findTriggerRunOnClient(client, run.id);
+          const updatedExecution = await findAgentExecutionOnClient(client, input.executionId);
           await client.query("commit");
-          const updatedExecution = await this.findAgentExecutionById(input.executionId);
-          return {
-            execution: updatedExecution ?? toAgentExecutionRecord(execution),
-            transitioned: recovery.executionIds.includes(input.executionId),
-            deadlineKind,
-          };
+          return transitionWithTerminalRun(
+            {
+              execution: updatedExecution ?? toAgentExecutionRecord(execution),
+              transitioned: recovery.executionIds.includes(input.executionId),
+              deadlineKind,
+            },
+            terminalRun,
+          );
         }
         if (deadlineKind !== undefined) {
           const updated = await timeoutWorkflowStepOnClient(
@@ -912,12 +925,16 @@ class PgDatabase implements Database {
             deadlineKind,
             observedAt,
           );
+          const terminalRun = await findTriggerRunOnClient(client, run.id);
           await client.query("commit");
-          return {
-            execution: toAgentExecutionRecord(updated),
-            transitioned: true,
-            deadlineKind,
-          };
+          return transitionWithTerminalRun(
+            {
+              execution: toAgentExecutionRecord(updated),
+              transitioned: true,
+              deadlineKind,
+            },
+            terminalRun,
+          );
         }
       }
 
@@ -928,13 +945,17 @@ class PgDatabase implements Database {
       }
 
       await finishWorkflowStepAndRun(client, step, run, input);
+      const terminalRun = await findTriggerRunOnClient(client, run.id);
 
       await client.query("commit");
-      return {
-        execution: toAgentExecutionRecord(liveTransition.execution),
-        transitioned: liveTransition.transitioned,
-        ...(input.deadlineKind === undefined ? {} : { deadlineKind: input.deadlineKind }),
-      };
+      return transitionWithTerminalRun(
+        {
+          execution: toAgentExecutionRecord(liveTransition.execution),
+          transitioned: liveTransition.transitioned,
+          ...(input.deadlineKind === undefined ? {} : { deadlineKind: input.deadlineKind }),
+        },
+        terminalRun,
+      );
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
@@ -999,9 +1020,12 @@ class PgDatabase implements Database {
        where id = $1 and status = 'running' returning *`,
       [triggerRunId],
     );
-    if (rows.rows[0] === undefined) return this.findTriggerRunById(triggerRunId);
+    if (rows.rows[0] === undefined) {
+      const run = await this.findTriggerRunById(triggerRunId);
+      return run === undefined ? undefined : { run, transitioned: false };
+    }
     await this.deleteWorkflowWakeup(triggerRunId);
-    return toTriggerRunRecord(rows.rows[0]);
+    return { run: toTriggerRunRecord(rows.rows[0]), transitioned: true };
   }
 
   async failWorkflowRun(
@@ -1034,6 +1058,7 @@ class PgDatabase implements Database {
         return {
           stepRun: toWorkflowStepRunRecord(step),
           run: toTriggerRunRecord(run),
+          transitioned: false,
         };
       }
       const completedAt = new Date();
@@ -1056,6 +1081,7 @@ class PgDatabase implements Database {
       return {
         stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
         run: toTriggerRunRecord(updatedRun.rows[0]!),
+        transitioned: true,
       };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
@@ -1829,7 +1855,8 @@ class PgDatabase implements Database {
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
               receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
-              receipts.payload, receipts.received_at, receipts.dropped_reason
+              receipts.payload, receipts.received_at, receipts.dropped_reason,
+              receipts.accepted_routes
        from trigger_runs runs
        join provider_event_receipts receipts
          on receipts.id = runs.provider_event_receipt_id
@@ -1847,7 +1874,8 @@ class PgDatabase implements Database {
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
               receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
-              receipts.payload, receipts.received_at, receipts.dropped_reason
+              receipts.payload, receipts.received_at, receipts.dropped_reason,
+              receipts.accepted_routes
        from trigger_runs runs
        join provider_event_receipts receipts
          on receipts.id = runs.provider_event_receipt_id
@@ -3336,6 +3364,7 @@ export interface ProviderEventReceiptRow extends QueryResultRow {
   payload: unknown;
   received_at: Date;
   dropped_reason: string | null;
+  accepted_routes: unknown;
 }
 
 interface TriggerRunRow extends QueryResultRow {
@@ -3372,6 +3401,7 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   payload: unknown;
   received_at: Date;
   dropped_reason: string | null;
+  accepted_routes: unknown;
 }
 
 interface WorkflowStepRunRow extends QueryResultRow {
@@ -3853,6 +3883,27 @@ async function finishWorkflowStepAndRun(
   await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
     step.trigger_run_id,
   ]);
+}
+
+async function findTriggerRunOnClient(
+  client: PoolClient,
+  triggerRunId: string,
+): Promise<TriggerRunRecord | undefined> {
+  const rows = await client.query<TriggerRunRow>(`select * from trigger_runs where id = $1`, [
+    triggerRunId,
+  ]);
+  return rows.rows[0] === undefined ? undefined : toTriggerRunRecord(rows.rows[0]);
+}
+
+async function findAgentExecutionOnClient(
+  client: PoolClient,
+  executionId: string,
+): Promise<AgentExecutionRecord | undefined> {
+  const rows = await client.query<AgentExecutionRow>(
+    `select * from agent_executions where id = $1`,
+    [executionId],
+  );
+  return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
 }
 
 async function wakeWorkflowRun(

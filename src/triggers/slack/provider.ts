@@ -75,7 +75,9 @@ export function createSlackTriggerProvider(options: {
         rawEvent.teamId,
       );
       if (botUserId === undefined) return [];
-      const stored = await options.configurationStoreForProject(trigger.projectId).getActive();
+      const stored = await options
+        .configurationStoreForProject(trigger.projectId)
+        .getRevision(trigger.configurationRevisionId);
       if (stored === undefined) return [];
       const matchedTriggers = matchSlackTriggers(
         stored.configuration,

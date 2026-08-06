@@ -63,7 +63,7 @@ export function createDiscordTriggerProvider(options: {
       const event = NormalizedDiscordMessageEventSchema.parse(externalTrigger.payload);
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
-        .getActive();
+        .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return [];
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];

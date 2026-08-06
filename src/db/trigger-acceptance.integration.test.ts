@@ -31,6 +31,19 @@ describe("manual trigger tenant idempotency", () => {
         ('20000000-0000-4000-8000-000000000001', 'manual-org-b', 'Default', 'same-project');
     `);
     await client.end();
+    for (const [projectId, contentHash] of [
+      ["10000000-0000-4000-8000-000000000001", "manual-org-a-config"],
+      ["20000000-0000-4000-8000-000000000001", "manual-org-b-config"],
+    ] as const) {
+      const revision = await database.insertProjectConfigurationRevision({
+        projectId,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash,
+      });
+      await database.activateProjectConfigurationRevision(projectId, revision.id);
+    }
 
     const first = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
@@ -47,10 +60,11 @@ describe("manual trigger tenant idempotency", () => {
     const duplicate = await database.persistManualEvent(
       input("manual-org-a", "10000000-0000-4000-8000-000000000001"),
     );
-    assert.deepEqual(duplicate, {
-      status: "duplicate",
-      providerEventReceiptId: first.event.providerEventReceiptId,
-    });
+    assert.equal(duplicate.status, "accepted");
+    if (duplicate.status !== "accepted") throw new Error("expected replayed accepted trigger");
+    assert.equal(duplicate.event.providerEventReceiptId, first.event.providerEventReceiptId);
+    assert.equal(duplicate.event.organizationId, "manual-org-a");
+    assert.equal(duplicate.event.projectId, "10000000-0000-4000-8000-000000000001");
     await database.close();
   }, 120_000);
 });

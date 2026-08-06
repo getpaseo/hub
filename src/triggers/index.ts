@@ -6,6 +6,7 @@ export interface ExternalTrigger {
   providerEventReceiptId: string;
   organizationId: string;
   projectId: string;
+  configurationRevisionId: string;
   source: string;
   deliveryId: string;
   receivedAt: Date;

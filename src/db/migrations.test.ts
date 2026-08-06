@@ -63,7 +63,7 @@ describe("database migrations", () => {
   });
 
   it("destructively cuts superseded trigger and execution ownership paths", () => {
-    const cutover = readFileSync(join(here, "../../drizzle/0022_yellow_the_call.sql"), "utf8");
+    const cutover = readFileSync(join(here, "../../drizzle/0018_silky_cannonball.sql"), "utf8");
 
     assert.match(cutover, /DROP TABLE "triggers" CASCADE/);
     assert.match(cutover, /DROP COLUMN "trigger_id"/);
