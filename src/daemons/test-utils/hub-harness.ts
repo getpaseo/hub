@@ -600,6 +600,9 @@ export class HubHarness {
   async completeCurrentTurn(agentId: string): Promise<void> {
     await this.requireDaemon().completesTurn(agentId);
   }
+  async completeCurrentTurnWithoutFinishTimeline(agentId: string): Promise<void> {
+    await this.requireDaemon().completesTurnWithoutFinishTimeline(agentId);
+  }
   async failCurrentTurn(agentId: string): Promise<void> {
     await this.requireDaemon().failsTurn(agentId);
   }
@@ -1938,6 +1941,17 @@ class TestDaemon {
         },
       },
     });
+    this.send({
+      type: "hub.execution.agent.stream",
+      payload: {
+        executionId: this.executionId(agentId),
+        agentId,
+        event: { type: "turn_completed", provider: "opencode" },
+      },
+    });
+    this.changesStatus(agentId, "idle");
+  }
+  async completesTurnWithoutFinishTimeline(agentId: string): Promise<void> {
     this.send({
       type: "hub.execution.agent.stream",
       payload: {

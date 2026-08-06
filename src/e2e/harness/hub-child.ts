@@ -44,10 +44,52 @@ async function main(): Promise<void> {
   );
   await client.end();
   const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
+  const outputs = new OutputExecutorRegistry();
+  outputs.register("discord.reply", async (output) => {
+    await appendFile(outputFile, `${JSON.stringify(output)}\n`);
+  });
+  const auth = createAuthServer({
+    databaseUrl,
+    baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
+    secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
+    policy: readInstanceAuthPolicy(),
+  });
+  await auth.initialize?.();
+  const createdApiKey = await auth.apiKeys?.create(
+    organizationId,
+    "hub-e2e",
+    "hub e2e automation",
+    ["configuration:install", "runs:dispatch", "daemons:enroll"],
+  );
+  if (createdApiKey === undefined) throw new Error("API key service unavailable");
+  await writeFile(requiredEnvironment("HUB_E2E_MACHINE_KEY_FILE"), createdApiKey.secret, "utf8");
+  const seededDaemonId = "00000000-0000-4000-8000-0000000000dd";
+  let daemon = await database.findDaemonById(seededDaemonId);
+  if (daemon === undefined) {
+    await database.issueEnrollmentToken({
+      id: "00000000-0000-4000-8000-0000000000ee",
+      verifier: "hub-e2e-seed-daemon-token",
+      organizationId,
+      issuedByApiKeyId: createdApiKey.summary.id,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      consumedAt: null,
+    });
+    daemon = await database.enrollDaemon({
+      tokenVerifier: "hub-e2e-seed-daemon-token",
+      daemonId: seededDaemonId,
+      idempotencyKey: "hub-e2e-seed-daemon-idempotency",
+      serverId: "hub-e2e-seed-server",
+      daemonPublicKey: "hub-e2e-seed-public-key",
+      credentialVerifier: "hub-e2e-seed-credential-verifier",
+      scopes: ["hub.execution.*"],
+      now: new Date(),
+    });
+  }
+  if (daemon === undefined) throw new Error("Hub E2E seed daemon enrollment failed");
   const config = await configuration.insertManualRevision({
     rawYaml: null,
     rawConfiguration: {
-      environments: [{ name: "hub-e2e", kind: "docker", image: "paseo/e2e" }],
+      environments: [{ name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() }],
       triggers: [
         {
           name: "e2e-discord",
@@ -71,25 +113,6 @@ async function main(): Promise<void> {
     sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
   });
   await configuration.activate(config.id);
-  const outputs = new OutputExecutorRegistry();
-  outputs.register("discord.reply", async (output) => {
-    await appendFile(outputFile, `${JSON.stringify(output)}\n`);
-  });
-  const auth = createAuthServer({
-    databaseUrl,
-    baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
-    secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
-    policy: readInstanceAuthPolicy(),
-  });
-  await auth.initialize?.();
-  const createdApiKey = await auth.apiKeys?.create(
-    organizationId,
-    "hub-e2e",
-    "hub e2e automation",
-    ["configuration:install", "runs:dispatch", "daemons:enroll"],
-  );
-  if (createdApiKey === undefined) throw new Error("API key service unavailable");
-  await writeFile(requiredEnvironment("HUB_E2E_MACHINE_KEY_FILE"), createdApiKey.secret, "utf8");
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,

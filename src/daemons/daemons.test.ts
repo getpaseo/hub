@@ -725,6 +725,30 @@ describe("daemon enrollment and execution", () => {
     assert.notEqual((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
   });
 
+  it("keeps MCP finish completion durable when the response acknowledgement is lost", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({ autoArchive: true });
+
+    assert.equal(await hub.completeExecution(result.execution.id), 200);
+    const completed = await hub.execution(result.execution.id);
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.hubActionAcknowledgements.finishExecutionCall?.callId, null);
+    assert.equal(completed.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+    assert.equal(completed.hubActionReadyAt, null);
+    assert.equal(completed.hubActionCompletedAt, null);
+    assert.equal(await hub.completeExecution(result.execution.id), 409);
+
+    await hub.completeCurrentTurnWithoutFinishTimeline(result.agentId);
+    await hub.pendingControlAction(result.execution.id);
+    await hub.completePendingCleanup();
+
+    const archived = await hub.execution(result.execution.id);
+    assert.deepEqual(hub.controlActions(), ["archive"]);
+    assert.equal(archived.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+    assert.notEqual(archived.hubActionReadyAt, null);
+    assert.notEqual(archived.hubActionCompletedAt, null);
+  });
+
   it("completes successful non-archived runs without daemon control", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: false });

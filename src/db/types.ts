@@ -119,7 +119,7 @@ export type AgentExecutionHubFinishExecutionStatus =
   | "canceled";
 
 export interface AgentExecutionHubFinishExecutionAcknowledgement {
-  callId: string;
+  callId: string | null;
   status: AgentExecutionHubFinishExecutionStatus;
   observedAt: Date;
 }
@@ -135,7 +135,7 @@ export type AgentExecutionHubAcknowledgementInput =
   | { kind: "idle"; observedAt: Date }
   | {
       kind: "finish_execution";
-      callId: string;
+      callId?: string | null;
       status: AgentExecutionHubFinishExecutionStatus;
       observedAt: Date;
     };

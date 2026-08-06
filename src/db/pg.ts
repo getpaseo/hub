@@ -2185,13 +2185,19 @@ class PgDatabase implements Database {
           where id = $1
             and (
               ${state}->'finish_execution_call'->>'observed_at' is null
-              or (${state}->'finish_execution_call'->>'observed_at')::timestamptz < $2::timestamptz
+              or (
+                ${state}->'finish_execution_call'->>'status' <> 'completed'
+                and (
+                  $4::text = 'completed'
+                  or (${state}->'finish_execution_call'->>'observed_at')::timestamptz < $2::timestamptz
+                )
+              )
             )
           returning *`;
         parameters = [
           executionId,
           acknowledgement.observedAt,
-          acknowledgement.callId,
+          acknowledgement.callId ?? null,
           acknowledgement.status,
         ];
       }

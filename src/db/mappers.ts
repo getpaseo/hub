@@ -169,14 +169,14 @@ function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubA
     const status = rawFinishExecutionCall["status"];
     const observedAt = toDateOrNull(rawFinishExecutionCall["observed_at"]);
     if (
-      typeof callId === "string" &&
+      (typeof callId === "string" || callId === null || callId === undefined) &&
       (status === "running" ||
         status === "completed" ||
         status === "failed" ||
         status === "canceled") &&
       observedAt !== null
     ) {
-      finishExecutionCall = { callId, status, observedAt };
+      finishExecutionCall = { callId: callId ?? null, status, observedAt };
     }
   }
   return { terminalAt, idleAt, finishExecutionCall };

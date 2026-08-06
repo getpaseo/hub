@@ -1709,10 +1709,12 @@ class MemoryDatabase implements Database {
       if (
         previous === undefined ||
         previous === null ||
-        acknowledgement.observedAt.getTime() > previous.observedAt.getTime()
+        (previous.status !== "completed" &&
+          (acknowledgement.status === "completed" ||
+            acknowledgement.observedAt.getTime() > previous.observedAt.getTime()))
       ) {
         updatedAcknowledgements.finishExecutionCall = {
-          callId: acknowledgement.callId,
+          callId: acknowledgement.callId ?? null,
           status: acknowledgement.status,
           observedAt: acknowledgement.observedAt,
         };

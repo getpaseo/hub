@@ -173,10 +173,10 @@ export class HubE2E {
 
   async daemonIsConnected(): Promise<void> {
     await this.observe(async () => {
-      const result = await this.requirePool().query<{ presence: string }>(
-        "select presence from daemons limit 1",
+      const result = await this.requirePool().query<{ connected: string }>(
+        "select count(*)::text as connected from daemons where presence = 'connected'",
       );
-      return result.rows[0]?.presence === "connected" && this.requireProxy().hubConnectionIsOpen();
+      return result.rows[0]?.connected !== "0" && this.requireProxy().hubConnectionIsOpen();
     }, "daemon to become connected");
   }
 
@@ -205,7 +205,7 @@ export class HubE2E {
 
   async installProductionConfiguration(): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons limit 1",
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
@@ -283,7 +283,7 @@ export class HubE2E {
 
   async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons limit 1",
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
@@ -324,7 +324,7 @@ export class HubE2E {
 
   async installRealAgentRoutingConfiguration(provider: RealAgentProvider): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons limit 1",
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
@@ -419,7 +419,7 @@ export class HubE2E {
         id: string;
         slug: string;
         presence: string;
-      }>("select id, slug, presence from daemons limit 1");
+      }>("select id, slug, presence from daemons order by presence = 'connected' desc limit 1");
       throw new Error(
         `run manual trigger returned HTTP ${
           response.status

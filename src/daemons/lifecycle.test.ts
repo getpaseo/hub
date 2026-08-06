@@ -105,6 +105,9 @@ describe("durable Hub action acknowledgement state", () => {
     await fixture.connection.emit(
       toolCall("finish-call", "mcp__hub__finish_execution", "completed"),
     );
+    await fixture.connection.emit(
+      toolCall("finish-call-retry", "hub.finish_execution", "canceled"),
+    );
     await fixture.connection.emit(turnCompleted());
     await fixture.connection.emit(agentIdle());
 

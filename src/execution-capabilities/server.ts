@@ -161,6 +161,11 @@ function createMcpServer(
           ...(output === undefined ? {} : { output }),
         });
         if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
+        await options.database.recordAgentExecutionHubAcknowledgement(execution.id, {
+          kind: "finish_execution",
+          status: "completed",
+          observedAt: options.now?.() ?? new Date(),
+        });
         return toolSuccess("Execution finished");
       } catch (error) {
         return toolFailure(
