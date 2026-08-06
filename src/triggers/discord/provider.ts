@@ -153,24 +153,20 @@ export function createDiscordTriggerProvider(options: {
     },
     async onAgentExecutionCompleted(triggerContext) {
       await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-      await reactSafely(options.bot, triggerContext.target, "white_check_mark");
+      await react(options.bot, triggerContext.target, "white_check_mark");
     },
     async onAgentExecutionFailed(triggerContext, _outputContext, reason) {
       await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
       await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-      await reactSafely(options.bot, triggerContext.target, "x");
-      await postThreadNoticeSafely(
-        options.bot,
-        triggerContext.target,
-        `Paseo agent failed: ${reason}`,
-      );
+      await react(options.bot, triggerContext.target, "x");
+      await postThreadNotice(options.bot, triggerContext.target, `Paseo agent failed: ${reason}`);
     },
     async onMachineTerminated(triggerContext, reason) {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
         await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
         await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
-        await reactSafely(options.bot, triggerContext.target, "x");
-        await postThreadNoticeSafely(
+        await react(options.bot, triggerContext.target, "x");
+        await postThreadNotice(
           options.bot,
           triggerContext.target,
           `Paseo machine terminated before the agent could complete: ${reason}`,
@@ -345,7 +341,6 @@ async function reactSafely(
   emoji: string,
 ): Promise<void> {
   const discordEmoji = toDiscordReactionEmoji(emoji);
-
   try {
     await bot.createReaction({
       channelId: event.channelId,
@@ -363,6 +358,18 @@ async function reactSafely(
       "discord reaction failed",
     );
   }
+}
+
+async function react(
+  bot: DiscordBotClient,
+  event: DiscordOutputContext,
+  emoji: string,
+): Promise<void> {
+  await bot.createReaction({
+    channelId: event.channelId,
+    messageId: event.messageId,
+    emoji: toDiscordReactionEmoji(emoji),
+  });
 }
 
 async function deleteReactionSafely(
@@ -408,25 +415,14 @@ function toDiscordReactionEmoji(emoji: string): string {
   }
 }
 
-async function postThreadNoticeSafely(
+async function postThreadNotice(
   bot: DiscordBotClient,
   event: DiscordOutputContext,
   content: string,
 ): Promise<void> {
-  try {
-    await bot.sendChannelMessage({
-      channelId: event.channelId,
-      threadId: event.threadId,
-      content,
-    });
-  } catch (error) {
-    logger.warn(
-      {
-        err: error,
-        channelId: event.channelId,
-        threadId: event.threadId,
-      },
-      "discord thread notice failed",
-    );
-  }
+  await bot.sendChannelMessage({
+    channelId: event.channelId,
+    threadId: event.threadId,
+    content,
+  });
 }

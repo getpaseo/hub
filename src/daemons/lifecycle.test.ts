@@ -8,6 +8,8 @@ import type {
   DaemonConnection,
 } from "./protocol.js";
 import { createDaemonDispatchLifecycle, type DaemonDispatchLifecycle } from "./lifecycle.js";
+import { createDurableWorkflowHandler } from "../workflows/engine.js";
+import type { TriggerProvider } from "../triggers/index.js";
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
@@ -15,6 +17,85 @@ const EXECUTION_ID = "00000000-0000-4000-8000-000000000001";
 const ACKNOWLEDGED_AT = new Date("2026-01-01T00:00:01.000Z");
 
 describe("durable Hub action acknowledgement state", () => {
+  it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
+    const database = createMemoryDatabase();
+    let failureHooks = 0;
+    const provider: TriggerProvider = {
+      name: "test",
+      eventNames: ["manual.test"],
+      match: () => Promise.resolve([]),
+      onAgentExecutionFailed: async () => {
+        failureHooks += 1;
+      },
+    };
+    const lifecycle = createDaemonDispatchLifecycle({
+      database,
+      connectionForDaemon: () => undefined,
+      providers: [provider],
+    });
+    const run = (
+      await database.createAcceptedTriggerRun({
+        organizationId: "org-workflow-terminal",
+        projectId: "project-workflow-terminal",
+        configurationRevisionId: "revision-workflow-terminal",
+        providerEventReceiptId: "receipt-workflow-terminal",
+        configuredTriggerName: "terminal",
+        rawPrompt: "raw",
+        prompt: "prompt",
+        inputs: {},
+        triggerContext: { provider: "test" },
+        outputContext: { provider: "test" },
+        deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+        stepIds: ["step"],
+      })
+    ).run;
+    const step = (await database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await database.insertAgentExecution({
+      id: "00000000-0000-4000-8000-0000000000dd",
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+      machineId: null,
+      daemonId: DAEMON_ID,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      configurationRevisionId: run.configurationRevisionId,
+      workflowStepRunId: step.id,
+      deadlineAt: new Date("2000-01-01T00:00:00.000Z"),
+      idleDeadlineAt: new Date("2000-01-01T00:00:00.000Z"),
+    });
+    await database.linkWorkflowStepRunExecution(step.id, execution.id);
+
+    await lifecycle.recoverAgentExecutionDeadlines();
+
+    assert.equal(failureHooks, 0);
+    const pendingDelivery = await database.findTriggerRunById(run.id);
+    assert.equal(pendingDelivery?.status, "failed");
+    assert.equal(pendingDelivery?.outcome, "accepted");
+    assert.equal(
+      pendingDelivery?.outcome === "accepted"
+        ? pendingDelivery.terminalNotificationDeliveredAt
+        : null,
+      null,
+    );
+
+    const engine = createDurableWorkflowHandler({
+      database,
+      providers: [],
+      onWorkflowRunTerminal: (terminalRun) => lifecycle.notifyWorkflowRunTerminal(terminalRun),
+    }).engine;
+    await engine.processAvailable();
+
+    const delivered = await database.findTriggerRunById(run.id);
+    assert.equal(failureHooks, 1);
+    assert.equal(
+      delivered?.outcome === "accepted"
+        ? delivered.terminalNotificationDeliveredAt !== null
+        : false,
+      true,
+    );
+    await lifecycle.stop();
+  });
+
   it("ignores unrelated failed or canceled tools when finish_execution completes", async () => {
     const fixture = await acknowledgementFixture();
     await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);

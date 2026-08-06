@@ -93,6 +93,79 @@ describe("durable multi-step workflow engine", () => {
     },
   );
 
+  it("retries a failed workflow terminal outbox delivery", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const delivered: string[] = [];
+    let failFirst = true;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async (intent) => {
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+      onWorkflowRunTerminal: async (run) => {
+        delivered.push(run.id);
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("provider unavailable");
+        }
+      },
+    });
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const first = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!.id,
+    );
+    assert.ok(first);
+    const secondStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[1]!;
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: first.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+    });
+    await engine.processAvailable();
+    const second = await fixture.database.findAgentExecutionByWorkflowStepRunId(secondStep.id);
+    assert.ok(second);
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: second.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+    });
+
+    await engine.processAvailable();
+    assert.deepEqual(delivered, [run.id]);
+    const failedDelivery = await fixture.database.findTriggerRunById(run.id);
+    assert.equal(
+      failedDelivery?.outcome === "accepted"
+        ? failedDelivery.terminalNotificationDeliveredAt
+        : "missing",
+      null,
+    );
+
+    now = new Date("2026-08-06T12:00:01.001Z");
+    await engine.processAvailable();
+    assert.deepEqual(delivered, [run.id, run.id]);
+    const completedDelivery = await fixture.database.findTriggerRunById(run.id);
+    assert.equal(
+      completedDelivery?.outcome === "accepted"
+        ? completedDelivery.terminalNotificationDeliveredAt !== null
+        : false,
+      true,
+    );
+  });
+
   it("launches the exact committed partial content with inline-equivalent interpolation", async () => {
     const content = "Committed partial for ${{ paseo.prompt }} / ${{ paseo.inputs.repo }}";
     const fixture = await workflowFixture({
@@ -214,6 +287,58 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(run.status, "failed");
     assert.match(run.failureReason ?? "", /unavailable|evaluation/iu);
     assert.deepEqual(dispatches, []);
+  });
+
+  it("fails prompt interpolation that reads a skipped prior step output without dispatching", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: skippedOutputPromptConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    assert.equal(run.status, "failed");
+    assert.match(run.failureReason ?? "", /steps\.classify\.outputs\.repo|unavailable/iu);
+    assert.deepEqual(
+      steps.map((step) => [step.stepId, step.status]),
+      [
+        ["classify", "skipped"],
+        ["work", "failed"],
+      ],
+    );
+    assert.deepEqual(dispatches, []);
+  });
+
+  it("persists final values composed from a one-step structured output", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: finalValueConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: execution.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded", output: { decision: "ship" } },
+      stepOutput: { decision: "ship" },
+      completedByAgent: true,
+    });
+    await engine.processAvailable();
+
+    const completed = await fixture.database.findTriggerRunById(run.id);
+    assert.equal(completed?.status, "succeeded");
+    assert.deepEqual(completed?.values, { final_decision: "ship" });
   });
 
   it("fails a classifier without launching downstream work", async () => {
@@ -744,6 +869,81 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
             idle_timeout: options.idleTimeout ?? "20s",
             agent: { provider: "codex" },
             prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function skippedOutputPromptConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "skipped-output-prompt",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "classify",
+            if: "${{ false }}",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Classify" }],
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["repo"],
+                properties: { repo: { enum: ["hub"] } },
+              },
+            },
+          },
+          {
+            id: "work",
+            if: "${{ true }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Repo ${{ steps.classify.outputs.repo }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function finalValueConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "final-value",
+        on: "manual.run",
+        max_runtime: "1h",
+        values: {
+          final_decision: "${{ steps.decide.outputs.decision }}",
+        },
+        steps: [
+          {
+            id: "decide",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Decide" }],
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["decision"],
+                properties: { decision: { enum: ["ship"] } },
+              },
+            },
           },
         ],
       },

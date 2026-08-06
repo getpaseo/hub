@@ -238,7 +238,16 @@ export class DurableWorkflowEngine {
         startedAt.getTime() + step.idleTimeoutMs,
       ),
     );
-    const intent = buildStepIntent(configuration, trigger, step, run, context, next.id, deadlineAt);
+    const intent = await this.buildStepIntentOrFail(
+      configuration,
+      trigger,
+      step,
+      run,
+      context,
+      next.id,
+      deadlineAt,
+    );
+    if (intent === undefined) return;
     const executionId = durableExecutionId(intent);
     const created = await database.createWorkflowStepExecution({
       triggerRunId: run.id,
@@ -355,8 +364,7 @@ export class DurableWorkflowEngine {
       (recoverPreHandoffDispatch ? await this.findRecoverablePreHandoffStep(steps) : undefined) ??
       steps.find((candidate) => candidate.status === "pending");
     if (next === undefined) {
-      const succeeded = await database.succeedTriggerRun(run.id);
-      if (succeeded?.transitioned === true) await this.notifyWorkflowRunTerminal(succeeded.run);
+      await this.finishWorkflowRunIfComplete(reconciledRun, steps, trigger);
       return undefined;
     }
     const step = trigger.steps[next.ordinal];
@@ -371,6 +379,49 @@ export class DurableWorkflowEngine {
       context: workflowContext(reconciledRun, steps, trigger.values),
       recoverPreHandoffDispatch,
     };
+  }
+
+  private async buildStepIntentOrFail(
+    configuration: CompiledProjectConfiguration,
+    trigger: CompiledProjectConfiguration["triggers"][number],
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    run: AcceptedWorkflowRun,
+    context: ExpressionContext,
+    stepRunId: string,
+    deadlineAt: Date,
+  ): Promise<LaunchMachineIntent | undefined> {
+    const database = this.options.database;
+    if (database === null) return undefined;
+    try {
+      return buildStepIntent(configuration, trigger, step, run, context, stepRunId, deadlineAt);
+    } catch (error) {
+      if (!(error instanceof ExpressionEvaluationError)) throw error;
+      const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+      return undefined;
+    }
+  }
+
+  private async finishWorkflowRunIfComplete(
+    run: AcceptedWorkflowRun,
+    steps: readonly WorkflowStepRun[],
+    trigger: CompiledProjectConfiguration["triggers"][number],
+  ): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    try {
+      await database.updateTriggerRunValues(
+        run.id,
+        composeValues(trigger.values, workflowContext(run, steps, trigger.values)),
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
+      const failed = await database.failWorkflowRun(run.id, "failed", reason);
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+      return;
+    }
+    const succeeded = await database.succeedTriggerRun(run.id);
+    if (succeeded?.transitioned === true) await this.notifyWorkflowRunTerminal(succeeded.run);
   }
 
   private async recoverWorkflowDeadlines(now: Date): Promise<void> {

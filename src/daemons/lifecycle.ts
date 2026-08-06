@@ -296,9 +296,6 @@ export class DaemonDispatchLifecycle {
     const tracked = after
       .then(async () => {
         await this.notifyExecutionLifecycle(execution, executionFailureReason(execution));
-        if (failure.terminalRun !== undefined) {
-          await this.notifyWorkflowRunTerminal(failure.terminalRun);
-        }
         return undefined;
       })
       .catch((error: unknown) => {
@@ -1097,13 +1094,11 @@ export class DaemonDispatchLifecycle {
     this.startedExecutions.delete(executionId);
     await this.notifyExecutionTerminal(execution);
     if (options.deferHubAction !== true) await this.reconcileHubActionSafely(execution);
-    await this.notifyExecutionLifecycle(execution).catch((error: unknown) => {
-      this.logger.error({ err: error }, "provider completion hook failed");
-    });
-    if (transition.terminalRun !== undefined) {
-      await this.notifyWorkflowRunTerminal(transition.terminalRun);
+    if (execution.workflowStepRunId === null) {
+      await this.notifyExecutionLifecycle(execution).catch((error: unknown) => {
+        this.logger.error({ err: error }, "provider completion hook failed");
+      });
     }
-
     return execution;
   }
 
@@ -1169,13 +1164,10 @@ export class DaemonDispatchLifecycle {
     this.startedExecutions.delete(executionId);
     await this.notifyExecutionTerminal(execution);
     await this.reconcileHubActionSafely(execution);
-    if (details.notifyProvider !== false) {
+    if (details.notifyProvider !== false && execution.workflowStepRunId === null) {
       await this.notifyExecutionLifecycle(execution, reason).catch((error: unknown) => {
         this.logger.error({ err: error }, "provider failure hook failed");
       });
-      if (transition.terminalRun !== undefined) {
-        await this.notifyWorkflowRunTerminal(transition.terminalRun);
-      }
     }
 
     return execution;

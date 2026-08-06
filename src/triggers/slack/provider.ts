@@ -165,12 +165,8 @@ export function createSlackTriggerProvider(options: {
       await replaceReaction(options.client, context.target, "eyes", "hourglass_flowing_sand");
     },
     async onAgentExecutionCompleted(context) {
-      await replaceReaction(
-        options.client,
-        context.target,
-        "hourglass_flowing_sand",
-        "white_check_mark",
-      );
+      await removeReactionSafely(options.client, context.target, "hourglass_flowing_sand");
+      await addReaction(options.client, context.target, "white_check_mark");
     },
     async onAgentExecutionFailed(context, _output, reason) {
       await failWithNotice(options.client, context.target, reason);
@@ -361,18 +357,28 @@ async function failWithNotice(
 ): Promise<void> {
   await removeReactionSafely(client, event, "eyes");
   await removeReactionSafely(client, event, "hourglass_flowing_sand");
-  await addReactionSafely(client, event, "x");
-  try {
-    await client.sendMessage({
-      organizationId: event.organizationId,
-      teamId: event.teamId,
-      channelId: event.channelId,
-      threadTs: event.threadTs,
-      content: `Paseo agent failed: ${reason}`,
-    });
-  } catch (error) {
-    logger.warn({ err: error, teamId: event.teamId }, "Slack failure notice failed");
-  }
+  await addReaction(client, event, "x");
+  await client.sendMessage({
+    organizationId: event.organizationId,
+    teamId: event.teamId,
+    channelId: event.channelId,
+    threadTs: event.threadTs,
+    content: `Paseo agent failed: ${reason}`,
+  });
+}
+
+async function addReaction(
+  client: SlackBotClient,
+  event: SlackOutputContext,
+  name: string,
+): Promise<void> {
+  await client.addReaction({
+    organizationId: event.organizationId,
+    teamId: event.teamId,
+    channelId: event.channelId,
+    messageTs: event.messageTs,
+    name,
+  });
 }
 
 async function addReactionSafely(

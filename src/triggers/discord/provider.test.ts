@@ -260,10 +260,82 @@ describe("Discord Phase 1 trigger provider", () => {
       ],
     );
   });
+
+  it("propagates terminal Discord reaction and notice failures", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const reactionBot = new FailingDiscordBotClient({
+      selfUserId: "900",
+      failReactionEmoji: "✅",
+    });
+    const reactionProvider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: reactionBot,
+    });
+    const match = (await reactionProvider.match(external(project.id, revision.id, event())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    await assert.rejects(async () => {
+      await reactionProvider.onAgentExecutionCompleted!(match.triggerContext, match.outputContext, {
+        status: "succeeded",
+      });
+    }, /discord reaction failed/u);
+    assert.deepEqual(
+      reactionBot.deletedOwnReactions.map((reaction) => reaction.emoji),
+      ["⏳"],
+    );
+
+    const noticeBot = new FailingDiscordBotClient({
+      selfUserId: "900",
+      failMessages: true,
+    });
+    const noticeProvider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: noticeBot,
+    });
+    await assert.rejects(async () => {
+      await noticeProvider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        "boom",
+      );
+    }, /discord message failed/u);
+    assert.deepEqual(
+      noticeBot.reactions.map((reaction) => reaction.emoji),
+      ["❌"],
+    );
+  });
 });
 
 async function activeConfiguration(rawConfiguration = discordConfiguration()) {
   return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
+}
+
+class FailingDiscordBotClient extends MemoryDiscordBotClient {
+  constructor(
+    options: ConstructorParameters<typeof MemoryDiscordBotClient>[0] & {
+      failReactionEmoji?: string;
+      failMessages?: boolean;
+    },
+  ) {
+    super(options);
+    this.failReactionEmoji = options.failReactionEmoji;
+    this.failMessages = options.failMessages ?? false;
+  }
+
+  private readonly failReactionEmoji: string | undefined;
+  private readonly failMessages: boolean;
+
+  override async createReaction(input: Parameters<MemoryDiscordBotClient["createReaction"]>[0]) {
+    if (input.emoji === this.failReactionEmoji) throw new Error("discord reaction failed");
+    await super.createReaction(input);
+  }
+
+  override async sendChannelMessage(
+    input: Parameters<MemoryDiscordBotClient["sendChannelMessage"]>[0],
+  ) {
+    if (this.failMessages) throw new Error("discord message failed");
+    await super.sendChannelMessage(input);
+  }
 }
 
 function discordConfiguration() {

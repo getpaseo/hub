@@ -163,6 +163,52 @@ describe("Slack Phase 1 trigger provider", () => {
     ]);
   });
 
+  it("propagates terminal Slack reaction and notice failures", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const reactionFailure = new RecordingSlackClient({ failAddReaction: "white_check_mark" });
+    const reactionProvider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: reactionFailure,
+    });
+    const match = (await reactionProvider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    await assert.rejects(async () => {
+      await reactionProvider.onAgentExecutionCompleted!(match.triggerContext, match.outputContext, {
+        status: "succeeded",
+      });
+    }, /slack add reaction failed/u);
+    assert.deepEqual(reactionFailure.reactions, [
+      "org-1:T1:remove:hourglass_flowing_sand",
+      "org-1:T1:add:white_check_mark",
+    ]);
+
+    const noticeFailure = new RecordingSlackClient({ failMessages: true });
+    const noticeProvider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: noticeFailure,
+    });
+    await assert.rejects(async () => {
+      await noticeProvider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        "boom",
+      );
+    }, /slack message failed/u);
+    assert.deepEqual(noticeFailure.reactions, [
+      "org-1:T1:remove:eyes",
+      "org-1:T1:remove:hourglass_flowing_sand",
+      "org-1:T1:add:x",
+    ]);
+  });
+
   it("hydrates only routed thread replies and leaves top-level mentions alone", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -334,17 +380,27 @@ class RecordingSlackClient implements SlackBotClient {
   threadReads: string[] = [];
   private readonly threadMessages: SlackThreadMessage[];
 
-  constructor(options: { threadMessages?: SlackThreadMessage[] } = {}) {
+  constructor(
+    private readonly options: {
+      threadMessages?: SlackThreadMessage[];
+      failAddReaction?: string;
+      failMessages?: boolean;
+    } = {},
+  ) {
     this.threadMessages = options.threadMessages ?? [];
   }
 
   sendMessage(input: (typeof this.messages)[number]): Promise<void> {
     this.messages.push(input);
+    if (this.options.failMessages === true)
+      return Promise.reject(new Error("slack message failed"));
     return Promise.resolve();
   }
 
   addReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
     this.reactions.push(`${input.organizationId}:${input.teamId}:add:${input.name}`);
+    if (this.options.failAddReaction === input.name)
+      return Promise.reject(new Error("slack add reaction failed"));
     return Promise.resolve();
   }
 
