@@ -88,7 +88,10 @@ export function createHubRuntime(options: HubRuntimeOptions): HubRuntime {
 }
 
 export function createHubApplication(options: HubRuntimeOptions): HubApplication {
-  const daemons = options.database === null ? null : new ActiveDaemonRegistry(options.database);
+  const daemons =
+    options.database === null
+      ? null
+      : new ActiveDaemonRegistry(options.database, options.daemonClock);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
     return new ProjectConfigurationStore(options.database, projectId);

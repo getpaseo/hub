@@ -948,6 +948,57 @@ describe("daemon enrollment and execution", () => {
     assert.equal((await hub.execution(result.execution.id)).status, "failed");
   });
 
+  it("uses the activity receipt time when processing follows the idle deadline", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+
+    const beforeActivity = await hub.execution(result.execution.id);
+    hub.holdActivityRefresh(result.execution.id);
+    const activity = hub.emitReplacementTurn(result.agentId);
+    await hub.activityRefreshBegins();
+
+    const lateProcessing = hub.advanceDispatchTime(2 * 60_000);
+    hub.releaseActivityRefresh();
+    await Promise.all([activity, lateProcessing]);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.equal(afterActivity.status, "running");
+    assert.equal(
+      afterActivity.idleDeadlineAt?.getTime(),
+      beforeActivity.idleDeadlineAt!.getTime() + 4 * 60_000,
+    );
+  });
+
+  it("does not resurrect activity received at the idle deadline", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+    hub.advanceDispatchClock(60_000);
+
+    hub.holdActivityRefresh(result.execution.id);
+    const activity = hub.emitReplacementTurn(result.agentId);
+    await hub.activityRefreshBegins();
+
+    const timeout = hub.advanceDispatchTime(0);
+    hub.releaseActivityRefresh();
+    await Promise.all([activity, timeout]);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.deepEqual(
+      { status: afterActivity.status, result: afterActivity.result },
+      { status: "failed", result: { status: "failed", reason: "idle_timeout" } },
+    );
+  });
+
   it("interrupts a live workflow execution when the whole-run deadline expires", async () => {
     await hub.connectDaemon();
     const daemonSlug = hub.connectedDaemonSlug();

@@ -56,7 +56,10 @@ export class ActiveDaemonRegistry {
   private readonly offlinePresenceWrites = new Set<Promise<void>>();
   private generation = 0;
 
-  constructor(private readonly database: Pick<Database, "setDaemonPresence">) {}
+  constructor(
+    private readonly database: Pick<Database, "setDaemonPresence">,
+    private readonly clock: DaemonClock = systemDaemonClock,
+  ) {}
 
   accept(daemon: DaemonRecord, socket: WebSocket): void {
     if (!daemon.scopes.includes("hub.execution.*")) {
@@ -206,6 +209,7 @@ export class ActiveDaemonRegistry {
 
   private receive(active: ActiveSocket, raw: string): void {
     if (this.active.get(active.daemon.id)?.generation !== active.generation) return;
+    const receivedAt = this.clock.nowDate().toISOString();
     const value: unknown = JSON.parse(raw);
     const envelope = HubExecutionOutboundSchema.safeParse(value);
     if (!envelope.success) return;
@@ -222,7 +226,7 @@ export class ActiveDaemonRegistry {
         executionId: update.data.payload.executionId,
         agentId: update.data.payload.agentId,
         agent: update.data.payload.agent,
-        timestamp: new Date().toISOString(),
+        timestamp: receivedAt,
       } as const;
       for (const subscriber of this.subscribersFor(active.daemon.id)) void subscriber(event);
       return;
@@ -234,7 +238,7 @@ export class ActiveDaemonRegistry {
       executionId: stream.data.payload.executionId,
       agentId: stream.data.payload.agentId,
       event: stream.data.payload.event,
-      timestamp: new Date().toISOString(),
+      timestamp: receivedAt,
     } as const;
     for (const subscriber of this.subscribersFor(active.daemon.id)) void subscriber(event);
   }
@@ -384,3 +388,7 @@ function disconnectError(request: PendingRequest): Error {
 export interface DaemonClock {
   nowDate(): Date;
 }
+
+const systemDaemonClock: DaemonClock = {
+  nowDate: () => new Date(),
+};

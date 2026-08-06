@@ -396,6 +396,7 @@ describe("durable multi-step workflow engine", () => {
       execution.id,
       new Date("2026-08-06T12:00:30.000Z"),
       now,
+      now,
     );
     assert.equal(refreshed.deadlineAt?.getTime(), hardDeadline?.getTime());
     assert.equal(refreshed.idleDeadlineAt?.toISOString(), "2026-08-06T12:00:30.000Z");

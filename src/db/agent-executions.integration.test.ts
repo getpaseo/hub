@@ -245,6 +245,7 @@ describe("agent execution PostgreSQL repository", () => {
         execution.id,
         new Date("2026-08-05T12:00:08.000Z"),
         now,
+        now,
       );
       const refreshed = (await fixture.database.findAgentExecutionById(execution.id))!;
       assert.equal(refreshed.deadlineAt?.toISOString(), "2026-08-05T12:01:00.000Z");

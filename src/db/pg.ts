@@ -1781,6 +1781,7 @@ class PgDatabase implements Database {
     executionId: string,
     idleDeadlineAt: Date | null,
     observedAt: Date,
+    processedAt: Date,
   ): Promise<AgentExecutionRecord> {
     const client = await this.pool.connect();
     try {
@@ -1792,35 +1793,52 @@ class PgDatabase implements Database {
       const existing = existingRows.rows[0];
       if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
 
+      let workflowRefreshAllowed = true;
       if (existing.workflow_step_run_id !== null) {
         const stepRows = await client.query<WorkflowStepRunRow>(
           `select * from workflow_step_runs where id = $1`,
           [existing.workflow_step_run_id],
         );
-        const step = stepRows.rows[0];
-        if (step !== undefined) {
-          await client.query(`select id from trigger_runs where id = $1 for update`, [
-            step.trigger_run_id,
-          ]);
-          await client.query(`select id from workflow_step_runs where id = $1 for update`, [
-            step.id,
-          ]);
+        const stepCandidate = stepRows.rows[0];
+        if (stepCandidate !== undefined) {
+          const runRows = await client.query<TriggerRunRow>(
+            `select * from trigger_runs where id = $1 for update`,
+            [stepCandidate.trigger_run_id],
+          );
+          const lockedStepRows = await client.query<WorkflowStepRunRow>(
+            `select * from workflow_step_runs where id = $1 for update`,
+            [stepCandidate.id],
+          );
+          const step = lockedStepRows.rows[0];
+          const run = runRows.rows[0];
+          workflowRefreshAllowed =
+            step !== undefined &&
+            step.status === "running" &&
+            run !== undefined &&
+            run.status === "running" &&
+            (run.deadline_at === null || run.deadline_at > processedAt);
+        } else {
+          workflowRefreshAllowed = false;
         }
       }
 
-      const rows = await client.query<AgentExecutionRow>(
-        `update agent_executions
-         set idle_deadline_at = case
-           when $2::timestamptz is null then null
-           when deadline_at is null then $2::timestamptz
-           else least(deadline_at, $2::timestamptz)
-         end
-         where id = $1 and status in ('spawning', 'running')
-           and ($3::timestamptz is null or deadline_at is null or deadline_at > $3)
-         returning *`,
-        [executionId, idleDeadlineAt, observedAt],
-      );
-      const row = rows.rows[0];
+      let row: AgentExecutionRow | undefined;
+      if (workflowRefreshAllowed) {
+        const rows = await client.query<AgentExecutionRow>(
+          `update agent_executions
+           set idle_deadline_at = case
+             when $2::timestamptz is null then null
+             when deadline_at is null then $2::timestamptz
+             else least(deadline_at, $2::timestamptz)
+           end
+           where id = $1 and status in ('spawning', 'running')
+             and ($3::timestamptz is null or deadline_at is null or deadline_at > $3)
+             and (idle_deadline_at is null or idle_deadline_at > $4)
+           returning *`,
+          [executionId, idleDeadlineAt, processedAt, observedAt],
+        );
+        row = rows.rows[0];
+      }
       if (row !== undefined && row.workflow_step_run_id !== null) {
         await client.query(
           `update workflow_step_runs

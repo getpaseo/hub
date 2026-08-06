@@ -556,25 +556,30 @@ export class DaemonDispatchLifecycle {
     return connection.createAgent(await this.buildCreateAgentOptions(intent, hubExecutionEnv));
   }
 
-  async handleAgentStreamEvent(executionId: string, event: DaemonAgentStreamEvent): Promise<void> {
+  async handleAgentStreamEvent(
+    executionId: string,
+    event: DaemonAgentStreamEvent,
+    observedAt: Date,
+  ): Promise<void> {
     switch (event.type) {
       case "thread_started":
-        await this.startAgentExecution(executionId);
-        await this.refreshAgentIdleDeadline(executionId);
+        if (await this.refreshAgentIdleDeadline(executionId, observedAt)) {
+          await this.startAgentExecution(executionId);
+        }
         return;
       case "timeline":
-        await this.refreshAgentIdleDeadline(executionId);
+        await this.refreshAgentIdleDeadline(executionId, observedAt);
         return;
       case "turn_completed":
       case "turn_failed":
       case "turn_canceled":
-        await this.refreshAgentIdleDeadline(executionId);
+        await this.refreshAgentIdleDeadline(executionId, observedAt);
         return;
       case "permission_requested":
       case "permission_resolved":
       case "turn_started":
       case "attention_required":
-        await this.refreshAgentIdleDeadline(executionId);
+        await this.refreshAgentIdleDeadline(executionId, observedAt);
         return;
     }
 
@@ -587,19 +592,25 @@ export class DaemonDispatchLifecycle {
     event: DaemonEvent,
   ): Promise<void> {
     if (event.type === "agent_stream") {
-      await this.handleAgentStreamEvent(executionId, event.event);
+      await this.handleAgentStreamEvent(executionId, event.event, new Date(event.timestamp));
       return;
     }
     if (isInterruptedAgentState(event.agent)) {
       await this.options.database.attachAgentToExecution(executionId, daemonId, event.agentId);
     }
-    await this.handleAgentStatus(executionId, event.agent.status, "live");
+    await this.handleAgentStatus(
+      executionId,
+      event.agent.status,
+      "live",
+      new Date(event.timestamp),
+    );
   }
 
   private async handleAgentStatus(
     executionId: string,
     status: AgentStatus,
     source: "live" | "restore",
+    observedAt: Date,
   ): Promise<void> {
     if (status === "error" || status === "closed") {
       const failed = await this.failAgentExecution(executionId, "agent_interrupted");
@@ -613,61 +624,111 @@ export class DaemonDispatchLifecycle {
 
     let execution = await this.options.database.findAgentExecutionById(executionId);
     if (execution === undefined || isTerminalExecutionStatus(execution.status)) return;
+    const processedAt = new Date(this.now());
+    if (
+      await this.expireIfDaemonEventDeadlineElapsed(executionId, execution, observedAt, processedAt)
+    )
+      return;
     if ((status === "running" || status === "idle") && execution.status === "spawning") {
       await this.startAgentExecution(executionId);
       execution = await this.options.database.findAgentExecutionById(executionId);
       if (execution === undefined || isTerminalExecutionStatus(execution.status)) return;
     }
 
-    const workflowExecution = execution.workflowStepRunId !== null;
-    let idleDeadlineAt: Date | null = workflowExecution ? execution.idleDeadlineAt : null;
-    if (status === "idle") {
-      idleDeadlineAt =
-        source === "restore" && execution.idleDeadlineAt !== null
-          ? execution.idleDeadlineAt
-          : new Date(
-              Math.min(
-                this.now() +
-                  (execution.launchIntent?.idleTimeoutMs ?? DEFAULT_AGENT_IDLE_TIMEOUT_MS),
-                execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY,
-              ),
-            );
-    }
+    const idleDeadlineAt = this.idleDeadlineForStatus(execution, status, source, observedAt);
     const updated = await this.options.database.setAgentExecutionIdleDeadline(
       executionId,
       idleDeadlineAt,
-      new Date(this.now()),
+      observedAt,
+      processedAt,
     );
-    this.armExecutionDeadline(updated);
+    await this.armOrExpireExecution(executionId, updated, processedAt);
   }
 
-  private async refreshAgentIdleDeadline(executionId: string): Promise<void> {
-    const execution = await this.options.database.findAgentExecutionById(executionId);
+  private async expireIfDaemonEventDeadlineElapsed(
+    executionId: string,
+    execution: AgentExecutionRecord,
+    observedAt: Date,
+    processedAt: Date,
+  ): Promise<boolean> {
     if (
-      execution === undefined ||
-      isTerminalExecutionStatus(execution.status) ||
-      execution.idleDeadlineAt === null
+      (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= processedAt.getTime()) ||
+      (execution.idleDeadlineAt !== null &&
+        execution.idleDeadlineAt.getTime() <= observedAt.getTime())
     ) {
+      await this.expireExecutionAtCurrentDeadline(executionId, false);
+      return true;
+    }
+    return false;
+  }
+
+  private idleDeadlineForStatus(
+    execution: AgentExecutionRecord,
+    status: AgentStatus,
+    source: "live" | "restore",
+    observedAt: Date,
+  ): Date | null {
+    if (status === "idle") {
+      if (source === "restore" && execution.idleDeadlineAt !== null) {
+        return execution.idleDeadlineAt;
+      }
+      return new Date(
+        Math.min(
+          observedAt.getTime() +
+            (execution.launchIntent?.idleTimeoutMs ?? DEFAULT_AGENT_IDLE_TIMEOUT_MS),
+          execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY,
+        ),
+      );
+    }
+    return execution.workflowStepRunId === null ? null : execution.idleDeadlineAt;
+  }
+
+  private async armOrExpireExecution(
+    executionId: string,
+    execution: AgentExecutionRecord,
+    processedAt: Date,
+  ): Promise<void> {
+    const deadline = nextExecutionDeadline(execution);
+    if (deadline !== undefined && deadline.at.getTime() <= processedAt.getTime()) {
+      await this.expireExecutionAtCurrentDeadline(executionId, false);
       return;
     }
-    const observedAt = this.now();
-    if (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= observedAt) {
-      await this.expireExecutionAtCurrentDeadline(executionId);
-      return;
+    this.armExecutionDeadline(execution);
+  }
+
+  private async refreshAgentIdleDeadline(executionId: string, observedAt: Date): Promise<boolean> {
+    const execution = await this.options.database.findAgentExecutionById(executionId);
+    if (execution === undefined || isTerminalExecutionStatus(execution.status)) {
+      return false;
+    }
+    const processedAt = new Date(this.now());
+    if (
+      (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= processedAt.getTime()) ||
+      (execution.idleDeadlineAt !== null &&
+        execution.idleDeadlineAt.getTime() <= observedAt.getTime())
+    ) {
+      await this.expireExecutionAtCurrentDeadline(executionId, false);
+      return false;
+    }
+    if (execution.idleDeadlineAt === null) {
+      return true;
     }
     const idleTimeoutMs = execution.launchIntent?.idleTimeoutMs ?? DEFAULT_AGENT_IDLE_TIMEOUT_MS;
     const idleDeadlineAt = new Date(
       Math.min(
-        observedAt + idleTimeoutMs,
+        observedAt.getTime() + idleTimeoutMs,
         execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY,
       ),
     );
     const updated = await this.options.database.setAgentExecutionIdleDeadline(
       executionId,
       idleDeadlineAt,
-      new Date(observedAt),
+      observedAt,
+      processedAt,
     );
-    this.armExecutionDeadline(updated);
+    if (isTerminalExecutionStatus(updated.status)) return false;
+    await this.armOrExpireExecution(executionId, updated, processedAt);
+    return true;
   }
 
   async completeAgentExecutionFromCallback(input: {
@@ -861,7 +922,8 @@ export class DaemonDispatchLifecycle {
       await this.startAgentExecution(executionId);
       return;
     }
-    await this.handleAgentStatus(executionId, agent.state.status, "restore");
+    const observedAt = new Date(this.now());
+    await this.handleAgentStatus(executionId, agent.state.status, "restore", observedAt);
   }
 
   async failPendingExecutionsForDisconnectedMachine(
@@ -1490,7 +1552,13 @@ export class DaemonDispatchLifecycle {
     this.recoveredSubscriptions.delete(executionId);
   }
 
-  private async expireExecutionAtCurrentDeadline(executionId: string): Promise<boolean> {
+  private async expireExecutionAtCurrentDeadline(
+    executionId: string,
+    waitForPendingStreamHandlers = true,
+  ): Promise<boolean> {
+    if (waitForPendingStreamHandlers) {
+      await this.waitForPendingStreamHandlers(executionId);
+    }
     const execution = await this.options.database.findAgentExecutionById(executionId);
     if (execution === undefined || isTerminalExecutionStatus(execution.status)) return false;
     const deadline = nextExecutionDeadline(execution);

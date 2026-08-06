@@ -1289,11 +1289,29 @@ class MemoryDatabase implements Database {
     executionId: string,
     idleDeadlineAt: Date | null,
     observedAt: Date,
+    processedAt: Date,
   ) {
     const execution = this.readAgentExecution(executionId);
     if (isTerminalAgentExecutionStatus(execution.status)) return execution;
-    if (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= observedAt.getTime()) {
+    if (
+      (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= processedAt.getTime()) ||
+      (execution.idleDeadlineAt !== null &&
+        execution.idleDeadlineAt.getTime() <= observedAt.getTime())
+    ) {
       return execution;
+    }
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      const run = step === undefined ? undefined : this.triggerRuns.get(step.triggerRunId);
+      if (
+        step === undefined ||
+        step.status !== "running" ||
+        run === undefined ||
+        run.status !== "running" ||
+        run.deadlineAt.getTime() <= processedAt.getTime()
+      ) {
+        return execution;
+      }
     }
     const boundedIdleDeadlineAt = capIdleDeadline(idleDeadlineAt, execution.deadlineAt);
     const updated = { ...execution, idleDeadlineAt: boundedIdleDeadlineAt };

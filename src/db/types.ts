@@ -789,6 +789,7 @@ export interface Database {
     executionId: string,
     idleDeadlineAt: Date | null,
     observedAt: Date,
+    processedAt: Date,
   ): Promise<AgentExecutionRecord>;
   prepareAgentExecutionForDispatch(
     executionId: string,

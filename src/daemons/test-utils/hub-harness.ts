@@ -105,6 +105,15 @@ export class HubHarness {
         release(): void;
       }
     | undefined;
+  private activityRefreshGate:
+    | {
+        executionId: string;
+        reached: Promise<void>;
+        markReached(): void;
+        released: Promise<void>;
+        release(): void;
+      }
+    | undefined;
   private materializations = 0;
   private acceptanceExecutionId: string | undefined;
   private failureHooks = 0;
@@ -511,6 +520,9 @@ export class HubHarness {
   advanceDispatchTime(ms: number): Promise<void> {
     return this.clock.advanceBy(ms);
   }
+  advanceDispatchClock(ms: number): void {
+    this.clock.advanceClockBy(ms);
+  }
 
   createdAgent() {
     return this.requireDaemon().createdAgent();
@@ -543,6 +555,21 @@ export class HubHarness {
     await this.requireDaemon().starts(agentId);
   }
   async beginReplacementTurn(agentId: string): Promise<void> {
+    const execution = (await this.requireDatabase().findPendingAgentExecutions()).find(
+      (candidate) => candidate.daemonAgentId === agentId,
+    );
+    if (execution === undefined) throw new Error("Replacement execution does not exist");
+    const previousIdleDeadline = execution.idleDeadlineAt?.getTime() ?? null;
+    await this.requireDaemon().startsTurn(agentId);
+    if (previousIdleDeadline === null) return;
+    await waitFor(async () => {
+      const current = await this.execution(execution.id);
+      return (
+        current.idleDeadlineAt !== null && current.idleDeadlineAt.getTime() !== previousIdleDeadline
+      );
+    });
+  }
+  async emitReplacementTurn(agentId: string): Promise<void> {
     await this.requireDaemon().startsTurn(agentId);
   }
   async completeCurrentTurn(agentId: string): Promise<void> {
@@ -621,6 +648,29 @@ export class HubHarness {
   releaseRecoveryRefresh(): void {
     this.recoveryRefreshGate?.release();
     this.recoveryRefreshGate = undefined;
+  }
+  holdActivityRefresh(executionId: string): void {
+    let markReached!: () => void;
+    let release!: () => void;
+    this.activityRefreshGate = {
+      executionId,
+      reached: new Promise<void>((resolve) => {
+        markReached = resolve;
+      }),
+      markReached,
+      released: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release,
+    };
+  }
+  activityRefreshBegins(): Promise<void> {
+    if (this.activityRefreshGate === undefined) throw new Error("Activity refresh is not held");
+    return this.activityRefreshGate.reached;
+  }
+  releaseActivityRefresh(): void {
+    this.activityRefreshGate?.release();
+    this.activityRefreshGate = undefined;
   }
   async terminateExecutionDirectly(executionId: string): Promise<void> {
     const transition = await this.requireDatabase().transitionAgentExecution(
@@ -1212,6 +1262,11 @@ export class HubHarness {
               gate.markReached();
               await gate.released;
             }
+            const activityGate = this.activityRefreshGate;
+            if (activityGate?.executionId === executionId) {
+              activityGate.markReached();
+              await activityGate.released;
+            }
             return target.findAgentExecutionById(executionId);
           };
         }
@@ -1318,13 +1373,16 @@ class HubClock implements DaemonClock, ExecutionDeadlineClock {
   nowDate(): Date {
     return new Date(this.nowMs);
   }
+  advanceClockBy(ms: number): void {
+    this.nowMs += ms;
+  }
   schedule(callback: () => Promise<void>, delayMs: number): () => void {
     const id = this.nextId++;
     this.timers.set(id, { dueAt: this.nowMs + delayMs, callback });
     return () => this.timers.delete(id);
   }
   async advanceBy(ms: number): Promise<void> {
-    this.nowMs += ms;
+    this.advanceClockBy(ms);
     for (const [id, timer] of this.timers) {
       if (timer.dueAt <= this.nowMs) {
         this.timers.delete(id);
