@@ -13,8 +13,60 @@ import type {
   MachineRecord,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
+  ProviderEventReceiptSummary,
   ProviderEventReceiptRecord,
 } from "./types.js";
+
+type ProviderEventReceiptSummaryRow = Pick<
+  ProviderEventReceiptRow,
+  | "id"
+  | "organization_id"
+  | "provider"
+  | "connection_id"
+  | "resource_id"
+  | "delivery_id"
+  | "signature_hash"
+  | "source"
+  | "repo"
+  | "received_at"
+  | "dropped_reason"
+>;
+
+export function toProviderEventReceiptSummary(
+  row: ProviderEventReceiptSummaryRow,
+): ProviderEventReceiptSummary {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    provider: row.provider,
+    connectionId: row.connection_id,
+    resourceId: row.resource_id,
+    deliveryId: row.delivery_id,
+    signatureHash: row.signature_hash,
+    source: row.source,
+    repo: row.repo,
+    receivedAt: row.received_at,
+    droppedReason: row.dropped_reason,
+  };
+}
+
+export function toProviderEventReceiptRecordSummary(
+  receipt: ProviderEventReceiptRecord,
+): ProviderEventReceiptSummary {
+  return {
+    id: receipt.id,
+    organizationId: receipt.organizationId,
+    provider: receipt.provider,
+    connectionId: receipt.connectionId,
+    resourceId: receipt.resourceId,
+    deliveryId: receipt.deliveryId,
+    signatureHash: receipt.signatureHash,
+    source: receipt.source,
+    repo: receipt.repo,
+    receivedAt: receipt.receivedAt,
+    droppedReason: receipt.droppedReason,
+  };
+}
 
 export function toProviderEventReceiptRecord(
   row: ProviderEventReceiptRow,

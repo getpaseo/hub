@@ -9,6 +9,7 @@ import {
 } from "../configuration/github-sync.js";
 import type {
   Database,
+  ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
   ProviderEventReceiptRecord,
 } from "../db/types.js";
@@ -100,7 +101,7 @@ export class ProjectDashboard {
         fullName: repository.fullName,
         defaultBranch: repository.defaultBranch,
       })),
-      activity: activity.map(activityRunView),
+      activity: activity.map(activityRunListView),
     };
   }
 
@@ -409,6 +410,48 @@ function activityRunView(activity: ProjectActivityRunRecord) {
       failureReason: step.failureReason,
       completedAt: step.completedAt?.toISOString() ?? null,
     })),
+  };
+  if (run.outcome === "rejected") {
+    return {
+      ...base,
+      outcome: run.outcome,
+      status: run.status,
+      deadlineAt: null,
+      deadlineKind: null,
+      failureReason: formatInvocationRejection(run.rejection),
+      rejectionReason: formatInvocationRejection(run.rejection),
+    };
+  }
+  return {
+    ...base,
+    outcome: run.outcome,
+    status: run.status,
+    deadlineAt: run.deadlineAt.toISOString(),
+    deadlineKind: run.deadlineKind,
+    failureReason: run.failureReason,
+    rejectionReason: null,
+  };
+}
+
+function activityRunListView(activity: ProjectActivityRunListRecord) {
+  const { run, receipt } = activity;
+  const base = {
+    id: run.id,
+    providerEventReceiptId: run.providerEventReceiptId,
+    provider: receipt.provider,
+    deliveryId: receipt.deliveryId,
+    source: receipt.source,
+    repo: receipt.repo,
+    receivedAt: receipt.receivedAt.toISOString(),
+    configuredTriggerName: run.configuredTriggerName,
+    rawMessage: run.rawPrompt,
+    cleanPrompt: run.prompt,
+    inputs: jsonValue(run.inputs),
+    values: jsonValue(run.values),
+    triggerContext: jsonValue(run.triggerContext),
+    outputContext: jsonValue(run.outputContext),
+    createdAt: run.createdAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
   };
   if (run.outcome === "rejected") {
     return {

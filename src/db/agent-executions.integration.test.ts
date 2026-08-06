@@ -862,6 +862,133 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
+  it("replays accepted and rejected runs by receipt, project, and trigger identity", async () => {
+    const fixture = await executionFixture(postgres);
+    const client = new Client({ connectionString: fixture.databaseUrl });
+    const projectTwoId = "00000000-0000-0000-0000-000000000002";
+    try {
+      await client.connect();
+      await client.query(
+        `insert into projects (id, organization_id, name, slug)
+         values ($1, 'org-1', 'Second', 'second')`,
+        [projectTwoId],
+      );
+      const projectTwoRevision = await fixture.database.insertProjectConfigurationRevision({
+        projectId: projectTwoId,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: {},
+        contentHash: "project-two-replay",
+      });
+      const receipt = await fixture.database.persistManualEvent({
+        organizationId: "org-1",
+        projectId: fixture.execution.projectId,
+        deliveryId: randomUUID(),
+        source: "manual.replay",
+        payload: { replay: true },
+        receivedAt: new Date("2026-08-05T12:00:00.000Z"),
+      });
+      if (receipt.status !== "accepted") throw new Error("workflow receipt was not accepted");
+      const acceptedInput = (projectId: string, revisionId: string, stepIds: string[]) => ({
+        organizationId: "org-1",
+        projectId,
+        configurationRevisionId: revisionId,
+        providerEventReceiptId: receipt.event.providerEventReceiptId,
+        configuredTriggerName: "shared-trigger",
+        rawPrompt: "run",
+        prompt: "run",
+        inputs: {},
+        triggerContext: {},
+        outputContext: {},
+        deadlineAt: new Date("2026-08-05T13:00:00.000Z"),
+        stepIds,
+        createdAt: new Date("2026-08-05T12:00:00.000Z"),
+      });
+      const first = await fixture.database.createAcceptedTriggerRun(
+        acceptedInput(fixture.execution.projectId, fixture.execution.configurationRevisionId, [
+          "project-one-first",
+          "project-one-second",
+        ]),
+      );
+      const second = await fixture.database.createAcceptedTriggerRun(
+        acceptedInput(projectTwoId, projectTwoRevision.id, [
+          "project-two-first",
+          "project-two-second",
+        ]),
+      );
+      const firstReplay = await fixture.database.createAcceptedTriggerRun(
+        acceptedInput(fixture.execution.projectId, fixture.execution.configurationRevisionId, [
+          "ignored-first",
+          "ignored-second",
+        ]),
+      );
+      const secondReplay = await fixture.database.createAcceptedTriggerRun(
+        acceptedInput(projectTwoId, projectTwoRevision.id, ["ignored-first", "ignored-second"]),
+      );
+      assert.equal(firstReplay.created, false);
+      assert.equal(secondReplay.created, false);
+      assert.equal(firstReplay.run.id, first.run.id);
+      assert.equal(secondReplay.run.id, second.run.id);
+      assert.notEqual(first.run.id, second.run.id);
+      for (const [projectId, runId, stepIds] of [
+        [fixture.execution.projectId, first.run.id, ["project-one-first", "project-one-second"]],
+        [projectTwoId, second.run.id, ["project-two-first", "project-two-second"]],
+      ] as const) {
+        const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(runId);
+        assert.deepEqual(
+          steps.map((step) => [step.triggerRunId, step.stepId, step.ordinal]),
+          stepIds.map((stepId, ordinal) => [runId, stepId, ordinal]),
+        );
+        const wakeup = await client.query(
+          "select trigger_run_id from workflow_wakeups where trigger_run_id = $1",
+          [runId],
+        );
+        assert.deepEqual(wakeup.rows, [{ trigger_run_id: runId }]);
+        assert.equal((await fixture.database.findTriggerRunById(runId))?.projectId, projectId);
+      }
+
+      const rejection = {
+        code: "invalid_choice" as const,
+        inputName: "repo",
+        value: "unknown",
+        choices: ["hub"],
+      };
+      const rejectedInput = (projectId: string, revisionId: string) => ({
+        organizationId: "org-1",
+        projectId,
+        configurationRevisionId: revisionId,
+        providerEventReceiptId: receipt.event.providerEventReceiptId,
+        configuredTriggerName: "shared-rejected-trigger",
+        rawPrompt: "repo=unknown",
+        prompt: "",
+        inputs: {},
+        triggerContext: {},
+        outputContext: {},
+        rejection,
+        createdAt: new Date("2026-08-05T12:00:00.000Z"),
+      });
+      const rejectedFirst = await fixture.database.createRejectedTriggerRun(
+        rejectedInput(fixture.execution.projectId, fixture.execution.configurationRevisionId),
+      );
+      const rejectedSecond = await fixture.database.createRejectedTriggerRun(
+        rejectedInput(projectTwoId, projectTwoRevision.id),
+      );
+      const rejectedFirstReplay = await fixture.database.createRejectedTriggerRun(
+        rejectedInput(fixture.execution.projectId, fixture.execution.configurationRevisionId),
+      );
+      const rejectedSecondReplay = await fixture.database.createRejectedTriggerRun(
+        rejectedInput(projectTwoId, projectTwoRevision.id),
+      );
+      assert.equal(rejectedFirstReplay.run.id, rejectedFirst.run.id);
+      assert.equal(rejectedSecondReplay.run.id, rejectedSecond.run.id);
+      assert.equal(rejectedFirstReplay.created, false);
+      assert.equal(rejectedSecondReplay.created, false);
+    } finally {
+      await client.end();
+      await fixture.database.close();
+    }
+  });
+
   it("atomically enforces the configured reply limit under concurrent callers", async () => {
     const fixture = await executionFixture(postgres);
     try {
@@ -1169,7 +1296,7 @@ function toDurableEvent(event: DurableProviderEvent): DurableProviderEvent {
 
 async function executionFixture(
   postgres: StartedPostgreSqlContainer,
-): Promise<{ database: Database; execution: AgentExecutionRecord }> {
+): Promise<{ database: Database; execution: AgentExecutionRecord; databaseUrl: string }> {
   const url = new URL(postgres.getConnectionUri());
   url.pathname = `/execution_finality_${randomUUID().replaceAll("-", "")}`;
   const database = await createDatabase(url.toString());
@@ -1210,5 +1337,5 @@ async function executionFixture(
     configurationRevisionId: config.id,
   });
   await database.transitionAgentExecution(execution.id, "running");
-  return { database, execution };
+  return { database, execution, databaseUrl: url.toString() };
 }

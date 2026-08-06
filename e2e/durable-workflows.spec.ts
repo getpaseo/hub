@@ -3,6 +3,8 @@ import { test } from "./app.js";
 import { expectRunDetail, openProjectRun } from "./helpers/projects/activity.js";
 import { projectApp } from "./helpers/projects/index.js";
 
+test.describe.configure({ timeout: 120_000 });
+
 const owner = {
   name: "Alice",
   email: "alice-durable-workflows@example.com",

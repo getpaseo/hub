@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import {
   compileHubConfig,
   compiledConfigurationHash,
@@ -17,6 +17,42 @@ import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
+  it("logs an initial recovery rejection and retries on the next interval", async () => {
+    vi.useFakeTimers();
+    const fixture = await workflowFixture();
+    const recovery = vi
+      .spyOn(fixture.database, "recoverWorkflowDeadlines")
+      .mockRejectedValueOnce(new Error("recovery unavailable"));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    const { engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+      workerIntervalMs: 10,
+      dispatchLaunchMachineIntent: async (intent) => {
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+    try {
+      engine.start();
+      assert.equal(recovery.mock.calls.length, 1);
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10);
+      assert.equal(recovery.mock.calls.length, 2);
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await engine.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["succeeded", "succeeded"],
     ["failed", "failed"],

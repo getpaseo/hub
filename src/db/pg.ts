@@ -17,6 +17,7 @@ import {
   toMachineRecord,
   toProjectConfigurationRevisionRecord,
   toProjectRecord,
+  toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
@@ -80,6 +81,7 @@ import type {
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
+  ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
 } from "./types.js";
 
@@ -473,9 +475,9 @@ class PgDatabase implements Database {
       if (run === undefined) {
         const existing = await client.query<TriggerRunRow>(
           `select * from trigger_runs
-           where provider_event_receipt_id = $1 and configured_trigger_name = $2
+           where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-          [input.providerEventReceiptId, input.configuredTriggerName],
+          [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
         );
         run = existing.rows[0];
       }
@@ -545,9 +547,9 @@ class PgDatabase implements Database {
       if (run === undefined) {
         const existing = await client.query<TriggerRunRow>(
           `select * from trigger_runs
-           where provider_event_receipt_id = $1 and configured_trigger_name = $2
+           where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-          [input.providerEventReceiptId, input.configuredTriggerName],
+          [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
         );
         run = existing.rows[0];
       }
@@ -1850,13 +1852,12 @@ class PgDatabase implements Database {
   async listProjectActivityRuns(
     projectId: string,
     limit: number,
-  ): Promise<ProjectActivityRunRecord[]> {
-    const rows = await query<ProjectActivityRunRow>(
+  ): Promise<ProjectActivityRunListRecord[]> {
+    const rows = await query<ProjectActivityRunListRow>(
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
               receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
-              receipts.payload, receipts.received_at, receipts.dropped_reason,
-              receipts.accepted_routes
+              receipts.received_at, receipts.dropped_reason
        from trigger_runs runs
        join provider_event_receipts receipts
          on receipts.id = runs.provider_event_receipt_id
@@ -1866,7 +1867,7 @@ class PgDatabase implements Database {
        limit $2`,
       [projectId, limit],
     );
-    return Promise.all(rows.rows.map((row) => this.toProjectActivityRun(row)));
+    return rows.rows.map((row) => this.toProjectActivityRunList(row));
   }
 
   async findProjectActivityRun(projectId: string, runId: string) {
@@ -1900,6 +1901,13 @@ class PgDatabase implements Database {
       run: toTriggerRunRecord(row),
       receipt: toProviderEventReceiptRecord(row),
       steps: steps.rows.map(toWorkflowStepRunRecord),
+    };
+  }
+
+  private toProjectActivityRunList(row: ProjectActivityRunListRow): ProjectActivityRunListRecord {
+    return {
+      run: toTriggerRunRecord(row),
+      receipt: toProviderEventReceiptSummary(row),
     };
   }
 
@@ -3402,6 +3410,18 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   received_at: Date;
   dropped_reason: string | null;
   accepted_routes: unknown;
+}
+
+interface ProjectActivityRunListRow extends TriggerRunRow {
+  provider: ProviderEventReceiptRecord["provider"];
+  connection_id: string | null;
+  resource_id: string | null;
+  delivery_id: string;
+  signature_hash: string | null;
+  source: string;
+  repo: string | null;
+  received_at: Date;
+  dropped_reason: string | null;
 }
 
 interface WorkflowStepRunRow extends QueryResultRow {

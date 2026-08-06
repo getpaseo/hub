@@ -79,9 +79,15 @@ export class DurableWorkflowEngine {
   start(): void {
     this.stopped = false;
     if (this.workerTimer !== undefined) return;
-    this.workerTimer = setInterval(() => void this.processAvailable(), this.workerIntervalMs);
+    this.workerTimer = setInterval(() => this.startProcessing(), this.workerIntervalMs);
     this.workerTimer.unref();
-    void this.processAvailable();
+    this.startProcessing();
+  }
+
+  private startProcessing(): void {
+    void this.processAvailable().catch((error: unknown) => {
+      this.logger.error({ err: error }, "durable workflow worker recovery failed");
+    });
   }
 
   async stop(): Promise<void> {

@@ -20,6 +20,20 @@ export interface ProviderEventReceiptRecord {
   acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
 }
 
+export interface ProviderEventReceiptSummary {
+  id: string;
+  organizationId: string;
+  provider: ProviderEventReceiptRecord["provider"];
+  connectionId: string | null;
+  resourceId: string | null;
+  deliveryId: string;
+  signatureHash: string | null;
+  source: string;
+  repo: string | null;
+  receivedAt: Date;
+  droppedReason: string | null;
+}
+
 export interface ProviderEventRouteSnapshot {
   projectId: string;
   configurationRevisionId: string;
@@ -558,6 +572,11 @@ export interface ProjectActivityRunRecord {
   steps: readonly WorkflowStepRunRecord[];
 }
 
+export interface ProjectActivityRunListRecord {
+  run: TriggerRunRecord;
+  receipt: ProviderEventReceiptSummary;
+}
+
 export interface WorkflowStepRunRecord {
   id: string;
   triggerRunId: string;
@@ -752,7 +771,10 @@ export interface Database {
     providerEventReceiptId: string,
   ): Promise<TriggerRunRecord[]>;
   listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
-  listProjectActivityRuns(projectId: string, limit: number): Promise<ProjectActivityRunRecord[]>;
+  listProjectActivityRuns(
+    projectId: string,
+    limit: number,
+  ): Promise<ProjectActivityRunListRecord[]>;
   findProjectActivityRun(
     projectId: string,
     runId: string,

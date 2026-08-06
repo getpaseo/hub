@@ -67,8 +67,9 @@ import type {
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
-  ProjectActivityRunRecord,
+  ProjectActivityRunListRecord,
 } from "./types.js";
+import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
 export interface MemoryDatabaseOptions {
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
@@ -104,7 +105,10 @@ class MemoryDatabase implements Database {
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
-  private readonly triggerRunIdsByProviderEventReceipt = new Map<string, Map<string, string>>();
+  private readonly triggerRunIdsByProviderEventReceipt = new Map<
+    string,
+    Map<string, Map<string, string>>
+  >();
   private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
   private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
   private readonly attachments = new Map<string, AttachmentRecord>();
@@ -144,9 +148,10 @@ class MemoryDatabase implements Database {
   async createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
-    const triggerRuns =
+    const projectRuns =
       this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
-      new Map<string, string>();
+      new Map<string, Map<string, string>>();
+    const triggerRuns = projectRuns.get(input.projectId) ?? new Map<string, string>();
     const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
       const existing = this.triggerRuns.get(existingId);
@@ -179,7 +184,8 @@ class MemoryDatabase implements Database {
     };
     this.triggerRuns.set(run.id, run);
     triggerRuns.set(input.configuredTriggerName, run.id);
-    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, triggerRuns);
+    projectRuns.set(input.projectId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, projectRuns);
     for (const [ordinal, stepId] of input.stepIds.entries()) {
       const step: WorkflowStepRunRecord = {
         id: randomUUID(),
@@ -210,9 +216,10 @@ class MemoryDatabase implements Database {
   async createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
-    const triggerRuns =
+    const projectRuns =
       this.triggerRunIdsByProviderEventReceipt.get(input.providerEventReceiptId) ??
-      new Map<string, string>();
+      new Map<string, Map<string, string>>();
+    const triggerRuns = projectRuns.get(input.projectId) ?? new Map<string, string>();
     const existingId = triggerRuns.get(input.configuredTriggerName);
     if (existingId !== undefined) {
       const existing = this.triggerRuns.get(existingId);
@@ -243,7 +250,8 @@ class MemoryDatabase implements Database {
     };
     this.triggerRuns.set(run.id, run);
     triggerRuns.set(input.configuredTriggerName, run.id);
-    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, triggerRuns);
+    projectRuns.set(input.projectId, triggerRuns);
+    this.triggerRunIdsByProviderEventReceipt.set(input.providerEventReceiptId, projectRuns);
     return { run, created: true };
   }
 
@@ -252,9 +260,14 @@ class MemoryDatabase implements Database {
   }
 
   async findTriggerRunsByProviderEventReceiptId(providerEventReceiptId: string) {
-    return [
-      ...(this.triggerRunIdsByProviderEventReceipt.get(providerEventReceiptId)?.values() ?? []),
-    ]
+    const projectRuns = this.triggerRunIdsByProviderEventReceipt.get(providerEventReceiptId);
+    const ids =
+      projectRuns === undefined
+        ? []
+        : Array.from(projectRuns.values()).flatMap((triggerRuns) =>
+            Array.from(triggerRuns.values()),
+          );
+    return ids
       .map((id) => this.triggerRuns.get(id))
       .filter((run): run is TriggerRunRecord => run !== undefined)
       .sort(
@@ -1461,11 +1474,11 @@ class MemoryDatabase implements Database {
   async listProjectActivityRuns(
     projectId: string,
     limit: number,
-  ): Promise<ProjectActivityRunRecord[]> {
+  ): Promise<ProjectActivityRunListRecord[]> {
     return (await this.listTriggerRunsForProject(projectId, limit)).flatMap((run) => {
       const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
       if (receipt === undefined) return [];
-      return [{ run, receipt, steps: this.listSteps(run.id) }];
+      return [{ run, receipt: toProviderEventReceiptRecordSummary(receipt) }];
     });
   }
 
