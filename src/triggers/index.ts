@@ -3,6 +3,7 @@ import type { WorktreeTarget } from "../config/index.js";
 import type { InvocationParseResult } from "./invocation.js";
 
 export interface ExternalTrigger {
+  providerEventReceiptId: string;
   organizationId: string;
   projectId: string;
   source: string;

@@ -25,7 +25,11 @@ export async function refreshConnections(
 }
 
 export function hasProviderBinding(status: ProviderConnectionStatus): boolean {
-  return status.status === "connected" || status.status === "suspended";
+  return (
+    status.status === "connected" ||
+    status.status === "suspended" ||
+    status.status === "requiresReauthorization"
+  );
 }
 
 export function providerBindingDetail(
@@ -34,5 +38,7 @@ export function providerBindingDetail(
 ): string | undefined {
   if (!hasProviderBinding(status)) return undefined;
   const name = PROVIDER_NAMES[provider];
-  return status.status === "suspended" ? `${name} suspended` : name;
+  if (status.status === "suspended") return `${name} suspended`;
+  if (status.status === "requiresReauthorization") return `${name} reauthorization required`;
+  return name;
 }

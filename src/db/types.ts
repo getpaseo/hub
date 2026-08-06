@@ -19,6 +19,34 @@ export interface ProviderEventReceiptRecord {
   droppedReason: string | null;
 }
 
+export type AttachmentProvider = "slack" | "discord";
+
+export interface AttachmentRecord {
+  id: string;
+  providerEventReceiptId: string;
+  organizationId: string;
+  connectionId: string;
+  provider: AttachmentProvider;
+  sourceId: string;
+  locator: unknown;
+  filename: string;
+  contentType: string | null;
+  byteSize: number | null;
+  createdAt: Date;
+}
+
+export interface InsertAttachmentInput {
+  providerEventReceiptId: string;
+  organizationId: string;
+  connectionId: string;
+  provider: AttachmentProvider;
+  sourceId: string;
+  locator: unknown;
+  filename: string;
+  contentType?: string | null;
+  byteSize?: number | null;
+}
+
 export interface MachineRecord {
   id: string;
   orgId: string;
@@ -308,6 +336,7 @@ export interface SlackConnectionRecord {
   teamName: string;
   botUserId: string;
   botAccessToken: string;
+  scopes: string[];
 }
 
 export interface StartConnectionAttemptInput {
@@ -347,6 +376,7 @@ export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
   teamName: string;
   botUserId: string;
   botAccessToken: string;
+  scopes: string[];
 }
 
 export type DisconnectConnectionResult =
@@ -773,6 +803,16 @@ export interface Database {
     organizationId?: string,
   ): Promise<ProviderEventReceiptRecord | undefined>;
   findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined>;
+  insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord>;
+  findAttachmentBySource(
+    providerEventReceiptId: string,
+    provider: AttachmentProvider,
+    sourceId: string,
+  ): Promise<AttachmentRecord | undefined>;
+  findAttachmentForExecution(
+    executionId: string,
+    attachmentId: string,
+  ): Promise<AttachmentRecord | undefined>;
   insertMachine(input: InsertMachineInput): Promise<MachineRecord>;
   findMachineById(id: string): Promise<MachineRecord | undefined>;
   findMachineForOrganization(

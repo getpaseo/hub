@@ -2,6 +2,19 @@ import { z } from "zod";
 
 const SlackIdSchema = z.string().min(1).max(255);
 const SlackTimestampSchema = z.string().regex(/^\d+\.\d+$/u);
+const SlackAttachmentMetadataSchema = z.object({
+  id: SlackIdSchema,
+  filename: z.string().min(1).max(255),
+  contentType: z.string().max(255).nullable(),
+  size: z.number().int().nonnegative().nullable(),
+});
+const SlackContextMessageSchema = z.object({
+  ts: SlackTimestampSchema,
+  createdAt: z.string(),
+  content: z.string(),
+  author: z.object({ id: SlackIdSchema }),
+  attachments: z.array(SlackAttachmentMetadataSchema),
+});
 
 export const SlackUrlVerificationSchema = z
   .object({
@@ -33,6 +46,19 @@ const SlackAppMentionSchema = z
     thread_ts: SlackTimestampSchema.optional(),
     bot_id: SlackIdSchema.optional(),
     subtype: z.string().optional(),
+    files: z
+      .array(
+        z
+          .object({
+            id: SlackIdSchema,
+            name: z.string().min(1).max(255).optional(),
+            title: z.string().min(1).max(255).optional(),
+            mimetype: z.string().max(255).optional(),
+            size: z.number().int().nonnegative().optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
   })
   .passthrough();
 
@@ -49,6 +75,8 @@ export const NormalizedSlackMentionEventSchema = z.object({
   content: z.string(),
   author: z.object({ id: SlackIdSchema }),
   createdAt: z.string(),
+  attachments: z.array(SlackAttachmentMetadataSchema).default([]),
+  threadContextMessages: z.array(SlackContextMessageSchema).default([]),
 });
 
 export type NormalizedSlackMentionEvent = z.infer<typeof NormalizedSlackMentionEventSchema>;
@@ -73,5 +101,12 @@ export function normalizeSlackEvent(
     content: mention.data.text,
     author: { id: mention.data.user },
     createdAt: new Date(Number(mention.data.ts) * 1_000).toISOString(),
+    attachments: (mention.data.files ?? []).map((file) => ({
+      id: file.id,
+      filename: file.name ?? file.title ?? file.id,
+      contentType: file.mimetype ?? null,
+      size: file.size ?? null,
+    })),
+    threadContextMessages: [],
   });
 }

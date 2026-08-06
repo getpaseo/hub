@@ -85,7 +85,7 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await app.configuration.expectActiveRevision(1);
   await app.configuration.switchToManual();
   await app.configuration.saveManualConfiguration(validConfiguration);
-  await app.configuration.expectActiveRevision(2);
+  await app.configuration.expectActiveRevision(3);
 });
 
 test("isolates durable activity and step detail by project", async ({ hub, page }) => {

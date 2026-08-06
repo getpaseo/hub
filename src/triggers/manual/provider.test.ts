@@ -35,6 +35,7 @@ describe("manual invocation provider", () => {
     const provider = createManualRunProvider(() => store);
     const match = (
       await provider.match({
+        providerEventReceiptId: "11111111-1111-4111-8111-111111111122",
         organizationId: "org-1",
         projectId: project.id,
         source: "manual.run",
@@ -83,6 +84,7 @@ describe("manual invocation provider", () => {
     });
     const provider = createManualRunProvider(() => store);
     const matches = await provider.match({
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111123",
       organizationId: "org-1",
       projectId: project.id,
       source: "manual.run",

@@ -75,6 +75,13 @@ export async function createApplicationRuntime(
     database: options.database,
     providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
     integrations: [...integrations.values()],
+    attachmentResolvers: Object.fromEntries(
+      registrations.flatMap((registration) =>
+        registration.attachment === undefined
+          ? []
+          : [[registration.attachment.provider, registration.attachment.resolve] as const],
+      ),
+    ),
     connectionsForProject,
     ...(options.auth === null ? {} : { browserOrganizationAccess: options.auth }),
     ...(options.operationAuth === undefined ? {} : { operationAuth: options.operationAuth }),

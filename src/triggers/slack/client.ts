@@ -3,7 +3,53 @@ import { z } from "zod";
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
   .passthrough();
+const SlackFileSchema = z
+  .object({
+    id: z.string().min(1).max(255),
+    name: z.string().min(1).max(255).optional(),
+    title: z.string().min(1).max(255).optional(),
+    mimetype: z.string().min(1).max(255).optional(),
+    size: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+const SlackThreadMessageSchema = z
+  .object({
+    ts: z.string().regex(/^\d+\.\d+$/u),
+    text: z.string().default(""),
+    user: z.string().min(1).max(255).optional(),
+    bot_id: z.string().min(1).max(255).optional(),
+    files: z.array(SlackFileSchema).optional(),
+  })
+  .passthrough();
+const SlackThreadRepliesSchema = SlackApiResponseSchema.extend({
+  messages: z.array(SlackThreadMessageSchema).optional(),
+  response_metadata: z.object({ next_cursor: z.string().optional() }).optional(),
+});
+const SlackFileInfoSchema = SlackApiResponseSchema.extend({
+  file: z
+    .object({
+      id: z.string().min(1).max(255),
+      url_private_download: z.url(),
+    })
+    .optional(),
+});
 const SLACK_API_TIMEOUT_MS = 10_000;
+const MAX_THREAD_PAGES = 4;
+
+export interface SlackAttachmentMetadata {
+  id: string;
+  filename: string;
+  contentType: string | null;
+  size: number | null;
+}
+
+export interface SlackThreadMessage {
+  ts: string;
+  createdAt: string;
+  content: string;
+  author: { id: string };
+  attachments: SlackAttachmentMetadata[];
+}
 
 export interface SlackBotClient {
   sendMessage(input: {
@@ -27,6 +73,18 @@ export interface SlackBotClient {
     messageTs: string;
     name: string;
   }): Promise<void>;
+  readThreadMessages?(input: {
+    organizationId: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    beforeTs: string;
+  }): Promise<SlackThreadMessage[]>;
+  downloadAttachment?(input: {
+    organizationId: string;
+    teamId: string;
+    fileId: string;
+  }): Promise<Response>;
 }
 
 export function createSlackBotClient(options: {
@@ -58,6 +116,94 @@ export function createSlackBotClient(options: {
     if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
   }
 
+  async function callJson(
+    organizationId: string,
+    teamId: string,
+    method: string,
+    body: Record<string, string>,
+  ): Promise<unknown> {
+    const token = await options.tokenForWorkspace(organizationId, teamId);
+    if (token === undefined) throw new Error("Slack workspace is not connected");
+    const response = await request(`https://slack.com/api/${method}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
+    return response.json();
+  }
+
+  async function readThreadMessages(input: {
+    organizationId: string;
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    beforeTs: string;
+  }): Promise<SlackThreadMessage[]> {
+    let cursor: string | undefined;
+    let selected: SlackThreadMessage[] = [];
+    let pageCount = 0;
+    do {
+      let result: z.infer<typeof SlackThreadRepliesSchema>;
+      try {
+        result = SlackThreadRepliesSchema.parse(
+          await callJson(input.organizationId, input.teamId, "conversations.replies", {
+            channel: input.channelId,
+            ts: input.threadTs,
+            latest: input.beforeTs,
+            inclusive: "false",
+            limit: "100",
+            ...(cursor === undefined ? {} : { cursor }),
+          }),
+        );
+        if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+      } catch (error) {
+        if (selected.length === 0) throw error;
+        break;
+      }
+      selected = [...selected, ...(result.messages ?? []).map(normalizeThreadMessage)]
+        .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0)
+        .sort((left, right) => compareSlackTs(right.ts, left.ts))
+        .slice(0, 50);
+      pageCount += 1;
+      const next = result.response_metadata?.next_cursor;
+      cursor = next === undefined || next.length === 0 ? undefined : next;
+    } while (cursor !== undefined && pageCount < MAX_THREAD_PAGES);
+
+    return selected.sort((left, right) => compareSlackTs(left.ts, right.ts));
+  }
+
+  async function downloadAttachment(input: {
+    organizationId: string;
+    teamId: string;
+    fileId: string;
+  }): Promise<Response> {
+    const token = await options.tokenForWorkspace(input.organizationId, input.teamId);
+    if (token === undefined) throw new Error("Slack workspace is not connected");
+    const result = SlackFileInfoSchema.parse(
+      await callJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
+    );
+    if (!result.ok || result.file?.id !== input.fileId) {
+      throw new Error(`Slack file ${input.fileId} is unavailable`);
+    }
+    const downloadUrl = new URL(result.file.url_private_download);
+    if (
+      downloadUrl.protocol !== "https:" ||
+      !["files.slack.com", "slack.com"].includes(downloadUrl.hostname)
+    ) {
+      throw new Error("Slack returned an invalid attachment URL");
+    }
+    return request(downloadUrl, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
+    });
+  }
+
   return {
     sendMessage: (input) =>
       call(input.organizationId, input.teamId, "chat.postMessage", {
@@ -77,5 +223,28 @@ export function createSlackBotClient(options: {
         timestamp: input.messageTs,
         name: input.name,
       }),
+    readThreadMessages,
+    downloadAttachment,
   };
+}
+
+function normalizeThreadMessage(
+  message: z.infer<typeof SlackThreadMessageSchema>,
+): SlackThreadMessage {
+  return {
+    ts: message.ts,
+    createdAt: new Date(Number(message.ts) * 1_000).toISOString(),
+    content: message.text,
+    author: { id: message.user ?? message.bot_id ?? "unknown" },
+    attachments: (message.files ?? []).map((file) => ({
+      id: file.id,
+      filename: file.name ?? file.title ?? file.id,
+      contentType: file.mimetype ?? null,
+      size: file.size ?? null,
+    })),
+  };
+}
+
+function compareSlackTs(left: string, right: string): number {
+  return Number(left) - Number(right);
 }

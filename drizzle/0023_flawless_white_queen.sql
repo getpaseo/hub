@@ -1,1 +1,0 @@
-ALTER TABLE "agent_executions" ADD COLUMN "hub_action_acknowledgements" jsonb DEFAULT '{"terminal_at":null,"idle_at":null,"finish_execution_call":null}'::jsonb NOT NULL;

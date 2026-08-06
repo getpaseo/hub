@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordTriggerProvider } from "./provider.js";
@@ -96,10 +97,21 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 
   it("preserves Discord attachments, references, and thread context as durable evidence", async () => {
-    const { project, store } = await activeConfiguration();
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      discordConfiguration(),
+    );
+    const attachments = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {},
+    });
     const provider = createDiscordTriggerProvider({
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+      attachments,
     });
     const attachment = {
       id: "701",
@@ -109,8 +121,8 @@ describe("Discord Phase 1 trigger provider", () => {
       size: 42,
     };
     const match = (
-      await provider.match(
-        external(
+      await provider.match({
+        ...external(
           project.id,
           event({
             channelId: "207",
@@ -131,17 +143,14 @@ describe("Discord Phase 1 trigger provider", () => {
             ],
           }),
         ),
-      )
+        connectionId: "22222222-2222-4222-8222-222222222222",
+      })
     )[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.deepEqual(match.triggerContext.event.discord.trigger_message.attachments[0], {
-      id: "701",
-      filename: "design.png",
-      url: attachment.url,
-      content_type: "image/png",
-      size: 42,
-    });
+    const triggerAttachment = match.triggerContext.event.discord.trigger_message.attachments[0];
+    assert.ok(triggerAttachment);
+    assert.equal("url" in triggerAttachment, false);
     assert.deepEqual(match.triggerContext.event.discord.trigger_message.referenced_message, {
       id: "298",
       channel_id: "200",
@@ -151,9 +160,18 @@ describe("Discord Phase 1 trigger provider", () => {
       match.triggerContext.event.discord.trigger_thread_context.messages[0]?.content,
       "see image",
     );
+    const materialized = await provider.materializeLaunch?.({
+      executionId: "execution-discord-materialize",
+      organizationId: "org_1",
+      projectId: project.id,
+      prompt: "Inspect the Discord request.",
+      triggerContext: match.triggerContext,
+    });
     assert.equal(
-      match.triggerContext.event.discord.trigger_thread_context.messages[0]?.attachments[0]?.url,
-      attachment.url,
+      (materialized?.prompt ?? "").includes(
+        attachments.urlFor(triggerAttachment.id, "execution-discord-materialize"),
+      ),
+      true,
     );
     assert.deepEqual(match.outputContext, {
       provider: "discord",
@@ -334,6 +352,7 @@ function discordConnectionConfiguration() {
 
 function external(projectId: string, payload: NormalizedDiscordMessageEvent) {
   return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
     organizationId: "org_1",
     projectId,
     source: "discord.mention",

@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-const SLACK_BOT_SCOPES = ["app_mentions:read", "chat:write", "reactions:write"] as const;
+export const SLACK_REQUIRED_BOT_SCOPES = [
+  "app_mentions:read",
+  "channels:history",
+  "chat:write",
+  "files:read",
+  "groups:history",
+  "reactions:write",
+] as const;
 
 const SlackOAuthResponseSchema = z
   .object({
@@ -9,6 +16,7 @@ const SlackOAuthResponseSchema = z
     app_id: z.string().optional(),
     access_token: z.string().optional(),
     bot_user_id: z.string().optional(),
+    scope: z.string().optional(),
     team: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
   })
   .passthrough();
@@ -22,6 +30,12 @@ export interface SlackInstallation {
   teamName: string;
   botUserId: string;
   botAccessToken: string;
+  scopes: string[];
+}
+
+export function hasRequiredSlackScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return SLACK_REQUIRED_BOT_SCOPES.every((scope) => granted.has(scope));
 }
 
 export interface SlackConnectionClient {
@@ -44,7 +58,7 @@ export function createSlackConnectionClient(options: {
     authorizationUrl(state) {
       const parameters = new URLSearchParams({
         client_id: options.clientId,
-        scope: SLACK_BOT_SCOPES.join(","),
+        scope: SLACK_REQUIRED_BOT_SCOPES.join(","),
         redirect_uri: redirectUri,
         state,
       });
@@ -77,6 +91,7 @@ export function createSlackConnectionClient(options: {
         teamName: result.team.name,
         botUserId: result.bot_user_id,
         botAccessToken: result.access_token,
+        scopes: parseSlackScopes(result.scope),
       };
     },
     async revoke(botAccessToken) {
@@ -92,4 +107,15 @@ export function createSlackConnectionClient(options: {
       if (!result.ok) throw new Error(`Slack revoke ${result.error ?? "unknown_error"}`);
     },
   };
+}
+
+function parseSlackScopes(scope: string | undefined): string[] {
+  return [
+    ...new Set(
+      (scope ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ].sort();
 }

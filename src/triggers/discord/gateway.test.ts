@@ -352,8 +352,8 @@ describe("Discord gateway source", () => {
 
     assert.equal(contextFetches, 1);
     const event = NormalizedDiscordMessageEventSchema.parse(dispatched[0]?.payload);
-    assert.equal(event.threadContextMessages.length, 100);
-    assert.equal(event.threadContextMessages[0]?.id, "501");
+    assert.equal(event.threadContextMessages.length, 50);
+    assert.equal(event.threadContextMessages[0]?.id, "551");
     assert.equal(event.threadContextMessages.at(-1)?.id, "600");
     await source.stop();
   });

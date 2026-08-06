@@ -1,6 +1,6 @@
 {
-  "id": "21e3df15-6e1d-41a2-bcac-9cc8a18da5c8",
-  "prevId": "5ebedfe1-f356-4aa6-aa84-9c86a5e01c46",
+  "id": "154feca8-36b9-4543-9b3d-7862107e4a7e",
+  "prevId": "b968d9f4-71fd-4e00-bdf3-b7ae623f65f3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -253,12 +253,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "workflow_step_run_id": {
-          "name": "workflow_step_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "hub_action": {
           "name": "hub_action",
           "type": "text",
@@ -370,15 +364,6 @@
           "columnsTo": ["id", "project_id", "organization_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "agent_executions_workflow_step_run_fk": {
-          "name": "agent_executions_workflow_step_run_fk",
-          "tableFrom": "agent_executions",
-          "tableTo": "workflow_step_runs",
-          "columnsFrom": ["workflow_step_run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -388,6 +373,154 @@
         "agent_executions_hub_action_check": {
           "name": "agent_executions_hub_action_check",
           "value": "\"agent_executions\".\"hub_action\" is null or \"agent_executions\".\"hub_action\" in ('interrupt', 'archive')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.attachment_capabilities": {
+      "name": "attachment_capabilities",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "trigger_id": {
+          "name": "trigger_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "locator": {
+          "name": "locator",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "filename": {
+          "name": "filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "attachment_capabilities_trigger_provider_source_unique": {
+          "name": "attachment_capabilities_trigger_provider_source_unique",
+          "columns": [
+            {
+              "expression": "trigger_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "attachment_capabilities_trigger_idx": {
+          "name": "attachment_capabilities_trigger_idx",
+          "columns": [
+            {
+              "expression": "trigger_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "attachment_capabilities_trigger_id_triggers_id_fk": {
+          "name": "attachment_capabilities_trigger_id_triggers_id_fk",
+          "tableFrom": "attachment_capabilities",
+          "tableTo": "triggers",
+          "columnsFrom": ["trigger_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "attachment_capabilities_organization_id_organization_id_fk": {
+          "name": "attachment_capabilities_organization_id_organization_id_fk",
+          "tableFrom": "attachment_capabilities",
+          "tableTo": "organization",
+          "columnsFrom": ["organization_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "attachment_capabilities_provider_check": {
+          "name": "attachment_capabilities_provider_check",
+          "value": "\"attachment_capabilities\".\"provider\" in ('slack', 'discord')"
         }
       },
       "isRLSEnabled": false
@@ -3456,6 +3589,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "scopes": {
+          "name": "scopes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "connected_by_user_id": {
           "name": "connected_by_user_id",
           "type": "text",
@@ -3553,200 +3693,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.trigger_runs": {
-      "name": "trigger_runs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "configuration_revision_id": {
-          "name": "configuration_revision_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "trigger_id": {
-          "name": "trigger_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "raw_prompt": {
-          "name": "raw_prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt": {
-          "name": "prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "inputs": {
-          "name": "inputs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "deadline_at": {
-          "name": "deadline_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "failure_reason": {
-          "name": "failure_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "trigger_runs_trigger_unique": {
-          "name": "trigger_runs_trigger_unique",
-          "columns": [
-            {
-              "expression": "trigger_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "trigger_runs_status_deadline_idx": {
-          "name": "trigger_runs_status_deadline_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "deadline_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "trigger_runs_project_created_idx": {
-          "name": "trigger_runs_project_created_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "trigger_runs_organization_fk": {
-          "name": "trigger_runs_organization_fk",
-          "tableFrom": "trigger_runs",
-          "tableTo": "organization",
-          "columnsFrom": ["organization_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "trigger_runs_project_organization_fk": {
-          "name": "trigger_runs_project_organization_fk",
-          "tableFrom": "trigger_runs",
-          "tableTo": "projects",
-          "columnsFrom": ["project_id", "organization_id"],
-          "columnsTo": ["id", "organization_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "trigger_runs_revision_project_organization_fk": {
-          "name": "trigger_runs_revision_project_organization_fk",
-          "tableFrom": "trigger_runs",
-          "tableTo": "project_configuration_revisions",
-          "columnsFrom": ["configuration_revision_id", "project_id", "organization_id"],
-          "columnsTo": ["id", "project_id", "organization_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "trigger_runs_trigger_project_organization_fk": {
-          "name": "trigger_runs_trigger_project_organization_fk",
-          "tableFrom": "trigger_runs",
-          "tableTo": "triggers",
-          "columnsFrom": ["trigger_id", "project_id", "organization_id"],
-          "columnsTo": ["id", "project_id", "organization_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "trigger_runs_status_check": {
-          "name": "trigger_runs_status_check",
-          "value": "\"trigger_runs\".\"status\" in ('running', 'succeeded', 'failed', 'timed_out')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.triggers": {
       "name": "triggers",
       "schema": "",
@@ -3839,6 +3785,18 @@
         },
         "dropped_reason": {
           "name": "dropped_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatch_plan": {
+          "name": "dispatch_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lifecycle_state": {
+          "name": "lifecycle_state",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -4012,6 +3970,10 @@
         "triggers_project_or_dropped_check": {
           "name": "triggers_project_or_dropped_check",
           "value": "\"triggers\".\"project_id\" is not null or \"triggers\".\"dropped_reason\" is not null"
+        },
+        "triggers_lifecycle_state_check": {
+          "name": "triggers_lifecycle_state_check",
+          "value": "\"triggers\".\"lifecycle_state\" is null or \"triggers\".\"lifecycle_state\" in ('accepted', 'running', 'succeeded', 'failed')"
         }
       },
       "isRLSEnabled": false
@@ -4132,244 +4094,6 @@
       },
       "indexes": {},
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.workflow_step_runs": {
-      "name": "workflow_step_runs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "trigger_run_id": {
-          "name": "trigger_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "step_id": {
-          "name": "step_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ordinal": {
-          "name": "ordinal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_execution_id": {
-          "name": "agent_execution_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output": {
-          "name": "output",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_reason": {
-          "name": "failure_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dispatch_intent": {
-          "name": "dispatch_intent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "workflow_step_runs_trigger_ordinal_unique": {
-          "name": "workflow_step_runs_trigger_ordinal_unique",
-          "columns": [
-            {
-              "expression": "trigger_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ordinal",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "workflow_step_runs_trigger_step_unique": {
-          "name": "workflow_step_runs_trigger_step_unique",
-          "columns": [
-            {
-              "expression": "trigger_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "step_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "workflow_step_runs_agent_execution_unique": {
-          "name": "workflow_step_runs_agent_execution_unique",
-          "columns": [
-            {
-              "expression": "agent_execution_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"workflow_step_runs\".\"agent_execution_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "workflow_step_runs_trigger_status_idx": {
-          "name": "workflow_step_runs_trigger_status_idx",
-          "columns": [
-            {
-              "expression": "trigger_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "workflow_step_runs_trigger_run_fk": {
-          "name": "workflow_step_runs_trigger_run_fk",
-          "tableFrom": "workflow_step_runs",
-          "tableTo": "trigger_runs",
-          "columnsFrom": ["trigger_run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "workflow_step_runs_status_check": {
-          "name": "workflow_step_runs_status_check",
-          "value": "\"workflow_step_runs\".\"status\" in ('pending', 'running', 'succeeded', 'skipped', 'failed', 'timed_out')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.workflow_wakeups": {
-      "name": "workflow_wakeups",
-      "schema": "",
-      "columns": {
-        "trigger_run_id": {
-          "name": "trigger_run_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "available_at": {
-          "name": "available_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "workflow_wakeups_available_lease_idx": {
-          "name": "workflow_wakeups_available_lease_idx",
-          "columns": [
-            {
-              "expression": "available_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "lease_expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "workflow_wakeups_trigger_run_fk": {
-          "name": "workflow_wakeups_trigger_run_fk",
-          "tableFrom": "workflow_wakeups",
-          "tableTo": "trigger_runs",
-          "columnsFrom": ["trigger_run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

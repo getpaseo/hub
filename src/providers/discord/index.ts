@@ -17,6 +17,7 @@ import {
 import { createDiscordBotClient, type DiscordBotClient } from "../../triggers/discord/bot.js";
 import { createDiscordGatewaySource } from "../../triggers/discord/gateway.js";
 import { createDiscordTriggerProvider } from "../../triggers/discord/provider.js";
+import { createDiscordAttachmentResolver } from "../../triggers/discord/attachments.js";
 import { createDiscordReplyExecutor } from "../../triggers/discord/reply.js";
 import {
   createDiscordConnectionClient,
@@ -98,16 +99,23 @@ export function createDiscordRegistration(
   return {
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject }) =>
+      ({ configurationStoreForProject, connectionsForProject, attachments }) =>
         createDiscordTriggerProvider({
           configurationStoreForProject,
           connectionsForProject,
+          ...(attachments === undefined ? {} : { attachments }),
           bot,
         }),
     ],
     sources: [gateway],
     outputs: [{ type: "discord.reply", execute: createDiscordReplyExecutor({ bot }) }],
     requests: [],
+    attachment: {
+      provider: "discord",
+      resolve: createDiscordAttachmentResolver(
+        options.fetch === undefined ? {} : { fetch: options.fetch },
+      ),
+    },
   };
 }
 

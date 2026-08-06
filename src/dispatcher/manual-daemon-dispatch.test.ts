@@ -91,6 +91,7 @@ describe("manual trigger durable workflow boundary", () => {
 
 function manualTrigger(deliveryId: string, projectId = PROJECT_ID): ManualTriggerInput {
   const trigger: ExternalTrigger = {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111121",
     organizationId: "org_1",
     projectId,
     source: "manual.run",

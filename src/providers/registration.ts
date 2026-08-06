@@ -4,10 +4,16 @@ import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
 import type { GitHubConfigurationProvider } from "../configuration/github-sync.js";
+import type {
+  AttachmentCapabilityRegistry,
+  AttachmentProvider,
+  AttachmentResolver,
+} from "../attachments/capabilities.js";
 
 export interface TriggerProviderResources {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   connectionsForProject: (projectId: string) => ConnectionResolver;
+  attachments?: AttachmentCapabilityRegistry;
 }
 
 export type TriggerProviderFactory = (
@@ -40,6 +46,11 @@ export interface ProviderRequestRegistration {
   handle(request: Request): Promise<Response>;
 }
 
+export interface ProviderAttachmentRegistration {
+  provider: AttachmentProvider;
+  resolve: AttachmentResolver;
+}
+
 export interface ProviderRegistration {
   connection: ProviderConnectionRegistration;
   integration?: ProviderIntegrationRegistration;
@@ -47,5 +58,6 @@ export interface ProviderRegistration {
   sources: readonly TriggerSource[];
   outputs: readonly ProviderOutputRegistration[];
   requests: readonly ProviderRequestRegistration[];
+  attachment?: ProviderAttachmentRegistration;
   githubConfiguration?: GitHubConfigurationProvider;
 }

@@ -38,11 +38,14 @@ import type {
   DurableProviderEvent,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
+  AttachmentProvider,
+  AttachmentRecord,
   GitHubLifecycleResult,
   PersistManualEventInput,
   ProviderEventAcceptance,
   CreateProjectInput,
   InsertProjectConfigurationRevisionInput,
+  InsertAttachmentInput,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
   TenantRouteAccess,
@@ -95,6 +98,8 @@ class MemoryDatabase implements Database {
   private readonly triggerRunIdsByProviderEventReceipt = new Map<string, Map<string, string>>();
   private readonly workflowStepRuns = new Map<string, WorkflowStepRunRecord>();
   private readonly workflowWakeups = new Map<string, WorkflowWakeupRecord>();
+  private readonly attachments = new Map<string, AttachmentRecord>();
+  private readonly attachmentIdsBySource = new Map<string, string>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
@@ -941,6 +946,62 @@ class MemoryDatabase implements Database {
 
   async findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined> {
     return this.providerEventReceipts.get(id);
+  }
+
+  async insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord> {
+    const sourceKey = attachmentSourceKey(
+      input.providerEventReceiptId,
+      input.provider,
+      input.sourceId,
+    );
+    const existingId = this.attachmentIdsBySource.get(sourceKey);
+    if (existingId !== undefined) return this.readAttachment(existingId);
+    const attachment: AttachmentRecord = {
+      id: randomUUID(),
+      providerEventReceiptId: input.providerEventReceiptId,
+      organizationId: input.organizationId,
+      connectionId: input.connectionId,
+      provider: input.provider,
+      sourceId: input.sourceId,
+      locator: input.locator,
+      filename: input.filename,
+      contentType: input.contentType ?? null,
+      byteSize: input.byteSize ?? null,
+      createdAt: new Date(),
+    };
+    this.attachments.set(attachment.id, attachment);
+    this.attachmentIdsBySource.set(sourceKey, attachment.id);
+    return attachment;
+  }
+
+  async findAttachmentBySource(
+    providerEventReceiptId: string,
+    provider: AttachmentProvider,
+    sourceId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const id = this.attachmentIdsBySource.get(
+      attachmentSourceKey(providerEventReceiptId, provider, sourceId),
+    );
+    return id === undefined ? undefined : this.attachments.get(id);
+  }
+
+  async findAttachmentForExecution(
+    executionId: string,
+    attachmentId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    const attachment = this.attachments.get(attachmentId);
+    if (execution === undefined || attachment === undefined) return undefined;
+    const stepRun =
+      execution.workflowStepRunId === null
+        ? undefined
+        : this.workflowStepRuns.get(execution.workflowStepRunId);
+    const triggerRun =
+      stepRun === undefined ? undefined : this.triggerRuns.get(stepRun.triggerRunId);
+    return execution.organizationId === attachment.organizationId &&
+      triggerRun?.providerEventReceiptId === attachment.providerEventReceiptId
+      ? attachment
+      : undefined;
   }
 
   async insertMachine(input: InsertMachineInput): Promise<MachineRecord> {
@@ -2015,6 +2076,12 @@ class MemoryDatabase implements Database {
 
   async close(): Promise<void> {}
 
+  private readAttachment(id: string): AttachmentRecord {
+    const attachment = this.attachments.get(id);
+    if (attachment === undefined) throw new Error(`attachment not found: ${id}`);
+    return attachment;
+  }
+
   private async acceptMemoryEvent(
     input: AcceptGitHubEventInput | AcceptDiscordEventInput | AcceptSlackEventInput,
     organizationId: string | undefined,
@@ -2266,4 +2333,12 @@ function freezeEvidence<T>(value: T): T {
   if (Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) freezeEvidence(child);
   return Object.freeze(value);
+}
+
+function attachmentSourceKey(
+  providerEventReceiptId: string,
+  provider: AttachmentProvider,
+  sourceId: string,
+): string {
+  return `${providerEventReceiptId}:${provider}:${sourceId}`;
 }

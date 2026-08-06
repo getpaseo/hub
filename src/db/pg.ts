@@ -13,6 +13,7 @@ import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import * as schema from "./schema.js";
 import {
   toAgentExecutionRecord,
+  toAttachmentRecord,
   toMachineRecord,
   toProjectConfigurationRevisionRecord,
   toProjectRecord,
@@ -21,11 +22,14 @@ import {
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type {
   AgentExecutionRecord,
+  AttachmentProvider,
+  AttachmentRecord,
   ConfigurationSyncAttemptRecord,
   CreateProjectInput,
   Database,
   InsertProjectConfigurationRevisionInput,
   InsertAgentExecutionInput,
+  InsertAttachmentInput,
   InsertMachineInput,
   MachineRecord,
   TerminateMachineFields,
@@ -2808,9 +2812,10 @@ class PgDatabase implements Database {
         team_name: string;
         bot_user_id: string;
         bot_access_token: string;
+        scopes: unknown;
       }>(
         this.pool,
-        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token
+        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes
          from slack_connections where organization_id = $1
          order by team_name, id`,
         [organizationId],
@@ -2842,6 +2847,7 @@ class PgDatabase implements Database {
         teamName: row.team_name,
         botUserId: row.bot_user_id,
         botAccessToken: row.bot_access_token,
+        scopes: stringArray(row.scopes),
       })),
     };
   }
@@ -3078,6 +3084,85 @@ class PgDatabase implements Database {
 
     return rows.rows[0] === undefined ? undefined : toProviderEventReceiptRecord(rows.rows[0]);
   }
+
+  async insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord> {
+    try {
+      const rows = await query<AttachmentRow>(
+        this.pool,
+        `insert into attachment_capabilities (
+           provider_event_receipt_id,
+           organization_id,
+           connection_id,
+           provider,
+           source_id,
+           locator,
+           filename,
+           content_type,
+           byte_size
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (provider_event_receipt_id, provider, source_id) do nothing
+         returning *`,
+        [
+          input.providerEventReceiptId,
+          input.organizationId,
+          input.connectionId,
+          input.provider,
+          input.sourceId,
+          JSON.stringify(input.locator),
+          input.filename,
+          input.contentType ?? null,
+          input.byteSize ?? null,
+        ],
+      );
+      const inserted = rows.rows[0];
+      if (inserted !== undefined) return toAttachmentRecord(inserted);
+      const existing = await this.findAttachmentBySource(
+        input.providerEventReceiptId,
+        input.provider,
+        input.sourceId,
+      );
+      if (existing === undefined) throw new Error("attachment insert conflict without row");
+      return existing;
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async findAttachmentBySource(
+    providerEventReceiptId: string,
+    provider: AttachmentProvider,
+    sourceId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const rows = await query<AttachmentRow>(
+      this.pool,
+      `select * from attachment_capabilities
+       where provider_event_receipt_id = $1 and provider = $2 and source_id = $3 limit 1`,
+      [providerEventReceiptId, provider, sourceId],
+    );
+    return rows.rows[0] === undefined ? undefined : toAttachmentRecord(rows.rows[0]);
+  }
+
+  async findAttachmentForExecution(
+    executionId: string,
+    attachmentId: string,
+  ): Promise<AttachmentRecord | undefined> {
+    const rows = await query<AttachmentRow>(
+      this.pool,
+      `select attachment.*
+       from attachment_capabilities attachment
+       join agent_executions execution
+         on execution.id = $1
+        and execution.organization_id = attachment.organization_id
+       join workflow_step_runs step_run
+         on step_run.id = execution.workflow_step_run_id
+       join trigger_runs trigger_run
+         on trigger_run.id = step_run.trigger_run_id
+        and trigger_run.provider_event_receipt_id = attachment.provider_event_receipt_id
+       where attachment.id = $2 limit 1`,
+      [executionId, attachmentId],
+    );
+    return rows.rows[0] === undefined ? undefined : toAttachmentRecord(rows.rows[0]);
+  }
 }
 
 async function lockValidProjectRevision(
@@ -3148,6 +3233,10 @@ async function query<T extends QueryResultRow = QueryResultRow>(
   values: unknown[] = [],
 ) {
   return withDatabaseDeadline(pool.query<T>(text, values));
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
 }
 
 async function withDatabaseDeadline<T>(promise: Promise<T>): Promise<T> {
@@ -3419,6 +3508,20 @@ export interface AgentExecutionRow extends QueryResultRow {
   hub_action_completed_at: Date | null;
   hub_action_ready_at: Date | null;
   hub_action_acknowledgements: unknown;
+}
+
+export interface AttachmentRow extends QueryResultRow {
+  id: string;
+  provider_event_receipt_id: string;
+  organization_id: string;
+  connection_id: string;
+  provider: AttachmentProvider;
+  source_id: string;
+  locator: unknown;
+  filename: string;
+  content_type: string | null;
+  byte_size: number | string | null;
+  created_at: Date;
 }
 
 interface DaemonRow extends QueryResultRow {

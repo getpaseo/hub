@@ -1,5 +1,6 @@
 import type {
   AgentExecutionRow,
+  AttachmentRow,
   MachineRow,
   ProjectConfigurationRevisionRow,
   ProjectRow,
@@ -8,6 +9,7 @@ import type {
 import type {
   AgentExecutionHubAcknowledgements,
   AgentExecutionRecord,
+  AttachmentRecord,
   MachineRecord,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
@@ -115,6 +117,22 @@ function toDateOrNull(value: unknown): Date | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function toAttachmentRecord(row: AttachmentRow): AttachmentRecord {
+  return {
+    id: row.id,
+    providerEventReceiptId: row.provider_event_receipt_id,
+    organizationId: row.organization_id,
+    connectionId: row.connection_id,
+    provider: row.provider,
+    sourceId: row.source_id,
+    locator: row.locator,
+    filename: row.filename,
+    contentType: row.content_type,
+    byteSize: row.byte_size === null ? null : Number(row.byte_size),
+    createdAt: row.created_at,
+  };
 }
 
 export function toProjectRecord(row: ProjectRow): ProjectRecord {

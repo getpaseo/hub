@@ -16,11 +16,13 @@ import type { Database, SlackConnectionRecord } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
+import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
 import { createSlackWebhookSource } from "../../triggers/slack/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createSlackConnectionClient,
+  hasRequiredSlackScopes,
   type SlackConnectionClient,
   type SlackInstallation,
 } from "./client.js";
@@ -112,10 +114,11 @@ export function createSlackRegistration(
   return {
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject }) =>
+      ({ configurationStoreForProject, connectionsForProject, attachments }) =>
         createSlackTriggerProvider({
           configurationStoreForProject,
           connectionsForProject,
+          ...(attachments === undefined ? {} : { attachments }),
           botUserIdForWorkspace: async (organizationId, teamId) =>
             (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,
           client: bot,
@@ -129,6 +132,7 @@ export function createSlackRegistration(
       },
     ],
     requests: [{ name: "slack.events", handle: (request) => webhook.handle(request) }],
+    attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
   };
 }
 
@@ -138,7 +142,9 @@ async function findSlackBindingForOrganization(
   teamId: string,
 ): Promise<SlackConnectionRecord | undefined> {
   const binding = await database.findSlackConnectionForOrganization(organizationId, teamId);
-  return binding?.organizationId === organizationId ? binding : undefined;
+  return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
+    ? binding
+    : undefined;
 }
 
 function emptySlackRegistration(
@@ -276,8 +282,9 @@ async function bindSlack(
 
 function slackStatus(configured: boolean, bindings: readonly SlackConnectionRecord[]) {
   if (!configured) return { status: "notConfigured" as const };
-  return bindings.length === 0
-    ? { status: "disconnected" as const }
+  if (bindings.length === 0) return { status: "disconnected" as const };
+  return bindings.some((binding) => !hasRequiredSlackScopes(binding.scopes))
+    ? { status: "requiresReauthorization" as const }
     : { status: "connected" as const };
 }
 

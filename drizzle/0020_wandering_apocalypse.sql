@@ -1,2 +1,0 @@
-ALTER TABLE "trigger_runs" ADD COLUMN "trigger_context" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "trigger_runs" ADD COLUMN "output_context" jsonb DEFAULT '{}'::jsonb NOT NULL;

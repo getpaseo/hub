@@ -21,6 +21,7 @@ const discordStatusSchema = z.discriminatedUnion("status", [
 const slackStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("notConfigured") }),
   z.object({ status: z.literal("disconnected") }),
+  z.object({ status: z.literal("requiresReauthorization") }),
   z.object({
     status: z.literal("connected"),
   }),

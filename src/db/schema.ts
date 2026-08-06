@@ -86,6 +86,39 @@ export const providerEventReceipts = pgTable(
   ],
 );
 
+export const attachmentCapabilities = pgTable(
+  "attachment_capabilities",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull(),
+    provider: text().$type<"slack" | "discord">().notNull(),
+    sourceId: text("source_id").notNull(),
+    locator: jsonb().notNull(),
+    filename: text().notNull(),
+    contentType: text("content_type"),
+    byteSize: bigint("byte_size", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("attachment_capabilities_receipt_provider_source_unique").on(
+      table.providerEventReceiptId,
+      table.provider,
+      table.sourceId,
+    ),
+    index("attachment_capabilities_receipt_idx").on(table.providerEventReceiptId),
+    check("attachment_capabilities_provider_check", sql`${table.provider} in ('slack', 'discord')`),
+    foreignKey({
+      columns: [table.providerEventReceiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "attachment_capabilities_receipt_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
 export const projects = pgTable(
   "projects",
   {
@@ -768,6 +801,10 @@ export const slackConnections = pgTable(
     teamName: text("team_name").notNull(),
     botUserId: text("bot_user_id").notNull(),
     botAccessToken: text("bot_access_token").notNull(),
+    scopes: jsonb()
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     connectedByUserId: text("connected_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

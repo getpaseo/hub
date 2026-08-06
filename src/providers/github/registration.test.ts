@@ -672,6 +672,7 @@ async function materialize(
 
 function githubExecution(deliveryId: string) {
   return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
     organizationId: "org_1",
     projectId: "project-1",
     source: "github.issue_comment",

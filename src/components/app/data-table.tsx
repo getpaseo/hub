@@ -1,3 +1,4 @@
+/* oxlint-disable eslint-plugin-jsx-a11y/prefer-tag-over-role, eslint-plugin-react-perf/jsx-no-new-function-as-prop -- a table row cannot itself be a <button>, and its onKeyDown handler is scoped per rendered row */
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
@@ -72,9 +73,28 @@ export function DataTable({
   );
 }
 
-/** A record row. Cells align to the column rails established by `DataTable`. */
-export function DataRow({ children }: { children: ReactNode }) {
-  return <TableRow className="border-border/60">{children}</TableRow>;
+/**
+ * A record row. Cells align to the column rails established by `DataTable`. Pass
+ * `onSelect` to make the row a keyboard-operable button into a detail view.
+ */
+export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) {
+  if (onSelect === undefined) return <TableRow className="border-border/60">{children}</TableRow>;
+  return (
+    <TableRow
+      className="cursor-pointer border-border/60 hover:bg-muted/40"
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onSelect();
+      }}
+    >
+      {children}
+    </TableRow>
+  );
 }
 
 export function DataCell({

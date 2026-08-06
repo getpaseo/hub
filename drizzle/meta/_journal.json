@@ -117,57 +117,22 @@
     {
       "idx": 16,
       "version": "7",
-      "when": 1785935928640,
-      "tag": "0016_thin_the_enforcers",
+      "when": 1785927979208,
+      "tag": "0016_windy_puma",
       "breakpoints": true
     },
     {
       "idx": 17,
       "version": "7",
-      "when": 1785936904837,
-      "tag": "0017_old_metal_master",
+      "when": 1785930920062,
+      "tag": "0017_clever_sasquatch",
       "breakpoints": true
     },
     {
       "idx": 18,
       "version": "7",
-      "when": 1785941223127,
-      "tag": "0018_bent_jack_power",
-      "breakpoints": true
-    },
-    {
-      "idx": 19,
-      "version": "7",
-      "when": 1785953359248,
-      "tag": "0019_demonic_piledriver",
-      "breakpoints": true
-    },
-    {
-      "idx": 20,
-      "version": "7",
-      "when": 1785958775711,
-      "tag": "0020_wandering_apocalypse",
-      "breakpoints": true
-    },
-    {
-      "idx": 21,
-      "version": "7",
-      "when": 1785976341526,
-      "tag": "0021_sticky_silver_fox",
-      "breakpoints": true
-    },
-    {
-      "idx": 22,
-      "version": "7",
-      "when": 1785988132396,
-      "tag": "0022_yellow_the_call",
-      "breakpoints": true
-    },
-    {
-      "idx": 23,
-      "version": "7",
-      "when": 1786001589250,
-      "tag": "0023_flawless_white_queen",
+      "when": 1786007639877,
+      "tag": "0018_silky_cannonball",
       "breakpoints": true
     }
   ]

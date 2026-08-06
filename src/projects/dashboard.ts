@@ -3,7 +3,6 @@ import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
 import { rawConfigurationHash } from "../config/compiler.js";
-import type { JsonValue } from "../config/compiler.js";
 import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
@@ -14,7 +13,17 @@ import type {
   ProviderEventReceiptRecord,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
+import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
+
+/** A jsonb column value, cast at the DB boundary so it survives the server-fn serializer. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface ProjectRouteScope {
   organizationSlug: string;
@@ -331,6 +340,7 @@ function connectionUsageView(
       slug: connection.slug,
       teamId: connection.teamId,
       teamName: connection.teamName,
+      requiresReauthorization: !hasRequiredSlackScopes(connection.scopes),
     })),
   };
 }

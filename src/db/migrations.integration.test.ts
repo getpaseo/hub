@@ -62,11 +62,11 @@ describe("database migration application", () => {
     });
   }, 120_000);
 
-  it("destructively disposes workflow evidence while preserving restart authorities", async () => {
+  it("destructively cuts over legacy execution evidence while preserving attachments and authorities", async () => {
     const url = await createHistoricalBaseline({
       postgres,
       prefix: "phase_six_destructive_cutover",
-      through: "0021_sticky_silver_fox",
+      through: "0017_clever_sasquatch",
     });
     await poolQuery(
       url,
@@ -131,23 +131,12 @@ describe("database migration application", () => {
           '70000000-0000-4000-8000-000000000001',
           '80000000-0000-4000-8000-000000000001', '960002',
           'a0000000-0000-4000-8000-000000000001');
-       insert into trigger_runs
-         (id, organization_id, project_id, configuration_revision_id, trigger_id,
-          configured_trigger_name, status, raw_prompt, prompt, inputs, deadline_at,
-          outcome, trigger_context, output_context)
+       insert into attachment_capabilities
+         (id, trigger_id, organization_id, connection_id, provider, source_id, locator, filename)
        values
-         ('a2000000-0000-4000-8000-000000000001', 'phase-six-org',
-          '60000000-0000-4000-8000-000000000001',
-          '70000000-0000-4000-8000-000000000001',
-          'a1000000-0000-4000-8000-000000000001', 'phase-six-trigger', 'running',
-          'raw', 'clean', '{}', now() + interval '2 hours', 'accepted', '{}', '{}');
-       insert into workflow_step_runs
-         (id, trigger_run_id, step_id, ordinal, status)
-       values
-         ('a3000000-0000-4000-8000-000000000001',
-          'a2000000-0000-4000-8000-000000000001', 'phase-six-step', 0, 'running');
-       insert into workflow_wakeups (trigger_run_id, available_at)
-       values ('a2000000-0000-4000-8000-000000000001', now());
+         ('a2000000-0000-4000-8000-000000000001',
+          'a1000000-0000-4000-8000-000000000001', 'phase-six-org',
+          '80000000-0000-4000-8000-000000000001', 'slack', 'file-1', '{}', 'file.txt');
        insert into agent_executions
          (id, organization_id, project_id, status, configuration_revision_id,
           trigger_id, trigger_connection_id, trigger_resource_id)
@@ -156,10 +145,7 @@ describe("database migration application", () => {
           '60000000-0000-4000-8000-000000000001', 'running',
           '70000000-0000-4000-8000-000000000001',
           'a1000000-0000-4000-8000-000000000001',
-          '80000000-0000-4000-8000-000000000001', '960002');
-       update workflow_step_runs
-       set agent_execution_id = 'a4000000-0000-4000-8000-000000000001'
-       where id = 'a3000000-0000-4000-8000-000000000001'`,
+          '80000000-0000-4000-8000-000000000001', '960002')`,
     );
 
     const before = await poolQuery<{
@@ -190,6 +176,7 @@ describe("database migration application", () => {
           trigger_connection_id: string | null;
           trigger_resource_id: string | null;
           provider_receipts: number;
+          attachments: number;
           runs: number;
           steps: number;
           wakeups: number;
@@ -204,6 +191,8 @@ describe("database migration application", () => {
                   (select column_name from information_schema.columns
                    where table_name = 'agent_executions' and column_name = 'trigger_resource_id') as trigger_resource_id,
                   (select count(*)::integer from provider_event_receipts) as provider_receipts,
+                  (select count(*)::integer from attachment_capabilities
+                   where provider_event_receipt_id = 'a0000000-0000-4000-8000-000000000001') as attachments,
                   (select count(*)::integer from trigger_runs) as runs,
                   (select count(*)::integer from workflow_step_runs) as steps,
                   (select count(*)::integer from workflow_wakeups) as wakeups,
@@ -216,7 +205,8 @@ describe("database migration application", () => {
           trigger_id: null,
           trigger_connection_id: null,
           trigger_resource_id: null,
-          provider_receipts: 0,
+          provider_receipts: 1,
+          attachments: 1,
           runs: 0,
           steps: 0,
           wakeups: 0,
@@ -258,7 +248,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 24,
+      drizzleMigrations: 19,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
