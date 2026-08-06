@@ -169,6 +169,13 @@
       "when": 1786046769096,
       "tag": "0023_robust_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786057714090,
+      "tag": "0024_flippant_young_avengers",
+      "breakpoints": true
     }
   ]
 }

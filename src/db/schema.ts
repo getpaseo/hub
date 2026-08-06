@@ -1028,3 +1028,43 @@ export const organizationApiKeys = pgTable(
     ),
   ],
 );
+
+export const ENTITLEMENT_CHANGE_SOURCES = ["provisioning", "plan_stamp"] as const;
+
+export const organizationEntitlements = pgTable("organization_entitlements", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  granted: jsonb().notNull(),
+  overrides: jsonb().notNull().default({}),
+  planId: text("plan_id"),
+  planVersion: text("plan_version"),
+  stampedAt: timestamp("stamped_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const entitlementChanges = pgTable(
+  "entitlement_changes",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    actor: text(),
+    source: text().$type<(typeof ENTITLEMENT_CHANGE_SOURCES)[number]>().notNull(),
+    before: jsonb(),
+    after: jsonb().notNull(),
+    reason: text(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("entitlement_changes_organization_created_idx").on(
+      table.organizationId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "entitlement_changes_source_check",
+      sql`${table.source} in ('provisioning', 'plan_stamp')`,
+    ),
+  ],
+);

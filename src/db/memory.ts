@@ -70,6 +70,8 @@ import type {
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
   ProjectActivityRunListRecord,
+  OrganizationEntitlementsRecord,
+  StampOrganizationEntitlementsInput,
 } from "./types.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
@@ -120,6 +122,7 @@ class MemoryDatabase implements Database {
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
+  private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -1854,6 +1857,30 @@ class MemoryDatabase implements Database {
     this.projects.set(project.id, project);
     this.configurationAuthorities.set(project.id, "manual");
     return project;
+  }
+
+  async getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined> {
+    return this.organizationEntitlements.get(organizationId);
+  }
+
+  async stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    const now = this.now();
+    const record: OrganizationEntitlementsRecord = {
+      organizationId: input.organizationId,
+      granted: input.granted,
+      overrides: existing?.overrides ?? {},
+      planId: input.planId,
+      planVersion: input.planVersion,
+      stampedAt: now,
+      updatedAt: now,
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    return record;
   }
 
   async listProjectsForOrganization(organizationId: string) {

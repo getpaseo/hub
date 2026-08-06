@@ -188,6 +188,7 @@ async function main(): Promise<void> {
     publicApi: application.publicApi,
     resources,
     projectDashboard: null,
+    entitlementsDashboard: null,
     testTriggerRoutes: true,
     auth: (request) => auth.handle(request),
     browserAccount: (request) => auth.browserAccount!(request),

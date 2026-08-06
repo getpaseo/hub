@@ -702,6 +702,28 @@ export interface CreateProjectInput {
   createdByUserId: string;
 }
 
+export type EntitlementChangeSource = "provisioning" | "plan_stamp";
+
+export interface OrganizationEntitlementsRecord {
+  organizationId: string;
+  granted: unknown;
+  overrides: unknown;
+  planId: string | null;
+  planVersion: string | null;
+  stampedAt: Date;
+  updatedAt: Date;
+}
+
+export interface StampOrganizationEntitlementsInput {
+  organizationId: string;
+  granted: unknown;
+  planId: string | null;
+  planVersion: string;
+  source: EntitlementChangeSource;
+  actor: string | null;
+  reason: string | null;
+}
+
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
   sourceKind: "github" | "manual";
@@ -988,6 +1010,12 @@ export interface Database {
   ): Promise<AgentExecutionRecord | undefined>;
   completeHubAction(executionId: string, action: HubAction): Promise<boolean>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
+  getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined>;
+  stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

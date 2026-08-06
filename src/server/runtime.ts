@@ -1,4 +1,5 @@
 import type { HubOperations, HubRuntime } from "../app.js";
+import type { EntitlementsDashboard } from "../entitlements/dashboard.js";
 import type {
   OrganizationResourceReader,
   OrganizationResources,
@@ -12,6 +13,7 @@ export interface ApplicationRuntime {
   publicApi: PublicApi;
   resources: OrganizationResources | null;
   projectDashboard: ProjectDashboard | null;
+  entitlementsDashboard: EntitlementsDashboard | null;
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;

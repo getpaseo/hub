@@ -87,6 +87,8 @@ import type {
   WorkflowDeadlineRecovery,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
+  OrganizationEntitlementsRecord,
+  StampOrganizationEntitlementsInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2423,6 +2425,67 @@ class PgDatabase implements Database {
     return toProjectRecord(project);
   }
 
+  async getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined> {
+    const rows = await query<OrganizationEntitlementsRow>(
+      this.pool,
+      `select * from organization_entitlements where organization_id = $1 limit 1`,
+      [organizationId],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationEntitlementsRecord(rows.rows[0]);
+  }
+
+  async stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query<OrganizationEntitlementsRow>(
+        `select * from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId],
+      );
+      const before = existing.rows[0];
+      const stamped = await client.query<OrganizationEntitlementsRow>(
+        `insert into organization_entitlements
+           (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+         values ($1, $2::jsonb, '{}'::jsonb, $3, $4, now(), now())
+         on conflict (organization_id) do update
+           set granted = excluded.granted,
+               plan_id = excluded.plan_id,
+               plan_version = excluded.plan_version,
+               stamped_at = now(),
+               updated_at = now()
+         returning *`,
+        [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
+      );
+      const after = stamped.rows[0];
+      if (after === undefined) throw new Error("entitlements stamp returned no row");
+      await client.query(
+        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+         values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+        [
+          input.organizationId,
+          input.actor,
+          input.source,
+          before === undefined
+            ? null
+            : JSON.stringify({ granted: before.granted, overrides: before.overrides }),
+          JSON.stringify({ granted: after.granted, overrides: after.overrides }),
+          input.reason,
+        ],
+      );
+      await client.query("commit");
+      return toOrganizationEntitlementsRecord(after);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -3908,6 +3971,30 @@ function toDeviceAuthorization(row: DeviceAuthorizationRow): DeviceAuthorization
     approvedSlug: row.approved_slug,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+  };
+}
+
+export interface OrganizationEntitlementsRow extends QueryResultRow {
+  organization_id: string;
+  granted: unknown;
+  overrides: unknown;
+  plan_id: string | null;
+  plan_version: string | null;
+  stamped_at: Date;
+  updated_at: Date;
+}
+
+function toOrganizationEntitlementsRecord(
+  row: OrganizationEntitlementsRow,
+): OrganizationEntitlementsRecord {
+  return {
+    organizationId: row.organization_id,
+    granted: row.granted,
+    overrides: row.overrides,
+    planId: row.plan_id,
+    planVersion: row.plan_version,
+    stampedAt: row.stamped_at,
+    updatedAt: row.updated_at,
   };
 }
 

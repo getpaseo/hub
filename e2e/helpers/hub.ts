@@ -470,6 +470,10 @@ export class PaseoHub {
     await this.requireUser(alias).expectConnections();
   }
 
+  async expectEntitlements(alias: string): Promise<void> {
+    await this.requireUser(alias).expectEntitlements();
+  }
+
   async expectMemberConnections(alias: string): Promise<void> {
     await this.requireUser(alias).expectMemberConnections();
   }
@@ -3006,6 +3010,23 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
   }
 
+  async expectEntitlements(): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    await expect(
+      this.page.getByRole("heading", { name: "Entitlements", exact: true, level: 1 }),
+    ).toBeVisible();
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Seats")).toContainText("Unlimited");
+    await expect(this.entitlementRow(table, "Members can invite")).toContainText("Allowed");
+    await expectAccessible(this.page);
+  }
+
+  private entitlementRow(table: Locator, entitlement: string): Locator {
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: entitlement, exact: true }) });
+  }
+
   private async expectConnectionShell(): Promise<void> {
     await this.openOrganizationSection("Connections");
     await this.expectConnectionContents();
@@ -3584,7 +3605,7 @@ class HubUser {
   }
 
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements",
   ): Promise<void> {
     const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
     if (await mobileSidebar.isVisible().catch(() => false)) {

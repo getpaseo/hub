@@ -5,6 +5,8 @@ import type { ConnectionResolutionContext, ConnectionResolver } from "./config/c
 import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
+import { EntitlementsDashboard } from "./entitlements/dashboard.js";
+import { EntitlementsService } from "./entitlements/service.js";
 import { OrganizationResources } from "./organizations/resources.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
 import type {
@@ -120,6 +122,14 @@ export async function createApplicationRuntime(
       options.database === null || options.auth === null
         ? null
         : new ProjectDashboard(options.database, options.auth, githubConfigurations[0]),
+    entitlementsDashboard:
+      options.database === null || options.auth === null
+        ? null
+        : new EntitlementsDashboard(
+            options.database,
+            options.auth,
+            new EntitlementsService(options.database),
+          ),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
       if (options.database === null) {

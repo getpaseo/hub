@@ -11,6 +11,7 @@ import {
   LogOut,
   Plus,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Users,
 } from "lucide-react";
@@ -295,6 +296,7 @@ const ORGANIZATION_DESTINATIONS = [
   { section: "connections", label: "Connections", icon: Cable },
   { section: "api-keys", label: "API keys", icon: KeyRound },
   { section: "team", label: "Team", icon: Users },
+  { section: "entitlements", label: "Entitlements", icon: ShieldCheck },
 ] as const;
 const PROJECT_DESTINATIONS = [
   { section: "overview", label: "Overview", icon: Gauge },
@@ -627,6 +629,7 @@ const ROUTE_SECTIONS = [
   { suffix: "/connections", label: "Connections" },
   { suffix: "/api-keys", label: "API keys" },
   { suffix: "/team", label: "Team" },
+  { suffix: "/entitlements", label: "Entitlements" },
 ] as const;
 
 function routeSection(pathname: string) {

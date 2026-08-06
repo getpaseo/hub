@@ -13,7 +13,7 @@ export class ProjectNavigation {
   }
 
   async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements",
   ) {
     await this.page
       .getByRole("navigation", { name: "Organization" })
@@ -34,7 +34,7 @@ export class ProjectNavigation {
   }
 
   async openMobileOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements",
   ) {
     await this.page.getByRole("button", { name: "Toggle Sidebar" }).click();
     await this.openOrganizationSection(name);
