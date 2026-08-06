@@ -474,6 +474,32 @@ export class PaseoHub {
     await this.requireUser(alias).expectEntitlements();
   }
 
+  async openSeatOverrideEditor(
+    alias: string,
+    input: { max: number; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).openSeatOverrideEditor(input);
+  }
+
+  async saveSeatOverride(alias: string, expectedSeats: number): Promise<void> {
+    await this.requireUser(alias).saveSeatOverride(expectedSeats);
+  }
+
+  async expectInviteRefusedBySeatLimit(
+    alias: string,
+    email: string,
+    expected: { limit: number; current: number },
+  ): Promise<void> {
+    await this.requireUser(alias).expectInviteRefusedBySeatLimit(email, expected);
+  }
+
+  async expectEntitlementsAudit(
+    alias: string,
+    expected: { actor: string; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).expectEntitlementsAudit(expected);
+  }
+
   async expectMemberConnections(alias: string): Promise<void> {
     await this.requireUser(alias).expectMemberConnections();
   }
@@ -3025,6 +3051,55 @@ class HubUser {
     return table
       .getByRole("row")
       .filter({ has: this.page.getByRole("cell", { name: entitlement, exact: true }) });
+  }
+
+  async openSeatOverrideEditor(input: { max: number; reason: string }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Seats")
+      .getByRole("button", { name: "Override seat limit" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Seat limit").fill(String(input.max));
+    await dialog.getByLabel("Reason").fill(input.reason);
+  }
+
+  async saveSeatOverride(expectedSeats: number): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Save override" }).click();
+    await expect(dialog).toBeHidden();
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Seats")).toContainText(String(expectedSeats));
+    await expectAccessible(this.page);
+  }
+
+  async expectInviteRefusedBySeatLimit(
+    email: string,
+    expected: { limit: number; current: number },
+  ): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    const form = await this.openInvitationForm();
+    await form.getByLabel("Invitee email").fill(email);
+    await form.getByRole("button", { name: "Create invitation" }).click();
+    await expect(form).toBeHidden();
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText("Seat limit reached");
+    await expect(alert).toContainText(`${expected.current} of ${expected.limit} seats`);
+    await expect(alert).toContainText("Entitlements page");
+    await expect(this.invitationRow(email)).toHaveCount(0);
+  }
+
+  async expectEntitlementsAudit(expected: { actor: string; reason: string }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    const auditRow = this.page
+      .getByRole("table", { name: "Audit trail" })
+      .getByRole("row")
+      .filter({ hasText: expected.reason });
+    await expect(auditRow).toContainText("Override");
+    await expect(auditRow).toContainText(expected.actor);
+    await expect(auditRow).toContainText(expected.reason);
+    await expectAccessible(this.page);
   }
 
   private async expectConnectionShell(): Promise<void> {

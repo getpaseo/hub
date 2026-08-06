@@ -214,9 +214,31 @@ export const createInvitation = createServerFn({ method: "POST" })
     }
     if (response.status === 401) return respondOk({ state: "sessionExpired" });
     if (response.status === 403) return respondOk({ state: "organizationRequired" });
+    if (response.status === 409) {
+      const denial = await readEntitlementDenial(response);
+      if (denial !== undefined) return respondError({ message: seatLimitMessage(denial) });
+    }
     if (!response.ok) return respondError({ message: "We couldn't create that invitation." });
     return respondOk({ state: "complete" });
   });
+
+const entitlementDenialSchema = z.object({
+  error: z.literal("entitlement_denied"),
+  entitlement: z.string(),
+  limit: z.number(),
+  current: z.number(),
+});
+
+async function readEntitlementDenial(
+  response: Response,
+): Promise<z.infer<typeof entitlementDenialSchema> | undefined> {
+  const parsed = entitlementDenialSchema.safeParse(await response.json().catch(() => undefined));
+  return parsed.success ? parsed.data : undefined;
+}
+
+function seatLimitMessage(denial: z.infer<typeof entitlementDenialSchema>): string {
+  return `Seat limit reached — ${denial.current} of ${denial.limit} seats are in use. An organization owner can raise the limit on the Entitlements page before inviting more members.`;
+}
 
 export const cancelInvitation = createServerFn({ method: "POST" })
   .validator(invitationIdSchema)

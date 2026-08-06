@@ -46,6 +46,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     database === null
       ? null
       : createProductionAuthServer(
+          database,
           config.databaseUrl,
           config.authPolicy,
           identity,
@@ -84,6 +85,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
 }
 
 function createProductionAuthServer(
+  database: Database,
   databaseUrl: string,
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
@@ -94,6 +96,7 @@ function createProductionAuthServer(
     return null;
   }
   return createAuthServer({
+    database,
     databaseUrl,
     secret: identity.authSecret,
     baseURL: identity.appUrl,

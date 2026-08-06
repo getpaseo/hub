@@ -24,6 +24,8 @@ import {
 } from "./organization-policy.js";
 import { invitationLockName } from "./registration-admission.js";
 import { provisionOrganization } from "../organizations/provisioning.js";
+import { EntitlementDenied } from "../entitlements/catalog.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 
 const INVITATION_LIFETIME_HOURS = 48;
 
@@ -72,6 +74,8 @@ interface OrganizationAccessOptions {
   baseURL: string;
   policy: InstanceAuthPolicy;
   apiKeys: OrganizationApiKeys;
+  /** Absent only for auth-focused test doubles that never wire a Database. */
+  entitlements?: EntitlementsService;
 }
 
 interface MembershipRow extends QueryResultRow {
@@ -157,6 +161,7 @@ export class OrganizationAccess {
       return notFound();
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
+      if (error instanceof EntitlementDenied) return entitlementDeniedResponse(error);
       logger.error({ err: error }, "account organization request failed");
       return Response.json({ error: "request_failed" }, { status: 500 });
     }
@@ -389,6 +394,19 @@ export class OrganizationAccess {
          where organization_id = $1 and status = 'pending' and expires_at <= now()`,
         [access.organization.id],
       );
+      const alreadyPending = await client.query<InvitationRow>(
+        `select id, organization_id, '' as organization_name, '' as inviter_name,
+                email, role, expires_at
+         from invitation
+         where organization_id = $1 and lower(email) = $2 and status = 'pending'
+           and expires_at > now()`,
+        [access.organization.id, email],
+      );
+      const pendingReinvite = alreadyPending.rows[0];
+      if (pendingReinvite !== undefined) return pendingReinvite;
+      // A genuinely new invitee reserves a seat, so it must fit the seat cap. Re-inviting an
+      // existing member or pending invitee (handled above) reserves nothing and is exempt.
+      await this.options.entitlements?.requireHeadroom(access.organization.id, "seats");
       const inserted = await client.query<InvitationRow>(
         `insert into invitation
           (id, organization_id, email, role, status, expires_at, inviter_id, created_at)
@@ -821,6 +839,37 @@ async function currentActorRole(
   const role = parseOrganizationRole(result.rows[0]?.role ?? "");
   if (role === undefined) throw new ProductRequestError(403, "organization_required");
   return role;
+}
+
+/**
+ * Seats in use = current members plus outstanding pending invitations. A pending invite
+ * reserves a seat so a burst of invitations can't overshoot the cap once they're accepted.
+ * This is the seats counter wired into `EntitlementsService` at composition.
+ */
+export async function countOrganizationSeatUsage(
+  pool: Pool,
+  organizationId: string,
+): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `select
+       (select count(*) from member where organization_id = $1)
+       + (select count(*) from invitation
+          where organization_id = $1 and status = 'pending' and expires_at > now()) as count`,
+    [organizationId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+function entitlementDeniedResponse(error: EntitlementDenied): Response {
+  return Response.json(
+    {
+      error: "entitlement_denied",
+      entitlement: error.entitlement,
+      limit: error.limit,
+      current: error.current,
+    },
+    { status: 409 },
+  );
 }
 
 async function lockOrganizationMembers(client: PoolClient, organizationId: string): Promise<void> {

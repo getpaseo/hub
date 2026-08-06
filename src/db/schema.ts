@@ -1029,7 +1029,7 @@ export const organizationApiKeys = pgTable(
   ],
 );
 
-export const ENTITLEMENT_CHANGE_SOURCES = ["provisioning", "plan_stamp"] as const;
+export const ENTITLEMENT_CHANGE_SOURCES = ["provisioning", "plan_stamp", "override"] as const;
 
 export const organizationEntitlements = pgTable("organization_entitlements", {
   organizationId: text("organization_id")
@@ -1064,7 +1064,7 @@ export const entitlementChanges = pgTable(
     ),
     check(
       "entitlement_changes_source_check",
-      sql`${table.source} in ('provisioning', 'plan_stamp')`,
+      sql`${table.source} in ('provisioning', 'plan_stamp', 'override')`,
     ),
   ],
 );

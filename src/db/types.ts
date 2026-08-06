@@ -702,7 +702,7 @@ export interface CreateProjectInput {
   createdByUserId: string;
 }
 
-export type EntitlementChangeSource = "provisioning" | "plan_stamp";
+export type EntitlementChangeSource = "provisioning" | "plan_stamp" | "override";
 
 export interface OrganizationEntitlementsRecord {
   organizationId: string;
@@ -722,6 +722,26 @@ export interface StampOrganizationEntitlementsInput {
   source: EntitlementChangeSource;
   actor: string | null;
   reason: string | null;
+}
+
+export interface OverrideOrganizationEntitlementsInput {
+  organizationId: string;
+  overrides: unknown;
+  actor: string | null;
+  reason: string;
+}
+
+export interface EntitlementChangeRecord {
+  id: string;
+  organizationId: string;
+  actor: string | null;
+  /** Display name resolved from the actor's user record, when one exists. */
+  actorName: string | null;
+  source: EntitlementChangeSource;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  createdAt: Date;
 }
 
 export interface InsertProjectConfigurationRevisionInput {
@@ -1016,6 +1036,10 @@ export interface Database {
   stampOrganizationEntitlements(
     input: StampOrganizationEntitlementsInput,
   ): Promise<OrganizationEntitlementsRecord>;
+  overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord>;
+  listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

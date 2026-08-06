@@ -72,6 +72,8 @@ import type {
   ProjectActivityRunListRecord,
   OrganizationEntitlementsRecord,
   StampOrganizationEntitlementsInput,
+  OverrideOrganizationEntitlementsInput,
+  EntitlementChangeRecord,
 } from "./types.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
@@ -123,6 +125,7 @@ class MemoryDatabase implements Database {
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
   private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
+  private readonly entitlementChanges: EntitlementChangeRecord[] = [];
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -1880,7 +1883,63 @@ class MemoryDatabase implements Database {
       updatedAt: now,
     };
     this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: input.source,
+      before:
+        existing === undefined
+          ? null
+          : { granted: existing.granted, overrides: existing.overrides },
+      after: { granted: record.granted, overrides: record.overrides },
+      reason: input.reason,
+    });
     return record;
+  }
+
+  async overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    if (existing === undefined) {
+      throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+    }
+    const record: OrganizationEntitlementsRecord = {
+      ...existing,
+      overrides: input.overrides,
+      updatedAt: this.now(),
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: "override",
+      before: { granted: existing.granted, overrides: existing.overrides },
+      after: { granted: record.granted, overrides: record.overrides },
+      reason: input.reason,
+    });
+    return record;
+  }
+
+  async listEntitlementChanges(
+    organizationId: string,
+    limit: number,
+  ): Promise<EntitlementChangeRecord[]> {
+    return this.entitlementChanges
+      .filter((change) => change.organizationId === organizationId)
+      .slice(-limit)
+      .toReversed();
+  }
+
+  private recordEntitlementChange(
+    input: Omit<EntitlementChangeRecord, "id" | "actorName" | "createdAt">,
+  ): void {
+    this.entitlementChanges.push({
+      ...input,
+      id: randomUUID(),
+      actorName: null,
+      createdAt: this.now(),
+    });
   }
 
   async listProjectsForOrganization(organizationId: string) {

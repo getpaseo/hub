@@ -43,6 +43,7 @@ async function main(): Promise<void> {
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
+        database,
         databaseUrl,
         baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,

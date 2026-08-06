@@ -89,6 +89,9 @@ import type {
   ProjectActivityRunRecord,
   OrganizationEntitlementsRecord,
   StampOrganizationEntitlementsInput,
+  OverrideOrganizationEntitlementsInput,
+  EntitlementChangeRecord,
+  EntitlementChangeSource,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2486,6 +2489,68 @@ class PgDatabase implements Database {
     }
   }
 
+  async overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query<OrganizationEntitlementsRow>(
+        `select * from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId],
+      );
+      const before = existing.rows[0];
+      if (before === undefined) {
+        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+      }
+      const updated = await client.query<OrganizationEntitlementsRow>(
+        `update organization_entitlements
+           set overrides = $2::jsonb, updated_at = now()
+         where organization_id = $1
+         returning *`,
+        [input.organizationId, JSON.stringify(input.overrides)],
+      );
+      const after = updated.rows[0];
+      if (after === undefined) throw new Error("entitlements override returned no row");
+      await client.query(
+        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+         values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
+        [
+          input.organizationId,
+          input.actor,
+          JSON.stringify({ granted: before.granted, overrides: before.overrides }),
+          JSON.stringify({ granted: after.granted, overrides: after.overrides }),
+          input.reason,
+        ],
+      );
+      await client.query("commit");
+      return toOrganizationEntitlementsRecord(after);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async listEntitlementChanges(
+    organizationId: string,
+    limit: number,
+  ): Promise<EntitlementChangeRecord[]> {
+    const rows = await query<EntitlementChangeRow>(
+      this.pool,
+      `select change.id, change.organization_id, change.actor, actor_user.name as actor_name,
+              change.source, change.before, change.after, change.reason, change.created_at
+       from entitlement_changes change
+       left join "user" actor_user on actor_user.id = change.actor
+       where change.organization_id = $1
+       order by change.created_at desc, change.id desc
+       limit $2`,
+      [organizationId, limit],
+    );
+    return rows.rows.map(toEntitlementChangeRecord);
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -3995,6 +4060,32 @@ function toOrganizationEntitlementsRecord(
     planVersion: row.plan_version,
     stampedAt: row.stamped_at,
     updatedAt: row.updated_at,
+  };
+}
+
+export interface EntitlementChangeRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  actor: string | null;
+  actor_name: string | null;
+  source: EntitlementChangeSource;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  created_at: Date;
+}
+
+function toEntitlementChangeRecord(row: EntitlementChangeRow): EntitlementChangeRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    actor: row.actor,
+    actorName: row.actor_name,
+    source: row.source,
+    before: row.before,
+    after: row.after,
+    reason: row.reason,
+    createdAt: row.created_at,
   };
 }
 

@@ -1,16 +1,45 @@
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useState, type FormEvent } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
+import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { Badge } from "../components/ui/badge.js";
+import { Button } from "../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog.js";
+import { Field, FieldLabel } from "../components/ui/field.js";
+import { Input } from "../components/ui/input.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import { useRouteTenant } from "../projects/context.js";
+import type { EntitlementChangeSource } from "../db/types.js";
+import type { EntitlementPatch } from "./catalog.js";
 import type { EntitlementsDashboard } from "./dashboard.js";
-import { entitlementsSnapshot } from "./functions.js";
+import { entitlementsOverride, entitlementsSnapshot } from "./functions.js";
 
 type EntitlementsSnapshot = Awaited<ReturnType<EntitlementsDashboard["snapshot"]>>;
+type OverrideResult = Awaited<ReturnType<typeof entitlementsOverride>>;
+
+/** Which entitlement an override dialog is editing, carrying the value to prefill. */
+type OverrideTarget =
+  | { kind: "seats"; max: number | null }
+  | { kind: "canInviteMembers"; value: boolean };
 
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "Entitlement" },
@@ -20,6 +49,21 @@ const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "", align: "end" },
 ];
 const ENTITLEMENTS_EMPTY = { title: "No entitlements" };
+const AUDIT_COLUMNS: readonly DataColumn[] = [
+  { header: "Change" },
+  { header: "Actor" },
+  { header: "Reason" },
+  { header: "When", align: "end" },
+];
+const AUDIT_EMPTY = {
+  title: "No changes yet",
+  description: "Provisioning, plan stamps, and overrides appear here.",
+};
+const SOURCE_LABELS: Record<EntitlementChangeSource, string> = {
+  provisioning: "Provisioning",
+  plan_stamp: "Plan",
+  override: "Override",
+};
 
 export function OrganizationEntitlementsPanel() {
   const tenant = useRouteTenant();
@@ -42,11 +86,23 @@ export function OrganizationEntitlementsPanel() {
       </Alert>
     );
   }
-  return <EntitlementsContent snapshot={query.data.data} />;
+  return <EntitlementsContent snapshot={query.data.data} slug={tenant.organization.slug} />;
 }
 
-function EntitlementsContent({ snapshot }: { snapshot: EntitlementsSnapshot }) {
+function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapshot; slug: string }) {
   const { effective, granted, overrides } = snapshot.entitlements;
+  const canManage = snapshot.capabilities.manageResources;
+  const [target, setTarget] = useState<OverrideTarget | null>(null);
+  const closeEditor = useCallback(() => setTarget(null), []);
+  const editSeats = useCallback(
+    () => setTarget({ kind: "seats", max: effective.seats.max }),
+    [effective.seats.max],
+  );
+  const editInvites = useCallback(
+    () => setTarget({ kind: "canInviteMembers", value: effective.canInviteMembers }),
+    [effective.canInviteMembers],
+  );
+
   return (
     <>
       <PageHeader
@@ -70,7 +126,13 @@ function EntitlementsContent({ snapshot }: { snapshot: EntitlementsSnapshot }) {
               {overrides.seats?.max === undefined ? "—" : seatLimitLabel(overrides.seats.max)}
             </DataCell>
             <DataCell>{seatLimitLabel(effective.seats.max)}</DataCell>
-            <DataCell align="end">{null}</DataCell>
+            <DataCell align="end">
+              <OverrideAction
+                canManage={canManage}
+                label="Override seat limit"
+                onClick={editSeats}
+              />
+            </DataCell>
           </DataRow>
           <DataRow>
             <DataCell>Members can invite</DataCell>
@@ -87,11 +149,198 @@ function EntitlementsContent({ snapshot }: { snapshot: EntitlementsSnapshot }) {
             <DataCell>
               <InviteBadge canInvite={effective.canInviteMembers} />
             </DataCell>
-            <DataCell align="end">{null}</DataCell>
+            <DataCell align="end">
+              <OverrideAction
+                canManage={canManage}
+                label="Override members can invite"
+                onClick={editInvites}
+              />
+            </DataCell>
           </DataRow>
         </DataTable>
       </Section>
+      <Section
+        title="Audit trail"
+        description="Every provisioning, plan stamp, and override, most recent first."
+      >
+        <AuditTrail history={snapshot.history} />
+      </Section>
+      {canManage && target !== null && (
+        <OverrideDialog target={target} slug={slug} onClose={closeEditor} />
+      )}
     </>
+  );
+}
+
+function OverrideAction({
+  canManage,
+  label,
+  onClick,
+}: {
+  canManage: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  if (!canManage) return null;
+  return (
+    <Button type="button" variant="outline" size="sm" aria-label={label} onClick={onClick}>
+      Override
+    </Button>
+  );
+}
+
+function OverrideDialog({
+  target,
+  slug,
+  onClose,
+}: {
+  target: OverrideTarget;
+  slug: string;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const save = useMutation({
+    mutationFn: useServerFn(entitlementsOverride) as (
+      input: Parameters<typeof entitlementsOverride>[0],
+    ) => Promise<OverrideResult>,
+    onSuccess: async (result) => {
+      if (result.status !== "ok") return;
+      await queryClient.invalidateQueries({ queryKey: ["entitlements"] });
+      onClose();
+    },
+  });
+  const error = save.data?.status === "error" ? save.data.error.message : undefined;
+
+  const submit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      save.mutate({
+        data: {
+          organizationSlug: slug,
+          patch: patchFrom(target, data),
+          reason: formText(data, "reason").trim(),
+        },
+      });
+    },
+    [save, slug, target],
+  );
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) onClose();
+    },
+    [onClose],
+  );
+
+  return (
+    <Dialog open onOpenChange={handleOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{overrideTitle(target)}</DialogTitle>
+          <DialogDescription>
+            Overrides are hand-set and survive plan changes. Every override is recorded in the audit
+            trail with the reason you give.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} aria-label="Override entitlement" className="grid gap-6">
+          {target.kind === "seats" ? (
+            <SeatsControl max={target.max} />
+          ) : (
+            <InviteControl value={target.value} />
+          )}
+          <Field>
+            <FieldLabel htmlFor="override-reason">Reason</FieldLabel>
+            <Input
+              id="override-reason"
+              name="reason"
+              required
+              maxLength={500}
+              placeholder="Why is this override being made?"
+            />
+          </Field>
+          {error !== undefined && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <DialogFooter>
+            <Button type="submit" disabled={save.isPending}>
+              Save override
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SeatsControl({ max }: { max: number | null }) {
+  return (
+    <Field>
+      <FieldLabel htmlFor="override-seats">Seat limit</FieldLabel>
+      <Input
+        id="override-seats"
+        name="seats"
+        type="number"
+        min={1}
+        step={1}
+        defaultValue={max === null ? "" : String(max)}
+        placeholder="Leave blank for unlimited"
+      />
+    </Field>
+  );
+}
+
+function InviteControl({ value }: { value: boolean }) {
+  const [choice, setChoice] = useState(value ? "allowed" : "blocked");
+  return (
+    <Field>
+      <FieldLabel htmlFor="override-invite">Members can invite</FieldLabel>
+      <Select name="invite" value={choice} onValueChange={setChoice}>
+        <SelectTrigger id="override-invite" className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="allowed">Allowed</SelectItem>
+          <SelectItem value="blocked">Not allowed</SelectItem>
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function AuditTrail({ history }: { history: EntitlementsSnapshot["history"] }) {
+  return (
+    <DataTable
+      label="Audit trail"
+      columns={AUDIT_COLUMNS}
+      isEmpty={history.length === 0}
+      empty={AUDIT_EMPTY}
+    >
+      {history.map((entry) => (
+        <DataRow key={entry.id}>
+          <DataCell>
+            <div className="flex flex-col gap-1">
+              <Badge variant={sourceBadgeVariant(entry.source)}>
+                {SOURCE_LABELS[entry.source]}
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                {effectiveLabel(entry.effective)}
+              </span>
+            </div>
+          </DataCell>
+          <DataCell muted>{entry.actorName ?? "System"}</DataCell>
+          <DataCell muted className="max-w-xs">
+            <span className="block truncate" title={entry.reason ?? undefined}>
+              {entry.reason ?? "—"}
+            </span>
+          </DataCell>
+          <DataCell align="end" muted>
+            <RelativeTime value={entry.createdAt} />
+          </DataCell>
+        </DataRow>
+      ))}
+    </DataTable>
   );
 }
 
@@ -101,6 +350,34 @@ function InviteBadge({ canInvite }: { canInvite: boolean }) {
       {canInvite ? "Allowed" : "Not allowed"}
     </StatusPill>
   );
+}
+
+function patchFrom(target: OverrideTarget, data: FormData): EntitlementPatch {
+  if (target.kind === "seats") {
+    const raw = formText(data, "seats").trim();
+    return { seats: { max: raw === "" ? null : Number(raw) } };
+  }
+  return { canInviteMembers: data.get("invite") === "allowed" };
+}
+
+function formText(data: FormData, name: string): string {
+  const value = data.get(name);
+  return typeof value === "string" ? value : "";
+}
+
+function overrideTitle(target: OverrideTarget): string {
+  return target.kind === "seats" ? "Override seat limit" : "Override members can invite";
+}
+
+function effectiveLabel(effective: EntitlementsSnapshot["entitlements"]["effective"]): string {
+  const invite = effective.canInviteMembers ? "Allowed" : "Not allowed";
+  return `Seats: ${seatLimitLabel(effective.seats.max)} · Invites: ${invite}`;
+}
+
+function sourceBadgeVariant(source: EntitlementChangeSource): "default" | "secondary" | "outline" {
+  if (source === "override") return "default";
+  if (source === "plan_stamp") return "secondary";
+  return "outline";
 }
 
 function seatLimitLabel(max: number | null): string {

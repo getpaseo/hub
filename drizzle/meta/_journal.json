@@ -176,6 +176,13 @@
       "when": 1786057714090,
       "tag": "0024_flippant_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786059695125,
+      "tag": "0025_heavy_sumo",
+      "breakpoints": true
     }
   ]
 }

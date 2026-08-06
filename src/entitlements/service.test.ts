@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import { effectiveEntitlements, hashTemplate, UNLIMITED_TEMPLATE } from "./catalog.js";
-import { EntitlementsService } from "./service.js";
+import type { Database } from "../db/types.js";
+import {
+  EntitlementDenied,
+  effectiveEntitlements,
+  hashTemplate,
+  UNLIMITED_TEMPLATE,
+} from "./catalog.js";
+import { EntitlementsService, type EntitlementCounters } from "./service.js";
+
+function serviceWith(
+  database: Database = createMemoryDatabase(),
+  counters: EntitlementCounters = { seats: async () => 0 },
+): EntitlementsService {
+  return new EntitlementsService(database, counters);
+}
 
 describe("EntitlementsService", () => {
   it("throws reading an organization that was never stamped", async () => {
-    const service = new EntitlementsService(createMemoryDatabase());
-    await assert.rejects(() => service.read("org-1"));
+    await assert.rejects(() => serviceWith().read("org-1"));
   });
 
   it("stamps the unlimited default template and reads it back as effective", async () => {
-    const service = new EntitlementsService(createMemoryDatabase());
+    const service = serviceWith();
     await service.stamp("org-1", UNLIMITED_TEMPLATE, {
       source: "provisioning",
       planId: null,
@@ -28,8 +40,7 @@ describe("EntitlementsService", () => {
   });
 
   it("re-stamping replaces granted without touching overrides", async () => {
-    const database = createMemoryDatabase();
-    const service = new EntitlementsService(database);
+    const service = serviceWith();
     await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
     const capped = { seats: { max: 3 }, canInviteMembers: false };
 
@@ -42,7 +53,7 @@ describe("EntitlementsService", () => {
   });
 
   it("rejects stamping an invalid template", async () => {
-    const service = new EntitlementsService(createMemoryDatabase());
+    const service = serviceWith();
     await assert.rejects(() =>
       service.stamp(
         "org-1",
@@ -50,6 +61,98 @@ describe("EntitlementsService", () => {
         { source: "provisioning", planId: null },
       ),
     );
+  });
+
+  it("keeps an override intact across a later plan re-stamp", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override("org-1", { seats: { max: 2 } }, "admin-1", "Custom deal");
+
+    // The whole point of the granted/overrides split: a plan sync writes granted and must
+    // never clobber a hand-set override.
+    await service.stamp(
+      "org-1",
+      { seats: { max: 25 }, canInviteMembers: true },
+      { source: "plan_stamp", planId: "plan-team" },
+    );
+    const record = await service.read("org-1");
+
+    assert.deepEqual(record.granted, { seats: { max: 25 }, canInviteMembers: true });
+    assert.deepEqual(record.overrides, { seats: { max: 2 } });
+    assert.equal(record.effective.seats.max, 2);
+  });
+
+  it("merges successive override patches without dropping earlier keys", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override("org-1", { seats: { max: 4 } }, "admin-1", "Cap seats");
+    await service.override("org-1", { canInviteMembers: false }, "admin-1", "Freeze invites");
+
+    const record = await service.read("org-1");
+    assert.deepEqual(record.overrides, { seats: { max: 4 }, canInviteMembers: false });
+  });
+
+  it("allows headroom under the cap and denies it at the cap", async () => {
+    let seatsInUse = 1;
+    const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });
+    await service.stamp(
+      "org-1",
+      { seats: { max: 2 }, canInviteMembers: true },
+      { source: "plan_stamp", planId: "plan-solo" },
+    );
+
+    await service.requireHeadroom("org-1", "seats");
+
+    seatsInUse = 2;
+    const denied = await service.requireHeadroom("org-1", "seats").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(denied instanceof EntitlementDenied);
+    assert.equal(denied.entitlement, "seats");
+    assert.equal(denied.limit, 2);
+    assert.equal(denied.current, 2);
+  });
+
+  it("never denies headroom for an unlimited cap", async () => {
+    const service = serviceWith(createMemoryDatabase(), { seats: async () => 9999 });
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.requireHeadroom("org-1", "seats");
+  });
+
+  it("enforces an overridden cap even when the plan grants more", async () => {
+    let seatsInUse = 2;
+    const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override("org-1", { seats: { max: 2 } }, "admin-1", "Trial cap");
+
+    const denied = await service.requireHeadroom("org-1", "seats").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(denied instanceof EntitlementDenied);
+
+    seatsInUse = 1;
+    await service.requireHeadroom("org-1", "seats");
+  });
+
+  it("records the audit trail newest first with actor and reason", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, {
+      source: "provisioning",
+      planId: null,
+      actor: "owner-1",
+    });
+    await service.override("org-1", { seats: { max: 2 } }, "owner-1", "Founding-team cap");
+
+    const history = await service.history("org-1", 10);
+
+    assert.equal(history.length, 2);
+    assert.equal(history[0]?.source, "override");
+    assert.equal(history[0]?.actor, "owner-1");
+    assert.equal(history[0]?.reason, "Founding-team cap");
+    assert.equal(history[0]?.effective.seats.max, 2);
+    assert.equal(history[1]?.source, "provisioning");
   });
 });
 

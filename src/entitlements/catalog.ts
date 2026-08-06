@@ -37,10 +37,55 @@ export const entitlementOverridesSchema = z
 
 export type EntitlementOverrides = z.infer<typeof entitlementOverridesSchema>;
 
+/** A patch is the set of hand-adjustments an admin applies over the granted template. */
+export type EntitlementPatch = EntitlementOverrides;
+
+/** Caps carry a numeric limit checked against a live count by `requireHeadroom`. */
+export type CapKey = "seats";
+
 export const UNLIMITED_TEMPLATE: EntitlementTemplate = {
   seats: { max: null },
   canInviteMembers: true,
 };
+
+/** The effective limit for a cap, or null when the cap is unlimited. */
+export function capLimit(effective: Entitlements, cap: CapKey): number | null {
+  const limits: Record<CapKey, number | null> = {
+    seats: effective.seats.max,
+  };
+  return limits[cap];
+}
+
+/**
+ * Fold a patch into the existing overrides. Leaves in the patch win; keys the patch
+ * omits keep their existing override. `granted` is never involved — a plan sync writes
+ * `granted`, an admin writes `overrides`, and the two never touch.
+ */
+export function mergeOverrides(
+  existing: EntitlementOverrides,
+  patch: EntitlementPatch,
+): EntitlementOverrides {
+  return entitlementOverridesSchema.parse({
+    ...existing,
+    ...patch,
+    ...(patch.seats === undefined ? {} : { seats: { ...existing.seats, ...patch.seats } }),
+  });
+}
+
+/**
+ * Thrown when a capped entitlement has no headroom left. Mapped to a machine-readable
+ * HTTP payload once at each boundary — never caught and reshaped per call site.
+ */
+export class EntitlementDenied extends Error {
+  constructor(
+    readonly entitlement: CapKey,
+    readonly limit: number,
+    readonly current: number,
+  ) {
+    super(`entitlement denied: ${entitlement} (${current}/${limit})`);
+    this.name = "EntitlementDenied";
+  }
+}
 
 /** overrides always wins; a missing key falls back to the granted value. */
 export function effectiveEntitlements(
