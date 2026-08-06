@@ -164,6 +164,24 @@ describe("public API interface", () => {
       {
         operations: {
           ...successfulOperations(),
+          installConfiguration: () =>
+            Promise.resolve({
+              status: "invalid_bundle",
+              issues: [
+                {
+                  path: ["partials", 0, "path"],
+                  message: "partial file is not referenced by the configuration",
+                },
+              ],
+            }),
+        },
+        request: installRequest("/api/v1/configurations/install"),
+        status: 422,
+        code: "invalid_configuration_bundle",
+      },
+      {
+        operations: {
+          ...successfulOperations(),
           dispatchManualRun: () => Promise.resolve({ status: "daemon_offline" }),
         },
         request: manualRequest("/api/v1/manual-runs"),
@@ -312,6 +330,13 @@ describe("generated public OpenAPI", () => {
     assert.deepEqual(publicOpenApiDocument.servers, [
       { url: "/", description: "This Hub instance" },
     ]);
+    const partialSchema = publicOpenApiDocument.components?.schemas?.["ConfigurationPartial"];
+    assert.ok(partialSchema);
+    assert.deepEqual(Reflect.get(partialSchema, "required"), ["path", "content"]);
+    assert.deepEqual(Reflect.get(partialSchema, "properties"), {
+      path: { type: "string", minLength: 1, maxLength: 512 },
+      content: { type: "string", maxLength: 1000000 },
+    });
   });
 
   it("keeps runtime dispatch and OpenAPI registration in parity with the operation manifest", () => {

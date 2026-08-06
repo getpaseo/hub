@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 export const PROMPT_PARTIAL_ROOT = ".paseo/partials";
+export const MAX_PROMPT_PARTIAL_COUNT = 100;
+export const MAX_PROMPT_PARTIAL_PATH_LENGTH = 512;
+export const MAX_PROMPT_PARTIAL_CONTENT_BYTES = 1_000_000;
+export const MAX_PROMPT_PARTIAL_BUNDLE_BYTES = 5_000_000;
 
 export interface ResolvedPromptPartial {
   path: string;
@@ -9,6 +13,16 @@ export interface ResolvedPromptPartial {
 }
 
 export type ResolvedPromptPartials = ReadonlyMap<string, ResolvedPromptPartial>;
+
+export interface PromptPartialBundleFile {
+  path: string;
+  content: string;
+}
+
+export interface PromptPartialBundleIssue {
+  path: readonly (string | number)[];
+  message: string;
+}
 
 export type PromptPartialReadResult =
   | { kind: "file"; content: string }
@@ -20,6 +34,13 @@ export class PromptPartialResolutionError extends Error {
   constructor(message: string) {
     super(`invalid prompt partial: ${message}`);
     this.name = "PromptPartialResolutionError";
+  }
+}
+
+export class PromptPartialBundleError extends Error {
+  constructor(readonly issues: readonly PromptPartialBundleIssue[]) {
+    super("invalid prompt partial bundle");
+    this.name = "PromptPartialBundleError";
   }
 }
 
@@ -99,6 +120,120 @@ export async function resolvePromptPartials(input: {
     });
   }
   return resolved;
+}
+
+export async function resolvePromptPartialsFromBundle(input: {
+  configuration: unknown;
+  files: readonly PromptPartialBundleFile[];
+}): Promise<ResolvedPromptPartials> {
+  const normalizedFiles = new Map<string, { index: number; content: string }>();
+  const issues: PromptPartialBundleIssue[] = [];
+  let bundleBytes = 0;
+
+  if (input.files.length > MAX_PROMPT_PARTIAL_COUNT) {
+    issues.push({
+      path: ["partials"],
+      message: `bundle contains ${input.files.length} files; the limit is ${MAX_PROMPT_PARTIAL_COUNT}`,
+    });
+  }
+
+  for (const [index, file] of input.files.entries()) {
+    const contentBytes = Buffer.byteLength(file.content, "utf8");
+    bundleBytes += contentBytes;
+    if (contentBytes > MAX_PROMPT_PARTIAL_CONTENT_BYTES) {
+      issues.push({
+        path: ["partials", index, "content"],
+        message: `content exceeds the ${MAX_PROMPT_PARTIAL_CONTENT_BYTES}-byte limit`,
+      });
+    }
+    let path: string;
+    try {
+      path = validatePromptPartialPath(file.path);
+    } catch (error) {
+      issues.push({
+        path: ["partials", index, "path"],
+        message: error instanceof Error ? error.message : "path is unsafe",
+      });
+      continue;
+    }
+    if (path.length > MAX_PROMPT_PARTIAL_PATH_LENGTH) {
+      issues.push({
+        path: ["partials", index, "path"],
+        message: `path exceeds the ${MAX_PROMPT_PARTIAL_PATH_LENGTH}-character limit`,
+      });
+      continue;
+    }
+    if (normalizedFiles.has(path)) {
+      issues.push({
+        path: ["partials", index, "path"],
+        message: `duplicate partial path after normalization: ${path}`,
+      });
+      continue;
+    }
+    normalizedFiles.set(path, { index, content: file.content });
+  }
+
+  if (bundleBytes > MAX_PROMPT_PARTIAL_BUNDLE_BYTES) {
+    issues.push({
+      path: ["partials"],
+      message: `combined content exceeds the ${MAX_PROMPT_PARTIAL_BUNDLE_BYTES}-byte limit`,
+    });
+  }
+
+  let requestedPaths: readonly string[] = [];
+  try {
+    requestedPaths = collectPromptPartialPaths(input.configuration);
+  } catch (error) {
+    issues.push({
+      path: ["yaml"],
+      message: error instanceof Error ? error.message : "include path is invalid",
+    });
+  }
+
+  const requested = new Set(requestedPaths);
+  for (const path of [...requested].sort()) {
+    if (!normalizedFiles.has(path)) {
+      issues.push({
+        path: ["partials", path],
+        message: `partial file is required by the configuration but was not supplied: ${path}`,
+      });
+    }
+  }
+  for (const [path, file] of [...normalizedFiles.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    if (!requested.has(path)) {
+      issues.push({
+        path: ["partials", file.index, "path"],
+        message: `partial file is not referenced by the configuration: ${path}`,
+      });
+    }
+  }
+
+  if (issues.length > 0) throw new PromptPartialBundleError(issues);
+
+  try {
+    return await resolvePromptPartials({
+      configuration: input.configuration,
+      read: async (path) => {
+        const file = normalizedFiles.get(path);
+        return file === undefined ? undefined : { kind: "file", content: file.content };
+      },
+    });
+  } catch (error) {
+    if (error instanceof PromptPartialResolutionError) {
+      throw new PromptPartialBundleError([{ path: ["partials"], message: error.message }]);
+    }
+    throw error;
+  }
+}
+
+export function resolvedPromptPartialsEvidence(
+  partials: ResolvedPromptPartials,
+): readonly { path: string; content: string; contentHash: string }[] {
+  return [...partials.values()]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map(({ path, content, contentHash }) => ({ path, content, contentHash }));
 }
 
 function decodePromptPartialPath(value: string): string {

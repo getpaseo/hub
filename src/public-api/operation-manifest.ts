@@ -55,7 +55,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     resultMapping: "configuration",
     summary: "Install and activate configuration",
     description:
-      "Validates YAML, strips optional project deployment metadata, records a configuration revision, and atomically activates it.",
+      "Validates YAML, strips optional project deployment metadata, resolves explicitly supplied prompt partials, records a configuration revision, and atomically activates it.",
     tag: "Configurations",
     responses: {
       201: "The new configuration revision is active.",
@@ -63,7 +63,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
       401: "The API key is missing, malformed, or revoked.",
       403: "The API key lacks configuration:install.",
       404: "The project does not exist in the key's organization.",
-      422: "The YAML or Hub configuration is invalid.",
+      422: "The YAML, supplied prompt partial bundle, or Hub configuration is invalid.",
       500: "The operation failed unexpectedly.",
       503: "Hub authentication or storage is unavailable.",
     },
