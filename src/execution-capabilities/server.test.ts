@@ -435,6 +435,46 @@ describe("execution capability MCP boundary", () => {
     assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
   });
 
+  it("keeps finish recoverable until a required output is emitted", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 1, undefined, false, [
+      "slack.reply",
+    ]);
+
+    const missing = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(missing.result).isError, true);
+    const missingText = z
+      .object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })) })
+      .parse(missing.result).content[0]?.text;
+    assert.match(missingText ?? "", /slack\.reply/iu);
+    assert.match(missingText ?? "", /`reply`/u);
+    assert.match(missingText ?? "", /retry `finish_execution`/u);
+    assert.deepEqual(fixture.completions, []);
+    assert.equal(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.status,
+      "spawning",
+    );
+
+    const reply = await fixture.call("tools/call", {
+      name: "reply",
+      arguments: { content: "hello" },
+    });
+    assert.equal(ToolResultSchema.parse(reply.result).isError, undefined);
+    assert.deepEqual(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.outputEmissions,
+      { "slack.reply": 1 },
+    );
+
+    const completed = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(completed.result).isError, undefined);
+    assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
+  });
+
   it("claims before one reply and rejects a concurrent duplicate with one outbound call", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -524,6 +564,7 @@ async function capabilityFixture(
   maxReplies = 1,
   outputSchema?: JsonValue,
   autoArchive = false,
+  requiredOutputTypes: readonly string[] = [],
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
@@ -537,7 +578,7 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive),
+    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes),
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
@@ -662,6 +703,7 @@ function launchIntent(
   maxReplies = 1,
   outputSchema?: JsonValue,
   autoArchive = false,
+  requiredOutputTypes: readonly string[] = [],
 ): LaunchMachineIntent {
   return {
     kind: "launch_machine",
@@ -678,7 +720,13 @@ function launchIntent(
     },
     prompt: "reply",
     agent: { provider: "codex", mode: "full-access" },
-    allowOutputs: [{ type: "slack.reply", max: maxReplies }],
+    allowOutputs: [
+      {
+        type: "slack.reply",
+        max: maxReplies,
+        ...(requiredOutputTypes.includes("slack.reply") ? { required: true } : {}),
+      },
+    ],
     autoArchive,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,

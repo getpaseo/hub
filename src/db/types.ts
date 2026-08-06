@@ -100,6 +100,7 @@ export interface AgentExecutionRecord {
   completionTokenHash: string | null;
   replyClaimedAt: Date | null;
   replyClaimCount: number;
+  outputEmissions: Readonly<Record<string, number>>;
   launchIntent: LaunchMachineIntent | null;
   daemonId: string | null;
   daemonAgentId: string | null;
@@ -946,6 +947,10 @@ export interface Database {
     maxReplies: number,
     claimedAt: Date,
   ): Promise<boolean>;
+  recordAgentExecutionOutput(
+    executionId: string,
+    outputType: string,
+  ): Promise<AgentExecutionRecord | undefined>;
   transitionAgentExecution(
     id: string,
     toStatus: AgentExecutionStatus,

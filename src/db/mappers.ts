@@ -147,6 +147,7 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     completionTokenHash: row.completion_token_hash,
     replyClaimedAt: row.reply_claimed_at,
     replyClaimCount: row.reply_claim_count,
+    outputEmissions: toOutputEmissions(row.output_emissions),
     launchIntent: row.launch_intent,
     daemonId: row.daemon_id,
     daemonAgentId: row.daemon_agent_id,
@@ -156,6 +157,17 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     hubActionReadyAt: row.hub_action_ready_at,
     hubActionAcknowledgements: toAgentExecutionHubAcknowledgements(row.hub_action_acknowledgements),
   };
+}
+
+function toOutputEmissions(value: unknown): Readonly<Record<string, number>> {
+  if (!isRecord(value)) return {};
+  const emissions: Record<string, number> = {};
+  for (const [type, count] of Object.entries(value)) {
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+      emissions[type] = count;
+    }
+  }
+  return emissions;
 }
 
 function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubAcknowledgements {

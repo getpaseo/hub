@@ -1209,6 +1209,26 @@ describe("agent execution PostgreSQL repository", () => {
       await fixture.database.close();
     }
   });
+
+  it("persists successful output emissions independently of reply claims", async () => {
+    const fixture = await executionFixture(postgres);
+    try {
+      await Promise.all([
+        fixture.database.recordAgentExecutionOutput(fixture.execution.id, "discord.reply"),
+        fixture.database.recordAgentExecutionOutput(fixture.execution.id, "discord.reply"),
+        fixture.database.recordAgentExecutionOutput(fixture.execution.id, "slack.reply"),
+      ]);
+
+      const persisted = await fixture.database.findAgentExecutionById(fixture.execution.id);
+      assert.deepEqual(persisted?.outputEmissions, {
+        "discord.reply": 2,
+        "slack.reply": 1,
+      });
+      assert.equal(persisted?.replyClaimCount, 0);
+    } finally {
+      await fixture.database.close();
+    }
+  });
 });
 
 function launchIntent(

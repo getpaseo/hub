@@ -49,6 +49,26 @@ const PromptBlockSchema = z.union([
 ]);
 const JsonSchemaSchema = z.record(z.string(), z.unknown());
 
+const AllowOutputSchema = z
+  .object({
+    type: z.string().regex(EVENT_NAME),
+    max: z.number().int().nonnegative().optional(),
+    required: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((output, context) => {
+    if (output.max === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["max"],
+        message:
+          output.required === true
+            ? "required outputs must have max at least 1"
+            : "output max must be greater than 0",
+      });
+    }
+  });
+
 const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
@@ -127,16 +147,7 @@ const StepSchema = z
     prompt: z.array(PromptBlockSchema).min(1),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
-    allow_outputs: z
-      .array(
-        z
-          .object({
-            type: z.string().regex(EVENT_NAME),
-            max: z.number().int().positive().optional(),
-          })
-          .strict(),
-      )
-      .optional(),
+    allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
   })
   .strict();
@@ -200,7 +211,7 @@ export interface CompiledStep {
   prompt: readonly CompiledPromptBlock[];
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
-  allowOutputs: readonly { type: string; max: number }[];
+  allowOutputs: readonly { type: string; max: number; required: boolean }[];
   autoArchive: boolean;
 }
 
@@ -313,7 +324,13 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
-      z.object({ type: z.string().regex(EVENT_NAME), max: z.number().int().positive() }).strict(),
+      z
+        .object({
+          type: z.string().regex(EVENT_NAME),
+          max: z.number().int().positive(),
+          required: z.boolean().default(false),
+        })
+        .strict(),
     ),
     autoArchive: z.boolean(),
   })
@@ -474,6 +491,7 @@ function compileStep(
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
       type: allowOutput.type,
       max: allowOutput.max ?? 1,
+      required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
   };

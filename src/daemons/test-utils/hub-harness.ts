@@ -1268,6 +1268,7 @@ export class HubHarness {
     const port = await availablePort();
     this.origin = `http://127.0.0.1:${port}`;
     const registry = new OutputExecutorRegistry();
+    registry.register("discord.reply", async () => undefined);
     const application = createHubApplication({
       database: this.databaseForApplication(),
       providers: [this.recordingProvider()],

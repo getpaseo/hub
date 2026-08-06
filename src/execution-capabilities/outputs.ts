@@ -1,6 +1,7 @@
 export interface AllowedOutput {
   type: string;
   max: number;
+  required?: boolean;
 }
 
 export interface OutputExecutionInput {

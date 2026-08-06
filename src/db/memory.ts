@@ -1215,6 +1215,7 @@ class MemoryDatabase implements Database {
       completionTokenHash: input.completionTokenHash ?? null,
       replyClaimedAt: null,
       replyClaimCount: 0,
+      outputEmissions: {},
       launchIntent: input.launchIntent ?? null,
       daemonId: input.daemonId ?? null,
       daemonAgentId: null,
@@ -1597,6 +1598,21 @@ class MemoryDatabase implements Database {
       replyClaimCount: execution.replyClaimCount + 1,
     });
     return true;
+  }
+
+  async recordAgentExecutionOutput(
+    executionId: string,
+    outputType: string,
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (execution === undefined) return undefined;
+    const count = execution.outputEmissions[outputType] ?? 0;
+    const updated: AgentExecutionRecord = {
+      ...execution,
+      outputEmissions: { ...execution.outputEmissions, [outputType]: count + 1 },
+    };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
   }
 
   async transitionAgentExecution(

@@ -1997,6 +1997,30 @@ class PgDatabase implements Database {
     return rows.rowCount === 1;
   }
 
+  async recordAgentExecutionOutput(
+    executionId: string,
+    outputType: string,
+  ): Promise<AgentExecutionRecord | undefined> {
+    try {
+      const rows = await query<AgentExecutionRow>(
+        this.pool,
+        `update agent_executions
+         set output_emissions = jsonb_set(
+           coalesce(output_emissions, '{}'::jsonb),
+           array[$2::text],
+           to_jsonb(coalesce((coalesce(output_emissions, '{}'::jsonb)->>$2)::integer, 0) + 1),
+           true
+         )
+         where id = $1
+         returning *`,
+        [executionId, outputType],
+      );
+      return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
   async transitionAgentExecution(
     id: string,
     toStatus: AgentExecutionStatus,
@@ -3645,6 +3669,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   completion_token_hash: string | null;
   reply_claimed_at: Date | null;
   reply_claim_count: number;
+  output_emissions: unknown;
   launch_intent: AgentExecutionRecord["launchIntent"];
   daemon_id: string | null;
   daemon_agent_id: string | null;
