@@ -549,6 +549,7 @@ export const agentExecutions = pgTable(
     replyClaimedAt: timestamp("reply_claimed_at", { withTimezone: true }),
     replyClaimCount: integer("reply_claim_count").default(0).notNull(),
     outputEmissions: jsonb("output_emissions").notNull().default({}),
+    outputDeliveryAttempts: jsonb("output_delivery_attempts").notNull().default({}),
     launchIntent: jsonb("launch_intent"),
     daemonId: uuid("daemon_id"),
     daemonAgentId: text("daemon_agent_id"),

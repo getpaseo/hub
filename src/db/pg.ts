@@ -1,4 +1,5 @@
 import { basename, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
@@ -23,6 +24,7 @@ import {
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type {
+  AgentExecutionOutputAttempt,
   AgentExecutionRecord,
   AttachmentProvider,
   AttachmentRecord,
@@ -90,6 +92,7 @@ import type {
 const QUERY_DEADLINE_MS = 3_000;
 const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
+const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 function transitionWithTerminalRun(
   transition: TransitionAgentExecutionResult,
@@ -1978,46 +1981,187 @@ class PgDatabase implements Database {
     };
   }
 
-  async claimAgentExecutionReply(
-    executionId: string,
-    maxReplies: number,
-    claimedAt: Date,
-  ): Promise<boolean> {
-    const rows = await query(
-      this.pool,
-      `update agent_executions
-       set reply_claimed_at = coalesce(reply_claimed_at, $3),
-           reply_claim_count = reply_claim_count + 1
-       where id = $1
-         and reply_claim_count < $2
-         and status in ('spawning', 'running')
-       returning id`,
-      [executionId, maxReplies, claimedAt],
-    );
-    return rows.rowCount === 1;
-  }
-
-  async recordAgentExecutionOutput(
+  async beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
-  ): Promise<AgentExecutionRecord | undefined> {
+    maxOutputs: number,
+    startedAt: Date,
+  ): Promise<AgentExecutionOutputAttempt | undefined> {
+    const client = await this.pool.connect();
     try {
-      const rows = await query<AgentExecutionRow>(
-        this.pool,
+      await client.query("begin");
+      const selected = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1 for update`,
+        [executionId],
+      );
+      const row = selected.rows[0];
+      if (row === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      const execution = toAgentExecutionRecord(row);
+      const activeAttempts = Object.values(execution.outputDeliveryAttempts).filter(
+        (attempt) =>
+          attempt.outputType === outputType &&
+          attempt.status === "pending" &&
+          attempt.leaseExpiresAt > startedAt,
+      ).length;
+      if (
+        maxOutputs < 1 ||
+        (execution.status !== "spawning" && execution.status !== "running") ||
+        (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs
+      ) {
+        await client.query("commit");
+        return undefined;
+      }
+      const attempt: AgentExecutionOutputAttempt = {
+        id: randomUUID(),
+        outputType,
+        status: "pending",
+        startedAt,
+        leaseExpiresAt: new Date(startedAt.getTime() + OUTPUT_ATTEMPT_LEASE_MS),
+        completedAt: null,
+      };
+      await client.query(
         `update agent_executions
-         set output_emissions = jsonb_set(
-           coalesce(output_emissions, '{}'::jsonb),
-           array[$2::text],
-           to_jsonb(coalesce((coalesce(output_emissions, '{}'::jsonb)->>$2)::integer, 0) + 1),
-           true
-         )
+         set output_delivery_attempts = $2::jsonb
+         where id = $1`,
+        [
+          executionId,
+          JSON.stringify({
+            ...execution.outputDeliveryAttempts,
+            [attempt.id]: attempt,
+          }),
+        ],
+      );
+      await client.query("commit");
+      return attempt;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async completeAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    completedAt: Date,
+  ): Promise<AgentExecutionRecord | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1 for update`,
+        [executionId],
+      );
+      const row = selected.rows[0];
+      if (row === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      const execution = toAgentExecutionRecord(row);
+      const attempt = execution.outputDeliveryAttempts[attemptId];
+      if (attempt === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      if (attempt.status === "succeeded") {
+        await client.query("commit");
+        return execution;
+      }
+      if (attempt.status !== "pending") {
+        await client.query("commit");
+        return undefined;
+      }
+      if (attempt.leaseExpiresAt <= completedAt) {
+        await client.query(
+          `update agent_executions
+           set output_delivery_attempts = $2::jsonb
+           where id = $1`,
+          [
+            executionId,
+            JSON.stringify({
+              ...execution.outputDeliveryAttempts,
+              [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
+            }),
+          ],
+        );
+        await client.query("commit");
+        return undefined;
+      }
+      const outputEmissions = {
+        ...execution.outputEmissions,
+        [attempt.outputType]: (execution.outputEmissions[attempt.outputType] ?? 0) + 1,
+      };
+      const updated = await client.query<AgentExecutionRow>(
+        `update agent_executions
+         set output_emissions = $2::jsonb,
+             output_delivery_attempts = $3::jsonb
          where id = $1
          returning *`,
-        [executionId, outputType],
+        [
+          executionId,
+          JSON.stringify(outputEmissions),
+          JSON.stringify({
+            ...execution.outputDeliveryAttempts,
+            [attemptId]: { ...attempt, status: "succeeded" as const, completedAt },
+          }),
+        ],
       );
-      return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
+      await client.query("commit");
+      return updated.rows[0] === undefined ? undefined : toAgentExecutionRecord(updated.rows[0]);
     } catch (error) {
+      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async failAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    _failedAt: Date,
+  ): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1 for update`,
+        [executionId],
+      );
+      const row = selected.rows[0];
+      if (row === undefined) {
+        await client.query("commit");
+        return false;
+      }
+      const execution = toAgentExecutionRecord(row);
+      const attempt = execution.outputDeliveryAttempts[attemptId];
+      if (attempt === undefined || attempt.status !== "pending") {
+        await client.query("commit");
+        return false;
+      }
+      await client.query(
+        `update agent_executions
+         set output_delivery_attempts = $2::jsonb
+         where id = $1`,
+        [
+          executionId,
+          JSON.stringify({
+            ...execution.outputDeliveryAttempts,
+            [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
+          }),
+        ],
+      );
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
     }
   }
 
@@ -3670,6 +3814,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   reply_claimed_at: Date | null;
   reply_claim_count: number;
   output_emissions: unknown;
+  output_delivery_attempts: unknown;
   launch_intent: AgentExecutionRecord["launchIntent"];
   daemon_id: string | null;
   daemon_agent_id: string | null;

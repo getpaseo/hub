@@ -34,7 +34,11 @@ import {
 } from "../../daemons/lifecycle.js";
 import type { LaunchMachineIntent } from "../../dispatcher/launch-machine-intent.js";
 import type { WorktreeTarget } from "../../config/index.js";
-import { OutputExecutorRegistry } from "../../execution-capabilities/outputs.js";
+import {
+  OutputExecutorRegistry,
+  outputContextProvider,
+  replyOutputTool,
+} from "../../execution-capabilities/outputs.js";
 import type { DaemonClock } from "../registry.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
 import type { TriggerProvider } from "../../triggers/index.js";
@@ -1268,7 +1272,12 @@ export class HubHarness {
     const port = await availablePort();
     this.origin = `http://127.0.0.1:${port}`;
     const registry = new OutputExecutorRegistry();
-    registry.register("discord.reply", async () => undefined);
+    registry.register({
+      type: "discord.reply",
+      tool: replyOutputTool,
+      available: outputContextProvider("discord"),
+      execute: async () => undefined,
+    });
     const application = createHubApplication({
       database: this.databaseForApplication(),
       providers: [this.recordingProvider()],

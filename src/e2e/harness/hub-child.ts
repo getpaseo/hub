@@ -4,7 +4,11 @@ import type { Duplex } from "node:stream";
 import { createHubApplication } from "../../app.js";
 import { createDatabase } from "../../db/pg.js";
 import { Client } from "pg";
-import { OutputExecutorRegistry } from "../../execution-capabilities/outputs.js";
+import {
+  OutputExecutorRegistry,
+  outputContextProvider,
+  replyOutputTool,
+} from "../../execution-capabilities/outputs.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createAuthServer } from "../../auth/server.js";
@@ -45,8 +49,13 @@ async function main(): Promise<void> {
   await client.end();
   const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
   const outputs = new OutputExecutorRegistry();
-  outputs.register("discord.reply", async (output) => {
-    await appendFile(outputFile, `${JSON.stringify(output)}\n`);
+  outputs.register({
+    type: "discord.reply",
+    tool: replyOutputTool,
+    available: outputContextProvider("discord"),
+    execute: async (output) => {
+      await appendFile(outputFile, `${JSON.stringify(output)}\n`);
+    },
   });
   const auth = createAuthServer({
     databaseUrl,

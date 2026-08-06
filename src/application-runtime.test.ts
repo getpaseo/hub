@@ -10,6 +10,7 @@ import {
 import { createMemoryDatabase } from "./db/memory.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
+import { replyOutputTool } from "./execution-capabilities/outputs.js";
 
 describe("application runtime provider composition", () => {
   it("collects a fake registration without a concrete-provider case", async () => {
@@ -38,7 +39,7 @@ describe("application runtime provider composition", () => {
           },
         },
       ],
-      outputs: [{ type: "fake.output", execute: () => Promise.resolve() }],
+      outputs: [{ type: "fake.output", tool: replyOutputTool, execute: () => Promise.resolve() }],
       requests: [
         {
           name: "webhook",

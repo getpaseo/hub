@@ -16,7 +16,7 @@ import {
   compileJsonSchema,
   formatJsonSchemaErrors,
 } from "../workflows/json-schema.js";
-import type { OutputExecutorRegistry } from "./outputs.js";
+import type { MaterializedOutputCapability, OutputExecutorRegistry } from "./outputs.js";
 
 interface JsonSchemaNode {
   readonly [key: string]: JsonValue;
@@ -28,18 +28,11 @@ interface JsonSchema extends JsonSchemaNode {
   readonly required?: string[];
 }
 
-const ReplyArgumentsSchema: JsonSchema = {
-  type: "object" as const,
-  properties: { content: { type: "string", minLength: 1 } },
-  required: ["content"],
-  additionalProperties: false,
-};
-
 export interface ExecutionCapabilityServer {
   handle(request: Request, executionId: string): Promise<Response>;
 }
 
-export function createExecutionCapabilityServer(options: {
+interface ExecutionCapabilityOptions {
   database: Database;
   outputs: OutputExecutorRegistry;
   completeExecution(input: {
@@ -48,7 +41,11 @@ export function createExecutionCapabilityServer(options: {
     output?: unknown;
   }): Promise<AgentExecutionRecord>;
   now?: () => Date;
-}): ExecutionCapabilityServer {
+}
+
+export function createExecutionCapabilityServer(
+  options: ExecutionCapabilityOptions,
+): ExecutionCapabilityServer {
   return {
     async handle(request, executionId) {
       const token = readBearerToken(request.headers.get("authorization") ?? undefined);
@@ -57,8 +54,24 @@ export function createExecutionCapabilityServer(options: {
       if (execution.status !== "spawning" && execution.status !== "running") {
         return Response.json({ error: "execution_not_live" }, { status: 409 });
       }
+      let materializedOutputs: readonly MaterializedOutputCapability[];
+      try {
+        materializedOutputs = options.outputs.materialize(
+          execution.launchIntent?.allowOutputs ?? [],
+          execution.outputContext,
+        );
+      } catch (error) {
+        return Response.json(
+          {
+            error: "required_output_capability_unavailable",
+            message:
+              error instanceof Error ? error.message : "required output capability unavailable",
+          },
+          { status: 409 },
+        );
+      }
 
-      const server = createMcpServer(options, execution, token!);
+      const server = createMcpServer(options, execution, token!, materializedOutputs);
       const transport = new WebStandardStreamableHTTPServerTransport({
         // Omitting sessionIdGenerator is the SDK's stateless-mode setting.
         enableJsonResponse: true,
@@ -117,6 +130,7 @@ function createMcpServer(
   },
   execution: AgentExecutionRecord,
   token: string,
+  materializedOutputs: readonly MaterializedOutputCapability[],
 ): Server {
   const server = new Server(
     { name: "paseo-hub-execution", version: "1.0.0" },
@@ -130,17 +144,21 @@ function createMcpServer(
       inputSchema: finishContract.schema,
     },
   ];
-  const replyOutput = allowedReplyOutput(execution);
-  if (replyOutput !== undefined) {
+  for (const output of materializedOutputs) {
     tools.push({
-      name: "reply",
-      description: `Reply to the conversation that triggered this execution (up to ${replyOutput.max} times).`,
-      inputSchema: ReplyArgumentsSchema,
+      name: output.capability.tool.name,
+      description: `${output.capability.tool.description} (up to ${output.declaration.max} times).`,
+      inputSchema: output.capability.tool.inputSchema,
     });
   }
   const contracts = new Map<string, JsonSchemaContract>([["finish_execution", finishContract]]);
-  if (replyOutput !== undefined) {
-    contracts.set("reply", jsonSchemaContract(ReplyArgumentsSchema));
+  const outputsByToolName = new Map<string, MaterializedOutputCapability>();
+  for (const output of materializedOutputs) {
+    contracts.set(
+      output.capability.tool.name,
+      jsonSchemaContract(output.capability.tool.inputSchema),
+    );
+    outputsByToolName.set(output.capability.tool.name, output);
   }
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
@@ -152,55 +170,80 @@ function createMcpServer(
     const validation = contract.validate(args);
     if (!validation.valid) return toolFailure(validation.message);
 
-    if (toolName === "finish_execution") {
-      try {
-        const missingOutputs = missingRequiredOutputs(execution);
-        if (missingOutputs.length > 0) return toolFailure(requiredOutputsGuidance(missingOutputs));
-        const output = Object.hasOwn(args, "output") ? args["output"] : undefined;
-        const completed = await options.completeExecution({
-          executionId: execution.id,
-          token,
-          ...(output === undefined ? {} : { output }),
-        });
-        if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
-        await options.database.recordAgentExecutionHubAcknowledgement(execution.id, {
-          kind: "finish_execution",
-          status: "completed",
-          observedAt: options.now?.() ?? new Date(),
-        });
-        return toolSuccess("Execution finished");
-      } catch (error) {
-        return toolFailure(
-          error instanceof Error ? error.message : "Execution could not be finished",
-        );
-      }
-    }
-
-    if (replyOutput === undefined) return toolFailure(`Tool ${toolName} not found`);
-    const claimed = await options.database.claimAgentExecutionReply(
-      execution.id,
-      replyOutput.max,
-      options.now?.() ?? new Date(),
-    );
-    if (!claimed) return toolFailure("Reply limit reached");
-    try {
-      await options.outputs.execute({
-        agentExecutionId: execution.id,
-        toolType: replyOutput.type,
-        args,
-        outputContext: execution.outputContext,
-      });
-      const recorded = await options.database.recordAgentExecutionOutput(
-        execution.id,
-        replyOutput.type,
-      );
-      if (recorded === undefined) throw new Error("output emission could not be recorded");
-      return toolSuccess("Reply sent");
-    } catch {
-      return toolFailure("Reply delivery failed; the reply claim remains consumed");
-    }
+    if (toolName === "finish_execution")
+      return finishExecutionCall(options, execution, token, args, materializedOutputs);
+    const output = outputsByToolName.get(toolName);
+    return output === undefined
+      ? toolFailure(`Tool ${toolName} not found`)
+      : executeOutputCall(options, execution, toolName, output, args);
   });
   return server;
+}
+
+async function finishExecutionCall(
+  options: ExecutionCapabilityOptions,
+  execution: AgentExecutionRecord,
+  token: string,
+  args: Record<string, unknown>,
+  materializedOutputs: readonly MaterializedOutputCapability[],
+) {
+  try {
+    const missingOutputs = missingRequiredOutputs(execution, materializedOutputs);
+    if (missingOutputs.length > 0) return toolFailure(requiredOutputsGuidance(missingOutputs));
+    const output = Object.hasOwn(args, "output") ? args["output"] : undefined;
+    const completed = await options.completeExecution({
+      executionId: execution.id,
+      token,
+      ...(output === undefined ? {} : { output }),
+    });
+    if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
+    await options.database.recordAgentExecutionHubAcknowledgement(execution.id, {
+      kind: "finish_execution",
+      status: "completed",
+      observedAt: options.now?.() ?? new Date(),
+    });
+    return toolSuccess("Execution finished");
+  } catch (error) {
+    return toolFailure(error instanceof Error ? error.message : "Execution could not be finished");
+  }
+}
+
+async function executeOutputCall(
+  options: ExecutionCapabilityOptions,
+  execution: AgentExecutionRecord,
+  toolName: string,
+  output: MaterializedOutputCapability,
+  args: Record<string, unknown>,
+) {
+  const attempt = await options.database.beginAgentExecutionOutput(
+    execution.id,
+    output.declaration.type,
+    output.declaration.max,
+    options.now?.() ?? new Date(),
+  );
+  if (attempt === undefined)
+    return toolFailure(`Output limit reached for ${output.declaration.type}`);
+  try {
+    await options.outputs.execute({
+      agentExecutionId: execution.id,
+      attemptId: attempt.id,
+      toolType: output.declaration.type,
+      args,
+      outputContext: execution.outputContext,
+    });
+    const recorded = await options.database.completeAgentExecutionOutput(
+      execution.id,
+      attempt.id,
+      options.now?.() ?? new Date(),
+    );
+    if (recorded === undefined) throw new Error("output emission could not be recorded");
+    return toolSuccess("Output sent");
+  } catch {
+    await options.database
+      .failAgentExecutionOutput(execution.id, attempt.id, options.now?.() ?? new Date())
+      .catch(() => undefined);
+    return toolFailure(`Output delivery failed; retry \`${toolName}\`.`);
+  }
 }
 
 interface JsonSchemaContract {
@@ -271,39 +314,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function allowedReplyOutput(
+function missingRequiredOutputs(
   execution: AgentExecutionRecord,
-): { type: "slack.reply" | "discord.reply"; max: number } | undefined {
-  const provider = readProvider(execution.outputContext);
-  let type: "slack.reply" | "discord.reply" | undefined;
-  if (provider === "slack") type = "slack.reply";
-  if (provider === "discord") type = "discord.reply";
-  if (type === undefined) return undefined;
-  const output = execution.launchIntent?.allowOutputs.find((candidate) => candidate.type === type);
-  return output === undefined ? undefined : { type, max: output.max };
-}
-
-function missingRequiredOutputs(execution: AgentExecutionRecord): readonly { type: string }[] {
+  materializedOutputs: readonly MaterializedOutputCapability[],
+): readonly { type: string; toolName: string }[] {
+  const toolsByType = new Map(
+    materializedOutputs.map((output) => [output.declaration.type, output.capability.tool.name]),
+  );
   return (execution.launchIntent?.allowOutputs ?? [])
     .filter((output) => output.required === true)
     .filter((output) => (execution.outputEmissions[output.type] ?? 0) < 1)
-    .map((output) => ({ type: output.type }));
+    .map((output) => ({
+      type: output.type,
+      toolName: toolsByType.get(output.type) ?? "unavailable",
+    }));
 }
 
-function requiredOutputsGuidance(missingOutputs: readonly { type: string }[]): string {
+function requiredOutputsGuidance(
+  missingOutputs: readonly { type: string; toolName: string }[],
+): string {
   const missing = missingOutputs
-    .map((output) => `${output.type} (call \`${outputToolName(output.type)}\`)`)
+    .map((output) => `${output.type} (call \`${output.toolName}\`)`)
     .join(", ");
-  return `Required output missing: ${missing}. Emit the required output with the named Hub tool, then retry \`finish_execution\`.`;
-}
-
-function outputToolName(outputType: string): string {
-  const suffix = outputType.slice(outputType.lastIndexOf(".") + 1);
-  return suffix.length === 0 ? outputType : suffix;
-}
-
-function readProvider(value: unknown): unknown {
-  return typeof value === "object" && value !== null ? Reflect.get(value, "provider") : undefined;
+  return `Required output missing: ${missing}. Call the named Hub tool, then retry \`finish_execution\`.`;
 }
 
 function readBearerToken(header: string | undefined): string | undefined {

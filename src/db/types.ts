@@ -101,6 +101,7 @@ export interface AgentExecutionRecord {
   replyClaimedAt: Date | null;
   replyClaimCount: number;
   outputEmissions: Readonly<Record<string, number>>;
+  outputDeliveryAttempts: Readonly<Record<string, AgentExecutionOutputAttempt>>;
   launchIntent: LaunchMachineIntent | null;
   daemonId: string | null;
   daemonAgentId: string | null;
@@ -109,6 +110,17 @@ export interface AgentExecutionRecord {
   hubActionCompletedAt: Date | null;
   hubActionReadyAt: Date | null;
   hubActionAcknowledgements: AgentExecutionHubAcknowledgements;
+}
+
+export type AgentExecutionOutputAttemptStatus = "pending" | "succeeded" | "failed";
+
+export interface AgentExecutionOutputAttempt {
+  id: string;
+  outputType: string;
+  status: AgentExecutionOutputAttemptStatus;
+  startedAt: Date;
+  leaseExpiresAt: Date;
+  completedAt: Date | null;
 }
 
 export type HubAction = "interrupt" | "archive";
@@ -942,15 +954,22 @@ export interface Database {
     projectId: string,
     id: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  claimAgentExecutionReply(
-    executionId: string,
-    maxReplies: number,
-    claimedAt: Date,
-  ): Promise<boolean>;
-  recordAgentExecutionOutput(
+  beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
+    maxOutputs: number,
+    startedAt: Date,
+  ): Promise<AgentExecutionOutputAttempt | undefined>;
+  completeAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    completedAt: Date,
   ): Promise<AgentExecutionRecord | undefined>;
+  failAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    failedAt: Date,
+  ): Promise<boolean>;
   transitionAgentExecution(
     id: string,
     toStatus: AgentExecutionStatus,
