@@ -6,26 +6,33 @@ import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database, DaemonRecord } from "../db/types.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "../http/client-address.js";
 import type { ActiveDaemonRegistry, DaemonClock } from "./registry.js";
+import { slugify } from "../slug.js";
 
 const DEVICE_LIFETIME_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
 const DEVICE_PER_FINGERPRINT_LIMIT = 5;
 const DEVICE_GLOBAL_LIMIT = 1_000;
 
-const startBody = z.object({ displayName: z.string().trim().min(1).max(100) }).strict();
+// Older Paseo releases sent the hostname under `displayName`; collapse that wire shape at ingress.
+const startBody = z
+  .union([
+    z.object({ slug: z.string().trim().min(1).max(100) }).strict(),
+    z.object({ displayName: z.string().trim().min(1).max(100) }).strict(),
+  ])
+  .transform((input) => ("slug" in input ? input.slug : input.displayName));
 const pollBody = z.object({ deviceCode: z.string().min(32).max(200) }).strict();
 const codeBody = z.object({ userCode: z.string().min(1).max(40) }).strict();
 const decisionBody = z.discriminatedUnion("decision", [
   codeBody
     .extend({
       decision: z.literal("approve"),
-      displayName: z.string().trim().min(1).max(100),
+      slug: z.string().trim().min(1).max(100),
       organizationId: z.string().min(1),
     })
     .strict(),
   codeBody.extend({ decision: z.literal("deny") }).strict(),
 ]);
-const renameBody = z.object({ displayName: z.string().trim().min(1).max(100) }).strict();
+const renameBody = z.object({ slug: z.string().trim().min(1).max(100) }).strict();
 const enrollmentBody = z
   .object({
     daemonId: z.string().uuid(),
@@ -63,7 +70,7 @@ export class DaemonRegistration {
       deviceVerifier: verifier(deviceCode),
       userCodeVerifier: verifier(normalizeUserCode(userCode)),
       fingerprintVerifier: requestFingerprint(request),
-      suggestedDisplayName: input.displayName,
+      suggestedSlug: slugify(input, "daemon"),
       lifetimeSeconds: DEVICE_LIFETIME_SECONDS,
       pollIntervalSeconds: DEVICE_POLL_INTERVAL_SECONDS,
       perFingerprintLimit: DEVICE_PER_FINGERPRINT_LIMIT,
@@ -119,7 +126,7 @@ export class DaemonRegistration {
     );
     if (authorization === undefined) return unavailableAuthorization();
     return Response.json({
-      displayName: authorization.suggestedDisplayName,
+      slug: authorization.suggestedSlug,
       expiresAt: authorization.expiresAt.toISOString(),
       organization: access.organization,
       canManage: access.capabilities.manageResources,
@@ -148,7 +155,7 @@ export class DaemonRegistration {
         ? {
             userCodeVerifier: verifier(normalizeUserCode(input.userCode)),
             decision: input.decision,
-            displayName: input.displayName,
+            slug: slugify(input.slug, "daemon"),
             access: decisionAccess,
           }
         : {
@@ -185,9 +192,11 @@ export class DaemonRegistration {
     const daemon = await this.options.database.renameDaemonForOrganization(
       access.organization.id,
       daemonId,
-      input.displayName,
+      slugify(input.slug, "daemon"),
     );
-    return daemon === undefined ? unavailableDaemon() : Response.json(daemonSummary(daemon));
+    if (daemon === undefined) return unavailableDaemon();
+    if (daemon.status === "slug_conflict") return daemonSlugConflict(daemon.slug);
+    return Response.json(daemonSummary(daemon));
   }
 
   async revoke(request: Request, daemonId: string): Promise<Response> {
@@ -311,10 +320,12 @@ export async function enrollDaemon(
   if (daemon === undefined) {
     return Response.json({ error: "invalid enrollment token" }, { status: 401 });
   }
+  if (daemon.status === "slug_conflict") return daemonSlugConflict(daemon.slug);
   const webSocketUrl = new URL("/api/daemons/socket", publicBaseUrl ?? request.url);
   webSocketUrl.protocol = webSocketUrl.protocol === "https:" ? "wss:" : "ws:";
   return Response.json({
     daemonId: daemon.id,
+    slug: daemon.slug,
     scopes: daemon.scopes,
     webSocketUrl: webSocketUrl.toString(),
   });
@@ -399,9 +410,7 @@ async function parseRequest<TSchema extends z.ZodType>(
 function daemonSummary(daemon: DaemonRecord) {
   return {
     id: daemon.id,
-    stableIdentity: daemon.id.slice(0, 8),
     slug: daemon.slug,
-    displayName: daemon.displayName,
     status: daemon.status,
     presence: daemon.presence,
     connectedAt: daemon.connectedAt?.toISOString() ?? null,
@@ -417,6 +426,10 @@ function unavailableAuthorization(): Response {
 
 function unavailableDaemon(): Response {
   return Response.json({ error: "daemon_unavailable" }, { status: 404 });
+}
+
+function daemonSlugConflict(slug: string): Response {
+  return Response.json({ error: "daemon_slug_conflict", slug }, { status: 409 });
 }
 
 export const ENROLLMENT_LIFETIME_MS = 10 * 60_000;

@@ -273,7 +273,6 @@ function daemonRecord(): DaemonRecord {
     daemonPublicKey: "public-key",
     credentialVerifier: "verifier",
     scopes: ["hub.execution.*"],
-    displayName: "Replacement daemon",
     approvedByUserId: null,
     registeredByApiKeyId: null,
     registrationMethod: "operator",

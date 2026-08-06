@@ -36,6 +36,59 @@ describe("database migration application", () => {
     await postgres.stop();
   }, 120_000);
 
+  it("promotes unambiguous daemon names to slugs without inventing collision aliases", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "daemon_friendly_slug",
+      through: "0015_certain_gateway",
+    });
+    await poolQuery(
+      url,
+      `insert into organization (id, name, slug)
+         values ('organization-daemons', 'Daemon organization', 'daemon-organization');
+       insert into machines (id, org_id, source, status) values
+         ('30000000-0000-4000-8000-000000000020', 'organization-daemons', '{}', 'alive'),
+         ('30000000-0000-4000-8000-000000000021', 'organization-daemons', '{}', 'alive'),
+         ('30000000-0000-4000-8000-000000000022', 'organization-daemons', '{}', 'alive');
+       insert into daemons
+         (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id,
+          server_id, daemon_public_key, credential_verifier, scopes, display_name, status)
+       values
+         ('40000000-0000-4000-8000-000000000020', 'enrollment-20', 'verifier-20',
+          'daemon-40000000', '30000000-0000-4000-8000-000000000020', 'organization-daemons',
+          'server-20', 'public-20', 'credential-20', '[]', 'Build Mac', 'active'),
+         ('40000000-0000-4000-8000-000000000021', 'enrollment-21', 'verifier-21',
+          'daemon-40000001', '30000000-0000-4000-8000-000000000021', 'organization-daemons',
+          'server-21', 'public-21', 'credential-21', '[]', 'Shared Mac', 'active'),
+         ('40000000-0000-4000-8000-000000000022', 'enrollment-22', 'verifier-22',
+          'daemon-40000002', '30000000-0000-4000-8000-000000000022', 'organization-daemons',
+          'server-22', 'public-22', 'credential-22', '[]', 'Shared Mac', 'active')`,
+    );
+
+    const database = await createDatabase(url);
+    await database.close();
+
+    const daemons = await poolQuery<{ id: string; slug: string }>(
+      url,
+      `select id::text, slug from daemons order by id`,
+    );
+    assert.deepEqual(daemons.rows, [
+      { id: "40000000-0000-4000-8000-000000000020", slug: "build-mac" },
+      { id: "40000000-0000-4000-8000-000000000021", slug: "daemon-40000001" },
+      { id: "40000000-0000-4000-8000-000000000022", slug: "daemon-40000002" },
+    ]);
+    assert.equal(
+      (
+        await poolQuery<{ count: number }>(
+          url,
+          `select count(*)::integer as count from information_schema.columns
+           where table_name = 'daemons' and column_name = 'display_name'`,
+        )
+      ).rows[0]?.count,
+      0,
+    );
+  }, 120_000);
+
   it("migrates production-shaped identity state without changing durable identities", async () => {
     const url = await createHistoricalBaseline({
       postgres,
@@ -248,7 +301,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 21,
+      drizzleMigrations: 22,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,

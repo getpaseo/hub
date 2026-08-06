@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { slugify } from "../slug.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
@@ -1260,13 +1261,13 @@ class MemoryDatabase implements Database {
       deviceVerifier: input.deviceVerifier,
       userCodeVerifier: input.userCodeVerifier,
       fingerprintVerifier: input.fingerprintVerifier,
-      suggestedDisplayName: input.suggestedDisplayName,
+      suggestedSlug: input.suggestedSlug,
       status: "pending",
       pollIntervalSeconds: input.pollIntervalSeconds,
       nextPollAt: now,
       approvedOrganizationId: null,
       approvedByUserId: null,
-      approvedDisplayName: null,
+      approvedSlug: null,
       enrollmentTokenVerifier: null,
       createdAt: now,
       expiresAt: new Date(now.getTime() + input.lifetimeSeconds * 1_000),
@@ -1305,7 +1306,7 @@ class MemoryDatabase implements Database {
     if (input.decision === "approve") {
       authorization.approvedOrganizationId = input.access.organizationId;
       authorization.approvedByUserId = input.access.userId;
-      authorization.approvedDisplayName = input.displayName;
+      authorization.approvedSlug = input.slug;
     }
     return status;
   }
@@ -1348,7 +1349,7 @@ class MemoryDatabase implements Database {
         verifier: input.enrollmentTokenVerifier,
         organizationId: authorization.approvedOrganizationId!,
         authorizationId: authorization.id,
-        displayName: authorization.approvedDisplayName,
+        slug: authorization.approvedSlug,
         approvedByUserId: authorization.approvedByUserId,
         issuedByApiKeyId: null,
         registrationMethod: "device",
@@ -1361,11 +1362,17 @@ class MemoryDatabase implements Database {
       intervalSeconds: authorization.pollIntervalSeconds,
     };
   }
-  async enrollDaemon(input: EnrollDaemonInput): Promise<DaemonRecord | undefined> {
+  async enrollDaemon(input: EnrollDaemonInput) {
     const replay = Array.from(this.daemons.values()).find((daemon) => daemon.id === input.daemonId);
     if (replay) return replay;
     const token = this.enrollmentTokens.get(input.tokenVerifier);
     if (!token || token.consumedAt || token.expiresAt <= input.now) return undefined;
+    const slug = slugify(token.slug ?? "", `daemon-${input.daemonId.slice(0, 8)}`);
+    const slugTaken = Array.from(this.daemons.values()).some(
+      (daemon) =>
+        daemon.slug === slug && this.machines.get(daemon.machineId)?.orgId === token.organizationId,
+    );
+    if (slugTaken) return { status: "slug_conflict" as const, slug };
     this.enrollmentTokens.set(input.tokenVerifier, {
       ...token,
       consumedAt: input.now,
@@ -1377,13 +1384,12 @@ class MemoryDatabase implements Database {
     });
     const daemon: DaemonRecord = {
       id: input.daemonId,
-      slug: `daemon-${input.daemonId.slice(0, 8)}`,
+      slug,
       machineId: machine.id,
       serverId: input.serverId,
       daemonPublicKey: input.daemonPublicKey,
       credentialVerifier: input.credentialVerifier,
       scopes: input.scopes,
-      displayName: token.displayName ?? `daemon-${input.daemonId.slice(0, 8)}`,
       approvedByUserId: token.approvedByUserId ?? null,
       registeredByApiKeyId: token.issuedByApiKeyId ?? null,
       registrationMethod: token.registrationMethod ?? "operator",
@@ -1420,12 +1426,19 @@ class MemoryDatabase implements Database {
   async listDaemonsForOrganization(organizationId: string) {
     return Array.from(this.daemons.values())
       .filter((daemon) => this.machines.get(daemon.machineId)?.orgId === organizationId)
-      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+      .sort((left, right) => left.slug.localeCompare(right.slug));
   }
-  async renameDaemonForOrganization(organizationId: string, id: string, displayName: string) {
+  async renameDaemonForOrganization(organizationId: string, id: string, slug: string) {
     const daemon = await this.findDaemonForOrganization(organizationId, id);
     if (daemon === undefined) return undefined;
-    const renamed = { ...daemon, displayName };
+    const slugTaken = Array.from(this.daemons.values()).some(
+      (candidate) =>
+        candidate.id !== id &&
+        candidate.slug === slug &&
+        this.machines.get(candidate.machineId)?.orgId === organizationId,
+    );
+    if (slugTaken) return { status: "slug_conflict" as const, slug };
+    const renamed = { ...daemon, slug };
     this.daemons.set(id, renamed);
     return renamed;
   }

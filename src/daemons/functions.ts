@@ -6,9 +6,7 @@ import { getApplication } from "../server/runtime.js";
 
 const daemonSchema = z.object({
   id: z.string().uuid(),
-  stableIdentity: z.string(),
   slug: z.string(),
-  displayName: z.string(),
   status: z.enum(["active", "revoked"]),
   presence: z.enum(["offline", "connected"]),
   connectedAt: z.string().datetime().nullable(),
@@ -21,12 +19,12 @@ const daemonListSchema = z.object({
   canManage: z.boolean(),
 });
 const registrationSchema = z.object({
-  displayName: z.string(),
+  slug: z.string(),
   expiresAt: z.string().datetime(),
   organization: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
   canManage: z.boolean(),
 });
-const renameSchema = z.object({ daemonId: z.string().uuid(), displayName: z.string() });
+const renameSchema = z.object({ daemonId: z.string().uuid(), slug: z.string() });
 const daemonIdSchema = z.object({ daemonId: z.string().uuid() });
 const organizationScopeSchema = z.object({ organizationSlug: z.string().min(1) });
 const scopedRenameSchema = organizationScopeSchema.extend(renameSchema.shape);
@@ -35,7 +33,7 @@ const userCodeSchema = z.object({ userCode: z.string().min(1) });
 const decisionSchema = z.object({
   userCode: z.string().min(1),
   decision: z.enum(["approve", "deny"]),
-  displayName: z.string().optional(),
+  slug: z.string().optional(),
   organizationId: z.string().optional(),
 });
 
@@ -74,7 +72,7 @@ export const renameDaemon = createServerFn({ method: "POST" })
           "POST",
           "/organization/daemons/rename",
           {
-            displayName: data.displayName,
+            slug: data.slug,
           },
           data.organizationSlug,
         ),
@@ -85,6 +83,16 @@ export const renameDaemon = createServerFn({ method: "POST" })
         const failure = z.object({ error: z.string() }).safeParse(await response.json());
         if (failure.success && failure.data.error === "organization_required") {
           return respondOk({ state: "organizationRequired" });
+        }
+      }
+      if (response.status === 409) {
+        const failure = z
+          .object({ error: z.literal("daemon_slug_conflict"), slug: z.string() })
+          .safeParse(await response.json());
+        if (failure.success) {
+          return respondError({
+            message: `The daemon slug “${failure.data.slug}” is already in use. Choose another slug.`,
+          });
         }
       }
       if (!response.ok) return respondError({ message: "We couldn't rename that daemon." });
