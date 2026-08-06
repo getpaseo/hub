@@ -402,6 +402,12 @@ export function ProjectOverviewPanel() {
 
 export function ProjectConfigurationPanel() {
   const tenant = useRouteTenant();
+  if (tenant.project === null) throw new Error("configuration route has no project");
+  return <ProjectConfigurationPanelState key={tenant.project.id} />;
+}
+
+function ProjectConfigurationPanelState() {
+  const tenant = useRouteTenant();
   const queryClient = useQueryClient();
   const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();

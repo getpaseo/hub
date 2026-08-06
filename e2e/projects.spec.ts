@@ -112,6 +112,26 @@ test("explains invalid manual configuration and allows a corrected retry", async
   await app.configuration.expectActiveRevision(3);
 });
 
+test("scopes configuration activation feedback to its project", async ({ hub, page }) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await app.projects.create("Second", "second");
+  await app.navigation.openProject("Second");
+  await app.navigation.openProjectSection("Configuration");
+  await app.navigation.switchProject("Default");
+
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.expectConfigurationActivated(1);
+  await app.configuration.expectActiveRevision(1);
+  await app.configuration.saveManualConfiguration(unresolvedConfiguration);
+  await app.configuration.expectValidationError(
+    "Unresolved organization resources: missing-runner",
+  );
+  await app.navigation.switchProject("Second");
+  await app.configuration.expectNoPriorProjectFeedback(1, "missing-runner");
+});
+
 test("uses manual configuration without a GitHub deployment", async ({ hub }) => {
   await hub.proveManualConfigurationWithoutGitHub(owner, validConfiguration);
 });

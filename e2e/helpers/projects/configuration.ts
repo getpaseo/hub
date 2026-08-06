@@ -45,6 +45,15 @@ export class ProjectConfiguration {
     await expect(this.page.getByText(`Revision ${version}`, { exact: true })).toBeVisible();
   }
 
+  async expectNoPriorProjectFeedback(version: number, validationResource: string) {
+    await expect(this.page.getByRole("status")).toHaveText("No active configuration.");
+    await expect(this.page.getByRole("alert")).toHaveCount(0);
+    await expect(this.page.getByText(`Revision ${String(version)}`, { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(this.page.getByText(validationResource)).toHaveCount(0);
+  }
+
   async syncNow() {
     await this.page.getByRole("button", { name: "Sync now" }).click();
   }
