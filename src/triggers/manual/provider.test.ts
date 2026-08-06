@@ -62,7 +62,7 @@ describe("manual invocation provider", () => {
   it("returns a rejected branch before resolving an unusable launch environment", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(database, {
-      environments: [{ name: "runner", kind: "docker", image: "paseo/test" }],
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
         {
           name: "manual-request",
