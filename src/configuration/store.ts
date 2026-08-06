@@ -1,5 +1,4 @@
 import { dump } from "js-yaml";
-import { z } from "zod";
 import {
   compileHubConfig,
   compiledConfigurationHash,
@@ -17,6 +16,10 @@ import type {
   ProjectConfigurationRevisionRecord,
   ProjectTriggerRoute,
 } from "../db/types.js";
+import {
+  configurationValidationErrors,
+  type ConfigurationValidationErrors,
+} from "./validation-errors.js";
 
 export interface StoredProjectConfiguration {
   revision: ProjectConfigurationRevisionRecord;
@@ -286,9 +289,7 @@ async function compileConfiguration(
       success: false,
       kind: "raw",
       missing: [],
-      validationErrors: {
-        formErrors: [formatConfigurationError(error)],
-      },
+      validationErrors: formatConfigurationError(error),
     };
   }
   const project = await database.findProjectById(projectId);
@@ -331,10 +332,12 @@ async function compileConfiguration(
   };
 }
 
-function formatConfigurationError(error: unknown): unknown {
-  if (error instanceof z.ZodError) return z.treeifyError(error);
-  if (error instanceof Error) return error.message;
-  return "invalid configuration";
+function formatConfigurationError(error: unknown): ConfigurationValidationErrors {
+  if (error instanceof z.ZodError) return configurationValidationErrors(error);
+  return {
+    formErrors: [error instanceof Error ? error.message : "invalid configuration"],
+    fieldErrors: {},
+  };
 }
 
 function resolveEnvironment(

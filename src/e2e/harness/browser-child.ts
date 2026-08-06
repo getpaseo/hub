@@ -70,6 +70,7 @@ async function main(): Promise<void> {
   );
   const bot = new BrowserDiscordBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
+  const githubConfigured = hasBrowserGitHub(scenario);
   const registrations =
     auth === null
       ? []
@@ -79,23 +80,22 @@ async function main(): Promise<void> {
             auth,
             applicationBaseUrl: publicBaseUrl,
             publicBaseUrl,
-            configuration:
-              scenario === "not-configured"
-                ? null
-                : {
-                    appSlug: "paseo",
-                    clientId: "client",
-                    clientSecret: "secret",
-                    webhookSecret: requiredEnvironment("GITHUB_WEBHOOK_SECRET"),
-                  },
-            ...(scenario === "not-configured"
-              ? {}
-              : {
+            configuration: githubConfigured
+              ? {
+                  appSlug: "paseo",
+                  clientId: "client",
+                  clientSecret: "secret",
+                  webhookSecret: requiredEnvironment("GITHUB_WEBHOOK_SECRET"),
+                }
+              : null,
+            ...(githubConfigured
+              ? {
                   appAuth: new BrowserGitHubAuth(),
                   connectionClient: new BrowserGitHubConnections(publicBaseUrl, scenario),
                   configurationProvider: githubConfiguration,
                   reactionClient: new BrowserGitHubReactions(),
-                }),
+                }
+              : {}),
           }),
           createDiscordRegistration({
             database,
@@ -241,11 +241,16 @@ function readScenario(): BrowserProviderScenario {
     value === "connected" ||
     value === "approval" ||
     value === "conflict" ||
-    value === "not-configured"
+    value === "not-configured" ||
+    value === "discord-only"
   ) {
     return value;
   }
   throw new Error(`invalid browser provider scenario: ${value}`);
+}
+
+function hasBrowserGitHub(scenario: BrowserProviderScenario): boolean {
+  return scenario !== "not-configured" && scenario !== "discord-only";
 }
 
 function browserAuthEnabled(): boolean {

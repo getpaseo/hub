@@ -34,7 +34,7 @@ import {
   type ConnectionStatus,
 } from "../connections/functions.js";
 import { useRouteTenant } from "./context.js";
-import type { ProjectDashboard } from "./dashboard.js";
+import type { ManualConfigurationSaveResult, ProjectDashboard } from "./dashboard.js";
 import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
 import {
   archiveProject,
@@ -52,8 +52,6 @@ import {
 
 type OrganizationSnapshot = Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>;
 type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>;
-type CommandResult = Result<{ state: "complete" }>;
-
 export function ProjectsPanel() {
   const tenant = useRouteTenant();
   const queryClient = useQueryClient();
@@ -409,7 +407,10 @@ export function ProjectConfigurationPanel() {
   const snapshot = useProjectSnapshot();
   const sync = useProjectCommand(syncProjectConfiguration, queryClient, scope);
   const manual = useProjectCommand(switchConfigurationToManual, queryClient, scope);
-  const save = useProjectCommand(saveManualConfiguration, queryClient, scope);
+  const save = useProjectCommand<
+    Parameters<typeof saveManualConfiguration>[0],
+    ManualConfigurationSaveResult
+  >(saveManualConfiguration, queryClient, scope);
   const configure = useProjectCommand(useGitHubConfiguration, queryClient, scope);
   const loadRepositories = useServerFn(availableGitHubRepositories);
   const repositories = useQuery({
@@ -443,6 +444,7 @@ export function ProjectConfigurationPanel() {
         description={`Setup and source for ${data.project.name}.`}
       />
       <CommandError mutations={[sync, manual, save, configure]} />
+      <ManualConfigurationResult result={save.data} />
       <Section title="Active revision">
         <div className="rounded-lg border bg-card p-5">
           {configuration.activeRevision === null ? (
@@ -493,6 +495,36 @@ export function ProjectConfigurationPanel() {
         saveManualPending={save.isPending}
       />
     </>
+  );
+}
+
+function ManualConfigurationResult({
+  result,
+}: {
+  result: Result<ManualConfigurationSaveResult> | undefined;
+}) {
+  if (result?.status !== "ok") return null;
+  if (result.data.outcome === "activated") {
+    return (
+      <Alert role="status" className="mb-5">
+        <AlertDescription>
+          Configuration saved and activated as Revision {result.data.revision.version}.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  return (
+    <Alert variant="destructive" className="mb-5">
+      <AlertTitle>Configuration couldn't be activated</AlertTitle>
+      <AlertDescription>
+        <p>Correct the YAML and try again. The active revision was not changed.</p>
+        <ul className="list-disc pl-5">
+          {result.data.errors.map((error) => (
+            <li key={error}>{error}</li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -925,15 +957,15 @@ function queryState<T>(
   return { ok: true, data: query.data.data };
 }
 
-function useProjectCommand<TInput>(
-  command: (input: TInput) => Promise<CommandResult>,
+function useProjectCommand<TInput, TOutput = { state: "complete" }>(
+  command: (input: TInput) => Promise<Result<TOutput>>,
   queryClient: ReturnType<typeof useQueryClient>,
   scope: { organizationSlug: string; projectSlug?: string },
 ) {
   return useMutation({
     mutationFn: useServerFn(command as never) as unknown as (
       input: TInput,
-    ) => Promise<CommandResult>,
+    ) => Promise<Result<TOutput>>,
     onSuccess: async (result) => {
       if (result.status === "ok") await invalidateScope(queryClient, scope);
     },

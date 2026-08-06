@@ -35,7 +35,12 @@ const DISCORD_GUILDS: readonly DiscordGuildIdentity[] = [
   { guildId: "200", guildName: "Orbit Guild" },
 ];
 
-export type BrowserProviderScenario = "connected" | "approval" | "conflict" | "not-configured";
+export type BrowserProviderScenario =
+  | "connected"
+  | "approval"
+  | "conflict"
+  | "not-configured"
+  | "discord-only";
 
 export class BrowserGitHubAuth implements GitHubAuth, GitHubExecutionTokenAuth {
   getInstallation() {

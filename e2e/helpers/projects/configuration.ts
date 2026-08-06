@@ -27,6 +27,16 @@ export class ProjectConfiguration {
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }
 
+  async expectValidationError(message: string) {
+    await expect(this.page.getByRole("alert")).toContainText(message);
+  }
+
+  async expectConfigurationActivated(version: number) {
+    await expect(this.page.getByRole("status")).toHaveText(
+      `Configuration saved and activated as Revision ${String(version)}.`,
+    );
+  }
+
   async expectActiveRevision(version: number) {
     await this.page
       .getByRole("navigation", { name: "Project" })
