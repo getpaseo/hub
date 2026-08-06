@@ -554,6 +554,9 @@ export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
   deadlineAt: Date;
   deadlineKind: WorkflowDeadlineKind | null;
   failureReason: string | null;
+  terminalNotificationPendingAt: Date | null;
+  terminalNotificationDeliveredAt: Date | null;
+  terminalNotificationLeaseExpiresAt: Date | null;
   completedAt: Date | null;
 }
 
@@ -598,6 +601,7 @@ export interface WorkflowWakeupRecord {
   triggerRunId: string;
   availableAt: Date;
   leaseExpiresAt: Date | null;
+  leasedBeforeClaim: boolean;
 }
 
 export interface CreateAcceptedTriggerRunInput {
@@ -822,6 +826,14 @@ export interface Database {
   ): Promise<
     { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
   >;
+  claimPendingWorkflowRunTerminalNotification(
+    now: Date,
+    leaseMs: number,
+  ): Promise<TriggerRunRecord | undefined>;
+  markWorkflowRunTerminalNotificationDelivered(
+    triggerRunId: string,
+    deliveredAt: Date,
+  ): Promise<void>;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;

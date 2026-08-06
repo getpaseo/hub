@@ -541,6 +541,199 @@ describe("agent execution PostgreSQL repository", () => {
     },
   );
 
+  it("reuses a pre-handoff spawning workflow execution after PostgreSQL lease recovery", async () => {
+    const fixture = await executionFixture(postgres);
+    let now = new Date("2026-08-05T12:00:00.000Z");
+    let successfulHandoffs = 0;
+    const createEngine = (crashBeforeHandoff: boolean) =>
+      createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [
+          {
+            name: "test",
+            eventNames: ["test.event"],
+            async match() {
+              return [phaseOneMatch(fixture.execution.configurationRevisionId)];
+            },
+          },
+        ],
+        now: () => now,
+        leaseMs: 1_000,
+        dispatchLaunchMachineIntent: async (intent) => {
+          if (crashBeforeHandoff) throw new Error("crash before daemon handoff");
+          successfulHandoffs += 1;
+          const execution = await persistedWorkflowExecution(fixture.database, intent);
+          return { execution };
+        },
+      });
+    try {
+      const first = createEngine(true);
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-pre-handoff-recovery",
+      );
+      await first.handler(toDurableEvent(trigger.event));
+      await first.engine.processAvailable();
+
+      const run = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          trigger.event.providerEventReceiptId,
+        )
+      )[0]!;
+      const step = (await fixture.database.findWorkflowStepRunByTriggerRun(run.id))!;
+      const execution = (await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id))!;
+      assert.equal(execution.status, "spawning");
+      assert.equal(execution.machineId, null);
+      assert.equal(execution.daemonId, null);
+      assert.equal(execution.daemonAgentId, null);
+      assert.equal(successfulHandoffs, 0);
+
+      now = new Date("2026-08-05T12:00:01.001Z");
+      const restarted = createEngine(false);
+      await restarted.engine.processAvailable();
+
+      const recoveredExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+        step.id,
+      );
+      assert.equal(recoveredExecution?.id, execution.id);
+      assert.equal(successfulHandoffs, 1);
+      const client = new Client({ connectionString: fixture.databaseUrl });
+      await client.connect();
+      try {
+        const count = await client.query<{ count: string }>(
+          `select count(*)::text as count
+           from agent_executions execution
+           join workflow_step_runs step on step.id = execution.workflow_step_run_id
+           where step.trigger_run_id = $1`,
+          [run.id],
+        );
+        assert.equal(count.rows[0]?.count, "1");
+      } finally {
+        await client.end();
+      }
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  it("delivers a terminal workflow notification after restart when the crash happened before the hook", async () => {
+    const fixture = await executionFixture(postgres);
+    const delivered: string[] = [];
+    try {
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-terminal-crash-before-hook",
+      );
+      const run = (
+        await fixture.database.createAcceptedTriggerRun({
+          organizationId: trigger.event.organizationId,
+          projectId: trigger.event.projectId,
+          configurationRevisionId: fixture.execution.configurationRevisionId,
+          providerEventReceiptId: trigger.event.providerEventReceiptId,
+          configuredTriggerName: "one-step",
+          rawPrompt: "raw",
+          prompt: "prompt",
+          inputs: {},
+          triggerContext: { provider: "test" },
+          outputContext: { provider: "test" },
+          deadlineAt: new Date("2026-08-05T13:00:00.000Z"),
+          stepIds: ["step-one"],
+          createdAt: new Date("2026-08-05T12:00:00.000Z"),
+        })
+      ).run;
+      await fixture.database.succeedTriggerRun(run.id);
+
+      const restarted = createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [],
+        onWorkflowRunTerminal: async (terminalRun) => {
+          delivered.push(terminalRun.id);
+        },
+      });
+      await restarted.engine.processAvailable();
+      await restarted.engine.processAvailable();
+
+      assert.deepEqual(delivered, [run.id]);
+      const persisted = await fixture.database.findTriggerRunById(run.id);
+      assert.equal(
+        persisted?.outcome === "accepted"
+          ? persisted.terminalNotificationDeliveredAt !== null
+          : false,
+        true,
+      );
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  it("retries a failed terminal workflow notification and stops after delivery", async () => {
+    const fixture = await executionFixture(postgres);
+    let now = new Date("2026-08-05T12:00:00.000Z");
+    const delivered: string[] = [];
+    let failFirst = true;
+    try {
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-terminal-retry",
+      );
+      const run = (
+        await fixture.database.createAcceptedTriggerRun({
+          organizationId: trigger.event.organizationId,
+          projectId: trigger.event.projectId,
+          configurationRevisionId: fixture.execution.configurationRevisionId,
+          providerEventReceiptId: trigger.event.providerEventReceiptId,
+          configuredTriggerName: "one-step",
+          rawPrompt: "raw",
+          prompt: "prompt",
+          inputs: {},
+          triggerContext: { provider: "test" },
+          outputContext: { provider: "test" },
+          deadlineAt: new Date("2026-08-05T13:00:00.000Z"),
+          stepIds: ["step-one"],
+          createdAt: now,
+        })
+      ).run;
+      await fixture.database.succeedTriggerRun(run.id);
+
+      const engine = createDurableWorkflowHandler({
+        database: fixture.database,
+        providers: [],
+        now: () => now,
+        leaseMs: 1_000,
+        onWorkflowRunTerminal: async (terminalRun) => {
+          delivered.push(terminalRun.id);
+          if (failFirst) {
+            failFirst = false;
+            throw new Error("provider unavailable");
+          }
+        },
+      }).engine;
+      await engine.processAvailable();
+      assert.deepEqual(delivered, [run.id]);
+      const failedDelivery = await fixture.database.findTriggerRunById(run.id);
+      assert.equal(failedDelivery?.outcome, "accepted");
+      assert.equal(failedDelivery.terminalNotificationDeliveredAt, null);
+
+      now = new Date("2026-08-05T12:00:01.001Z");
+      await engine.processAvailable();
+      await engine.processAvailable();
+
+      assert.deepEqual(delivered, [run.id, run.id]);
+      const persisted = await fixture.database.findTriggerRunById(run.id);
+      assert.equal(
+        persisted?.outcome === "accepted"
+          ? persisted.terminalNotificationDeliveredAt !== null
+          : false,
+        true,
+      );
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
   it.each([
     { executionStatus: "succeeded" as const, stepStatus: "succeeded" as const },
     { executionStatus: "failed" as const, stepStatus: "failed" as const },

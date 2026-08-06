@@ -145,6 +145,17 @@ class MemoryDatabase implements Database {
     return this.options.now?.() ?? new Date();
   }
 
+  private pendingTerminalNotification(
+    run: AcceptedTriggerRunRecord,
+    terminalAt: Date,
+  ): AcceptedTriggerRunRecord {
+    return {
+      ...run,
+      terminalNotificationPendingAt: run.terminalNotificationPendingAt ?? terminalAt,
+      terminalNotificationLeaseExpiresAt: null,
+    };
+  }
+
   async createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
@@ -179,6 +190,9 @@ class MemoryDatabase implements Database {
       deadlineAt: input.deadlineAt,
       deadlineKind: null,
       failureReason: null,
+      terminalNotificationPendingAt: null,
+      terminalNotificationDeliveredAt: null,
+      terminalNotificationLeaseExpiresAt: null,
       createdAt: now,
       completedAt: null,
     };
@@ -209,6 +223,7 @@ class MemoryDatabase implements Database {
       triggerRunId: run.id,
       availableAt: now,
       leaseExpiresAt: null,
+      leasedBeforeClaim: false,
     });
     return { run, created: true };
   }
@@ -317,7 +332,11 @@ class MemoryDatabase implements Database {
       )
       .sort((left, right) => left.availableAt.getTime() - right.availableAt.getTime())[0];
     if (candidate === undefined) return undefined;
-    const claimed = { ...candidate, leaseExpiresAt: new Date(now.getTime() + leaseMs) };
+    const claimed = {
+      ...candidate,
+      leaseExpiresAt: new Date(now.getTime() + leaseMs),
+      leasedBeforeClaim: candidate.leaseExpiresAt !== null,
+    };
     this.workflowWakeups.set(candidate.triggerRunId, claimed);
     return claimed;
   }
@@ -331,6 +350,7 @@ class MemoryDatabase implements Database {
           ? availableAt
           : current.availableAt,
       leaseExpiresAt: null,
+      leasedBeforeClaim: false,
     });
   }
 
@@ -529,6 +549,7 @@ class MemoryDatabase implements Database {
           triggerRunId: run.id,
           availableAt: now,
           leaseExpiresAt: null,
+          leasedBeforeClaim: false,
         });
       }
       return;
@@ -541,7 +562,7 @@ class MemoryDatabase implements Database {
         runStatus = "failed";
       }
       this.triggerRuns.set(run.id, {
-        ...run,
+        ...this.pendingTerminalNotification(run, now),
         status: runStatus,
         deadlineKind: input.deadlineKind ?? run.deadlineKind,
         failureReason: input.failureReason ?? null,
@@ -602,7 +623,7 @@ class MemoryDatabase implements Database {
     });
     if (run.status === "running") {
       this.triggerRuns.set(run.id, {
-        ...run,
+        ...this.pendingTerminalNotification(run, now),
         status: "failed",
         deadlineKind,
         failureReason,
@@ -660,7 +681,7 @@ class MemoryDatabase implements Database {
       }
     }
     const updatedRun: AcceptedTriggerRunRecord = {
-      ...run,
+      ...this.pendingTerminalNotification(run, now),
       status: "timed_out",
       deadlineKind: "whole_run",
       failureReason: "whole_run_timeout",
@@ -702,7 +723,7 @@ class MemoryDatabase implements Database {
             completedAt: now,
           });
           this.triggerRuns.set(run.id, {
-            ...run,
+            ...this.pendingTerminalNotification(run, now),
             status: "failed",
             deadlineKind,
             failureReason: deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout",
@@ -735,6 +756,7 @@ class MemoryDatabase implements Database {
       triggerRunId: run.id,
       availableAt: now,
       leaseExpiresAt: null,
+      leasedBeforeClaim: false,
     });
     return { stepRun: updatedStep, run };
   }
@@ -744,7 +766,11 @@ class MemoryDatabase implements Database {
     if (run === undefined || run.outcome !== "accepted") return undefined;
     if (run.status !== "running") return { run, transitioned: false };
     const now = this.options.now?.() ?? new Date();
-    const updated = { ...run, status: "succeeded" as const, completedAt: now };
+    const updated = {
+      ...this.pendingTerminalNotification(run, now),
+      status: "succeeded" as const,
+      completedAt: now,
+    };
     this.triggerRuns.set(run.id, updated);
     this.workflowWakeups.delete(run.id);
     return { run: updated, transitioned: true };
@@ -773,7 +799,7 @@ class MemoryDatabase implements Database {
         : step;
     if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
     const updatedRun: AcceptedTriggerRunRecord = {
-      ...run,
+      ...this.pendingTerminalNotification(run, now),
       status,
       failureReason,
       completedAt: now,
@@ -807,9 +833,53 @@ class MemoryDatabase implements Database {
           triggerRunId: run.id,
           availableAt: now,
           leaseExpiresAt: null,
+          leasedBeforeClaim: false,
         });
       }
     }
+  }
+
+  async claimPendingWorkflowRunTerminalNotification(now: Date, leaseMs: number) {
+    const candidate = Array.from(this.triggerRuns.values())
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.outcome === "accepted" &&
+          run.status !== "running" &&
+          run.terminalNotificationPendingAt !== null &&
+          run.terminalNotificationDeliveredAt === null &&
+          (run.terminalNotificationLeaseExpiresAt === null ||
+            run.terminalNotificationLeaseExpiresAt <= now),
+      )
+      .sort((left, right) => {
+        const time =
+          left.terminalNotificationPendingAt!.getTime() -
+          right.terminalNotificationPendingAt!.getTime();
+        return time === 0 ? left.id.localeCompare(right.id) : time;
+      })[0];
+    if (candidate === undefined) return undefined;
+    const updated = {
+      ...candidate,
+      terminalNotificationLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+    };
+    this.triggerRuns.set(updated.id, updated);
+    return updated;
+  }
+
+  async markWorkflowRunTerminalNotificationDelivered(triggerRunId: string, deliveredAt: Date) {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (
+      run === undefined ||
+      run.outcome !== "accepted" ||
+      run.terminalNotificationPendingAt === null ||
+      run.terminalNotificationDeliveredAt !== null
+    ) {
+      return;
+    }
+    this.triggerRuns.set(run.id, {
+      ...run,
+      terminalNotificationDeliveredAt: deliveredAt,
+      terminalNotificationLeaseExpiresAt: null,
+    });
   }
 
   async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {

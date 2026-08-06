@@ -4,6 +4,7 @@ import type {
   Database,
   DurableProviderEvent,
   TriggerRunRecord,
+  WorkflowWakeupRecord,
   WorkflowDeadlineRecovery,
 } from "../db/types.js";
 import type { AgentExecutionStatus } from "../db/schema.js";
@@ -47,6 +48,7 @@ interface PreparedWorkflowWakeup {
   next: WorkflowStepRun;
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number];
   context: ExpressionContext;
+  recoverPreHandoffDispatch: boolean;
 }
 
 export interface DurableWorkflowEngineOptions {
@@ -176,12 +178,13 @@ export class DurableWorkflowEngine {
     const database = this.options.database;
     if (database === null) return;
     await this.recoverWorkflowDeadlines(this.now());
+    await this.recoverPendingWorkflowRunTerminalNotifications();
     await database.recoverWorkflowWakeups(this.now());
     while (!this.stopped) {
       const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs);
       if (wakeup === undefined) return;
       try {
-        await this.processWakeup(wakeup.triggerRunId);
+        await this.processWakeup(wakeup);
       } catch (error) {
         this.logger.error(
           { err: error, triggerRunId: wakeup.triggerRunId },
@@ -191,12 +194,13 @@ export class DurableWorkflowEngine {
     }
   }
 
-  private async processWakeup(triggerRunId: string): Promise<void> {
+  private async processWakeup(wakeup: WorkflowWakeupRecord): Promise<void> {
     const database = this.options.database;
     if (database === null) return;
-    const prepared = await this.prepareWorkflowWakeup(triggerRunId);
+    const prepared = await this.prepareWorkflowWakeup(wakeup);
     if (prepared === undefined) return;
-    const { run, configuration, trigger, next, step, context } = prepared;
+    const { run, configuration, trigger, next, step, context, recoverPreHandoffDispatch } =
+      prepared;
     let shouldRun = true;
     try {
       shouldRun =
@@ -263,7 +267,11 @@ export class DurableWorkflowEngine {
     }
     await database.linkWorkflowStepRunExecution(next.id, created.execution.id, intent);
     if (!created.created) {
-      await this.finishPersistedExecution(created.execution);
+      await this.handleExistingWorkflowExecution(
+        created.execution,
+        next.id,
+        recoverPreHandoffDispatch,
+      );
       await database.deleteWorkflowWakeup(run.id);
       return;
     }
@@ -276,11 +284,33 @@ export class DurableWorkflowEngine {
     await database.deleteWorkflowWakeup(run.id);
   }
 
+  private async handleExistingWorkflowExecution(
+    execution: AgentExecutionRecord,
+    stepRunId: string,
+    recoverPreHandoffDispatch: boolean,
+  ): Promise<void> {
+    if (!recoverPreHandoffDispatch || !isRecoverablePreHandoffExecution(execution)) {
+      await this.finishPersistedExecution(execution);
+      return;
+    }
+    const persistedIntent = execution.launchIntent;
+    if (persistedIntent === null) {
+      throw new Error(`workflow execution missing persisted launch intent: ${execution.id}`);
+    }
+    const result = await this.dispatch(persistedIntent);
+    const recovered = await this.executionFromResult(result, persistedIntent, stepRunId);
+    if (recovered.id !== execution.id) {
+      throw new Error(`durable dispatch returned a different execution: ${recovered.id}`);
+    }
+    await this.finishPersistedExecution(recovered);
+  }
+
   private async prepareWorkflowWakeup(
-    triggerRunId: string,
+    wakeup: WorkflowWakeupRecord,
   ): Promise<PreparedWorkflowWakeup | undefined> {
     const database = this.options.database;
     if (database === null) return undefined;
+    const triggerRunId = wakeup.triggerRunId;
     const run = await database.findTriggerRunById(triggerRunId);
     if (run === undefined || run.status !== "running" || run.outcome !== "accepted") {
       await database.deleteWorkflowWakeup(triggerRunId);
@@ -320,7 +350,10 @@ export class DurableWorkflowEngine {
       await database.deleteWorkflowWakeup(run.id);
       return undefined;
     }
-    const next = steps.find((candidate) => candidate.status === "pending");
+    const recoverPreHandoffDispatch = wakeup.leasedBeforeClaim;
+    const next =
+      (recoverPreHandoffDispatch ? await this.findRecoverablePreHandoffStep(steps) : undefined) ??
+      steps.find((candidate) => candidate.status === "pending");
     if (next === undefined) {
       const succeeded = await database.succeedTriggerRun(run.id);
       if (succeeded?.transitioned === true) await this.notifyWorkflowRunTerminal(succeeded.run);
@@ -336,6 +369,7 @@ export class DurableWorkflowEngine {
       next,
       step,
       context: workflowContext(reconciledRun, steps, trigger.values),
+      recoverPreHandoffDispatch,
     };
   }
 
@@ -355,7 +389,28 @@ export class DurableWorkflowEngine {
 
   private notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<void> {
     if (run.outcome !== "accepted" || run.status === "running") return Promise.resolve();
-    return this.options.onWorkflowRunTerminal?.(run) ?? Promise.resolve();
+    return this.recoverPendingWorkflowRunTerminalNotifications();
+  }
+
+  private async recoverPendingWorkflowRunTerminalNotifications(): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    while (!this.stopped) {
+      const run = await database.claimPendingWorkflowRunTerminalNotification(
+        this.now(),
+        this.leaseMs,
+      );
+      if (run === undefined) return;
+      try {
+        await this.options.onWorkflowRunTerminal?.(run);
+        await database.markWorkflowRunTerminalNotificationDelivered(run.id, this.now());
+      } catch (error) {
+        this.logger.error(
+          { err: error, triggerRunId: run.id },
+          "workflow terminal notification failed",
+        );
+      }
+    }
   }
 
   private async finishPersistedExecution(
@@ -383,8 +438,23 @@ export class DurableWorkflowEngine {
       if (
         execution !== undefined &&
         (execution.status === "spawning" || execution.status === "running")
-      )
+      ) {
+        if (isRecoverablePreHandoffExecution(execution)) continue;
         return execution;
+      }
+    }
+    return undefined;
+  }
+
+  private async findRecoverablePreHandoffStep(
+    steps: readonly WorkflowStepRun[],
+  ): Promise<WorkflowStepRun | undefined> {
+    const database = this.options.database;
+    if (database === null) return undefined;
+    for (const step of steps) {
+      if (step.status !== "running" || step.agentExecutionId === null) continue;
+      const execution = await database.findAgentExecutionById(step.agentExecutionId);
+      if (execution !== undefined && isRecoverablePreHandoffExecution(execution)) return step;
     }
     return undefined;
   }
@@ -588,6 +658,16 @@ function composeValuesIfAvailable(
     if (error instanceof ExpressionEvaluationError) return undefined;
     throw error;
   }
+}
+
+function isRecoverablePreHandoffExecution(execution: AgentExecutionRecord): boolean {
+  return (
+    execution.status === "spawning" &&
+    execution.launchIntent !== null &&
+    execution.machineId === null &&
+    execution.daemonId === null &&
+    execution.daemonAgentId === null
+  );
 }
 
 function authorityString(value: string, field: string): string {

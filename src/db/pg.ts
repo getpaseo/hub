@@ -655,7 +655,7 @@ class PgDatabase implements Database {
         [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs)],
       );
       await client.query("commit");
-      return toWorkflowWakeupRecord(updated.rows[0]!);
+      return toWorkflowWakeupRecord(updated.rows[0]!, wakeup.lease_expires_at !== null);
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
@@ -1018,7 +1018,10 @@ class PgDatabase implements Database {
   async succeedTriggerRun(triggerRunId: string) {
     const rows = await query<TriggerRunRow>(
       this.pool,
-      `update trigger_runs set status = 'succeeded', completed_at = now()
+      `update trigger_runs
+       set status = 'succeeded', completed_at = now(),
+           terminal_notification_pending_at = coalesce(terminal_notification_pending_at, now()),
+           terminal_notification_lease_expires_at = null
        where id = $1 and status = 'running' returning *`,
       [triggerRunId],
     );
@@ -1074,7 +1077,9 @@ class PgDatabase implements Database {
       );
       const updatedRun = await client.query<TriggerRunRow>(
         `update trigger_runs
-         set status = $2, failure_reason = $3, completed_at = $4
+         set status = $2, failure_reason = $3, completed_at = $4,
+             terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $4),
+             terminal_notification_lease_expires_at = null
          where id = $1 returning *`,
         [triggerRunId, status, failureReason, completedAt],
       );
@@ -1111,6 +1116,59 @@ class PgDatabase implements Database {
          and wakeups.trigger_run_id is null
        on conflict (trigger_run_id) do nothing`,
       [now],
+    );
+  }
+
+  async claimPendingWorkflowRunTerminalNotification(now: Date, leaseMs: number) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const selected = await client.query<TriggerRunRow>(
+        `select * from trigger_runs
+         where outcome = 'accepted'
+           and status <> 'running'
+           and terminal_notification_pending_at is not null
+           and terminal_notification_delivered_at is null
+           and (
+             terminal_notification_lease_expires_at is null
+             or terminal_notification_lease_expires_at <= $1
+           )
+         order by terminal_notification_pending_at, id
+         for update skip locked limit 1`,
+        [now],
+      );
+      const run = selected.rows[0];
+      if (run === undefined) {
+        await client.query("commit");
+        return undefined;
+      }
+      const updated = await client.query<TriggerRunRow>(
+        `update trigger_runs
+         set terminal_notification_lease_expires_at = $2
+         where id = $1
+         returning *`,
+        [run.id, new Date(now.getTime() + leaseMs)],
+      );
+      await client.query("commit");
+      return toTriggerRunRecord(updated.rows[0]!);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async markWorkflowRunTerminalNotificationDelivered(triggerRunId: string, deliveredAt: Date) {
+    await query(
+      this.pool,
+      `update trigger_runs
+       set terminal_notification_delivered_at = coalesce(terminal_notification_delivered_at, $2),
+           terminal_notification_lease_expires_at = null
+       where id = $1
+         and terminal_notification_pending_at is not null
+         and terminal_notification_delivered_at is null`,
+      [triggerRunId, deliveredAt],
     );
   }
 
@@ -3393,6 +3451,9 @@ interface TriggerRunRow extends QueryResultRow {
   deadline_at: Date | null;
   deadline_kind: WorkflowDeadlineKind | null;
   failure_reason: string | null;
+  terminal_notification_pending_at: Date | null;
+  terminal_notification_delivered_at: Date | null;
+  terminal_notification_lease_expires_at: Date | null;
   rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
@@ -3487,6 +3548,9 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     deadlineAt: row.deadline_at,
     deadlineKind: row.deadline_kind,
     failureReason: row.failure_reason,
+    terminalNotificationPendingAt: row.terminal_notification_pending_at,
+    terminalNotificationDeliveredAt: row.terminal_notification_delivered_at,
+    terminalNotificationLeaseExpiresAt: row.terminal_notification_lease_expires_at,
     completedAt: row.completed_at,
   };
   return accepted;
@@ -3511,11 +3575,15 @@ function toWorkflowStepRunRecord(row: WorkflowStepRunRow): WorkflowStepRunRecord
   };
 }
 
-function toWorkflowWakeupRecord(row: WorkflowWakeupRow): WorkflowWakeupRecord {
+function toWorkflowWakeupRecord(
+  row: WorkflowWakeupRow,
+  leasedBeforeClaim = false,
+): WorkflowWakeupRecord {
   return {
     triggerRunId: row.trigger_run_id,
     availableAt: row.available_at,
     leaseExpiresAt: row.lease_expires_at,
+    leasedBeforeClaim,
   };
 }
 
@@ -3756,7 +3824,9 @@ async function timeoutWorkflowStepOnClient(
   if (run.status === "running") {
     await client.query(
       `update trigger_runs
-       set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4
+       set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4,
+           terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $4),
+           terminal_notification_lease_expires_at = null
        where id = $1 and status = 'running'`,
       [run.id, deadlineKind, reason, observedAt],
     );
@@ -3798,7 +3868,9 @@ async function timeoutWorkflowRunOnClient(
   await client.query(
     `update trigger_runs
      set status = 'timed_out', deadline_kind = 'whole_run',
-         failure_reason = 'whole_run_timeout', completed_at = $2
+         failure_reason = 'whole_run_timeout', completed_at = $2,
+         terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $2),
+         terminal_notification_lease_expires_at = null
      where id = $1 and status = 'running'`,
     [run.id, observedAt],
   );
@@ -3889,7 +3961,9 @@ async function finishWorkflowStepAndRun(
              when $5 is null then $2
              else 'failed'
            end,
-           deadline_kind = coalesce($5, deadline_kind), failure_reason = $3, completed_at = $4
+           deadline_kind = coalesce($5, deadline_kind), failure_reason = $3, completed_at = $4,
+           terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $4),
+           terminal_notification_lease_expires_at = null
        where id = $1`,
       [
         step.trigger_run_id,

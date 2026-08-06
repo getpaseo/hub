@@ -275,6 +275,15 @@ export const triggerRuns = pgTable(
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
     failureReason: text("failure_reason"),
+    terminalNotificationPendingAt: timestamp("terminal_notification_pending_at", {
+      withTimezone: true,
+    }),
+    terminalNotificationDeliveredAt: timestamp("terminal_notification_delivered_at", {
+      withTimezone: true,
+    }),
+    terminalNotificationLeaseExpiresAt: timestamp("terminal_notification_lease_expires_at", {
+      withTimezone: true,
+    }),
     rejection: jsonb(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -287,6 +296,10 @@ export const triggerRuns = pgTable(
     ),
     index("trigger_runs_status_deadline_idx").on(table.status, table.deadlineAt),
     index("trigger_runs_project_created_idx").on(table.projectId, table.createdAt.desc()),
+    index("trigger_runs_terminal_notification_idx").on(
+      table.terminalNotificationDeliveredAt,
+      table.terminalNotificationLeaseExpiresAt,
+    ),
     check(
       "trigger_runs_status_check",
       sql`${table.status} in ('running', 'succeeded', 'failed', 'timed_out', 'rejected')`,
