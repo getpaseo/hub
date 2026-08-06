@@ -30,6 +30,7 @@ export { enrollDaemon, issueEnrollmentToken, revokeDaemon } from "./registration
 interface DaemonModuleTestOptions {
   logger?: Logger;
   dispatchTimeoutMs?: number;
+  deadlineClock?: import("./lifecycle.js").ExecutionDeadlineClock;
 }
 
 export interface DaemonModuleOptions {

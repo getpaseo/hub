@@ -62,6 +62,8 @@ import type {
   WorkflowStepRunRecord,
   WorkflowWakeupRecord,
   WorkflowAgentCompletionInput,
+  WorkflowDeadlineKind,
+  WorkflowDeadlineRecovery,
 } from "./types.js";
 
 export interface MemoryDatabaseOptions {
@@ -123,6 +125,10 @@ class MemoryDatabase implements Database {
     this.organizationIds = new Set(options.organizationIds);
   }
 
+  private now(): Date {
+    return this.options.now?.() ?? new Date();
+  }
+
   async createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
@@ -152,6 +158,7 @@ class MemoryDatabase implements Database {
       triggerContext: freezeEvidence(input.triggerContext),
       outputContext: freezeEvidence(input.outputContext),
       deadlineAt: input.deadlineAt,
+      deadlineKind: null,
       failureReason: null,
       createdAt: now,
       completedAt: null,
@@ -169,6 +176,9 @@ class MemoryDatabase implements Database {
         agentExecutionId: null,
         output: null,
         failureReason: null,
+        deadlineKind: null,
+        deadlineAt: null,
+        idleDeadlineAt: null,
         startedAt: null,
         completedAt: null,
         dispatchIntent: null,
@@ -311,15 +321,40 @@ class MemoryDatabase implements Database {
         created: false,
       };
     }
+    const run = this.triggerRuns.get(input.triggerRunId);
+    const startedAt = input.execution.startedAt;
+    if (run === undefined || run.outcome !== "accepted" || run.status !== "running") {
+      return { stepRun: step, execution: undefined, created: false };
+    }
+    if (run.deadlineAt <= startedAt) {
+      this.timeoutWorkflowRun(run.id, startedAt);
+      return {
+        stepRun: this.workflowStepRuns.get(step.id) ?? step,
+        execution: undefined,
+        created: false,
+      };
+    }
+    const deadlineAt = new Date(
+      Math.min(input.execution.deadlineAt.getTime(), run.deadlineAt.getTime()),
+    );
+    const idleDeadlineAt = new Date(
+      Math.min(input.execution.idleDeadlineAt.getTime(), deadlineAt.getTime()),
+    );
     const execution = await this.insertAgentExecution({
       ...input.execution,
       id: input.executionId,
+      startedAt,
+      deadlineAt,
+      idleDeadlineAt,
       workflowStepRunId: step.id,
     });
     step = {
       ...step,
       status: "running",
       agentExecutionId: execution.id,
+      deadlineAt: execution.deadlineAt,
+      idleDeadlineAt: execution.idleDeadlineAt,
+      dispatchIntent: input.execution.launchIntent ?? step.dispatchIntent,
       startedAt: execution.startedAt,
     };
     this.workflowStepRuns.set(step.id, step);
@@ -394,6 +429,23 @@ class MemoryDatabase implements Database {
       throw new Error(`workflow step run not found: ${execution.workflowStepRunId}`);
     const run = this.triggerRuns.get(step.triggerRunId);
     if (run === undefined) throw new Error(`workflow trigger run not found: ${step.triggerRunId}`);
+    if (run.outcome !== "accepted") throw new Error("rejected trigger run has no workflow step");
+
+    const observedAt = input.observedAt ?? this.now();
+    if (execution.status === "spawning" || execution.status === "running") {
+      const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+      if (deadlineKind === "whole_run") {
+        this.timeoutWorkflowRun(run.id, observedAt);
+        return {
+          execution: this.readAgentExecution(execution.id),
+          transitioned: true,
+          deadlineKind,
+        };
+      }
+      if (deadlineKind !== undefined) {
+        return this.timeoutWorkflowStep(execution.id, deadlineKind, observedAt);
+      }
+    }
 
     const transitioned =
       execution.status === "spawning" || execution.status === "running"
@@ -429,6 +481,7 @@ class MemoryDatabase implements Database {
       status: input.stepStatus,
       output: freezeEvidence(input.stepOutput !== undefined ? input.stepOutput : input.result),
       failureReason: input.failureReason ?? null,
+      deadlineKind: input.deadlineKind ?? step.deadlineKind,
       completedAt: now,
     };
     this.workflowStepRuns.set(step.id, updatedStep);
@@ -443,14 +496,178 @@ class MemoryDatabase implements Database {
       return;
     }
     if (run.status === "running") {
+      let runStatus: TriggerRunRecord["status"] = input.stepStatus;
+      if (input.deadlineKind === "whole_run") {
+        runStatus = "timed_out";
+      } else if (input.deadlineKind !== undefined) {
+        runStatus = "failed";
+      }
       this.triggerRuns.set(run.id, {
         ...run,
-        status: input.stepStatus,
+        status: runStatus,
+        deadlineKind: input.deadlineKind ?? run.deadlineKind,
         failureReason: input.failureReason ?? null,
         completedAt: now,
       });
     }
     this.workflowWakeups.delete(run.id);
+  }
+
+  private timeoutWorkflowStep(
+    executionId: string,
+    deadlineKind: Exclude<WorkflowDeadlineKind, "whole_run">,
+    now: Date,
+  ): TransitionAgentExecutionResult {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) {
+      return { execution, transitioned: false };
+    }
+    const failureReason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+    let hubAction: "interrupt" | "archive" | null = null;
+    if (execution.daemonId !== null) {
+      hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+    }
+    const updatedExecution: AgentExecutionRecord = {
+      ...execution,
+      status: "failed",
+      completedAt: now,
+      result: { status: "failed", reason: failureReason },
+      idleDeadlineAt: null,
+      hubAction,
+      hubActionCompletedAt: hubAction === null ? null : null,
+    };
+    this.agentExecutions.set(execution.id, updatedExecution);
+    const step =
+      execution.workflowStepRunId === null
+        ? undefined
+        : this.workflowStepRuns.get(execution.workflowStepRunId);
+    if (
+      step === undefined ||
+      step.status === "succeeded" ||
+      step.status === "failed" ||
+      step.status === "timed_out"
+    ) {
+      return { execution: updatedExecution, transitioned: true, deadlineKind };
+    }
+    const run = this.triggerRuns.get(step.triggerRunId);
+    if (run === undefined || run.outcome !== "accepted") {
+      return { execution: updatedExecution, transitioned: true, deadlineKind };
+    }
+    this.workflowStepRuns.set(step.id, {
+      ...step,
+      status: "timed_out",
+      failureReason,
+      deadlineKind,
+      completedAt: now,
+    });
+    if (run.status === "running") {
+      this.triggerRuns.set(run.id, {
+        ...run,
+        status: "failed",
+        deadlineKind,
+        failureReason,
+        completedAt: now,
+      });
+    }
+    this.workflowWakeups.delete(run.id);
+    return { execution: updatedExecution, transitioned: true, deadlineKind };
+  }
+
+  private timeoutWorkflowRun(
+    triggerRunId: string,
+    now: Date,
+  ): WorkflowDeadlineRecovery | undefined {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined || run.outcome !== "accepted" || run.status !== "running") {
+      return undefined;
+    }
+    const executionIds: string[] = [];
+    for (const step of this.workflowStepRuns.values()) {
+      if (step.triggerRunId !== triggerRunId) continue;
+      if (step.agentExecutionId !== null) {
+        const execution = this.agentExecutions.get(step.agentExecutionId);
+        if (
+          execution !== undefined &&
+          (execution.status === "spawning" || execution.status === "running")
+        ) {
+          const updatedExecution: AgentExecutionRecord = {
+            ...execution,
+            status: "failed",
+            completedAt: now,
+            result: { status: "failed", reason: "whole_run_timeout" },
+            idleDeadlineAt: null,
+            hubAction: execution.daemonId === null ? null : "interrupt",
+            hubActionCompletedAt: null,
+          };
+          this.agentExecutions.set(execution.id, updatedExecution);
+          executionIds.push(execution.id);
+        }
+      }
+      if (step.status === "pending" || step.status === "running") {
+        this.workflowStepRuns.set(step.id, {
+          ...step,
+          status: "timed_out",
+          failureReason: "whole_run_timeout",
+          deadlineKind: "whole_run",
+          completedAt: now,
+        });
+      }
+    }
+    const updatedRun: AcceptedTriggerRunRecord = {
+      ...run,
+      status: "timed_out",
+      deadlineKind: "whole_run",
+      failureReason: "whole_run_timeout",
+      completedAt: now,
+    };
+    this.triggerRuns.set(run.id, updatedRun);
+    this.workflowWakeups.delete(run.id);
+    return { triggerRunId: run.id, executionIds };
+  }
+
+  async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
+    const recoveries: WorkflowDeadlineRecovery[] = [];
+    for (const run of this.triggerRuns.values()) {
+      if (run.outcome !== "accepted" || run.status !== "running") continue;
+      if (run.deadlineAt <= now) {
+        const recovery = this.timeoutWorkflowRun(run.id, now);
+        if (recovery !== undefined) recoveries.push(recovery);
+        continue;
+      }
+      const steps = await this.listWorkflowStepRunsForTriggerRun(run.id);
+      for (const step of steps) {
+        if (step.status !== "running") continue;
+        const execution =
+          step.agentExecutionId === null
+            ? undefined
+            : this.agentExecutions.get(step.agentExecutionId);
+        if (execution !== undefined && isTerminalAgentExecutionStatus(execution.status)) continue;
+        const deadlineKind = workflowDeadlineKind(execution, step, run, now);
+        if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
+        if (execution !== undefined) {
+          const recovery = this.timeoutWorkflowStep(execution.id, deadlineKind, now);
+          recoveries.push({ triggerRunId: run.id, executionIds: [recovery.execution.id] });
+        } else {
+          this.workflowStepRuns.set(step.id, {
+            ...step,
+            status: "timed_out",
+            failureReason: deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout",
+            deadlineKind,
+            completedAt: now,
+          });
+          this.triggerRuns.set(run.id, {
+            ...run,
+            status: "failed",
+            deadlineKind,
+            failureReason: deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout",
+            completedAt: now,
+          });
+          this.workflowWakeups.delete(run.id);
+          recoveries.push({ triggerRunId: run.id, executionIds: [] });
+        }
+      }
+    }
+    return recoveries;
   }
 
   async markWorkflowStepSkipped(triggerRunId: string, stepId: string, reason: string) {
@@ -523,7 +740,7 @@ class MemoryDatabase implements Database {
 
   async recoverWorkflowWakeups(now: Date) {
     for (const run of this.triggerRuns.values()) {
-      if (run.status !== "running") continue;
+      if (run.status !== "running" || run.deadlineAt <= now) continue;
       const wakeup = this.workflowWakeups.get(run.id);
       const steps = await this.listWorkflowStepRunsForTriggerRun(run.id);
       const execution = (
@@ -803,7 +1020,9 @@ class MemoryDatabase implements Database {
     }
 
     const status = input.status ?? "spawning";
-    const completedAt = status === "failed" ? new Date() : null;
+    const completedAt = status === "failed" ? this.now() : null;
+    const deadlineAt = input.deadlineAt ?? null;
+    const idleDeadlineAt = capIdleDeadline(input.idleDeadlineAt, deadlineAt);
 
     const execution: AgentExecutionRecord = {
       id: input.id ?? randomUUID(),
@@ -811,11 +1030,11 @@ class MemoryDatabase implements Database {
       projectId: input.projectId,
       machineId: input.machineId,
       status,
-      startedAt: new Date(),
+      startedAt: input.startedAt ?? this.now(),
       completedAt,
       completedByAgentAt: null,
-      deadlineAt: input.deadlineAt ?? null,
-      idleDeadlineAt: input.idleDeadlineAt ?? null,
+      deadlineAt,
+      idleDeadlineAt,
       result: input.result ?? null,
       triggerContext: input.triggerContext,
       outputContext: input.outputContext,
@@ -1066,10 +1285,42 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
-  async setAgentExecutionIdleDeadline(executionId: string, idleDeadlineAt: Date | null) {
+  async setAgentExecutionIdleDeadline(
+    executionId: string,
+    idleDeadlineAt: Date | null,
+    observedAt: Date,
+  ) {
     const execution = this.readAgentExecution(executionId);
     if (isTerminalAgentExecutionStatus(execution.status)) return execution;
-    const updated = { ...execution, idleDeadlineAt };
+    if (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= observedAt.getTime()) {
+      return execution;
+    }
+    const boundedIdleDeadlineAt = capIdleDeadline(idleDeadlineAt, execution.deadlineAt);
+    const updated = { ...execution, idleDeadlineAt: boundedIdleDeadlineAt };
+    this.agentExecutions.set(executionId, updated);
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      if (step !== undefined) {
+        this.workflowStepRuns.set(step.id, { ...step, idleDeadlineAt: boundedIdleDeadlineAt });
+      }
+    }
+    return updated;
+  }
+
+  async prepareAgentExecutionForDispatch(
+    executionId: string,
+    daemonId: string,
+    machineId: string,
+    completionTokenHash: string,
+  ) {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) return execution;
+    const updated = {
+      ...execution,
+      daemonId,
+      machineId,
+      completionTokenHash: execution.completionTokenHash ?? completionTokenHash,
+    };
     this.agentExecutions.set(executionId, updated);
     return updated;
   }
@@ -1173,15 +1424,15 @@ class MemoryDatabase implements Database {
 
     let hubActionCompletedAt = execution.hubActionCompletedAt;
     if (fields.hubAction !== undefined) {
-      hubActionCompletedAt = fields.hubAction === null ? new Date() : null;
+      hubActionCompletedAt = fields.hubAction === null ? this.now() : null;
     }
     const updated: AgentExecutionRecord = {
       ...execution,
       status: toStatus,
-      completedAt: isTerminalAgentExecutionStatus(toStatus) ? new Date() : execution.completedAt,
+      completedAt: isTerminalAgentExecutionStatus(toStatus) ? this.now() : execution.completedAt,
       completedByAgentAt:
         fields.completedByAgent === true && toStatus === "succeeded"
-          ? new Date()
+          ? this.now()
           : execution.completedByAgentAt,
       result: fields.result !== undefined ? fields.result : execution.result,
       idleDeadlineAt: isTerminalAgentExecutionStatus(toStatus) ? null : execution.idleDeadlineAt,
@@ -1904,6 +2155,42 @@ interface MemoryDeviceAuthorization extends DeviceAuthorizationRecord {
   fingerprintVerifier: string;
   nextPollAt: Date;
   enrollmentTokenVerifier: string | null;
+}
+
+function workflowDeadlineKind(
+  execution: AgentExecutionRecord | undefined,
+  step: WorkflowStepRunRecord,
+  run: AcceptedTriggerRunRecord,
+  observedAt: Date,
+): WorkflowDeadlineKind | undefined {
+  if (run.status === "running" && run.deadlineAt <= observedAt) return "whole_run";
+  const hardDeadline = execution?.deadlineAt ?? step.deadlineAt;
+  const idleDeadline = execution?.idleDeadlineAt ?? step.idleDeadlineAt;
+  if (hardDeadline !== null && hardDeadline !== undefined && hardDeadline <= observedAt) {
+    if (
+      idleDeadline !== null &&
+      idleDeadline !== undefined &&
+      idleDeadline <= observedAt &&
+      idleDeadline < hardDeadline
+    ) {
+      return "step_idle";
+    }
+    return "step_hard";
+  }
+  if (idleDeadline !== null && idleDeadline !== undefined && idleDeadline <= observedAt) {
+    return "step_idle";
+  }
+  return undefined;
+}
+
+function capIdleDeadline(
+  idleDeadlineAt: Date | null | undefined,
+  deadlineAt: Date | null,
+): Date | null {
+  if (idleDeadlineAt === null || idleDeadlineAt === undefined || deadlineAt === null) {
+    return idleDeadlineAt ?? null;
+  }
+  return new Date(Math.min(idleDeadlineAt.getTime(), deadlineAt.getTime()));
 }
 
 function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {

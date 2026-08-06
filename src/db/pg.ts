@@ -75,6 +75,8 @@ import type {
   WorkflowStepRunRecord,
   WorkflowWakeupRecord,
   WorkflowAgentCompletionInput,
+  WorkflowDeadlineKind,
+  WorkflowDeadlineRecovery,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -389,6 +391,7 @@ class PgDatabase implements Database {
             machine_id,
             daemon_id,
             status,
+            started_at,
             trigger_context,
             output_context,
             configuration_revision_id,
@@ -403,8 +406,14 @@ class PgDatabase implements Database {
             result,
             completed_at
           )
-          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $18, $17,
-                 case when $16 = 'failed'::agent_execution_status then now() else null end
+          select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+                 case
+                   when $11::timestamptz is null then null
+                   when $10::timestamptz is null then $11::timestamptz
+                   else least($10::timestamptz, $11::timestamptz)
+                 end,
+                 $12, $13, $14, $15, $18, $17,
+                 case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
             and exists (
@@ -440,6 +449,7 @@ class PgDatabase implements Database {
           input.status ?? "spawning",
           input.result ?? null,
           input.workflowStepRunId ?? null,
+          input.startedAt ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -468,6 +478,7 @@ class PgDatabase implements Database {
             machine_id,
             daemon_id,
             status,
+            started_at,
             trigger_context,
             output_context,
             configuration_revision_id,
@@ -482,8 +493,14 @@ class PgDatabase implements Database {
             result,
             completed_at
           )
-          select $1, $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $18, $17,
-                 case when $16 = 'failed'::agent_execution_status then now() else null end
+          select $1, $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+                 case
+                   when $11::timestamptz is null then null
+                   when $10::timestamptz is null then $11::timestamptz
+                   else least($10::timestamptz, $11::timestamptz)
+                 end,
+                 $12, $13, $14, $15, $18, $17,
+                 case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
             and exists (
@@ -520,6 +537,7 @@ class PgDatabase implements Database {
           input.status ?? "spawning",
           input.result ?? null,
           input.workflowStepRunId ?? null,
+          input.startedAt ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -539,8 +557,8 @@ class PgDatabase implements Database {
         `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, trigger_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, trigger_context, output_context, deadline_at, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, $10, $11, $12, null, $13)
+            raw_prompt, prompt, inputs, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, $10, $11, $12, null, null, $13)
          on conflict (trigger_id, configured_trigger_name) do nothing
          returning *`,
         [
@@ -574,8 +592,9 @@ class PgDatabase implements Database {
       if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
       for (const [ordinal, stepId] of input.stepIds.entries()) {
         await client.query(
-          `insert into workflow_step_runs (trigger_run_id, step_id, ordinal, status)
-           values ($1, $2, $3, 'pending')
+          `insert into workflow_step_runs
+             (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
+           values ($1, $2, $3, 'pending', null, null, null)
            on conflict (trigger_run_id, ordinal) do nothing`,
           [run.id, stepId, ordinal],
         );
@@ -774,6 +793,44 @@ class PgDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
+      const startedAt = input.execution.startedAt;
+      const runRows = await client.query<TriggerRunRow>(
+        `select * from trigger_runs where id = $1 for update`,
+        [input.triggerRunId],
+      );
+      const run = runRows.rows[0];
+      if (run === undefined) throw new Error("workflow trigger run not found");
+      if (run.outcome !== "accepted" || run.status !== "running") {
+        await client.query("commit");
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
+          [input.triggerRunId, input.stepId, input.ordinal],
+        );
+        const step = stepRows.rows[0];
+        if (step === undefined) throw new Error("workflow step run not found");
+        return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
+      }
+      if (run.deadline_at === null || run.deadline_at.getTime() <= startedAt.getTime()) {
+        await timeoutWorkflowRunOnClient(client, run, startedAt);
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
+          [input.triggerRunId, input.stepId, input.ordinal],
+        );
+        const step = stepRows.rows[0];
+        await client.query("commit");
+        if (step === undefined) throw new Error("workflow step run not found");
+        return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
+      }
+      const deadlineAt = new Date(
+        Math.min(input.execution.deadlineAt.getTime(), run.deadline_at.getTime()),
+      );
+      const idleDeadlineAt = new Date(
+        Math.min(
+          input.execution.idleDeadlineAt.getTime(),
+          deadlineAt.getTime(),
+          run.deadline_at.getTime(),
+        ),
+      );
       const selected = await client.query<WorkflowStepRunRow>(
         `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3 for update`,
         [input.triggerRunId, input.stepId, input.ordinal],
@@ -796,14 +853,24 @@ class PgDatabase implements Database {
       const execution = await insertAgentExecutionOnClient(client, {
         ...input.execution,
         id: input.executionId,
+        deadlineAt,
+        idleDeadlineAt,
         workflowStepRunId: step.id,
       });
       const updated = await client.query<WorkflowStepRunRow>(
         `update workflow_step_runs
-         set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3)
+         set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3),
+             deadline_at = $4, idle_deadline_at = $5, dispatch_intent = coalesce($6, dispatch_intent)
          where id = $1 and agent_execution_id is null
          returning *`,
-        [step.id, execution.id, execution.started_at],
+        [
+          step.id,
+          execution.id,
+          execution.started_at,
+          execution.deadline_at,
+          execution.idle_deadline_at,
+          input.execution.launchIntent ?? null,
+        ],
       );
       step = updated.rows[0] ?? step;
       await client.query("commit");
@@ -895,15 +962,13 @@ class PgDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      const executionRows = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1 for update`,
+      const initialExecution = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1`,
         [input.executionId],
       );
-      const execution = executionRows.rows[0];
-      if (execution === undefined)
-        throw new Error(`agent execution not found: ${input.executionId}`);
-
-      if (execution.workflow_step_run_id === null) {
+      const initial = initialExecution.rows[0];
+      if (initial === undefined) throw new Error(`agent execution not found: ${input.executionId}`);
+      if (initial.workflow_step_run_id === null) {
         await client.query("commit");
         return this.transitionAgentExecution(input.executionId, input.executionStatus, {
           result: input.result,
@@ -917,18 +982,62 @@ class PgDatabase implements Database {
         });
       }
 
-      const stepRows = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where id = $1 for update`,
-        [execution.workflow_step_run_id],
+      const stepLookup = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where id = $1`,
+        [initial.workflow_step_run_id],
       );
-      const step = stepRows.rows[0];
-      if (step === undefined) throw new Error("workflow step run not found");
+      const stepCandidate = stepLookup.rows[0];
+      if (stepCandidate === undefined) throw new Error("workflow step run not found");
       const runRows = await client.query<TriggerRunRow>(
         `select * from trigger_runs where id = $1 for update`,
-        [step.trigger_run_id],
+        [stepCandidate.trigger_run_id],
       );
       const run = runRows.rows[0];
       if (run === undefined) throw new Error("workflow trigger run not found");
+      const stepRows = await client.query<WorkflowStepRunRow>(
+        `select * from workflow_step_runs where id = $1 for update`,
+        [initial.workflow_step_run_id],
+      );
+      const step = stepRows.rows[0];
+      if (step === undefined) throw new Error("workflow step run not found");
+
+      const executionRows = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1 for update`,
+        [input.executionId],
+      );
+      const execution = executionRows.rows[0];
+      if (execution === undefined)
+        throw new Error(`agent execution not found: ${input.executionId}`);
+      const observedAt = input.observedAt ?? new Date();
+      if (execution.status === "spawning" || execution.status === "running") {
+        const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+        if (deadlineKind === "whole_run") {
+          const recovery = await timeoutWorkflowRunOnClient(client, run, observedAt);
+          await client.query("commit");
+          const updatedExecution = await this.findAgentExecutionById(input.executionId);
+          return {
+            execution: updatedExecution ?? toAgentExecutionRecord(execution),
+            transitioned: recovery.executionIds.includes(input.executionId),
+            deadlineKind,
+          };
+        }
+        if (deadlineKind !== undefined) {
+          const updated = await timeoutWorkflowStepOnClient(
+            client,
+            execution,
+            step,
+            run,
+            deadlineKind,
+            observedAt,
+          );
+          await client.query("commit");
+          return {
+            execution: toAgentExecutionRecord(updated),
+            transitioned: true,
+            deadlineKind,
+          };
+        }
+      }
 
       const liveTransition = await transitionWorkflowAgentExecution(client, execution, input);
       if (liveTransition === undefined) {
@@ -942,6 +1051,7 @@ class PgDatabase implements Database {
       return {
         execution: toAgentExecutionRecord(liveTransition.execution),
         transitioned: liveTransition.transitioned,
+        ...(input.deadlineKind === undefined ? {} : { deadlineKind: input.deadlineKind }),
       };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
@@ -1081,6 +1191,7 @@ class PgDatabase implements Database {
        from trigger_runs runs
        left join workflow_wakeups wakeups on wakeups.trigger_run_id = runs.id
        where runs.status = 'running'
+         and runs.deadline_at > $1
          and not exists (
            select 1 from agent_executions executions
            join workflow_step_runs live_steps on live_steps.id = executions.workflow_step_run_id
@@ -1091,6 +1202,93 @@ class PgDatabase implements Database {
        on conflict (trigger_run_id) do nothing`,
       [now],
     );
+  }
+
+  async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const recoveries: WorkflowDeadlineRecovery[] = [];
+      const overdueRuns = await client.query<TriggerRunRow>(
+        `select * from trigger_runs
+         where outcome = 'accepted' and status = 'running' and deadline_at <= $1
+         order by deadline_at, id
+         for update skip locked`,
+        [now],
+      );
+      for (const run of overdueRuns.rows) {
+        recoveries.push(await timeoutWorkflowRunOnClient(client, run, now));
+      }
+
+      const activeRuns = await client.query<TriggerRunRow>(
+        `select * from trigger_runs
+         where outcome = 'accepted' and status = 'running' and deadline_at > $1
+         order by deadline_at, id
+         for update skip locked`,
+        [now],
+      );
+      for (const run of activeRuns.rows) {
+        const steps = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs
+           where trigger_run_id = $1 and status = 'running'
+           order by ordinal
+           for update`,
+          [run.id],
+        );
+        for (const step of steps.rows) {
+          const executionRows =
+            step.agent_execution_id === null
+              ? { rows: [] as AgentExecutionRow[] }
+              : await client.query<AgentExecutionRow>(
+                  `select * from agent_executions where id = $1 for update`,
+                  [step.agent_execution_id],
+                );
+          const execution = executionRows.rows[0];
+          if (
+            execution !== undefined &&
+            (execution.status === "succeeded" || execution.status === "failed")
+          ) {
+            continue;
+          }
+          const deadlineKind = workflowDeadlineKind(execution, step, run, now);
+          if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
+          if (execution === undefined) {
+            const reason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+            await client.query(
+              `update workflow_step_runs
+               set status = 'timed_out', failure_reason = $2, deadline_kind = $3, completed_at = $4
+               where id = $1 and status = 'running'`,
+              [step.id, reason, deadlineKind, now],
+            );
+            await client.query(
+              `update trigger_runs
+               set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4
+               where id = $1 and status = 'running'`,
+              [run.id, deadlineKind, reason, now],
+            );
+            await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
+            recoveries.push({ triggerRunId: run.id, executionIds: [] });
+          } else {
+            const updated = await timeoutWorkflowStepOnClient(
+              client,
+              execution,
+              step,
+              run,
+              deadlineKind,
+              now,
+            );
+            recoveries.push({ triggerRunId: run.id, executionIds: [updated.id] });
+          }
+        }
+      }
+      await client.query("commit");
+      return recoveries;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
   }
 
   async issueEnrollmentToken(input: EnrollmentTokenRecord): Promise<boolean> {
@@ -1582,17 +1780,90 @@ class PgDatabase implements Database {
   async setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
+    observedAt: Date,
+  ): Promise<AgentExecutionRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existingRows = await client.query<AgentExecutionRow>(
+        `select * from agent_executions where id = $1`,
+        [executionId],
+      );
+      const existing = existingRows.rows[0];
+      if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
+
+      if (existing.workflow_step_run_id !== null) {
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where id = $1`,
+          [existing.workflow_step_run_id],
+        );
+        const step = stepRows.rows[0];
+        if (step !== undefined) {
+          await client.query(`select id from trigger_runs where id = $1 for update`, [
+            step.trigger_run_id,
+          ]);
+          await client.query(`select id from workflow_step_runs where id = $1 for update`, [
+            step.id,
+          ]);
+        }
+      }
+
+      const rows = await client.query<AgentExecutionRow>(
+        `update agent_executions
+         set idle_deadline_at = case
+           when $2::timestamptz is null then null
+           when deadline_at is null then $2::timestamptz
+           else least(deadline_at, $2::timestamptz)
+         end
+         where id = $1 and status in ('spawning', 'running')
+           and ($3::timestamptz is null or deadline_at is null or deadline_at > $3)
+         returning *`,
+        [executionId, idleDeadlineAt, observedAt],
+      );
+      const row = rows.rows[0];
+      if (row !== undefined && row.workflow_step_run_id !== null) {
+        await client.query(
+          `update workflow_step_runs
+           set idle_deadline_at = $2
+           where id = $1 and status = 'running'`,
+          [row.workflow_step_run_id, row.idle_deadline_at],
+        );
+      }
+      const current =
+        row === undefined
+          ? ((
+              await client.query<AgentExecutionRow>(
+                `select * from agent_executions where id = $1`,
+                [executionId],
+              )
+            ).rows[0] ?? existing)
+          : row;
+      await client.query("commit");
+      return toAgentExecutionRecord(current);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async prepareAgentExecutionForDispatch(
+    executionId: string,
+    daemonId: string,
+    machineId: string,
+    completionTokenHash: string,
   ): Promise<AgentExecutionRecord> {
     const rows = await query<AgentExecutionRow>(
       this.pool,
       `update agent_executions
-       set idle_deadline_at = $2
+       set daemon_id = $2, machine_id = $3,
+           completion_token_hash = coalesce(completion_token_hash, $4)
        where id = $1 and status in ('spawning', 'running')
        returning *`,
-      [executionId, idleDeadlineAt],
+      [executionId, daemonId, machineId, completionTokenHash],
     );
-    const row = rows.rows[0];
-    if (row !== undefined) return toAgentExecutionRecord(row);
+    if (rows.rows[0] !== undefined) return toAgentExecutionRecord(rows.rows[0]);
     const execution = await this.findAgentExecutionById(executionId);
     if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
     return execution;
@@ -2969,13 +3240,18 @@ async function insertAgentExecutionOnClient(
 ): Promise<AgentExecutionRow> {
   const rows = await client.query<AgentExecutionRow>(
     `insert into agent_executions
-       (id, organization_id, project_id, machine_id, daemon_id, status,
+       (id, organization_id, project_id, machine_id, daemon_id, status, started_at,
         trigger_context, output_context, configuration_revision_id, completion_token_hash,
         deadline_at, idle_deadline_at, trigger_id, trigger_connection_id, trigger_resource_id,
         launch_intent, workflow_step_run_id, result, completed_at)
-     select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, $6, $7, $8, $9, $10, $11,
+     select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $16, coalesce($19, now()), $6, $7, $8, $9, $10,
+            case
+              when $11::timestamptz is null then null
+              when $10::timestamptz is null then $11::timestamptz
+              else least($10::timestamptz, $11::timestamptz)
+            end,
             $12, $13, $14, $15, $18, $17,
-            case when $16 = 'failed'::agent_execution_status then now() else null end
+            case when $16 = 'failed'::agent_execution_status then coalesce($19, now()) else null end
      from projects
      where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
        and exists (
@@ -3008,6 +3284,7 @@ async function insertAgentExecutionOnClient(
       input.status ?? "spawning",
       input.result ?? null,
       input.workflowStepRunId ?? null,
+      input.startedAt ?? null,
     ],
   );
   const execution = rows.rows[0];
@@ -3051,6 +3328,7 @@ interface TriggerRunRow extends QueryResultRow {
   trigger_context: unknown;
   output_context: unknown;
   deadline_at: Date | null;
+  deadline_kind: WorkflowDeadlineKind | null;
   failure_reason: string | null;
   rejection: unknown;
   created_at: Date;
@@ -3066,6 +3344,9 @@ interface WorkflowStepRunRow extends QueryResultRow {
   agent_execution_id: string | null;
   output: unknown;
   failure_reason: string | null;
+  deadline_kind: WorkflowDeadlineKind | null;
+  deadline_at: Date | null;
+  idle_deadline_at: Date | null;
   started_at: Date | null;
   completed_at: Date | null;
   dispatch_intent: LaunchMachineIntent | null;
@@ -3114,6 +3395,7 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     outcome: "accepted",
     status: row.status,
     deadlineAt: row.deadline_at,
+    deadlineKind: row.deadline_kind,
     failureReason: row.failure_reason,
     completedAt: row.completed_at,
   };
@@ -3130,6 +3412,9 @@ function toWorkflowStepRunRecord(row: WorkflowStepRunRow): WorkflowStepRunRecord
     agentExecutionId: row.agent_execution_id,
     output: row.output,
     failureReason: row.failure_reason,
+    deadlineKind: row.deadline_kind,
+    deadlineAt: row.deadline_at,
+    idleDeadlineAt: row.idle_deadline_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     dispatchIntent: row.dispatch_intent,
@@ -3313,6 +3598,110 @@ function deadlineConditionAllows(
   );
 }
 
+function workflowDeadlineKind(
+  execution: AgentExecutionRow | undefined,
+  step: WorkflowStepRunRow,
+  run: TriggerRunRow,
+  observedAt: Date,
+): WorkflowDeadlineKind | undefined {
+  if (run.status === "running" && run.deadline_at !== null && run.deadline_at <= observedAt) {
+    return "whole_run";
+  }
+  const hardDeadline = execution?.deadline_at ?? step.deadline_at;
+  const idleDeadline = execution?.idle_deadline_at ?? step.idle_deadline_at;
+  if (hardDeadline !== null && hardDeadline <= observedAt) {
+    if (idleDeadline !== null && idleDeadline <= observedAt && idleDeadline < hardDeadline) {
+      return "step_idle";
+    }
+    return "step_hard";
+  }
+  if (idleDeadline !== null && idleDeadline <= observedAt) return "step_idle";
+  return undefined;
+}
+
+async function timeoutWorkflowStepOnClient(
+  client: PoolClient,
+  execution: AgentExecutionRow,
+  step: WorkflowStepRunRow,
+  run: TriggerRunRow,
+  deadlineKind: Exclude<WorkflowDeadlineKind, "whole_run">,
+  observedAt: Date,
+): Promise<AgentExecutionRow> {
+  const reason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+  const updatedExecution = await client.query<AgentExecutionRow>(
+    `update agent_executions
+     set status = 'failed', completed_at = $2,
+         result = jsonb_build_object('status', 'failed', 'reason', $3::text),
+         idle_deadline_at = null,
+         hub_action = case
+           when daemon_id is null then null
+           when coalesce((launch_intent ->> 'autoArchive')::boolean, false) then 'archive'
+           else 'interrupt'
+         end,
+         hub_action_completed_at = null::timestamptz
+     where id = $1 and status in ('spawning', 'running')
+     returning *`,
+    [execution.id, observedAt, reason],
+  );
+  const updated = updatedExecution.rows[0] ?? execution;
+  await client.query(
+    `update workflow_step_runs
+     set status = 'timed_out', failure_reason = $2, deadline_kind = $3, completed_at = $4
+     where id = $1 and status in ('pending', 'running')`,
+    [step.id, reason, deadlineKind, observedAt],
+  );
+  if (run.status === "running") {
+    await client.query(
+      `update trigger_runs
+       set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4
+       where id = $1 and status = 'running'`,
+      [run.id, deadlineKind, reason, observedAt],
+    );
+  }
+  await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
+  return updated;
+}
+
+async function timeoutWorkflowRunOnClient(
+  client: PoolClient,
+  run: TriggerRunRow,
+  observedAt: Date,
+): Promise<WorkflowDeadlineRecovery> {
+  const executionRows = await client.query<{ id: string }>(
+    `update agent_executions
+     set status = 'failed', completed_at = $2,
+         result = jsonb_build_object('status', 'failed', 'reason', 'whole_run_timeout'),
+         idle_deadline_at = null,
+         hub_action = case when daemon_id is null then null else 'interrupt' end,
+         hub_action_completed_at = null::timestamptz
+     where workflow_step_run_id in (
+       select id from workflow_step_runs where trigger_run_id = $1
+     )
+       and status in ('spawning', 'running')
+     returning id`,
+    [run.id, observedAt],
+  );
+  await client.query(
+    `update workflow_step_runs
+     set status = 'timed_out', failure_reason = 'whole_run_timeout',
+         deadline_kind = 'whole_run', completed_at = $2
+     where trigger_run_id = $1 and status in ('pending', 'running')`,
+    [run.id, observedAt],
+  );
+  await client.query(
+    `update trigger_runs
+     set status = 'timed_out', deadline_kind = 'whole_run',
+         failure_reason = 'whole_run_timeout', completed_at = $2
+     where id = $1 and status = 'running'`,
+    [run.id, observedAt],
+  );
+  await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
+  return {
+    triggerRunId: run.id,
+    executionIds: executionRows.rows.map((row) => row.id),
+  };
+}
+
 async function transitionWorkflowAgentExecution(
   client: PoolClient,
   execution: AgentExecutionRow,
@@ -3323,7 +3712,7 @@ async function transitionWorkflowAgentExecution(
   }
   if (!deadlineConditionAllows(execution, input.deadlineCondition)) return undefined;
 
-  const completedAt = new Date();
+  const completedAt = input.observedAt ?? new Date();
   const updatedRows = await client.query<AgentExecutionRow>(
     `update agent_executions
      set status = $2, completed_at = $3,
@@ -3366,10 +3755,11 @@ async function finishWorkflowStepAndRun(
 ): Promise<void> {
   if (isTerminalWorkflowStepStatus(step.status)) return;
 
-  const completedAt = new Date();
+  const completedAt = input.observedAt ?? new Date();
   await client.query(
     `update workflow_step_runs
-     set status = $2, output = $3, failure_reason = $4, completed_at = $5
+     set status = $2, output = $3, failure_reason = $4,
+         deadline_kind = coalesce($6, deadline_kind), completed_at = $5
      where id = $1`,
     [
       step.id,
@@ -3377,6 +3767,7 @@ async function finishWorkflowStepAndRun(
       input.stepOutput !== undefined ? input.stepOutput : (input.result ?? null),
       input.failureReason ?? null,
       completedAt,
+      input.deadlineKind ?? null,
     ],
   );
   if (input.stepStatus === "succeeded") {
@@ -3386,9 +3777,20 @@ async function finishWorkflowStepAndRun(
   if (run.status === "running") {
     await client.query(
       `update trigger_runs
-       set status = $2, failure_reason = $3, completed_at = $4
+       set status = case
+             when $5 = 'whole_run' then 'timed_out'
+             when $5 is null then $2
+             else 'failed'
+           end,
+           deadline_kind = coalesce($5, deadline_kind), failure_reason = $3, completed_at = $4
        where id = $1`,
-      [step.trigger_run_id, input.stepStatus, input.failureReason ?? null, completedAt],
+      [
+        step.trigger_run_id,
+        input.stepStatus,
+        input.failureReason ?? null,
+        completedAt,
+        input.deadlineKind ?? null,
+      ],
     );
   }
   await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [

@@ -2,6 +2,8 @@ import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schem
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
 
+export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
+
 export interface TriggerRecord {
   id: string;
   organizationId: string;
@@ -441,6 +443,7 @@ export interface InsertAgentExecutionInput {
   projectId: string;
   machineId: string | null;
   daemonId?: string | null;
+  startedAt?: Date;
   triggerContext: unknown;
   outputContext: unknown;
   configurationRevisionId: string;
@@ -475,6 +478,7 @@ export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
   outcome: "accepted";
   status: "running" | "succeeded" | "failed" | "timed_out";
   deadlineAt: Date;
+  deadlineKind: WorkflowDeadlineKind | null;
   failureReason: string | null;
   completedAt: Date | null;
 }
@@ -497,6 +501,9 @@ export interface WorkflowStepRunRecord {
   agentExecutionId: string | null;
   output: unknown;
   failureReason: string | null;
+  deadlineKind: WorkflowDeadlineKind | null;
+  deadlineAt: Date | null;
+  idleDeadlineAt: Date | null;
   startedAt: Date | null;
   completedAt: Date | null;
   dispatchIntent: LaunchMachineIntent | null;
@@ -546,7 +553,11 @@ export interface WorkflowStepExecutionInput {
   stepId: string;
   ordinal: number;
   executionId: string;
-  execution: InsertAgentExecutionInput;
+  execution: Omit<InsertAgentExecutionInput, "deadlineAt" | "idleDeadlineAt" | "startedAt"> & {
+    deadlineAt: Date;
+    idleDeadlineAt: Date;
+    startedAt: Date;
+  };
 }
 
 export interface WorkflowAgentCompletionInput {
@@ -556,6 +567,8 @@ export interface WorkflowAgentCompletionInput {
   result?: unknown;
   stepOutput?: unknown;
   failureReason?: string;
+  deadlineKind?: WorkflowDeadlineKind;
+  observedAt?: Date;
   completedByAgent?: boolean;
   deadlineCondition?: TransitionAgentExecutionFields["deadlineCondition"];
   hubAction?: HubAction | null;
@@ -641,6 +654,12 @@ export interface TransitionAgentExecutionFields {
 export interface TransitionAgentExecutionResult {
   execution: AgentExecutionRecord;
   transitioned: boolean;
+  deadlineKind?: WorkflowDeadlineKind;
+}
+
+export interface WorkflowDeadlineRecovery {
+  triggerRunId: string;
+  executionIds: readonly string[];
 }
 
 export interface TerminateMachineFields {
@@ -697,6 +716,7 @@ export interface Database {
     failureReason: string,
     stepId?: string,
   ): Promise<{ stepRun: WorkflowStepRunRecord; run: TriggerRunRecord } | undefined>;
+  recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   insertTrigger(input: InsertTriggerInput): Promise<InsertTriggerResult>;
   markTriggerDropped(id: string, reason: string): Promise<TriggerRecord>;
@@ -768,6 +788,13 @@ export interface Database {
   setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
+    observedAt: Date,
+  ): Promise<AgentExecutionRecord>;
+  prepareAgentExecutionForDispatch(
+    executionId: string,
+    daemonId: string,
+    machineId: string,
+    completionTokenHash: string,
   ): Promise<AgentExecutionRecord>;
   findAgentExecutionById(id: string): Promise<AgentExecutionRecord | undefined>;
   findAgentExecutionForOrganization(

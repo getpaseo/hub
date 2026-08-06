@@ -10,7 +10,6 @@ import {
   hashPromptPartialContent,
   type ResolvedPromptPartials,
 } from "../config/prompt-partials.js";
-import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, DurableTrigger } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
@@ -95,6 +94,7 @@ describe("durable multi-step workflow engine", () => {
     await engine.processAvailable();
     assert.deepEqual(dispatches, ["classify"]);
     const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
     const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
     const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.ok(classifier);
@@ -308,6 +308,161 @@ describe("durable multi-step workflow engine", () => {
       );
     },
   );
+
+  it("persists step hard and idle deadlines capped by the whole-run deadline", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    assert.equal(execution.deadlineAt?.toISOString(), "2026-08-06T12:01:00.000Z");
+    assert.equal(execution.idleDeadlineAt?.toISOString(), "2026-08-06T12:00:20.000Z");
+
+    assert.equal(run.deadlineAt.toISOString(), "2026-08-06T12:02:00.000Z");
+  });
+
+  it("times out a live step when the whole-run deadline expires", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({
+      rawConfiguration: deadlineConfiguration({ idleTimeout: "1m" }),
+    });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+
+    now = new Date("2026-08-06T12:02:00.000Z");
+    await engine.processAvailable();
+
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "timed_out");
+    assert.equal((await fixture.database.findWorkflowStepRunById(step.id))?.status, "timed_out");
+    assert.equal((await fixture.database.findAgentExecutionById(execution.id))?.status, "failed");
+  });
+
+  it("fails a step at its hard deadline without extending the run", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({
+      rawConfiguration: deadlineConfiguration({ idleTimeout: "1m" }),
+    });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    now = new Date("2026-08-06T12:01:00.000Z");
+    await engine.processAvailable();
+
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.equal(run.status, "failed");
+    assert.equal(run.deadlineKind, "step_hard");
+    assert.equal(step.status, "timed_out");
+    assert.equal(step.deadlineKind, "step_hard");
+    assert.equal(dispatches.length, 1);
+  });
+
+  it("refreshes only the persisted idle deadline for a live workflow step", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    const hardDeadline = execution.deadlineAt;
+
+    now = new Date("2026-08-06T12:00:10.000Z");
+    const refreshed = await fixture.database.setAgentExecutionIdleDeadline(
+      execution.id,
+      new Date("2026-08-06T12:00:30.000Z"),
+      now,
+    );
+    assert.equal(refreshed.deadlineAt?.getTime(), hardDeadline?.getTime());
+    assert.equal(refreshed.idleDeadlineAt?.toISOString(), "2026-08-06T12:00:30.000Z");
+    assert.equal(
+      (await fixture.database.findWorkflowStepRunById(step.id))?.idleDeadlineAt?.toISOString(),
+      "2026-08-06T12:00:30.000Z",
+    );
+  });
+
+  it("does not dispatch a later step after the whole-run deadline between steps", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const first = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(first.id);
+    assert.ok(firstExecution);
+    await fixture.database.transitionAgentExecution(firstExecution.id, "succeeded", {
+      result: { status: "succeeded" },
+    });
+    await fixture.database.completeWorkflowStep(firstExecution.id, "succeeded", {
+      status: "succeeded",
+    });
+
+    now = new Date("2026-08-06T12:02:00.000Z");
+    await engine.processAvailable();
+
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    assert.equal(dispatches.length, 1);
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "timed_out");
+    assert.equal(steps[1]?.status, "timed_out");
+    assert.equal(steps[1]?.deadlineKind, "whole_run");
+  });
+
+  it("wins a completion-at-deadline race with the deadline transition", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({
+      rawConfiguration: deadlineConfiguration({ idleTimeout: "1m" }),
+    });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches, undefined, () => now);
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    const run = (await fixture.database.findTriggerRunsByTriggerId(fixture.triggerId))[0]!;
+    assert.equal(run.outcome, "accepted");
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    now = execution.deadlineAt!;
+
+    const completion = await fixture.database.completeWorkflowAgentExecution({
+      executionId: execution.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+      observedAt: now,
+    });
+    assert.equal(completion.deadlineKind, "step_hard");
+    assert.equal(completion.execution.status, "failed");
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "failed");
+  });
 });
 
 interface Fixture {
@@ -425,30 +580,55 @@ function engineFor(
   fixture: Fixture,
   dispatches: string[],
   beforeDispatch?: (intent: { prompt: string }) => Promise<void>,
+  now?: () => Date,
 ) {
   return createDurableWorkflowHandler({
     database: fixture.database,
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+    ...(now === undefined ? {} : { now }),
     dispatchLaunchMachineIntent: async (intent) => {
       await beforeDispatch?.(intent);
       dispatches.push(dispatchLabel(intent));
+      const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+        intent.workflowStepRunId!,
+      );
+      if (execution === undefined) throw new Error("workflow execution was not persisted");
       return {
-        execution: await fixture.database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          deadlineAt: intent.deadlineAt ?? null,
-          launchIntent: intent,
-        }),
+        execution,
       };
     },
   });
+}
+
+function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "deadline-route",
+        on: "manual.run",
+        max_runtime: "2m",
+        steps: [
+          {
+            id: "first",
+            environment: "runner",
+            max_runtime: "1m",
+            idle_timeout: options.idleTimeout ?? "20s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "run" }],
+          },
+          {
+            id: "second",
+            environment: "runner",
+            max_runtime: "1m",
+            idle_timeout: options.idleTimeout ?? "20s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  };
 }
 
 function providerMatch(configuration: CompiledHubConfig, revisionId: string) {

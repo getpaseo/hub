@@ -1632,6 +1632,7 @@ class TestDaemon {
         event: { type: "turn_started", provider: "opencode" },
       },
     });
+    await new Promise((resolve) => setImmediate(resolve));
   }
   async failsTurn(agentId: string): Promise<void> {
     this.send({

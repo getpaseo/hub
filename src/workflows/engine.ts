@@ -1,5 +1,10 @@
 import { DatabaseUnavailableError } from "../db/errors.js";
-import type { AgentExecutionRecord, Database, DurableTrigger } from "../db/types.js";
+import type {
+  AgentExecutionRecord,
+  Database,
+  DurableTrigger,
+  WorkflowDeadlineRecovery,
+} from "../db/types.js";
 import type { AgentExecutionStatus } from "../db/schema.js";
 import { parseCompiledHubConfig, type JsonPrimitive } from "../config/compiler.js";
 import type { CompiledProjectConfiguration } from "../configuration/store.js";
@@ -35,6 +40,7 @@ export interface DurableWorkflowEngineOptions {
   leaseMs?: number;
   workerIntervalMs?: number;
   now?: () => Date;
+  onWorkflowDeadlineExceeded?: (recovery: WorkflowDeadlineRecovery) => Promise<void>;
 }
 
 export class DurableWorkflowEngine {
@@ -142,6 +148,7 @@ export class DurableWorkflowEngine {
   private async processAvailableImpl(): Promise<void> {
     const database = this.options.database;
     if (database === null) return;
+    await this.recoverWorkflowDeadlines(this.now());
     await database.recoverWorkflowWakeups(this.now());
     while (!this.stopped) {
       const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs);
@@ -162,6 +169,11 @@ export class DurableWorkflowEngine {
     if (database === null) return;
     const run = await database.findTriggerRunById(triggerRunId);
     if (run === undefined || run.status !== "running" || run.outcome !== "accepted") {
+      await database.deleteWorkflowWakeup(triggerRunId);
+      return;
+    }
+    if (run.deadlineAt <= this.now()) {
+      await this.recoverWorkflowDeadlines(this.now());
       await database.deleteWorkflowWakeup(triggerRunId);
       return;
     }
@@ -212,11 +224,17 @@ export class DurableWorkflowEngine {
       await database.markWorkflowStepSkipped(run.id, step.id, "condition_false");
       return;
     }
-    if (this.now() >= run.deadlineAt) {
-      await database.failWorkflowRun(run.id, "timed_out", "workflow_run_deadline_exceeded");
-      return;
-    }
-
+    const startedAt = this.now();
+    const deadlineAt = new Date(
+      Math.min(run.deadlineAt.getTime(), startedAt.getTime() + step.maxRuntimeMs),
+    );
+    const idleDeadlineAt = new Date(
+      Math.min(
+        run.deadlineAt.getTime(),
+        deadlineAt.getTime(),
+        startedAt.getTime() + step.idleTimeoutMs,
+      ),
+    );
     const intent = buildStepIntent(
       configuration,
       trigger,
@@ -224,20 +242,57 @@ export class DurableWorkflowEngine {
       reconciledRun,
       context,
       next.id,
-      this.now(),
+      deadlineAt,
     );
-    const existing = await database.findAgentExecutionByWorkflowStepRunId(next.id);
-    if (existing !== undefined) {
-      await database.linkWorkflowStepRunExecution(next.id, existing.id, intent);
-      await this.finishPersistedExecution(existing);
+    const executionId = durableExecutionId(intent);
+    const created = await database.createWorkflowStepExecution({
+      triggerRunId: run.id,
+      stepId: step.id,
+      ordinal: next.ordinal,
+      executionId,
+      execution: {
+        id: executionId,
+        organizationId: run.organizationId,
+        projectId: run.projectId,
+        machineId: null,
+        daemonId: null,
+        triggerId: run.triggerId,
+        triggerContext: run.triggerContext,
+        outputContext: run.outputContext,
+        configurationRevisionId: run.configurationRevisionId,
+        deadlineAt,
+        idleDeadlineAt,
+        startedAt,
+        workflowStepRunId: next.id,
+        launchIntent: intent,
+      },
+    });
+    if (created.execution === undefined) {
+      await database.deleteWorkflowWakeup(run.id);
+      return;
+    }
+    await database.linkWorkflowStepRunExecution(next.id, created.execution.id, intent);
+    if (!created.created) {
+      await this.finishPersistedExecution(created.execution);
       await database.deleteWorkflowWakeup(run.id);
       return;
     }
     const result = await this.dispatch(intent);
     const execution = await this.executionFromResult(result, intent, next.id);
-    await database.linkWorkflowStepRunExecution(next.id, execution.id, intent);
+    if (execution.id !== created.execution.id) {
+      throw new Error(`durable dispatch returned a different execution: ${execution.id}`);
+    }
     await this.finishPersistedExecution(execution);
     await database.deleteWorkflowWakeup(run.id);
+  }
+
+  private async recoverWorkflowDeadlines(now: Date): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    for (const recovery of await database.recoverWorkflowDeadlines(now)) {
+      if (this.options.onWorkflowDeadlineExceeded === undefined) continue;
+      await this.options.onWorkflowDeadlineExceeded(recovery);
+    }
   }
 
   private async finishPersistedExecution(
@@ -336,7 +391,7 @@ function buildStepIntent(
   run: Extract<Awaited<ReturnType<Database["findTriggerRunById"]>>, { outcome: "accepted" }>,
   context: ExpressionContext,
   stepRunId: string,
-  now: Date,
+  deadlineAt: Date,
 ): LaunchMachineIntent {
   const environmentName = authorityString(
     renderExpressionTemplate(step.environment, context),
@@ -406,7 +461,7 @@ function buildStepIntent(
     }),
     workflowStepRunId: stepRunId,
     ...(step.output === undefined ? {} : { outputSchema: step.output.schema }),
-    deadlineAt: new Date(Math.min(run.deadlineAt.getTime(), now.getTime() + step.maxRuntimeMs)),
+    deadlineAt,
   };
 }
 

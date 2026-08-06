@@ -398,6 +398,9 @@ function triggerView(
             configuredTriggerName: run.configuredTriggerName,
             outcome: run.outcome,
             status: run.status,
+            deadlineAt: run.deadlineAt.toISOString(),
+            deadlineKind: run.deadlineKind,
+            completedAt: run.completedAt?.toISOString() ?? null,
             rejectionReason: null,
             rawPrompt: run.rawPrompt,
             prompt: run.prompt,
@@ -408,6 +411,10 @@ function triggerView(
               stepId: step.stepId,
               ordinal: step.ordinal,
               status: step.status,
+              deadlineAt: step.deadlineAt?.toISOString() ?? null,
+              idleDeadlineAt: step.idleDeadlineAt?.toISOString() ?? null,
+              deadlineKind: step.deadlineKind,
+              startedAt: step.startedAt?.toISOString() ?? null,
               output: step.output === null ? null : jsonValue(step.output),
               failureReason: step.failureReason,
               completedAt: step.completedAt?.toISOString() ?? null,
@@ -434,6 +441,16 @@ function executionView(execution: Awaited<ReturnType<Database["findAgentExecutio
     status: execution.status,
     startedAt: execution.startedAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
+    deadlineAt: execution.deadlineAt?.toISOString() ?? null,
+    idleDeadlineAt: execution.idleDeadlineAt?.toISOString() ?? null,
+    failureReason:
+      execution.status === "failed" &&
+      typeof execution.result === "object" &&
+      execution.result !== null &&
+      "reason" in execution.result &&
+      typeof execution.result.reason === "string"
+        ? execution.result.reason
+        : null,
     configurationRevisionId: execution.configurationRevisionId,
     daemonId: execution.daemonId,
   };

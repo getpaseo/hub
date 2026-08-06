@@ -5,7 +5,6 @@ import {
   compiledConfigurationHash,
   type CompiledHubConfig,
 } from "../config/compiler.js";
-import { durableExecutionId } from "../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { ManualTriggerInput } from "../triggers/manual/schema.js";
 import type { ExternalTrigger, TriggerProvider } from "../triggers/index.js";
@@ -58,18 +57,11 @@ describe("manual trigger durable workflow boundary", () => {
       configurationRevisionId: revision.id,
       dispatchLaunchMachineIntent: async (intent) => {
         dispatches.push(intent.workflowStepRunId ?? "");
-        const execution = await database.insertAgentExecution({
-          id: durableExecutionId(intent),
-          organizationId: intent.organizationId,
-          projectId: intent.projectId,
-          machineId: null,
-          triggerId: intent.triggerId,
-          triggerContext: intent.triggerContext,
-          outputContext: intent.outputContext,
-          configurationRevisionId: intent.configurationRevisionId,
-          workflowStepRunId: intent.workflowStepRunId!,
-          launchIntent: intent,
-        });
+        if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
+        const execution = await database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
         return { execution };
       },
     });

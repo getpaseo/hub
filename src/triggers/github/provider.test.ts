@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
-import { durableExecutionId } from "../../daemons/lifecycle.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableTrigger } from "../../db/types.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
@@ -218,19 +217,13 @@ describe("GitHub Phase 1 trigger provider", () => {
       providers: [provider],
       dispatchLaunchMachineIntent: async (intent) => {
         dispatches += 1;
+        if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
+        const execution = await database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
         return {
-          execution: await database.insertAgentExecution({
-            id: durableExecutionId(intent),
-            organizationId: intent.organizationId,
-            projectId: intent.projectId,
-            machineId: null,
-            triggerId: intent.triggerId,
-            triggerContext: intent.triggerContext,
-            outputContext: intent.outputContext,
-            configurationRevisionId: intent.configurationRevisionId,
-            workflowStepRunId: intent.workflowStepRunId!,
-            launchIntent: intent,
-          }),
+          execution,
         };
       },
     });

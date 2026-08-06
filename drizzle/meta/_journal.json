@@ -148,6 +148,13 @@
       "when": 1785958775711,
       "tag": "0020_wandering_apocalypse",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785976341526,
+      "tag": "0021_sticky_silver_fox",
+      "breakpoints": true
     }
   ]
 }

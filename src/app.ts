@@ -5,7 +5,7 @@ import { requireOperation, type OperationAuthenticator } from "./auth/operation-
 import type { OperationAuthorization } from "./auth/api-keys.js";
 import { ProjectConfigurationStore } from "./configuration/store.js";
 import { installConfiguration } from "./config/admin-routes.js";
-import type { Database } from "./db/types.js";
+import type { Database, WorkflowDeadlineRecovery } from "./db/types.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
 import {
   ActiveDaemonRegistry,
@@ -138,6 +138,16 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     ...(options.configurationRevisionId === undefined
       ? {}
       : { configurationRevisionId: options.configurationRevisionId }),
+    ...(options.executionDeadlineClock === undefined
+      ? {}
+      : { now: () => new Date(options.executionDeadlineClock!.now()) }),
+    ...(daemonModule === null
+      ? {}
+      : {
+          onWorkflowDeadlineExceeded: async (recovery: WorkflowDeadlineRecovery) => {
+            await daemonModule.lifecycle.recoverWorkflowDeadlineExecutions(recovery.executionIds);
+          },
+        }),
   };
   const { handler: workflowDispatcher, engine: workflowEngine } = createDispatcherWithEngine({
     ...dispatcherOptions,

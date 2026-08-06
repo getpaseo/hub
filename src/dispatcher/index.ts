@@ -16,6 +16,8 @@ export interface DispatcherOptions {
   configurationRevisionId?: string;
   leaseMs?: number;
   workerIntervalMs?: number;
+  now?: () => Date;
+  onWorkflowDeadlineExceeded?: DurableWorkflowEngineOptions["onWorkflowDeadlineExceeded"];
 }
 
 export function createDispatcher(options: DispatcherOptions): TriggerHandler {
@@ -28,6 +30,23 @@ export function createDispatcherWithEngine(options: DispatcherOptions): {
   handler: TriggerHandler;
   engine: DurableWorkflowEngine;
 } {
-  const engineOptions: DurableWorkflowEngineOptions = options;
+  const engineOptions: DurableWorkflowEngineOptions = {
+    database: options.database,
+    ...(options.providers === undefined ? {} : { providers: options.providers }),
+    ...(options.dispatchLaunchMachineIntent === undefined
+      ? {}
+      : { dispatchLaunchMachineIntent: options.dispatchLaunchMachineIntent }),
+    ...(options.configurationRevisionId === undefined
+      ? {}
+      : { configurationRevisionId: options.configurationRevisionId }),
+    ...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+    ...(options.workerIntervalMs === undefined
+      ? {}
+      : { workerIntervalMs: options.workerIntervalMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.onWorkflowDeadlineExceeded === undefined
+      ? {}
+      : { onWorkflowDeadlineExceeded: options.onWorkflowDeadlineExceeded }),
+  };
   return createDurableWorkflowHandler(engineOptions);
 }

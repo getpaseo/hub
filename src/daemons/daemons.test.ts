@@ -844,7 +844,11 @@ describe("daemon enrollment and execution", () => {
   it("re-arms future deadlines after restart and expires exactly once", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ timeoutMs: 10_000 });
+    const beforeRestart = await hub.execution(result.execution.id);
     await hub.restartApp();
+    const afterRestart = await hub.execution(result.execution.id);
+    assert.equal(afterRestart.deadlineAt?.getTime(), beforeRestart.deadlineAt?.getTime());
+    assert.equal(afterRestart.idleDeadlineAt?.getTime(), beforeRestart.idleDeadlineAt?.getTime());
     await hub.advanceDispatchTime(10_000);
     await hub.advanceDispatchTime(10_000);
 
@@ -920,6 +924,69 @@ describe("daemon enrollment and execution", () => {
     assert.equal((await hub.execution(result.execution.id)).status, "running");
     await hub.advanceDispatchTime(4 * 60_000);
     assert.equal((await hub.execution(result.execution.id)).status, "failed");
+  });
+
+  it("refreshes the idle deadline on meaningful daemon activity", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      timeoutMs: 60 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
+    });
+    await hub.agentBecomesIdle(result.execution.id, result.agentId);
+    await hub.advanceDispatchTime(4 * 60_000);
+
+    const beforeActivity = await hub.execution(result.execution.id);
+    await hub.beginReplacementTurn(result.agentId);
+    await hub.advanceDispatchTime(0);
+    await hub.advanceDispatchTime(2 * 60_000);
+
+    const afterActivity = await hub.execution(result.execution.id);
+    assert.equal(afterActivity.status, "running");
+    assert.ok(afterActivity.idleDeadlineAt! > beforeActivity.idleDeadlineAt!);
+
+    await hub.advanceDispatchTime(5 * 60_000);
+    assert.equal((await hub.execution(result.execution.id)).status, "failed");
+  });
+
+  it("interrupts a live workflow execution when the whole-run deadline expires", async () => {
+    await hub.connectDaemon();
+    const daemonSlug = hub.connectedDaemonSlug();
+    await hub.installConfiguration({
+      yaml: [
+        "environments:",
+        "  - name: production",
+        "    kind: daemon",
+        `    daemon: ${daemonSlug}`,
+        "    cwd: /workspace/manual",
+        "triggers:",
+        "  - name: deadline",
+        "    on: manual.run",
+        "    max_runtime: 10s",
+        "    filters:",
+        "      from_users: [alice]",
+        "    steps:",
+        "      - id: deadline-step",
+        "        environment: production",
+        "        max_runtime: 1m",
+        "        idle_timeout: 1m",
+        "        agent:",
+        "          provider: opencode",
+        "          mode: full-access",
+        '        prompt: [{ text: "Deadline" }]',
+      ].join("\n"),
+    });
+    hub.holdSpawnAcknowledgement();
+    const dispatch = hub.beginManual({ trigger: "deadline", deliveryKey: "whole-run-live" });
+    await hub.spawnBegins();
+    const pending = await hub.pendingExecution();
+    hub.acceptSpawn();
+    const result = await dispatch;
+    assert.equal(result.status, 200);
+
+    await hub.advanceDispatchTime(10_000);
+
+    assert.equal((await hub.execution(pending.id)).status, "failed");
+    assert.deepEqual(hub.controlActions(), ["interrupt"]);
   });
 
   it("ignores a stale inactivity deadline after a later idle report", async () => {
@@ -1005,7 +1072,11 @@ describe("daemon enrollment and execution", () => {
     await hub.agentBecomesIdle(result.execution.id, result.agentId);
     await hub.advanceDispatchTime(4 * 60_000);
 
+    const beforeRestart = await hub.execution(result.execution.id);
     await hub.restartApp();
+    const afterRestart = await hub.execution(result.execution.id);
+    assert.equal(afterRestart.deadlineAt?.getTime(), beforeRestart.deadlineAt?.getTime());
+    assert.equal(afterRestart.idleDeadlineAt?.getTime(), beforeRestart.idleDeadlineAt?.getTime());
     await hub.advanceDispatchTime(60_000);
 
     const execution = await hub.execution(result.execution.id);

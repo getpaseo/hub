@@ -304,6 +304,7 @@ export const triggerRuns = pgTable(
     triggerContext: jsonb("trigger_context").notNull().default({}),
     outputContext: jsonb("output_context").notNull().default({}),
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
     failureReason: text("failure_reason"),
     rejection: jsonb(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -324,6 +325,15 @@ export const triggerRuns = pgTable(
       "trigger_runs_outcome_check",
       sql`(${table.outcome} = 'accepted' and ${table.status} <> 'rejected' and ${table.rejection} is null)
         or (${table.outcome} = 'rejected' and ${table.status} = 'rejected' and ${table.rejection} is not null)`,
+    ),
+    check(
+      "trigger_runs_deadline_kind_check",
+      sql`${table.deadlineKind} is null or ${table.deadlineKind} in ('step_hard', 'step_idle', 'whole_run')`,
+    ),
+    check(
+      "trigger_runs_deadline_shape_check",
+      sql`(${table.outcome} = 'accepted' and ${table.deadlineAt} is not null)
+        or (${table.outcome} = 'rejected' and ${table.deadlineAt} is null)`,
     ),
     foreignKey({
       columns: [table.organizationId],
@@ -365,6 +375,9 @@ export const workflowStepRuns = pgTable(
     agentExecutionId: uuid("agent_execution_id"),
     output: jsonb(),
     failureReason: text("failure_reason"),
+    deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    idleDeadlineAt: timestamp("idle_deadline_at", { withTimezone: true }),
     dispatchIntent: jsonb("dispatch_intent").$type<LaunchMachineIntent>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -379,6 +392,10 @@ export const workflowStepRuns = pgTable(
     check(
       "workflow_step_runs_status_check",
       sql`${table.status} in ('pending', 'running', 'succeeded', 'skipped', 'failed', 'timed_out')`,
+    ),
+    check(
+      "workflow_step_runs_deadline_kind_check",
+      sql`${table.deadlineKind} is null or ${table.deadlineKind} in ('step_hard', 'step_idle', 'whole_run')`,
     ),
     foreignKey({
       columns: [table.triggerRunId],
