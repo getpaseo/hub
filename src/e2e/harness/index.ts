@@ -1234,7 +1234,7 @@ export class HubE2E {
       const page = await context.newPage();
       try {
         await page.goto(`${origin}/activate?code=${encodeURIComponent(userCode)}`);
-        await page.getByLabel("Display name").fill(displayName);
+        await page.getByLabel("Daemon slug").fill(displayName);
         await page.getByRole("button", { name: "Approve daemon" }).click();
         await page.getByRole("heading", { name: "Registration approved" }).waitFor();
       } catch (error) {

@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { slugify } from "../slug.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "./errors.js";
 import * as schema from "./schema.js";
 import type {
@@ -594,7 +595,7 @@ async function uniqueConnectionSlug(
   provider: ConnectionProvider,
   identity: string,
 ): Promise<string> {
-  const base = `${slugify(identity)}-${provider}`;
+  const base = `${slugify(identity, "connection")}-${provider}`;
   const rows = await transaction.execute<{ slug: string }>(sql`
     select slug from (
       select slug from github_connections where organization_id = ${organizationId}
@@ -611,14 +612,4 @@ async function uniqueConnectionSlug(
   let suffix = 2;
   while (used.has(`${base}-${suffix}`)) suffix += 1;
   return `${base}-${suffix}`;
-}
-
-function slugify(value: string): string {
-  const slug = value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/gu, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "");
-  return slug.length > 0 ? slug.slice(0, 72).replace(/-+$/u, "") : "connection";
 }

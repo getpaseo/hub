@@ -148,7 +148,6 @@ export interface DaemonRecord {
   daemonPublicKey: string;
   credentialVerifier: string;
   scopes: string[];
-  displayName: string;
   approvedByUserId: string | null;
   registeredByApiKeyId: string | null;
   registrationMethod: "operator" | "device";
@@ -165,7 +164,7 @@ export interface EnrollmentTokenRecord {
   verifier: string;
   organizationId: string;
   authorizationId?: string | null;
-  displayName?: string | null;
+  slug?: string | null;
   approvedByUserId?: string | null;
   issuedByApiKeyId?: string | null;
   registrationMethod?: "operator" | "device";
@@ -175,12 +174,12 @@ export interface EnrollmentTokenRecord {
 
 export interface DeviceAuthorizationRecord {
   id: string;
-  suggestedDisplayName: string;
+  suggestedSlug: string;
   status: "pending" | "approved" | "denied" | "expired" | "enrolled";
   pollIntervalSeconds: number;
   approvedOrganizationId: string | null;
   approvedByUserId: string | null;
-  approvedDisplayName: string | null;
+  approvedSlug: string | null;
   createdAt: Date;
   expiresAt: Date;
 }
@@ -190,7 +189,7 @@ export interface StartDeviceAuthorizationInput {
   deviceVerifier: string;
   userCodeVerifier: string;
   fingerprintVerifier: string;
-  suggestedDisplayName: string;
+  suggestedSlug: string;
   lifetimeSeconds: number;
   pollIntervalSeconds: number;
   perFingerprintLimit: number;
@@ -211,7 +210,7 @@ export interface DeviceDecisionAccess {
 export type DeviceAuthorizationDecisionInput = {
   userCodeVerifier: string;
   access: DeviceDecisionAccess;
-} & ({ decision: "approve"; displayName: string } | { decision: "deny" });
+} & ({ decision: "approve"; slug: string } | { decision: "deny" });
 
 export interface ProjectRecord {
   id: string;
@@ -904,7 +903,7 @@ export interface Database {
   renameDaemonForOrganization(
     organizationId: string,
     id: string,
-    displayName: string,
+    slug: string,
   ): Promise<DaemonRecord | undefined>;
   touchDaemon(id: string): Promise<void>;
   setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void>;

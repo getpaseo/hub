@@ -82,14 +82,14 @@ describe("daemon registration PostgreSQL authority", () => {
       enrollments.sort((left, right) => left - right),
       [200, 401],
     );
-    assert.deepEqual(await journey.visibleDaemonNames("acme"), ["Build Studio"]);
+    assert.deepEqual(await journey.visibleDaemonNames("acme"), ["build-studio"]);
     assert.deepEqual(await journey.visibleDaemonNames("orbit"), []);
     const daemonId = await journey.onlyDaemonId();
     const rename = await journey.foreign().rename(daemonId, "Foreign rename");
     const revoke = await journey.foreign().revoke(daemonId);
     assert.equal(rename.status, 404);
     assert.equal(revoke.status, 404);
-    assert.deepEqual(await journey.visibleDaemonNames("acme"), ["Build Studio"]);
+    assert.deepEqual(await journey.visibleDaemonNames("acme"), ["build-studio"]);
   });
 });
 
@@ -284,11 +284,11 @@ class RegistrationBoundary {
     return { owner, admin, member, organizationId };
   }
 
-  async request(displayName: string) {
+  async request(slug: string) {
     const response = await this.operations.handleDeviceAuthorizationStart(
       post(
         "/api/device-authorizations/",
-        { displayName },
+        { slug },
         { [INTERNAL_CLIENT_ADDRESS_HEADER]: `2001:db8::${this.requestNumber++}` },
       ),
     );
@@ -302,7 +302,7 @@ class RegistrationBoundary {
         this.operations.handleDeviceAuthorizationStart(
           post(
             "/api/device-authorizations/",
-            { displayName: `Concurrent ${index}` },
+            { slug: `Concurrent ${index}` },
             { [INTERNAL_CLIENT_ADDRESS_HEADER]: "198.51.100.42" },
           ),
         ),
@@ -311,9 +311,9 @@ class RegistrationBoundary {
     return responses.map(({ status }) => status);
   }
 
-  async registerDaemon(account: RegistrationAccount, displayName: string): Promise<string> {
-    const request = await this.request(displayName);
-    assert.equal((await account.approve(request.userCode, displayName)).status, 200);
+  async registerDaemon(account: RegistrationAccount, slug: string): Promise<string> {
+    const request = await this.request(slug);
+    assert.equal((await account.approve(request.userCode, slug)).status, 200);
     await this.query(`update daemon_device_authorizations set next_poll_at = now()`);
     const poll = await this.operations.handleDeviceAuthorizationPoll(
       post("/api/device-authorizations/poll", { deviceCode: request.deviceCode }),
@@ -507,14 +507,14 @@ class RegistrationAccount {
 
   approve(
     userCode: string,
-    displayName: string,
+    slug: string,
     organizationId = this.requireActiveOrganization(),
   ): Promise<Response> {
     return this.operations.handleDeviceAuthorizationDecision(
       this.request("/api/device-authorizations/decision", {
         userCode,
         decision: "approve",
-        displayName,
+        slug,
         organizationId,
       }),
     );
@@ -537,16 +537,16 @@ class RegistrationAccount {
       ),
     );
     return z
-      .object({ daemons: z.array(z.object({ displayName: z.string() })) })
+      .object({ daemons: z.array(z.object({ slug: z.string() })) })
       .parse(await response.json())
-      .daemons.map(({ displayName }) => displayName);
+      .daemons.map(({ slug }) => slug);
   }
 
-  rename(daemonId: string, displayName: string): Promise<Response> {
+  rename(daemonId: string, slug: string): Promise<Response> {
     return this.operations.handleOrganizationDaemonRename(
       this.request(
         `/api/organization/daemons/${daemonId}/rename?organizationSlug=${this.requireActiveOrganizationSlug()}`,
-        { displayName },
+        { slug },
       ),
       daemonId,
     );
@@ -633,19 +633,17 @@ class PostgresRegistration {
     `);
   }
 
-  async request(displayName: string) {
-    const response = await this.registration.start(
-      post("/api/device-authorizations/", { displayName }),
-    );
+  async request(slug: string) {
+    const response = await this.registration.start(post("/api/device-authorizations/", { slug }));
     assert.equal(response.status, 201);
     return startSchema.parse(await response.json());
   }
 
-  approve(userCode: string, displayName: string): Promise<Response> {
+  approve(userCode: string, slug: string): Promise<Response> {
     return this.registration.decide(
       post("/api/device-authorizations/decision", {
         userCode,
-        displayName,
+        slug,
         organizationId: this.organizationAccess.organization.id,
         decision: "approve",
       }),
@@ -683,11 +681,11 @@ class PostgresRegistration {
     return responses.map((response) => response.status);
   }
 
-  rename(daemonId: string, displayName: string): Promise<Response> {
+  rename(daemonId: string, slug: string): Promise<Response> {
     return this.registration.rename(
       post(
         `/api/organization/daemons/${daemonId}/rename?organizationSlug=${this.organizationAccess.organization.id}`,
-        { displayName },
+        { slug },
       ),
       daemonId,
     );
@@ -720,7 +718,7 @@ class PostgresRegistration {
 
   async visibleDaemonNames(organizationId: string): Promise<string[]> {
     return (await this.database.listDaemonsForOrganization(organizationId)).map(
-      (daemon) => daemon.displayName,
+      (daemon) => daemon.slug,
     );
   }
 

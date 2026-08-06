@@ -312,7 +312,6 @@ function daemonView(daemon: Awaited<ReturnType<Database["findDaemonById"]>> & {}
   return {
     id: daemon.id,
     slug: daemon.slug,
-    displayName: daemon.displayName,
     status: daemon.status,
     presence: daemon.presence,
     lastSeenAt: daemon.lastSeenAt.toISOString(),

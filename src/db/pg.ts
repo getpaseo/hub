@@ -6,6 +6,7 @@ import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
+import { slugify } from "../slug.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
@@ -1265,7 +1266,7 @@ class PgDatabase implements Database {
       await query(
         this.pool,
         `insert into daemon_enrollment_tokens
-           (id, verifier, organization_id, authorization_id, display_name,
+           (id, verifier, organization_id, authorization_id, slug,
             approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
@@ -1273,7 +1274,7 @@ class PgDatabase implements Database {
           input.verifier,
           input.organizationId,
           input.authorizationId ?? null,
-          input.displayName ?? null,
+          input.slug ?? null,
           input.approvedByUserId ?? null,
           null,
           input.registrationMethod ?? "operator",
@@ -1301,7 +1302,7 @@ class PgDatabase implements Database {
         }
         await client.query(
           `insert into daemon_enrollment_tokens
-             (id, verifier, organization_id, authorization_id, display_name,
+             (id, verifier, organization_id, authorization_id, slug,
               approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
@@ -1309,7 +1310,7 @@ class PgDatabase implements Database {
             input.verifier,
             input.organizationId,
             input.authorizationId ?? null,
-            input.displayName ?? null,
+            input.slug ?? null,
             input.approvedByUserId ?? null,
             input.issuedByApiKeyId,
             input.registrationMethod ?? "operator",
@@ -1358,7 +1359,7 @@ class PgDatabase implements Database {
       const inserted = await client.query<DeviceAuthorizationRow>(
         `insert into daemon_device_authorizations
            (id, device_verifier, user_code_verifier, fingerprint_verifier,
-            suggested_display_name, status, poll_interval_seconds, next_poll_at, expires_at)
+            suggested_slug, status, poll_interval_seconds, next_poll_at, expires_at)
          values ($1, $2, $3, $4, $5, 'pending', $6, now(),
                  now() + ($7 * interval '1 second'))
          returning *`,
@@ -1367,7 +1368,7 @@ class PgDatabase implements Database {
           input.deviceVerifier,
           input.userCodeVerifier,
           input.fingerprintVerifier,
-          input.suggestedDisplayName,
+          input.suggestedSlug,
           input.pollIntervalSeconds,
           input.lifetimeSeconds,
         ],
@@ -1448,7 +1449,7 @@ class PgDatabase implements Database {
         `update daemon_device_authorizations
          set status = $2, approved_organization_id = case when $2 = 'approved' then $3 end,
              approved_by_user_id = case when $2 = 'approved' then $4 end,
-             approved_display_name = case when $2 = 'approved' then $5 end,
+             approved_slug = case when $2 = 'approved' then $5 end,
              decided_at = now()
          where id = $1`,
         [
@@ -1456,7 +1457,7 @@ class PgDatabase implements Database {
           status,
           input.access.organizationId,
           input.access.userId,
-          input.decision === "approve" ? input.displayName : null,
+          input.decision === "approve" ? input.slug : null,
         ],
       );
       await client.query("commit");
@@ -1528,7 +1529,7 @@ class PgDatabase implements Database {
       if (authorization.status === "approved") {
         const token = await client.query<{ id: string }>(
           `insert into daemon_enrollment_tokens
-             (id, verifier, organization_id, authorization_id, display_name,
+             (id, verifier, organization_id, authorization_id, slug,
               approved_by_user_id, registration_method, expires_at)
            values (gen_random_uuid(), $1, $2, $3, $4, $5, 'device', $6)
            on conflict (authorization_id) do update set verifier = excluded.verifier
@@ -1537,7 +1538,7 @@ class PgDatabase implements Database {
             input.enrollmentTokenVerifier,
             authorization.approved_organization_id,
             authorization.id,
-            authorization.approved_display_name,
+            authorization.approved_slug,
             authorization.approved_by_user_id,
             authorization.expires_at,
           ],
@@ -1580,7 +1581,7 @@ class PgDatabase implements Database {
         id: string;
         organization_id: string | null;
         authorization_id: string | null;
-        display_name: string | null;
+        slug: string | null;
         approved_by_user_id: string | null;
         issued_by_api_key_id: string | null;
         registration_method: "operator" | "device";
@@ -1589,7 +1590,7 @@ class PgDatabase implements Database {
          set consumed_at = case when registration_method = 'device' then now() else $2 end
          where verifier = $1 and organization_id is not null and consumed_at is null
            and expires_at > case when registration_method = 'device' then now() else $2 end
-         returning id, organization_id, authorization_id, display_name,
+         returning id, organization_id, authorization_id, slug,
                    approved_by_user_id, issued_by_api_key_id, registration_method`,
         [input.tokenVerifier, input.now],
       );
@@ -1602,13 +1603,15 @@ class PgDatabase implements Database {
         `insert into machines (org_id, source, status) values ($1, $2, 'alive') returning *`,
         [consumedToken.organization_id, { kind: "daemon", daemonId: input.daemonId }],
       );
-      const slug = `daemon-${input.daemonId.slice(0, 8)}`;
+      const fallbackSlug = `daemon-${input.daemonId.slice(0, 8)}`;
+      const slug =
+        consumedToken.slug === null ? fallbackSlug : slugify(consumedToken.slug, fallbackSlug);
       const daemon = await client.query<DaemonRow>(
         `insert into daemons
            (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
-            daemon_public_key, credential_verifier, scopes, display_name,
+            daemon_public_key, credential_verifier, scopes,
             approved_by_user_id, registered_by_api_key_id, registration_method, status)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active') returning *`,
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active') returning *`,
         [
           input.daemonId,
           input.idempotencyKey,
@@ -1620,7 +1623,6 @@ class PgDatabase implements Database {
           input.daemonPublicKey,
           input.credentialVerifier,
           JSON.stringify(input.scopes),
-          consumedToken.display_name,
           consumedToken.approved_by_user_id,
           consumedToken.issued_by_api_key_id,
           consumedToken.registration_method,
@@ -1689,7 +1691,7 @@ class PgDatabase implements Database {
       `select daemons.* from daemons
        join machines on machines.id = daemons.machine_id
        where machines.org_id = $1
-       order by lower(coalesce(daemons.display_name, daemons.slug)), daemons.id`,
+       order by lower(daemons.slug), daemons.id`,
       [organizationId],
     );
     return rows.rows.map(toDaemon);
@@ -1698,15 +1700,15 @@ class PgDatabase implements Database {
   async renameDaemonForOrganization(
     organizationId: string,
     id: string,
-    displayName: string,
+    slug: string,
   ): Promise<DaemonRecord | undefined> {
     const rows = await query<DaemonRow>(
       this.pool,
-      `update daemons set display_name = $3
+      `update daemons set slug = $3
        from machines
        where daemons.id = $2 and machines.id = daemons.machine_id and machines.org_id = $1
        returning daemons.*`,
-      [organizationId, id, displayName],
+      [organizationId, id, slug],
     );
     return rows.rows[0] === undefined ? undefined : toDaemon(rows.rows[0]);
   }
@@ -3661,7 +3663,6 @@ interface DaemonRow extends QueryResultRow {
   daemon_public_key: string;
   credential_verifier: string;
   scopes: string[];
-  display_name: string | null;
   approved_by_user_id: string | null;
   registered_by_api_key_id: string | null;
   registration_method: "operator" | "device";
@@ -3678,13 +3679,13 @@ interface DeviceAuthorizationRow extends QueryResultRow {
   device_verifier: string;
   user_code_verifier: string;
   fingerprint_verifier: string;
-  suggested_display_name: string;
+  suggested_slug: string;
   status: "pending" | "approved" | "denied" | "expired" | "enrolled";
   poll_interval_seconds: number;
   next_poll_at: Date;
   approved_organization_id: string | null;
   approved_by_user_id: string | null;
-  approved_display_name: string | null;
+  approved_slug: string | null;
   created_at: Date;
   expires_at: Date;
   database_now: Date;
@@ -3699,7 +3700,6 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     daemonPublicKey: row.daemon_public_key,
     credentialVerifier: row.credential_verifier,
     scopes: row.scopes,
-    displayName: row.display_name ?? row.slug,
     approvedByUserId: row.approved_by_user_id,
     registeredByApiKeyId: row.registered_by_api_key_id,
     registrationMethod: row.registration_method,
@@ -3715,12 +3715,12 @@ function toDaemon(row: DaemonRow): DaemonRecord {
 function toDeviceAuthorization(row: DeviceAuthorizationRow): DeviceAuthorizationRecord {
   return {
     id: row.id,
-    suggestedDisplayName: row.suggested_display_name,
+    suggestedSlug: row.suggested_slug,
     status: row.status,
     pollIntervalSeconds: row.poll_interval_seconds,
     approvedOrganizationId: row.approved_organization_id,
     approvedByUserId: row.approved_by_user_id,
-    approvedDisplayName: row.approved_display_name,
+    approvedSlug: row.approved_slug,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };

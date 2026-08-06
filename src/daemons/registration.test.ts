@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
 import { z } from "zod";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
@@ -23,7 +23,7 @@ const daemonListSchema = z.object({
   daemons: z.array(
     z.object({
       id: z.string(),
-      displayName: z.string(),
+      slug: z.string(),
       registrationMethod: z.string(),
       status: z.string(),
     }),
@@ -42,13 +42,34 @@ describe("daemon registration", () => {
       daemons: [
         {
           id: daemonId,
-          displayName: "Build Studio",
+          slug: "build-studio",
           registrationMethod: "device",
           status: "active",
         },
       ],
       canManage: true,
     });
+  });
+
+  it("normalizes the chosen slug once and resolves configuration by that identifier", async () => {
+    const hub = new RegistrationJourney();
+    const request = await hub.request("Studio Mac");
+    const daemonId = await hub.approveAndEnroll(request, "Équipe / Build #1");
+
+    assert.equal((await hub.resolve("equipe-build-1"))?.id, daemonId);
+    assert.equal((await hub.rename(daemonId, "North Wing")).status, 200);
+    assert.equal(await hub.resolve("equipe-build-1"), undefined);
+    assert.equal((await hub.resolve("north-wing"))?.id, daemonId);
+  });
+
+  it("uses the immutable ID-derived slug only when enrollment has no friendly slug", async () => {
+    const hub = new RegistrationJourney();
+    const daemonId = randomUUID();
+
+    await hub.issueUnnamedEnrollment("operator-token");
+    assert.equal((await hub.enroll("operator-token", daemonId)).status, 200);
+
+    assert.equal((await hub.resolve(`daemon-${daemonId.slice(0, 8)}`))?.id, daemonId);
   });
 
   it("keeps denial and expiry terminal without organization residue", async () => {
@@ -161,10 +182,8 @@ class RegistrationJourney {
     });
   }
 
-  async request(displayName: string) {
-    const response = await this.registration.start(
-      post("/api/device-authorizations/", { displayName }),
-    );
+  async request(slug: string) {
+    const response = await this.registration.start(post("/api/device-authorizations/", { slug }));
     assert.equal(response.status, 201);
     return registrationRequestSchema.parse(await response.json());
   }
@@ -175,7 +194,7 @@ class RegistrationJourney {
       statuses.push(
         (
           await this.registration.start(
-            post("/api/device-authorizations/", { displayName: `Daemon ${index}` }),
+            post("/api/device-authorizations/", { slug: `Daemon ${index}` }),
           )
         ).status,
       );
@@ -185,9 +204,9 @@ class RegistrationJourney {
 
   async approveAndEnroll(
     request: { deviceCode: string; userCode: string },
-    displayName: string,
+    slug: string,
   ): Promise<string> {
-    await this.approve(request.userCode, displayName);
+    await this.approve(request.userCode, slug);
     this.advance(5);
     const poll = await this.poll(request.deviceCode);
     const daemonId = randomUUID();
@@ -196,11 +215,11 @@ class RegistrationJourney {
     return daemonId;
   }
 
-  async approve(userCode: string, displayName: string): Promise<void> {
+  async approve(userCode: string, slug: string): Promise<void> {
     const response = await this.registration.decide(
       post("/api/device-authorizations/decision", {
         userCode,
-        displayName,
+        slug,
         organizationId: this.organizationAccess.organization.id,
         decision: "approve",
       }),
@@ -260,13 +279,34 @@ class RegistrationJourney {
     return daemonListSchema.parse(await response.json());
   }
 
-  rename(daemonId: string, displayName: string): Promise<Response> {
+  rename(daemonId: string, slug: string): Promise<Response> {
     return this.registration.rename(
       post(
         `/api/organization/daemons/${daemonId}/rename?organizationSlug=${this.organizationAccess.organization.id}`,
-        { displayName },
+        { slug },
       ),
       daemonId,
+    );
+  }
+
+  resolve(slug: string) {
+    return this.database.findDaemonBySlugForOrganization(
+      this.organizationAccess.organization.id,
+      slug,
+    );
+  }
+
+  async issueUnnamedEnrollment(token: string): Promise<void> {
+    assert.equal(
+      await this.database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier: createHash("sha256").update(token).digest("base64url"),
+        organizationId: this.organizationAccess.organization.id,
+        registrationMethod: "operator",
+        expiresAt: new Date(this.now.getTime() + 60_000),
+        consumedAt: null,
+      }),
+      true,
     );
   }
 

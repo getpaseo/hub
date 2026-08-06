@@ -19,6 +19,7 @@ import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-provider
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
+import { slugify } from "../../src/slug.js";
 import { ProjectNavigation } from "./projects/navigation.js";
 
 export interface BuiltApplication {
@@ -974,8 +975,8 @@ export class PaseoHub {
     await user.chooseOrganization("Acme");
     await user.expectDaemon(displayName, daemonId, "Offline");
     await user.replaceDaemonAccountWithoutDisclosure(daemonReplacement, "Replacement", displayName);
-    const replacementDaemonId = await this.seedDaemon(alias, "Replacement Studio");
-    await user.expectDaemon("Replacement Studio", replacementDaemonId, "Offline");
+    const replacementDaemonId = await this.seedDaemon(alias, "replacement-studio");
+    await user.expectDaemon("replacement-studio", replacementDaemonId, "Offline");
     const replacementRegistration = await this.startRegistrationRequest("Replacement request");
     await user.openDaemonApproval(
       replacementRegistration.verificationUrl,
@@ -988,28 +989,28 @@ export class PaseoHub {
       "Replacement",
     );
     await user.returnToProjects();
-    const finalDaemonId = await this.seedDaemon(alias, "Final Studio");
-    await user.expectDaemon("Final Studio", finalDaemonId, "Offline");
+    const finalDaemonId = await this.seedDaemon(alias, "final-studio");
+    await user.expectDaemon("final-studio", finalDaemonId, "Offline");
     await this.expireSession(alias);
-    await user.attemptStaleRename("Final Studio", "Leaked Studio");
+    await user.attemptStaleRename("final-studio", "leaked-studio");
   }
 
   async proveDaemonCommandLocksAccountContext(alias: string): Promise<void> {
     const user = this.requireUser(alias);
     await this.chooseOrganization(alias, "Acme");
 
-    const renameDaemonId = await this.seedDaemon(alias, "Rename Pending Studio");
-    await user.expectDaemon("Rename Pending Studio", renameDaemonId, "Offline");
+    const renameDaemonId = await this.seedDaemon(alias, "rename-pending-studio");
+    await user.expectDaemon("rename-pending-studio", renameDaemonId, "Offline");
     await user.expectRenameDaemonLocksAccountContext(
-      "Rename Pending Studio",
-      "Renamed Pending Studio",
+      "rename-pending-studio",
+      "renamed-pending-studio",
       "Orbit",
     );
 
-    const revokeDaemonId = await this.seedDaemon(alias, "Revoke Pending Studio");
-    await user.expectDaemon("Revoke Pending Studio", revokeDaemonId, "Offline");
+    const revokeDaemonId = await this.seedDaemon(alias, "revoke-pending-studio");
+    await user.expectDaemon("revoke-pending-studio", revokeDaemonId, "Offline");
     await user.expectRevokeDaemonLocksAccountContext(
-      "Revoke Pending Studio",
+      "revoke-pending-studio",
       revokeDaemonId,
       "Orbit",
     );
@@ -1137,18 +1138,11 @@ export class PaseoHub {
       this.primary.databaseUrl,
       `insert into daemons
          (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
-          daemon_public_key, credential_verifier, scopes, display_name, registration_method, status)
+          daemon_public_key, credential_verifier, scopes, registration_method, status)
        values ($1, $2, $3, $4, $5, (select org_id from machines where id = $5),
                'browser-boundary', 'public-key',
-               'credential-verifier', '["hub.execution.*"]'::jsonb, $6, 'device', 'active')`,
-      [
-        daemonId,
-        randomUUID(),
-        randomUUID(),
-        `daemon-${daemonId.slice(0, 8)}`,
-        machineId,
-        displayName,
-      ],
+               'credential-verifier', '["hub.execution.*"]'::jsonb, 'device', 'active')`,
+      [daemonId, randomUUID(), randomUUID(), displayName, machineId],
     );
     return daemonId;
   }
@@ -1226,7 +1220,7 @@ export class PaseoHub {
 
   private async startRegistrationRequest(displayName: string) {
     const response = await this.requests.post(`${this.primary.origin}/api/device-authorizations/`, {
-      data: { displayName },
+      data: { slug: displayName },
     });
     expect(response.status()).toBe(201);
     const request = z
@@ -2336,7 +2330,9 @@ class HubUser {
     await this.page.goto(verificationUrl);
     await expect(this.page.getByRole("heading", { name: "Approve daemon" })).toBeVisible();
     const form = this.page.getByRole("form", { name: "Approve daemon" });
-    await expect(form.getByLabel("Display name")).toHaveValue(displayName ?? /.+/u);
+    await expect(form.getByLabel("Daemon slug")).toHaveValue(
+      displayName === undefined ? /.+/u : slugify(displayName, "daemon"),
+    );
     await expect(
       this.page
         .getByRole("region", { name: "Approve daemon" })
@@ -2346,7 +2342,7 @@ class HubUser {
 
   async approveDaemon(displayName: string): Promise<void> {
     const form = this.page.getByRole("form", { name: "Approve daemon" });
-    const name = form.getByLabel("Display name");
+    const name = form.getByLabel("Daemon slug");
     await name.fill(displayName);
     await name.focus();
     await this.page.keyboard.press("Tab");
@@ -2420,7 +2416,7 @@ class HubUser {
   async renameDaemon(currentName: string, displayName: string): Promise<void> {
     await this.openOrganizationSection("Daemons");
     const form = await this.openDaemonRename(currentName);
-    const name = form.getByLabel("Display name");
+    const name = form.getByLabel("Daemon slug");
     await name.fill(displayName);
     await name.focus();
     await this.page.keyboard.press("Tab");
@@ -2471,7 +2467,7 @@ class HubUser {
   ): Promise<void> {
     await this.openOrganizationSection("Daemons");
     const form = await this.openDaemonRename(currentName);
-    await form.getByLabel("Display name").fill(displayName);
+    await form.getByLabel("Daemon slug").fill(displayName);
     const pending = await this.holdDaemonCommand(
       (request) => request.postData()?.includes(displayName) === true,
     );
@@ -2479,7 +2475,7 @@ class HubUser {
       await form.getByRole("button", { name: "Rename" }).click();
       await pending.commandReceived();
       await expect(form).toBeVisible();
-      await expect(form.getByLabel("Display name")).toBeDisabled();
+      await expect(form.getByLabel("Daemon slug")).toBeDisabled();
       await this.page.getByRole("button", { name: "Close" }).click();
       await expect(form).toBeHidden();
       await this.page.keyboard.press("Escape");
@@ -2499,7 +2495,7 @@ class HubUser {
 
   async attemptStaleRename(currentName: string, displayName: string): Promise<void> {
     const form = await this.openDaemonRename(currentName);
-    await form.getByLabel("Display name").fill(displayName);
+    await form.getByLabel("Daemon slug").fill(displayName);
     await form.getByRole("button", { name: "Rename" }).click();
     await expect(this.page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
     await expect(this.page.getByText(currentName, { exact: true })).toHaveCount(0);
@@ -2573,7 +2569,7 @@ class HubUser {
     destinationOrganization: string,
   ): Promise<void> {
     const form = this.page.getByRole("form", { name: "Approve daemon" });
-    await form.getByLabel("Display name").fill(displayName);
+    await form.getByLabel("Daemon slug").fill(displayName);
     const pending = await this.holdDaemonCommand(
       (request) => request.postData()?.includes(displayName) === true,
     );
@@ -2581,7 +2577,7 @@ class HubUser {
       await form.getByRole("button", { name: "Approve daemon" }).click();
       await pending.commandReceived();
       await expect(this.page.getByRole("heading", { name: "Approve daemon" })).toBeVisible();
-      await expect(form.getByLabel("Display name")).toBeDisabled();
+      await expect(form.getByLabel("Daemon slug")).toBeDisabled();
       await this.expectTenantControlsLocked(destinationOrganization);
     } finally {
       await pending.release();

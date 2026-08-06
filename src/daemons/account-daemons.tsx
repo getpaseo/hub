@@ -35,8 +35,8 @@ import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
-  { header: "Name" },
-  { header: "Identity" },
+  { header: "Slug" },
+  { header: "ID" },
   { header: "Status" },
   { header: "Last seen" },
   { header: "Registered" },
@@ -94,10 +94,10 @@ export function DaemonsPanel({
     },
   });
   const renameSelected = useCallback(
-    async (daemonId: string, displayName: string) => {
+    async (daemonId: string, slug: string) => {
       try {
         const result = await rename.mutateAsync({
-          data: { organizationSlug, daemonId, displayName },
+          data: { organizationSlug, daemonId, slug },
         });
         return result.status === "ok" && result.data.state === "complete";
       } catch {
@@ -171,7 +171,7 @@ function DaemonRow({
   daemon: BrowserDaemon;
   canManage: boolean;
   busy: boolean;
-  onRename: (daemonId: string, displayName: string) => Promise<boolean>;
+  onRename: (daemonId: string, slug: string) => Promise<boolean>;
   onRevoke: (daemonId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -184,10 +184,10 @@ function DaemonRow({
   return (
     <DataRow>
       <DataCell className="min-w-0">
-        <span className="block truncate">{daemon.displayName}</span>
+        <span className="block truncate">{daemon.slug}</span>
       </DataCell>
       <DataCell muted>
-        <span className="font-mono text-xs">{daemon.stableIdentity}</span>
+        <span className="font-mono text-xs">{daemon.id.slice(0, 8)}</span>
       </DataCell>
       <DataCell>
         <DaemonStatus daemon={daemon} />
@@ -197,7 +197,7 @@ function DaemonRow({
       <DataCell align="end">
         {canManage ? (
           <>
-            <RowActions label={`Actions for ${daemon.displayName}`}>
+            <RowActions label={`Actions for ${daemon.slug}`}>
               <DropdownMenuItem disabled={busy} onSelect={requestRename}>
                 Rename
               </DropdownMenuItem>
@@ -206,7 +206,7 @@ function DaemonRow({
                   busy={busy}
                   destructive
                   label="Revoke"
-                  title={`Revoke ${daemon.displayName}?`}
+                  title={`Revoke ${daemon.slug}?`}
                   description="The daemon will disconnect and its credential cannot reconnect."
                   cancelLabel="Cancel"
                   confirmLabel="Revoke daemon"
@@ -237,22 +237,22 @@ function RenameDaemonDialog({
 }: {
   daemon: BrowserDaemon;
   busy: boolean;
-  onRename: (daemonId: string, displayName: string) => Promise<boolean>;
+  onRename: (daemonId: string, slug: string) => Promise<boolean>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const completeRename = useCallback(
-    async (displayName: string) => {
-      if (await onRename(daemon.id, displayName)) onOpenChange(false);
+    async (slug: string) => {
+      if (await onRename(daemon.id, slug)) onOpenChange(false);
     },
     [daemon.id, onOpenChange, onRename],
   );
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const displayName = new FormData(event.currentTarget).get("displayName");
-      if (typeof displayName !== "string") return;
-      void completeRename(displayName);
+      const slug = new FormData(event.currentTarget).get("slug");
+      if (typeof slug !== "string") return;
+      void completeRename(slug);
     },
     [completeRename],
   );
@@ -265,15 +265,15 @@ function RenameDaemonDialog({
         </DialogHeader>
         <form
           onSubmit={submit}
-          aria-label={`Rename ${daemon.displayName}`}
+          aria-label={`Rename ${daemon.slug}`}
           className="grid gap-6 text-left"
         >
           <Field>
-            <FieldLabel htmlFor={`daemon-name-${daemon.id}`}>Display name</FieldLabel>
+            <FieldLabel htmlFor={`daemon-slug-${daemon.id}`}>Daemon slug</FieldLabel>
             <Input
-              id={`daemon-name-${daemon.id}`}
-              name="displayName"
-              defaultValue={daemon.displayName}
+              id={`daemon-slug-${daemon.id}`}
+              name="slug"
+              defaultValue={daemon.slug}
               maxLength={100}
               required
               disabled={busy}
@@ -360,17 +360,17 @@ export function RegistrationApproval({
       event.preventDefault();
       if (snapshot.data?.status !== "ok" || code === undefined) return;
       const data = new FormData(event.currentTarget);
-      const displayName = data.get("displayName");
+      const slug = data.get("slug");
       const nativeEvent = event.nativeEvent;
       const submitter = "submitter" in nativeEvent ? nativeEvent.submitter : undefined;
       const value = submitter instanceof HTMLButtonElement ? submitter.value : "approve";
-      if (typeof displayName === "string" && (value === "approve" || value === "deny")) {
+      if (typeof slug === "string" && (value === "approve" || value === "deny")) {
         decide.mutate({
           data: {
             userCode: code,
             decision: value,
             ...(value === "approve"
-              ? { displayName, organizationId: snapshot.data.data.organization.id }
+              ? { slug, organizationId: snapshot.data.data.organization.id }
               : {}),
           },
         });
@@ -419,16 +419,18 @@ export function RegistrationApproval({
         {request.canManage ? (
           <form className="grid gap-6" onSubmit={submitDecision} aria-label="Approve daemon">
             <Field>
-              <FieldLabel htmlFor="registration-display-name">Display name</FieldLabel>
+              <FieldLabel htmlFor="registration-slug">Daemon slug</FieldLabel>
               <Input
-                id="registration-display-name"
-                name="displayName"
-                defaultValue={request.displayName}
+                id="registration-slug"
+                name="slug"
+                defaultValue={request.slug}
                 maxLength={100}
                 required
                 disabled={decide.isPending}
               />
-              <FieldDescription>This name can be changed later.</FieldDescription>
+              <FieldDescription>
+                This slug is used in hub.yml and can be changed later.
+              </FieldDescription>
             </Field>
             {message === undefined ? null : (
               <Alert variant="destructive">
