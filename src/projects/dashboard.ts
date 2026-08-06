@@ -2,6 +2,7 @@ import { load } from "js-yaml";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
+import { configurationValidationMessages } from "../configuration/validation-errors.js";
 import { rawConfigurationHash } from "../config/compiler.js";
 import {
   synchronizeGitHubDefaultBranch,
@@ -30,6 +31,10 @@ export interface ProjectRouteScope {
   organizationSlug: string;
   projectSlug?: string | undefined;
 }
+
+export type ManualConfigurationSaveResult =
+  | { outcome: "activated"; revision: { id: string; version: number } }
+  | { outcome: "invalid"; revision: { id: string; version: number }; errors: string[] };
 
 export class ProjectDashboard {
   constructor(
@@ -156,6 +161,7 @@ export class ProjectDashboard {
     const { tenant } = await this.resolveProject(request, scope);
     const connections = (await this.database.organizationConnectionUsage(tenant.organization.id))
       .github;
+    if (connections.length === 0) return [];
     if (this.github === undefined) {
       throw new ProjectCommandError("github_repositories_unavailable");
     }
@@ -202,7 +208,11 @@ export class ProjectDashboard {
     );
   }
 
-  async saveManualConfiguration(request: Request, scope: ProjectRouteScope, rawYaml: string) {
+  async saveManualConfiguration(
+    request: Request,
+    scope: ProjectRouteScope,
+    rawYaml: string,
+  ): Promise<ManualConfigurationSaveResult> {
     const { account, tenant } = await this.resolveProjectManager(request, scope);
     const status = await this.database.projectConfigurationReadModel(tenant.project.id);
     if (status.authority !== "manual") throw new ProjectCommandError("configuration_read_only");
@@ -211,7 +221,7 @@ export class ProjectDashboard {
     try {
       rawConfiguration = load(rawYaml);
     } catch (error) {
-      return this.database.insertProjectConfigurationRevision({
+      const revision = await this.database.insertProjectConfigurationRevision({
         projectId: tenant.project.id,
         sourceKind: "manual",
         sourceEvidence: { kind: "manual", userId: account.account.id },
@@ -223,14 +233,19 @@ export class ProjectDashboard {
         contentHash: rawConfigurationHash(rawYaml),
         createdByUserId: account.account.id,
       });
+      return invalidManualConfiguration(revision);
     }
     const revision = await store.insertManualRevision({
       rawYaml,
       rawConfiguration,
       userId: account.account.id,
     });
-    if (revision.validationErrors === null) await store.activate(revision.id);
-    return revision;
+    if (revision.validationErrors !== null) return invalidManualConfiguration(revision);
+    await store.activate(revision.id);
+    return {
+      outcome: "activated",
+      revision: { id: revision.id, version: revision.version },
+    };
   }
 
   async syncConfiguration(request: Request, scope: ProjectRouteScope) {
@@ -283,6 +298,16 @@ export class ProjectDashboard {
     }
     return resolved;
   }
+}
+
+function invalidManualConfiguration(
+  revision: Awaited<ReturnType<Database["insertProjectConfigurationRevision"]>>,
+): ManualConfigurationSaveResult {
+  return {
+    outcome: "invalid",
+    revision: { id: revision.id, version: revision.version },
+    errors: configurationValidationMessages(revision.validationErrors),
+  };
 }
 
 export class ProjectCommandError extends Error {

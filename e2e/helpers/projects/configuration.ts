@@ -27,12 +27,31 @@ export class ProjectConfiguration {
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }
 
+  async expectValidationError(message: string) {
+    await expect(this.page.getByRole("alert")).toContainText(message);
+  }
+
+  async expectConfigurationActivated(version: number) {
+    await expect(this.page.getByRole("status")).toHaveText(
+      `Configuration saved and activated as Revision ${String(version)}.`,
+    );
+  }
+
   async expectActiveRevision(version: number) {
     await this.page
       .getByRole("navigation", { name: "Project" })
       .getByRole("link", { name: "Configuration" })
       .click();
     await expect(this.page.getByText(`Revision ${version}`, { exact: true })).toBeVisible();
+  }
+
+  async expectNoPriorProjectFeedback(version: number, validationResource: string) {
+    await expect(this.page.getByRole("status")).toHaveText("No active configuration.");
+    await expect(this.page.getByRole("alert")).toHaveCount(0);
+    await expect(this.page.getByText(`Revision ${String(version)}`, { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(this.page.getByText(validationResource)).toHaveCount(0);
   }
 
   async syncNow() {

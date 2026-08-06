@@ -5,7 +5,11 @@ import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
 import { logger } from "../logger.js";
 import { TenantRouteNotFoundError } from "./access.js";
-import { ProjectCommandError, type ProjectDashboard } from "./dashboard.js";
+import {
+  ProjectCommandError,
+  type ManualConfigurationSaveResult,
+  type ProjectDashboard,
+} from "./dashboard.js";
 
 const organizationScopeSchema = z
   .object({ organizationSlug: z.string().trim().min(1).max(100) })
@@ -114,10 +118,11 @@ export const switchConfigurationToManual = createServerFn({ method: "POST" })
 
 export const saveManualConfiguration = createServerFn({ method: "POST" })
   .validator(manualConfigurationSchema)
-  .handler(async ({ data }) =>
-    command(data, (dashboard) =>
-      dashboard.saveManualConfiguration(getRequest(), data, data.rawYaml),
-    ),
+  .handler(
+    async ({ data }): Promise<Result<ManualConfigurationSaveResult>> =>
+      commandResult(data, (dashboard) =>
+        dashboard.saveManualConfiguration(getRequest(), data, data.rawYaml),
+      ),
   );
 
 export const syncProjectConfiguration = createServerFn({ method: "POST" })
@@ -142,9 +147,18 @@ async function command<T>(
   scope: { organizationSlug: string; projectSlug?: string | undefined },
   operation: (dashboard: ProjectDashboard) => Promise<T>,
 ): Promise<Result<{ state: "complete" }>> {
+  return commandResult(scope, async (dashboard) => {
+    await operation(dashboard);
+    return { state: "complete" } as const;
+  });
+}
+
+async function commandResult<T>(
+  scope: { organizationSlug: string; projectSlug?: string | undefined },
+  operation: (dashboard: ProjectDashboard) => Promise<T>,
+): Promise<Result<T>> {
   try {
-    await operation(await requireDashboard());
-    return respondOk({ state: "complete" });
+    return respondOk(await operation(await requireDashboard()));
   } catch (error) {
     if (error instanceof ProjectCommandError && error.code === "forbidden") {
       return respondError({ message: "You don't have permission to manage this project." });
