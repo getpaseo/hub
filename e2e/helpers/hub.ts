@@ -1258,7 +1258,7 @@ export class PaseoHub {
     const enrollmentToken = z
       .object({ status: z.literal("approved"), enrollmentToken: z.string() })
       .parse(await poll.json()).enrollmentToken;
-    const daemon = new ContractDaemon(this.primary, this.requests);
+    const daemon = new ContractDaemon(this.primary, this.requests, displayName);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -3606,7 +3606,7 @@ function roleLabel(role: "owner" | "admin" | "member"): string {
 
 class ContractDaemon {
   readonly daemonId = randomUUID();
-  readonly slug = `daemon-${this.daemonId.slice(0, 8)}`;
+  readonly slug: string;
   private readonly credential = randomUUID();
   private readonly executionCapabilities = new Map<
     string,
@@ -3618,7 +3618,11 @@ class ContractDaemon {
   constructor(
     private readonly application: BuiltApplication,
     private readonly requests: APIRequestContext,
-  ) {}
+    friendlyName?: string,
+  ) {
+    const fallback = `daemon-${this.daemonId.slice(0, 8)}`;
+    this.slug = friendlyName === undefined ? fallback : slugify(friendlyName, fallback);
+  }
 
   async enroll(token: string): Promise<void> {
     const response = await this.requests.post(`${this.application.origin}/api/daemons/enroll`, {
@@ -3630,6 +3634,7 @@ class ContractDaemon {
     const body = z
       .object({
         daemonId: z.literal(this.daemonId),
+        slug: z.literal(this.slug),
         scopes: z.tuple([z.literal("hub.execution.*")]),
         webSocketUrl: z.string().url(),
       })
