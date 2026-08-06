@@ -21,6 +21,18 @@ export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): strin
   return getFilterText(event);
 }
 
+export function readGitHubInvocationParserMessage(
+  event: NormalizedGitHubEvent,
+  filter: TriggerFilter | undefined,
+): string {
+  const message = readGitHubInvocationMessage(event);
+  if (filter === undefined) return message;
+  const contains = readStringFilter(filter, "contains");
+  if (contains === undefined) return message;
+  const index = message.indexOf(contains);
+  return index === -1 ? message : message.slice(index);
+}
+
 export function readGitHubMention(
   event: NormalizedGitHubEvent,
   filter: TriggerFilter | undefined,

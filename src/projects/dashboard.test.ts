@@ -5,7 +5,7 @@ import { createMemoryDatabase } from "../db/memory.js";
 import { ProjectDashboard } from "./dashboard.js";
 
 describe("project dashboard activity read models", () => {
-  it("omits a large receipt payload from the list and retains it in detail", async () => {
+  it("omits payload-bearing evidence from lists and retains it in detail", async () => {
     const database = createMemoryDatabase({
       memberships: [
         {
@@ -33,6 +33,7 @@ describe("project dashboard activity read models", () => {
     });
     await database.activateProjectConfigurationRevision(project.id, revision.id, []);
     const rawPayload = { body: "payload-".repeat(20_000) };
+    const triggerContext = { provider: "manual", body: "trigger-".repeat(20_000) };
     const receipt = await database.persistManualEvent({
       organizationId: "org-1",
       projectId: project.id,
@@ -51,10 +52,19 @@ describe("project dashboard activity read models", () => {
       rawPrompt: "run",
       prompt: "run",
       inputs: {},
-      triggerContext: {},
+      triggerContext,
       outputContext: {},
       deadlineAt: new Date("2026-08-06T13:00:00.000Z"),
       stepIds: ["step"],
+    });
+    const unroutedPayload = { body: "unrouted-".repeat(20_000) };
+    await database.persistManualEvent({
+      organizationId: "org-1",
+      projectId: project.id,
+      deliveryId: "dashboard-unrouted-large-payload",
+      source: "manual.dashboard",
+      payload: unroutedPayload,
+      receivedAt: new Date("2026-08-06T12:01:00.000Z"),
     });
     const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
     const request = new Request("https://hub.test/o/acme/projects/hub");
@@ -63,6 +73,7 @@ describe("project dashboard activity read models", () => {
       projectSlug: "hub",
     });
     assert.equal("rawPayload" in list.activity[0]!, false);
+    assert.equal("triggerContext" in list.activity[0]!, false);
 
     const detail = await dashboard.activityRunSnapshot(request, {
       organizationSlug: "acme",
@@ -70,6 +81,17 @@ describe("project dashboard activity read models", () => {
       runId: run.run.id,
     });
     assert.deepEqual(detail.activity.rawPayload, rawPayload);
+    assert.deepEqual(detail.activity.triggerContext, triggerContext);
+
+    const organization = await dashboard.organizationSnapshot(request, {
+      organizationSlug: "acme",
+    });
+    const unroutedEvent = organization.unroutedEvents[0];
+    assert.ok(unroutedEvent);
+    assert.equal(unroutedEvent.deliveryId, "dashboard-unrouted-large-payload");
+    assert.equal(unroutedEvent.status, "dropped");
+    assert.equal(unroutedEvent.providerEventReceiptId, unroutedEvent.id);
+    assert.equal("rawPayload" in unroutedEvent, false);
   });
 });
 

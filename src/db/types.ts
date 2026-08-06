@@ -1037,7 +1037,7 @@ export interface Database {
   ): Promise<GitHubConfigurationTarget[]>;
   listUnroutedProviderEventsForOrganization(
     organizationId: string,
-  ): Promise<ProviderEventReceiptRecord[]>;
+  ): Promise<ProviderEventReceiptSummary[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
   readConnectionAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord>;

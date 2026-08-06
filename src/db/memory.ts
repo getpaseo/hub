@@ -2133,7 +2133,9 @@ class MemoryDatabase implements Database {
       .sort(
         (left, right) =>
           right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
-      );
+      )
+      .slice(0, 50)
+      .map(toProviderEventReceiptRecordSummary);
   }
 
   async isOrganizationMember(): Promise<boolean> {

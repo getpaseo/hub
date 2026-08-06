@@ -11,7 +11,7 @@ import type {
   Database,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
-  ProviderEventReceiptRecord,
+  ProviderEventReceiptSummary,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
@@ -448,7 +448,6 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
     cleanPrompt: run.prompt,
     inputs: jsonValue(run.inputs),
     values: jsonValue(run.values),
-    triggerContext: jsonValue(run.triggerContext),
     outputContext: jsonValue(run.outputContext),
     createdAt: run.createdAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
@@ -475,7 +474,7 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
   };
 }
 
-function unroutedEventView(receipt: ProviderEventReceiptRecord) {
+function unroutedEventView(receipt: ProviderEventReceiptSummary) {
   return {
     id: receipt.id,
     providerEventReceiptId: receipt.id,
@@ -484,7 +483,6 @@ function unroutedEventView(receipt: ProviderEventReceiptRecord) {
     source: receipt.source,
     repo: receipt.repo,
     receivedAt: receipt.receivedAt.toISOString(),
-    rawPayload: jsonValue(receipt.payload),
     configuredTriggerName: null,
     rawMessage: null,
     cleanPrompt: null,

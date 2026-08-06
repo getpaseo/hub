@@ -37,6 +37,7 @@ import type {
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
+  ProviderEventReceiptSummary,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -3080,20 +3081,23 @@ class PgDatabase implements Database {
 
   async listUnroutedProviderEventsForOrganization(
     organizationId: string,
-  ): Promise<ProviderEventReceiptRecord[]> {
-    const rows = await query<ProviderEventReceiptRow>(
+  ): Promise<ProviderEventReceiptSummary[]> {
+    const rows = await query<ProjectActivityRunListRow>(
       this.pool,
-      `select receipts.*
+      `select receipts.id, receipts.organization_id, receipts.provider, receipts.connection_id,
+              receipts.resource_id, receipts.delivery_id, receipts.signature_hash, receipts.source,
+              receipts.repo, receipts.received_at, receipts.dropped_reason
        from provider_event_receipts receipts
        where receipts.organization_id = $1
          and not exists (
            select 1 from trigger_runs runs
            where runs.provider_event_receipt_id = receipts.id
          )
-       order by receipts.received_at desc, receipts.id desc`,
+       order by receipts.received_at desc, receipts.id desc
+       limit 50`,
       [organizationId],
     );
-    return rows.rows.map(toProviderEventReceiptRecord);
+    return rows.rows.map(toProviderEventReceiptSummary);
   }
 
   async isOrganizationMember(userId: string, organizationId: string): Promise<boolean> {

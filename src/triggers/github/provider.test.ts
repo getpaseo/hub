@@ -34,6 +34,29 @@ describe("GitHub Phase 1 trigger provider", () => {
     });
   });
 
+  it("parses typed inputs after a matched contains marker in leading prose", async () => {
+    const { project, revision, store } = await activeConfiguration(inputConfiguration());
+    const provider = createProvider(store, new TestReactions());
+
+    const match = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          createEvent({ body: "please @paseo repo=hub agent=opus investigate" }),
+        ),
+      )
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      rawMessage: "please @paseo repo=hub agent=opus investigate",
+      prompt: "investigate",
+      inputs: { repo: "hub", agent: "opus" },
+    });
+  });
+
   it("matches a literal one-step prompt only after the security filters pass", async () => {
     const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();

@@ -3,7 +3,12 @@ import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
 import { logger } from "../../logger.js";
-import { matchTriggers, readGitHubInvocationMessage, readGitHubMention } from "./match.js";
+import {
+  matchTriggers,
+  readGitHubInvocationMessage,
+  readGitHubInvocationParserMessage,
+  readGitHubMention,
+} from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import {
   IssueCommentPayloadSchema,
@@ -153,6 +158,7 @@ export function createGitHubTriggerProvider(options: {
           readGitHubInvocationMessage(event),
           compiledTrigger.inputs,
           readGitHubMention(event, compiledTrigger.filters),
+          readGitHubInvocationParserMessage(event, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
