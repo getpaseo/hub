@@ -199,13 +199,11 @@ export class DaemonDispatchLifecycle {
       }
       const resumable = await this.prepareClaimedDurableDispatch(execution);
       if (resumable !== undefined) {
-        this.startDurableDispatch(resumable, false);
-        void this.notifyDispatchAccepted(intent);
+        this.startDurableDispatch(resumable, this.notifyDispatchAccepted(intent));
       }
       return { execution };
     }
-    this.startDurableDispatch(prepared, false);
-    void this.notifyDispatchAccepted(intent);
+    this.startDurableDispatch(prepared, this.notifyDispatchAccepted(intent));
     return { execution: prepared.execution };
   }
 
@@ -436,9 +434,13 @@ export class DaemonDispatchLifecycle {
     };
   }
 
-  private startDurableDispatch(prepared: PreparedDaemonDispatch, notifyAccepted: boolean): void {
+  private startDurableDispatch(
+    prepared: PreparedDaemonDispatch,
+    accepted: Promise<void> | undefined,
+  ): void {
     if (this.activeExecutionDispatches.has(prepared.execution.id)) return;
-    const tracked = this.spawnPreparedDispatch(prepared, notifyAccepted)
+    const tracked = Promise.resolve(accepted)
+      .then(() => this.spawnPreparedDispatch(prepared, false))
       .catch((error: unknown) => {
         this.logger.error(
           {

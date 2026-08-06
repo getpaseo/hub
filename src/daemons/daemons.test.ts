@@ -163,19 +163,23 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.createdAgentRequestCount(), 2);
   });
 
-  it("hands off and starts durable fan-out without waiting for provider notification", async () => {
+  it("registers durable fan-out before provider notification and waits to spawn", async () => {
     await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
     hub.holdAcceptanceHook();
 
     try {
       const batch = await hub.handoffBatch(["first", "second"]);
-      await Promise.all(
-        batch.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
-      );
 
       assert.equal(batch.executions.length, 2);
       assert.equal(await hub.pendingExecutionCount(), 2);
+      assert.equal(hub.createdAgentRequestCount(), 0);
+      assert.equal(hub.terminalHookCount(), 0);
+
+      hub.releaseAcceptanceHook();
+      await Promise.all(
+        batch.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
+      );
       assert.equal(hub.createdAgentRequestCount(), 2);
     } finally {
       hub.releaseAcceptanceHook();
@@ -872,6 +876,7 @@ describe("daemon enrollment and execution", () => {
         result: { status: "failed", reason: "daemon_unreachable" },
       },
     );
+    await hub.drainWorkflowOutbox();
     assert.equal(hub.failureHookCount(), 1);
     assert.equal(hub.createdAgentCount(), 0);
   });
@@ -892,6 +897,7 @@ describe("daemon enrollment and execution", () => {
       { status: execution.status, result: execution.result },
       { status: "failed", result: { status: "failed", reason: "whole_run_timeout" } },
     );
+    await hub.drainWorkflowOutbox();
     assert.equal(hub.failureHookCount(), 1);
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
     assert.equal(await hub.completeExecution(result.execution.id), 409);

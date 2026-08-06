@@ -63,6 +63,7 @@ export interface HubRuntime {
   resourceCounts(): {
     recoveredExecutionSubscriptions: number;
   };
+  processWorkflowOutbox(): Promise<void>;
   handleUpgrade: ReturnType<typeof createDaemonUpgradeHandler> | null;
   start(sources?: readonly TriggerSource[]): Promise<void>;
   stop(): Promise<void>;
@@ -183,6 +184,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       recoveredExecutionSubscriptions:
         daemonModule?.lifecycle.activeRecoveryObservationCount() ?? 0,
     }),
+    processWorkflowOutbox: () => workflowEngine.processAvailable(),
     handleUpgrade:
       options.database === null ? null : createDaemonUpgradeHandler(options.database, daemons!),
     async start(sources = []) {

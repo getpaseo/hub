@@ -11,7 +11,12 @@ import {
   type ResolvedPromptPartials,
 } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { Database, DurableProviderEvent, TriggerRunRecord } from "../db/types.js";
+import type {
+  Database,
+  DurableProviderEvent,
+  ProviderEventReceiptRecord,
+  TriggerRunRecord,
+} from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { createDurableWorkflowHandler } from "./engine.js";
@@ -127,14 +132,16 @@ describe("durable multi-step workflow engine", () => {
       (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!.id,
     );
     assert.ok(first);
-    const secondStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[1]!;
     await fixture.database.completeWorkflowAgentExecution({
       executionId: first.id,
       executionStatus: "succeeded",
       stepStatus: "succeeded",
       result: { status: "succeeded" },
+      observedAt: now,
     });
+    await fixture.database.wakeWorkflowRun(run.id, now);
     await engine.processAvailable();
+    const secondStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[1]!;
     const second = await fixture.database.findAgentExecutionByWorkflowStepRunId(secondStep.id);
     assert.ok(second);
     await fixture.database.completeWorkflowAgentExecution({
@@ -142,7 +149,9 @@ describe("durable multi-step workflow engine", () => {
       executionStatus: "succeeded",
       stepStatus: "succeeded",
       result: { status: "succeeded" },
+      observedAt: now,
     });
+    await fixture.database.wakeWorkflowRun(run.id, now);
 
     await engine.processAvailable();
     assert.deepEqual(delivered, [run.id]);
@@ -164,6 +173,88 @@ describe("durable multi-step workflow engine", () => {
         : false,
       true,
     );
+  });
+
+  it("keeps a shared accepted receipt replayable when one project route has no workflow match", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    const secondProject = await fixture.database.createProject({
+      organizationId: "org-1",
+      name: "Other Workflow",
+      slug: randomUUID(),
+      createdByUserId: "user-1",
+    });
+    const secondRevision = await fixture.database.insertProjectConfigurationRevision({
+      projectId: secondProject.id,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: fixture.configuration,
+      contentHash: compiledConfigurationHash(fixture.configuration),
+      createdByUserId: "user-1",
+    });
+    await fixture.database.activateProjectConfigurationRevision(
+      secondProject.id,
+      secondRevision.id,
+      [],
+    );
+    const receipt = await fixture.database.findProviderEventReceiptById(
+      fixture.providerEventReceiptId,
+    );
+    assert.ok(receipt);
+    setAcceptedRoutes(fixture.database, {
+      ...receipt,
+      acceptedRoutes: [
+        {
+          projectId: fixture.projectId,
+          configurationRevisionId: fixture.revisionId,
+          connectionId: null,
+          resourceId: null,
+        },
+        {
+          projectId: secondProject.id,
+          configurationRevisionId: secondRevision.id,
+          connectionId: null,
+          resourceId: null,
+        },
+      ],
+    });
+    const { handler } = createDurableWorkflowHandler({
+      database: fixture.database,
+      providers: [
+        {
+          name: "manual",
+          eventNames: ["manual.run"] as const,
+          async match(external) {
+            if (external.projectId === fixture.projectId) return [];
+            throw new Error("enqueue unavailable");
+          },
+        },
+      ],
+    });
+
+    await assert.rejects(
+      handler({
+        ...fixture.trigger("run"),
+        projectId: secondProject.id,
+        configurationRevisionId: secondRevision.id,
+      }),
+      /enqueue unavailable/iu,
+    );
+    assert.deepEqual(await handler(fixture.trigger("run")), {
+      providerEventReceiptId: fixture.providerEventReceiptId,
+    });
+    const replay = await fixture.database.persistManualEvent({
+      organizationId: "org-1",
+      projectId: fixture.projectId,
+      deliveryId: fixture.deliveryId,
+      source: "manual.run",
+      payload: {},
+      receivedAt: new Date(),
+    });
+    assert.equal(replay.status, "accepted");
+    const replayReceipt = await fixture.database.findProviderEventReceiptById(
+      fixture.providerEventReceiptId,
+    );
+    assert.equal(replayReceipt?.droppedReason, null);
   });
 
   it("launches the exact committed partial content with inline-equivalent interpolation", async () => {
@@ -709,6 +800,8 @@ describe("durable multi-step workflow engine", () => {
 interface Fixture {
   database: Database;
   providerEventReceiptId: string;
+  deliveryId: string;
+  projectId: string;
   revisionId: string;
   configuration: CompiledHubConfig;
   trigger(message: string): DurableProviderEvent;
@@ -773,6 +866,8 @@ async function workflowFixture(
   return {
     database,
     providerEventReceiptId: receipt.event.providerEventReceiptId,
+    deliveryId: receipt.event.deliveryId,
+    projectId: project.id,
     revisionId: revision.id,
     configuration,
     trigger(message) {
@@ -790,6 +885,12 @@ async function workflowFixture(
       };
     },
   };
+}
+
+function setAcceptedRoutes(database: Database, receipt: ProviderEventReceiptRecord): void {
+  const receipts: unknown = Reflect.get(database, "providerEventReceipts");
+  if (!(receipts instanceof Map)) throw new Error("memory receipt store unavailable");
+  receipts.set(receipt.id, receipt);
 }
 
 function partialRuntimeConfiguration(): Record<string, unknown> {

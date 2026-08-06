@@ -385,6 +385,9 @@ export class HubHarness {
       await this.requireDatabase().findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)
     )[0]?.prompt;
   }
+  async drainWorkflowOutbox(): Promise<void> {
+    await this.requireHub().processWorkflowOutbox();
+  }
   async persistUnlaunchedBatch(
     triggerNames: readonly string[],
     persistedCount = triggerNames.length,
@@ -1209,10 +1212,30 @@ export class HubHarness {
     );
     await client.end();
     const store = new ProjectConfigurationStore(this.database, HUB_PROJECT_ID);
+    await this.database.issueEnrollmentToken({
+      id: "00000000-0000-4000-8000-0000000000ee",
+      verifier: "seed-daemon-token",
+      organizationId: HUB_ORGANIZATION_ID,
+      issuedByApiKeyId: HUB_API_KEY_ID,
+      expiresAt: new Date(Date.now() + ENROLLMENT_LIFETIME_MS),
+      consumedAt: null,
+    });
+    await this.database.enrollDaemon({
+      tokenVerifier: "seed-daemon-token",
+      daemonId: "00000000-0000-4000-8000-0000000000dd",
+      idempotencyKey: "seed-daemon-idempotency",
+      serverId: "seed-server",
+      daemonPublicKey: "seed-public-key",
+      credentialVerifier: "seed-credential-verifier",
+      scopes: ["hub.execution.*"],
+      now: new Date(),
+    });
     const config = await store.insertManualRevision({
       rawYaml: null,
       rawConfiguration: {
-        environments: [{ name: "test", kind: "docker", image: "paseo/test" }],
+        environments: [
+          { name: "test", kind: "daemon", daemon: "daemon-00000000", cwd: "/workspace" },
+        ],
         triggers: ["discord-ping", "first", "second", "member-0", "member-1"].map((name) => ({
           name,
           on: "discord.mention",

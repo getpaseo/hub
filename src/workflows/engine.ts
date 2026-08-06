@@ -103,10 +103,6 @@ export class DurableWorkflowEngine {
     if (this.options.database === null) throw new DatabaseUnavailableError();
     const matches = await collectProviderMatches(this.options.providers ?? [], trigger);
     if (matches.length === 0) {
-      await this.options.database.markProviderEventDropped(
-        trigger.providerEventReceiptId,
-        "no_matching_trigger",
-      );
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
     const createdAt = this.now();

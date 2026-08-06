@@ -346,8 +346,11 @@ export function compileHubConfig(
   const authored = AuthoredSchema.parse(raw);
   validateAuthoredIds(authored);
   const environmentNames = new Set(authored.environments.map((environment) => environment.name));
+  const environments = new Map(
+    authored.environments.map((environment) => [environment.name, environment]),
+  );
   const triggers = authored.triggers.map((trigger) =>
-    compileTrigger(trigger, environmentNames, options.resolvedPromptPartials),
+    compileTrigger(trigger, environmentNames, environments, options.resolvedPromptPartials),
   );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
   validateCompiledContract(compiled);
@@ -403,14 +406,15 @@ export function parseDurationMs(value: string, field: string): number {
 function compileTrigger(
   trigger: AuthoredTrigger,
   environmentNames: ReadonlySet<string>,
+  environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
 ): CompiledTrigger {
   if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
   const inputs = compileInputs(trigger);
   validateInputFilters(trigger, inputs);
-  validateEnvironmentInputChoices(trigger, inputs, environmentNames);
+  validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments);
   const steps = trigger.steps.map((step) =>
-    compileStep(trigger, step, environmentNames, resolvedPromptPartials),
+    compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials),
   );
   const values = compileValues(trigger);
   const compiled = {
@@ -430,10 +434,17 @@ function compileStep(
   trigger: AuthoredTrigger,
   step: AuthoredStep,
   environmentNames: ReadonlySet<string>,
+  environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
 ): CompiledStep {
   if (!environmentNames.has(step.environment) && !DYNAMIC_INPUT_REFERENCE.test(step.environment)) {
     throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
+  }
+  const staticEnvironment = environments.get(step.environment);
+  if (staticEnvironment !== undefined && staticEnvironment.kind !== "daemon") {
+    throw new Error(
+      `trigger ${trigger.name} step ${step.id} environment ${step.environment} must be a daemon environment`,
+    );
   }
   const maxRuntimeMs = parseDurationMs(
     step.max_runtime,
@@ -581,6 +592,7 @@ function validateEnvironmentInputChoices(
   trigger: AuthoredTrigger,
   inputs: Readonly<Record<string, CompiledInput>>,
   environmentNames: ReadonlySet<string>,
+  environments: ReadonlyMap<string, AuthoredEnvironment>,
 ): void {
   for (const step of trigger.steps) {
     const reference = DYNAMIC_INPUT_REFERENCE.exec(step.environment);
@@ -591,6 +603,11 @@ function validateEnvironmentInputChoices(
       if (typeof choice !== "string" || !environmentNames.has(choice)) {
         throw new Error(
           `trigger ${trigger.name} step ${step.id} environment choice ${String(choice)} is not a configured environment`,
+        );
+      }
+      if (environments.get(choice)?.kind !== "daemon") {
+        throw new Error(
+          `trigger ${trigger.name} step ${step.id} environment choice ${choice} must be a daemon environment`,
         );
       }
     }
@@ -793,6 +810,7 @@ function matchesInputType(value: JsonPrimitive | undefined, type: AuthoredInput[
 
 function validateCompiledContract(config: CompiledHubConfig): void {
   const environmentIds = new Set<string>();
+  const environments = new Map<string, CompiledEnvironment>();
   for (const environment of config.environments) {
     if (environmentIds.has(environment.name)) {
       throw new Error(`duplicate environment id: ${environment.name}`);
@@ -800,6 +818,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     if (!IDENTIFIER.test(environment.name))
       throw new Error(`invalid environment name: ${environment.name}`);
     environmentIds.add(environment.name);
+    environments.set(environment.name, environment);
   }
 
   const triggerIds = new Set<string>();
@@ -818,6 +837,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
       ) {
         throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
       }
+      validateCompiledStepEnvironment(step, trigger.inputs, environments);
       if (step.idleTimeoutMs > step.maxRuntimeMs) {
         throw new Error(`step ${step.id} idle_timeout must not exceed max_runtime`);
       }
@@ -836,6 +856,27 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     }
     validateExpressionContract(trigger.name, trigger, environmentIds);
     validateTriggerLaunchSecurity(trigger);
+  }
+}
+
+function validateCompiledStepEnvironment(
+  step: CompiledStep,
+  inputs: Readonly<Record<string, CompiledInput>>,
+  environments: ReadonlyMap<string, CompiledEnvironment>,
+): void {
+  const staticEnvironment = environments.get(step.environment);
+  if (staticEnvironment !== undefined && staticEnvironment.kind !== "daemon") {
+    throw new Error(`step ${step.id} environment ${step.environment} must be a daemon environment`);
+  }
+  const environmentReference = DYNAMIC_INPUT_REFERENCE.exec(step.environment);
+  const environmentInput =
+    environmentReference === null ? undefined : inputs[environmentReference[1]!];
+  for (const choice of environmentInput?.choices ?? []) {
+    if (typeof choice !== "string") continue;
+    const choiceEnvironment = environments.get(choice);
+    if (choiceEnvironment !== undefined && choiceEnvironment.kind !== "daemon") {
+      throw new Error(`step ${step.id} environment choice ${choice} must be a daemon environment`);
+    }
   }
 }
 
