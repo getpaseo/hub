@@ -60,3 +60,10 @@ test("locks tenant controls while browser daemon commands are pending", async ({
 
   await hub.proveDaemonCommandLocksAccountContext("alice");
 });
+
+test("keeps a conflicting daemon rename recoverable", async ({ hub }) => {
+  await hub.signUpAs("alice", alice);
+  await hub.createOrganization("alice", "Acme");
+
+  await hub.proveDaemonRenameConflict("alice");
+});

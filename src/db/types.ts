@@ -159,6 +159,13 @@ export interface DaemonRecord {
   createdAt: Date;
 }
 
+export interface DaemonSlugConflict {
+  status: "slug_conflict";
+  slug: string;
+}
+
+export type DaemonWriteResult = DaemonRecord | DaemonSlugConflict | undefined;
+
 export interface EnrollmentTokenRecord {
   id: string;
   verifier: string;
@@ -892,7 +899,7 @@ export interface Database {
     deviceVerifier: string;
     enrollmentTokenVerifier: string;
   }): Promise<DevicePollResult>;
-  enrollDaemon(input: EnrollDaemonInput): Promise<DaemonRecord | undefined>;
+  enrollDaemon(input: EnrollDaemonInput): Promise<DaemonWriteResult>;
   findDaemonBySlugForOrganization(
     organizationId: string,
     slug: string,
@@ -904,7 +911,7 @@ export interface Database {
     organizationId: string,
     id: string,
     slug: string,
-  ): Promise<DaemonRecord | undefined>;
+  ): Promise<DaemonWriteResult>;
   touchDaemon(id: string): Promise<void>;
   setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void>;
   revokeDaemon(id: string): Promise<boolean>;

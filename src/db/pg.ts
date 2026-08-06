@@ -1561,8 +1561,9 @@ class PgDatabase implements Database {
     }
   }
 
-  async enrollDaemon(input: EnrollDaemonInput): Promise<DaemonRecord | undefined> {
+  async enrollDaemon(input: EnrollDaemonInput) {
     const client = await this.pool.connect();
+    let requestedSlug: string | undefined;
     try {
       await client.query("begin");
       const existing = await client.query<DaemonRow>(
@@ -1606,6 +1607,7 @@ class PgDatabase implements Database {
       const fallbackSlug = `daemon-${input.daemonId.slice(0, 8)}`;
       const slug =
         consumedToken.slug === null ? fallbackSlug : slugify(consumedToken.slug, fallbackSlug);
+      requestedSlug = slug;
       const daemon = await client.query<DaemonRow>(
         `insert into daemons
            (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
@@ -1640,6 +1642,9 @@ class PgDatabase implements Database {
       return toDaemon(daemon.rows[0]!);
     } catch (error) {
       await client.query("rollback");
+      if (requestedSlug !== undefined && isDaemonSlugConflict(error)) {
+        return { status: "slug_conflict" as const, slug: requestedSlug };
+      }
       throw toDatabaseError(error);
     } finally {
       client.release();
@@ -1697,20 +1702,21 @@ class PgDatabase implements Database {
     return rows.rows.map(toDaemon);
   }
 
-  async renameDaemonForOrganization(
-    organizationId: string,
-    id: string,
-    slug: string,
-  ): Promise<DaemonRecord | undefined> {
-    const rows = await query<DaemonRow>(
-      this.pool,
-      `update daemons set slug = $3
-       from machines
-       where daemons.id = $2 and machines.id = daemons.machine_id and machines.org_id = $1
-       returning daemons.*`,
-      [organizationId, id, slug],
-    );
-    return rows.rows[0] === undefined ? undefined : toDaemon(rows.rows[0]);
+  async renameDaemonForOrganization(organizationId: string, id: string, slug: string) {
+    try {
+      const rows = await query<DaemonRow>(
+        this.pool,
+        `update daemons set slug = $3
+         from machines
+         where daemons.id = $2 and machines.id = daemons.machine_id and machines.org_id = $1
+         returning daemons.*`,
+        [organizationId, id, slug],
+      );
+      return rows.rows[0] === undefined ? undefined : toDaemon(rows.rows[0]);
+    } catch (error) {
+      if (isDaemonSlugConflict(error)) return { status: "slug_conflict" as const, slug };
+      throw toDatabaseError(error);
+    }
   }
 
   async touchDaemon(id: string): Promise<void> {
@@ -3343,6 +3349,15 @@ async function query<T extends QueryResultRow = QueryResultRow>(
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+}
+
+function isDaemonSlugConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const postgresError = error as { code?: unknown; constraint?: unknown };
+  return (
+    postgresError.code === "23505" &&
+    postgresError.constraint === "daemons_organization_slug_unique"
+  );
 }
 
 async function withDatabaseDeadline<T>(promise: Promise<T>): Promise<T> {

@@ -1024,6 +1024,15 @@ export class PaseoHub {
     );
   }
 
+  async proveDaemonRenameConflict(alias: string): Promise<void> {
+    await this.seedDaemon(alias, "reserved-studio");
+    await this.seedDaemon(alias, "rename-source-studio");
+    await this.requireUser(alias).expectDaemonRenameConflict(
+      "rename-source-studio",
+      "reserved-studio",
+    );
+  }
+
   async denyRegistration(alias: string, displayName: string): Promise<void> {
     const request = await this.startRegistrationRequest(displayName);
     await this.requireUser(alias).openDaemonApproval(request.verificationUrl, displayName, "Acme");
@@ -2458,6 +2467,17 @@ class HubUser {
     await this.page.keyboard.press("Escape");
     await expect(this.daemonRow(displayName).getByText(displayName, { exact: true })).toBeVisible();
     await this.page.unroute(serverFunctions);
+  }
+
+  async expectDaemonRenameConflict(currentName: string, reservedSlug: string): Promise<void> {
+    await this.openOrganizationSection("Daemons");
+    const form = await this.openDaemonRename(currentName);
+    await form.getByLabel("Daemon slug").fill(reservedSlug);
+    await form.getByRole("button", { name: "Rename" }).click();
+    await expect(form.getByRole("alert")).toHaveText(
+      `The daemon slug “${reservedSlug}” is already in use. Choose another slug.`,
+    );
+    await expect(form).toBeVisible();
   }
 
   async expectRenameDaemonLocksAccountContext(

@@ -72,6 +72,39 @@ describe("daemon registration", () => {
     assert.equal((await hub.resolve(`daemon-${daemonId.slice(0, 8)}`))?.id, daemonId);
   });
 
+  it("returns an actionable conflict when enrollment reserves an existing slug", async () => {
+    const hub = new RegistrationJourney();
+    await hub.approveAndEnroll(await hub.request("First Mac"), "Build Studio");
+    const request = await hub.request("Replacement Mac");
+    await hub.approve(request.userCode, "Build Studio");
+    hub.advance(5);
+    const poll = await hub.poll(request.deviceCode);
+
+    const response = await hub.enroll(poll.enrollmentToken!, randomUUID());
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "daemon_slug_conflict",
+      slug: "build-studio",
+    });
+    assert.equal((await hub.daemons()).daemons.length, 1);
+  });
+
+  it("returns an actionable conflict when rename reserves an existing slug", async () => {
+    const hub = new RegistrationJourney();
+    await hub.approveAndEnroll(await hub.request("First Mac"), "Build Studio");
+    const releaseId = await hub.approveAndEnroll(await hub.request("Second Mac"), "Release Studio");
+
+    const response = await hub.rename(releaseId, "Build Studio");
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "daemon_slug_conflict",
+      slug: "build-studio",
+    });
+    assert.equal((await hub.resolve("release-studio"))?.id, releaseId);
+  });
+
   it("keeps denial and expiry terminal without organization residue", async () => {
     const denied = new RegistrationJourney();
     const deniedRequest = await denied.request("Denied Mac");

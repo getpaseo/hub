@@ -99,9 +99,12 @@ export function DaemonsPanel({
         const result = await rename.mutateAsync({
           data: { organizationSlug, daemonId, slug },
         });
-        return result.status === "ok" && result.data.state === "complete";
+        if (result.status === "error") return result.error.message;
+        return result.data.state === "complete"
+          ? undefined
+          : "We couldn't rename that daemon in the current organization.";
       } catch {
-        return false;
+        return "We couldn't rename that daemon.";
       }
     },
     [organizationSlug, rename],
@@ -124,9 +127,9 @@ export function DaemonsPanel({
     );
   }
   const daemons = snapshot.data.data;
-  const failure = [rename.data, revoke.data].find((result) => result?.status === "error");
+  const failure = [revoke.data].find((result) => result?.status === "error");
   let message = failure?.status === "error" ? failure.error.message : undefined;
-  if (rename.isError || revoke.isError) message = "We couldn't update that daemon.";
+  if (revoke.isError) message = "We couldn't update that daemon.";
   const busy = rename.isPending || revoke.isPending;
   return (
     <>
@@ -171,7 +174,7 @@ function DaemonRow({
   daemon: BrowserDaemon;
   canManage: boolean;
   busy: boolean;
-  onRename: (daemonId: string, slug: string) => Promise<boolean>;
+  onRename: (daemonId: string, slug: string) => Promise<string | undefined>;
   onRevoke: (daemonId: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -237,15 +240,25 @@ function RenameDaemonDialog({
 }: {
   daemon: BrowserDaemon;
   busy: boolean;
-  onRename: (daemonId: string, slug: string) => Promise<boolean>;
+  onRename: (daemonId: string, slug: string) => Promise<string | undefined>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const [error, setError] = useState<string>();
+  const changeOpen = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) setError(undefined);
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange],
+  );
   const completeRename = useCallback(
     async (slug: string) => {
-      if (await onRename(daemon.id, slug)) onOpenChange(false);
+      const failure = await onRename(daemon.id, slug);
+      setError(failure);
+      if (failure === undefined) changeOpen(false);
     },
-    [daemon.id, onOpenChange, onRename],
+    [changeOpen, daemon.id, onRename],
   );
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -258,7 +271,7 @@ function RenameDaemonDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Rename daemon</DialogTitle>
@@ -279,6 +292,11 @@ function RenameDaemonDialog({
               disabled={busy}
             />
           </Field>
+          {error === undefined ? null : (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
           <DialogFooter>
             <Button type="submit" disabled={busy}>
               Rename

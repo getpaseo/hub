@@ -74,7 +74,7 @@ async function main(): Promise<void> {
       expiresAt: new Date(Date.now() + 60 * 60_000),
       consumedAt: null,
     });
-    daemon = await database.enrollDaemon({
+    const enrollment = await database.enrollDaemon({
       tokenVerifier: "hub-e2e-seed-daemon-token",
       daemonId: seededDaemonId,
       idempotencyKey: "hub-e2e-seed-daemon-idempotency",
@@ -84,6 +84,7 @@ async function main(): Promise<void> {
       scopes: ["hub.execution.*"],
       now: new Date(),
     });
+    daemon = enrollment?.status === "slug_conflict" ? undefined : enrollment;
   }
   if (daemon === undefined) throw new Error("Hub E2E seed daemon enrollment failed");
   const config = await configuration.insertManualRevision({

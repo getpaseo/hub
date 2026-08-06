@@ -194,7 +194,9 @@ export class DaemonRegistration {
       daemonId,
       slugify(input.slug, "daemon"),
     );
-    return daemon === undefined ? unavailableDaemon() : Response.json(daemonSummary(daemon));
+    if (daemon === undefined) return unavailableDaemon();
+    if (daemon.status === "slug_conflict") return daemonSlugConflict(daemon.slug);
+    return Response.json(daemonSummary(daemon));
   }
 
   async revoke(request: Request, daemonId: string): Promise<Response> {
@@ -318,6 +320,7 @@ export async function enrollDaemon(
   if (daemon === undefined) {
     return Response.json({ error: "invalid enrollment token" }, { status: 401 });
   }
+  if (daemon.status === "slug_conflict") return daemonSlugConflict(daemon.slug);
   const webSocketUrl = new URL("/api/daemons/socket", publicBaseUrl ?? request.url);
   webSocketUrl.protocol = webSocketUrl.protocol === "https:" ? "wss:" : "ws:";
   return Response.json({
@@ -423,6 +426,10 @@ function unavailableAuthorization(): Response {
 
 function unavailableDaemon(): Response {
   return Response.json({ error: "daemon_unavailable" }, { status: 404 });
+}
+
+function daemonSlugConflict(slug: string): Response {
+  return Response.json({ error: "daemon_slug_conflict", slug }, { status: 409 });
 }
 
 export const ENROLLMENT_LIFETIME_MS = 10 * 60_000;

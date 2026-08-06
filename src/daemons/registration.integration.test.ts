@@ -91,6 +91,59 @@ describe("daemon registration PostgreSQL authority", () => {
     assert.equal(revoke.status, 404);
     assert.deepEqual(await journey.visibleDaemonNames("acme"), ["build-studio"]);
   });
+
+  it("returns a slug conflict when a revoked daemon still reserves the enrollment slug", async () => {
+    const first = await journey.request("Revoked Collision Studio");
+    assert.equal((await journey.approve(first.userCode, "Revoked Collision Studio")).status, 200);
+    const firstToken = await journey.pollWithResponseLoss(first.deviceCode);
+    assert.equal((await journey.enrollToken(firstToken[0])).status, 200);
+    const daemonId = await journey.daemonIdBySlug("revoked-collision-studio");
+    assert.equal((await journey.revoke(daemonId)).status, 204);
+
+    const replacement = await journey.request("Revoked Collision Studio");
+    assert.equal(
+      (await journey.approve(replacement.userCode, "Revoked Collision Studio")).status,
+      200,
+    );
+    const replacementToken = await journey.pollWithResponseLoss(replacement.deviceCode);
+    const response = await journey.enrollToken(replacementToken[0]);
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "daemon_slug_conflict",
+      slug: "revoked-collision-studio",
+    });
+  });
+
+  it("returns a slug conflict without changing either daemon on rename", async () => {
+    const first = await journey.request("Rename Conflict Studio");
+    assert.equal((await journey.approve(first.userCode, "Rename Conflict Studio")).status, 200);
+    assert.equal(
+      (await journey.enrollToken((await journey.pollWithResponseLoss(first.deviceCode))[0])).status,
+      200,
+    );
+    const second = await journey.request("Rename Source Studio");
+    assert.equal((await journey.approve(second.userCode, "Rename Source Studio")).status, 200);
+    assert.equal(
+      (await journey.enrollToken((await journey.pollWithResponseLoss(second.deviceCode))[0]))
+        .status,
+      200,
+    );
+    const release = (await database.listDaemonsForOrganization("acme")).find(
+      (daemon) => daemon.slug === "rename-source-studio",
+    );
+    assert.ok(release);
+
+    const response = await journey.rename(release.id, "Rename Conflict Studio");
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "daemon_slug_conflict",
+      slug: "rename-conflict-studio",
+    });
+    assert.ok((await journey.visibleDaemonNames("acme")).includes("rename-conflict-studio"));
+    assert.ok((await journey.visibleDaemonNames("acme")).includes("rename-source-studio"));
+  });
 });
 
 describe("daemon registration authenticated application boundary", () => {
@@ -728,6 +781,14 @@ class PostgresRegistration {
     return daemons[0]!.id;
   }
 
+  async daemonIdBySlug(slug: string): Promise<string> {
+    const daemon = (await this.database.listDaemonsForOrganization("acme")).find(
+      (candidate) => candidate.slug === slug,
+    );
+    assert.ok(daemon);
+    return daemon.id;
+  }
+
   private async pollNow(deviceCode: string) {
     await this.query(
       `update daemon_device_authorizations set next_poll_at = now()
@@ -755,6 +816,10 @@ class PostgresRegistration {
       this.database,
       "https://hub.paseo.test",
     );
+  }
+
+  enrollToken(token: string): Promise<Response> {
+    return this.enroll(token, randomUUID());
   }
 
   private async query(sql: string): Promise<void> {

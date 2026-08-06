@@ -85,6 +85,16 @@ export const renameDaemon = createServerFn({ method: "POST" })
           return respondOk({ state: "organizationRequired" });
         }
       }
+      if (response.status === 409) {
+        const failure = z
+          .object({ error: z.literal("daemon_slug_conflict"), slug: z.string() })
+          .safeParse(await response.json());
+        if (failure.success) {
+          return respondError({
+            message: `The daemon slug “${failure.data.slug}” is already in use. Choose another slug.`,
+          });
+        }
+      }
       if (!response.ok) return respondError({ message: "We couldn't rename that daemon." });
       return respondOk({ state: "complete" });
     } catch {
