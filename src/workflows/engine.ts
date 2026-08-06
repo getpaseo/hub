@@ -55,6 +55,7 @@ export interface DurableWorkflowEngineOptions {
   database: Database | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
+  validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
   configurationRevisionId?: string;
   leaseMs?: number;
   workerIntervalMs?: number;
@@ -246,6 +247,7 @@ export class DurableWorkflowEngine {
       deadlineAt,
     );
     if (intent === undefined) return;
+    if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
     const executionId = durableExecutionId(intent);
     const created = await database.createWorkflowStepExecution({
       triggerRunId: run.id,
@@ -397,6 +399,24 @@ export class DurableWorkflowEngine {
       const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return undefined;
+    }
+  }
+
+  private async failInvalidLaunchIntent(
+    database: Database,
+    run: AcceptedWorkflowRun,
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    intent: LaunchMachineIntent,
+  ): Promise<boolean> {
+    try {
+      this.options.validateLaunchMachineIntent?.(intent);
+      return false;
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "required output capability unavailable";
+      const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+      return true;
     }
   }
 

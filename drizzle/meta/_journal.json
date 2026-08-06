@@ -155,6 +155,20 @@
       "when": 1786031867703,
       "tag": "0021_unknown_retro_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786046610670,
+      "tag": "0022_burly_whiplash",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786046769096,
+      "tag": "0023_robust_vapor",
+      "breakpoints": true
     }
   ]
 }

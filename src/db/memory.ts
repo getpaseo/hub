@@ -4,6 +4,7 @@ import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
   AgentExecutionRecord,
+  AgentExecutionOutputAttempt,
   AgentExecutionHubAcknowledgementInput,
   AgentExecutionHubAcknowledgements,
   Database,
@@ -71,6 +72,8 @@ import type {
   ProjectActivityRunListRecord,
 } from "./types.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
+
+const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 export interface MemoryDatabaseOptions {
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
@@ -1215,6 +1218,8 @@ class MemoryDatabase implements Database {
       completionTokenHash: input.completionTokenHash ?? null,
       replyClaimedAt: null,
       replyClaimCount: 0,
+      outputEmissions: {},
+      outputDeliveryAttempts: {},
       launchIntent: input.launchIntent ?? null,
       daemonId: input.daemonId ?? null,
       daemonAgentId: null,
@@ -1579,22 +1584,98 @@ class MemoryDatabase implements Database {
       .sort((left, right) => left.ordinal - right.ordinal);
   }
 
-  async claimAgentExecutionReply(
+  async beginAgentExecutionOutput(
     executionId: string,
-    maxReplies: number,
-    claimedAt: Date,
-  ): Promise<boolean> {
-    const execution = this.readAgentExecution(executionId);
+    outputType: string,
+    maxOutputs: number,
+    startedAt: Date,
+  ): Promise<AgentExecutionOutputAttempt | undefined> {
+    const execution = this.agentExecutions.get(executionId);
     if (
-      execution.replyClaimCount >= maxReplies ||
+      execution === undefined ||
+      maxOutputs < 1 ||
       (execution.status !== "spawning" && execution.status !== "running")
     ) {
+      return undefined;
+    }
+    const activeAttempts = Object.values(execution.outputDeliveryAttempts).filter(
+      (attempt) =>
+        attempt.outputType === outputType &&
+        attempt.status === "pending" &&
+        attempt.leaseExpiresAt > startedAt,
+    ).length;
+    if ((execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs) {
+      return undefined;
+    }
+    const attempt: AgentExecutionOutputAttempt = {
+      id: randomUUID(),
+      outputType,
+      status: "pending",
+      startedAt,
+      leaseExpiresAt: new Date(startedAt.getTime() + OUTPUT_ATTEMPT_LEASE_MS),
+      completedAt: null,
+    };
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      outputDeliveryAttempts: {
+        ...execution.outputDeliveryAttempts,
+        [attempt.id]: attempt,
+      },
+    });
+    return attempt;
+  }
+
+  async completeAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    completedAt: Date,
+  ): Promise<AgentExecutionRecord | undefined> {
+    const execution = this.agentExecutions.get(executionId);
+    if (execution === undefined) return undefined;
+    const attempt = execution.outputDeliveryAttempts[attemptId];
+    if (attempt === undefined) return undefined;
+    if (attempt.status === "succeeded") return execution;
+    if (attempt.status !== "pending" || attempt.leaseExpiresAt <= completedAt) {
+      if (attempt.status === "pending" && attempt.leaseExpiresAt <= completedAt) {
+        this.agentExecutions.set(executionId, {
+          ...execution,
+          outputDeliveryAttempts: {
+            ...execution.outputDeliveryAttempts,
+            [attemptId]: { ...attempt, status: "failed", completedAt: null },
+          },
+        });
+      }
+      return undefined;
+    }
+    const count = execution.outputEmissions[attempt.outputType] ?? 0;
+    const updated: AgentExecutionRecord = {
+      ...execution,
+      outputEmissions: { ...execution.outputEmissions, [attempt.outputType]: count + 1 },
+      outputDeliveryAttempts: {
+        ...execution.outputDeliveryAttempts,
+        [attemptId]: { ...attempt, status: "succeeded", completedAt },
+      },
+    };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
+  }
+
+  async failAgentExecutionOutput(
+    executionId: string,
+    attemptId: string,
+    _failedAt: Date,
+  ): Promise<boolean> {
+    const execution = this.agentExecutions.get(executionId);
+    const attempt = execution?.outputDeliveryAttempts[attemptId];
+    if (execution === undefined || attempt === undefined || attempt.status !== "pending") {
       return false;
     }
     this.agentExecutions.set(executionId, {
       ...execution,
-      replyClaimedAt: execution.replyClaimedAt ?? claimedAt,
-      replyClaimCount: execution.replyClaimCount + 1,
+      outputDeliveryAttempts: {
+        ...execution.outputDeliveryAttempts,
+        [attemptId]: { ...attempt, status: "failed", completedAt: null },
+      },
     });
     return true;
   }

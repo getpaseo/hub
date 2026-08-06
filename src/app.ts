@@ -159,6 +159,17 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     ...(options.executionDeadlineClock === undefined
       ? {}
       : { now: () => new Date(options.executionDeadlineClock!.now()) }),
+    ...(options.outputRegistry === undefined
+      ? {}
+      : {
+          validateLaunchMachineIntent: (
+            intent: import("./dispatcher/launch-machine-intent.js").LaunchMachineIntent,
+          ) =>
+            options.outputRegistry!.validateRequiredOutputs(
+              intent.allowOutputs,
+              intent.outputContext,
+            ),
+        }),
     ...(daemonModule === null
       ? {}
       : {

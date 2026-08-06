@@ -1185,26 +1185,72 @@ describe("agent execution PostgreSQL repository", () => {
   it("atomically enforces the configured reply limit under concurrent callers", async () => {
     const fixture = await executionFixture(postgres);
     try {
-      const claims = await Promise.all(
+      const attempts = await Promise.all(
         Array.from({ length: 8 }, (_, index) =>
-          fixture.database.claimAgentExecutionReply(
+          fixture.database.beginAgentExecutionOutput(
             fixture.execution.id,
+            "discord.reply",
             3,
             new Date(`2026-08-03T00:00:0${index}.000Z`),
           ),
         ),
       );
 
-      assert.equal(claims.filter(Boolean).length, 3);
+      assert.equal(attempts.filter((attempt) => attempt !== undefined).length, 3);
       assert.equal(
-        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.replyClaimedAt !==
-          null,
-        true,
-      );
-      assert.equal(
-        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.replyClaimCount,
+        Object.values(
+          (await fixture.database.findAgentExecutionById(fixture.execution.id))
+            ?.outputDeliveryAttempts ?? {},
+        ).filter((attempt) => attempt.status === "pending").length,
         3,
       );
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  it("persists failed output attempts as retryable and records a successful retry idempotently", async () => {
+    const fixture = await executionFixture(postgres);
+    try {
+      const first = await fixture.database.beginAgentExecutionOutput(
+        fixture.execution.id,
+        "discord.reply",
+        1,
+        new Date("2026-08-03T00:00:00.000Z"),
+      );
+      assert.ok(first);
+      assert.equal(
+        await fixture.database.failAgentExecutionOutput(
+          fixture.execution.id,
+          first.id,
+          new Date("2026-08-03T00:00:01.000Z"),
+        ),
+        true,
+      );
+      const retry = await fixture.database.beginAgentExecutionOutput(
+        fixture.execution.id,
+        "discord.reply",
+        1,
+        new Date("2026-08-03T00:00:02.000Z"),
+      );
+      assert.ok(retry);
+      const completed = await fixture.database.completeAgentExecutionOutput(
+        fixture.execution.id,
+        retry.id,
+        new Date("2026-08-03T00:00:03.000Z"),
+      );
+      assert.ok(completed);
+      const duplicateCompletion = await fixture.database.completeAgentExecutionOutput(
+        fixture.execution.id,
+        retry.id,
+        new Date("2026-08-03T00:00:04.000Z"),
+      );
+      assert.ok(duplicateCompletion);
+
+      const persisted = await fixture.database.findAgentExecutionById(fixture.execution.id);
+      assert.deepEqual(persisted?.outputEmissions, { "discord.reply": 1 });
+      assert.equal(persisted?.outputDeliveryAttempts[first.id]?.status, "failed");
+      assert.equal(persisted?.outputDeliveryAttempts[retry.id]?.status, "succeeded");
     } finally {
       await fixture.database.close();
     }

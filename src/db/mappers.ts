@@ -8,6 +8,7 @@ import type {
 } from "./pg.js";
 import type {
   AgentExecutionHubAcknowledgements,
+  AgentExecutionOutputAttempt,
   AgentExecutionRecord,
   AttachmentRecord,
   MachineRecord,
@@ -147,6 +148,8 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     completionTokenHash: row.completion_token_hash,
     replyClaimedAt: row.reply_claimed_at,
     replyClaimCount: row.reply_claim_count,
+    outputEmissions: toOutputEmissions(row.output_emissions),
+    outputDeliveryAttempts: toOutputDeliveryAttempts(row.output_delivery_attempts),
     launchIntent: row.launch_intent,
     daemonId: row.daemon_id,
     daemonAgentId: row.daemon_agent_id,
@@ -156,6 +159,50 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     hubActionReadyAt: row.hub_action_ready_at,
     hubActionAcknowledgements: toAgentExecutionHubAcknowledgements(row.hub_action_acknowledgements),
   };
+}
+
+function toOutputEmissions(value: unknown): Readonly<Record<string, number>> {
+  if (!isRecord(value)) return {};
+  const emissions: Record<string, number> = {};
+  for (const [type, count] of Object.entries(value)) {
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+      emissions[type] = count;
+    }
+  }
+  return emissions;
+}
+
+function toOutputDeliveryAttempts(
+  value: unknown,
+): Readonly<Record<string, AgentExecutionOutputAttempt>> {
+  if (!isRecord(value)) return {};
+  const attempts: Record<string, AgentExecutionOutputAttempt> = {};
+  for (const [id, raw] of Object.entries(value)) {
+    if (!isRecord(raw)) continue;
+    const outputType = raw["outputType"];
+    const status = raw["status"];
+    const startedAt = toDate(raw["startedAt"]);
+    const leaseExpiresAt = toDate(raw["leaseExpiresAt"]);
+    const completedAt = raw["completedAt"] === null ? null : toDate(raw["completedAt"]);
+    if (
+      typeof outputType !== "string" ||
+      (status !== "pending" && status !== "succeeded" && status !== "failed") ||
+      startedAt === undefined ||
+      leaseExpiresAt === undefined ||
+      (raw["completedAt"] !== null && completedAt === undefined)
+    ) {
+      continue;
+    }
+    attempts[id] = { id, outputType, status, startedAt, leaseExpiresAt, completedAt: completedAt! };
+  }
+  return attempts;
+}
+
+function toDate(value: unknown): Date | undefined {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubAcknowledgements {

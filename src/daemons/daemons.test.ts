@@ -683,6 +683,29 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.terminalHookCount(), 1);
   });
 
+  it("keeps a required output completion recoverable through the application MCP route", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      allowOutputs: [{ type: "discord.reply", max: 1, required: true }],
+      outputContext: { provider: "discord", channelId: "channel-1", messageId: "message-1" },
+    });
+    await hub.startExecution(result.agentId);
+
+    const missing = await hub.callExecutionTool(result.execution.id, "finish_execution", {});
+    assert.equal(toolResultIsError(missing), true);
+    assert.equal((await hub.execution(result.execution.id)).status, "running");
+
+    const reply = await hub.callExecutionTool(result.execution.id, "reply", {
+      content: "hello",
+    });
+    assert.equal(reply["error"], undefined);
+
+    const completed = await hub.callExecutionTool(result.execution.id, "finish_execution", {});
+    assert.equal(completed["error"], undefined);
+    assert.equal(toolResultIsError(completed), undefined);
+    assert.equal((await hub.execution(result.execution.id)).status, "succeeded");
+  });
+
   it("archives an associated run after successful auto-archive completion", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: true });
@@ -1488,3 +1511,17 @@ describe("daemon enrollment and execution", () => {
     assert.equal(await HubHarness.startupFailureRollsBack(), true);
   });
 });
+
+function toolResultIsError(response: Record<string, unknown>): boolean | undefined {
+  const result = response["result"];
+  if (!isRecord(result)) throw new Error("execution tool response has no result");
+  const isError = result["isError"];
+  if (isError !== undefined && typeof isError !== "boolean") {
+    throw new Error("execution tool response has an invalid isError field");
+  }
+  return isError;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

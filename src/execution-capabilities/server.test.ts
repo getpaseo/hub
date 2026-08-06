@@ -18,7 +18,7 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
 import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
-import { OutputExecutorRegistry } from "./outputs.js";
+import { OutputExecutorRegistry, replyOutputTool, type OutputCapability } from "./outputs.js";
 import { createExecutionCapabilityServer } from "./server.js";
 
 const RpcResponseSchema = z
@@ -435,6 +435,119 @@ describe("execution capability MCP boundary", () => {
     assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
   });
 
+  it("keeps finish recoverable until a required output is emitted", async () => {
+    const fixture = await capabilityFixture(
+      undefined,
+      "succeeded",
+      1,
+      undefined,
+      false,
+      ["slack.reply"],
+      { ...replyOutputTool, name: "post_to_slack" },
+    );
+
+    const missing = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(missing.result).isError, true);
+    const missingText = z
+      .object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })) })
+      .parse(missing.result).content[0]?.text;
+    assert.match(missingText ?? "", /slack\.reply/iu);
+    assert.match(missingText ?? "", /`post_to_slack`/u);
+    assert.match(missingText ?? "", /retry `finish_execution`/u);
+    assert.deepEqual(fixture.completions, []);
+    assert.equal(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.status,
+      "spawning",
+    );
+
+    const reply = await fixture.call("tools/call", {
+      name: "post_to_slack",
+      arguments: { content: "hello" },
+    });
+    assert.equal(ToolResultSchema.parse(reply.result).isError, undefined);
+    assert.deepEqual(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.outputEmissions,
+      { "slack.reply": 1 },
+    );
+
+    const completed = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(completed.result).isError, undefined);
+    assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
+  });
+
+  it("rejects a required output that has no materialized Hub capability", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 1, undefined, false, [
+      "manual.reply",
+    ]);
+    const response = await fixture.server.handle(
+      new Request(`https://hub.test/agent-executions/${fixture.executionId}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer token",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: mcpRequest("tools/list"),
+      }),
+      fixture.executionId,
+    );
+    assert.equal(response.status, 409);
+    const body = JSON.stringify(await response.json());
+    assert.match(body, /manual\.reply/iu);
+    assert.match(body, /register a Hub output tool/iu);
+  });
+
+  it("guides and materializes multiple required output capabilities", async () => {
+    const fixture = await capabilityFixture(
+      undefined,
+      "succeeded",
+      1,
+      undefined,
+      false,
+      ["slack.reply", "manual.reply"],
+      { ...replyOutputTool, name: "post_to_slack" },
+      [
+        {
+          type: "manual.reply",
+          tool: { ...replyOutputTool, name: "send_manual_reply" },
+          execute: async () => undefined,
+        },
+      ],
+    );
+    const missing = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    const missingText = z
+      .object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })) })
+      .parse(missing.result).content[0]?.text;
+    assert.match(missingText ?? "", /`post_to_slack`/u);
+    assert.match(missingText ?? "", /`send_manual_reply`/u);
+
+    for (const name of ["post_to_slack", "send_manual_reply"]) {
+      const output = await fixture.call("tools/call", {
+        name,
+        arguments: { content: name },
+      });
+      assert.equal(ToolResultSchema.parse(output.result).isError, undefined);
+    }
+    const completed = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(completed.result).isError, undefined);
+    assert.deepEqual(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.outputEmissions,
+      { "slack.reply": 1, "manual.reply": 1 },
+    );
+  });
+
   it("claims before one reply and rejects a concurrent duplicate with one outbound call", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -455,14 +568,22 @@ describe("execution capability MCP boundary", () => {
 
     assert.equal(successful.error, undefined);
     assert.equal(ToolResultSchema.parse(duplicate.result).isError, true);
-    assert.deepEqual(fixture.outbound, [
+    assert.equal(fixture.outbound.length, 1);
+    assert.deepEqual(
+      fixture.outbound[0] && {
+        agentExecutionId: fixture.outbound[0].agentExecutionId,
+        toolType: fixture.outbound[0].toolType,
+        args: fixture.outbound[0].args,
+        outputContext: fixture.outbound[0].outputContext,
+      },
       {
         agentExecutionId: fixture.executionId,
         toolType: "slack.reply",
         args: { content: "first" },
         outputContext: slackOutputContext,
       },
-    ]);
+    );
+    assert.equal(typeof fixture.outbound[0]?.attemptId, "string");
   });
 
   it("allows replies up to the configured maximum", async () => {
@@ -484,29 +605,42 @@ describe("execution capability MCP boundary", () => {
     assert.equal(fixture.outbound.length, 3);
   });
 
-  it("burns an ambiguous failed reply claim", async () => {
-    const fixture = await capabilityFixture(() => Promise.reject(new Error("delivery timeout")));
+  it("allows a failed required reply delivery to be retried before finish", async () => {
+    let attempts = 0;
+    const fixture = await capabilityFixture(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("delivery timeout");
+      },
+      "succeeded",
+      1,
+      undefined,
+      false,
+      ["slack.reply"],
+    );
     const failed = await fixture.call("tools/call", {
       name: "reply",
       arguments: { content: "first" },
     });
-    const duplicate = await fixture.call("tools/call", {
+    const retry = await fixture.call("tools/call", {
       name: "reply",
       arguments: { content: "second" },
     });
 
     assert.equal(ToolResultSchema.parse(failed.result).isError, true);
-    assert.equal(ToolResultSchema.parse(duplicate.result).isError, true);
+    assert.equal(ToolResultSchema.parse(retry.result).isError, undefined);
     assert.equal(
-      (await fixture.database.findAgentExecutionById(fixture.executionId))
-        ?.replyClaimedAt instanceof Date,
-      true,
-    );
-    assert.equal(
-      (await fixture.database.findAgentExecutionById(fixture.executionId))?.replyClaimCount,
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.outputEmissions[
+        "slack.reply"
+      ],
       1,
     );
-    assert.equal(fixture.outbound.length, 1);
+    const completed = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(completed.result).isError, undefined);
+    assert.equal(fixture.outbound.length, 2);
   });
 });
 
@@ -524,6 +658,9 @@ async function capabilityFixture(
   maxReplies = 1,
   outputSchema?: JsonValue,
   autoArchive = false,
+  requiredOutputTypes: readonly string[] = [],
+  outputTool = replyOutputTool,
+  additionalCapabilities: readonly OutputCapability[] = [],
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
@@ -537,14 +674,19 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive),
+    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes),
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
-  outputs.register("slack.reply", async (input) => {
-    outbound.push(input);
-    await execute();
+  outputs.register({
+    type: "slack.reply",
+    tool: outputTool,
+    execute: async (input) => {
+      outbound.push(input);
+      await execute();
+    },
   });
+  for (const capability of additionalCapabilities) outputs.register(capability);
   const completions: Array<{
     executionId: string;
     token: string;
@@ -662,6 +804,7 @@ function launchIntent(
   maxReplies = 1,
   outputSchema?: JsonValue,
   autoArchive = false,
+  requiredOutputTypes: readonly string[] = [],
 ): LaunchMachineIntent {
   return {
     kind: "launch_machine",
@@ -678,7 +821,16 @@ function launchIntent(
     },
     prompt: "reply",
     agent: { provider: "codex", mode: "full-access" },
-    allowOutputs: [{ type: "slack.reply", max: maxReplies }],
+    allowOutputs: [
+      {
+        type: "slack.reply",
+        max: maxReplies,
+        ...(requiredOutputTypes.includes("slack.reply") ? { required: true } : {}),
+      },
+      ...requiredOutputTypes
+        .filter((type) => type !== "slack.reply")
+        .map((type) => ({ type, max: 1, required: true as const })),
+    ],
     autoArchive,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,

@@ -68,7 +68,7 @@ export async function createApplicationRuntime(
     };
   const outputRegistry = new OutputExecutorRegistry();
   for (const output of registrations.flatMap((registration) => registration.outputs)) {
-    outputRegistry.register(output.type, output.execute);
+    outputRegistry.register(output);
   }
 
   const application = createHubApplication({

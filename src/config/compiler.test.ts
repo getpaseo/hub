@@ -5,6 +5,9 @@ import {
   compiledConfigurationHash,
   parseCompiledHubConfig,
   rawConfigurationHash,
+  type CompiledHubConfig,
+  type CompiledStep,
+  type CompiledTrigger,
 } from "./compiler.js";
 
 const environment = { name: "runner", kind: "daemon" as const, daemon: "runner", cwd: "/repo" };
@@ -33,6 +36,23 @@ function configuration(overrides: Record<string, unknown> = {}) {
     ],
     ...overrides,
   };
+}
+
+function legacyAllowOutputs(allowOutputs: CompiledStep["allowOutputs"]) {
+  return allowOutputs.map(({ type, max }) => ({ type, max }));
+}
+
+function legacyStep(step: CompiledStep) {
+  return { ...step, allowOutputs: legacyAllowOutputs(step.allowOutputs) };
+}
+
+function legacyTrigger(trigger: CompiledTrigger) {
+  return { ...trigger, steps: trigger.steps.map(legacyStep) };
+}
+
+function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
+  const cloned = structuredClone(compiled);
+  return { ...cloned, triggers: cloned.triggers.map(legacyTrigger) };
 }
 
 describe("workflow compiler", () => {
@@ -73,6 +93,44 @@ describe("workflow compiler", () => {
     assert.equal(schema["type"], "object");
     assert.equal(Object.isFrozen(compiled), true);
     assert.equal(Object.isFrozen(trigger.steps[1]), true);
+  });
+
+  it("compiles required output declarations and rejects an unusable maximum", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...trigger,
+          steps: [
+            {
+              ...step,
+              allow_outputs: [{ type: "discord.reply", max: 1, required: true }],
+            },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.allowOutputs, [
+      { type: "discord.reply", max: 1, required: true },
+    ]);
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                { ...step, allow_outputs: [{ type: "discord.reply", max: 0, required: true }] },
+              ],
+            },
+          ],
+        }),
+      /required outputs must have max at least 1/iu,
+    );
   });
 
   it("rejects duplicate IDs, unknown references, forward references, and value cycles", () => {
@@ -257,6 +315,8 @@ describe("workflow compiler", () => {
   it("re-establishes the multi-step contract for stored JSON and hashes all compiled fields", () => {
     const compiled = compileHubConfig(configuration());
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    const legacyConfiguration = legacyCompiledConfiguration(compiled);
+    assert.deepEqual(parseCompiledHubConfig(legacyConfiguration), compiled);
     assert.throws(
       () =>
         parseCompiledHubConfig({
