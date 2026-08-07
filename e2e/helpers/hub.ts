@@ -492,8 +492,38 @@ export class PaseoHub {
     await this.requireUser(alias).expectConnections();
   }
 
-  async expectEntitlements(alias: string): Promise<void> {
-    await this.requireUser(alias).expectEntitlements();
+  async expectUsageUnlimitedDefaults(alias: string): Promise<void> {
+    await this.requireUser(alias).expectUsageUnlimitedDefaults();
+  }
+
+  async expectUsageReadOnly(alias: string): Promise<void> {
+    await this.requireUser(alias).expectUsageReadOnly();
+  }
+
+  async expectNoOperatorNav(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoOperatorNav();
+  }
+
+  async expectOperatorRouteRefused(alias: string): Promise<void> {
+    await this.requireUser(alias).expectOperatorRouteRefused();
+  }
+
+  async openOperatorConsole(alias: string): Promise<void> {
+    await this.requireUser(alias).openOperatorConsole();
+  }
+
+  /**
+   * Grant the instance-operator flag exactly as an administrator would in production — a single
+   * SQL update, documented in docs/entitlements.md, with no UI. Reload so the client re-reads the
+   * account state and the operator nav appears; the server-side guard already honours the flag.
+   */
+  async grantOperator(alias: string): Promise<void> {
+    await this.queryDatabaseRows(
+      this.primary.databaseUrl,
+      `update "user" set is_instance_operator = true where lower(email) = lower($1)`,
+      [this.requireUser(alias).accountEmail],
+    );
+    await this.page.reload();
   }
 
   async expectNoBillingNavigation(alias: string): Promise<void> {
@@ -703,15 +733,16 @@ export class PaseoHub {
 
   async expectEntitlementCells(
     alias: string,
+    org: string,
     name: string,
     expected: { granted: string; override: string; effective: string },
   ): Promise<void> {
-    await this.requireUser(alias).expectEntitlementCells(name, expected);
+    await this.requireUser(alias).expectEntitlementCells(org, name, expected);
   }
 
   async clearSeatOverride(
     alias: string,
-    input: { reason: string; expectedEffective: string },
+    input: { org: string; reason: string; expectedEffective: string },
   ): Promise<void> {
     await this.requireUser(alias).clearSeatOverride(input);
   }
@@ -734,7 +765,7 @@ export class PaseoHub {
 
   async openSeatOverrideEditor(
     alias: string,
-    input: { max: number; reason: string },
+    input: { org: string; max: number; reason: string },
   ): Promise<void> {
     await this.requireUser(alias).openSeatOverrideEditor(input);
   }
@@ -745,7 +776,7 @@ export class PaseoHub {
 
   async openMeterOverrideEditor(
     alias: string,
-    input: { limit: number; reason: string },
+    input: { org: string; limit: number; reason: string },
   ): Promise<void> {
     await this.requireUser(alias).openMeterOverrideEditor(input);
   }
@@ -768,7 +799,7 @@ export class PaseoHub {
 
   async expectEntitlementsAudit(
     alias: string,
-    expected: { actor: string; reason: string },
+    expected: { org: string; actor: string; reason: string },
   ): Promise<void> {
     await this.requireUser(alias).expectEntitlementsAudit(expected);
   }
@@ -3315,15 +3346,50 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
   }
 
-  async expectEntitlements(): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+  async expectUsageUnlimitedDefaults(): Promise<void> {
+    await this.openOrganizationSection("Usage");
     await expect(
-      this.page.getByRole("heading", { name: "Entitlements", exact: true, level: 1 }),
+      this.page.getByRole("heading", { name: "Usage", exact: true, level: 1 }),
     ).toBeVisible();
-    const table = this.page.getByRole("table", { name: "Entitlements" });
-    await expect(this.entitlementRow(table, "Seats")).toContainText("Unlimited");
-    await expect(this.entitlementRow(table, "Members can invite")).toContainText("Allowed");
+    const table = this.page.getByRole("table", { name: "Limits" });
+    await expect(this.limitRow(table, "Seats")).toContainText("Unlimited");
+    await expect(this.limitRow(table, "Members can invite")).toContainText("Allowed");
     await expectAccessible(this.page);
+  }
+
+  /** The Usage page is read-only for customers: no override affordance anywhere on it. */
+  async expectUsageReadOnly(): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    await expect(this.page.getByRole("button", { name: /Override/u })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectNoOperatorNav(): Promise<void> {
+    await this.openOrganizationSection("Projects");
+    await expect(this.page.getByRole("navigation", { name: "Instance" })).toHaveCount(0);
+    await expect(this.page.getByRole("link", { name: "Operator", exact: true })).toHaveCount(0);
+  }
+
+  /** A non-operator reaching the operator route is refused server-side, not merely un-navigated to. */
+  async expectOperatorRouteRefused(): Promise<void> {
+    await this.page.goto(`${this.origin}/operator`);
+    await expect(this.page.getByText("You don't have operator access.")).toBeVisible();
+  }
+
+  async openOperatorConsole(): Promise<void> {
+    await this.page
+      .getByRole("navigation", { name: "Instance" })
+      .getByRole("link", { name: "Operator" })
+      .click();
+    await expect(
+      this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
+    ).toBeVisible();
+  }
+
+  private limitRow(table: Locator, resource: string): Locator {
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: resource, exact: true }) });
   }
 
   private entitlementRow(table: Locator, entitlement: string): Locator {
@@ -3332,8 +3398,16 @@ class HubUser {
       .filter({ has: this.page.getByRole("cell", { name: entitlement, exact: true }) });
   }
 
-  async openSeatOverrideEditor(input: { max: number; reason: string }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+  /** Navigate to the operator console and select one organization, leaving its entitlements table
+   * loaded. Every operator override and audit read starts here. */
+  private async openOperatorFor(org: string): Promise<void> {
+    await this.openOperatorConsole();
+    await this.chooseOption(this.page.getByRole("combobox", { name: "Manage organization" }), org);
+    await expect(this.page.getByRole("table", { name: "Entitlements" })).toBeVisible();
+  }
+
+  async openSeatOverrideEditor(input: { org: string; max: number; reason: string }): Promise<void> {
+    await this.openOperatorFor(input.org);
     const table = this.page.getByRole("table", { name: "Entitlements" });
     await this.entitlementRow(table, "Seats")
       .getByRole("button", { name: "Override seat limit" })
@@ -3353,8 +3427,12 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
-  async openMeterOverrideEditor(input: { limit: number; reason: string }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+  async openMeterOverrideEditor(input: {
+    org: string;
+    limit: number;
+    reason: string;
+  }): Promise<void> {
+    await this.openOperatorFor(input.org);
     const table = this.page.getByRole("table", { name: "Entitlements" });
     await this.entitlementRow(table, "Executions this month")
       .getByRole("button", { name: "Override executions this month" })
@@ -3377,9 +3455,9 @@ class HubUser {
   }
 
   async expectMeterUsage(expected: { used: number; limit: number }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
-    const table = this.page.getByRole("table", { name: "Entitlements" });
-    await expect(this.entitlementRow(table, "Executions this month")).toContainText(
+    await this.openOrganizationSection("Usage");
+    const table = this.page.getByRole("table", { name: "Limits" });
+    await expect(this.limitRow(table, "Executions this month")).toContainText(
       `${expected.used}/${expected.limit}`,
     );
   }
@@ -3396,12 +3474,16 @@ class HubUser {
     const alert = this.page.getByRole("alert");
     await expect(alert).toContainText("Seat limit reached");
     await expect(alert).toContainText(`${expected.current} of ${expected.limit} seats`);
-    await expect(alert).toContainText("Entitlements page");
+    await expect(alert).toContainText("Usage page");
     await expect(this.invitationRow(email)).toHaveCount(0);
   }
 
-  async expectEntitlementsAudit(expected: { actor: string; reason: string }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+  async expectEntitlementsAudit(expected: {
+    org: string;
+    actor: string;
+    reason: string;
+  }): Promise<void> {
+    await this.openOperatorFor(expected.org);
     const auditRow = this.page
       .getByRole("table", { name: "Audit trail" })
       .getByRole("row")
@@ -3487,32 +3569,34 @@ class HubUser {
   }
 
   /**
-   * The over-limit banner a downgrade leaves behind. Reload so the entitlements page re-reads the
-   * plan the webhook just stamped — a server-side stamp does not invalidate the client query.
+   * The over-limit banner a downgrade leaves behind. It lives on the customer Usage page (not
+   * Billing), so it renders self-hosted too. Reload so the page re-reads the plan the webhook just
+   * stamped — a server-side stamp does not invalidate the client query.
    */
   async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+    await this.openOrganizationSection("Usage");
     await this.page.reload();
-    const banner = this.page.getByRole("alert", { name: "Over plan limit" });
+    const banner = this.page.getByRole("alert", { name: "Over limit" });
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(`You have ${expected.used} seats in use`);
-    await expect(banner).toContainText(`your current plan includes ${expected.limit}`);
+    await expect(banner).toContainText(`your limit is ${expected.limit}`);
     await expectAccessible(this.page);
   }
 
   async expectNoOverLimitBanner(): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+    await this.openOrganizationSection("Usage");
     await this.page.reload();
-    await expect(this.page.getByRole("alert", { name: "Over plan limit" })).toHaveCount(0);
+    await expect(this.page.getByRole("alert", { name: "Over limit" })).toHaveCount(0);
   }
 
-  /** Assert the granted / override / effective cells of one entitlement row after a re-stamp. */
+  /** Assert the granted / override / effective cells of one entitlement row after a re-stamp — on
+   * the operator page, the only surface that shows the granted/override breakdown. */
   async expectEntitlementCells(
+    org: string,
     name: string,
     expected: { granted: string; override: string; effective: string },
   ): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
-    await this.page.reload();
+    await this.openOperatorFor(org);
     const cells = this.entitlementRow(
       this.page.getByRole("table", { name: "Entitlements" }),
       name,
@@ -3523,9 +3607,13 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
-  /** Reset the seat override back to the plan default from the override dialog. */
-  async clearSeatOverride(input: { reason: string; expectedEffective: string }): Promise<void> {
-    await this.openOrganizationSection("Entitlements");
+  /** Reset the seat override back to the plan default from the operator override dialog. */
+  async clearSeatOverride(input: {
+    org: string;
+    reason: string;
+    expectedEffective: string;
+  }): Promise<void> {
+    await this.openOperatorFor(input.org);
     const table = this.page.getByRole("table", { name: "Entitlements" });
     await this.entitlementRow(table, "Seats")
       .getByRole("button", { name: "Override seat limit" })
@@ -4119,7 +4207,7 @@ class HubUser {
   }
 
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements" | "Billing",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Usage" | "Billing",
   ): Promise<void> {
     const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
     if (await mobileSidebar.isVisible().catch(() => false)) {

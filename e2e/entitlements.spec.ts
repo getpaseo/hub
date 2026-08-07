@@ -19,42 +19,46 @@ const SLICE_1_DIR = "e2e/screenshots/slice-1";
 const SLICE_2_DIR = "e2e/screenshots/slice-2";
 const SLICE_3_DIR = "e2e/screenshots/slice-3";
 
-test("shows the unlimited default entitlements for a newly provisioned organization", async ({
-  hub,
-  page,
-}) => {
+test("a normal owner sees read-only usage and no operator surface", async ({ hub, page }) => {
   await test.step("sign up and land in a new organization", async () => {
     await hub.signUpAs("owner", owner);
     await hub.createOrganization("owner", "Acme");
+    await page.screenshot({ path: `${SLICE_1_DIR}/01-new-organization.png`, fullPage: true });
+  });
+
+  await test.step("the usage page shows the unlimited defaults, read-only", async () => {
+    await hub.expectUsageUnlimitedDefaults("owner");
+    await hub.expectUsageReadOnly("owner");
     await page.screenshot({
-      path: `${SLICE_1_DIR}/01-new-organization.png`,
+      path: `${SLICE_1_DIR}/02-usage-unlimited-defaults.png`,
       fullPage: true,
     });
   });
 
-  await test.step("open the entitlements page and see the unlimited defaults", async () => {
-    await hub.expectEntitlements("owner");
-    await page.screenshot({
-      path: `${SLICE_1_DIR}/02-entitlements-unlimited-defaults.png`,
-      fullPage: true,
-    });
+  await test.step("there is no operator nav, and the operator route refuses server-side", async () => {
+    await hub.expectNoOperatorNav("owner");
+    await hub.expectOperatorRouteRefused("owner");
+    await page.screenshot({ path: `${SLICE_1_DIR}/03-operator-refused.png`, fullPage: true });
   });
 });
 
-test("an owner caps seats, a blocked invite explains itself, and the audit trail records who and why", async ({
+test("an operator caps seats, a blocked invite explains itself, and the audit trail records who and why", async ({
   hub,
   page,
 }) => {
   const reason = "Founding-team seat cap for the private beta";
 
-  await test.step("sign up and create an organization", async () => {
+  await test.step("sign up, create an organization, and become an operator", async () => {
     await hub.signUpAs("owner", owner);
     await hub.createOrganization("owner", "Acme");
+    await hub.grantOperator("owner");
+    await hub.openOperatorConsole("owner");
+    await page.screenshot({ path: `${SLICE_2_DIR}/01-operator-console.png`, fullPage: true });
   });
 
-  await test.step("cap seats at 2 with a required reason", async () => {
-    await hub.openSeatOverrideEditor("owner", { max: 2, reason });
-    await page.screenshot({ path: `${SLICE_2_DIR}/01-override-editor.png`, fullPage: true });
+  await test.step("cap seats at 2 from the operator console with a required reason", async () => {
+    await hub.openSeatOverrideEditor("owner", { org: "Acme", max: 2, reason });
+    await page.screenshot({ path: `${SLICE_2_DIR}/02-override-editor.png`, fullPage: true });
     await hub.saveSeatOverride("owner", 2);
   });
 
@@ -64,12 +68,12 @@ test("an owner caps seats, a blocked invite explains itself, and the audit trail
 
   await test.step("a third invite is refused with a message that names the limit", async () => {
     await hub.expectInviteRefusedBySeatLimit("owner", thirdMember, { limit: 2, current: 2 });
-    await page.screenshot({ path: `${SLICE_2_DIR}/02-invite-refused.png`, fullPage: true });
+    await page.screenshot({ path: `${SLICE_2_DIR}/03-invite-refused.png`, fullPage: true });
   });
 
-  await test.step("the audit trail records who capped seats and why", async () => {
-    await hub.expectEntitlementsAudit("owner", { actor: owner.name, reason });
-    await page.screenshot({ path: `${SLICE_2_DIR}/03-audit-trail.png`, fullPage: true });
+  await test.step("the operator audit trail records who capped seats and why", async () => {
+    await hub.expectEntitlementsAudit("owner", { org: "Acme", actor: owner.name, reason });
+    await page.screenshot({ path: `${SLICE_2_DIR}/04-audit-trail.png`, fullPage: true });
   });
 });
 
@@ -83,16 +87,17 @@ test.describe("metered usage", () => {
     const reason = "Trial cap on monthly executions";
     const app = projectApp(page);
 
-    await test.step("sign up, create an organization, and register a daemon", async () => {
+    await test.step("sign up, create an organization, register a daemon, become an operator", async () => {
       await hub.signUpAs("owner", meterOwner);
       await hub.createOrganization("owner", "Acme");
       await hub.startDaemonRegistration("owner");
       const daemonId = await hub.approveDaemon("owner", "Slice Three Runner");
       await hub.setDaemonSlug(daemonId, "slice-three-runner");
+      await hub.grantOperator("owner");
     });
 
-    await test.step("cap executions this month at 1 with a required reason", async () => {
-      await hub.openMeterOverrideEditor("owner", { limit: 1, reason });
+    await test.step("cap executions this month at 1 from the operator console", async () => {
+      await hub.openMeterOverrideEditor("owner", { org: "Acme", limit: 1, reason });
       await page.screenshot({ path: `${SLICE_3_DIR}/01-override-editor.png`, fullPage: true });
       await hub.saveMeterOverride("owner", 1);
     });
@@ -176,7 +181,7 @@ test.describe("metered usage", () => {
       await page.screenshot({ path: `${SLICE_3_DIR}/02-execution-denied.png`, fullPage: true });
     });
 
-    await test.step("the entitlements page shows 1 of 1 executions used", async () => {
+    await test.step("the usage page shows 1 of 1 executions used", async () => {
       await hub.expectMeterUsage("owner", { used: 1, limit: 1 });
       await page.screenshot({ path: `${SLICE_3_DIR}/03-usage-shown.png`, fullPage: true });
     });

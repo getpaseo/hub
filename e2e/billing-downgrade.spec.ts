@@ -76,23 +76,25 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
   hub,
   page,
 }) => {
-  await test.step("put the organization on the solo plan", async () => {
+  await test.step("put the organization on the solo plan and become an operator", async () => {
     await hub.signUpAs("owner", overrideOwner);
     await hub.createOrganization("owner", "Globex");
     await hub.subscribeToPlan("owner", { plan: "Solo", interval: "Monthly" });
     await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", "Solo");
+    // Overrides are operator-only now; the owner is granted the flag to hand-set the deal.
+    await hub.grantOperator("owner");
   });
 
-  await test.step("hand-set a three-seat override on top of the plan", async () => {
-    await hub.openSeatOverrideEditor("owner", { max: 3, reason: seatReason });
+  await test.step("hand-set a three-seat override from the operator console", async () => {
+    await hub.openSeatOverrideEditor("owner", { org: "Globex", max: 3, reason: seatReason });
     await hub.saveSeatOverride("owner", 3);
-    await hub.expectEntitlementCells("owner", "Seats", {
+    await hub.expectEntitlementCells("owner", "Globex", "Seats", {
       granted: "Unlimited",
       override: "3",
       effective: "3",
     });
-    await hub.expectEntitlementCells("owner", "Executions this month", {
+    await hub.expectEntitlementCells("owner", "Globex", "Executions this month", {
       granted: "2000",
       override: "—",
       effective: "2000",
@@ -105,13 +107,13 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
     await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", "Team");
     // Seats: plan re-stamped to unlimited, but the hand-set override still wins.
-    await hub.expectEntitlementCells("owner", "Seats", {
+    await hub.expectEntitlementCells("owner", "Globex", "Seats", {
       granted: "Unlimited",
       override: "3",
       effective: "3",
     });
     // Executions: never overridden, so it re-stamps from Solo's 2000 to Team's unlimited.
-    await hub.expectEntitlementCells("owner", "Executions this month", {
+    await hub.expectEntitlementCells("owner", "Globex", "Executions this month", {
       granted: "Unlimited",
       override: "—",
       effective: "Unlimited",
@@ -120,13 +122,21 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
   });
 
   await test.step("clear the override: the team plan's unlimited seats take over, and the reset is audited", async () => {
-    await hub.clearSeatOverride("owner", { reason: clearReason, expectedEffective: "Unlimited" });
-    await hub.expectEntitlementCells("owner", "Seats", {
+    await hub.clearSeatOverride("owner", {
+      org: "Globex",
+      reason: clearReason,
+      expectedEffective: "Unlimited",
+    });
+    await hub.expectEntitlementCells("owner", "Globex", "Seats", {
       granted: "Unlimited",
       override: "—",
       effective: "Unlimited",
     });
-    await hub.expectEntitlementsAudit("owner", { actor: overrideOwner.name, reason: clearReason });
+    await hub.expectEntitlementsAudit("owner", {
+      org: "Globex",
+      actor: overrideOwner.name,
+      reason: clearReason,
+    });
     await page.screenshot({ path: `${DIR}/06-override-cleared.png`, fullPage: true });
   });
 });

@@ -268,12 +268,11 @@ function AppSidebar({
         )}
       </SidebarHeader>
       <SidebarContent>
-        {tenant === undefined ? null : (
-          <NavigationGroups
-            tenant={tenant}
-            canManageResources={account.capabilities.manageResources}
-          />
-        )}
+        <NavigationGroups
+          organizationSlug={tenant?.organization.slug ?? account.organization.slug}
+          projectSlug={tenant?.project?.slug}
+          canManageResources={account.capabilities.manageResources}
+        />
         {account.isInstanceOperator ? <InstanceNavigationGroup /> : null}
       </SidebarContent>
       <SidebarFooter>
@@ -345,16 +344,21 @@ function NavItem({
   );
 }
 
+// Rendered from the active account's organization when the route has no tenant of its own — the
+// instance-scoped operator page is under the shell but outside /o/, and the sidebar must still let
+// the operator get back to their organization's sections.
 function NavigationGroups({
-  tenant,
+  organizationSlug,
+  projectSlug,
   canManageResources,
 }: {
-  tenant: RouteTenant;
+  organizationSlug: string;
+  projectSlug: string | undefined;
   canManageResources: boolean;
 }) {
-  const organizationBase = `/o/${tenant.organization.slug}`;
+  const organizationBase = `/o/${organizationSlug}`;
   const projectBase =
-    tenant.project === null ? undefined : `${organizationBase}/projects/${tenant.project.slug}`;
+    projectSlug === undefined ? undefined : `${organizationBase}/projects/${projectSlug}`;
   // Billing is hosted-only: the entry appears solely when the instance is billing-configured, so
   // self-hosted deployments show no billing navigation at all (the route also 404s there).
   const loadBillingConfigured = useServerFn(billingConfigured);

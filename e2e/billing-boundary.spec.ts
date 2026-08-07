@@ -33,4 +33,12 @@ test("a self-hosted instance without STRIPE_SECRET_KEY has no billing surface", 
   await test.step("the billing webhook endpoint 404s", async () => {
     await hub.expectBillingWebhookUnavailable();
   });
+
+  await test.step("usage is still present and read-only without any billing surface", async () => {
+    // Limits, billing, and metrics are separate concerns: a self-hosted instance has no billing,
+    // yet a team still sees its own limits and usage. Usage never gates on STRIPE_SECRET_KEY.
+    await hub.expectUsageUnlimitedDefaults("owner");
+    await hub.expectUsageReadOnly("owner");
+    await page.screenshot({ path: `${SLICE_4_DIR}/03-usage-present.png`, fullPage: true });
+  });
 });
