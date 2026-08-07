@@ -224,10 +224,13 @@ export const createInvitation = createServerFn({ method: "POST" })
   });
 
 function invitationDenialMessage(denial: EntitlementDenialPayload): string {
+  // Neutral on remedy: raising a limit is the instance operator's job, not the org owner's, and
+  // this renders on self-hosted too where there is nothing to upgrade. The Usage page shows the
+  // limit and current use; who can change it depends on the deployment.
   if (denial.entitlement === "canInviteMembers") {
-    return "Inviting members isn't enabled for this organization. An organization owner can enable it on the Entitlements page.";
+    return "Inviting members isn't enabled for this organization. See the Usage page for its limits.";
   }
-  return `Seat limit reached — ${denial.current} of ${denial.limit} seats are in use. An organization owner can raise the limit on the Entitlements page before inviting more members.`;
+  return `Seat limit reached — ${denial.current} of ${denial.limit} seats are in use. See the Usage page for this organization's limits.`;
 }
 
 export const cancelInvitation = createServerFn({ method: "POST" })

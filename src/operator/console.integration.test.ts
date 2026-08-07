@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
+import { z } from "zod";
 import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { createDatabase } from "../db/pg.js";
@@ -73,10 +74,10 @@ describe("OperatorConsole authorization", () => {
     assert.equal(await hub.membershipCount(operator.email, customerSlug), 0);
 
     const organizations = await hub.console.listOrganizations(operator.request());
-    assert.deepEqual(
-      organizations.map((organization) => organization.name).sort(),
-      ["Ada Co", "Cyril Co"],
-    );
+    assert.deepEqual(organizations.map((organization) => organization.name).sort(), [
+      "Ada Co",
+      "Cyril Co",
+    ]);
 
     const before = await hub.console.snapshot(operator.request(), {
       organizationSlug: customerSlug,
@@ -207,14 +208,15 @@ class OperatorAccount {
   async createOrganization(name: string): Promise<string> {
     const response = await this.post("/api/auth/paseo/create-organization", { name });
     assert.equal(response.status, 201);
-    const body = (await response.json()) as { organizationId: string };
+    const body = z.object({ organizationId: z.string() }).parse(await response.json());
     const selected = await this.post("/api/auth/paseo/select-organization", {
       organizationId: body.organizationId,
     });
     assert.equal(selected.status, 200);
     const state = await this.get("/api/auth/paseo/state");
-    const parsed = (await state.json()) as { organization?: { slug: string } };
-    assert.ok(parsed.organization !== undefined);
+    const parsed = z
+      .object({ organization: z.object({ slug: z.string() }) })
+      .parse(await state.json());
     return parsed.organization.slug;
   }
 

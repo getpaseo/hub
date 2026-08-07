@@ -54,6 +54,36 @@ doesn't model — so it's exercised only through E2E, not unit tests.
 read-then-write: two statements race under load. Proven with 20 concurrent callers against a
 limit of 5 yielding exactly 5 successes, against real Postgres.
 
+## Surfaces
+
+Limits, billing, and usage are three separate concerns; three surfaces read and write
+entitlements, each gating on a different thing. Tying them together is the mistake this split
+exists to prevent — a self-hosted operator sets per-org limits with no Stripe anywhere, and those
+teams still see their own limits and usage.
+
+- **Usage** (`src/usage/`) — org-scoped, read-only, always present. Any member sees the
+  organization's effective limits, current usage against the meter, the over-limit banner, and the
+  change history. No billing gate, so it renders identically self-hosted and hosted. Resolves
+  through the organization's own membership.
+- **Operator** (`src/operator/`) — instance-scoped, gated on `user.is_instance_operator`. The only
+  surface that writes overrides: an operator picks any organization and sets or clears its limits
+  with a required reason. It is not a membership read — an operator acts on organizations it does
+  not belong to — so it has its own resolution (`Database.findOrganizationForOperator`) gated on
+  the flag rather than borrowing `resolveRouteTenant`. Authorization is server-side: `OperatorConsole`
+  refuses every read and write without the flag, independent of what the client sends. Hiding the
+  nav is only presentation.
+- **Billing** (`src/billing/`) — hosted only, plan and payment; it never shows or edits limits and
+  links to Usage. See docs/billing.md.
+
+### Granting operator
+
+The bootstrap owner (`PASEO_BOOTSTRAP_OWNER_EMAIL`) is the first operator. Every other operator is
+granted by one SQL statement — no UI, no env var, no invite flow:
+
+```sql
+update "user" set is_instance_operator = true where lower(email) = lower('someone@example.com');
+```
+
 ## Denials
 
 One error, `EntitlementDenied` (`src/entitlements/catalog.ts:213`), covers caps, meters, and

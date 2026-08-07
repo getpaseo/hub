@@ -126,11 +126,11 @@ repo's pinned `stripe@18.5.0` fine. Don't re-add it on the assumption this was a
 ## Downgrade and over-limit
 
 A downgrade stamps the lower template but deletes nothing to fit it — existing resources are
-grandfathered, only growth past the new cap is blocked. The over-limit banner and the
-`overages()` query behind it are core entitlements concerns
-(`EntitlementsService.overages`, `src/entitlements/service.ts:188`, rendered in
-`src/entitlements/panel.tsx`), not billing. Billing only triggers the re-stamp that can produce
-the over-limit state in the first place.
+grandfathered, only growth past the new cap is blocked. The over-limit banner lives on the
+customer Usage page (`src/usage/panel.tsx`), not billing, because limits are a core concern that
+renders self-hosted too — its copy names the limit and stays silent on remedies. Billing only
+triggers the re-stamp that can produce the over-limit state, and links to Usage; it never shows or
+edits limits. See docs/entitlements.md's Surfaces section.
 
 ## Testing
 
