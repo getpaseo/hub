@@ -12,9 +12,11 @@ import {
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createAuthServer } from "../../auth/server.js";
+import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
+import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -29,6 +31,13 @@ async function main(): Promise<void> {
   await client.query(
     `insert into organization (id, name, slug) values ($1, $2, $3) on conflict (id) do nothing`,
     [organizationId, "Hub E2E", organizationId],
+  );
+  await client.query(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ($1, $2::jsonb, '{}'::jsonb, null, $3, now(), now())
+     on conflict (organization_id) do nothing`,
+    [organizationId, JSON.stringify(UNLIMITED_TEMPLATE), hashTemplate(UNLIMITED_TEMPLATE)],
   );
   await client.query(
     `insert into "user" (id, name, email, email_verified)
@@ -57,8 +66,10 @@ async function main(): Promise<void> {
       await appendFile(outputFile, `${JSON.stringify(output)}\n`);
     },
   });
+  const entitlements = composeEntitlements(database, databaseUrl);
   const auth = createAuthServer({
     databaseUrl,
+    entitlements: entitlements.service,
     baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
     secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     policy: readInstanceAuthPolicy(),
@@ -126,6 +137,7 @@ async function main(): Promise<void> {
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,
+    entitlements: entitlements.service,
     publicApi:
       auth.apiKeys === undefined
         ? { status: "unavailable" }
@@ -187,7 +199,10 @@ async function main(): Promise<void> {
     operations: application.operations,
     publicApi: application.publicApi,
     resources,
+    billing: null,
     projectDashboard: null,
+    usageDashboard: null,
+    operatorConsole: null,
     testTriggerRoutes: true,
     auth: (request) => auth.handle(request),
     browserAccount: (request) => auth.browserAccount!(request),
@@ -200,10 +215,17 @@ async function main(): Promise<void> {
     connectionAction: () =>
       Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
     webhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    billingWebhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    billingPlans: () => Promise.resolve(null),
+    billingConfigured: () => false,
+    billingOverview: () => Promise.reject(new Error("billing is not configured")),
+    billingCheckout: () => Promise.reject(new Error("billing is not configured")),
+    billingPortal: () => Promise.reject(new Error("billing is not configured")),
     providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
     async stop() {
       await hub?.stop();
       await auth.close();
+      await entitlements.close();
     },
   }));
   const server = createFetchServer((request) => start.default.fetch(request));
@@ -219,6 +241,7 @@ async function main(): Promise<void> {
     );
     await attempt(() => hub?.stop(), failures);
     await attempt(() => auth.close(), failures);
+    await attempt(() => entitlements.close(), failures);
     if ("closeIdleConnections" in server) server.closeIdleConnections();
     if ("closeAllConnections" in server) server.closeAllConnections();
     await attempt(() => listenerClosed, failures);

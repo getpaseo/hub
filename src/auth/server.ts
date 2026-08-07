@@ -24,6 +24,11 @@ import {
   type OrganizationAccessValue,
 } from "./organization-access.js";
 import { paseoOrganizationPlugin } from "./organization-policy.js";
+import type { EntitlementsService } from "../entitlements/service.js";
+import {
+  UNLIMITED_PROVISIONING,
+  type ProvisioningEntitlementResolver,
+} from "../organizations/provisioning.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -53,10 +58,18 @@ export interface AuthServer {
 
 interface AuthServerOptions {
   databaseUrl: string;
+  /** Owned by the composition root, injected here — auth consumes entitlements, never owns them. */
+  entitlements: EntitlementsService;
   secret: string;
   baseURL: string;
   policy?: InstanceAuthPolicy;
   trustedClientIpHeader?: string;
+  /** How a new organization is provisioned. Defaults to unlimited (self-hosted); the composition
+   * root passes a billing-backed resolver when Stripe is configured. */
+  provisioningEntitlements?: ProvisioningEntitlementResolver;
+  /** Post-commit hook fired when a membership change alters an organization's seat count. The
+   * composition root wires billing's seat-quantity reporter here; undefined self-hosted. */
+  onMembershipChanged?: (organizationId: string) => Promise<void>;
 }
 
 const sessionSchema = z.object({
@@ -73,6 +86,7 @@ const sessionSchema = z.object({
       name: z.string(),
       email: z.string(),
       mustChangePassword: z.boolean().optional(),
+      isInstanceOperator: z.boolean().optional(),
     })
     .passthrough(),
 });
@@ -89,6 +103,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const pool = createPostgresPool(options.databaseUrl);
   const database = drizzle(pool, { schema });
   const policy = options.policy ?? defaultInstanceAuthPolicy();
+  const provisioningEntitlements =
+    options.provisioningEntitlements ?? (() => Promise.resolve(UNLIMITED_PROVISIONING));
   const apiKeys = new OrganizationApiKeys(pool);
   const registration = new RegistrationAdmission(pool, policy);
   const authSchema = {
@@ -122,6 +138,15 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           input: false,
           returned: true,
         },
+        // The instance operator flag: read into the session so cross-org operator authorization
+        // resolves from it. Granted only by bootstrap or SQL — never client input — so `input:
+        // false` keeps it off every sign-up/update body. Threaded exactly like mustChangePassword.
+        isInstanceOperator: {
+          type: "boolean",
+          defaultValue: false,
+          input: false,
+          returned: true,
+        },
       },
     },
     plugins: [paseoOrganizationPlugin(), tanstackStartCookies()],
@@ -138,6 +163,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         email: parsed.data.user.email,
         activeOrganizationId: parsed.data.session.activeOrganizationId ?? null,
         mustChangePassword: parsed.data.user.mustChangePassword ?? false,
+        isInstanceOperator: parsed.data.user.isInstanceOperator ?? false,
       };
     },
   };
@@ -147,6 +173,11 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     baseURL: options.baseURL,
     policy,
     apiKeys,
+    entitlements: options.entitlements,
+    provisioningEntitlements,
+    ...(options.onMembershipChanged === undefined
+      ? {}
+      : { onMembershipChanged: options.onMembershipChanged }),
   });
   const browserOrigin = new URL(options.baseURL).origin;
 
@@ -219,7 +250,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     resolveOrganizationAccess: (request) => access.resolve(request),
     resolveAccount: (request) => access.account(request),
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
-    initialize: () => bootstrapInstance(pool, policy),
+    initialize: () => bootstrapInstance(pool, policy, provisioningEntitlements),
     apiKeys,
     close: () => pool.end(),
   };

@@ -11,6 +11,7 @@ import {
 } from "./organization-contract.js";
 import { PASSWORD_MIN_LENGTH } from "./instance-policy.js";
 import { API_KEY_SCOPES, apiKeyScopeSchema } from "./api-key-contract.js";
+import { parseEntitlementDenial, type EntitlementDenialPayload } from "../entitlements/denial.js";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -214,9 +215,23 @@ export const createInvitation = createServerFn({ method: "POST" })
     }
     if (response.status === 401) return respondOk({ state: "sessionExpired" });
     if (response.status === 403) return respondOk({ state: "organizationRequired" });
+    if (response.status === 409) {
+      const denial = parseEntitlementDenial(await response.json().catch(() => undefined));
+      if (denial !== undefined) return respondError({ message: invitationDenialMessage(denial) });
+    }
     if (!response.ok) return respondError({ message: "We couldn't create that invitation." });
     return respondOk({ state: "complete" });
   });
+
+function invitationDenialMessage(denial: EntitlementDenialPayload): string {
+  // Neutral on remedy: raising a limit is the instance operator's job, not the org owner's, and
+  // this renders on self-hosted too where there is nothing to upgrade. The Usage page shows the
+  // limit and current use; who can change it depends on the deployment.
+  if (denial.entitlement === "canInviteMembers") {
+    return "Inviting members isn't enabled for this organization. See the Usage page for its limits.";
+  }
+  return `Seat limit reached — ${denial.current} of ${denial.limit} seats are in use. See the Usage page for this organization's limits.`;
+}
 
 export const cancelInvitation = createServerFn({ method: "POST" })
   .validator(invitationIdSchema)

@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
+import { z } from "zod";
 import {
   PaseoHub,
   setBuiltApplicationMachineKey,
@@ -17,12 +18,22 @@ import { createDatabase } from "../src/db/pg.js";
 import { SourcePaseo } from "./helpers/source-paseo.js";
 import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../src/e2e/harness/browser-providers.js";
+import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.js";
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
+
+const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
 
 let primaryApplication: BuiltApplication | undefined;
 
-export const test = base.extend<{ hub: PaseoHub; projectExternal: ProjectExternalFacts }>({
-  hub: async ({ browser, browserName, page, context }, provide, testInfo) => {
+export const test = base.extend<{
+  hub: PaseoHub;
+  projectExternal: ProjectExternalFacts;
+  billing: boolean;
+}>({
+  // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
+  // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
+  billing: [false, { option: true }],
+  hub: async ({ browser, browserName, page, context, billing }, provide, testInfo) => {
     if (browserName !== "chromium") {
       throw new Error(`unsupported Phase 0 browser: ${browserName}`);
     }
@@ -37,6 +48,7 @@ export const test = base.extend<{ hub: PaseoHub; projectExternal: ProjectExterna
       });
       const primary = await applications.start({
         databaseProfile: "fresh",
+        billing,
       });
       primaryApplication = primary;
       await provide(
@@ -103,6 +115,17 @@ class BuiltApplications {
         commitSha: string;
         rawYaml?: string;
       }) => deliverCommand(server, { type: "github-configuration", ...input }),
+      setBillingProduct: (product: FixtureBillingProduct) =>
+        deliverCommand(server, { type: "billing-product", product }),
+      cancelSubscription: (organizationId: string) =>
+        deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
+      reportedSeatQuantity: async (organizationId: string) => {
+        const data = await deliverCommandForData(server, {
+          type: "billing-inspect",
+          organizationId,
+        });
+        return billingInspectSchema.parse(data).reportedSeatQuantity;
+      },
     };
     this.running.push(application);
     await serverReady(server, origin, output);
@@ -152,6 +175,7 @@ interface ApplicationEnvironmentInput {
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
+  billing?: BuiltApplicationOptions["billing"];
 }
 
 function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.ProcessEnv {
@@ -174,6 +198,8 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     PASEO_E2E_MACHINE_KEY_FILE: input.machineKeyFile,
     PASEO_E2E_DATABASE_PROFILE: input.databaseProfile ?? "legacy",
     GITHUB_WEBHOOK_SECRET: "phase-zero-webhook-secret",
+    STRIPE_WEBHOOK_SECRET: "whsec_phase_zero_fixture_secret",
+    PASEO_BROWSER_BILLING_SCENARIO: input.billing === true ? "configured" : "unconfigured",
     PASEO_BROWSER_PROVIDER_SCENARIO:
       input.providerScenario ??
       (input.providerConnections === false
@@ -199,20 +225,28 @@ async function deliverCommand(
   server: ChildProcess,
   command: Record<string, unknown>,
 ): Promise<void> {
+  await deliverCommandForData(server, command);
+}
+
+/** Like `deliverCommand`, but resolves with the reply's `data` payload for inspection commands. */
+async function deliverCommandForData(
+  server: ChildProcess,
+  command: Record<string, unknown>,
+): Promise<unknown> {
   const id = randomUUID();
-  const result = new Promise<void>((resolve, reject) => {
+  const result = new Promise<unknown>((resolve, reject) => {
     const receive = (message: unknown) => {
       if (typeof message !== "object" || message === null || Reflect.get(message, "id") !== id) {
         return;
       }
       server.off("message", receive);
-      if (Reflect.get(message, "ok") === true) resolve();
+      if (Reflect.get(message, "ok") === true) resolve(Reflect.get(message, "data"));
       else reject(new Error(String(Reflect.get(message, "error"))));
     };
     server.on("message", receive);
   });
   server.send({ id, ...command });
-  await result;
+  return result;
 }
 
 async function prepareDatabase(
@@ -227,6 +261,16 @@ async function prepareDatabase(
   await client.query(
     `insert into organization (id, name, slug)
      values ('phase-zero', 'Phase Zero', 'phase-zero')`,
+  );
+  // A faithful legacy organization: it predates the meters field, so its granted document has
+  // the exact shape migration 0025 backfilled. Enforcement reads it on every provider event
+  // through the versioned normalization boundary, so the built server exercises that upgrade
+  // path end to end — without a row here, metering would throw and manual runs would 500.
+  await client.query(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ('phase-zero', '{"seats":{"max":null},"canInviteMembers":true}'::jsonb,
+             '{}'::jsonb, null, null, now(), now())`,
   );
   await client.query(
     `insert into "user" (id, name, email, email_verified)

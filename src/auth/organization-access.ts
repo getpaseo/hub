@@ -23,7 +23,13 @@ import {
   parseOrganizationRole,
 } from "./organization-policy.js";
 import { invitationLockName } from "./registration-admission.js";
-import { provisionOrganization } from "../organizations/provisioning.js";
+import {
+  provisionOrganization,
+  type ProvisioningEntitlementResolver,
+} from "../organizations/provisioning.js";
+import { EntitlementDenied } from "../entitlements/catalog.js";
+import { entitlementDenialResponse } from "../entitlements/denial.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 
 const INVITATION_LIFETIME_HOURS = 48;
 
@@ -34,6 +40,7 @@ export interface AccountSession {
   email: string;
   activeOrganizationId: string | null;
   mustChangePassword: boolean;
+  isInstanceOperator: boolean;
 }
 
 export interface OrganizationAccessValue {
@@ -60,6 +67,9 @@ export interface OrganizationAccessValue {
 export interface AccountAccessValue {
   session: { id: string; activeOrganizationId: string | null };
   account: { id: string; name: string; email: string };
+  /** The instance-operator flag, carried from the session. The operator surface authorizes on
+   * this alone — it is never a membership read. Presentation gates the operator nav on it too. */
+  isInstanceOperator: boolean;
 }
 
 export interface AccountSessionReader {
@@ -72,6 +82,14 @@ interface OrganizationAccessOptions {
   baseURL: string;
   policy: InstanceAuthPolicy;
   apiKeys: OrganizationApiKeys;
+  entitlements: EntitlementsService;
+  /** What a newly created organization is stamped with — unlimited self-hosted, the Free plan
+   * on a billing-configured instance. Resolved per creation so a later Free-plan sync is seen. */
+  provisioningEntitlements: ProvisioningEntitlementResolver;
+  /** Post-commit hook fired when an organization's seat count may have changed (invite, cancel,
+   * accept, remove). The composition root wires billing's seat-quantity reporter here; undefined
+   * self-hosted. Never blocks or fails the member action. */
+  onMembershipChanged?: (organizationId: string) => Promise<void>;
 }
 
 interface MembershipRow extends QueryResultRow {
@@ -157,6 +175,7 @@ export class OrganizationAccess {
       return notFound();
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
+      if (error instanceof EntitlementDenied) return entitlementDenialResponse(error.payload());
       logger.error({ err: error }, "account organization request failed");
       return Response.json({ error: "request_failed" }, { status: 500 });
     }
@@ -170,6 +189,7 @@ export class OrganizationAccess {
         activeOrganizationId: session.activeOrganizationId,
       },
       account: { id: session.userId, name: session.name, email: session.email },
+      isInstanceOperator: session.isInstanceOperator,
     };
   }
 
@@ -237,6 +257,9 @@ export class OrganizationAccess {
       organization: access.organization,
       membership: access.membership,
       capabilities: access.capabilities,
+      // Presentation only — it decides whether the operator nav renders. Every operator read and
+      // write re-checks the flag server-side, so a forged value here buys nothing.
+      isInstanceOperator: resolvedSession.isInstanceOperator,
       canCreateOrganization: this.options.policy.organizationCreation === "open",
       team,
       ...(invitation === undefined ? {} : { invitation: invitationSummary(invitation) }),
@@ -251,12 +274,19 @@ export class OrganizationAccess {
     }
     const input = await parseBody(request, createOrganizationBody);
     const id = randomUUID();
+    // Resolve the provisioning entitlement before opening the transaction — on a hosted instance
+    // this reads the Free plan from the catalog mirror, which must not run inside the org insert.
+    const entitlement = await this.options.provisioningEntitlements();
     const organization = await transaction(this.options.pool, async (client) => {
-      const created = await provisionOrganization(client, {
-        organizationId: id,
-        name: input.name,
-        ownerUserId: session.userId,
-      });
+      const created = await provisionOrganization(
+        client,
+        {
+          organizationId: id,
+          name: input.name,
+          ownerUserId: session.userId,
+        },
+        entitlement,
+      );
       await activateSession(client, session, id);
       return created;
     });
@@ -389,6 +419,22 @@ export class OrganizationAccess {
          where organization_id = $1 and status = 'pending' and expires_at <= now()`,
         [access.organization.id],
       );
+      const alreadyPending = await client.query<InvitationRow>(
+        `select id, organization_id, '' as organization_name, '' as inviter_name,
+                email, role, expires_at
+         from invitation
+         where organization_id = $1 and lower(email) = $2 and status = 'pending'
+           and expires_at > now()`,
+        [access.organization.id, email],
+      );
+      const pendingReinvite = alreadyPending.rows[0];
+      if (pendingReinvite !== undefined) return pendingReinvite;
+      // A genuinely new invitee reserves a seat, so the organization must both be allowed to
+      // invite at all and have a free seat. Both checks run under the membership advisory lock
+      // held by this transaction, so a burst of concurrent invites is serialized against one
+      // another. Re-inviting an existing member or pending invitee (handled above) is exempt.
+      await this.options.entitlements.requireFlag(access.organization.id, "canInviteMembers");
+      await this.options.entitlements.requireHeadroom(access.organization.id, "seats");
       const inserted = await client.query<InvitationRow>(
         `insert into invitation
           (id, organization_id, email, role, status, expires_at, inviter_id, created_at)
@@ -419,6 +465,7 @@ export class OrganizationAccess {
       if (pending === undefined) throw new Error("pending invitation conflict returned no row");
       return pending;
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json(managerInvitationSummary(invitation, this.options.baseURL), {
       status: 201,
     });
@@ -446,6 +493,7 @@ export class OrganizationAccess {
       );
       if (result.rowCount !== 1) throw new ProductRequestError(404, "invitation_unavailable");
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json({ canceled: true });
   }
 
@@ -498,6 +546,7 @@ export class OrganizationAccess {
       await activateSession(client, session, invitation.organization_id);
       return invitation.organization_id;
     });
+    await this.notifyMembershipChanged(organizationId);
     return Response.json({ organizationId });
   }
 
@@ -547,7 +596,24 @@ export class OrganizationAccess {
         [target.user_id, access.organization.id],
       );
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json({ removed: true });
+  }
+
+  /**
+   * Post-commit: the organization's seat count may have changed, so billing re-reports it to
+   * Stripe. Awaited so a test sees the report immediately, but wrapped — a reporting failure must
+   * never fail the member action, and the subscription-webhook reconcile re-reports as a backstop.
+   */
+  private async notifyMembershipChanged(organizationId: string): Promise<void> {
+    try {
+      await this.options.onMembershipChanged?.(organizationId);
+    } catch (error) {
+      logger.warn(
+        { err: error, organizationId },
+        "seat-usage notification after membership change failed",
+      );
+    }
   }
 
   private async requireSession(request: Request): Promise<AccountSession> {
@@ -821,6 +887,25 @@ async function currentActorRole(
   const role = parseOrganizationRole(result.rows[0]?.role ?? "");
   if (role === undefined) throw new ProductRequestError(403, "organization_required");
   return role;
+}
+
+/**
+ * Seats in use = current members plus outstanding pending invitations. A pending invite
+ * reserves a seat so a burst of invitations can't overshoot the cap once they're accepted.
+ * This is the seats counter wired into `EntitlementsService` at composition.
+ */
+export async function countOrganizationSeatUsage(
+  pool: Pool,
+  organizationId: string,
+): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `select
+       (select count(*) from member where organization_id = $1)
+       + (select count(*) from invitation
+          where organization_id = $1 and status = 'pending' and expires_at > now()) as count`,
+    [organizationId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 async function lockOrganizationMembers(client: PoolClient, organizationId: string): Promise<void> {

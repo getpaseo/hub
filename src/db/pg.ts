@@ -8,6 +8,11 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
 import { slugify } from "../slug.js";
+import {
+  clearOverrideKey,
+  entitlementOverridesSchema,
+  mergeOverrides,
+} from "../entitlements/catalog.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
@@ -87,6 +92,20 @@ import type {
   WorkflowDeadlineRecovery,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
+  OrganizationEntitlementsRecord,
+  OperatorOrganizationRecord,
+  StampOrganizationEntitlementsInput,
+  OverrideOrganizationEntitlementsInput,
+  ClearOrganizationEntitlementsOverrideInput,
+  EntitlementChangeRecord,
+  EntitlementChangeSource,
+  OrganizationUsageRecord,
+  ConsumeOrganizationUsageInput,
+  BillingPlanRecord,
+  BillingPlanPriceRecord,
+  SyncBillingPlanInput,
+  OrganizationSubscriptionRecord,
+  ReconcileOrganizationSubscriptionInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -755,6 +774,43 @@ class PgDatabase implements Database {
         idleDeadlineAt,
         workflowStepRunId: step.id,
       });
+      // Reserve one meter unit in the same transaction that creates the execution. If the
+      // reservation is denied the whole transaction rolls back, so no execution is created and
+      // nothing is dispatched — metering is atomic with the work it permits.
+      if (input.reservation !== undefined) {
+        const reserved = await reserveOrganizationUsageOnClient(client, {
+          organizationId: input.execution.organizationId,
+          meter: input.reservation.meter,
+          periodStart: input.reservation.periodStart,
+          amount: 1,
+          limit: input.reservation.limit,
+        });
+        if (reserved === undefined) {
+          if (input.reservation.limit === null) {
+            throw new Error("unreachable: an unlimited meter reservation cannot be denied");
+          }
+          const usage = await client.query<OrganizationUsageRow>(
+            `select used from organization_usage
+             where organization_id = $1 and meter = $2 and period_start = $3`,
+            [
+              input.execution.organizationId,
+              input.reservation.meter,
+              input.reservation.periodStart,
+            ],
+          );
+          await client.query("rollback");
+          return {
+            stepRun: toWorkflowStepRunRecord(step),
+            execution: undefined,
+            created: false,
+            reservationDenied: {
+              meter: input.reservation.meter,
+              limit: input.reservation.limit,
+              current: Number(usage.rows[0]?.used ?? 0),
+            },
+          };
+        }
+      }
       const updated = await client.query<WorkflowStepRunRow>(
         `update workflow_step_runs
          set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3),
@@ -2423,6 +2479,359 @@ class PgDatabase implements Database {
     return toProjectRecord(project);
   }
 
+  async getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined> {
+    const rows = await query<OrganizationEntitlementsRow>(
+      this.pool,
+      `select * from organization_entitlements where organization_id = $1 limit 1`,
+      [organizationId],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationEntitlementsRecord(rows.rows[0]);
+  }
+
+  async stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const record = await stampEntitlementsWithinTransaction(client, input);
+      await client.query("commit");
+      return record;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query<OrganizationEntitlementsRow>(
+        `select * from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId],
+      );
+      const before = existing.rows[0];
+      if (before === undefined) {
+        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+      }
+      // Merge the patch against the row we hold locked, so a concurrent override serializes
+      // behind this one instead of reading a stale base and clobbering its keys.
+      const overrides = mergeOverrides(
+        entitlementOverridesSchema.parse(before.overrides),
+        input.patch,
+      );
+      const updated = await client.query<OrganizationEntitlementsRow>(
+        `update organization_entitlements
+           set overrides = $2::jsonb, updated_at = now()
+         where organization_id = $1
+         returning *`,
+        [input.organizationId, JSON.stringify(overrides)],
+      );
+      const after = updated.rows[0];
+      if (after === undefined) throw new Error("entitlements override returned no row");
+      await client.query(
+        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+         values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
+        [
+          input.organizationId,
+          input.actor,
+          JSON.stringify(entitlementSnapshot(before)),
+          JSON.stringify(entitlementSnapshot(after)),
+          input.reason,
+        ],
+      );
+      await client.query("commit");
+      return toOrganizationEntitlementsRecord(after);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query<OrganizationEntitlementsRow>(
+        `select * from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId],
+      );
+      const before = existing.rows[0];
+      if (before === undefined) {
+        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+      }
+      // Remove the key from the row we hold locked, the same lock the merge takes, so a clear and
+      // a concurrent override serialize instead of racing on a stale base.
+      const overrides = clearOverrideKey(
+        entitlementOverridesSchema.parse(before.overrides),
+        input.key,
+      );
+      const updated = await client.query<OrganizationEntitlementsRow>(
+        `update organization_entitlements
+           set overrides = $2::jsonb, updated_at = now()
+         where organization_id = $1
+         returning *`,
+        [input.organizationId, JSON.stringify(overrides)],
+      );
+      const after = updated.rows[0];
+      if (after === undefined) throw new Error("entitlements override clear returned no row");
+      await client.query(
+        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+         values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
+        [
+          input.organizationId,
+          input.actor,
+          JSON.stringify(entitlementSnapshot(before)),
+          JSON.stringify(entitlementSnapshot(after)),
+          input.reason,
+        ],
+      );
+      await client.query("commit");
+      return toOrganizationEntitlementsRecord(after);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async listEntitlementChanges(
+    organizationId: string,
+    limit: number,
+  ): Promise<EntitlementChangeRecord[]> {
+    const rows = await query<EntitlementChangeRow>(
+      this.pool,
+      `select change.id, change.organization_id, change.actor, actor_user.name as actor_name,
+              change.source, change.before, change.after, change.reason, change.created_at
+       from entitlement_changes change
+       left join "user" actor_user on actor_user.id = change.actor
+       where change.organization_id = $1
+       order by change.created_at desc, change.id desc
+       limit $2`,
+      [organizationId, limit],
+    );
+    return rows.rows.map(toEntitlementChangeRecord);
+  }
+
+  async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
+    const rows = await query<OperatorOrganizationRow>(
+      this.pool,
+      `select id, name, slug from organization order by lower(name), id`,
+    );
+    return rows.rows.map(toOperatorOrganizationRecord);
+  }
+
+  async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
+    const rows = await query<OperatorOrganizationRow>(
+      this.pool,
+      `select id, name, slug from organization where slug = $1 limit 1`,
+      [slug],
+    );
+    return rows.rows[0] === undefined ? undefined : toOperatorOrganizationRecord(rows.rows[0]);
+  }
+
+  async consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    return reserveOrganizationUsageOnClient(this.pool, input);
+  }
+
+  async getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    const rows = await query<OrganizationUsageRow>(
+      this.pool,
+      `select * from organization_usage
+       where organization_id = $1 and meter = $2 and period_start = $3
+       limit 1`,
+      [organizationId, meter, periodStart],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
+  }
+
+  async syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const planRow = await client.query<BillingPlanRow>(
+        `insert into billing_plans (id, slug, name, template, template_hash, marketing, active, synced_at)
+         values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, now())
+         on conflict (id) do update
+           set slug = excluded.slug,
+               name = excluded.name,
+               template = excluded.template,
+               template_hash = excluded.template_hash,
+               marketing = excluded.marketing,
+               active = excluded.active,
+               synced_at = now()
+         returning *`,
+        [
+          input.id,
+          input.slug,
+          input.name,
+          JSON.stringify(input.template),
+          input.templateHash,
+          JSON.stringify(input.marketing),
+          input.active,
+        ],
+      );
+      const plan = planRow.rows[0];
+      if (plan === undefined) throw new Error("billing plan sync returned no row");
+      // Prices are replaced wholesale rather than diffed: the catalog is small and this runs
+      // only on boot or a product/price webhook, so a delete-and-reinsert is simple and correct.
+      await client.query(`delete from billing_plan_prices where plan_id = $1`, [input.id]);
+      const prices: BillingPlanPriceRow[] = [];
+      for (const price of input.prices) {
+        const priceRow = await client.query<BillingPlanPriceRow>(
+          `insert into billing_plan_prices (id, plan_id, lookup_key, interval, unit_amount, currency, active)
+           values ($1, $2, $3, $4, $5, $6, $7)
+           returning *`,
+          [
+            price.id,
+            input.id,
+            price.lookupKey,
+            price.interval,
+            price.unitAmount,
+            price.currency,
+            price.active,
+          ],
+        );
+        const insertedPrice = priceRow.rows[0];
+        if (insertedPrice === undefined)
+          throw new Error("billing plan price insert returned no row");
+        prices.push(insertedPrice);
+      }
+      await client.query("commit");
+      return toBillingPlanRecord(plan, prices);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void> {
+    // An empty snapshot means no Paseo plans remain, so every mirrored plan is deactivated.
+    await query(
+      this.pool,
+      `update billing_plans set active = false where id <> all($1::text[]) and active`,
+      [activeIds],
+    );
+  }
+
+  async listBillingPlans(): Promise<BillingPlanRecord[]> {
+    const plans = await query<BillingPlanRow>(
+      this.pool,
+      `select * from billing_plans order by name`,
+      [],
+    );
+    const prices = await query<BillingPlanPriceRow>(
+      this.pool,
+      `select * from billing_plan_prices`,
+      [],
+    );
+    const pricesByPlan = new Map<string, BillingPlanPriceRow[]>();
+    for (const row of prices.rows) {
+      const list = pricesByPlan.get(row.plan_id) ?? [];
+      list.push(row);
+      pricesByPlan.set(row.plan_id, list);
+    }
+    return plans.rows.map((row) => toBillingPlanRecord(row, pricesByPlan.get(row.id) ?? []));
+  }
+
+  async reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const rows = await client.query<OrganizationSubscriptionRow>(
+        `insert into organization_subscriptions
+           (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
+            current_period_end, cancel_at_period_end, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, now())
+         on conflict (organization_id) do update
+           set stripe_customer_id = excluded.stripe_customer_id,
+               stripe_subscription_id = excluded.stripe_subscription_id,
+               plan_id = excluded.plan_id,
+               status = excluded.status,
+               current_period_end = excluded.current_period_end,
+               cancel_at_period_end = excluded.cancel_at_period_end,
+               updated_at = now()
+         returning *`,
+        [
+          input.organizationId,
+          input.stripeCustomerId,
+          input.stripeSubscriptionId,
+          input.planId,
+          input.status,
+          input.currentPeriodEnd,
+          input.cancelAtPeriodEnd,
+        ],
+      );
+      const row = rows.rows[0];
+      if (row === undefined) throw new Error("organization subscription upsert returned no row");
+      // Same transaction as the mirror upsert: the plan the org is billed on and the entitlements
+      // it enforces can never diverge across a crash between the two writes.
+      if (input.stamp !== undefined) {
+        await stampEntitlementsWithinTransaction(client, {
+          organizationId: input.organizationId,
+          ...input.stamp,
+        });
+      }
+      await client.query("commit");
+      return toOrganizationSubscriptionRecord(row);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    // A session-level advisory lock on a dedicated connection: it serializes the critical section
+    // across processes, and it is held for the whole of `fn` (including any external re-read),
+    // not just a single statement. `hashtextextended` maps the string key to the bigint the
+    // advisory-lock functions take.
+    const client = await this.pool.connect();
+    try {
+      await client.query(`select pg_advisory_lock(hashtextextended($1, 0))`, [key]);
+      return await fn();
+    } finally {
+      await client
+        .query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [key])
+        .catch(() => undefined);
+      client.release();
+    }
+  }
+
+  async getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined> {
+    const rows = await query<OrganizationSubscriptionRow>(
+      this.pool,
+      `select * from organization_subscriptions where organization_id = $1`,
+      [organizationId],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationSubscriptionRecord(rows.rows[0]);
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -3909,6 +4318,253 @@ function toDeviceAuthorization(row: DeviceAuthorizationRow): DeviceAuthorization
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
+}
+
+export interface OrganizationEntitlementsRow extends QueryResultRow {
+  organization_id: string;
+  granted: unknown;
+  overrides: unknown;
+  plan_id: string | null;
+  plan_version: string | null;
+  stamped_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * The audit before/after snapshot. Carries planId and planVersion so two plans with identical
+ * templates stay historically distinguishable — the off-template query depends on it.
+ */
+/**
+ * The idempotent entitlement stamp, scoped to a transaction the caller already opened. A stamp
+ * that lands the same granted template and the same plan provenance is a no-op — no timestamp
+ * bump, no duplicate audit row — which is what stops the webhook re-stamp ping-pong. jsonb
+ * `is distinct from` compares granted structurally. Shared by `stampOrganizationEntitlements`
+ * and `reconcileOrganizationSubscription` so the subscription mirror and the stamp commit
+ * together.
+ */
+async function stampEntitlementsWithinTransaction(
+  client: PoolClient,
+  input: StampOrganizationEntitlementsInput,
+): Promise<OrganizationEntitlementsRecord> {
+  const existing = await client.query<OrganizationEntitlementsRow & { changed: boolean }>(
+    `select *,
+        (granted is distinct from $2::jsonb
+         or plan_id is distinct from $3
+         or plan_version is distinct from $4) as changed
+     from organization_entitlements where organization_id = $1 for update`,
+    [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
+  );
+  const before = existing.rows[0];
+  if (before !== undefined && !before.changed) {
+    return toOrganizationEntitlementsRecord(before);
+  }
+  const stamped = await client.query<OrganizationEntitlementsRow>(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ($1, $2::jsonb, '{}'::jsonb, $3, $4, now(), now())
+     on conflict (organization_id) do update
+       set granted = excluded.granted,
+           plan_id = excluded.plan_id,
+           plan_version = excluded.plan_version,
+           stamped_at = now(),
+           updated_at = now()
+     returning *`,
+    [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
+  );
+  const after = stamped.rows[0];
+  if (after === undefined) throw new Error("entitlements stamp returned no row");
+  await client.query(
+    `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+     values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+    [
+      input.organizationId,
+      input.actor,
+      input.source,
+      before === undefined ? null : JSON.stringify(entitlementSnapshot(before)),
+      JSON.stringify(entitlementSnapshot(after)),
+      input.reason,
+    ],
+  );
+  return toOrganizationEntitlementsRecord(after);
+}
+
+function entitlementSnapshot(row: OrganizationEntitlementsRow): {
+  granted: unknown;
+  overrides: unknown;
+  planId: string | null;
+  planVersion: string | null;
+} {
+  return {
+    granted: row.granted,
+    overrides: row.overrides,
+    planId: row.plan_id,
+    planVersion: row.plan_version,
+  };
+}
+
+function toOrganizationEntitlementsRecord(
+  row: OrganizationEntitlementsRow,
+): OrganizationEntitlementsRecord {
+  return {
+    organizationId: row.organization_id,
+    granted: row.granted,
+    overrides: row.overrides,
+    planId: row.plan_id,
+    planVersion: row.plan_version,
+    stampedAt: row.stamped_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface OperatorOrganizationRow extends QueryResultRow {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+function toOperatorOrganizationRecord(row: OperatorOrganizationRow): OperatorOrganizationRecord {
+  return { id: row.id, name: row.name, slug: row.slug };
+}
+
+export interface EntitlementChangeRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  actor: string | null;
+  actor_name: string | null;
+  source: EntitlementChangeSource;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  created_at: Date;
+}
+
+function toEntitlementChangeRecord(row: EntitlementChangeRow): EntitlementChangeRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    actor: row.actor,
+    actorName: row.actor_name,
+    source: row.source,
+    before: row.before,
+    after: row.after,
+    reason: row.reason,
+    createdAt: row.created_at,
+  };
+}
+
+export interface OrganizationUsageRow extends QueryResultRow {
+  organization_id: string;
+  meter: string;
+  period_start: Date;
+  used: number | string;
+}
+
+function toOrganizationUsageRecord(row: OrganizationUsageRow): OrganizationUsageRecord {
+  return {
+    organizationId: row.organization_id,
+    meter: row.meter,
+    periodStart: row.period_start,
+    used: Number(row.used),
+  };
+}
+
+export interface BillingPlanRow extends QueryResultRow {
+  id: string;
+  slug: string;
+  name: string;
+  template: unknown;
+  template_hash: string;
+  marketing: unknown;
+  active: boolean;
+  synced_at: Date;
+}
+
+export interface BillingPlanPriceRow extends QueryResultRow {
+  id: string;
+  plan_id: string;
+  lookup_key: string;
+  interval: BillingPlanPriceRecord["interval"];
+  unit_amount: number;
+  currency: string;
+  active: boolean;
+}
+
+function toBillingPlanRecord(
+  row: BillingPlanRow,
+  priceRows: readonly BillingPlanPriceRow[],
+): BillingPlanRecord {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    template: row.template,
+    templateHash: row.template_hash,
+    marketing: row.marketing,
+    active: row.active,
+    syncedAt: row.synced_at,
+    prices: priceRows.map((price) => ({
+      id: price.id,
+      planId: price.plan_id,
+      lookupKey: price.lookup_key,
+      interval: price.interval,
+      unitAmount: price.unit_amount,
+      currency: price.currency,
+      active: price.active,
+    })),
+  };
+}
+
+export interface OrganizationSubscriptionRow extends QueryResultRow {
+  organization_id: string;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  plan_id: string | null;
+  status: string;
+  current_period_end: Date | null;
+  cancel_at_period_end: boolean;
+  updated_at: Date;
+}
+
+function toOrganizationSubscriptionRecord(
+  row: OrganizationSubscriptionRow,
+): OrganizationSubscriptionRecord {
+  return {
+    organizationId: row.organization_id,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    planId: row.plan_id,
+    status: row.status,
+    currentPeriodEnd: row.current_period_end,
+    cancelAtPeriodEnd: row.cancel_at_period_end,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * The single conditional upsert behind both standalone consumption and the durable engine's
+ * per-execution reservation, run against a pool or an open transaction client. On conflict the
+ * accumulation guard (`where` on the update) makes concurrent consumers race-safe: Postgres
+ * serializes concurrent inserts on the same conflict key, so one attempt wins the fresh insert
+ * and every other is forced through the guarded update. Returns `undefined` — usage unchanged —
+ * when a non-null limit would be exceeded.
+ */
+async function reserveOrganizationUsageOnClient(
+  client: Pool | PoolClient,
+  input: ConsumeOrganizationUsageInput,
+): Promise<OrganizationUsageRecord | undefined> {
+  const rows = await withDatabaseDeadline(
+    client.query<OrganizationUsageRow>(
+      `insert into organization_usage (organization_id, meter, period_start, used)
+       select $1, $2, $3, $4::bigint
+       where $5::bigint is null or $4::bigint <= $5::bigint
+       on conflict (organization_id, meter, period_start) do update
+         set used = organization_usage.used + excluded.used
+       where $5::bigint is null or organization_usage.used + excluded.used <= $5::bigint
+       returning *`,
+      [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
+    ),
+  );
+  return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
 }
 
 export interface ProjectRow extends QueryResultRow {

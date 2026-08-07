@@ -8,6 +8,8 @@ import {
   hashAgentExecutionCompletionToken,
 } from "./agent-executions/completion-token.js";
 import { createMemoryDatabase } from "./db/memory.js";
+import type { Database } from "./db/types.js";
+import { EntitlementsService } from "./entitlements/service.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
@@ -48,9 +50,12 @@ describe("application runtime provider composition", () => {
       ],
     };
     let closed = false;
+    const database = await runtimeDatabase("owner");
     const runtime = await createApplicationRuntime({
-      database: await runtimeDatabase("owner"),
+      database,
       auth: new RuntimeAuth(),
+      entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => {
@@ -100,11 +105,14 @@ describe("application runtime provider composition", () => {
     second.connection = { ...second.connection, name: "second" };
     second.requests = [{ name: "events", handle: () => Promise.resolve(new Response()) }];
 
+    const database = createMemoryDatabase();
     await assert.rejects(
       () =>
         createApplicationRuntime({
-          database: createMemoryDatabase(),
+          database,
           auth: new RuntimeAuth(),
+          entitlements: entitlementsForTest(database),
+          billing: null,
           publicApi: { status: "unavailable" },
           registrations: [first, second],
           close: () => Promise.resolve(),
@@ -114,9 +122,12 @@ describe("application runtime provider composition", () => {
   });
 
   it("reports member connection status as read-only", async () => {
+    const database = await runtimeDatabase("member");
     const runtime = await createApplicationRuntime({
-      database: await runtimeDatabase("member"),
+      database,
       auth: new RuntimeAuth("member"),
+      entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [fakeRegistration()],
       close: () => Promise.resolve(),
@@ -189,6 +200,8 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database,
       auth: new RuntimeAuth(),
+      entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => Promise.resolve(),
@@ -227,6 +240,8 @@ describe("application runtime provider composition", () => {
     const runtime = await createApplicationRuntime({
       database,
       auth: new RuntimeAuth(),
+      entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [
         {
@@ -292,6 +307,7 @@ class RuntimeAuth implements AuthServer {
     return {
       session: { id: access.session.id, activeOrganizationId: null },
       account: access.account,
+      isInstanceOperator: false,
     };
   }
   rejectCookieMutation(): Response | undefined {
@@ -300,6 +316,10 @@ class RuntimeAuth implements AuthServer {
   close(): Promise<void> {
     return Promise.resolve();
   }
+}
+
+function entitlementsForTest(database: Database): EntitlementsService {
+  return new EntitlementsService(database, { seats: () => Promise.resolve(0) });
 }
 
 function fakeRegistration(name = "fake"): ProviderRegistration {

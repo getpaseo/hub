@@ -22,6 +22,36 @@ The configuration install body may also include an optional `partials` array. Ea
 
 The self-hosted Scalar reference is served with a restrictive Content Security Policy and does not require external fonts, scripts, telemetry, registries, or proxies.
 
+## Plan catalog
+
+`GET /api/billing/plans` is unauthenticated and read-only. It returns the plan catalog mirrored
+from Stripe (see docs/billing.md) as marketing copy and pricing only. It never includes the
+entitlement template (`granted` caps/flags/meters); that stays internal to `src/billing/` and
+`src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
+Hub itself has no pricing page.
+
+```json
+{
+  "plans": [
+    {
+      "slug": "solo",
+      "name": "Solo",
+      "marketingFeatures": ["Unlimited seats", "2,000 executions / month", "Email support"],
+      "prices": {
+        "monthly": { "unitAmount": 2900, "currency": "usd" },
+        "annual": { "unitAmount": 29000, "currency": "usd" }
+      }
+    }
+  ]
+}
+```
+
+`unitAmount` is in the smallest currency unit (cents for `usd`), matching Stripe's own `Price`
+convention. An interval is `null` when the plan has no active price at that interval. A
+self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
+catalog — the billing boundary means the route is never registered on an unconfigured instance.
+See docs/billing.md.
+
 ## Public documentation follow-up
 
 The public Hub docs live in the separate `getpaseo/paseo` repository under `public-docs/`. Update its Hub API guide in a separate PR to:
@@ -31,3 +61,4 @@ The public Hub docs live in the separate `getpaseo/paseo` repository under `publ
 3. Document bearer scopes, the Bearer challenge, and the `401`/`403`/`500`/`503` distinction.
 4. Replace the manual-run success example with the five durable fields listed above.
 5. Describe RFC 9457 errors, structured `issues`, `requestId`, `X-Request-ID`, and narrow delivery-key semantics.
+6. Document `GET /api/billing/plans` (unauthenticated, no scopes) — this is what paseo.sh's pricing page will fetch.

@@ -4,22 +4,26 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
 import { createDatabase } from "../db/pg.js";
+import type { Database } from "../db/types.js";
 import { createAuthServer, type AuthServer } from "./server.js";
+import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
 describe("organization API-key boundary", () => {
   let postgres: StartedPostgreSqlContainer;
   let auth: AuthServer;
+  let authEntitlements: ComposedEntitlements;
+  let authDatabase: Database;
   let databaseUrl: string;
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     databaseUrl = postgres.getConnectionUri();
-    const database = await createDatabase(databaseUrl);
-    await database.close();
+    authDatabase = await createDatabase(databaseUrl);
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     await client.query(`
@@ -34,8 +38,10 @@ describe("organization API-key boundary", () => {
         ('member-b', 'organization-b', 'user-b', 'owner');
     `);
     await client.end();
+    authEntitlements = composeEntitlements(authDatabase, databaseUrl);
     auth = createAuthServer({
       databaseUrl,
+      entitlements: authEntitlements.service,
       secret: "test".repeat(8),
       baseURL: "http://localhost:3000",
       policy: {
@@ -47,7 +53,9 @@ describe("organization API-key boundary", () => {
   }, 120_000);
 
   afterAll(async () => {
+    await authDatabase.close();
     await auth.close();
+    await authEntitlements.close();
     await postgres.stop();
   }, 120_000);
 
@@ -156,6 +164,7 @@ describe("organization API-key boundary", () => {
     });
     const application = createHubApplication({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       publicApi: { status: "enabled", authenticator: auth.apiKeys! },
     });
     await application.hub.start();

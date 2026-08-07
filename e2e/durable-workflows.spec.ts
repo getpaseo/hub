@@ -67,6 +67,7 @@ test("shows invalid typed manual input in Activity without creating an execution
     status: 400,
     error: "invalid_input",
     reason: expect.stringContaining("rejected_input:deploy"),
+    triggerRunId: expect.any(String),
   });
 
   await app.navigation.openProjectSection("Activity");

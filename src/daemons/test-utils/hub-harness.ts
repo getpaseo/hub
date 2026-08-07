@@ -46,6 +46,7 @@ import {
 } from "../../execution-capabilities/outputs.js";
 import type { DaemonClock } from "../registry.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
+import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 import type { TriggerProvider } from "../../triggers/index.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
@@ -94,6 +95,7 @@ const ExecutionSessionRequestSchema = z.object({
 export class HubHarness {
   private postgres: StartedPostgreSqlContainer | undefined;
   private database: Database | undefined;
+  private readonly entitlements = createUnlimitedEntitlementsService();
   private server: Server | undefined;
   private hub: HubRuntime | undefined;
   private connectedDaemon: TestDaemon | undefined;
@@ -1325,6 +1327,7 @@ export class HubHarness {
     });
     const application = createHubApplication({
       database: this.databaseForApplication(),
+      entitlements: this.entitlements,
       providers: [this.recordingProvider()],
       providerFactories: [
         ({ configurationStoreForProject, attachments }) =>
@@ -1353,7 +1356,10 @@ export class HubHarness {
       operations: application.operations,
       publicApi: application.publicApi,
       resources: null,
+      billing: null,
       projectDashboard: null,
+      usageDashboard: null,
+      operatorConsole: null,
       testTriggerRoutes: true,
       auth: () => Promise.resolve(new Response("Not Found", { status: 404 })),
       organizationResources: () => Promise.reject(new Error("organization resources unavailable")),
@@ -1362,6 +1368,12 @@ export class HubHarness {
       connectionAction: () =>
         Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
       webhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+      billingWebhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+      billingPlans: () => Promise.resolve(null),
+      billingConfigured: () => false,
+      billingOverview: () => Promise.reject(new Error("billing is not configured")),
+      billingCheckout: () => Promise.reject(new Error("billing is not configured")),
+      billingPortal: () => Promise.reject(new Error("billing is not configured")),
       providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
       stop: () => hub.stop(),
     }));

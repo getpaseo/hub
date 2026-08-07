@@ -19,6 +19,8 @@ import type {
 } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { parseInvocation } from "../triggers/invocation.js";
+import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
+import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
@@ -33,6 +35,7 @@ describe("durable multi-step workflow engine", () => {
     process.on("unhandledRejection", onUnhandled);
     const { engine } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
       workerIntervalMs: 10,
       dispatchLaunchMachineIntent: async (intent) => {
@@ -105,6 +108,7 @@ describe("durable multi-step workflow engine", () => {
     let failFirst = true;
     const { handler, engine } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
       now: () => now,
       leaseMs: 1_000,
@@ -278,6 +282,7 @@ describe("durable multi-step workflow engine", () => {
     });
     const { handler } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: fixture.entitlements,
       providers: [
         {
           name: "manual",
@@ -854,10 +859,193 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(completion.execution.status, "failed");
     assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "failed");
   });
+
+  it("meters one unit per execution, not once per trigger, across a multi-step workflow", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const first = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!.id,
+    );
+    assert.ok(first);
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: first.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+      observedAt: new Date(),
+    });
+    await fixture.database.wakeWorkflowRun(run.id, new Date());
+    await engine.processAvailable();
+
+    // Two executions were created, so two units were consumed — the old once-per-trigger meter
+    // would report 1 here.
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 2);
+    assert.equal(dispatches.length, 2);
+  });
+
+  it("denies the second execution once the meter is full and fails that run with the reason", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    await fixture.entitlements.override(
+      "org-1",
+      { meters: { "executions.monthly": { limit: 1 } } },
+      "admin-1",
+      "Trial cap",
+    );
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const first = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!.id,
+    );
+    assert.ok(first);
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: first.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+      observedAt: new Date(),
+    });
+    await fixture.database.wakeWorkflowRun(run.id, new Date());
+    await engine.processAvailable();
+
+    const failed = await fixture.database.findTriggerRunById(run.id);
+    assert.equal(failed?.status, "failed");
+    assert.match(
+      failed?.outcome === "accepted" ? (failed.failureReason ?? "") : "",
+      /executions\.monthly/u,
+    );
+    // Only the first execution was ever created; the denied second one reserved nothing.
+    assert.equal(dispatches.length, 1);
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+  });
+
+  it("denies a second single-execution trigger once the meter is full", async () => {
+    const fixture = await workflowFixture();
+    await fixture.entitlements.override(
+      "org-1",
+      { meters: { "executions.monthly": { limit: 1 } } },
+      "admin-1",
+      "Trial cap",
+    );
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+
+    await handler(fixture.trigger("repo=hub work"));
+    await engine.processAvailable();
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+
+    const second = await fixture.database.persistManualEvent({
+      organizationId: "org-1",
+      projectId: fixture.projectId,
+      deliveryId: randomUUID(),
+      source: "manual.run",
+      payload: {},
+      receivedAt: new Date(),
+    });
+    if (second.status !== "accepted") throw new Error("second receipt was not accepted");
+    await handler({
+      ...fixture.trigger("repo=hub work"),
+      providerEventReceiptId: second.event.providerEventReceiptId,
+      deliveryId: second.event.deliveryId,
+    });
+    await engine.processAvailable();
+
+    const secondRun = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(
+        second.event.providerEventReceiptId,
+      )
+    )[0];
+    assert.equal(secondRun?.status, "failed");
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+    assert.equal(dispatches.length, 1);
+  });
+
+  it("meters nothing when an accepted trigger skips every step", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: allSkippedConfiguration() });
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    assert.equal(run.status, "succeeded");
+    assert.deepEqual(dispatches, []);
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 0);
+  });
+
+  it("does not double-consume when an already-running execution is replayed", async () => {
+    const fixture = await workflowFixture();
+    const dispatches: string[] = [];
+    const { handler, engine } = engineFor(fixture, dispatches);
+    await handler(fixture.trigger("repo=hub work"));
+    await engine.processAvailable();
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    await fixture.database.wakeWorkflowRun(run.id, new Date());
+    await engine.processAvailable();
+
+    // The step's execution is already live, so re-processing the wakeup creates nothing new.
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+    assert.equal(dispatches.length, 1);
+  });
+
+  it("does not double-consume when dispatch crashes after an execution is reserved", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
+    let crashNextDispatch = true;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async (intent) => {
+        if (crashNextDispatch) {
+          crashNextDispatch = false;
+          throw new Error("dispatch crashed after reservation");
+        }
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    // The execution was created and one unit reserved before dispatch threw.
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+
+    now = new Date("2026-08-06T12:00:02.000Z");
+    await engine.processAvailable();
+
+    // Recovery re-dispatches the already-created execution; it does not reserve a second unit.
+    assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
+  });
 });
 
 interface Fixture {
   database: Database;
+  entitlements: EntitlementsService;
   providerEventReceiptId: string;
   deliveryId: string;
   projectId: string;
@@ -875,6 +1063,12 @@ async function workflowFixture(
   } = {},
 ): Promise<Fixture> {
   const database = createMemoryDatabase({ organizationIds: ["org-1"] });
+  // A real EntitlementsService over the SAME database the engine uses — not an auto-unlimited
+  // proxy over a separate store. Metering the engine performs is therefore observable here, and
+  // a per-execution regression actually fails these tests. Stamped unlimited by default; tests
+  // that exercise the meter override it down.
+  const entitlements = new EntitlementsService(database, { seats: async () => 0 });
+  await entitlements.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
   const project = await database.createProject({
     organizationId: "org-1",
     name: "Workflow",
@@ -924,6 +1118,7 @@ async function workflowFixture(
   if (receipt.status !== "accepted") throw new Error("workflow receipt was not accepted");
   return {
     database,
+    entitlements,
     providerEventReceiptId: receipt.event.providerEventReceiptId,
     deliveryId: receipt.event.deliveryId,
     projectId: project.id,
@@ -988,6 +1183,7 @@ function engineFor(
 ) {
   return createDurableWorkflowHandler({
     database: fixture.database,
+    entitlements: fixture.entitlements,
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],
     ...(now === undefined ? {} : { now }),
     ...(onWorkflowRunTerminal === undefined ? {} : { onWorkflowRunTerminal }),
@@ -1029,6 +1225,30 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
             idle_timeout: options.idleTimeout ?? "20s",
             agent: { provider: "codex" },
             prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function allSkippedConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "all-skipped",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "never",
+            if: "${{ false }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Never runs" }],
           },
         ],
       },

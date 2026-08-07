@@ -70,7 +70,24 @@ import type {
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
   ProjectActivityRunListRecord,
+  OrganizationEntitlementsRecord,
+  OperatorOrganizationRecord,
+  StampOrganizationEntitlementsInput,
+  OverrideOrganizationEntitlementsInput,
+  ClearOrganizationEntitlementsOverrideInput,
+  EntitlementChangeRecord,
+  OrganizationUsageRecord,
+  ConsumeOrganizationUsageInput,
+  BillingPlanRecord,
+  SyncBillingPlanInput,
+  OrganizationSubscriptionRecord,
+  ReconcileOrganizationSubscriptionInput,
 } from "./types.js";
+import {
+  clearOverrideKey,
+  entitlementOverridesSchema,
+  mergeOverrides,
+} from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
@@ -87,6 +104,20 @@ export interface MemoryDatabaseOptions {
     role: "owner" | "admin" | "member";
   }[];
   now?: () => Date;
+}
+
+function usageKey(organizationId: string, meter: string, periodStart: Date): string {
+  return `${organizationId}:${meter}:${periodStart.toISOString()}`;
+}
+
+/** Audit before/after snapshot carrying plan provenance, mirroring the Postgres store. */
+function entitlementSnapshot(record: OrganizationEntitlementsRecord): unknown {
+  return {
+    granted: record.granted,
+    overrides: record.overrides,
+    planId: record.planId,
+    planVersion: record.planVersion,
+  };
 }
 
 function transitionWithTerminalRun(
@@ -120,6 +151,12 @@ class MemoryDatabase implements Database {
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
+  private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
+  private readonly entitlementChanges: EntitlementChangeRecord[] = [];
+  private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
+  private readonly billingPlans = new Map<string, BillingPlanRecord>();
+  private readonly organizationSubscriptions = new Map<string, OrganizationSubscriptionRecord>();
+  private readonly advisoryLocks = new Map<string, Promise<void>>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -388,6 +425,39 @@ class MemoryDatabase implements Database {
         execution: undefined,
         created: false,
       };
+    }
+    // Reserve one meter unit before creating the execution, so a denied reservation creates
+    // nothing — the in-memory single-threaded model gives the same atomicity the Postgres
+    // transaction does. A replay hits the `agentExecutionId !== null` branch above and never
+    // reaches here, so it cannot double-consume.
+    if (input.reservation !== undefined) {
+      const reserved = await this.consumeOrganizationUsage({
+        organizationId: input.execution.organizationId,
+        meter: input.reservation.meter,
+        periodStart: input.reservation.periodStart,
+        amount: 1,
+        limit: input.reservation.limit,
+      });
+      if (reserved === undefined) {
+        if (input.reservation.limit === null) {
+          throw new Error("unreachable: an unlimited meter reservation cannot be denied");
+        }
+        const usage = await this.getOrganizationUsage(
+          input.execution.organizationId,
+          input.reservation.meter,
+          input.reservation.periodStart,
+        );
+        return {
+          stepRun: step,
+          execution: undefined,
+          created: false,
+          reservationDenied: {
+            meter: input.reservation.meter,
+            limit: input.reservation.limit,
+            current: usage?.used ?? 0,
+          },
+        };
+      }
     }
     const deadlineAt = new Date(
       Math.min(input.execution.deadlineAt.getTime(), run.deadlineAt.getTime()),
@@ -1856,6 +1926,235 @@ class MemoryDatabase implements Database {
     return project;
   }
 
+  async getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined> {
+    return this.organizationEntitlements.get(organizationId);
+  }
+
+  async stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    // Idempotent: an identical granted template and plan provenance is a no-op — no timestamp
+    // bump, no duplicate audit row — mirroring the Postgres conditional stamp.
+    if (
+      existing !== undefined &&
+      existing.planId === input.planId &&
+      existing.planVersion === input.planVersion &&
+      JSON.stringify(existing.granted) === JSON.stringify(input.granted)
+    ) {
+      return existing;
+    }
+    const now = this.now();
+    const record: OrganizationEntitlementsRecord = {
+      organizationId: input.organizationId,
+      granted: input.granted,
+      overrides: existing?.overrides ?? {},
+      planId: input.planId,
+      planVersion: input.planVersion,
+      stampedAt: now,
+      updatedAt: now,
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: input.source,
+      before: existing === undefined ? null : entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
+      reason: input.reason,
+    });
+    return record;
+  }
+
+  async overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    if (existing === undefined) {
+      throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+    }
+    // Merge the patch against the current row, mirroring the Postgres locked-row merge. No await
+    // between read and write, so concurrent overrides cannot interleave and lose keys.
+    const overrides = mergeOverrides(
+      entitlementOverridesSchema.parse(existing.overrides),
+      input.patch,
+    );
+    const record: OrganizationEntitlementsRecord = {
+      ...existing,
+      overrides,
+      updatedAt: this.now(),
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: "override",
+      before: entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
+      reason: input.reason,
+    });
+    return record;
+  }
+
+  async clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    if (existing === undefined) {
+      throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+    }
+    // Drop the key from the current row, mirroring the Postgres locked-row clear. No await
+    // between read and write, so a concurrent override cannot interleave.
+    const overrides = clearOverrideKey(
+      entitlementOverridesSchema.parse(existing.overrides),
+      input.key,
+    );
+    const record: OrganizationEntitlementsRecord = {
+      ...existing,
+      overrides,
+      updatedAt: this.now(),
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: "override",
+      before: entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
+      reason: input.reason,
+    });
+    return record;
+  }
+
+  async listEntitlementChanges(
+    organizationId: string,
+    limit: number,
+  ): Promise<EntitlementChangeRecord[]> {
+    return this.entitlementChanges
+      .filter((change) => change.organizationId === organizationId)
+      .slice(-limit)
+      .toReversed();
+  }
+
+  private recordEntitlementChange(
+    input: Omit<EntitlementChangeRecord, "id" | "actorName" | "createdAt">,
+  ): void {
+    this.entitlementChanges.push({
+      ...input,
+      id: randomUUID(),
+      actorName: null,
+      createdAt: this.now(),
+    });
+  }
+
+  async consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    // No `await` between read and write, so this is as atomic as the single-statement
+    // Postgres upsert it mirrors: nothing can interleave on Node's single thread.
+    const key = usageKey(input.organizationId, input.meter, input.periodStart);
+    const existing = this.organizationUsage.get(key);
+    const used = (existing?.used ?? 0) + input.amount;
+    if (input.limit !== null && used > input.limit) return undefined;
+    const record: OrganizationUsageRecord = {
+      organizationId: input.organizationId,
+      meter: input.meter,
+      periodStart: input.periodStart,
+      used,
+    };
+    this.organizationUsage.set(key, record);
+    return record;
+  }
+
+  async getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    return this.organizationUsage.get(usageKey(organizationId, meter, periodStart));
+  }
+
+  async syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord> {
+    const record: BillingPlanRecord = {
+      id: input.id,
+      slug: input.slug,
+      name: input.name,
+      template: input.template,
+      templateHash: input.templateHash,
+      marketing: input.marketing,
+      active: input.active,
+      syncedAt: this.now(),
+      prices: input.prices.map((price) => ({ ...price, planId: input.id })),
+    };
+    this.billingPlans.set(input.id, record);
+    return record;
+  }
+
+  async deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void> {
+    const keep = new Set(activeIds);
+    for (const [id, plan] of this.billingPlans) {
+      if (!keep.has(id) && plan.active) this.billingPlans.set(id, { ...plan, active: false });
+    }
+  }
+
+  async listBillingPlans(): Promise<BillingPlanRecord[]> {
+    return Array.from(this.billingPlans.values());
+  }
+
+  async reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord> {
+    const record: OrganizationSubscriptionRecord = {
+      organizationId: input.organizationId,
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscriptionId: input.stripeSubscriptionId,
+      planId: input.planId,
+      status: input.status,
+      currentPeriodEnd: input.currentPeriodEnd,
+      cancelAtPeriodEnd: input.cancelAtPeriodEnd,
+      updatedAt: this.now(),
+    };
+    this.organizationSubscriptions.set(input.organizationId, record);
+    // No await between the two writes, so on Node's single thread the mirror and the stamp land
+    // together — the in-memory stand-in for the Postgres transaction that couples them.
+    if (input.stamp !== undefined) {
+      await this.stampOrganizationEntitlements({
+        organizationId: input.organizationId,
+        ...input.stamp,
+      });
+    }
+    return record;
+  }
+
+  async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    // Node runs one callback at a time, so a per-key promise chain is a faithful in-memory
+    // stand-in for the Postgres advisory lock: same-key sections run strictly in sequence.
+    const previous = this.advisoryLocks.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const held = previous.then(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    this.advisoryLocks.set(key, held);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.advisoryLocks.get(key) === held) this.advisoryLocks.delete(key);
+    }
+  }
+
+  async getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined> {
+    return this.organizationSubscriptions.get(organizationId);
+  }
+
   async listProjectsForOrganization(organizationId: string) {
     return Array.from(this.projects.values()).filter(
       (project) => project.organizationId === organizationId,
@@ -1875,6 +2174,28 @@ class MemoryDatabase implements Database {
     return Array.from(this.projects.values()).find(
       (project) => project.organizationId === organizationId && project.slug === slug,
     );
+  }
+
+  async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
+    return this.operatorOrganizations();
+  }
+
+  async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
+    return this.operatorOrganizations().find((organization) => organization.slug === slug);
+  }
+
+  /** Distinct organizations derived from the membership fixtures — the in-memory store models
+   * organizations only through those, so the operator picker reads the same source. */
+  private operatorOrganizations(): OperatorOrganizationRecord[] {
+    const seen = new Map<string, OperatorOrganizationRecord>();
+    for (const membership of this.options.memberships ?? []) {
+      seen.set(membership.organizationId, {
+        id: membership.organizationId,
+        name: membership.organizationName,
+        slug: membership.organizationSlug,
+      });
+    }
+    return Array.from(seen.values()).sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async resolveTenantRouteAccess(

@@ -1,6 +1,11 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
+import type {
+  EntitlementPatch,
+  EntitlementTemplate,
+  OverrideKey,
+} from "../entitlements/catalog.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -658,6 +663,26 @@ export interface CreateRejectedTriggerRunInput {
   createdAt?: Date;
 }
 
+/**
+ * A meter reservation the durable engine attaches to execution creation. One unit is consumed
+ * in the same transaction that creates the execution, so metering is exactly per-execution:
+ * a genuinely new execution reserves, a replay or recovery of an existing one does not, and a
+ * denial prevents the execution from being created at all. `limit` null means unlimited — the
+ * unit is still counted (for usage display) but never denied.
+ */
+export interface MeterReservation {
+  meter: string;
+  periodStart: Date;
+  limit: number | null;
+}
+
+/** Returned when a reservation would exceed a non-null limit; the execution is not created. */
+export interface MeterReservationDenied {
+  meter: string;
+  limit: number;
+  current: number;
+}
+
 export interface WorkflowStepExecutionInput {
   triggerRunId: string;
   stepId: string;
@@ -668,6 +693,8 @@ export interface WorkflowStepExecutionInput {
     idleDeadlineAt: Date;
     startedAt: Date;
   };
+  /** When set, one meter unit is reserved atomically with creating the execution. */
+  reservation?: MeterReservation;
 }
 
 export interface WorkflowAgentCompletionInput {
@@ -700,6 +727,175 @@ export interface CreateProjectInput {
   name: string;
   slug: string;
   createdByUserId: string;
+}
+
+export type EntitlementChangeSource = "provisioning" | "plan_stamp" | "override";
+
+export interface OrganizationEntitlementsRecord {
+  organizationId: string;
+  granted: unknown;
+  overrides: unknown;
+  planId: string | null;
+  planVersion: string | null;
+  stampedAt: Date;
+  updatedAt: Date;
+}
+
+/** An organization as the instance-operator surface sees it — identity only, no membership. */
+export interface OperatorOrganizationRecord {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface StampOrganizationEntitlementsInput {
+  organizationId: string;
+  granted: unknown;
+  planId: string | null;
+  planVersion: string;
+  source: EntitlementChangeSource;
+  actor: string | null;
+  reason: string | null;
+}
+
+export interface OverrideOrganizationEntitlementsInput {
+  organizationId: string;
+  /**
+   * The hand-adjustment patch, merged against the locked row inside the persistence
+   * transaction — not a pre-merged document. Merging under the row lock is what stops two
+   * concurrent overrides from clobbering each other's keys.
+   */
+  patch: EntitlementPatch;
+  actor: string | null;
+  reason: string;
+}
+
+export interface ClearOrganizationEntitlementsOverrideInput {
+  organizationId: string;
+  /** The single override key to remove, returning that entitlement to its plan-granted value. */
+  key: OverrideKey;
+  actor: string | null;
+  reason: string;
+}
+
+export interface EntitlementChangeRecord {
+  id: string;
+  organizationId: string;
+  actor: string | null;
+  /** Display name resolved from the actor's user record, when one exists. */
+  actorName: string | null;
+  source: EntitlementChangeSource;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  createdAt: Date;
+}
+
+export interface OrganizationUsageRecord {
+  organizationId: string;
+  meter: string;
+  periodStart: Date;
+  used: number;
+}
+
+export interface ConsumeOrganizationUsageInput {
+  organizationId: string;
+  meter: string;
+  periodStart: Date;
+  amount: number;
+  /** null means unlimited: the conditional upsert never denies. */
+  limit: number | null;
+}
+
+export type BillingPlanPriceInterval = "monthly" | "annual";
+
+export interface BillingPlanMarketing {
+  features: readonly string[];
+}
+
+export interface BillingPlanPriceRecord {
+  id: string;
+  planId: string;
+  lookupKey: string;
+  interval: BillingPlanPriceInterval;
+  unitAmount: number;
+  currency: string;
+  active: boolean;
+}
+
+/**
+ * `template` and `marketing` are `unknown` at the storage boundary, matching
+ * `OrganizationEntitlementsRecord` above — both were validated once by `src/billing/` before
+ * `syncBillingPlan` was called. The public plans projection re-parses `marketing`
+ * (`application-runtime.ts`) and never reads `template` at all; the (future) stamping path
+ * re-parses `template`.
+ */
+export interface BillingPlanRecord {
+  id: string;
+  slug: string;
+  name: string;
+  template: unknown;
+  templateHash: string;
+  marketing: unknown;
+  active: boolean;
+  syncedAt: Date;
+  prices: BillingPlanPriceRecord[];
+}
+
+export interface SyncBillingPlanPriceInput {
+  id: string;
+  lookupKey: string;
+  interval: BillingPlanPriceInterval;
+  unitAmount: number;
+  currency: string;
+  active: boolean;
+}
+
+export interface SyncBillingPlanInput {
+  id: string;
+  slug: string;
+  name: string;
+  template: EntitlementTemplate;
+  templateHash: string;
+  marketing: BillingPlanMarketing;
+  active: boolean;
+  prices: readonly SyncBillingPlanPriceInput[];
+}
+
+/**
+ * The organization's current Stripe subscription mirror. `planId` is the resolved
+ * `billing_plans.id` (a soft reference), or null when the subscription's price is not in the
+ * mirror. Enforcement never reads this — the subscription webhook re-stamps
+ * `organization_entitlements` from the resolved plan's template.
+ */
+export interface OrganizationSubscriptionRecord {
+  organizationId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  planId: string | null;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+  updatedAt: Date;
+}
+
+/**
+ * One convergent reconciliation of an organization's Stripe subscription: the local mirror and
+ * the entitlement stamp move together in a single transaction, so a subscription webhook can
+ * never leave the two disagreeing. `stamp` is present when the reconciled state should re-stamp
+ * entitlements (an active plan, or Free on terminal cancellation) and absent when the state is
+ * grandfathered (a transient status that leaves the last stamp untouched). The stamp reuses the
+ * same idempotent logic as `stampOrganizationEntitlements`, so a replay is a no-op.
+ */
+export interface ReconcileOrganizationSubscriptionInput {
+  organizationId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  planId: string | null;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+  stamp?: Omit<StampOrganizationEntitlementsInput, "organizationId">;
 }
 
 export interface InsertProjectConfigurationRevisionInput {
@@ -816,6 +1012,8 @@ export interface Database {
     stepRun: WorkflowStepRunRecord;
     execution: AgentExecutionRecord | undefined;
     created: boolean;
+    /** Present only when a reservation was requested and denied; no execution was created. */
+    reservationDenied?: MeterReservationDenied;
   }>;
   linkWorkflowStepRunExecution(
     stepRunId: string,
@@ -988,6 +1186,72 @@ export interface Database {
   ): Promise<AgentExecutionRecord | undefined>;
   completeHubAction(executionId: string, action: HubAction): Promise<boolean>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
+  getOrganizationEntitlements(
+    organizationId: string,
+  ): Promise<OrganizationEntitlementsRecord | undefined>;
+  stampOrganizationEntitlements(
+    input: StampOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord>;
+  overrideOrganizationEntitlements(
+    input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord>;
+  /** Removes one hand-set override under the row lock and writes an `override` audit row. */
+  clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
+  ): Promise<OrganizationEntitlementsRecord>;
+  listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
+  /**
+   * Every organization, for the instance-operator picker. Not a membership read — the operator
+   * acts on organizations it does not belong to, so the caller must gate this on the operator
+   * flag before invoking it.
+   */
+  listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]>;
+  /**
+   * One organization by slug, without any membership check. The operator resolution path; gate on
+   * the operator flag at the caller. Undefined when no organization has that slug.
+   */
+  findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined>;
+  /**
+   * Single atomic conditional upsert: increments `used` by `amount` and returns the new
+   * row, unless doing so would exceed `limit` (when non-null), in which case it returns
+   * `undefined` and leaves usage unchanged. Never read-then-write — see the plan.
+   */
+  consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined>;
+  getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined>;
+  /** Upserts the plan and replaces its price set. `src/billing/` is the only caller. */
+  syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord>;
+  /**
+   * Deactivates every synced plan whose id is not in `activeIds` — the sync applies its catalog as
+   * one reconciled snapshot, so a product that lost its `paseo_plan` tag or was deleted stops being
+   * active and selectable rather than lingering. `src/billing/` only.
+   */
+  deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void>;
+  /** All synced plans (active and inactive) with their prices. Empty when never synced. */
+  listBillingPlans(): Promise<BillingPlanRecord[]>;
+  /**
+   * Atomically upserts the organization's Stripe subscription mirror and, when `stamp` is set,
+   * re-stamps its entitlements in the same transaction. `src/billing/` only — the sole convergent
+   * writer the subscription webhook drives.
+   */
+  reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord>;
+  /** The organization's current subscription mirror, or undefined when it never subscribed. */
+  getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined>;
+  /**
+   * Runs `fn` while holding a named advisory lock that serializes across processes, so a
+   * per-organization critical section (re-read external state, then write) cannot interleave with
+   * another instance handling the same organization. Released even if `fn` throws.
+   */
+  withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

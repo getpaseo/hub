@@ -3,6 +3,8 @@ import type {
   AgentExecutionRecord,
   Database,
   DurableProviderEvent,
+  MeterReservation,
+  MeterReservationDenied,
   TriggerRunRecord,
   WorkflowWakeupRecord,
   WorkflowDeadlineRecovery,
@@ -12,6 +14,9 @@ import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../c
 import type { CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
+import { EntitlementDenied } from "../entitlements/catalog.js";
+import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 import {
   buildLaunchMachineIntent,
   type LaunchMachineIntent,
@@ -53,6 +58,8 @@ interface PreparedWorkflowWakeup {
 
 export interface DurableWorkflowEngineOptions {
   database: Database | null;
+  /** Required end to end so the executions meter can never be silently skipped. */
+  entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
   validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
@@ -144,6 +151,9 @@ export class DurableWorkflowEngine {
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${acceptedMatch.triggerName}`);
         const runDeadline = new Date(createdAt.getTime() + compiledTrigger.maxRuntimeMs);
+        // Accepting a trigger reserves nothing: a trigger can skip every step, and multi-step
+        // workflows create several executions. Metering happens per execution, at creation time
+        // (see processWakeup), so the meter is genuinely per-execution and atomic with the work.
         await this.options.database!.createAcceptedTriggerRun({
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
@@ -249,6 +259,7 @@ export class DurableWorkflowEngine {
     if (intent === undefined) return;
     if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
     const executionId = durableExecutionId(intent);
+    const reservation = await this.reserveExecution(run.organizationId);
     const created = await database.createWorkflowStepExecution({
       triggerRunId: run.id,
       stepId: step.id,
@@ -269,7 +280,9 @@ export class DurableWorkflowEngine {
         workflowStepRunId: next.id,
         launchIntent: intent,
       },
+      reservation,
     });
+    if (await this.failDeniedReservation(database, run, step, created.reservationDenied)) return;
     if (created.execution === undefined) {
       await database.deleteWorkflowWakeup(run.id);
       return;
@@ -291,6 +304,45 @@ export class DurableWorkflowEngine {
     }
     await this.finishPersistedExecution(execution);
     await database.deleteWorkflowWakeup(run.id);
+  }
+
+  /**
+   * Fail the run when execution creation was denied by the meter. The denial is the same typed
+   * `EntitlementDenied` every other boundary produces, so a metered failure stays distinct from
+   * a crash on the run's failure reason. Returns true when it handled a denial.
+   */
+  private async failDeniedReservation(
+    database: Database,
+    run: AcceptedWorkflowRun,
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    denied: MeterReservationDenied | undefined,
+  ): Promise<boolean> {
+    if (denied === undefined) return false;
+    const error = new EntitlementDenied(
+      "executions.monthly",
+      "meter",
+      denied.limit,
+      denied.current,
+    );
+    // Store the machine-parseable denial, not the human message: the run UI decodes this back
+    // into a typed payload rather than pattern-matching a sentence. See src/entitlements/denial.ts.
+    const failureReason = encodeEntitlementDenialFailureReason(error.payload());
+    const failed = await database.failWorkflowRun(run.id, "failed", failureReason, step.id);
+    if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+    await database.deleteWorkflowWakeup(run.id);
+    return true;
+  }
+
+  /**
+   * The meter reservation to attach to the next execution creation. Entitlements is required
+   * whenever a database is wired, so a null here is a composition bug, not a skipped meter.
+   */
+  private async reserveExecution(organizationId: string): Promise<MeterReservation> {
+    const entitlements = this.options.entitlements;
+    if (entitlements === null) {
+      throw new Error("durable workflow engine requires entitlements when a database is wired");
+    }
+    return entitlements.meterReservation(organizationId, "executions.monthly");
   }
 
   private async handleExistingWorkflowExecution(

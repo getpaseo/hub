@@ -17,6 +17,8 @@ import { z } from "zod";
 import type { SourcePaseo, SourceRegistration } from "./source-paseo.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
+import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
+import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { slugify } from "../../src/slug.js";
@@ -33,6 +35,11 @@ export interface BuiltApplication {
     commitSha: string;
     rawYaml?: string;
   }): Promise<void>;
+  setBillingProduct(product: FixtureBillingProduct): Promise<void>;
+  /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
+  cancelSubscription(organizationId: string): Promise<void>;
+  /** The seat quantity billing last reported to the fixture Stripe for this organization. */
+  reportedSeatQuantity(organizationId: string): Promise<number | null>;
 }
 
 let MACHINE_KEY = "";
@@ -55,6 +62,8 @@ export interface BuiltApplicationOptions {
     ownerEmail: string;
     ownerPassword: string;
   };
+  /** Configures billing with the fixture Stripe catalog (Free/Solo/Team). Default: unconfigured. */
+  billing?: boolean;
 }
 
 export interface Account {
@@ -337,8 +346,12 @@ export class PaseoHub {
     await this.requireUser(alias).expectDesktopSidebarAndOrganizationMenu();
   }
 
-  async proveAuthenticationPendingLocksMode(alias: string, account: Account): Promise<void> {
-    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account);
+  async proveAuthenticationPendingLocksMode(
+    alias: string,
+    account: Account,
+    organization: string,
+  ): Promise<void> {
+    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account, organization);
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -427,7 +440,13 @@ export class PaseoHub {
     deliveryKey: string;
     trigger?: string;
     apiKey?: string;
-  }): Promise<{ status: number; error?: string; reason?: string }> {
+  }): Promise<{
+    status: number;
+    error?: string;
+    reason?: string;
+    workflowStatus?: string;
+    triggerRunId?: string;
+  }> {
     const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
       headers: {
         ...(input.apiKey === undefined
@@ -444,13 +463,20 @@ export class PaseoHub {
       },
     });
     const body = z
-      .object({ error: z.string().optional(), reason: z.string().optional() })
+      .object({
+        error: z.string().optional(),
+        reason: z.string().optional(),
+        workflowStatus: z.string().optional(),
+        triggerRunId: z.string().optional(),
+      })
       .passthrough()
       .parse(await response.json());
     return {
       status: response.status(),
       ...(body.error === undefined ? {} : { error: body.error }),
       ...(body.reason === undefined ? {} : { reason: body.reason }),
+      ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
+      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
     };
   }
 
@@ -468,6 +494,318 @@ export class PaseoHub {
 
   async expectConnections(alias: string): Promise<void> {
     await this.requireUser(alias).expectConnections();
+  }
+
+  async expectUsageUnlimitedDefaults(alias: string): Promise<void> {
+    await this.requireUser(alias).expectUsageUnlimitedDefaults();
+  }
+
+  async expectUsageReadOnly(alias: string): Promise<void> {
+    await this.requireUser(alias).expectUsageReadOnly();
+  }
+
+  async expectNoOperatorNav(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoOperatorNav();
+  }
+
+  async expectOperatorRouteRefused(alias: string): Promise<void> {
+    await this.requireUser(alias).expectOperatorRouteRefused();
+  }
+
+  async openOperatorConsole(alias: string): Promise<void> {
+    await this.requireUser(alias).openOperatorConsole();
+  }
+
+  /**
+   * Grant the instance-operator flag exactly as an administrator would in production — a single
+   * SQL update, documented in docs/entitlements.md, with no UI. Reload so the client re-reads the
+   * account state and the operator nav appears; the server-side guard already honours the flag.
+   */
+  async grantOperator(alias: string): Promise<void> {
+    await this.queryDatabaseRows(
+      this.primary.databaseUrl,
+      `update "user" set is_instance_operator = true where lower(email) = lower($1)`,
+      [this.requireUser(alias).accountEmail],
+    );
+    await this.page.reload();
+  }
+
+  async expectNoBillingNavigation(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoBillingNavigation();
+  }
+
+  async expectBillingPageUnavailable(alias: string): Promise<void> {
+    await this.requireUser(alias).expectBillingPageUnavailable();
+  }
+
+  async expectBillingWebhookUnavailable(): Promise<void> {
+    const response = await this.requests.post(`${this.primary.origin}/api/billing/webhook`, {
+      headers: { "content-type": "application/json" },
+      data: Buffer.from("{}"),
+    });
+    // On a self-hosted instance the billing routes are never registered, so the webhook 404s
+    // as if it did not exist rather than mimicking any particular not-found body.
+    expect(response.status()).toBe(404);
+  }
+
+  async expectPublicBillingPlansUnavailableWhenUnconfigured(): Promise<void> {
+    const response = await this.requests.get(`${this.primary.origin}/api/billing/plans`);
+    // Unconfigured means no billing surface at all: the public catalog endpoint 404s rather
+    // than serving an empty list, so self-hosted instances expose nothing billing-shaped.
+    expect(response.status()).toBe(404);
+  }
+
+  async visitPublicBillingPlans(origin?: string): Promise<void> {
+    await this.page.goto(`${origin ?? this.primary.origin}/api/billing/plans`);
+  }
+
+  /**
+   * Starts a second, billing-configured application serving the fixture Free/Solo/Team
+   * catalog, verifies the public plans endpoint mirrors it, then simulates a Stripe dashboard
+   * typo (invalid `ent_seats_max`) on the Team product and delivers a real HMAC-signed
+   * `product.updated` webhook. The catalog sync must reject that one product, log loudly, and
+   * leave the previously synced row untouched — the other two plans are unaffected throughout.
+   */
+  async proveStripePlanCatalogMirror(): Promise<string> {
+    const application = await this.startApplication({ databaseProfile: "fresh", billing: true });
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
+
+    await application.setBillingProduct({
+      id: "prod_fixture_team",
+      name: "Team",
+      active: true,
+      metadata: {
+        paseo_plan: "true",
+        paseo_plan_slug: "team",
+        ent_seats_max: "not-a-number",
+        ent_can_invite: "true",
+        ent_executions_monthly_limit: "unlimited",
+      },
+      marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
+    });
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
+
+    await expect
+      .poll(() => application.logs())
+      .toContain("rejected product with invalid entitlement metadata");
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
+
+    // A product that loses its paseo_plan tag drops out of the reconciled snapshot: the sync
+    // deactivates its mirrored row, so the public catalog stops serving it rather than leaving a
+    // removed plan selectable. Free and Solo are unaffected.
+    await application.setBillingProduct({
+      id: "prod_fixture_team",
+      name: "Team",
+      active: true,
+      metadata: { paseo_plan: "false" },
+      marketingFeatures: [],
+    });
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS.slice(0, 2));
+    return application.origin;
+  }
+
+  private async expectPublicBillingPlans(
+    application: BuiltApplication,
+    expected: readonly PublicBillingPlanExpectation[],
+  ): Promise<void> {
+    const response = await this.requests.get(`${application.origin}/api/billing/plans`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ plans: expected });
+  }
+
+  private async deliverBillingWebhook(
+    application: BuiltApplication,
+    eventType: string,
+    objectId: string,
+  ): Promise<void> {
+    await this.postSignedBillingWebhook(application.origin, eventType, {
+      id: objectId,
+      object: "product",
+    });
+  }
+
+  /**
+   * Sign a Stripe webhook payload with the fixture secret and POST it — the same HMAC scheme
+   * Stripe uses, so signature verification is exercised for real. No Stripe account, no network.
+   */
+  private async postSignedBillingWebhook(
+    origin: string,
+    eventType: string,
+    object: Record<string, unknown>,
+  ): Promise<void> {
+    const payload = JSON.stringify({
+      id: `evt_${randomUUID()}`,
+      type: eventType,
+      data: { object },
+    });
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+      .update(`${timestamp}.${payload}`)
+      .digest("hex");
+    const response = await this.requests.post(`${origin}/api/billing/webhook`, {
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": `t=${timestamp},v1=${signature}`,
+      },
+      data: Buffer.from(payload),
+    });
+    expect(response.status()).toBe(200);
+  }
+
+  /**
+   * Deliver the subscription webhook for an organization's fixture subscription. The billing
+   * runtime re-reads live state through the fixture client and stamps — driven by the read, not
+   * this payload — so a replay of the exact same signed event is idempotent.
+   */
+  async deliverSubscriptionWebhook(alias: string): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await this.postSignedBillingWebhook(this.primary.origin, "customer.subscription.created", {
+      id: fixtureSubscriptionId(organizationId),
+      object: "subscription",
+    });
+  }
+
+  /**
+   * Cancel the organization's subscription in the fixture (a portal cancellation) and deliver the
+   * signed customer.subscription.deleted webhook. Reconciliation re-reads the canceled state and
+   * stamps Free, so paid entitlements do not survive a cancellation.
+   */
+  async cancelSubscription(alias: string): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await this.primary.cancelSubscription(organizationId);
+    await this.postSignedBillingWebhook(this.primary.origin, "customer.subscription.deleted", {
+      id: fixtureSubscriptionId(organizationId),
+      object: "subscription",
+    });
+  }
+
+  /**
+   * The seat quantity billing reported to Stripe for the organization's subscription — the proof
+   * that a multi-seat paid organization is billed for its actual seats, not one. Polled because the
+   * report is post-commit off the membership change.
+   */
+  async expectReportedSeatQuantity(alias: string, quantity: number): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
+  }
+
+  async subscribeToPlan(
+    alias: string,
+    plan: { plan: string; interval: "Monthly" | "Annual" },
+  ): Promise<void> {
+    await this.requireUser(alias).subscribeToPlan(plan.plan, plan.interval);
+  }
+
+  async openPlanDialog(alias: string): Promise<void> {
+    await this.requireUser(alias).openPlanDialog();
+  }
+
+  async choosePlan(
+    alias: string,
+    plan: { plan: string; interval: "Monthly" | "Annual" },
+  ): Promise<void> {
+    await this.requireUser(alias).choosePlan(plan.plan, plan.interval);
+  }
+
+  async expectCurrentPlan(alias: string, plan: string): Promise<void> {
+    await this.requireUser(alias).expectCurrentPlan(plan);
+  }
+
+  async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
+    await this.requireUser(alias).expectInviteBlockedByPlan(email);
+  }
+
+  async expectPendingInvitation(alias: string, email: string): Promise<void> {
+    await this.requireUser(alias).expectPendingInvitation(email);
+  }
+
+  async expectPendingInvitationsRetained(alias: string, emails: readonly string[]): Promise<void> {
+    await this.requireUser(alias).expectPendingInvitationsRetained(emails);
+  }
+
+  async expectOverLimitBanner(
+    alias: string,
+    expected: { used: number; limit: number },
+  ): Promise<void> {
+    await this.requireUser(alias).expectOverLimitBanner(expected);
+  }
+
+  async expectNoOverLimitBanner(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoOverLimitBanner();
+  }
+
+  async expectEntitlementCells(
+    alias: string,
+    org: string,
+    name: string,
+    expected: { granted: string; override: string; effective: string },
+  ): Promise<void> {
+    await this.requireUser(alias).expectEntitlementCells(org, name, expected);
+  }
+
+  async clearSeatOverride(
+    alias: string,
+    input: { org: string; reason: string; expectedEffective: string },
+  ): Promise<void> {
+    await this.requireUser(alias).clearSeatOverride(input);
+  }
+
+  private async organizationIdForAlias(alias: string): Promise<string> {
+    const rows = z.array(z.object({ id: z.string() })).parse(
+      await this.queryDatabaseRows(
+        this.primary.databaseUrl,
+        `select active_organization_id as id from session
+         join "user" on "user".id = session.user_id
+         where lower("user".email) = $1 and active_organization_id is not null
+         order by session.updated_at desc limit 1`,
+        [this.requireUser(alias).accountEmail],
+      ),
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) throw new Error(`no active organization for ${alias}`);
+    return id;
+  }
+
+  async openSeatOverrideEditor(
+    alias: string,
+    input: { org: string; max: number; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).openSeatOverrideEditor(input);
+  }
+
+  async saveSeatOverride(alias: string, expectedSeats: number): Promise<void> {
+    await this.requireUser(alias).saveSeatOverride(expectedSeats);
+  }
+
+  async openMeterOverrideEditor(
+    alias: string,
+    input: { org: string; limit: number; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).openMeterOverrideEditor(input);
+  }
+
+  async saveMeterOverride(alias: string, expectedLimit: number): Promise<void> {
+    await this.requireUser(alias).saveMeterOverride(expectedLimit);
+  }
+
+  async expectMeterUsage(alias: string, expected: { used: number; limit: number }): Promise<void> {
+    await this.requireUser(alias).expectMeterUsage(expected);
+  }
+
+  async expectInviteRefusedBySeatLimit(
+    alias: string,
+    email: string,
+    expected: { limit: number; current: number },
+  ): Promise<void> {
+    await this.requireUser(alias).expectInviteRefusedBySeatLimit(email, expected);
+  }
+
+  async expectEntitlementsAudit(
+    alias: string,
+    expected: { org: string; actor: string; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).expectEntitlementsAudit(expected);
   }
 
   async expectMemberConnections(alias: string): Promise<void> {
@@ -836,6 +1174,12 @@ export class PaseoHub {
 
   async inviteMember(alias: string, email: string, role: "admin" | "member"): Promise<string> {
     return this.requireUser(alias).invite(email, role);
+  }
+
+  async inviteMembers(alias: string, emails: readonly string[]): Promise<void> {
+    for (const email of emails) {
+      await this.requireUser(alias).invite(email, "member");
+    }
   }
 
   async openInvitation(alias: string, link: string): Promise<void> {
@@ -1922,7 +2266,7 @@ class HubUser {
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
-  async proveAuthenticationPendingLocksMode(account: Account): Promise<void> {
+  async proveAuthenticationPendingLocksMode(account: Account, organization: string): Promise<void> {
     const serverFunctions = "**/_serverFn/**";
     let authRequests = 0;
     let responseCompleted = () => {};
@@ -1972,7 +2316,11 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+    await expect(
+      this.page
+        .getByRole("heading", { name: "Choose an organization" })
+        .or(this.page.locator("header").first().getByText(organization, { exact: true })),
+    ).toBeVisible();
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -2860,6 +3208,7 @@ class HubUser {
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
     const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
+    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
@@ -2874,6 +3223,8 @@ class HubUser {
     await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(usage).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -2903,6 +3254,7 @@ class HubUser {
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
     const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
+    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
@@ -2919,6 +3271,8 @@ class HubUser {
     await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(usage).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3004,6 +3358,293 @@ class HubUser {
   async expectMemberConnections(): Promise<void> {
     await this.expectConnectionShell();
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
+  }
+
+  async expectUsageUnlimitedDefaults(): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    await expect(
+      this.page.getByRole("heading", { name: "Usage", exact: true, level: 1 }),
+    ).toBeVisible();
+    const table = this.page.getByRole("table", { name: "Limits" });
+    await expect(this.limitRow(table, "Seats")).toContainText("Unlimited");
+    await expect(this.limitRow(table, "Members can invite")).toContainText("Allowed");
+    await expectAccessible(this.page);
+  }
+
+  /** The Usage page is read-only for customers: no override affordance anywhere on it. */
+  async expectUsageReadOnly(): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    await expect(this.page.getByRole("button", { name: /Override/u })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectNoOperatorNav(): Promise<void> {
+    await this.openOrganizationSection("Projects");
+    await expect(this.page.getByRole("navigation", { name: "Instance" })).toHaveCount(0);
+    await expect(this.page.getByRole("link", { name: "Operator", exact: true })).toHaveCount(0);
+  }
+
+  /** A non-operator reaching the operator route is refused server-side, not merely un-navigated to. */
+  async expectOperatorRouteRefused(): Promise<void> {
+    await this.page.goto(`${this.origin}/operator`);
+    await expect(this.page.getByText("You don't have operator access.")).toBeVisible();
+  }
+
+  async openOperatorConsole(): Promise<void> {
+    await this.page
+      .getByRole("navigation", { name: "Instance" })
+      .getByRole("link", { name: "Operator" })
+      .click();
+    await expect(
+      this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
+    ).toBeVisible();
+    // The heading renders immediately, before the organization list has loaded — wait for the
+    // real picker (a combobox) rather than its loading skeleton, so this fails if the list never
+    // arrives instead of racing ahead of it.
+    await expect(this.page.getByRole("combobox", { name: "Manage organization" })).toBeVisible();
+  }
+
+  private limitRow(table: Locator, resource: string): Locator {
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: resource, exact: true }) });
+  }
+
+  private entitlementRow(table: Locator, entitlement: string): Locator {
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: entitlement, exact: true }) });
+  }
+
+  /** Navigate to the operator console and select one organization, leaving its entitlements table
+   * loaded. Every operator override and audit read starts here. */
+  private async openOperatorFor(org: string): Promise<void> {
+    await this.openOperatorConsole();
+    await this.chooseOption(this.page.getByRole("combobox", { name: "Manage organization" }), org);
+    await expect(this.page.getByRole("table", { name: "Entitlements" })).toBeVisible();
+  }
+
+  async openSeatOverrideEditor(input: { org: string; max: number; reason: string }): Promise<void> {
+    await this.openOperatorFor(input.org);
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Seats")
+      .getByRole("button", { name: "Override seat limit" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Seat limit").fill(String(input.max));
+    await dialog.getByLabel("Reason").fill(input.reason);
+  }
+
+  async saveSeatOverride(expectedSeats: number): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Save override" }).click();
+    await expect(dialog).toBeHidden();
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Seats")).toContainText(String(expectedSeats));
+    await expectAccessible(this.page);
+  }
+
+  async openMeterOverrideEditor(input: {
+    org: string;
+    limit: number;
+    reason: string;
+  }): Promise<void> {
+    await this.openOperatorFor(input.org);
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Executions this month")
+      .getByRole("button", { name: "Override executions this month" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Executions this month").fill(String(input.limit));
+    await dialog.getByLabel("Reason").fill(input.reason);
+  }
+
+  async saveMeterOverride(expectedLimit: number): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Save override" }).click();
+    await expect(dialog).toBeHidden();
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Executions this month")).toContainText(
+      String(expectedLimit),
+    );
+    await expectAccessible(this.page);
+  }
+
+  async expectMeterUsage(expected: { used: number; limit: number }): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    const table = this.page.getByRole("table", { name: "Limits" });
+    await expect(this.limitRow(table, "Executions this month")).toContainText(
+      `${expected.used}/${expected.limit}`,
+    );
+  }
+
+  async expectInviteRefusedBySeatLimit(
+    email: string,
+    expected: { limit: number; current: number },
+  ): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    const form = await this.openInvitationForm();
+    await form.getByLabel("Invitee email").fill(email);
+    await form.getByRole("button", { name: "Create invitation" }).click();
+    await expect(form).toBeHidden();
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText("Seat limit reached");
+    await expect(alert).toContainText(`${expected.current} of ${expected.limit} seats`);
+    await expect(alert).toContainText("Usage page");
+    await expect(this.invitationRow(email)).toHaveCount(0);
+  }
+
+  async expectEntitlementsAudit(expected: {
+    org: string;
+    actor: string;
+    reason: string;
+  }): Promise<void> {
+    await this.openOperatorFor(expected.org);
+    const auditRow = this.page
+      .getByRole("table", { name: "Audit trail" })
+      .getByRole("row")
+      .filter({ hasText: expected.reason });
+    await expect(auditRow).toContainText("Override");
+    await expect(auditRow).toContainText(expected.actor);
+    await expect(auditRow).toContainText(expected.reason);
+    await expectAccessible(this.page);
+  }
+
+  async expectNoBillingNavigation(): Promise<void> {
+    await this.openOrganizationSection("Projects");
+    await expect(this.page.getByRole("link", { name: "Billing", exact: true })).toHaveCount(0);
+    await expect(this.page.getByRole("button", { name: "Billing", exact: true })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectBillingPageUnavailable(): Promise<void> {
+    const organizationSlug = new URL(this.page.url()).pathname.split("/")[2];
+    if (organizationSlug === undefined) throw new Error("organization slug is unavailable");
+    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/billing`);
+    expect(response?.status()).toBe(404);
+  }
+
+  async openPlanDialog(): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.getByRole("button", { name: /^(Choose a plan|Change plan)$/u }).click();
+    await expect(
+      this.page.getByRole("dialog").getByRole("heading", { name: "Choose a plan" }),
+    ).toBeVisible();
+  }
+
+  async choosePlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: interval, exact: true }).click();
+    // Choosing a plan redirects through the fixture checkout back to the billing page.
+    await dialog.getByRole("button", { name: `Choose ${plan}`, exact: true }).click();
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
+  }
+
+  async subscribeToPlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
+    await this.openPlanDialog();
+    await this.choosePlan(plan, interval);
+  }
+
+  async expectCurrentPlan(plan: string): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.reload();
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
+    // Scope to main: a plan name like "Team" also names a sidebar nav link.
+    await expect(this.page.getByRole("main").getByText(plan, { exact: true })).toBeVisible();
+    await expectAccessible(this.page);
+  }
+
+  async expectInviteBlockedByPlan(email: string): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    const form = await this.openInvitationForm();
+    await form.getByLabel("Invitee email").fill(email);
+    await form.getByRole("button", { name: "Create invitation" }).click();
+    await expect(form).toBeHidden();
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText("Inviting members isn't enabled");
+    await expect(this.invitationRow(email)).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectPendingInvitation(email: string): Promise<void> {
+    await this.openOrganizationSection("Team");
+    await expect(this.invitationRow(email)).toBeVisible();
+  }
+
+  /** Every seat is still present after a downgrade — grandfathering never deletes to fit. */
+  async expectPendingInvitationsRetained(emails: readonly string[]): Promise<void> {
+    await this.openOrganizationSection("Team");
+    await this.page.reload();
+    for (const email of emails) {
+      await expect(this.invitationRow(email)).toBeVisible();
+    }
+  }
+
+  /**
+   * The over-limit banner a downgrade leaves behind. It lives on the customer Usage page (not
+   * Billing), so it renders self-hosted too. Reload so the page re-reads the plan the webhook just
+   * stamped — a server-side stamp does not invalidate the client query.
+   */
+  async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    await this.page.reload();
+    const banner = this.page.getByRole("alert", { name: "Over limit" });
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText(`You have ${expected.used} seats in use`);
+    await expect(banner).toContainText(`your limit is ${expected.limit}`);
+    await expectAccessible(this.page);
+  }
+
+  async expectNoOverLimitBanner(): Promise<void> {
+    await this.openOrganizationSection("Usage");
+    await this.page.reload();
+    await expect(this.page.getByRole("alert", { name: "Over limit" })).toHaveCount(0);
+  }
+
+  /** Assert the granted / override / effective cells of one entitlement row after a re-stamp — on
+   * the operator page, the only surface that shows the granted/override breakdown. */
+  async expectEntitlementCells(
+    org: string,
+    name: string,
+    expected: { granted: string; override: string; effective: string },
+  ): Promise<void> {
+    await this.openOperatorFor(org);
+    const cells = this.entitlementRow(
+      this.page.getByRole("table", { name: "Entitlements" }),
+      name,
+    ).getByRole("cell");
+    await expect(cells.nth(1)).toHaveText(expected.granted);
+    await expect(cells.nth(2)).toHaveText(expected.override);
+    await expect(cells.nth(3)).toHaveText(expected.effective);
+    await expectAccessible(this.page);
+  }
+
+  /** Reset the seat override back to the plan default from the operator override dialog. */
+  async clearSeatOverride(input: {
+    org: string;
+    reason: string;
+    expectedEffective: string;
+  }): Promise<void> {
+    await this.openOperatorFor(input.org);
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Seats")
+      .getByRole("button", { name: "Override seat limit" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Reason").fill(input.reason);
+    await dialog.getByRole("button", { name: "Reset to plan default" }).click();
+    await expect(dialog).toBeHidden();
+    const cells = this.entitlementRow(table, "Seats").getByRole("cell");
+    await expect(cells.nth(2)).toHaveText("—");
+    await expect(cells.nth(3)).toHaveText(input.expectedEffective);
+    await expectAccessible(this.page);
   }
 
   private async expectConnectionShell(): Promise<void> {
@@ -3584,7 +4225,7 @@ class HubUser {
   }
 
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Usage" | "Billing",
   ): Promise<void> {
     const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
     if (await mobileSidebar.isVisible().catch(() => false)) {
@@ -3777,6 +4418,49 @@ interface HttpResponse {
 }
 
 const WEBHOOK_SECRET = "phase-zero-webhook-secret";
+// Must match e2e/app.ts's STRIPE_WEBHOOK_SECRET env value and browser-child.ts's fixture config.
+const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
+
+interface PublicBillingPlanExpectation {
+  slug: string;
+  name: string;
+  marketingFeatures: readonly string[];
+  prices: {
+    monthly: { unitAmount: number; currency: string } | null;
+    annual: { unitAmount: number; currency: string } | null;
+  };
+}
+
+// Mirrors src/e2e/harness/browser-billing.ts's FIXTURE_BILLING_PRODUCTS/FIXTURE_BILLING_PRICES.
+const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
+  {
+    slug: "free",
+    name: "Free",
+    marketingFeatures: ["1 seat", "100 executions / month", "Community support"],
+    prices: {
+      monthly: { unitAmount: 0, currency: "usd" },
+      annual: { unitAmount: 0, currency: "usd" },
+    },
+  },
+  {
+    slug: "solo",
+    name: "Solo",
+    marketingFeatures: ["Unlimited seats", "2,000 executions / month", "Email support"],
+    prices: {
+      monthly: { unitAmount: 2900, currency: "usd" },
+      annual: { unitAmount: 29000, currency: "usd" },
+    },
+  },
+  {
+    slug: "team",
+    name: "Team",
+    marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
+    prices: {
+      monthly: { unitAmount: 9900, currency: "usd" },
+      annual: { unitAmount: 99000, currency: "usd" },
+    },
+  },
+];
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const ORGANIZATION_POST_PATHS = [

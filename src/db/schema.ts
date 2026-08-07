@@ -10,6 +10,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -614,6 +615,7 @@ export const users = pgTable("user", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   mustChangePassword: boolean("must_change_password").default(false).notNull(),
+  isInstanceOperator: boolean("is_instance_operator").default(false).notNull(),
 });
 
 export const sessions = pgTable(
@@ -1028,3 +1030,119 @@ export const organizationApiKeys = pgTable(
     ),
   ],
 );
+
+export const ENTITLEMENT_CHANGE_SOURCES = ["provisioning", "plan_stamp", "override"] as const;
+
+export const organizationEntitlements = pgTable("organization_entitlements", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  granted: jsonb().notNull(),
+  overrides: jsonb().notNull().default({}),
+  planId: text("plan_id"),
+  planVersion: text("plan_version"),
+  stampedAt: timestamp("stamped_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const entitlementChanges = pgTable(
+  "entitlement_changes",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    actor: text(),
+    source: text().$type<(typeof ENTITLEMENT_CHANGE_SOURCES)[number]>().notNull(),
+    before: jsonb(),
+    after: jsonb().notNull(),
+    reason: text(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("entitlement_changes_organization_created_idx").on(
+      table.organizationId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "entitlement_changes_source_check",
+      sql`${table.source} in ('provisioning', 'plan_stamp', 'override')`,
+    ),
+  ],
+);
+
+export const organizationUsage = pgTable(
+  "organization_usage",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    meter: text().notNull(),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    used: bigint({ mode: "number" }).notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.meter, table.periodStart] }),
+    index("organization_usage_organization_meter_idx").on(table.organizationId, table.meter),
+    // Usage only ever accumulates; a negative counter would be a corruption, so the database
+    // refuses it independently of any caller validation.
+    check("organization_usage_used_non_negative", sql`${table.used} >= 0`),
+  ],
+);
+
+export const BILLING_PLAN_PRICE_INTERVALS = ["monthly", "annual"] as const;
+
+// Mirror of Stripe's plan catalog (products + prices tagged `metadata.paseo_plan=true`).
+// `id` is the Stripe product id; nothing else in the schema references it — see the plan's
+// "materialize, don't reference" decision. Self-hosted instances never sync, so these tables
+// stay empty rather than absent.
+export const billingPlans = pgTable("billing_plans", {
+  id: text().primaryKey(),
+  // Unique: `slug` is catalog identity (`{slug}_{interval}` lookup keys resolve prices, and
+  // checkout selects a plan by slug). Two products claiming one slug is a rejected ambiguity, not
+  // an arbitrary winner — the sync drops the colliding products and this constraint is the backstop.
+  slug: text().notNull().unique(),
+  name: text().notNull(),
+  template: jsonb().notNull(),
+  templateHash: text("template_hash").notNull(),
+  marketing: jsonb().notNull(),
+  active: boolean().notNull(),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+});
+
+export const billingPlanPrices = pgTable(
+  "billing_plan_prices",
+  {
+    id: text().primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => billingPlans.id, { onDelete: "cascade" }),
+    lookupKey: text("lookup_key").notNull(),
+    interval: text().$type<(typeof BILLING_PLAN_PRICE_INTERVALS)[number]>().notNull(),
+    unitAmount: integer("unit_amount").notNull(),
+    currency: text().notNull(),
+    active: boolean().notNull(),
+  },
+  (table) => [
+    index("billing_plan_prices_plan_id_idx").on(table.planId),
+    check("billing_plan_prices_interval_check", sql`${table.interval} in ('monthly', 'annual')`),
+  ],
+);
+
+// The organization's current Stripe subscription, mirrored locally. One row per organization
+// (`referenceId = organizationId`). `plan_id` is a soft reference to `billing_plans.id`, resolved
+// from the subscription's price at webhook time — never dereferenced by enforcement, which reads
+// only `organization_entitlements`. `status` carries Stripe's own vocabulary verbatim, so no
+// check constraint drifts against it. Self-hosted instances never write here.
+export const organizationSubscriptions = pgTable("organization_subscriptions", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  stripeCustomerId: text("stripe_customer_id").notNull(),
+  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
+  planId: text("plan_id"),
+  status: text().notNull(),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});

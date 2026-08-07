@@ -4,6 +4,7 @@ import {
   Check,
   ChevronsUpDown,
   Cpu,
+  CreditCard,
   FolderKanban,
   Gauge,
   History,
@@ -11,12 +12,14 @@ import {
   LogOut,
   Plus,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Users,
 } from "lucide-react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { billingConfigured } from "../server/capabilities.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Page } from "../components/app/page.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";
@@ -265,12 +268,12 @@ function AppSidebar({
         )}
       </SidebarHeader>
       <SidebarContent>
-        {tenant === undefined ? null : (
-          <NavigationGroups
-            tenant={tenant}
-            canManageResources={account.capabilities.manageResources}
-          />
-        )}
+        <NavigationGroups
+          organizationSlug={tenant?.organization.slug ?? account.organization.slug}
+          projectSlug={tenant?.project?.slug}
+          canManageResources={account.capabilities.manageResources}
+        />
+        {account.isInstanceOperator ? <InstanceNavigationGroup /> : null}
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
@@ -295,6 +298,7 @@ const ORGANIZATION_DESTINATIONS = [
   { section: "connections", label: "Connections", icon: Cable },
   { section: "api-keys", label: "API keys", icon: KeyRound },
   { section: "team", label: "Team", icon: Users },
+  { section: "usage", label: "Usage", icon: Gauge },
 ] as const;
 const PROJECT_DESTINATIONS = [
   { section: "overview", label: "Overview", icon: Gauge },
@@ -340,16 +344,30 @@ function NavItem({
   );
 }
 
+// Rendered from the active account's organization when the route has no tenant of its own — the
+// instance-scoped operator page is under the shell but outside /o/, and the sidebar must still let
+// the operator get back to their organization's sections.
 function NavigationGroups({
-  tenant,
+  organizationSlug,
+  projectSlug,
   canManageResources,
 }: {
-  tenant: RouteTenant;
+  organizationSlug: string;
+  projectSlug: string | undefined;
   canManageResources: boolean;
 }) {
-  const organizationBase = `/o/${tenant.organization.slug}`;
+  const organizationBase = `/o/${organizationSlug}`;
   const projectBase =
-    tenant.project === null ? undefined : `${organizationBase}/projects/${tenant.project.slug}`;
+    projectSlug === undefined ? undefined : `${organizationBase}/projects/${projectSlug}`;
+  // Billing is hosted-only: the entry appears solely when the instance is billing-configured, so
+  // self-hosted deployments show no billing navigation at all (the route also 404s there).
+  const loadBillingConfigured = useServerFn(billingConfigured);
+  const billingQuery = useQuery({
+    queryKey: ["billing-configured"],
+    queryFn: () => loadBillingConfigured(),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const billingEnabled = billingQuery.data?.configured === true;
   return (
     <>
       <nav aria-label="Organization">
@@ -369,6 +387,9 @@ function NavigationGroups({
                   icon={destination.icon}
                 />
               ))}
+              {billingEnabled && (
+                <NavItem to={`${organizationBase}/billing`} label="Billing" icon={CreditCard} />
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -395,6 +416,28 @@ function NavigationGroups({
         </nav>
       )}
     </>
+  );
+}
+
+/**
+ * Instance-scoped navigation — the operator back office. It lives outside the organization group
+ * because an operator acts across organizations, so it renders whether or not a tenant is
+ * resolved. Presence here is presentation only: the operator routes enforce the flag server-side.
+ */
+function InstanceNavigationGroup() {
+  return (
+    <nav aria-label="Instance">
+      <SidebarGroup>
+        <div className="px-2 pb-2 text-xs font-medium text-muted-foreground group-data-[collapsible=icon]:sr-only">
+          Instance
+        </div>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <NavItem to="/operator" label="Operator" icon={ShieldCheck} />
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    </nav>
   );
 }
 
@@ -627,6 +670,9 @@ const ROUTE_SECTIONS = [
   { suffix: "/connections", label: "Connections" },
   { suffix: "/api-keys", label: "API keys" },
   { suffix: "/team", label: "Team" },
+  { suffix: "/usage", label: "Usage" },
+  { suffix: "/billing", label: "Billing" },
+  { suffix: "/operator", label: "Operator" },
 ] as const;
 
 function routeSection(pathname: string) {

@@ -12,6 +12,14 @@ import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
+import {
+  composeBilling,
+  createStripeBillingClient,
+  createStripeCatalogSource,
+  readBillingConfig,
+  type BillingRuntime,
+} from "./billing/index.js";
+import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
 import { createSlackRegistration } from "./providers/slack/index.js";
@@ -42,15 +50,31 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const config = loadRuntimeConfig();
   const identity = readHubIdentity();
   const database = await createDatabaseHandle(config.databaseUrl);
-  const auth =
-    database === null
+  const entitlements = composeEntitlements(database, config.databaseUrl);
+  const billingConfig = readBillingConfig();
+  const billing =
+    billingConfig === undefined
       ? null
-      : createProductionAuthServer(
-          config.databaseUrl,
-          config.authPolicy,
-          identity,
-          config.trustedClientIpHeader,
-        );
+      : composeBilling({
+          config: billingConfig,
+          database,
+          catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
+          billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
+          seatUsage: entitlements.seatUsage,
+        });
+  // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
+  // starting — only the marketing catalog goes stale until the next webhook or restart.
+  await billing?.syncCatalog().catch((error: unknown) => {
+    logger.error({ err: error }, "billing catalog sync failed at boot");
+  });
+  const auth = createProductionAuthServer(
+    entitlements,
+    config.databaseUrl,
+    config.authPolicy,
+    identity,
+    config.trustedClientIpHeader,
+    billing,
+  );
   if (config.authPolicy.bootstrap !== undefined && auth === null) {
     throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
   }
@@ -69,6 +93,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   return createApplicationRuntime({
     database,
     auth,
+    entitlements: entitlements.service,
+    billing,
     publicApi:
       auth?.apiKeys === undefined
         ? { status: "unavailable" }
@@ -78,16 +104,19 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),
     async close() {
       await auth?.close();
+      await entitlements.close();
       await database?.close();
     },
   });
 }
 
 function createProductionAuthServer(
+  entitlements: ComposedEntitlements,
   databaseUrl: string,
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
   trustedClientIpHeader: string | undefined,
+  billing: BillingRuntime | null,
 ) {
   if (identity.authSecret === undefined) {
     logger.warn("PASEO_HUB_AUTH_SECRET is unset; browser auth routes are closed");
@@ -95,10 +124,19 @@ function createProductionAuthServer(
   }
   return createAuthServer({
     databaseUrl,
+    entitlements: entitlements.service,
     secret: identity.authSecret,
     baseURL: identity.appUrl,
     policy: authPolicy,
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
+    // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
+    // (billing null) keeps the createAuthServer default, which stamps unlimited.
+    ...(billing === null
+      ? {}
+      : {
+          provisioningEntitlements: () => billing.provisioningEntitlement(),
+          onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
+        }),
   });
 }
 

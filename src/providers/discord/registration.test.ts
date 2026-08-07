@@ -135,6 +135,7 @@ class RegistrationAuth implements AuthServer {
     return {
       session: { id: access.session.id, activeOrganizationId: null },
       account: access.account,
+      isInstanceOperator: false,
     };
   }
   rejectCookieMutation(): Response | undefined {

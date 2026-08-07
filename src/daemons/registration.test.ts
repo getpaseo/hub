@@ -209,6 +209,7 @@ class RegistrationJourney {
         resolveAccount: async () => ({
           session: { ...organizationAccess.session, activeOrganizationId: null },
           account: organizationAccess.account,
+          isInstanceOperator: false,
         }),
         rejectCookieMutation: () => undefined,
       },

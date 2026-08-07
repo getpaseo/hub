@@ -9,6 +9,7 @@ import type { GitHubReactionClient } from "./provider.js";
 import { createGitHubTriggerProvider } from "./provider.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
+import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
   it("normalizes typed inputs identically at the provider boundary", async () => {
@@ -241,6 +242,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     let dispatches = 0;
     const { handler, engine } = createDurableWorkflowHandler({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [provider],
       dispatchLaunchMachineIntent: async (intent) => {
         dispatches += 1;

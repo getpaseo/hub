@@ -6,6 +6,7 @@ import { Client } from "pg";
 import { z } from "zod";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
+import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { createHubApplication, type HubOperations, type HubRuntime } from "../app.js";
 import { createDatabase } from "../db/pg.js";
@@ -150,6 +151,7 @@ describe("daemon registration authenticated application boundary", () => {
   let postgres: StartedPostgreSqlContainer;
   let database: Database;
   let auth: AuthServer;
+  let entitlements: ComposedEntitlements;
   let hub: HubRuntime;
   let boundary: RegistrationBoundary;
 
@@ -159,8 +161,10 @@ describe("daemon registration authenticated application boundary", () => {
       .start();
     const databaseUrl = postgres.getConnectionUri();
     database = await createDatabase(databaseUrl);
+    entitlements = composeEntitlements(database, databaseUrl);
     auth = createAuthServer({
       databaseUrl,
+      entitlements: entitlements.service,
       baseURL: "https://hub.paseo.test",
       secret: "phase-two-registration-auth-secret-at-least-32-characters",
       policy: {
@@ -171,6 +175,7 @@ describe("daemon registration authenticated application boundary", () => {
     });
     const application = createHubApplication({
       database,
+      entitlements: entitlements.service,
       publicApi: { status: "unavailable" },
       browserOrganizationAccess: auth,
       publicBaseUrl: "https://hub.paseo.test",
@@ -182,6 +187,7 @@ describe("daemon registration authenticated application boundary", () => {
   afterAll(async () => {
     await hub.stop();
     await auth.close();
+    await entitlements.close();
     await database.close();
     await postgres.stop();
   }, 120_000);
@@ -668,6 +674,7 @@ class PostgresRegistration {
         resolveAccount: async () => ({
           session: { ...this.organizationAccess.session, activeOrganizationId: null },
           account: this.organizationAccess.account,
+          isInstanceOperator: false,
         }),
         rejectCookieMutation: () => undefined,
       },
