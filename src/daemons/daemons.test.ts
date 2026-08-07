@@ -266,7 +266,7 @@ describe("daemon enrollment and execution", () => {
 
       hub.releaseLaunchMaterialization();
       await hub.waitForRecoveredExecution(handedOff.execution.id);
-      assert.match(String(hub.createdAgentLaunch().prompt), /^token=resolved-secret/u);
+      assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
@@ -317,7 +317,7 @@ describe("daemon enrollment and execution", () => {
     assert(execution !== undefined);
     await hub.waitForRecoveredExecution(execution.id);
 
-    assert.match(String(hub.createdAgentLaunch().prompt), /^token=resolved-secret/u);
+    assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",
