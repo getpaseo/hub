@@ -1,6 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
+import {
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
+  MAX_PROMPT_PARTIAL_COUNT,
+  MAX_PROMPT_PARTIAL_PATH_LENGTH,
+} from "../config/prompt-partial-limits.js";
 import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
 import { logger } from "../logger.js";
@@ -34,7 +39,17 @@ const configurationRepositorySchema = projectScopeSchema.extend({
   connectionId: z.string().uuid(),
   repositoryId: z.number().int().positive(),
 });
-const manualConfigurationSchema = projectScopeSchema.extend({ rawYaml: z.string().max(1_048_576) });
+const manualConfigurationSchema = projectScopeSchema.extend({
+  rawYaml: z.string().max(1_048_576),
+  partials: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(MAX_PROMPT_PARTIAL_PATH_LENGTH),
+        content: z.string().max(MAX_PROMPT_PARTIAL_CONTENT_BYTES),
+      }),
+    )
+    .max(MAX_PROMPT_PARTIAL_COUNT),
+});
 
 export const tenantContext = createServerFn({ method: "GET" })
   .validator(
@@ -118,7 +133,10 @@ export const saveManualConfiguration = createServerFn({ method: "POST" })
   .handler(
     async ({ data }): Promise<Result<ManualConfigurationSaveResult>> =>
       commandResult(data, (dashboard) =>
-        dashboard.saveManualConfiguration(getRequest(), data, data.rawYaml),
+        dashboard.saveManualConfiguration(getRequest(), data, {
+          rawYaml: data.rawYaml,
+          partials: data.partials,
+        }),
       ),
   );
 

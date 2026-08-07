@@ -12,6 +12,7 @@ import {
 import type { EnvironmentConfig } from "../config/schema.js";
 import {
   resolvedPromptPartialsEvidence,
+  type PromptPartialBundleFile,
   type ResolvedPromptPartials,
 } from "../config/prompt-partials.js";
 import type {
@@ -37,6 +38,22 @@ export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments
   )[];
   triggers: readonly CompiledTrigger[];
 };
+
+const storedPromptPartialsSchema = z.object({
+  partials: z.array(z.object({ path: z.string(), content: z.string() })),
+});
+
+/**
+ * The partial files a revision was built from, read back out of the evidence this
+ * module writes. Revisions are immutable, so this is the authored source the
+ * dashboard editor reopens — the compiled configuration inlines the same content.
+ */
+export function revisionPromptPartials(
+  revision: Pick<ProjectConfigurationRevisionRecord, "sourceEvidence">,
+): readonly PromptPartialBundleFile[] {
+  const parsed = storedPromptPartialsSchema.safeParse(revision.sourceEvidence);
+  return parsed.success ? parsed.data.partials : [];
+}
 
 function addPromptPartialsEvidence(
   sourceEvidence: unknown,

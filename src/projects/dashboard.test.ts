@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { ProjectDashboard } from "./dashboard.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { ProjectDashboard, type ManualConfigurationInput } from "./dashboard.js";
 
 describe("project dashboard activity read models", () => {
   it("omits payload-bearing evidence from lists and retains it in detail", async () => {
@@ -94,6 +95,115 @@ describe("project dashboard activity read models", () => {
     assert.equal("rawPayload" in unroutedEvent, false);
   });
 });
+
+describe("manual configuration saves", () => {
+  const yamlWithInclude = [
+    "environments:",
+    "  - name: runner",
+    "    kind: daemon",
+    `    daemon: ${TEST_DAEMON_SLUG}`,
+    "    cwd: /repo",
+    "triggers:",
+    "  - name: triage",
+    "    on: manual.run",
+    "    max_runtime: 1h",
+    "    steps:",
+    "      - id: only",
+    "        environment: runner",
+    "        max_runtime: 10m",
+    "        idle_timeout: 1m",
+    "        agent: { provider: claude }",
+    "        prompt:",
+    "          - include: triage/preamble.md",
+    "",
+  ].join("\n");
+
+  it("activates the YAML and its partials as one revision the editor reopens", async () => {
+    const hub = await manualConfigurationHub();
+
+    const saved = await hub.save({
+      rawYaml: yamlWithInclude,
+      partials: [{ path: "triage/preamble.md", content: "Triage first." }],
+    });
+
+    assert.equal(saved.outcome, "activated");
+    const active = (await hub.snapshot()).configuration.activeRevision;
+    assert.equal(active?.version, saved.revision.version);
+    assert.equal(active?.rawYaml, yamlWithInclude);
+    assert.deepEqual(active?.partials, [{ path: "triage/preamble.md", content: "Triage first." }]);
+  });
+
+  it("rejects an include with no partial supplied and preserves the active revision", async () => {
+    const hub = await manualConfigurationHub();
+    const activated = await hub.save({
+      rawYaml: yamlWithInclude,
+      partials: [{ path: "triage/preamble.md", content: "Triage first." }],
+    });
+
+    const rejected = await hub.save({ rawYaml: yamlWithInclude, partials: [] });
+
+    assert.equal(rejected.outcome, "invalid");
+    assert.match(String(rejected.errors), /was not supplied/u);
+    assert.equal(
+      (await hub.snapshot()).configuration.activeRevision?.version,
+      activated.revision.version,
+    );
+  });
+
+  it("rejects a partial the configuration never includes", async () => {
+    const hub = await manualConfigurationHub();
+
+    const rejected = await hub.save({
+      rawYaml: yamlWithInclude,
+      partials: [
+        { path: "triage/preamble.md", content: "Triage first." },
+        { path: "unused.md", content: "Nothing includes this." },
+      ],
+    });
+
+    assert.equal(rejected.outcome, "invalid");
+    assert.match(String(rejected.errors), /not referenced by the configuration/u);
+  });
+
+  it("records invalid YAML as a revision without activating it", async () => {
+    const hub = await manualConfigurationHub();
+
+    const rejected = await hub.save({ rawYaml: "environments: [", partials: [] });
+
+    assert.equal(rejected.outcome, "invalid");
+    assert.equal((await hub.snapshot()).configuration.activeRevision, null);
+  });
+});
+
+async function manualConfigurationHub() {
+  const database = createMemoryDatabase({
+    memberships: [
+      {
+        userId: "user-1",
+        organizationId: "org-1",
+        organizationName: "Acme",
+        organizationSlug: "acme",
+        membershipId: "membership-1",
+        role: "owner",
+      },
+    ],
+  });
+  await enrollTestDaemon(database, "org-1");
+  await database.createProject({
+    organizationId: "org-1",
+    name: "Hub",
+    slug: "hub",
+    createdByUserId: "user-1",
+  });
+  const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
+  const request = new Request("https://hub.test/o/acme/projects/hub");
+  const scope = { organizationSlug: "acme", projectSlug: "hub" };
+  return {
+    save: (input: ManualConfigurationInput) =>
+      dashboard.saveManualConfiguration(request, scope, input),
+    snapshot: () => dashboard.projectSnapshot(request, scope),
+  };
+}
 
 function accountAuth(): AuthServer {
   return {

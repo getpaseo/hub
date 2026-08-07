@@ -17,6 +17,25 @@ const validConfiguration =
   "environments:\n  - name: runner\n    kind: docker\n    image: paseo/test\ntriggers: []";
 const unresolvedConfiguration =
   "environments:\n  - name: runner\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\ntriggers: []";
+const includeConfiguration = [
+  "environments:",
+  "  - name: runner",
+  "    kind: daemon",
+  "    daemon: editor-daemon",
+  "    cwd: /workspace",
+  "triggers:",
+  "  - name: triage",
+  "    on: manual.run",
+  "    max_runtime: 1h",
+  "    steps:",
+  "      - id: only",
+  "        environment: runner",
+  "        max_runtime: 10m",
+  "        idle_timeout: 1m",
+  "        agent: { provider: claude }",
+  "        prompt:",
+  "          - include: triage/preamble.md",
+].join("\n");
 
 test("creates and archives projects through the organization project list", async ({
   hub,
@@ -130,6 +149,47 @@ test("scopes configuration activation feedback to its project", async ({ hub, pa
   );
   await app.navigation.switchProject("Second");
   await app.configuration.expectNoPriorProjectFeedback(1, "missing-runner");
+});
+
+test("edits configuration and prompt partials in the editor", async ({ hub, page }) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
+  await app.navigation.openProject("Default");
+  await app.navigation.openProjectSection("Configuration");
+
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.expectConfigurationActivated(1);
+  await app.configuration.expectReadOnlyEditor("environments:");
+  await app.configuration.expectHighlightedYaml();
+
+  await app.configuration.addPartial("triage/preamble.md", "Triage before labelling.");
+  await app.configuration.openFile("hub.yml");
+  await app.configuration.saveManualConfiguration(includeConfiguration);
+  await app.configuration.expectConfigurationActivated(2);
+
+  await app.navigation.openProjectSection("Overview");
+  await app.navigation.openProjectSection("Configuration");
+  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
+  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+});
+
+test("rejects a partial the configuration does not include", async ({ hub, page }) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
+  await app.navigation.openProject("Default");
+  await app.navigation.openProjectSection("Configuration");
+
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.expectActiveRevision(1);
+  await app.configuration.addPartial("orphan.md", "Nothing includes this.");
+  await app.configuration.save();
+
+  await app.configuration.expectValidationError("not referenced by the configuration");
+  await app.configuration.expectActiveRevision(1);
 });
 
 test("uses manual configuration without a GitHub deployment", async ({ hub }) => {

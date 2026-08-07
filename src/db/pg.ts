@@ -3009,7 +3009,9 @@ class PgDatabase implements Database {
         input.sourceKind,
         input.sourceEvidence,
         input.rawYaml ?? null,
-        input.normalizedConfiguration,
+        // A rejected save has no compiled document. The column is not-null, so that is
+        // stored as the jsonb value `null` — passing JS null would be SQL NULL.
+        input.normalizedConfiguration ?? "null",
         input.validationErrors ?? null,
         input.contentHash,
         input.createdByUserId ?? null,

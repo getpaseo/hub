@@ -1,9 +1,20 @@
 import { load } from "js-yaml";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
-import { ProjectConfigurationStore } from "../configuration/store.js";
-import { configurationValidationMessages } from "../configuration/validation-errors.js";
+import { ProjectConfigurationStore, revisionPromptPartials } from "../configuration/store.js";
+import {
+  configurationValidationMessages,
+  promptPartialValidationErrors,
+  type ConfigurationValidationErrors,
+} from "../configuration/validation-errors.js";
 import { rawConfigurationHash } from "../config/compiler.js";
+import {
+  promptPartialIncludePath,
+  PromptPartialBundleError,
+  resolvePromptPartialsFromBundle,
+  type PromptPartialBundleFile,
+  type ResolvedPromptPartials,
+} from "../config/prompt-partials.js";
 import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
@@ -40,6 +51,12 @@ export interface ProjectRouteScope {
 export type ManualConfigurationSaveResult =
   | { outcome: "activated"; revision: { id: string; version: number } }
   | { outcome: "invalid"; revision: { id: string; version: number }; errors: string[] };
+
+/** One save: the YAML and every partial file it includes, activated together. */
+export interface ManualConfigurationInput {
+  rawYaml: string;
+  partials: readonly PromptPartialBundleFile[];
+}
 
 export class ProjectDashboard {
   constructor(
@@ -216,34 +233,28 @@ export class ProjectDashboard {
   async saveManualConfiguration(
     request: Request,
     scope: ProjectRouteScope,
-    rawYaml: string,
+    input: ManualConfigurationInput,
   ): Promise<ManualConfigurationSaveResult> {
     const { account, tenant } = await this.resolveProjectManager(request, scope);
     const status = await this.database.projectConfigurationReadModel(tenant.project.id);
     if (status.authority !== "manual") throw new ProjectCommandError("configuration_read_only");
-    const store = new ProjectConfigurationStore(this.database, tenant.project.id);
-    let rawConfiguration: unknown;
-    try {
-      rawConfiguration = load(rawYaml);
-    } catch (error) {
-      const revision = await this.database.insertProjectConfigurationRevision({
-        projectId: tenant.project.id,
-        sourceKind: "manual",
-        sourceEvidence: { kind: "manual", userId: account.account.id },
-        rawYaml,
-        normalizedConfiguration: null,
-        validationErrors: {
-          formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
-        },
-        contentHash: rawConfigurationHash(rawYaml),
-        createdByUserId: account.account.id,
-      });
-      return invalidManualConfiguration(revision);
+    const authored = await authorManualConfiguration(input);
+    if (!authored.success) {
+      return invalidManualConfiguration(
+        await this.recordRejectedManualConfiguration({
+          projectId: tenant.project.id,
+          userId: account.account.id,
+          rawYaml: input.rawYaml,
+          validationErrors: authored.validationErrors,
+        }),
+      );
     }
+    const store = new ProjectConfigurationStore(this.database, tenant.project.id);
     const revision = await store.insertManualRevision({
-      rawYaml,
-      rawConfiguration,
+      rawYaml: input.rawYaml,
+      rawConfiguration: authored.configuration,
       userId: account.account.id,
+      resolvedPromptPartials: authored.resolvedPromptPartials,
     });
     if (revision.validationErrors !== null) return invalidManualConfiguration(revision);
     await store.activate(revision.id);
@@ -251,6 +262,25 @@ export class ProjectDashboard {
       outcome: "activated",
       revision: { id: revision.id, version: revision.version },
     };
+  }
+
+  /** Saves the operator rejected: recorded as a revision so the attempt stays in history. */
+  private recordRejectedManualConfiguration(input: {
+    projectId: string;
+    userId: string;
+    rawYaml: string;
+    validationErrors: ConfigurationValidationErrors;
+  }) {
+    return this.database.insertProjectConfigurationRevision({
+      projectId: input.projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "manual", userId: input.userId },
+      rawYaml: input.rawYaml,
+      normalizedConfiguration: null,
+      validationErrors: input.validationErrors,
+      contentHash: rawConfigurationHash(input.rawYaml),
+      createdByUserId: input.userId,
+    });
   }
 
   async syncConfiguration(request: Request, scope: ProjectRouteScope) {
@@ -302,6 +332,42 @@ export class ProjectDashboard {
       throw new ProjectCommandError("forbidden");
     }
     return resolved;
+  }
+}
+
+type AuthoredManualConfiguration =
+  | { success: true; configuration: unknown; resolvedPromptPartials: ResolvedPromptPartials }
+  | { success: false; validationErrors: ConfigurationValidationErrors };
+
+/** Parses the YAML and pins its `include:` targets to the partials supplied with it. */
+async function authorManualConfiguration(
+  input: ManualConfigurationInput,
+): Promise<AuthoredManualConfiguration> {
+  let configuration: unknown;
+  try {
+    configuration = load(input.rawYaml);
+  } catch (error) {
+    return {
+      success: false,
+      validationErrors: {
+        formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
+      },
+    };
+  }
+  try {
+    return {
+      success: true,
+      configuration,
+      resolvedPromptPartials: await resolvePromptPartialsFromBundle({
+        configuration,
+        files: input.partials,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof PromptPartialBundleError) {
+      return { success: false, validationErrors: promptPartialValidationErrors(error.issues) };
+    }
+    throw error;
   }
 }
 
@@ -384,6 +450,10 @@ function configurationView(
             version: active.version,
             sourceKind: active.sourceKind,
             rawYaml: active.rawYaml,
+            partials: revisionPromptPartials(active).map(({ path, content }) => ({
+              path: promptPartialIncludePath(path),
+              content,
+            })),
             validation: active.validationErrors === null ? "valid" : "invalid",
             createdAt: active.createdAt.toISOString(),
           },

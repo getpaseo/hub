@@ -507,7 +507,7 @@ function compilePromptBlocks(
     if ("text" in block) return { kind: "text" as const, value: block.text };
     if (resolvedPromptPartials === undefined) {
       throw new Error(
-        `trigger ${triggerName} step ${stepId} prompt[${index}].include: repository partials are only available for GitHub-synchronized configurations; manual configurations cannot include repository files`,
+        `trigger ${triggerName} step ${stepId} prompt[${index}].include: this configuration was compiled without a prompt partial bundle, so no include can be resolved`,
       );
     }
     const path = validatePromptPartialPathForCompilation(block.include);
