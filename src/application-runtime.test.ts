@@ -12,7 +12,7 @@ import type { Database } from "./db/types.js";
 import { EntitlementsService } from "./entitlements/service.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
-import { replyCapabilityMetadata, replyOutputTool } from "./execution-capabilities/outputs.js";
+import { replyOutputTool } from "./execution-capabilities/outputs.js";
 
 describe("application runtime provider composition", () => {
   it("collects a fake registration without a concrete-provider case", async () => {
@@ -44,7 +44,6 @@ describe("application runtime provider composition", () => {
       outputs: [
         {
           type: "fake.output",
-          hub: replyCapabilityMetadata,
           tool: replyOutputTool,
           execute: () => Promise.resolve(),
         },

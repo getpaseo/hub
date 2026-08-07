@@ -20,7 +20,7 @@ The configuration install body may also include an optional `partials` array. Ea
 
 ## Workflow prompt capability inventory
 
-Each workflow step's agent prompt begins with a factual inventory of the capabilities available to that execution by default. It uses the header `Capabilities available in this execution:`, lists only the available capabilities, then leaves a blank line before the authored prompt. The inventory uses stable semantic names: `hub.finalize` records the current agent execution as complete and returns its result to the workflow, while `hub.reply` sends a message to the conversation that triggered the execution when that output is allowed and available. Finalizing an execution does not necessarily complete the whole workflow.
+Each workflow step's agent prompt begins with a factual inventory of the MCP tools available to that execution by default. It uses the header `Capabilities available in this execution:`, lists the actual callable tool names and descriptions, then leaves a blank line before the authored prompt. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
 
 Authors may opt out for an individual step with `inject_tool_inventory: false`:
 
@@ -77,4 +77,4 @@ The public Hub docs live in the separate `getpaseo/paseo` repository under `publ
 4. Replace the manual-run success example with the five durable fields listed above.
 5. Describe RFC 9457 errors, structured `issues`, `requestId`, `X-Request-ID`, and narrow delivery-key semantics.
 6. Document `GET /api/billing/plans` (unauthenticated, no scopes) — this is what paseo.sh's pricing page will fetch.
-7. Document workflow-step `inject_tool_inventory` and the semantic `hub.finalize` / `hub.reply` inventory names.
+7. Document workflow-step `inject_tool_inventory` and the actual `finish_execution` / output-tool inventory names.

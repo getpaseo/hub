@@ -1,11 +1,7 @@
 import type { ProjectConfigurationStore } from "../configuration/store.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
 import type { OrganizationConnectionUsage } from "../db/types.js";
-import type {
-  HubCapabilityMetadata,
-  OutputExecutor,
-  OutputToolDefinition,
-} from "../execution-capabilities/outputs.js";
+import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
 import type { GitHubConfigurationProvider } from "../configuration/github-sync.js";
 import type {
@@ -42,7 +38,6 @@ export interface ProviderConnectionRegistration {
 
 export interface ProviderOutputRegistration {
   type: string;
-  hub: HubCapabilityMetadata;
   tool: OutputToolDefinition;
   available?: (outputContext: unknown) => boolean;
   execute: OutputExecutor;

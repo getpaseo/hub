@@ -18,12 +18,8 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
 import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
-import {
-  OutputExecutorRegistry,
-  replyCapabilityMetadata,
-  replyOutputTool,
-  type OutputCapability,
-} from "./outputs.js";
+import { OutputExecutorRegistry, replyOutputTool, type OutputCapability } from "./outputs.js";
+import { composeExecutionPrompt } from "./prompt.js";
 import { createExecutionCapabilityServer } from "./server.js";
 
 const RpcResponseSchema = z
@@ -167,6 +163,64 @@ describe("execution capability MCP boundary", () => {
       });
       assert.equal(result.isError, undefined);
       assert.deepEqual(fixture.completions, [{ executionId: fixture.executionId, token: "token" }]);
+    } finally {
+      await client.close();
+      await closeServer(endpoint.server);
+    }
+  });
+
+  it("keeps a structured classifier inventory aligned with the exposed MCP tools", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 1, {
+      type: "object",
+      additionalProperties: false,
+      required: ["repo"],
+      properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+    });
+    const endpoint = await serveFixture(fixture);
+    const client = new Client({ name: "paseo-hub-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(endpoint.url), {
+      requestInit: { headers: { authorization: "Bearer token" } },
+    });
+    try {
+      // @ts-expect-error upstream SDK exactOptionalPropertyTypes mismatch
+      await client.connect(transport);
+      const exposedTools = await client.listTools();
+      const launchedPrompt = composeExecutionPrompt({
+        prompt: "Classify the request.",
+        allowOutputs: fixture.intent.allowOutputs,
+        outputContext: fixture.intent.outputContext,
+        ...(fixture.intent.outputSchema === undefined
+          ? {}
+          : { outputSchema: fixture.intent.outputSchema }),
+        capabilities: fixture.outputs,
+      });
+      const advertisedTools = launchedPrompt
+        .split("\n\n", 1)[0]!
+        .split("\n")
+        .slice(1)
+        .map((line) => line.slice(2, line.indexOf(":", 2)));
+
+      assert.deepEqual(
+        advertisedTools,
+        exposedTools.tools.map((tool) => tool.name),
+      );
+      assert.deepEqual(
+        exposedTools.tools.find((tool) => tool.name === "finish_execution")?.inputSchema,
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["output"],
+          properties: {
+            output: {
+              $id: "urn:paseo:hub:finish-execution-output",
+              type: "object",
+              additionalProperties: false,
+              required: ["repo"],
+              properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+            },
+          },
+        },
+      );
     } finally {
       await client.close();
       await closeServer(endpoint.server);
@@ -520,7 +574,6 @@ describe("execution capability MCP boundary", () => {
       [
         {
           type: "manual.reply",
-          hub: replyCapabilityMetadata,
           tool: { ...replyOutputTool, name: "send_manual_reply" },
           execute: async () => undefined,
         },
@@ -671,6 +724,7 @@ async function capabilityFixture(
   const database = createMemoryDatabase();
   const executionId = randomUUID();
   const token = "token";
+  const intent = launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes);
   await database.insertAgentExecution({
     id: executionId,
     organizationId: "org-1",
@@ -680,13 +734,12 @@ async function capabilityFixture(
     outputContext: slackOutputContext,
     configurationRevisionId: randomUUID(),
     completionTokenHash: hashAgentExecutionCompletionToken(token),
-    launchIntent: launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes),
+    launchIntent: intent,
   });
   const outbound: Array<import("./outputs.js").OutputExecutionInput> = [];
   const outputs = new OutputExecutorRegistry();
   outputs.register({
     type: "slack.reply",
-    hub: replyCapabilityMetadata,
     tool: outputTool,
     execute: async (input) => {
       outbound.push(input);
@@ -717,7 +770,9 @@ async function capabilityFixture(
   return {
     database,
     executionId,
+    intent,
     server,
+    outputs,
     outbound,
     completions,
     async call(method: string, params?: unknown) {

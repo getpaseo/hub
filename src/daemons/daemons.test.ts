@@ -115,7 +115,7 @@ describe("daemon enrollment and execution", () => {
       agent.prompt,
       [
         "Capabilities available in this execution:",
-        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "- finish_execution: Completes this execution and records its optional structured output.",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -148,8 +148,8 @@ describe("daemon enrollment and execution", () => {
       hub.createdAgentLaunch().prompt,
       [
         "Capabilities available in this execution:",
-        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
-        "- hub.reply: sends a message to the conversation that triggered the execution.",
+        "- finish_execution: Completes this execution and records its optional structured output.",
+        "- reply: Sends a reply to the conversation that triggered this execution. (up to 1 times).",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -162,7 +162,7 @@ describe("daemon enrollment and execution", () => {
       hub.createdAgentLaunch().prompt,
       [
         "Capabilities available in this execution:",
-        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "- finish_execution: Completes this execution and records its optional structured output.",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -177,6 +177,48 @@ describe("daemon enrollment and execution", () => {
     });
 
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
+  });
+
+  it("keeps a structured classifier launch inventory aligned with its MCP tools", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      prompt: "Classify the request.",
+      allowOutputs: [],
+      outputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["repo"],
+        properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+      },
+    });
+
+    const launch = hub.createdAgentLaunch();
+    if (typeof launch.prompt !== "string") throw new Error("agent prompt is unavailable");
+    const advertisedTools = launch.prompt
+      .split("\n\n", 1)[0]!
+      .split("\n")
+      .slice(1)
+      .map((line) => line.slice(2, line.indexOf(":", 2)));
+    const exposedTools = await hub.listExecutionTools(result.execution.id);
+
+    assert.deepEqual(
+      advertisedTools,
+      exposedTools.map((tool) => tool.name),
+    );
+    assert.deepEqual(exposedTools[0]?.inputSchema, {
+      type: "object",
+      additionalProperties: false,
+      required: ["output"],
+      properties: {
+        output: {
+          $id: "urn:paseo:hub:finish-execution-output",
+          type: "object",
+          additionalProperties: false,
+          required: ["repo"],
+          properties: { repo: { type: "string", enum: ["paseo", "hub"] } },
+        },
+      },
+    });
   });
 
   it("deduplicates durable fan-out per configured trigger match", async () => {
