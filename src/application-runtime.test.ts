@@ -8,6 +8,7 @@ import {
   hashAgentExecutionCompletionToken,
 } from "./agent-executions/completion-token.js";
 import { createMemoryDatabase } from "./db/memory.js";
+import { EntitlementsService } from "./entitlements/service.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
@@ -297,6 +298,9 @@ class RuntimeAuth implements AuthServer {
   rejectCookieMutation(): Response | undefined {
     return undefined;
   }
+  entitlements = new EntitlementsService(createMemoryDatabase(), {
+    seats: () => Promise.resolve(0),
+  });
   close(): Promise<void> {
     return Promise.resolve();
   }

@@ -166,6 +166,7 @@ describe("production Hub cold start", () => {
     process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"] = "api-owner@example.test";
     process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"] = "production-temporary-password";
     let keyAuthority: ReturnType<typeof createAuthServer> | undefined;
+    let keyAuthorityDatabase: Awaited<ReturnType<typeof createDatabase>> | undefined;
     try {
       const runtime = await startProductionRuntime();
       const client = new Client({ connectionString: databaseUrl });
@@ -176,7 +177,9 @@ describe("production Hub cold start", () => {
       await client.end();
       const identity = owner.rows[0];
       assert.ok(identity);
+      keyAuthorityDatabase = await createDatabase(databaseUrl);
       keyAuthority = createAuthServer({
+        database: keyAuthorityDatabase,
         databaseUrl,
         secret,
         baseURL: "http://localhost:3000",
@@ -207,6 +210,7 @@ describe("production Hub cold start", () => {
       assert.equal(response.status, 404);
     } finally {
       await keyAuthority?.close();
+      await keyAuthorityDatabase?.close();
       await stopProductionRuntime();
       for (const [name, value] of previous) restoreEnvironment(name, value);
     }

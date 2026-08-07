@@ -160,6 +160,7 @@ describe("daemon registration authenticated application boundary", () => {
     const databaseUrl = postgres.getConnectionUri();
     database = await createDatabase(databaseUrl);
     auth = createAuthServer({
+      database,
       databaseUrl,
       baseURL: "https://hub.paseo.test",
       secret: "phase-two-registration-auth-secret-at-least-32-characters",

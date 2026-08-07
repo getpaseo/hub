@@ -103,14 +103,23 @@ describe("registration policy boundary", () => {
   async function startAuth(registrationMode: "open" | "invite_only" | "disabled") {
     const url = await isolatedDatabaseUrl(postgres.getConnectionUri(), registrationMode);
     const database = await createDatabase(url);
-    await database.close();
     const auth = createAuthServer({
+      database,
       databaseUrl: url,
       secret: "registration-policy-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
       policy: { registrationMode, organizationCreation: "disabled", bootstrap: undefined },
     });
-    return { auth, url };
+    return {
+      auth: {
+        ...auth,
+        close: async () => {
+          await auth.close();
+          await database.close();
+        },
+      },
+      url,
+    };
   }
 });
 

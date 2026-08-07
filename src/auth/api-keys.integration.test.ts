@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
 import { createDatabase } from "../db/pg.js";
+import type { Database } from "../db/types.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
@@ -13,13 +14,13 @@ const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uu
 describe("organization API-key boundary", () => {
   let postgres: StartedPostgreSqlContainer;
   let auth: AuthServer;
+  let authDatabase: Database;
   let databaseUrl: string;
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     databaseUrl = postgres.getConnectionUri();
-    const database = await createDatabase(databaseUrl);
-    await database.close();
+    authDatabase = await createDatabase(databaseUrl);
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     await client.query(`
@@ -35,6 +36,7 @@ describe("organization API-key boundary", () => {
     `);
     await client.end();
     auth = createAuthServer({
+      database: authDatabase,
       databaseUrl,
       secret: "test".repeat(8),
       baseURL: "http://localhost:3000",
@@ -47,6 +49,7 @@ describe("organization API-key boundary", () => {
   }, 120_000);
 
   afterAll(async () => {
+    await authDatabase.close();
     await auth.close();
     await postgres.stop();
   }, 120_000);

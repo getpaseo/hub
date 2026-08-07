@@ -122,7 +122,7 @@ export async function createApplicationRuntime(
         ? null
         : new ProjectDashboard(options.database, options.auth, githubConfigurations[0]),
     entitlementsDashboard:
-      options.database === null || options.auth === null || options.auth.entitlements === undefined
+      options.database === null || options.auth === null
         ? null
         : new EntitlementsDashboard(options.database, options.auth, options.auth.entitlements),
     testTriggerRoutes: options.testTriggerRoutes ?? false,

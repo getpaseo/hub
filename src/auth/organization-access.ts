@@ -74,8 +74,7 @@ interface OrganizationAccessOptions {
   baseURL: string;
   policy: InstanceAuthPolicy;
   apiKeys: OrganizationApiKeys;
-  /** Absent only for auth-focused test doubles that never wire a Database. */
-  entitlements?: EntitlementsService;
+  entitlements: EntitlementsService;
 }
 
 interface MembershipRow extends QueryResultRow {
@@ -406,7 +405,7 @@ export class OrganizationAccess {
       if (pendingReinvite !== undefined) return pendingReinvite;
       // A genuinely new invitee reserves a seat, so it must fit the seat cap. Re-inviting an
       // existing member or pending invitee (handled above) reserves nothing and is exempt.
-      await this.options.entitlements?.requireHeadroom(access.organization.id, "seats");
+      await this.options.entitlements.requireHeadroom(access.organization.id, "seats");
       const inserted = await client.query<InvitationRow>(
         `insert into invitation
           (id, organization_id, email, role, status, expires_at, inviter_id, created_at)

@@ -4,6 +4,7 @@ import type { AuthServer } from "../../auth/server.js";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
+import { EntitlementsService } from "../../entitlements/service.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type { DiscordConnectionClient } from "./client.js";
 import { createDiscordRegistration } from "./index.js";
@@ -140,6 +141,9 @@ class RegistrationAuth implements AuthServer {
   rejectCookieMutation(): Response | undefined {
     return undefined;
   }
+  entitlements = new EntitlementsService(createMemoryDatabase(), {
+    seats: () => Promise.resolve(0),
+  });
   close(): Promise<void> {
     return Promise.resolve();
   }

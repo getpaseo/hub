@@ -142,6 +142,26 @@ describe("account and organization boundary", () => {
     assert.equal(await hub.pendingInvitationCount(organizationId, bob.email), 0);
   });
 
+  it("refuses a genuinely new invite once the seat cap has no headroom, and admits it once raised", async () => {
+    const hub = await startAccounts(postgres);
+    const alice = await hub.signUp("Alice", "alice@example.com");
+    const organizationId = await alice.createOrganization("Acme");
+    await hub.capSeats(organizationId, 1, "regression test: enforce the seat cap");
+
+    const denied = await alice.createInvitationDenied("blocked@example.com", "member");
+    assert.deepEqual(denied, {
+      error: "entitlement_denied",
+      entitlement: "seats",
+      limit: 1,
+      current: 1,
+    });
+    assert.equal(await hub.pendingInvitationCount(organizationId, "blocked@example.com"), 0);
+
+    await hub.capSeats(organizationId, 2, "regression test: raise the seat cap");
+    const invitation = await alice.invite("allowed@example.com", "member");
+    assert.ok(invitation.id);
+  });
+
   it("serializes invitation creation against membership acceptance", async () => {
     const hub = await startAccounts(postgres);
     const alice = await hub.signUp("Alice", "alice@example.com");
@@ -310,6 +330,7 @@ class PaseoAccounts {
       url,
       database,
       createAuthServer({
+        database,
         databaseUrl: url,
         secret: "phase-one-auth-secret-at-least-32-characters",
         baseURL: "http://localhost:3000",
@@ -365,6 +386,10 @@ class PaseoAccounts {
       admin: Object.assign(admin, { memberId: adminMemberId }),
       member: Object.assign(member, { memberId: memberMemberId }),
     };
+  }
+
+  async capSeats(organizationId: string, max: number, reason: string): Promise<void> {
+    await this.auth.entitlements.override(organizationId, { seats: { max } }, null, reason);
   }
 
   async removeMembership(email: string, organizationId: string): Promise<void> {
@@ -640,6 +665,22 @@ class AccountBrowser {
 
   async createInvitation(email: string, role: "admin" | "member"): Promise<number> {
     return (await this.post("/api/auth/paseo/create-invitation", { email, role })).status;
+  }
+
+  async createInvitationDenied(
+    email: string,
+    role: "admin" | "member",
+  ): Promise<{ error: string; entitlement: string; limit: number; current: number }> {
+    const response = await this.post("/api/auth/paseo/create-invitation", { email, role });
+    assert.equal(response.status, 409);
+    return z
+      .object({
+        error: z.string(),
+        entitlement: z.string(),
+        limit: z.number(),
+        current: z.number(),
+      })
+      .parse(await response.json());
   }
 
   async inviteConcurrently(email: string): Promise<string[]> {

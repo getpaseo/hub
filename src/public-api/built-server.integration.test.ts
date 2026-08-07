@@ -47,6 +47,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       });
     }
     auth = createAuthServer({
+      database,
       databaseUrl,
       secret: "built-public-api-test-secret".padEnd(32, "-"),
       baseURL: "http://hub.test",

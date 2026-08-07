@@ -130,7 +130,9 @@ describe("instance bootstrap and first-login boundary", () => {
     const pool = await migratedPool(isolated);
     await bootstrapInstance(pool, policy);
     await pool.end();
+    const database = await createDatabase(isolated);
     const auth = createAuthServer({
+      database,
       databaseUrl: isolated,
       secret: "bootstrap-gate-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
@@ -168,6 +170,7 @@ describe("instance bootstrap and first-login boundary", () => {
     );
     assert.equal(z.object({ status: z.string() }).parse(await active.json()).status, "active");
     await auth.close();
+    await database.close();
   }, 120_000);
 });
 

@@ -51,18 +51,13 @@ export interface AuthServer {
   rejectCookieMutation(request: Request): Response | undefined;
   initialize?(): Promise<void>;
   apiKeys?: OrganizationApiKeys;
-  /**
-   * The organization entitlements module, shared with the dashboard so there is one owner.
-   * Present whenever a `Database` handle is wired (every real deployment); omitted only by
-   * auth-focused test doubles that don't touch entitlements.
-   */
-  entitlements?: EntitlementsService;
+  /** The organization entitlements module, shared with the dashboard so there is one owner. */
+  entitlements: EntitlementsService;
   close(): Promise<void>;
 }
 
 interface AuthServerOptions {
-  /** Wires entitlements enforcement + the dashboard. Every real composition passes it. */
-  database?: Database;
+  database: Database;
   databaseUrl: string;
   secret: string;
   baseURL: string;
@@ -152,19 +147,16 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       };
     },
   };
-  const entitlements =
-    options.database === undefined
-      ? undefined
-      : new EntitlementsService(options.database, {
-          seats: (organizationId) => countOrganizationSeatUsage(pool, organizationId),
-        });
+  const entitlements = new EntitlementsService(options.database, {
+    seats: (organizationId) => countOrganizationSeatUsage(pool, organizationId),
+  });
   const access = new OrganizationAccess({
     pool,
     sessions,
     baseURL: options.baseURL,
     policy,
     apiKeys,
-    ...(entitlements === undefined ? {} : { entitlements }),
+    entitlements,
   });
   const browserOrigin = new URL(options.baseURL).origin;
 
@@ -239,7 +231,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
     initialize: () => bootstrapInstance(pool, policy),
     apiKeys,
-    ...(entitlements === undefined ? {} : { entitlements }),
+    entitlements,
     close: () => pool.end(),
   };
 
