@@ -80,7 +80,7 @@ import type {
   BillingPlanRecord,
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
-  UpsertOrganizationSubscriptionInput,
+  ReconcileOrganizationSubscriptionInput,
 } from "./types.js";
 import {
   clearOverrideKey,
@@ -155,6 +155,7 @@ class MemoryDatabase implements Database {
   private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
   private readonly billingPlans = new Map<string, BillingPlanRecord>();
   private readonly organizationSubscriptions = new Map<string, OrganizationSubscriptionRecord>();
+  private readonly advisoryLocks = new Map<string, Promise<void>>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -2094,8 +2095,8 @@ class MemoryDatabase implements Database {
     return Array.from(this.billingPlans.values());
   }
 
-  async upsertOrganizationSubscription(
-    input: UpsertOrganizationSubscriptionInput,
+  async reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
   ): Promise<OrganizationSubscriptionRecord> {
     const record: OrganizationSubscriptionRecord = {
       organizationId: input.organizationId,
@@ -2108,7 +2109,36 @@ class MemoryDatabase implements Database {
       updatedAt: this.now(),
     };
     this.organizationSubscriptions.set(input.organizationId, record);
+    // No await between the two writes, so on Node's single thread the mirror and the stamp land
+    // together — the in-memory stand-in for the Postgres transaction that couples them.
+    if (input.stamp !== undefined) {
+      await this.stampOrganizationEntitlements({
+        organizationId: input.organizationId,
+        ...input.stamp,
+      });
+    }
     return record;
+  }
+
+  async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    // Node runs one callback at a time, so a per-key promise chain is a faithful in-memory
+    // stand-in for the Postgres advisory lock: same-key sections run strictly in sequence.
+    const previous = this.advisoryLocks.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const held = previous.then(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    this.advisoryLocks.set(key, held);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.advisoryLocks.get(key) === held) this.advisoryLocks.delete(key);
+    }
   }
 
   async getOrganizationSubscription(

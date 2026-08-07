@@ -174,8 +174,17 @@ export function fixtureSubscriptionId(organizationId: string): string {
 /**
  * The E2E fixture for Stripe customer/checkout/portal/subscription operations. No Stripe account,
  * no network — checkout "completes" instantly (the subscription exists by the time the browser
- * returns), and the money test then delivers a real HMAC-signed webhook that the billing runtime
- * re-reads through `getSubscription`. One subscription per organization, keyed by organization id.
+ * returns), and the tests then deliver real HMAC-signed webhooks that the billing runtime re-reads
+ * through `getSubscription`.
+ *
+ * It preserves the invariant that makes the money path testable: an organization has exactly one
+ * Stripe subscription for its lifetime, and its price only ever changes through
+ * `changeSubscriptionPrice`. `createCheckoutSession` is therefore idempotent for the initial
+ * subscription (a repeated first-checkout collapses onto the one subscription rather than a
+ * second), and it never rewrites the price of an existing subscription. So if a plan change ever
+ * regressed to routing through checkout instead of `changeSubscriptionPrice`, the price would not
+ * move, and the plan-change assertions in billing-subscription/billing-downgrade would fail —
+ * which is the whole point of modeling Stripe faithfully here.
  */
 export class FixtureStripeBillingClient {
   private readonly subscriptions = new Map<string, FixtureSubscriptionState>();
@@ -190,16 +199,31 @@ export class FixtureStripeBillingClient {
     priceId: string;
     successUrl: string;
   }): Promise<{ url: string }> {
-    this.subscriptions.set(input.organizationId, {
-      id: fixtureSubscriptionId(input.organizationId),
-      customerId: input.customerId,
-      organizationId: input.organizationId,
-      priceId: input.priceId,
-      status: "active",
-      currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
-      cancelAtPeriodEnd: false,
-    });
+    const id = fixtureSubscriptionId(input.organizationId);
+    // Idempotent initial subscription: if one already exists, checkout does not open a second or
+    // rewrite its price. A price change must go through changeSubscriptionPrice.
+    if (!this.subscriptions.has(id)) {
+      this.subscriptions.set(id, {
+        id,
+        customerId: input.customerId,
+        organizationId: input.organizationId,
+        priceId: input.priceId,
+        status: "active",
+        currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
+        cancelAtPeriodEnd: false,
+      });
+    }
     return { url: `/test/stripe-checkout?success=${encodeURIComponent(input.successUrl)}` };
+  }
+
+  async changeSubscriptionPrice(input: { subscriptionId: string; priceId: string }): Promise<void> {
+    const subscription = this.find(input.subscriptionId);
+    if (subscription === undefined) {
+      throw new Error(`fixture subscription not found: ${input.subscriptionId}`);
+    }
+    // A plan change updates the existing subscription's item in place — same id, new price.
+    subscription.priceId = input.priceId;
+    subscription.status = "active";
   }
 
   async createBillingPortalSession(input: { returnUrl: string }): Promise<{ url: string }> {
@@ -208,8 +232,26 @@ export class FixtureStripeBillingClient {
   }
 
   async getSubscription(subscriptionId: string): Promise<FixtureSubscriptionState | undefined> {
+    const subscription = this.find(subscriptionId);
+    return subscription === undefined ? undefined : { ...subscription };
+  }
+
+  /**
+   * Test-only (not part of `StripeBillingClient`): stand in for a portal cancellation by moving
+   * the organization's subscription to `canceled`. The caller then delivers the signed
+   * customer.subscription.deleted webhook, which reconciliation reads and stamps Free from.
+   */
+  cancelSubscription(organizationId: string): boolean {
+    const subscription = this.subscriptions.get(fixtureSubscriptionId(organizationId));
+    if (subscription === undefined) return false;
+    subscription.status = "canceled";
+    subscription.cancelAtPeriodEnd = false;
+    return true;
+  }
+
+  private find(subscriptionId: string): FixtureSubscriptionState | undefined {
     for (const state of this.subscriptions.values()) {
-      if (state.id === subscriptionId) return { ...state };
+      if (state.id === subscriptionId) return state;
     }
     return undefined;
   }

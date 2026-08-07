@@ -104,7 +104,7 @@ import type {
   BillingPlanPriceRecord,
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
-  UpsertOrganizationSubscriptionInput,
+  ReconcileOrganizationSubscriptionInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2495,51 +2495,9 @@ class PgDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      // Idempotent by design: a stamp that lands the same granted template and the same plan
-      // provenance is a no-op — no timestamp bump, no duplicate audit row. That is what stops
-      // the webhook re-stamp ping-pong. jsonb `is distinct from` compares granted structurally.
-      const existing = await client.query<OrganizationEntitlementsRow & { changed: boolean }>(
-        `select *,
-            (granted is distinct from $2::jsonb
-             or plan_id is distinct from $3
-             or plan_version is distinct from $4) as changed
-         from organization_entitlements where organization_id = $1 for update`,
-        [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
-      );
-      const before = existing.rows[0];
-      if (before !== undefined && !before.changed) {
-        await client.query("commit");
-        return toOrganizationEntitlementsRecord(before);
-      }
-      const stamped = await client.query<OrganizationEntitlementsRow>(
-        `insert into organization_entitlements
-           (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
-         values ($1, $2::jsonb, '{}'::jsonb, $3, $4, now(), now())
-         on conflict (organization_id) do update
-           set granted = excluded.granted,
-               plan_id = excluded.plan_id,
-               plan_version = excluded.plan_version,
-               stamped_at = now(),
-               updated_at = now()
-         returning *`,
-        [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
-      );
-      const after = stamped.rows[0];
-      if (after === undefined) throw new Error("entitlements stamp returned no row");
-      await client.query(
-        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
-         values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
-        [
-          input.organizationId,
-          input.actor,
-          input.source,
-          before === undefined ? null : JSON.stringify(entitlementSnapshot(before)),
-          JSON.stringify(entitlementSnapshot(after)),
-          input.reason,
-        ],
-      );
+      const record = await stampEntitlementsWithinTransaction(client, input);
       await client.query("commit");
-      return toOrganizationEntitlementsRecord(after);
+      return record;
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
@@ -2769,37 +2727,71 @@ class PgDatabase implements Database {
     return plans.rows.map((row) => toBillingPlanRecord(row, pricesByPlan.get(row.id) ?? []));
   }
 
-  async upsertOrganizationSubscription(
-    input: UpsertOrganizationSubscriptionInput,
+  async reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
   ): Promise<OrganizationSubscriptionRecord> {
-    const rows = await query<OrganizationSubscriptionRow>(
-      this.pool,
-      `insert into organization_subscriptions
-         (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
-          current_period_end, cancel_at_period_end, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, now())
-       on conflict (organization_id) do update
-         set stripe_customer_id = excluded.stripe_customer_id,
-             stripe_subscription_id = excluded.stripe_subscription_id,
-             plan_id = excluded.plan_id,
-             status = excluded.status,
-             current_period_end = excluded.current_period_end,
-             cancel_at_period_end = excluded.cancel_at_period_end,
-             updated_at = now()
-       returning *`,
-      [
-        input.organizationId,
-        input.stripeCustomerId,
-        input.stripeSubscriptionId,
-        input.planId,
-        input.status,
-        input.currentPeriodEnd,
-        input.cancelAtPeriodEnd,
-      ],
-    );
-    const row = rows.rows[0];
-    if (row === undefined) throw new Error("organization subscription upsert returned no row");
-    return toOrganizationSubscriptionRecord(row);
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const rows = await client.query<OrganizationSubscriptionRow>(
+        `insert into organization_subscriptions
+           (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
+            current_period_end, cancel_at_period_end, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, now())
+         on conflict (organization_id) do update
+           set stripe_customer_id = excluded.stripe_customer_id,
+               stripe_subscription_id = excluded.stripe_subscription_id,
+               plan_id = excluded.plan_id,
+               status = excluded.status,
+               current_period_end = excluded.current_period_end,
+               cancel_at_period_end = excluded.cancel_at_period_end,
+               updated_at = now()
+         returning *`,
+        [
+          input.organizationId,
+          input.stripeCustomerId,
+          input.stripeSubscriptionId,
+          input.planId,
+          input.status,
+          input.currentPeriodEnd,
+          input.cancelAtPeriodEnd,
+        ],
+      );
+      const row = rows.rows[0];
+      if (row === undefined) throw new Error("organization subscription upsert returned no row");
+      // Same transaction as the mirror upsert: the plan the org is billed on and the entitlements
+      // it enforces can never diverge across a crash between the two writes.
+      if (input.stamp !== undefined) {
+        await stampEntitlementsWithinTransaction(client, {
+          organizationId: input.organizationId,
+          ...input.stamp,
+        });
+      }
+      await client.query("commit");
+      return toOrganizationSubscriptionRecord(row);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    // A session-level advisory lock on a dedicated connection: it serializes the critical section
+    // across processes, and it is held for the whole of `fn` (including any external re-read),
+    // not just a single statement. `hashtextextended` maps the string key to the bigint the
+    // advisory-lock functions take.
+    const client = await this.pool.connect();
+    try {
+      await client.query(`select pg_advisory_lock(hashtextextended($1, 0))`, [key]);
+      return await fn();
+    } finally {
+      await client
+        .query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [key])
+        .catch(() => undefined);
+      client.release();
+    }
   }
 
   async getOrganizationSubscription(
@@ -4315,6 +4307,60 @@ export interface OrganizationEntitlementsRow extends QueryResultRow {
  * The audit before/after snapshot. Carries planId and planVersion so two plans with identical
  * templates stay historically distinguishable — the off-template query depends on it.
  */
+/**
+ * The idempotent entitlement stamp, scoped to a transaction the caller already opened. A stamp
+ * that lands the same granted template and the same plan provenance is a no-op — no timestamp
+ * bump, no duplicate audit row — which is what stops the webhook re-stamp ping-pong. jsonb
+ * `is distinct from` compares granted structurally. Shared by `stampOrganizationEntitlements`
+ * and `reconcileOrganizationSubscription` so the subscription mirror and the stamp commit
+ * together.
+ */
+async function stampEntitlementsWithinTransaction(
+  client: PoolClient,
+  input: StampOrganizationEntitlementsInput,
+): Promise<OrganizationEntitlementsRecord> {
+  const existing = await client.query<OrganizationEntitlementsRow & { changed: boolean }>(
+    `select *,
+        (granted is distinct from $2::jsonb
+         or plan_id is distinct from $3
+         or plan_version is distinct from $4) as changed
+     from organization_entitlements where organization_id = $1 for update`,
+    [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
+  );
+  const before = existing.rows[0];
+  if (before !== undefined && !before.changed) {
+    return toOrganizationEntitlementsRecord(before);
+  }
+  const stamped = await client.query<OrganizationEntitlementsRow>(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ($1, $2::jsonb, '{}'::jsonb, $3, $4, now(), now())
+     on conflict (organization_id) do update
+       set granted = excluded.granted,
+           plan_id = excluded.plan_id,
+           plan_version = excluded.plan_version,
+           stamped_at = now(),
+           updated_at = now()
+     returning *`,
+    [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
+  );
+  const after = stamped.rows[0];
+  if (after === undefined) throw new Error("entitlements stamp returned no row");
+  await client.query(
+    `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+     values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+    [
+      input.organizationId,
+      input.actor,
+      input.source,
+      before === undefined ? null : JSON.stringify(entitlementSnapshot(before)),
+      JSON.stringify(entitlementSnapshot(after)),
+      input.reason,
+    ],
+  );
+  return toOrganizationEntitlementsRecord(after);
+}
+
 function entitlementSnapshot(row: OrganizationEntitlementsRow): {
   granted: unknown;
   overrides: unknown;

@@ -12,9 +12,15 @@
 export interface StripeBillingClient {
   /** The Stripe customer for an organization, created if it does not exist yet. */
   ensureCustomer(input: EnsureCustomerInput): Promise<string>;
-  /** A Checkout Session for a subscription to `priceId`, carrying `organizationId` in metadata
-   * so the subscription webhook can resolve the reference on re-read. Returns its redirect URL. */
+  /** A Checkout Session for the organization's *first* subscription to `priceId`, carrying
+   * `organizationId` in metadata so the subscription webhook can resolve the reference on re-read.
+   * Only ever called when the organization has no subscription yet — a plan change goes through
+   * `changeSubscriptionPrice`, never a second checkout. Returns its redirect URL. */
   createCheckoutSession(input: CreateCheckoutSessionInput): Promise<{ url: string }>;
+  /** Move the organization's existing subscription onto `priceId` by updating its single item in
+   * place. Stripe models a plan change as an update to the existing subscription, not a second
+   * one, so this is the only path a change ever takes. */
+  changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void>;
   /** A Billing Portal session — Stripe owns payment methods, invoices, and cancellation. */
   createBillingPortalSession(input: CreateBillingPortalSessionInput): Promise<{ url: string }>;
   /** Re-read the authoritative subscription state. The webhook is driven by this, never by the
@@ -35,6 +41,11 @@ export interface CreateCheckoutSessionInput {
   priceId: string;
   successUrl: string;
   cancelUrl: string;
+}
+
+export interface ChangeSubscriptionPriceInput {
+  subscriptionId: string;
+  priceId: string;
 }
 
 export interface CreateBillingPortalSessionInput {

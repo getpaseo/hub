@@ -13,6 +13,7 @@ const owner = {
   password: "nadia-billing-password",
 };
 const invitee = "teammate-billing@example.com";
+const afterCancelInvitee = "post-cancel-billing@example.com";
 
 const SLICE_6_DIR = "e2e/screenshots/slice-6";
 
@@ -58,5 +59,13 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
     await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", "Solo");
     await hub.expectPendingInvitation("owner", invitee);
+  });
+
+  await test.step("canceling the subscription reverts entitlements to Free and blocks inviting again", async () => {
+    // A portal cancellation delivers customer.subscription.deleted; reconciliation reads the
+    // canceled state and stamps Free, so paid entitlements do not outlive the subscription.
+    await hub.cancelSubscription("owner");
+    await hub.expectInviteBlockedByPlan("owner", afterCancelInvitee);
+    await page.screenshot({ path: `${SLICE_6_DIR}/06-cancel-reverts-to-free.png`, fullPage: true });
   });
 });

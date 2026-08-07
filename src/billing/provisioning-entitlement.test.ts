@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, SyncBillingPlanInput } from "../db/types.js";
-import { EntitlementsService } from "../entitlements/service.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
 import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
@@ -15,6 +14,7 @@ const unusedCatalogSource: StripeCatalogSource = {
 const unusedBillingClient: StripeBillingClient = {
   ensureCustomer: () => Promise.reject(new Error("unused")),
   createCheckoutSession: () => Promise.reject(new Error("unused")),
+  changeSubscriptionPrice: () => Promise.reject(new Error("unused")),
   createBillingPortalSession: () => Promise.reject(new Error("unused")),
   getSubscription: (): Promise<StripeSubscriptionState | undefined> =>
     Promise.reject(new Error("unused")),
@@ -24,7 +24,6 @@ function billingOver(database: Database): BillingRuntime {
   return composeBilling({
     config: { stripeSecretKey: "sk_test_fake", stripeWebhookSecret: "whsec_fake" },
     database,
-    entitlements: new EntitlementsService(database, { seats: async () => 0 }),
     catalogSource: unusedCatalogSource,
     billingClient: unusedBillingClient,
   });

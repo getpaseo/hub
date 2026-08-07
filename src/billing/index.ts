@@ -1,7 +1,15 @@
 import StripeSDK from "stripe";
-import type { BillingPlanRecord, Database } from "../db/types.js";
-import { entitlementsSchema, type EntitlementTemplate } from "../entitlements/catalog.js";
-import type { EntitlementsService } from "../entitlements/service.js";
+import type {
+  BillingPlanRecord,
+  Database,
+  StampOrganizationEntitlementsInput,
+} from "../db/types.js";
+import {
+  entitlementsSchema,
+  hashTemplate,
+  type Entitlements,
+  type EntitlementTemplate,
+} from "../entitlements/catalog.js";
 import type { ProvisioningEntitlement } from "../organizations/provisioning.js";
 import { logger } from "../logger.js";
 import { syncBillingCatalog } from "./catalog-sync.js";
@@ -42,9 +50,26 @@ const SUBSCRIPTION_SYNC_EVENT_TYPES = new Set([
   "customer.subscription.deleted",
 ]);
 
-/** Statuses whose plan should be stamped onto the organization. Others leave entitlements as-is
- * (grandfathered) — downgrade on cancellation is slice 7, not this slice. */
+/** Statuses whose plan is stamped onto the organization. A dunning status (`past_due`, `unpaid`,
+ * `incomplete`) leaves the last stamp untouched — the organization is grandfathered while payment
+ * is retried, not dropped mid-cycle. */
 const STAMPABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
+
+/** Terminal statuses: the subscription is over. Reconciliation stamps Free so a customer who
+ * cancels through the portal cannot keep paid entitlements. */
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+
+/** Whether a subscription webhook could be reconciled now, or Stripe should retry it later. */
+type ReconcileOutcome = "reconciled" | "retry";
+
+/** The entitlement stamp reconciliation commits alongside the subscription mirror. */
+type SubscriptionStamp = Omit<StampOrganizationEntitlementsInput, "organizationId">;
+
+/** The per-organization advisory-lock key that serializes subscription reconciliation across
+ * processes, so an older webhook resuming after a newer one cannot revert the stamp. */
+function billingLockKey(organizationId: string): string {
+  return `billing:subscription:${organizationId}`;
+}
 
 /**
  * The plan a hosted organization gets before it pays. Identified by its `paseo_plan_slug`
@@ -70,7 +95,6 @@ const FREE_TIER_FALLBACK: EntitlementTemplate = {
 export interface ComposeBillingOptions {
   config: BillingConfig;
   database: Database;
-  entitlements: EntitlementsService;
   /** Production wires the real Stripe SDK; the E2E harness wires a fixture. See stripe-catalog-source.ts. */
   catalogSource: StripeCatalogSource;
   /** Production wires the real Stripe SDK; the E2E harness wires a fixture. See stripe-billing-client.ts. */
@@ -117,9 +141,10 @@ export class BillingRequestError extends Error {
  * nothing outside `src/billing/` or the composition root may import this module (enforced by
  * oxlint).
  *
- * The single coupling to core runs the other way: `billing` calls
- * `entitlements.stamp(organizationId, template, provenance)`. `src/entitlements/` never imports
- * this module.
+ * The single coupling to core runs the other way: `billing` writes the organization's entitlement
+ * stamp — through `database.reconcileOrganizationSubscription`, which commits the stamp and the
+ * subscription mirror in one transaction so a webhook can never leave them disagreeing.
+ * `src/entitlements/` never imports this module.
  */
 export class BillingRuntime {
   /** Signature verification only — a fixture's plausible-but-fake secret works identically. */
@@ -128,7 +153,6 @@ export class BillingRuntime {
   constructor(
     private readonly config: BillingConfig,
     private readonly database: Database,
-    private readonly entitlements: EntitlementsService,
     private readonly catalogSource: StripeCatalogSource,
     private readonly billingClient: StripeBillingClient,
   ) {
@@ -148,25 +172,48 @@ export class BillingRuntime {
    * (no billing) never reaches here and keeps stamping unlimited.
    */
   async provisioningEntitlement(): Promise<ProvisioningEntitlement> {
+    return this.freeEntitlement();
+  }
+
+  /**
+   * The Free plan's template from the catalog mirror — what both provisioning and a terminal
+   * cancellation stamp. When no active Free plan is mirrored yet (a first boot before the sync,
+   * or a Stripe account missing the product) it falls back to the conservative floor and logs
+   * loudly rather than failing open to unlimited.
+   */
+  private async freeEntitlement(): Promise<{ planId: string | null; granted: Entitlements }> {
     const plans = await this.database.listBillingPlans();
     const free = plans.find((plan) => plan.slug === FREE_PLAN_SLUG && plan.active);
     if (free !== undefined) {
       return { planId: free.id, granted: entitlementsSchema.parse(free.template) };
     }
     logger.error(
-      "billing is configured but the catalog mirror has no active Free plan; provisioning new " +
-        "organizations with the conservative free-tier fallback until the Free plan syncs",
+      "billing is configured but the catalog mirror has no active Free plan; falling back to the " +
+        "conservative free-tier floor until the Free plan syncs",
     );
-    return { planId: null, granted: FREE_TIER_FALLBACK };
+    return { planId: null, granted: entitlementsSchema.parse(FREE_TIER_FALLBACK) };
   }
 
   /**
-   * Start a Checkout Session for `planSlug`/`interval`, reusing the organization's Stripe
-   * customer when it already has one. Reference authorization (only a manager may act for the
-   * organization) is enforced upstream at the composition root before this is reached.
+   * Put the organization onto `planSlug`/`interval`. The first time, this is a Checkout Session
+   * (Stripe collects payment and creates the subscription). Every subsequent change updates the
+   * organization's existing subscription item in place — Stripe models a plan change as an update
+   * to the one subscription, so a change never opens a second checkout or a second subscription.
+   * Reference authorization (only a manager may act for the organization) is enforced upstream at
+   * the composition root before this is reached.
    */
   async createCheckout(input: CreateCheckoutInput): Promise<{ url: string }> {
     const price = await this.resolvePlanPrice(input.planSlug, input.interval);
+    const existing = await this.database.getOrganizationSubscription(input.organizationId);
+    if (existing !== undefined) {
+      await this.billingClient.changeSubscriptionPrice({
+        subscriptionId: existing.stripeSubscriptionId,
+        priceId: price.priceId,
+      });
+      // The change is immediate; Stripe fires a subscription webhook that re-stamps entitlements.
+      // Return the caller straight back to the billing page rather than through checkout.
+      return { url: input.successUrl };
+    }
     const customerId = await this.resolveCustomer(input);
     return this.billingClient.createCheckoutSession({
       organizationId: input.organizationId,
@@ -231,29 +278,67 @@ export class BillingRuntime {
       logger.warn({ err: error }, "billing webhook: rejected request with an invalid signature");
       return new Response("invalid signature", { status: 400 });
     }
-    if (CATALOG_SYNC_EVENT_TYPES.has(event.type)) {
-      await this.syncCatalog();
-    }
-    if (SUBSCRIPTION_SYNC_EVENT_TYPES.has(event.type)) {
-      await this.handleSubscriptionEvent(event);
+    try {
+      if (CATALOG_SYNC_EVENT_TYPES.has(event.type)) {
+        await this.syncCatalog();
+      }
+      if (SUBSCRIPTION_SYNC_EVENT_TYPES.has(event.type)) {
+        const outcome = await this.reconcileSubscriptionEvent(event);
+        if (outcome === "retry") {
+          logger.warn(
+            { eventType: event.type },
+            "billing webhook: subscription not reconcilable yet; returning 503 so Stripe retries",
+          );
+          return new Response("subscription not reconcilable yet", { status: 503 });
+        }
+      }
+    } catch (error) {
+      // Anything transient (a Stripe read, the catalog sync, the atomic write) returns non-2xx so
+      // Stripe redelivers, rather than acknowledging a state we never reconciled.
+      logger.error(
+        { err: error, eventType: event.type },
+        "billing webhook: reconciliation failed; returning 503 so Stripe retries",
+      );
+      return new Response("reconciliation failed", { status: 503 });
     }
     return Response.json({ received: true });
   }
 
   /**
-   * Re-read the referenced subscription and materialize it: upsert the local mirror, then stamp
-   * the resolved plan's template onto the organization. Idempotent by construction — the stamp
-   * is a no-op when the template is unchanged (see the entitlements consolidation), and the read
-   * is of live state rather than the event payload, so replays and reordered deliveries all
-   * settle on the same result.
+   * Converge the organization's entitlements and subscription mirror onto the subscription's live
+   * state. The whole critical section runs under a per-organization advisory lock, and the state
+   * is re-read *inside* that lock — so when an older delivery resumes after a newer one, it still
+   * reads current state and stamps the same result instead of reverting. The mirror upsert and the
+   * entitlement stamp commit in one transaction. Returns "retry" when the state cannot be
+   * reconciled yet (a price not in the mirror even after a resync, or an unreadable subscription),
+   * which the caller turns into a 503 so Stripe redelivers.
    */
-  private async handleSubscriptionEvent(event: StripeSDK.Event): Promise<void> {
+  private async reconcileSubscriptionEvent(event: StripeSDK.Event): Promise<ReconcileOutcome> {
     const subscriptionId = subscriptionReferenceFromEvent(event);
-    if (subscriptionId === undefined) return;
+    // A checkout session that completed without a subscription carries nothing to reconcile.
+    if (subscriptionId === undefined) return "reconciled";
+    const reference = await this.billingClient.getSubscription(subscriptionId);
+    if (reference === undefined) return "retry";
+    return this.database.withAdvisoryLock(billingLockKey(reference.organizationId), () =>
+      this.reconcileSubscriptionUnderLock(subscriptionId),
+    );
+  }
+
+  private async reconcileSubscriptionUnderLock(subscriptionId: string): Promise<ReconcileOutcome> {
     const state = await this.billingClient.getSubscription(subscriptionId);
-    if (state === undefined) return;
-    const plan = await this.resolvePlanByPrice(state.priceId);
-    await this.database.upsertOrganizationSubscription({
+    if (state === undefined) return "retry";
+    const terminal = TERMINAL_SUBSCRIPTION_STATUSES.has(state.status);
+    let plan = await this.resolvePlanByPrice(state.priceId);
+    if (plan === undefined && !terminal) {
+      // A subscription webhook can beat its own price/product webhook. Resync once, then
+      // re-resolve; if the price is still unmirrored, retry rather than acknowledge an unstamped
+      // subscription that nothing would ever revisit.
+      await this.syncCatalog();
+      plan = await this.resolvePlanByPrice(state.priceId);
+      if (plan === undefined) return "retry";
+    }
+    const stamp = await this.resolveStamp(state.status, terminal, plan);
+    await this.database.reconcileOrganizationSubscription({
       organizationId: state.organizationId,
       stripeCustomerId: state.customerId,
       stripeSubscriptionId: state.id,
@@ -261,20 +346,23 @@ export class BillingRuntime {
       status: state.status,
       currentPeriodEnd: state.currentPeriodEnd,
       cancelAtPeriodEnd: state.cancelAtPeriodEnd,
+      ...(stamp === undefined ? {} : { stamp }),
     });
-    if (plan === undefined) {
-      logger.warn(
-        { subscriptionId: state.id, priceId: state.priceId },
-        "billing webhook: subscription price is not in the plan mirror; skipping entitlement stamp",
-      );
-      return;
+    return "reconciled";
+  }
+
+  /** Which template the reconciled state should stamp, or undefined to grandfather the last one. */
+  private async resolveStamp(
+    status: string,
+    terminal: boolean,
+    plan: BillingPlanRecord | undefined,
+  ): Promise<SubscriptionStamp | undefined> {
+    if (terminal) {
+      const free = await this.freeEntitlement();
+      return planStamp(free.granted, free.planId);
     }
-    if (!STAMPABLE_SUBSCRIPTION_STATUSES.has(state.status)) return;
-    const template = entitlementsSchema.parse(plan.template);
-    await this.entitlements.stamp(state.organizationId, template, {
-      source: "plan_stamp",
-      planId: plan.id,
-    });
+    if (!STAMPABLE_SUBSCRIPTION_STATUSES.has(status) || plan === undefined) return undefined;
+    return planStamp(entitlementsSchema.parse(plan.template), plan.id);
   }
 
   private async resolveCustomer(input: CreateCheckoutInput): Promise<string> {
@@ -309,6 +397,19 @@ export class BillingRuntime {
   }
 }
 
+/** The `plan_stamp` reconciliation writes onto an organization; `plan_version` is the template
+ * hash so a replay with an unchanged template is a no-op. */
+function planStamp(granted: Entitlements, planId: string | null): SubscriptionStamp {
+  return {
+    granted,
+    planId,
+    planVersion: hashTemplate(granted),
+    source: "plan_stamp",
+    actor: null,
+    reason: null,
+  };
+}
+
 /**
  * The subscription id a lifecycle event references. A subscription event carries it directly;
  * `checkout.session.completed` carries it on the session's `subscription` field.
@@ -333,7 +434,6 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
   return new BillingRuntime(
     options.config,
     options.database,
-    options.entitlements,
     options.catalogSource,
     options.billingClient,
   );

@@ -3,13 +3,8 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
 import { createAuthServer } from "../../auth/server.js";
-import {
-  composeBilling,
-  type BillingConfig,
-  type BillingRuntime,
-  type StripeBillingClient,
-} from "../../billing/index.js";
-import { composeEntitlements, type ComposedEntitlements } from "../../auth/entitlements.js";
+import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
+import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createDatabase, createPostgresPool } from "../../db/pg.js";
 import type { Database } from "../../db/types.js";
@@ -54,6 +49,12 @@ interface BillingProductCommand {
   product: FixtureBillingProduct;
 }
 
+interface BillingCancelSubscriptionCommand {
+  id: string;
+  type: "billing-cancel-subscription";
+  organizationId: string;
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
@@ -68,7 +69,11 @@ async function main(): Promise<void> {
   // Compose (and sync) billing before auth: a billing-configured harness provisions new
   // organizations onto the Free plan, so the resolver must exist before createAuthServer, and the
   // catalog must be synced before auth.initialize runs any bootstrap.
-  const { billing, billingCatalog } = await composeFixtureBilling(database, entitlements);
+  const {
+    billing,
+    billingCatalog,
+    billingClient: billingFixtureClient,
+  } = await composeFixtureBilling(database);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
@@ -181,7 +186,7 @@ async function main(): Promise<void> {
   server.listen(Number(requiredEnvironment("PORT")), "127.0.0.1");
 
   process.on("message", (message: unknown) => {
-    void acceptCommand(message, bot, githubConfiguration, billingCatalog);
+    void acceptCommand(message, bot, githubConfiguration, billingCatalog, billingFixtureClient);
   });
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
@@ -225,6 +230,7 @@ async function acceptCommand(
   bot: BrowserDiscordBot,
   githubConfiguration: BrowserGitHubConfiguration,
   billingCatalog: FixtureStripeCatalogSource | null,
+  billingClient: FixtureStripeBillingClient | null,
 ): Promise<void> {
   if (isGitHubConfigurationCommand(message)) {
     githubConfiguration.setRevision(message);
@@ -238,6 +244,21 @@ async function acceptCommand(
     }
     billingCatalog.setProduct(message.product);
     process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isBillingCancelSubscriptionCommand(message)) {
+    if (billingClient === null) {
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
+      return;
+    }
+    // Stand in for the customer canceling in the Stripe portal: the subscription now reads
+    // canceled, and the caller then delivers the signed customer.subscription.deleted webhook.
+    const canceled = billingClient.cancelSubscription(message.organizationId);
+    process.send?.({
+      id: message.id,
+      ok: canceled,
+      error: canceled ? undefined : "no subscription",
+    });
     return;
   }
   if (!isDiscordCommand(message)) return;
@@ -273,6 +294,18 @@ function isBillingProductCommand(value: unknown): value is BillingProductCommand
     Reflect.get(value, "type") === "billing-product" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "product") === "object"
+  );
+}
+
+function isBillingCancelSubscriptionCommand(
+  value: unknown,
+): value is BillingCancelSubscriptionCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "billing-cancel-subscription" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "organizationId") === "string"
   );
 }
 
@@ -357,22 +390,22 @@ function readFixtureBillingConfig(): BillingConfig {
  * does in production with the real Stripe SDK. `billingCatalog` is returned separately so the
  * IPC handler can mutate it later — see the `billing-product` command below.
  */
-async function composeFixtureBilling(
-  database: Database,
-  entitlements: ComposedEntitlements,
-): Promise<{ billing: BillingRuntime | null; billingCatalog: FixtureStripeCatalogSource | null }> {
-  if (!billingEnabled()) return { billing: null, billingCatalog: null };
+async function composeFixtureBilling(database: Database): Promise<{
+  billing: BillingRuntime | null;
+  billingCatalog: FixtureStripeCatalogSource | null;
+  billingClient: FixtureStripeBillingClient | null;
+}> {
+  if (!billingEnabled()) return { billing: null, billingCatalog: null, billingClient: null };
   const billingCatalog = new FixtureStripeCatalogSource();
-  const billingClient: StripeBillingClient = new FixtureStripeBillingClient();
+  const billingClient = new FixtureStripeBillingClient();
   const billing = composeBilling({
     config: readFixtureBillingConfig(),
     database,
-    entitlements: entitlements.service,
     catalogSource: billingCatalog,
     billingClient,
   });
   await billing.syncCatalog();
-  return { billing, billingCatalog };
+  return { billing, billingCatalog, billingClient };
 }
 
 main().catch((error: unknown) => {

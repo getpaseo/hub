@@ -63,10 +63,25 @@ which. Checkout and the billing portal are Stripe-hosted; Hub's own dashboard su
 plan-picker dialog and a "Manage billing" link — payment methods, invoices, and cancellation stay
 in the Stripe portal.
 
-The subscription webhook (`BillingRuntime.handleWebhook`, `src/billing/index.ts:216`) re-reads
-the referenced subscription's live state and stamps from that, never from the event payload.
-That's what makes it idempotent under replay: a retried or reordered webhook converges on the
-same stamp instead of ping-ponging with the seat-usage echo entitlements reports back to Stripe.
+The first subscribe and a plan change are two different Stripe operations, and
+`BillingRuntime.createCheckout` picks the right one: with no subscription yet it opens a Checkout
+Session; once one exists, a change updates that single subscription's item in place
+(`changeSubscriptionPrice`) rather than opening a second checkout or a second subscription. Stripe
+models a plan change as an update to the one subscription, so an organization holds exactly one
+for its lifetime.
+
+The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes
+only the subscription id from the event, then — under a per-organization advisory lock that
+serializes across processes — re-reads the subscription's live state and converges the
+organization onto it: resolve the price to a plan (resyncing the catalog once when a subscription
+webhook beat its own price webhook), then stamp the plan's template, or stamp Free on a terminal
+cancellation so paid entitlements never outlive the subscription. The subscription mirror and the
+entitlement stamp commit in one transaction (`Database.reconcileOrganizationSubscription`), so the
+two can never disagree across a crash. Re-reading current state under the lock is what stops an
+older delivery resuming after a newer one from reverting the stamp; the idempotent stamp makes a
+pure replay a no-op. When it cannot reconcile yet — a price still not in the mirror, or an
+unreadable subscription — it returns a non-2xx so Stripe redelivers, rather than acknowledging a
+state nothing would revisit.
 
 `organization_subscriptions` (`src/db/schema.ts:1133`) is a table this repo owns and keys
 directly by `organization_id`, deliberately not part of Better Auth's schema.

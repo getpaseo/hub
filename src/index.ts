@@ -58,7 +58,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       : composeBilling({
           config: billingConfig,
           database,
-          entitlements: entitlements.service,
           catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
           billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
         });

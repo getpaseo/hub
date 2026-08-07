@@ -872,7 +872,15 @@ export interface OrganizationSubscriptionRecord {
   updatedAt: Date;
 }
 
-export interface UpsertOrganizationSubscriptionInput {
+/**
+ * One convergent reconciliation of an organization's Stripe subscription: the local mirror and
+ * the entitlement stamp move together in a single transaction, so a subscription webhook can
+ * never leave the two disagreeing. `stamp` is present when the reconciled state should re-stamp
+ * entitlements (an active plan, or Free on terminal cancellation) and absent when the state is
+ * grandfathered (a transient status that leaves the last stamp untouched). The stamp reuses the
+ * same idempotent logic as `stampOrganizationEntitlements`, so a replay is a no-op.
+ */
+export interface ReconcileOrganizationSubscriptionInput {
   organizationId: string;
   stripeCustomerId: string;
   stripeSubscriptionId: string;
@@ -880,6 +888,7 @@ export interface UpsertOrganizationSubscriptionInput {
   status: string;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  stamp?: Omit<StampOrganizationEntitlementsInput, "organizationId">;
 }
 
 export interface InsertProjectConfigurationRevisionInput {
@@ -1201,14 +1210,24 @@ export interface Database {
   syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord>;
   /** All synced plans (active and inactive) with their prices. Empty when never synced. */
   listBillingPlans(): Promise<BillingPlanRecord[]>;
-  /** Upserts the organization's current Stripe subscription mirror. `src/billing/` only. */
-  upsertOrganizationSubscription(
-    input: UpsertOrganizationSubscriptionInput,
+  /**
+   * Atomically upserts the organization's Stripe subscription mirror and, when `stamp` is set,
+   * re-stamps its entitlements in the same transaction. `src/billing/` only — the sole convergent
+   * writer the subscription webhook drives.
+   */
+  reconcileOrganizationSubscription(
+    input: ReconcileOrganizationSubscriptionInput,
   ): Promise<OrganizationSubscriptionRecord>;
   /** The organization's current subscription mirror, or undefined when it never subscribed. */
   getOrganizationSubscription(
     organizationId: string,
   ): Promise<OrganizationSubscriptionRecord | undefined>;
+  /**
+   * Runs `fn` while holding a named advisory lock that serializes across processes, so a
+   * per-organization critical section (re-read external state, then write) cannot interleave with
+   * another instance handling the same organization. Released even if `fn` throws.
+   */
+  withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

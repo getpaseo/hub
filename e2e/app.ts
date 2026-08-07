@@ -114,6 +114,8 @@ class BuiltApplications {
       }) => deliverCommand(server, { type: "github-configuration", ...input }),
       setBillingProduct: (product: FixtureBillingProduct) =>
         deliverCommand(server, { type: "billing-product", product }),
+      cancelSubscription: (organizationId: string) =>
+        deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
     };
     this.running.push(application);
     await serverReady(server, origin, output);

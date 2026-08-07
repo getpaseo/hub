@@ -5,6 +5,7 @@ import type {
   StripeCatalogSource,
 } from "./stripe-catalog-source.js";
 import type {
+  ChangeSubscriptionPriceInput,
   CreateBillingPortalSessionInput,
   CreateCheckoutSessionInput,
   EnsureCustomerInput,
@@ -75,11 +76,17 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
   const stripe = new StripeSDK(stripeSecretKey);
   return {
     async ensureCustomer(input: EnsureCustomerInput): Promise<string> {
-      const customer = await stripe.customers.create({
-        ...(input.email === null ? {} : { email: input.email }),
-        ...(input.name === null ? {} : { name: input.name }),
-        metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-      });
+      const customer = await stripe.customers.create(
+        {
+          ...(input.email === null ? {} : { email: input.email }),
+          ...(input.name === null ? {} : { name: input.name }),
+          metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
+        },
+        // Keyed on the organization so two concurrent first-checkout attempts collapse onto one
+        // customer instead of creating a duplicate — the customer half of "pending checkout
+        // creation is idempotent".
+        { idempotencyKey: `customer:${input.organizationId}` },
+      );
       return customer.id;
     },
     async createCheckoutSession(input: CreateCheckoutSessionInput): Promise<{ url: string }> {
@@ -97,6 +104,19 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       });
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
       return { url: session.url };
+    },
+    async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
+      // A plan change updates the existing subscription's single item onto the new price — never a
+      // second subscription. Stripe needs the item id, so retrieve first, then swap its price.
+      const subscription = await stripe.subscriptions.retrieve(input.subscriptionId);
+      const item = subscription.items.data[0];
+      if (item === undefined) {
+        throw new Error(`subscription ${input.subscriptionId} has no item to change`);
+      }
+      await stripe.subscriptions.update(input.subscriptionId, {
+        items: [{ id: item.id, price: input.priceId }],
+        proration_behavior: "create_prorations",
+      });
     },
     async createBillingPortalSession(
       input: CreateBillingPortalSessionInput,

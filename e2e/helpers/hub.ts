@@ -36,6 +36,8 @@ export interface BuiltApplication {
     rawYaml?: string;
   }): Promise<void>;
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
+  /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
+  cancelSubscription(organizationId: string): Promise<void>;
 }
 
 let MACHINE_KEY = "";
@@ -610,6 +612,20 @@ export class PaseoHub {
   async deliverSubscriptionWebhook(alias: string): Promise<void> {
     const organizationId = await this.organizationIdForAlias(alias);
     await this.postSignedBillingWebhook(this.primary.origin, "customer.subscription.created", {
+      id: fixtureSubscriptionId(organizationId),
+      object: "subscription",
+    });
+  }
+
+  /**
+   * Cancel the organization's subscription in the fixture (a portal cancellation) and deliver the
+   * signed customer.subscription.deleted webhook. Reconciliation re-reads the canceled state and
+   * stamps Free, so paid entitlements do not survive a cancellation.
+   */
+  async cancelSubscription(alias: string): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await this.primary.cancelSubscription(organizationId);
+    await this.postSignedBillingWebhook(this.primary.origin, "customer.subscription.deleted", {
       id: fixtureSubscriptionId(organizationId),
       object: "subscription",
     });
