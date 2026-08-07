@@ -7,7 +7,6 @@ import { Client } from "pg";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
-  replyCapabilityMetadata,
   replyOutputTool,
 } from "../../execution-capabilities/outputs.js";
 import { createFetchServer } from "../../http/node-server.js";
@@ -61,7 +60,6 @@ async function main(): Promise<void> {
   const outputs = new OutputExecutorRegistry();
   outputs.register({
     type: "discord.reply",
-    hub: replyCapabilityMetadata,
     tool: replyOutputTool,
     available: outputContextProvider("discord"),
     execute: async (output) => {

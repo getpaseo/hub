@@ -520,6 +520,7 @@ export class DaemonDispatchLifecycle {
           : { injectToolInventory: intent.injectToolInventory }),
         allowOutputs: intent.allowOutputs,
         outputContext: intent.outputContext,
+        ...(intent.outputSchema === undefined ? {} : { outputSchema: intent.outputSchema }),
         capabilities: this.executionCapabilities,
       }),
     };

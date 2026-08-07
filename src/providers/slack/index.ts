@@ -18,11 +18,7 @@ import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
-import {
-  outputContextProvider,
-  replyCapabilityMetadata,
-  replyOutputTool,
-} from "../../execution-capabilities/outputs.js";
+import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createSlackWebhookSource } from "../../triggers/slack/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
@@ -133,7 +129,6 @@ export function createSlackRegistration(
     outputs: [
       {
         type: "slack.reply",
-        hub: replyCapabilityMetadata,
         tool: replyOutputTool,
         available: outputContextProvider("slack"),
         execute: createSlackReplyExecutor({ client: bot }),

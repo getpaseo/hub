@@ -42,7 +42,6 @@ import type { WorktreeTarget } from "../../config/index.js";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
-  replyCapabilityMetadata,
   replyOutputTool,
 } from "../../execution-capabilities/outputs.js";
 import type { DaemonClock } from "../registry.js";
@@ -876,6 +875,41 @@ export class HubHarness {
     return body;
   }
 
+  async listExecutionTools(
+    executionId: string,
+  ): Promise<readonly { name: string; description: string; inputSchema: unknown }[]> {
+    const token = this.requireDaemon().completionToken(executionId);
+    const response = await fetch(`${this.origin}/agent-executions/${executionId}/mcp`, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      }),
+    });
+    assert.equal(response.status, 200);
+    return z
+      .object({
+        result: z.object({
+          tools: z.array(
+            z
+              .object({
+                name: z.string(),
+                description: z.string(),
+                inputSchema: z.unknown(),
+              })
+              .passthrough(),
+          ),
+        }),
+      })
+      .parse(await response.json()).result.tools;
+  }
+
   async restartApp(): Promise<void> {
     await this.stopApp();
     await this.startApp();
@@ -1322,7 +1356,6 @@ export class HubHarness {
     const registry = new OutputExecutorRegistry();
     registry.register({
       type: "discord.reply",
-      hub: replyCapabilityMetadata,
       tool: replyOutputTool,
       available: outputContextProvider("discord"),
       execute: async () => undefined,

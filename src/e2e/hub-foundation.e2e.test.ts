@@ -48,7 +48,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(completed, {
       prompt: [
         "Capabilities available in this execution:",
-        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "- finish_execution: Completes this execution and records its optional structured output.",
         "",
         "Deploy requested for phase-five-operator",
       ].join("\n"),
@@ -129,7 +129,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(recovered, {
       prompt: [
         "Capabilities available in this execution:",
-        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "- finish_execution: Completes this execution and records its optional structured output.",
         "",
         "Deploy requested for phase-five-operator",
       ].join("\n"),

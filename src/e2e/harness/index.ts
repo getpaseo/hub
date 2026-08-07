@@ -317,7 +317,7 @@ export class HubE2E {
       "        agent:",
       `          provider: ${provider}`,
       `          mode: ${mode}`,
-      '        prompt: [{ text: "Call the hub.finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      '        prompt: [{ text: "Call the finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",
@@ -365,7 +365,7 @@ export class HubE2E {
       "        agent:",
       `          provider: ${provider}`,
       `          mode: ${mode}`,
-      '        prompt: [{ text: "Classify the request and call hub.finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP. Request: ${{ paseo.prompt }}" }] ',
+      '        prompt: [{ text: "Classify the request and call finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP. Request: ${{ paseo.prompt }}" }] ',
       "        output:",
       "          schema:",
       "            type: object",
@@ -384,7 +384,7 @@ export class HubE2E {
       "        agent:",
       `          provider: ${provider}`,
       `          mode: ${mode}`,
-      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
       "      - id: work-hub",
       "        if: \"${{ values.selected == 'hub' }}\"",
       "        environment: real-agent-routing",
@@ -394,7 +394,7 @@ export class HubE2E {
       "        agent:",
       `          provider: ${provider}`,
       `          mode: ${mode}`,
-      '        prompt: [{ text: "Call hub.finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
       method: "POST",

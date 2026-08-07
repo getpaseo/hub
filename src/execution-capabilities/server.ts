@@ -1,32 +1,21 @@
 import type { ErrorObject } from "ajv";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
-import type { JsonValue } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
 import { registerResponseLifecycle } from "../http/response-lifecycle.js";
+import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
 import {
-  compileFinishExecutionArguments,
-  compileJsonSchema,
-  formatJsonSchemaErrors,
-} from "../workflows/json-schema.js";
-import type { MaterializedOutputCapability, OutputExecutorRegistry } from "./outputs.js";
+  executionToolDefinitions,
+  finishExecutionToolName,
+  type MaterializedOutputCapability,
+  type OutputExecutorRegistry,
+  type OutputToolSchema,
+} from "./outputs.js";
 
-interface JsonSchemaNode {
-  readonly [key: string]: JsonValue;
-}
-
-interface JsonSchema extends JsonSchemaNode {
-  readonly type: "object";
-  readonly properties?: Record<string, JsonSchemaNode>;
-  readonly required?: string[];
-}
+type JsonSchema = OutputToolSchema;
 
 export interface ExecutionCapabilityServer {
   handle(request: Request, executionId: string): Promise<Response>;
@@ -136,22 +125,13 @@ function createMcpServer(
     { name: "paseo-hub-execution", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
-  const finishContract = finishExecutionContract(execution.launchIntent?.outputSchema);
-  const tools: Tool[] = [
-    {
-      name: "finish_execution",
-      description: "Mark this Hub execution complete after the task is fully finished.",
-      inputSchema: finishContract.schema,
-    },
-  ];
-  for (const output of materializedOutputs) {
-    tools.push({
-      name: output.capability.tool.name,
-      description: `${output.capability.tool.description} (up to ${output.declaration.max} times).`,
-      inputSchema: output.capability.tool.inputSchema,
-    });
-  }
-  const contracts = new Map<string, JsonSchemaContract>([["finish_execution", finishContract]]);
+  const tools = executionToolDefinitions(execution.launchIntent?.outputSchema, materializedOutputs);
+  const finishTool = tools.find((tool) => tool.name === finishExecutionToolName);
+  if (finishTool === undefined) throw new Error("finish execution tool is not registered");
+  const finishContract = finishExecutionContract(finishTool.inputSchema);
+  const contracts = new Map<string, JsonSchemaContract>([
+    [finishExecutionToolName, finishContract],
+  ]);
   const outputsByToolName = new Map<string, MaterializedOutputCapability>();
   for (const output of materializedOutputs) {
     contracts.set(
@@ -170,7 +150,7 @@ function createMcpServer(
     const validation = contract.validate(args);
     if (!validation.valid) return toolFailure(validation.message);
 
-    if (toolName === "finish_execution")
+    if (toolName === finishExecutionToolName)
       return finishExecutionCall(options, execution, token, args, materializedOutputs);
     const output = outputsByToolName.get(toolName);
     return output === undefined
@@ -251,9 +231,8 @@ interface JsonSchemaContract {
   validate(args: Record<string, unknown>): { valid: true } | { valid: false; message: string };
 }
 
-function finishExecutionContract(outputSchema: JsonValue | undefined): JsonSchemaContract {
-  const compiled = compileFinishExecutionArguments(outputSchema);
-  const schema = toolSchema(compiled.schema);
+function finishExecutionContract(schema: JsonSchema): JsonSchemaContract {
+  const compiled = compileJsonSchema(schema);
   return {
     schema,
     validate(args) {
@@ -287,31 +266,6 @@ function validationMessage(errors: readonly ErrorObject[] | null | undefined): s
   return messages.length === 0
     ? "Invalid arguments for tool"
     : `Invalid arguments for tool: ${messages.join("; ")}`;
-}
-
-function isSchemaNode(value: JsonValue): value is JsonSchemaNode {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function toolSchema(value: JsonValue): JsonSchema {
-  if (!isToolSchema(value)) throw new Error("JSON Schema tool arguments must be an object");
-  return value;
-}
-
-function isToolSchema(value: JsonValue): value is JsonSchema {
-  if (!isSchemaNode(value) || value["type"] !== "object") return false;
-  const properties = value["properties"];
-  const required = value["required"];
-  return (
-    (properties === undefined ||
-      (isRecord(properties) && Object.values(properties).every(isSchemaNode))) &&
-    (required === undefined ||
-      (Array.isArray(required) && required.every((item) => typeof item === "string")))
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function missingRequiredOutputs(

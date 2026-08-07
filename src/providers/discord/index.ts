@@ -19,11 +19,7 @@ import { createDiscordGatewaySource } from "../../triggers/discord/gateway.js";
 import { createDiscordTriggerProvider } from "../../triggers/discord/provider.js";
 import { createDiscordAttachmentResolver } from "../../triggers/discord/attachments.js";
 import { createDiscordReplyExecutor } from "../../triggers/discord/reply.js";
-import {
-  outputContextProvider,
-  replyCapabilityMetadata,
-  replyOutputTool,
-} from "../../execution-capabilities/outputs.js";
+import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import {
   createDiscordConnectionClient,
   type DiscordConnectionClient,
@@ -116,7 +112,6 @@ export function createDiscordRegistration(
     outputs: [
       {
         type: "discord.reply",
-        hub: replyCapabilityMetadata,
         tool: replyOutputTool,
         available: outputContextProvider("discord"),
         execute: createDiscordReplyExecutor({ bot }),
