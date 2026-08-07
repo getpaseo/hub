@@ -924,6 +924,7 @@ describe("daemon enrollment and execution", () => {
       },
     );
     await hub.drainWorkflowOutbox();
+    await hub.failureNotified();
     assert.equal(hub.failureHookCount(), 1);
     assert.equal(hub.createdAgentCount(), 0);
   });
@@ -945,6 +946,7 @@ describe("daemon enrollment and execution", () => {
       { status: "failed", result: { status: "failed", reason: "whole_run_timeout" } },
     );
     await hub.drainWorkflowOutbox();
+    await hub.failureNotified();
     assert.equal(hub.failureHookCount(), 1);
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
     assert.equal(await hub.completeExecution(result.execution.id), 409);

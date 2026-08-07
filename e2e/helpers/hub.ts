@@ -1725,7 +1725,7 @@ export class PaseoHub {
     executionId: string,
     daemon: ContractDaemon,
   ): Promise<void> {
-    const capability = daemon.executionCapability(executionId);
+    const capability = await daemon.executionCapability(executionId);
     const client = new McpClient({ name: "paseo-hub-browser-contract", version: "1.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(capability.url), {
       requestInit: { headers: capability.headers },
@@ -3633,9 +3633,10 @@ class ContractDaemon {
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
-  private readonly executionCapabilities = new Map<
+  private readonly executionCapabilities = new Map<string, ExecutionCapability>();
+  private readonly executionCreateEvents = new Map<
     string,
-    { url: string; headers: Record<string, string> }
+    { promise: Promise<void>; resolve: () => void }
   >();
   private socket: WebSocket | undefined;
   private webSocketUrl = "";
@@ -3683,7 +3684,20 @@ class ContractDaemon {
     });
   }
 
-  executionCapability(executionId: string): { url: string; headers: Record<string, string> } {
+  async executionCapability(executionId: string): Promise<ExecutionCapability> {
+    const capability = this.executionCapabilities.get(executionId);
+    if (capability !== undefined) return capability;
+    const existingEvent = this.executionCreateEvents.get(executionId);
+    if (existingEvent !== undefined) {
+      await existingEvent.promise;
+    } else {
+      let resolve!: () => void;
+      const promise = new Promise<void>((fulfill) => {
+        resolve = fulfill;
+      });
+      this.executionCreateEvents.set(executionId, { promise, resolve });
+      await promise;
+    }
     return z
       .object({ url: z.string().url(), headers: z.record(z.string(), z.string()) })
       .parse(this.executionCapabilities.get(executionId));
@@ -3717,7 +3731,11 @@ class ContractDaemon {
     if (!envelope.success) return;
     const request = envelope.data.message;
     const capability = request.mcpServers?.["hub"];
-    if (capability !== undefined) this.executionCapabilities.set(request.executionId, capability);
+    if (capability !== undefined) {
+      this.executionCapabilities.set(request.executionId, capability);
+    }
+    this.executionCreateEvents.get(request.executionId)?.resolve();
+    this.executionCreateEvents.delete(request.executionId);
     this.socket?.send(
       JSON.stringify({
         type: "session",
@@ -3736,6 +3754,8 @@ class ContractDaemon {
     );
   }
 }
+
+type ExecutionCapability = { url: string; headers: Record<string, string> };
 
 interface HttpContract {
   name: string;
