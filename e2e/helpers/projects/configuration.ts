@@ -91,6 +91,25 @@ export class ProjectConfiguration {
     await expect(this.page.locator(".cm-line span").first()).toBeVisible();
   }
 
+  /** A rendered document line. CodeMirror gives lines no role of their own. */
+  private line(text: string) {
+    return this.page.locator(".cm-line").filter({ hasText: text });
+  }
+
+  /** Reach the end of a long document the way an operator does: wheel over it. */
+  async scrollEditorToEnd() {
+    await this.editor().hover();
+    for (let tick = 0; tick < 20; tick += 1) await this.page.mouse.wheel(0, 600);
+  }
+
+  async expectLineOutOfSight(text: string) {
+    await expect(this.line(text)).not.toBeInViewport();
+  }
+
+  async expectLineInSight(text: string) {
+    await expect(this.line(text)).toBeInViewport();
+  }
+
   async expectValidationError(message: string) {
     await expect(this.page.getByRole("alert")).toContainText(message);
   }

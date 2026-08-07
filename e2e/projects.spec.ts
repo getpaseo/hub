@@ -17,6 +17,16 @@ const validConfiguration =
   "environments:\n  - name: runner\n    kind: docker\n    image: paseo/test\ntriggers: []";
 const unresolvedConfiguration =
   "environments:\n  - name: runner\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\ntriggers: []";
+/** Taller than the editor at any desktop viewport, so its last line starts out of sight. */
+const longConfiguration = [
+  "environments:",
+  ...Array.from({ length: 40 }, (_, index) => [
+    `  - name: runner-${String(index + 1)}`,
+    "    kind: docker",
+    "    image: paseo/test",
+  ]).flat(),
+  "triggers: []",
+].join("\n");
 const includeConfiguration = [
   "environments:",
   "  - name: runner",
@@ -173,6 +183,21 @@ test("edits configuration and prompt partials in the editor", async ({ hub, page
   await app.navigation.openProjectSection("Configuration");
   await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
   await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+});
+
+test("scrolls a long configuration down to its last line", async ({ hub, page }) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await app.navigation.openProject("Default");
+  await app.navigation.openProjectSection("Configuration");
+  await app.configuration.saveManualConfiguration(longConfiguration);
+  await app.configuration.expectConfigurationActivated(1);
+
+  await app.configuration.expectReadOnlyEditor("environments:");
+  await app.configuration.expectLineOutOfSight("runner-40");
+  await app.configuration.scrollEditorToEnd();
+  await app.configuration.expectLineInSight("runner-40");
 });
 
 test("rejects a partial the configuration does not include", async ({ hub, page }) => {

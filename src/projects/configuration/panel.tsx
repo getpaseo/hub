@@ -168,7 +168,10 @@ function ConfigurationWorkbench({
   return (
     <section
       aria-label="Configuration editor"
-      className="grid h-[70svh] min-h-[30rem] grid-cols-1 overflow-hidden rounded-lg border bg-card md:grid-cols-[17rem_minmax(0,1fr)]"
+      // The row tracks are bounded like the columns are: an `auto` row would size to
+      // the open document and push the editor past this fixed height, where
+      // `overflow-hidden` would clip it with nothing left to scroll.
+      className="grid h-[70svh] min-h-[30rem] grid-cols-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-card md:grid-cols-[17rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]"
     >
       <div className="flex flex-col gap-5 overflow-y-auto border-b p-4 md:border-r md:border-b-0">
         {source}
