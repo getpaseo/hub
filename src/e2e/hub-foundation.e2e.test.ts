@@ -102,7 +102,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     });
 
     await hub.recoverAmbiguousManualRun(run.executionId);
-    const recovery = await hub.replayEvidence(run.executionId);
+    const recovery = await hub.replayEvidence(run.executionId, run.providerEventReceiptId);
     assert.equal(recovery.executionAgentId, recovery.ownerMatchingAgentId);
     assert.deepEqual(recovery, {
       deliveryReceipts: 1,
