@@ -346,8 +346,12 @@ export class PaseoHub {
     await this.requireUser(alias).expectDesktopSidebarAndOrganizationMenu();
   }
 
-  async proveAuthenticationPendingLocksMode(alias: string, account: Account): Promise<void> {
-    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account);
+  async proveAuthenticationPendingLocksMode(
+    alias: string,
+    account: Account,
+    organization: string,
+  ): Promise<void> {
+    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account, organization);
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -2262,7 +2266,10 @@ class HubUser {
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
-  async proveAuthenticationPendingLocksMode(account: Account): Promise<void> {
+  async proveAuthenticationPendingLocksMode(
+    account: Account,
+    organization: string,
+  ): Promise<void> {
     const serverFunctions = "**/_serverFn/**";
     let authRequests = 0;
     let responseCompleted = () => {};
@@ -2312,7 +2319,11 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+    await expect(
+      this.page
+        .getByRole("heading", { name: "Choose an organization" })
+        .or(this.page.locator("header").first().getByText(organization, { exact: true })),
+    ).toBeVisible();
   }
 
   async proveAuthenticationSettlementLocksMode(
