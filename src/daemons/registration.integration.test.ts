@@ -674,6 +674,7 @@ class PostgresRegistration {
         resolveAccount: async () => ({
           session: { ...this.organizationAccess.session, activeOrganizationId: null },
           account: this.organizationAccess.account,
+          isInstanceOperator: false,
         }),
         rejectCookieMutation: () => undefined,
       },

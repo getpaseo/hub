@@ -615,6 +615,7 @@ export const users = pgTable("user", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   mustChangePassword: boolean("must_change_password").default(false).notNull(),
+  isInstanceOperator: boolean("is_instance_operator").default(false).notNull(),
 });
 
 export const sessions = pgTable(

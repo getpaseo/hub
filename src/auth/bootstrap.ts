@@ -176,10 +176,13 @@ async function createBootstrapData(
 
   const ownerUserId = randomUUID();
   const password = await hashPassword(settings.ownerPassword);
+  // The bootstrap owner is the instance's first operator — the only limits surface on a
+  // self-hosted instance and the back office on a hosted one. Every later operator is granted
+  // by SQL (docs/entitlements.md), never a UI or env var.
   await client.query(
     `insert into "user"
-       (id, name, email, email_verified, must_change_password)
-     values ($1, $2, $3, true, true)`,
+       (id, name, email, email_verified, must_change_password, is_instance_operator)
+     values ($1, $2, $3, true, true, true)`,
     [ownerUserId, settings.ownerEmail.split("@")[0] ?? settings.ownerEmail, settings.ownerEmail],
   );
   await client.query(

@@ -82,6 +82,7 @@ function accountAuth(activeOrganizationId: string | null): AuthServer {
       Promise.resolve({
         session: { id: "session-1", activeOrganizationId },
         account: { id: "user-1", name: "User", email: "user@example.test" },
+        isInstanceOperator: false,
       }),
     rejectCookieMutation: () => undefined,
     close: () => Promise.resolve(),

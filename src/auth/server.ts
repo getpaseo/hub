@@ -86,6 +86,7 @@ const sessionSchema = z.object({
       name: z.string(),
       email: z.string(),
       mustChangePassword: z.boolean().optional(),
+      isInstanceOperator: z.boolean().optional(),
     })
     .passthrough(),
 });
@@ -137,6 +138,15 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           input: false,
           returned: true,
         },
+        // The instance operator flag: read into the session so cross-org operator authorization
+        // resolves from it. Granted only by bootstrap or SQL — never client input — so `input:
+        // false` keeps it off every sign-up/update body. Threaded exactly like mustChangePassword.
+        isInstanceOperator: {
+          type: "boolean",
+          defaultValue: false,
+          input: false,
+          returned: true,
+        },
       },
     },
     plugins: [paseoOrganizationPlugin(), tanstackStartCookies()],
@@ -153,6 +163,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         email: parsed.data.user.email,
         activeOrganizationId: parsed.data.session.activeOrganizationId ?? null,
         mustChangePassword: parsed.data.user.mustChangePassword ?? false,
+        isInstanceOperator: parsed.data.user.isInstanceOperator ?? false,
       };
     },
   };

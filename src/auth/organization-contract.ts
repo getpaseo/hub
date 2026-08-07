@@ -71,6 +71,7 @@ export const accountStateSchema = z.discriminatedUnion("status", [
     organization: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
     membership: z.object({ id: z.string(), role: organizationRoleSchema }),
     capabilities: organizationCapabilitiesSchema,
+    isInstanceOperator: z.boolean(),
     team: z.object({
       members: z.array(teamMemberSchema),
       invitations: z.array(managerInvitationSchema).optional(),

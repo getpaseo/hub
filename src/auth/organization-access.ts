@@ -40,6 +40,7 @@ export interface AccountSession {
   email: string;
   activeOrganizationId: string | null;
   mustChangePassword: boolean;
+  isInstanceOperator: boolean;
 }
 
 export interface OrganizationAccessValue {
@@ -66,6 +67,9 @@ export interface OrganizationAccessValue {
 export interface AccountAccessValue {
   session: { id: string; activeOrganizationId: string | null };
   account: { id: string; name: string; email: string };
+  /** The instance-operator flag, carried from the session. The operator surface authorizes on
+   * this alone — it is never a membership read. Presentation gates the operator nav on it too. */
+  isInstanceOperator: boolean;
 }
 
 export interface AccountSessionReader {
@@ -185,6 +189,7 @@ export class OrganizationAccess {
         activeOrganizationId: session.activeOrganizationId,
       },
       account: { id: session.userId, name: session.name, email: session.email },
+      isInstanceOperator: session.isInstanceOperator,
     };
   }
 
@@ -252,6 +257,9 @@ export class OrganizationAccess {
       organization: access.organization,
       membership: access.membership,
       capabilities: access.capabilities,
+      // Presentation only — it decides whether the operator nav renders. Every operator read and
+      // write re-checks the flag server-side, so a forged value here buys nothing.
+      isInstanceOperator: resolvedSession.isInstanceOperator,
       canCreateOrganization: this.options.policy.organizationCreation === "open",
       team,
       ...(invitation === undefined ? {} : { invitation: invitationSummary(invitation) }),
