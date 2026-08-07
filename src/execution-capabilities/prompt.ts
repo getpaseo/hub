@@ -16,9 +16,9 @@ export function composeExecutionPrompt(input: ExecutionPromptInput): string {
     input.outputContext,
   );
   return [
-    input.prompt,
-    "",
-    "Hub capabilities available in this execution:",
+    "Capabilities available in this execution:",
     ...inventory.map((capability) => `- ${capability.name}: ${capability.description}`),
+    "",
+    input.prompt,
   ].join("\n");
 }

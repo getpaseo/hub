@@ -20,7 +20,7 @@ The configuration install body may also include an optional `partials` array. Ea
 
 ## Workflow prompt capability inventory
 
-Each workflow step's agent prompt includes a factual inventory of the Hub capabilities available to that execution by default. The inventory uses stable semantic names: `hub.finalize` records the current agent execution as complete and returns its result to the workflow, while `hub.reply` sends a message to the conversation that triggered the execution when that output is allowed and available. Finalizing an execution does not necessarily complete the whole workflow.
+Each workflow step's agent prompt begins with a factual inventory of the capabilities available to that execution by default. It uses the header `Capabilities available in this execution:`, lists only the available capabilities, then leaves a blank line before the authored prompt. The inventory uses stable semantic names: `hub.finalize` records the current agent execution as complete and returns its result to the workflow, while `hub.reply` sends a message to the conversation that triggered the execution when that output is allowed and available. Finalizing an execution does not necessarily complete the whole workflow.
 
 Authors may opt out for an individual step with `inject_tool_inventory: false`:
 

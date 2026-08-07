@@ -31,10 +31,10 @@ describe("production Hub runtime", () => {
     assert.equal(
       hub.createdAgentLaunch().prompt,
       [
-        "Deploy the requested service",
-        "",
-        "Hub capabilities available in this execution:",
+        "Capabilities available in this execution:",
         "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Deploy the requested service",
       ].join("\n"),
     );
   });

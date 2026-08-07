@@ -114,10 +114,10 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       agent.prompt,
       [
-        "Reply pong.",
-        "",
-        "Hub capabilities available in this execution:",
+        "Capabilities available in this execution:",
         "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Reply pong.",
       ].join("\n"),
     );
     assert.equal(agent.thinkingOptionId, "xhigh");
@@ -147,11 +147,11 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       hub.createdAgentLaunch().prompt,
       [
-        "Reply pong.",
-        "",
-        "Hub capabilities available in this execution:",
+        "Capabilities available in this execution:",
         "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
         "- hub.reply: sends a message to the conversation that triggered the execution.",
+        "",
+        "Reply pong.",
       ].join("\n"),
     );
 
@@ -161,10 +161,10 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       hub.createdAgentLaunch().prompt,
       [
-        "Reply pong.",
-        "",
-        "Hub capabilities available in this execution:",
+        "Capabilities available in this execution:",
         "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Reply pong.",
       ].join("\n"),
     );
   });
