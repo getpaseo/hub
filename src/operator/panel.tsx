@@ -28,25 +28,20 @@ import {
   SelectValue,
 } from "../components/ui/select.js";
 import { Skeleton } from "../components/ui/skeleton.js";
-import { useRouteTenant } from "../projects/context.js";
 import type { EntitlementChangeSource } from "../db/types.js";
-import type { EntitlementPatch, OverrideKey } from "./catalog.js";
-import type { EntitlementsDashboard } from "./dashboard.js";
+import type { EntitlementPatch, OverrideKey } from "../entitlements/catalog.js";
+import type { OperatorConsole } from "./console.js";
 import {
-  entitlementsClearOverride,
-  entitlementsOverride,
-  entitlementsSnapshot,
+  operatorClearOverride,
+  operatorOrganizations,
+  operatorOverride,
+  operatorSnapshot,
 } from "./functions.js";
 
-type EntitlementsSnapshot = Awaited<ReturnType<EntitlementsDashboard["snapshot"]>>;
-type OverrideResult = Awaited<ReturnType<typeof entitlementsOverride>>;
-type ClearOverrideResult = Awaited<ReturnType<typeof entitlementsClearOverride>>;
+type Snapshot = Awaited<ReturnType<OperatorConsole["snapshot"]>>;
+type OverrideResult = Awaited<ReturnType<typeof operatorOverride>>;
+type ClearOverrideResult = Awaited<ReturnType<typeof operatorClearOverride>>;
 
-/**
- * Which entitlement an override dialog is editing, carrying the value to prefill and whether an
- * override is currently set (which is what unlocks "Reset to plan default"). `key` is the
- * override identity the clear path removes.
- */
 type OverrideTarget =
   | { kind: "seats"; key: OverrideKey; hasOverride: boolean; max: number | null }
   | { kind: "canInviteMembers"; key: OverrideKey; hasOverride: boolean; value: boolean }
@@ -77,15 +72,69 @@ const SOURCE_LABELS: Record<EntitlementChangeSource, string> = {
   override: "Override",
 };
 
-export function OrganizationEntitlementsPanel() {
-  const tenant = useRouteTenant();
-  const load = useServerFn(entitlementsSnapshot);
+export function OperatorEntitlementsPage() {
+  const [slug, setSlug] = useState<string | null>(null);
+  return (
+    <>
+      <PageHeader
+        title="Operator"
+        description="View and edit any organization's entitlements. Instance operators only."
+      />
+      <OrganizationPicker slug={slug} onSelect={setSlug} />
+      {slug !== null && <OperatorOrganization slug={slug} />}
+    </>
+  );
+}
+
+function OrganizationPicker({
+  slug,
+  onSelect,
+}: {
+  slug: string | null;
+  onSelect: (slug: string) => void;
+}) {
+  const load = useServerFn(operatorOrganizations);
+  const query = useQuery({ queryKey: ["operator", "organizations"], queryFn: () => load() });
+
+  if (query.isPending) return <OperatorLoading />;
+  if (query.isError || query.data.status === "error") {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Operator console unavailable</AlertTitle>
+        <AlertDescription>
+          {query.data?.status === "error"
+            ? query.data.error.message
+            : "We couldn't load organizations."}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  return (
+    <Section title="Organization" description="Pick an organization to manage its entitlements.">
+      <Select {...(slug === null ? {} : { value: slug })} onValueChange={onSelect}>
+        <SelectTrigger aria-label="Manage organization" className="w-full max-w-sm">
+          <SelectValue placeholder="Select an organization" />
+        </SelectTrigger>
+        <SelectContent>
+          {query.data.data.map((organization) => (
+            <SelectItem key={organization.id} value={organization.slug}>
+              {organization.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Section>
+  );
+}
+
+function OperatorOrganization({ slug }: { slug: string }) {
+  const load = useServerFn(operatorSnapshot);
   const query = useQuery({
-    queryKey: ["entitlements", tenant.account.id, tenant.organization.id],
-    queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
+    queryKey: ["operator", "snapshot", slug],
+    queryFn: () => load({ data: { organizationSlug: slug } }),
   });
 
-  if (query.isPending) return <EntitlementsLoading />;
+  if (query.isPending) return <OperatorLoading />;
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -98,12 +147,11 @@ export function OrganizationEntitlementsPanel() {
       </Alert>
     );
   }
-  return <EntitlementsContent snapshot={query.data.data} slug={tenant.organization.slug} />;
+  return <OrganizationContent snapshot={query.data.data} slug={slug} />;
 }
 
-function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapshot; slug: string }) {
+function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: string }) {
   const { effective, granted, overrides } = snapshot.entitlements;
-  const canManage = snapshot.capabilities.manageResources;
   const [target, setTarget] = useState<OverrideTarget | null>(null);
   const closeEditor = useCallback(() => setTarget(null), []);
   const seatsOverridden = overrides.seats?.max !== undefined;
@@ -143,14 +191,10 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
 
   return (
     <>
-      <PageHeader
-        title="Entitlements"
-        description={`What ${snapshot.organization.name} is currently allowed to do.`}
-      />
       <OverLimitBanner overages={snapshot.overages} />
       <Section
         title="Entitlements"
-        description="Effective values, granted by your plan and adjusted by any manual overrides."
+        description={`Effective values for ${snapshot.organization.name}, granted by its plan and adjusted by any manual overrides.`}
       >
         <DataTable
           label="Entitlements"
@@ -165,13 +209,17 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
               {overrides.seats?.max === undefined ? "—" : seatLimitLabel(overrides.seats.max)}
             </DataCell>
             <DataCell>{seatLimitLabel(effective.seats.max)}</DataCell>
-            <DataCell muted>—</DataCell>
+            <DataCell muted>{snapshot.seatsInUse}</DataCell>
             <DataCell align="end">
-              <OverrideAction
-                canManage={canManage}
-                label="Override seat limit"
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Override seat limit"
                 onClick={editSeats}
-              />
+              >
+                Override
+              </Button>
             </DataCell>
           </DataRow>
           <DataRow>
@@ -191,11 +239,15 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
             </DataCell>
             <DataCell muted>—</DataCell>
             <DataCell align="end">
-              <OverrideAction
-                canManage={canManage}
-                label="Override members can invite"
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Override members can invite"
                 onClick={editInvites}
-              />
+              >
+                Override
+              </Button>
             </DataCell>
           </DataRow>
           <DataRow>
@@ -209,11 +261,15 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
             <DataCell>{meterLimitLabel(effectiveExecutionsLimit)}</DataCell>
             <DataCell>{meterUsageLabel(snapshot.usage)}</DataCell>
             <DataCell align="end">
-              <OverrideAction
-                canManage={canManage}
-                label="Override executions this month"
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Override executions this month"
                 onClick={editExecutionsMonthly}
-              />
+              >
+                Override
+              </Button>
             </DataCell>
           </DataRow>
         </DataTable>
@@ -224,58 +280,30 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
       >
         <AuditTrail history={snapshot.history} />
       </Section>
-      {canManage && target !== null && (
-        <OverrideDialog target={target} slug={slug} onClose={closeEditor} />
-      )}
+      {target !== null && <OverrideDialog target={target} slug={slug} onClose={closeEditor} />}
     </>
   );
 }
 
-function OverrideAction({
-  canManage,
-  label,
-  onClick,
-}: {
-  canManage: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  if (!canManage) return null;
-  return (
-    <Button type="button" variant="outline" size="sm" aria-label={label} onClick={onClick}>
-      Override
-    </Button>
-  );
-}
-
 /**
- * Shown after a downgrade leaves an organization above a plan cap. Grandfathering means nothing
- * was deleted, so the tone is a warning, not an error: it says what is over and by how much, and
- * what the admin can do, without alarming them about data they still have. Renders nothing when
- * every cap has headroom.
+ * The operator sees which organizations sit over a cap a downgrade left behind. Existing resources
+ * were grandfathered, so this is a warning, not an error — it says what is over and by how much.
  */
-function OverLimitBanner({ overages }: { overages: EntitlementsSnapshot["overages"] }) {
+function OverLimitBanner({ overages }: { overages: Snapshot["overages"] }) {
   if (overages.length === 0) return null;
   return (
     <Alert aria-label="Over plan limit" className="border-warning/40 bg-warning-surface">
       <TriangleAlert className="text-warning" />
-      <AlertTitle>You're over your plan's limits</AlertTitle>
+      <AlertTitle>This organization is over its limits</AlertTitle>
       <AlertDescription>
         {overages.map((overage) => (
-          <p key={overage.entitlement}>{overageSentence(overage)}</p>
+          <p key={overage.entitlement}>
+            {`${overage.current} seats in use, but the effective limit is ${overage.limit}.`}
+          </p>
         ))}
-        <p>
-          Your existing seats are kept — nothing was removed. To add more, upgrade your plan or
-          remove members and pending invitations to fit.
-        </p>
       </AlertDescription>
     </Alert>
   );
-}
-
-/** `seats` is the only cap today, so the noun is fixed; the loop above already handles more. */
-function overageSentence(overage: EntitlementsSnapshot["overages"][number]): string {
-  return `You have ${overage.current} seats in use, but your current plan includes ${overage.limit}.`;
 }
 
 function OverrideDialog({
@@ -291,20 +319,20 @@ function OverrideDialog({
   const onSaved = useCallback(
     async (status: "ok" | "error") => {
       if (status !== "ok") return;
-      await queryClient.invalidateQueries({ queryKey: ["entitlements"] });
+      await queryClient.invalidateQueries({ queryKey: ["operator", "snapshot", slug] });
       onClose();
     },
-    [onClose, queryClient],
+    [onClose, queryClient, slug],
   );
   const save = useMutation({
-    mutationFn: useServerFn(entitlementsOverride) as (
-      input: Parameters<typeof entitlementsOverride>[0],
+    mutationFn: useServerFn(operatorOverride) as (
+      input: Parameters<typeof operatorOverride>[0],
     ) => Promise<OverrideResult>,
     onSuccess: (result) => onSaved(result.status),
   });
   const clear = useMutation({
-    mutationFn: useServerFn(entitlementsClearOverride) as (
-      input: Parameters<typeof entitlementsClearOverride>[0],
+    mutationFn: useServerFn(operatorClearOverride) as (
+      input: Parameters<typeof operatorClearOverride>[0],
     ) => Promise<ClearOverrideResult>,
     onSuccess: (result) => onSaved(result.status),
   });
@@ -316,8 +344,6 @@ function OverrideDialog({
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      // Which submit button was pressed decides set vs clear; reading it off the native
-      // SubmitEvent keeps the reason field's `required` validation firing for both buttons.
       const native = event.nativeEvent;
       const submitter = native instanceof SubmitEvent ? native.submitter : null;
       const data = new FormData(
@@ -443,7 +469,7 @@ function ExecutionsMonthlyControl({ limit }: { limit: number | null }) {
   );
 }
 
-function AuditTrail({ history }: { history: EntitlementsSnapshot["history"] }) {
+function AuditTrail({ history }: { history: Snapshot["history"] }) {
   return (
     <DataTable
       label="Audit trail"
@@ -509,7 +535,7 @@ function overrideTitle(target: OverrideTarget): string {
   return "Override members can invite";
 }
 
-function effectiveLabel(effective: EntitlementsSnapshot["entitlements"]["effective"]): string {
+function effectiveLabel(effective: Snapshot["entitlements"]["effective"]): string {
   const invite = effective.canInviteMembers ? "Allowed" : "Not allowed";
   const executions = meterLimitLabel(effective.meters["executions.monthly"].limit);
   return `Seats: ${seatLimitLabel(effective.seats.max)} · Invites: ${invite} · Executions: ${executions}`;
@@ -529,13 +555,13 @@ function meterLimitLabel(limit: number | null): string {
   return limit === null ? "Unlimited" : String(limit);
 }
 
-function meterUsageLabel(usage: EntitlementsSnapshot["usage"]): string {
+function meterUsageLabel(usage: Snapshot["usage"]): string {
   return usage.limit === null ? String(usage.used) : `${usage.used}/${usage.limit}`;
 }
 
-function EntitlementsLoading() {
+function OperatorLoading() {
   return (
-    <section aria-label="Loading entitlements" aria-busy="true" className="grid gap-6">
+    <section aria-label="Loading operator console" aria-busy="true" className="grid gap-6">
       <Skeleton className="h-12 w-64" />
       <Skeleton className="h-48 w-full" />
     </section>

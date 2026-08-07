@@ -274,6 +274,7 @@ function AppSidebar({
             canManageResources={account.capabilities.manageResources}
           />
         )}
+        {account.isInstanceOperator ? <InstanceNavigationGroup /> : null}
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
@@ -298,7 +299,7 @@ const ORGANIZATION_DESTINATIONS = [
   { section: "connections", label: "Connections", icon: Cable },
   { section: "api-keys", label: "API keys", icon: KeyRound },
   { section: "team", label: "Team", icon: Users },
-  { section: "entitlements", label: "Entitlements", icon: ShieldCheck },
+  { section: "usage", label: "Usage", icon: Gauge },
 ] as const;
 const PROJECT_DESTINATIONS = [
   { section: "overview", label: "Overview", icon: Gauge },
@@ -411,6 +412,28 @@ function NavigationGroups({
         </nav>
       )}
     </>
+  );
+}
+
+/**
+ * Instance-scoped navigation — the operator back office. It lives outside the organization group
+ * because an operator acts across organizations, so it renders whether or not a tenant is
+ * resolved. Presence here is presentation only: the operator routes enforce the flag server-side.
+ */
+function InstanceNavigationGroup() {
+  return (
+    <nav aria-label="Instance">
+      <SidebarGroup>
+        <div className="px-2 pb-2 text-xs font-medium text-muted-foreground group-data-[collapsible=icon]:sr-only">
+          Instance
+        </div>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <NavItem to="/operator" label="Operator" icon={ShieldCheck} />
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    </nav>
   );
 }
 
@@ -643,8 +666,9 @@ const ROUTE_SECTIONS = [
   { suffix: "/connections", label: "Connections" },
   { suffix: "/api-keys", label: "API keys" },
   { suffix: "/team", label: "Team" },
-  { suffix: "/entitlements", label: "Entitlements" },
+  { suffix: "/usage", label: "Usage" },
   { suffix: "/billing", label: "Billing" },
+  { suffix: "/operator", label: "Operator" },
 ] as const;
 
 function routeSection(pathname: string) {

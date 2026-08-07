@@ -64,6 +64,13 @@ export interface MeterUsage {
   limit: number | null;
 }
 
+/** A cap's live count, resolved against the effective limit — the read-only usage display. */
+export interface CapUsage {
+  cap: CapKey;
+  used: number;
+  limit: number | null;
+}
+
 /**
  * A cap whose live count already exceeds its effective limit — the state a downgrade leaves
  * behind. Existing resources are grandfathered (never deleted to fit), so this is surfaced as a
@@ -250,6 +257,18 @@ export class EntitlementsService {
       periodStart: meterPeriodStart(this.now()),
       limit: meterLimit(effective, meter),
     };
+  }
+
+  /**
+   * The live count for a cap, resolved against its effective limit — what the Usage and operator
+   * surfaces show as "in use". Reads the same counter as `requireHeadroom`, so "in use" agrees
+   * with what enforcement blocks against. Symmetric with `usage()` for meters.
+   */
+  async capUsage(organizationId: string, cap: CapKey): Promise<CapUsage> {
+    const { effective } = await this.read(organizationId);
+    const limit = capLimit(effective, cap);
+    const used = await this.counters[cap](organizationId);
+    return { cap, used, limit };
   }
 
   /** The current period's usage for a meter, resolved against the effective limit. */

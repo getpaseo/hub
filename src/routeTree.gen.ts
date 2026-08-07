@@ -20,6 +20,7 @@ import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
 import { Route as ApiManualRunsRouteImport } from './routes/api/manual-runs'
+import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellActivateRouteImport } from './routes/_shell/activate'
 import { Route as ApiDeviceAuthorizationsIndexRouteImport } from './routes/api/device-authorizations/index'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
@@ -38,9 +39,9 @@ import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/int
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
+import { Route as ShellOOrganizationSlugUsageRouteImport } from './routes/_shell/o/$organizationSlug/usage'
 import { Route as ShellOOrganizationSlugTeamRouteImport } from './routes/_shell/o/$organizationSlug/team'
 import { Route as ShellOOrganizationSlugProjectsRouteImport } from './routes/_shell/o/$organizationSlug/projects'
-import { Route as ShellOOrganizationSlugEntitlementsRouteImport } from './routes/_shell/o/$organizationSlug/entitlements'
 import { Route as ShellOOrganizationSlugDaemonsRouteImport } from './routes/_shell/o/$organizationSlug/daemons'
 import { Route as ShellOOrganizationSlugConnectionsRouteImport } from './routes/_shell/o/$organizationSlug/connections'
 import { Route as ShellOOrganizationSlugBillingRouteImport } from './routes/_shell/o/$organizationSlug/billing'
@@ -106,6 +107,11 @@ const ApiManualRunsRoute = ApiManualRunsRouteImport.update({
   id: '/api/manual-runs',
   path: '/api/manual-runs',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ShellOperatorRoute = ShellOperatorRouteImport.update({
+  id: '/operator',
+  path: '/operator',
+  getParentRoute: () => ShellRoute,
 } as any)
 const ShellActivateRoute = ShellActivateRouteImport.update({
   id: '/activate',
@@ -208,6 +214,12 @@ const AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute =
     path: '/agent-executions/$executionId/attachments/$attachmentId',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ShellOOrganizationSlugUsageRoute =
+  ShellOOrganizationSlugUsageRouteImport.update({
+    id: '/o/$organizationSlug/usage',
+    path: '/o/$organizationSlug/usage',
+    getParentRoute: () => ShellRoute,
+  } as any)
 const ShellOOrganizationSlugTeamRoute =
   ShellOOrganizationSlugTeamRouteImport.update({
     id: '/o/$organizationSlug/team',
@@ -218,12 +230,6 @@ const ShellOOrganizationSlugProjectsRoute =
   ShellOOrganizationSlugProjectsRouteImport.update({
     id: '/o/$organizationSlug/projects',
     path: '/o/$organizationSlug/projects',
-    getParentRoute: () => ShellRoute,
-  } as any)
-const ShellOOrganizationSlugEntitlementsRoute =
-  ShellOOrganizationSlugEntitlementsRouteImport.update({
-    id: '/o/$organizationSlug/entitlements',
-    path: '/o/$organizationSlug/entitlements',
     getParentRoute: () => ShellRoute,
   } as any)
 const ShellOOrganizationSlugDaemonsRoute =
@@ -300,6 +306,7 @@ export interface FileRoutesByFullPath {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/activate': typeof ShellActivateRoute
+  '/operator': typeof ShellOperatorRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
@@ -322,9 +329,9 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
-  '/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -343,6 +350,7 @@ export interface FileRoutesByTo {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/activate': typeof ShellActivateRoute
+  '/operator': typeof ShellOperatorRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
@@ -366,8 +374,8 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
-  '/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -387,6 +395,7 @@ export interface FileRoutesById {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/_shell/activate': typeof ShellActivateRoute
+  '/_shell/operator': typeof ShellOperatorRoute
   '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
@@ -410,9 +419,9 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/_shell/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/_shell/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
-  '/_shell/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
   '/_shell/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/_shell/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
+  '/_shell/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -434,6 +443,7 @@ export interface FileRouteTypes {
     | '/health'
     | '/webhook'
     | '/activate'
+    | '/operator'
     | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
@@ -456,9 +466,9 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
-    | '/o/$organizationSlug/entitlements'
     | '/o/$organizationSlug/projects'
     | '/o/$organizationSlug/team'
+    | '/o/$organizationSlug/usage'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -477,6 +487,7 @@ export interface FileRouteTypes {
     | '/health'
     | '/webhook'
     | '/activate'
+    | '/operator'
     | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
@@ -500,8 +511,8 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
-    | '/o/$organizationSlug/entitlements'
     | '/o/$organizationSlug/team'
+    | '/o/$organizationSlug/usage'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -520,6 +531,7 @@ export interface FileRouteTypes {
     | '/health'
     | '/webhook'
     | '/_shell/activate'
+    | '/_shell/operator'
     | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
@@ -543,9 +555,9 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/billing'
     | '/_shell/o/$organizationSlug/connections'
     | '/_shell/o/$organizationSlug/daemons'
-    | '/_shell/o/$organizationSlug/entitlements'
     | '/_shell/o/$organizationSlug/projects'
     | '/_shell/o/$organizationSlug/team'
+    | '/_shell/o/$organizationSlug/usage'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -669,6 +681,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/manual-runs'
       preLoaderRoute: typeof ApiManualRunsRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_shell/operator': {
+      id: '/_shell/operator'
+      path: '/operator'
+      fullPath: '/operator'
+      preLoaderRoute: typeof ShellOperatorRouteImport
+      parentRoute: typeof ShellRoute
     }
     '/_shell/activate': {
       id: '/_shell/activate'
@@ -796,6 +815,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_shell/o/$organizationSlug/usage': {
+      id: '/_shell/o/$organizationSlug/usage'
+      path: '/o/$organizationSlug/usage'
+      fullPath: '/o/$organizationSlug/usage'
+      preLoaderRoute: typeof ShellOOrganizationSlugUsageRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/o/$organizationSlug/team': {
       id: '/_shell/o/$organizationSlug/team'
       path: '/o/$organizationSlug/team'
@@ -808,13 +834,6 @@ declare module '@tanstack/react-router' {
       path: '/o/$organizationSlug/projects'
       fullPath: '/o/$organizationSlug/projects'
       preLoaderRoute: typeof ShellOOrganizationSlugProjectsRouteImport
-      parentRoute: typeof ShellRoute
-    }
-    '/_shell/o/$organizationSlug/entitlements': {
-      id: '/_shell/o/$organizationSlug/entitlements'
-      path: '/o/$organizationSlug/entitlements'
-      fullPath: '/o/$organizationSlug/entitlements'
-      preLoaderRoute: typeof ShellOOrganizationSlugEntitlementsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/o/$organizationSlug/daemons': {
@@ -944,29 +963,30 @@ const ShellOOrganizationSlugProjectsRouteWithChildren =
 
 interface ShellRouteChildren {
   ShellActivateRoute: typeof ShellActivateRoute
+  ShellOperatorRoute: typeof ShellOperatorRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellOOrganizationSlugApiKeysRoute: typeof ShellOOrganizationSlugApiKeysRoute
   ShellOOrganizationSlugBillingRoute: typeof ShellOOrganizationSlugBillingRoute
   ShellOOrganizationSlugConnectionsRoute: typeof ShellOOrganizationSlugConnectionsRoute
   ShellOOrganizationSlugDaemonsRoute: typeof ShellOOrganizationSlugDaemonsRoute
-  ShellOOrganizationSlugEntitlementsRoute: typeof ShellOOrganizationSlugEntitlementsRoute
   ShellOOrganizationSlugProjectsRoute: typeof ShellOOrganizationSlugProjectsRouteWithChildren
   ShellOOrganizationSlugTeamRoute: typeof ShellOOrganizationSlugTeamRoute
+  ShellOOrganizationSlugUsageRoute: typeof ShellOOrganizationSlugUsageRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
   ShellActivateRoute: ShellActivateRoute,
+  ShellOperatorRoute: ShellOperatorRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellOOrganizationSlugApiKeysRoute: ShellOOrganizationSlugApiKeysRoute,
   ShellOOrganizationSlugBillingRoute: ShellOOrganizationSlugBillingRoute,
   ShellOOrganizationSlugConnectionsRoute:
     ShellOOrganizationSlugConnectionsRoute,
   ShellOOrganizationSlugDaemonsRoute: ShellOOrganizationSlugDaemonsRoute,
-  ShellOOrganizationSlugEntitlementsRoute:
-    ShellOOrganizationSlugEntitlementsRoute,
   ShellOOrganizationSlugProjectsRoute:
     ShellOOrganizationSlugProjectsRouteWithChildren,
   ShellOOrganizationSlugTeamRoute: ShellOOrganizationSlugTeamRoute,
+  ShellOOrganizationSlugUsageRoute: ShellOOrganizationSlugUsageRoute,
 }
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)

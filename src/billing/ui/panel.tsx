@@ -1,4 +1,6 @@
+/* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express a server-resolved organization slug */
 import { useCallback, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Check } from "lucide-react";
@@ -74,6 +76,13 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
         title="Billing"
         description={`Plan and billing for ${overview.organization.name}.`}
       />
+      <p className="text-sm text-muted-foreground">
+        Your limits and current usage live on the{" "}
+        <Link to={`/o/${slug}/usage` as never} className="underline underline-offset-4">
+          Usage
+        </Link>{" "}
+        page.
+      </p>
       <Section
         title="Plan"
         description="Payment methods, invoices, and cancellation live in the Stripe billing portal."

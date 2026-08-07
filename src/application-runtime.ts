@@ -9,8 +9,9 @@ import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db
 import { resolveRouteTenant } from "./projects/access.js";
 import { capabilitiesFor } from "./auth/organization-policy.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
-import { EntitlementsDashboard } from "./entitlements/dashboard.js";
 import type { EntitlementsService } from "./entitlements/service.js";
+import { OperatorConsole } from "./operator/console.js";
+import { UsageDashboard } from "./usage/dashboard.js";
 import { OrganizationResources } from "./organizations/resources.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
 import type {
@@ -138,10 +139,7 @@ export async function createApplicationRuntime(
       options.database === null || options.auth === null
         ? null
         : new ProjectDashboard(options.database, options.auth, githubConfigurations[0]),
-    entitlementsDashboard:
-      options.database === null || options.auth === null || options.entitlements === null
-        ? null
-        : new EntitlementsDashboard(options.database, options.auth, options.entitlements),
+    ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
       if (options.database === null) {
@@ -335,6 +333,26 @@ function requireBilling(options: ApplicationCompositionOptions): {
 function requireAuth(options: ApplicationCompositionOptions): AuthServer {
   if (options.auth === null) throw new Error("browser auth is not configured");
   return options.auth;
+}
+
+/**
+ * The two org/instance entitlement surfaces, present together whenever a database, browser auth,
+ * and the core entitlements service all exist. Neither depends on billing — Usage renders on
+ * self-hosted and hosted alike, and the operator console is gated by its own server-side flag,
+ * not by Stripe.
+ */
+function entitlementSurfaces(options: ApplicationCompositionOptions): {
+  usageDashboard: UsageDashboard | null;
+  operatorConsole: OperatorConsole | null;
+} {
+  const { database, auth, entitlements } = options;
+  if (database === null || auth === null || entitlements === null) {
+    return { usageDashboard: null, operatorConsole: null };
+  }
+  return {
+    usageDashboard: new UsageDashboard(database, auth, entitlements),
+    operatorConsole: new OperatorConsole(database, auth, entitlements),
+  };
 }
 
 /** The dashboard billing page — where Stripe returns the user after checkout or the portal. */

@@ -741,6 +741,13 @@ export interface OrganizationEntitlementsRecord {
   updatedAt: Date;
 }
 
+/** An organization as the instance-operator surface sees it — identity only, no membership. */
+export interface OperatorOrganizationRecord {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 export interface StampOrganizationEntitlementsInput {
   organizationId: string;
   granted: unknown;
@@ -1193,6 +1200,17 @@ export interface Database {
     input: ClearOrganizationEntitlementsOverrideInput,
   ): Promise<OrganizationEntitlementsRecord>;
   listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
+  /**
+   * Every organization, for the instance-operator picker. Not a membership read — the operator
+   * acts on organizations it does not belong to, so the caller must gate this on the operator
+   * flag before invoking it.
+   */
+  listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]>;
+  /**
+   * One organization by slug, without any membership check. The operator resolution path; gate on
+   * the operator flag at the caller. Undefined when no organization has that slug.
+   */
+  findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined>;
   /**
    * Single atomic conditional upsert: increments `used` by `amount` and returns the new
    * row, unless doing so would exceed `limit` (when non-null), in which case it returns

@@ -93,6 +93,7 @@ import type {
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
   OrganizationEntitlementsRecord,
+  OperatorOrganizationRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   ClearOrganizationEntitlementsOverrideInput,
@@ -2624,6 +2625,23 @@ class PgDatabase implements Database {
     return rows.rows.map(toEntitlementChangeRecord);
   }
 
+  async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
+    const rows = await query<OperatorOrganizationRow>(
+      this.pool,
+      `select id, name, slug from organization order by lower(name), id`,
+    );
+    return rows.rows.map(toOperatorOrganizationRecord);
+  }
+
+  async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
+    const rows = await query<OperatorOrganizationRow>(
+      this.pool,
+      `select id, name, slug from organization where slug = $1 limit 1`,
+      [slug],
+    );
+    return rows.rows[0] === undefined ? undefined : toOperatorOrganizationRecord(rows.rows[0]);
+  }
+
   async consumeOrganizationUsage(
     input: ConsumeOrganizationUsageInput,
   ): Promise<OrganizationUsageRecord | undefined> {
@@ -4396,6 +4414,16 @@ function toOrganizationEntitlementsRecord(
     stampedAt: row.stamped_at,
     updatedAt: row.updated_at,
   };
+}
+
+interface OperatorOrganizationRow extends QueryResultRow {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+function toOperatorOrganizationRecord(row: OperatorOrganizationRow): OperatorOrganizationRecord {
+  return { id: row.id, name: row.name, slug: row.slug };
 }
 
 export interface EntitlementChangeRow extends QueryResultRow {

@@ -1,13 +1,14 @@
 import type { HubOperations, HubRuntime } from "../app.js";
 import type { BillingRuntime, CurrentSubscriptionView } from "../billing/index.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
-import type { EntitlementsDashboard } from "../entitlements/dashboard.js";
+import type { OperatorConsole } from "../operator/console.js";
 import type {
   OrganizationResourceReader,
   OrganizationResources,
 } from "../organizations/resources.js";
 import type { ProjectDashboard } from "../projects/dashboard.js";
 import type { PublicApi } from "../public-api/index.js";
+import type { UsageDashboard } from "../usage/dashboard.js";
 
 /**
  * The public plan catalog shape — name, slug, prices by interval, marketing bullets. Never
@@ -63,7 +64,12 @@ export interface ApplicationRuntime {
   /** HOSTED only. Null self-hosted; present when the composition root has a billing config. */
   billing: BillingRuntime | null;
   projectDashboard: ProjectDashboard | null;
-  entitlementsDashboard: EntitlementsDashboard | null;
+  /** Org-scoped, read-only limits and usage. Present whenever database + browser auth are; no
+   * billing dependency, so it renders on self-hosted and hosted alike. */
+  usageDashboard: UsageDashboard | null;
+  /** Instance-scoped operator back office. Present whenever database + browser auth are; its own
+   * server-side guard refuses non-operators regardless of this being wired. */
+  operatorConsole: OperatorConsole | null;
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;

@@ -71,6 +71,7 @@ import type {
   WorkflowDeadlineRecovery,
   ProjectActivityRunListRecord,
   OrganizationEntitlementsRecord,
+  OperatorOrganizationRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   ClearOrganizationEntitlementsOverrideInput,
@@ -2173,6 +2174,28 @@ class MemoryDatabase implements Database {
     return Array.from(this.projects.values()).find(
       (project) => project.organizationId === organizationId && project.slug === slug,
     );
+  }
+
+  async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
+    return this.operatorOrganizations();
+  }
+
+  async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
+    return this.operatorOrganizations().find((organization) => organization.slug === slug);
+  }
+
+  /** Distinct organizations derived from the membership fixtures — the in-memory store models
+   * organizations only through those, so the operator picker reads the same source. */
+  private operatorOrganizations(): OperatorOrganizationRecord[] {
+    const seen = new Map<string, OperatorOrganizationRecord>();
+    for (const membership of this.options.memberships ?? []) {
+      seen.set(membership.organizationId, {
+        id: membership.organizationId,
+        name: membership.organizationName,
+        slug: membership.organizationSlug,
+      });
+    }
+    return Array.from(seen.values()).sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async resolveTenantRouteAccess(
