@@ -1,7 +1,11 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
-import type { EntitlementPatch, EntitlementTemplate } from "../entitlements/catalog.js";
+import type {
+  EntitlementPatch,
+  EntitlementTemplate,
+  OverrideKey,
+} from "../entitlements/catalog.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -759,6 +763,14 @@ export interface OverrideOrganizationEntitlementsInput {
   reason: string;
 }
 
+export interface ClearOrganizationEntitlementsOverrideInput {
+  organizationId: string;
+  /** The single override key to remove, returning that entitlement to its plan-granted value. */
+  key: OverrideKey;
+  actor: string | null;
+  reason: string;
+}
+
 export interface EntitlementChangeRecord {
   id: string;
   organizationId: string;
@@ -1166,6 +1178,10 @@ export interface Database {
   ): Promise<OrganizationEntitlementsRecord>;
   overrideOrganizationEntitlements(
     input: OverrideOrganizationEntitlementsInput,
+  ): Promise<OrganizationEntitlementsRecord>;
+  /** Removes one hand-set override under the row lock and writes an `override` audit row. */
+  clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
   ): Promise<OrganizationEntitlementsRecord>;
   listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
   /**

@@ -92,8 +92,8 @@
       {
         "patterns": [
           {
-            "group": ["**/billing", "**/billing/*"],
-            "message": "src/billing/ is the hosted billing boundary — only the composition roots (src/index.ts, src/application-runtime.ts, src/server/runtime.ts, src/e2e/harness/browser-child.ts) may import it. See the 'Open source vs hosted' section of the entitlements/billing plan."
+            "group": ["**/billing", "**/billing/**"],
+            "message": "src/billing/ is the hosted billing boundary — only the composition roots (src/index.ts, src/application-runtime.ts, src/server/runtime.ts, src/e2e/harness/browser-child.ts) and the billing dashboard route (src/routes/_shell/o/$organizationSlug/billing.tsx, the feature's mount point) may import it. See the 'Open source vs hosted' section of the entitlements/billing plan."
           }
         ]
       }
@@ -112,6 +112,7 @@
         "src/application-runtime.ts",
         "src/server/runtime.ts",
         "src/billing/**",
+        "src/routes/_shell/o/$organizationSlug/billing.tsx",
         "src/e2e/harness/browser-child.ts"
       ],
       "rules": {

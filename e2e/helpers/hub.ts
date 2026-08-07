@@ -645,6 +645,36 @@ export class PaseoHub {
     await this.requireUser(alias).expectPendingInvitation(email);
   }
 
+  async expectPendingInvitationsRetained(alias: string, emails: readonly string[]): Promise<void> {
+    await this.requireUser(alias).expectPendingInvitationsRetained(emails);
+  }
+
+  async expectOverLimitBanner(
+    alias: string,
+    expected: { used: number; limit: number },
+  ): Promise<void> {
+    await this.requireUser(alias).expectOverLimitBanner(expected);
+  }
+
+  async expectNoOverLimitBanner(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoOverLimitBanner();
+  }
+
+  async expectEntitlementCells(
+    alias: string,
+    name: string,
+    expected: { granted: string; override: string; effective: string },
+  ): Promise<void> {
+    await this.requireUser(alias).expectEntitlementCells(name, expected);
+  }
+
+  async clearSeatOverride(
+    alias: string,
+    input: { reason: string; expectedEffective: string },
+  ): Promise<void> {
+    await this.requireUser(alias).clearSeatOverride(input);
+  }
+
   private async organizationIdForAlias(alias: string): Promise<string> {
     const rows = z.array(z.object({ id: z.string() })).parse(
       await this.queryDatabaseRows(
@@ -1068,6 +1098,12 @@ export class PaseoHub {
 
   async inviteMember(alias: string, email: string, role: "admin" | "member"): Promise<string> {
     return this.requireUser(alias).invite(email, role);
+  }
+
+  async inviteMembers(alias: string, emails: readonly string[]): Promise<void> {
+    for (const email of emails) {
+      await this.requireUser(alias).invite(email, "member");
+    }
   }
 
   async openInvitation(alias: string, link: string): Promise<void> {
@@ -3378,7 +3414,8 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
-    await expect(this.page.getByText(plan, { exact: true })).toBeVisible();
+    // Scope to main: a plan name like "Team" also names a sidebar nav link.
+    await expect(this.page.getByRole("main").getByText(plan, { exact: true })).toBeVisible();
     await expectAccessible(this.page);
   }
 
@@ -3397,6 +3434,70 @@ class HubUser {
   async expectPendingInvitation(email: string): Promise<void> {
     await this.openOrganizationSection("Team");
     await expect(this.invitationRow(email)).toBeVisible();
+  }
+
+  /** Every seat is still present after a downgrade — grandfathering never deletes to fit. */
+  async expectPendingInvitationsRetained(emails: readonly string[]): Promise<void> {
+    await this.openOrganizationSection("Team");
+    await this.page.reload();
+    for (const email of emails) {
+      await expect(this.invitationRow(email)).toBeVisible();
+    }
+  }
+
+  /**
+   * The over-limit banner a downgrade leaves behind. Reload so the entitlements page re-reads the
+   * plan the webhook just stamped — a server-side stamp does not invalidate the client query.
+   */
+  async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    await this.page.reload();
+    const banner = this.page.getByRole("alert", { name: "Over plan limit" });
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText(`You have ${expected.used} seats in use`);
+    await expect(banner).toContainText(`your current plan includes ${expected.limit}`);
+    await expectAccessible(this.page);
+  }
+
+  async expectNoOverLimitBanner(): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    await this.page.reload();
+    await expect(this.page.getByRole("alert", { name: "Over plan limit" })).toHaveCount(0);
+  }
+
+  /** Assert the granted / override / effective cells of one entitlement row after a re-stamp. */
+  async expectEntitlementCells(
+    name: string,
+    expected: { granted: string; override: string; effective: string },
+  ): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    await this.page.reload();
+    const cells = this.entitlementRow(
+      this.page.getByRole("table", { name: "Entitlements" }),
+      name,
+    ).getByRole("cell");
+    await expect(cells.nth(1)).toHaveText(expected.granted);
+    await expect(cells.nth(2)).toHaveText(expected.override);
+    await expect(cells.nth(3)).toHaveText(expected.effective);
+    await expectAccessible(this.page);
+  }
+
+  /** Reset the seat override back to the plan default from the override dialog. */
+  async clearSeatOverride(input: { reason: string; expectedEffective: string }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Seats")
+      .getByRole("button", { name: "Override seat limit" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Reason").fill(input.reason);
+    await dialog.getByRole("button", { name: "Reset to plan default" }).click();
+    await expect(dialog).toBeHidden();
+    const cells = this.entitlementRow(table, "Seats").getByRole("cell");
+    await expect(cells.nth(2)).toHaveText("—");
+    await expect(cells.nth(3)).toHaveText(input.expectedEffective);
+    await expectAccessible(this.page);
   }
 
   private async expectConnectionShell(): Promise<void> {

@@ -19,7 +19,7 @@ import {
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { billingConfigured } from "../billing-ui/functions.js";
+import { billingConfigured } from "../server/capabilities.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Page } from "../components/app/page.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";

@@ -65,6 +65,10 @@ async function main(): Promise<void> {
   const scenario = readScenario();
   const database = await createDatabase(databaseUrl);
   const entitlements = composeEntitlements(database, databaseUrl);
+  // Compose (and sync) billing before auth: a billing-configured harness provisions new
+  // organizations onto the Free plan, so the resolver must exist before createAuthServer, and the
+  // catalog must be synced before auth.initialize runs any bootstrap.
+  const { billing, billingCatalog } = await composeFixtureBilling(database, entitlements);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
@@ -73,6 +77,7 @@ async function main(): Promise<void> {
         baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,
         policy: readInstanceAuthPolicy(),
+        ...provisioningResolverOption(billing),
       })
     : null;
   await auth?.initialize?.();
@@ -97,7 +102,6 @@ async function main(): Promise<void> {
   const bot = new BrowserDiscordBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
-  const { billing, billingCatalog } = await composeFixtureBilling(database, entitlements);
   const registrations =
     auth === null
       ? []
@@ -182,6 +186,13 @@ async function main(): Promise<void> {
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+/** Hosted harness: new organizations start on the Free plan; self-hosted keeps the unlimited
+ * default. Kept out of `main` so its branch does not push that function past the complexity cap. */
+function provisioningResolverOption(billing: BillingRuntime | null) {
+  if (billing === null) return {};
+  return { provisioningEntitlements: () => billing.provisioningEntitlement() };
 }
 
 async function seedMachineAuthTarget(databaseUrl: string): Promise<void> {

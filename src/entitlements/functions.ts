@@ -20,6 +20,14 @@ const overrideInputSchema = z
   })
   .strict();
 
+const clearOverrideInputSchema = z
+  .object({
+    organizationSlug: z.string().trim().min(1).max(100),
+    key: z.enum(["seats", "canInviteMembers", "executions.monthly"]),
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 export const entitlementsSnapshot = createServerFn({ method: "GET" })
   .validator(organizationScopeSchema)
   .handler(
@@ -53,6 +61,26 @@ export const entitlementsOverride = createServerFn({ method: "POST" })
         );
       } catch (error) {
         logger.error({ err: error, organizationSlug }, "entitlements override failed");
+        return respondError({ message: overrideErrorMessage(error) });
+      }
+    },
+  );
+
+export const entitlementsClearOverride = createServerFn({ method: "POST" })
+  .validator(clearOverrideInputSchema)
+  .handler(
+    async ({
+      data,
+    }): Promise<Result<Awaited<ReturnType<EntitlementsDashboard["clearOverride"]>>>> => {
+      const { organizationSlug, key, reason } = data;
+      try {
+        const dashboard = (await getApplication()).entitlementsDashboard;
+        if (dashboard === null) throw new Error("entitlements dashboard unavailable");
+        return respondOk(
+          await dashboard.clearOverride(getRequest(), { organizationSlug }, { key, reason }),
+        );
+      } catch (error) {
+        logger.error({ err: error, organizationSlug }, "entitlements clear override failed");
         return respondError({ message: overrideErrorMessage(error) });
       }
     },

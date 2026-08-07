@@ -97,11 +97,21 @@ export type EntitlementPatch = EntitlementOverrides;
 /** Caps carry a numeric limit checked against a live count by `requireHeadroom`. */
 export type CapKey = "seats";
 
+/** Every cap, so `overages()` can walk them without a call site enumerating keys. */
+export const CAP_KEYS: readonly CapKey[] = ["seats"];
+
 /** Meters carry a numeric limit checked against period usage by `consume`. */
 export type MeterKey = "executions.monthly";
 
 /** Flags are boolean permissions checked by `requireFlag` — no count, no limit. */
 export type FlagKey = "canInviteMembers";
+
+/**
+ * Which entitlement an override touches. The clearable keys are exactly the cap, flag, and
+ * meter keys — one vocabulary, reused (see `clearOverrideKey`). An admin sets an override with
+ * a patch and clears it by key; both are hand actions on `overrides`, never on `granted`.
+ */
+export type OverrideKey = CapKey | FlagKey | MeterKey;
 
 /** Which kind of entitlement a denial is about; flags carry no numeric limit or current. */
 export type EntitlementKind = "cap" | "meter" | "flag";
@@ -168,6 +178,30 @@ export function mergeOverrides(
           },
         }),
   });
+}
+
+/**
+ * Remove one hand-set override so the entitlement falls back to its plan-granted value. The
+ * inverse of `mergeOverrides` for a single key — `override()` merges a value in, `clearOverride()`
+ * takes it back out. `granted` is never involved, so clearing an override returns that key to
+ * whatever the plan last stamped. Runs under the same row lock as the merge.
+ */
+export function clearOverrideKey(
+  existing: EntitlementOverrides,
+  key: OverrideKey,
+): EntitlementOverrides {
+  const next: EntitlementOverrides = { ...existing };
+  if (key === "seats") {
+    delete next.seats;
+  } else if (key === "canInviteMembers") {
+    delete next.canInviteMembers;
+  } else {
+    const meters = { ...next.meters };
+    delete meters[key];
+    if (Object.keys(meters).length === 0) delete next.meters;
+    else next.meters = meters;
+  }
+  return entitlementOverridesSchema.parse(next);
 }
 
 /**

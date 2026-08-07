@@ -25,6 +25,10 @@ import {
 } from "./organization-access.js";
 import { paseoOrganizationPlugin } from "./organization-policy.js";
 import type { EntitlementsService } from "../entitlements/service.js";
+import {
+  UNLIMITED_PROVISIONING,
+  type ProvisioningEntitlementResolver,
+} from "../organizations/provisioning.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -60,6 +64,9 @@ interface AuthServerOptions {
   baseURL: string;
   policy?: InstanceAuthPolicy;
   trustedClientIpHeader?: string;
+  /** How a new organization is provisioned. Defaults to unlimited (self-hosted); the composition
+   * root passes a billing-backed resolver when Stripe is configured. */
+  provisioningEntitlements?: ProvisioningEntitlementResolver;
 }
 
 const sessionSchema = z.object({
@@ -92,6 +99,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const pool = createPostgresPool(options.databaseUrl);
   const database = drizzle(pool, { schema });
   const policy = options.policy ?? defaultInstanceAuthPolicy();
+  const provisioningEntitlements =
+    options.provisioningEntitlements ?? (() => Promise.resolve(UNLIMITED_PROVISIONING));
   const apiKeys = new OrganizationApiKeys(pool);
   const registration = new RegistrationAdmission(pool, policy);
   const authSchema = {
@@ -151,6 +160,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     policy,
     apiKeys,
     entitlements: options.entitlements,
+    provisioningEntitlements,
   });
   const browserOrigin = new URL(options.baseURL).origin;
 
@@ -223,7 +233,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     resolveOrganizationAccess: (request) => access.resolve(request),
     resolveAccount: (request) => access.account(request),
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
-    initialize: () => bootstrapInstance(pool, policy),
+    initialize: () => bootstrapInstance(pool, policy, provisioningEntitlements),
     apiKeys,
     close: () => pool.end(),
   };

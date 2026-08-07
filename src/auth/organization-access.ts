@@ -23,7 +23,10 @@ import {
   parseOrganizationRole,
 } from "./organization-policy.js";
 import { invitationLockName } from "./registration-admission.js";
-import { provisionOrganization } from "../organizations/provisioning.js";
+import {
+  provisionOrganization,
+  type ProvisioningEntitlementResolver,
+} from "../organizations/provisioning.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
 import { entitlementDenialResponse } from "../entitlements/denial.js";
 import type { EntitlementsService } from "../entitlements/service.js";
@@ -76,6 +79,9 @@ interface OrganizationAccessOptions {
   policy: InstanceAuthPolicy;
   apiKeys: OrganizationApiKeys;
   entitlements: EntitlementsService;
+  /** What a newly created organization is stamped with — unlimited self-hosted, the Free plan
+   * on a billing-configured instance. Resolved per creation so a later Free-plan sync is seen. */
+  provisioningEntitlements: ProvisioningEntitlementResolver;
 }
 
 interface MembershipRow extends QueryResultRow {
@@ -256,12 +262,19 @@ export class OrganizationAccess {
     }
     const input = await parseBody(request, createOrganizationBody);
     const id = randomUUID();
+    // Resolve the provisioning entitlement before opening the transaction — on a hosted instance
+    // this reads the Free plan from the catalog mirror, which must not run inside the org insert.
+    const entitlement = await this.options.provisioningEntitlements();
     const organization = await transaction(this.options.pool, async (client) => {
-      const created = await provisionOrganization(client, {
-        organizationId: id,
-        name: input.name,
-        ownerUserId: session.userId,
-      });
+      const created = await provisionOrganization(
+        client,
+        {
+          organizationId: id,
+          name: input.name,
+          ownerUserId: session.userId,
+        },
+        entitlement,
+      );
       await activateSession(client, session, id);
       return created;
     });

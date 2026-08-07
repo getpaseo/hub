@@ -2,7 +2,7 @@ import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
-import type { EntitlementPatch } from "./catalog.js";
+import type { EntitlementPatch, OverrideKey } from "./catalog.js";
 import type {
   EntitlementChange,
   EntitlementsService,
@@ -17,6 +17,11 @@ export interface EntitlementsRouteScope {
 
 export interface OverrideEntitlementsInput {
   patch: EntitlementPatch;
+  reason: string;
+}
+
+export interface ClearOverrideEntitlementsInput {
+  key: OverrideKey;
   reason: string;
 }
 
@@ -41,6 +46,7 @@ export class EntitlementsDashboard {
     const record = await this.entitlements.read(tenant.organization.id);
     const history = await this.entitlements.history(tenant.organization.id, HISTORY_LIMIT);
     const usage = await this.entitlements.usage(tenant.organization.id, "executions.monthly");
+    const overages = await this.entitlements.overages(tenant.organization.id);
     return {
       account: account.account,
       organization: tenant.organization,
@@ -49,6 +55,7 @@ export class EntitlementsDashboard {
       entitlements: entitlementsView(record),
       history: history.map(historyView),
       usage,
+      overages,
     };
   }
 
@@ -66,6 +73,26 @@ export class EntitlementsDashboard {
     await this.entitlements.override(
       tenant.organization.id,
       input.patch,
+      account.account.id,
+      input.reason,
+    );
+    return this.snapshot(request, scope);
+  }
+
+  async clearOverride(
+    request: Request,
+    scope: EntitlementsRouteScope,
+    input: ClearOverrideEntitlementsInput,
+  ) {
+    const { account, tenant } = await resolveRouteTenant(this.auth, this.database, request, {
+      organizationSlug: scope.organizationSlug,
+    });
+    if (!capabilitiesFor(tenant.membership.role).manageResources) {
+      throw new EntitlementsForbiddenError();
+    }
+    await this.entitlements.clearOverride(
+      tenant.organization.id,
+      input.key,
       account.account.id,
       input.reason,
     );

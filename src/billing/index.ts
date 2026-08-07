@@ -1,7 +1,8 @@
 import StripeSDK from "stripe";
 import type { BillingPlanRecord, Database } from "../db/types.js";
-import { entitlementsSchema } from "../entitlements/catalog.js";
+import { entitlementsSchema, type EntitlementTemplate } from "../entitlements/catalog.js";
 import type { EntitlementsService } from "../entitlements/service.js";
+import type { ProvisioningEntitlement } from "../organizations/provisioning.js";
 import { logger } from "../logger.js";
 import { syncBillingCatalog } from "./catalog-sync.js";
 import type { BillingConfig } from "./config.js";
@@ -44,6 +45,27 @@ const SUBSCRIPTION_SYNC_EVENT_TYPES = new Set([
 /** Statuses whose plan should be stamped onto the organization. Others leave entitlements as-is
  * (grandfathered) — downgrade on cancellation is slice 7, not this slice. */
 const STAMPABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
+
+/**
+ * The plan a hosted organization gets before it pays. Identified by its `paseo_plan_slug`
+ * metadata, mirrored as `billing_plans.slug` — so which product is "free" is set in the Stripe
+ * dashboard, not hardcoded here (the plan's "Stripe is the source of truth" rule).
+ */
+const FREE_PLAN_SLUG = "free";
+
+/**
+ * The conservative floor used only when billing is configured but the mirror has no active Free
+ * plan — a first boot before the sync lands, or a Stripe account with no Free product. Not a
+ * mirror of any Stripe plan: it fails closed (one seat, no invites, a small execution cap) so a
+ * new organization can never get everything for free, while `provisioningEntitlement` logs loudly
+ * so an operator notices and fixes the catalog. A misconfigured Stripe is recoverable — every
+ * organization stamped from this floor re-stamps to the real Free plan the moment it subscribes.
+ */
+const FREE_TIER_FALLBACK: EntitlementTemplate = {
+  seats: { max: 1 },
+  canInviteMembers: false,
+  meters: { "executions.monthly": { limit: 100 } },
+};
 
 export interface ComposeBillingOptions {
   config: BillingConfig;
@@ -115,6 +137,27 @@ export class BillingRuntime {
 
   async syncCatalog(): Promise<void> {
     await syncBillingCatalog(this.catalogSource, this.database);
+  }
+
+  /**
+   * What a hosted organization is stamped with at provisioning: the Free plan's template resolved
+   * from the catalog mirror. When no active Free plan is mirrored yet — a first boot before the
+   * sync, or a misconfigured Stripe account — it falls back to a conservative floor and logs
+   * loudly rather than failing open to unlimited or bricking organization creation. The
+   * composition root wires this into the auth server's provisioning resolver; self-hosted
+   * (no billing) never reaches here and keeps stamping unlimited.
+   */
+  async provisioningEntitlement(): Promise<ProvisioningEntitlement> {
+    const plans = await this.database.listBillingPlans();
+    const free = plans.find((plan) => plan.slug === FREE_PLAN_SLUG && plan.active);
+    if (free !== undefined) {
+      return { planId: free.id, granted: entitlementsSchema.parse(free.template) };
+    }
+    logger.error(
+      "billing is configured but the catalog mirror has no active Free plan; provisioning new " +
+        "organizations with the conservative free-tier fallback until the Free plan syncs",
+    );
+    return { planId: null, granted: FREE_TIER_FALLBACK };
   }
 
   /**

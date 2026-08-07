@@ -1,23 +1,23 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
-import { logger } from "../logger.js";
-import { TenantRouteNotFoundError } from "../projects/access.js";
+import { respondError, respondOk, type Result } from "../../contract/respond.js";
+import { logger } from "../../logger.js";
+import { TenantRouteNotFoundError } from "../../projects/access.js";
 import {
   BillingForbiddenError,
   handleBillingCheckout,
   handleBillingOverview,
   handleBillingPortal,
-  isBillingConfigured,
   type BillingOverviewView,
-} from "../server/runtime.js";
+} from "../../server/runtime.js";
 
 /**
- * The dashboard billing surface, kept outside `src/billing/` so routes may import it without
- * crossing the billing boundary (see the plan's "Open source vs hosted" boundary rule). Every
- * function is a thin wrapper over the composition root, which owns Stripe and the
- * `authorizeReference` capability check.
+ * The dashboard billing surface. It lives under `src/billing/ui/`, inside the feature it belongs
+ * to; the billing dashboard route is exempted from the import boundary (like a composition root)
+ * so it can mount this. Every function is a thin wrapper over the composition root, which owns
+ * Stripe and the `authorizeReference` capability check. The "is billing configured" probe is a
+ * core capability check, not billing logic, so it lives in `src/server/capabilities.ts`.
  */
 const organizationScopeSchema = z
   .object({ organizationSlug: z.string().trim().min(1).max(100) })
@@ -30,10 +30,6 @@ const checkoutSchema = z
     interval: z.enum(["monthly", "annual"]),
   })
   .strict();
-
-export const billingConfigured = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ configured: boolean }> => ({ configured: await isBillingConfigured() }),
-);
 
 export const billingOverview = createServerFn({ method: "GET" })
   .validator(organizationScopeSchema)

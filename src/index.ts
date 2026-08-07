@@ -17,6 +17,7 @@ import {
   createStripeBillingClient,
   createStripeCatalogSource,
   readBillingConfig,
+  type BillingRuntime,
 } from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
@@ -72,6 +73,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     config.authPolicy,
     identity,
     config.trustedClientIpHeader,
+    billing,
   );
   if (config.authPolicy.bootstrap !== undefined && auth === null) {
     throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
@@ -114,6 +116,7 @@ function createProductionAuthServer(
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
   trustedClientIpHeader: string | undefined,
+  billing: BillingRuntime | null,
 ) {
   if (identity.authSecret === undefined) {
     logger.warn("PASEO_HUB_AUTH_SECRET is unset; browser auth routes are closed");
@@ -126,6 +129,11 @@ function createProductionAuthServer(
     baseURL: identity.appUrl,
     policy: authPolicy,
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
+    // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
+    // (billing null) keeps the createAuthServer default, which stamps unlimited.
+    ...(billing === null
+      ? {}
+      : { provisioningEntitlements: () => billing.provisioningEntitlement() }),
   });
 }
 

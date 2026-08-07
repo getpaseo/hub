@@ -8,7 +8,11 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
 import { slugify } from "../slug.js";
-import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
+import {
+  clearOverrideKey,
+  entitlementOverridesSchema,
+  mergeOverrides,
+} from "../entitlements/catalog.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
@@ -91,6 +95,7 @@ import type {
   OrganizationEntitlementsRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
+  ClearOrganizationEntitlementsOverrideInput,
   EntitlementChangeRecord,
   EntitlementChangeSource,
   OrganizationUsageRecord,
@@ -2572,6 +2577,56 @@ class PgDatabase implements Database {
       );
       const after = updated.rows[0];
       if (after === undefined) throw new Error("entitlements override returned no row");
+      await client.query(
+        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+         values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
+        [
+          input.organizationId,
+          input.actor,
+          JSON.stringify(entitlementSnapshot(before)),
+          JSON.stringify(entitlementSnapshot(after)),
+          input.reason,
+        ],
+      );
+      await client.query("commit");
+      return toOrganizationEntitlementsRecord(after);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const existing = await client.query<OrganizationEntitlementsRow>(
+        `select * from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId],
+      );
+      const before = existing.rows[0];
+      if (before === undefined) {
+        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+      }
+      // Remove the key from the row we hold locked, the same lock the merge takes, so a clear and
+      // a concurrent override serialize instead of racing on a stale base.
+      const overrides = clearOverrideKey(
+        entitlementOverridesSchema.parse(before.overrides),
+        input.key,
+      );
+      const updated = await client.query<OrganizationEntitlementsRow>(
+        `update organization_entitlements
+           set overrides = $2::jsonb, updated_at = now()
+         where organization_id = $1
+         returning *`,
+        [input.organizationId, JSON.stringify(overrides)],
+      );
+      const after = updated.rows[0];
+      if (after === undefined) throw new Error("entitlements override clear returned no row");
       await client.query(
         `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
          values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,

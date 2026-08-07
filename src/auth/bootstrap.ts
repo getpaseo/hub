@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "better-auth/crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { provisionOrganization } from "../organizations/provisioning.js";
+import {
+  provisionOrganization,
+  UNLIMITED_PROVISIONING,
+  type ProvisioningEntitlement,
+  type ProvisioningEntitlementResolver,
+} from "../organizations/provisioning.js";
 import type { BootstrapSettings, InstanceAuthPolicy } from "./instance-policy.js";
 
 const BOOTSTRAP_ROW_ID = "default";
@@ -32,10 +37,18 @@ export class InstanceBootstrapError extends Error {
  * one transaction, so a crash cannot leave an organization, account, or membership that
  * a later startup might mistake for a completed bootstrap.
  */
-export async function bootstrapInstance(pool: Pool, policy: InstanceAuthPolicy): Promise<void> {
+export async function bootstrapInstance(
+  pool: Pool,
+  policy: InstanceAuthPolicy,
+  provisioningEntitlements: ProvisioningEntitlementResolver = () =>
+    Promise.resolve(UNLIMITED_PROVISIONING),
+): Promise<void> {
   const settings = policy.bootstrap;
   if (settings === undefined) return;
 
+  // Resolve outside the transaction — the same value the create-organization path uses, so the
+  // bootstrap owner's organization is stamped by the instance's provisioning policy too.
+  const entitlement = await provisioningEntitlements();
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -63,7 +76,7 @@ export async function bootstrapInstance(pool: Pool, policy: InstanceAuthPolicy):
       );
     }
 
-    const created = await createBootstrapData(client, settings, row.organization_id);
+    const created = await createBootstrapData(client, settings, row.organization_id, entitlement);
     await client.query(
       `update instance_bootstrap
        set organization_id = $2, owner_user_id = $3, completed_at = now()
@@ -86,6 +99,7 @@ async function createBootstrapData(
   client: PoolClient,
   settings: BootstrapSettings,
   existingOrganizationId: string | null,
+  entitlement: ProvisioningEntitlement,
 ): Promise<{ organizationId: string; ownerUserId: string }> {
   const existingOwner = await client.query<{ id: string }>(
     `select id from "user" where lower(email) = $1 limit 1`,
@@ -176,11 +190,15 @@ async function createBootstrapData(
   );
 
   if (existingOrganization === undefined) {
-    await provisionOrganization(client, {
-      organizationId: randomUUID(),
-      name: settings.organizationName,
-      ownerUserId,
-    });
+    await provisionOrganization(
+      client,
+      {
+        organizationId: randomUUID(),
+        name: settings.organizationName,
+        ownerUserId,
+      },
+      entitlement,
+    );
   } else {
     await client.query(
       `insert into member (id, organization_id, user_id, role)

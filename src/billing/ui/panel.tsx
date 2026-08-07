@@ -2,12 +2,12 @@ import { useCallback, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Check } from "lucide-react";
-import { PageHeader } from "../components/app/page.js";
-import { Section } from "../components/app/section.js";
-import { StatusPill, type StatusTone } from "../components/app/status-pill.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
-import { Badge } from "../components/ui/badge.js";
-import { Button } from "../components/ui/button.js";
+import { PageHeader } from "../../components/app/page.js";
+import { Section } from "../../components/app/section.js";
+import { StatusPill, type StatusTone } from "../../components/app/status-pill.js";
+import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.js";
+import { Badge } from "../../components/ui/badge.js";
+import { Button } from "../../components/ui/button.js";
 import {
   Card,
   CardAction,
@@ -16,18 +16,18 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from "../components/ui/card.js";
+} from "../../components/ui/card.js";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "../components/ui/dialog.js";
-import { Skeleton } from "../components/ui/skeleton.js";
-import { useRouteTenant } from "../projects/context.js";
-import type { BillingPlanPriceInterval } from "../db/types.js";
-import type { BillingOverviewView, PublicBillingPlan } from "../server/runtime.js";
+} from "../../components/ui/dialog.js";
+import { Skeleton } from "../../components/ui/skeleton.js";
+import { useRouteTenant } from "../../projects/context.js";
+import type { BillingPlanPriceInterval } from "../../db/types.js";
+import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 import { billingCheckout, billingOverview, billingPortal } from "./functions.js";
 
 type CheckoutResult = Awaited<ReturnType<typeof billingCheckout>>;

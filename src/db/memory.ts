@@ -73,6 +73,7 @@ import type {
   OrganizationEntitlementsRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
+  ClearOrganizationEntitlementsOverrideInput,
   EntitlementChangeRecord,
   OrganizationUsageRecord,
   ConsumeOrganizationUsageInput,
@@ -81,7 +82,11 @@ import type {
   OrganizationSubscriptionRecord,
   UpsertOrganizationSubscriptionInput,
 } from "./types.js";
-import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
+import {
+  clearOverrideKey,
+  entitlementOverridesSchema,
+  mergeOverrides,
+} from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
@@ -1973,6 +1978,36 @@ class MemoryDatabase implements Database {
     const overrides = mergeOverrides(
       entitlementOverridesSchema.parse(existing.overrides),
       input.patch,
+    );
+    const record: OrganizationEntitlementsRecord = {
+      ...existing,
+      overrides,
+      updatedAt: this.now(),
+    };
+    this.organizationEntitlements.set(input.organizationId, record);
+    this.recordEntitlementChange({
+      organizationId: input.organizationId,
+      actor: input.actor,
+      source: "override",
+      before: entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
+      reason: input.reason,
+    });
+    return record;
+  }
+
+  async clearOrganizationEntitlementsOverride(
+    input: ClearOrganizationEntitlementsOverrideInput,
+  ): Promise<OrganizationEntitlementsRecord> {
+    const existing = this.organizationEntitlements.get(input.organizationId);
+    if (existing === undefined) {
+      throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+    }
+    // Drop the key from the current row, mirroring the Postgres locked-row clear. No await
+    // between read and write, so a concurrent override cannot interleave.
+    const overrides = clearOverrideKey(
+      entitlementOverridesSchema.parse(existing.overrides),
+      input.key,
     );
     const record: OrganizationEntitlementsRecord = {
       ...existing,

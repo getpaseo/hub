@@ -141,6 +141,87 @@ describe("EntitlementsService", () => {
     assert.deepEqual(record.overrides, { seats: { max: 4 }, canInviteMembers: false });
   });
 
+  it("clearing an override returns that entitlement to its plan-granted value", async () => {
+    const service = serviceWith();
+    await service.stamp(
+      "org-1",
+      {
+        seats: { max: 25 },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: null } },
+      },
+      { source: "plan_stamp", planId: "plan-team" },
+    );
+    await service.override("org-1", { seats: { max: 2 } }, "admin-1", "Trial cap");
+    assert.equal((await service.read("org-1")).effective.seats.max, 2);
+
+    // The path back from override(): the plan-granted 25 takes over once the hand-set 2 is cleared.
+    await service.clearOverride("org-1", "seats", "admin-1", "Trial ended");
+    const record = await service.read("org-1");
+    assert.deepEqual(record.overrides, {});
+    assert.equal(record.effective.seats.max, 25);
+  });
+
+  it("clearing one override leaves the other overrides untouched", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override("org-1", { seats: { max: 4 } }, "admin-1", "Cap seats");
+    await service.override("org-1", { canInviteMembers: false }, "admin-1", "Freeze invites");
+
+    await service.clearOverride("org-1", "seats", "admin-1", "Reopen seats");
+    const record = await service.read("org-1");
+    assert.deepEqual(record.overrides, { canInviteMembers: false });
+    assert.equal(record.effective.seats.max, null);
+  });
+
+  it("records a clear in the audit trail as an override change with actor and reason", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override("org-1", { seats: { max: 2 } }, "owner-1", "Cap seats");
+    await service.clearOverride("org-1", "seats", "owner-1", "Reset to plan default");
+
+    const [latest] = await service.history("org-1", 10);
+    assert.equal(latest?.source, "override");
+    assert.equal(latest?.actor, "owner-1");
+    assert.equal(latest?.reason, "Reset to plan default");
+    assert.deepEqual(latest?.overrides, {});
+  });
+
+  it("reports an overage when the live count sits above a capped limit", async () => {
+    const service = serviceWith(createMemoryDatabase(), { seats: async () => 5 });
+    await service.stamp(
+      "org-1",
+      {
+        seats: { max: 1 },
+        canInviteMembers: false,
+        meters: { "executions.monthly": { limit: null } },
+      },
+      { source: "plan_stamp", planId: "plan-free" },
+    );
+
+    assert.deepEqual(await service.overages("org-1"), [
+      { entitlement: "seats", limit: 1, current: 5 },
+    ]);
+  });
+
+  it("reports no overage when within the cap or the cap is unlimited", async () => {
+    const withinCap = serviceWith(createMemoryDatabase(), { seats: async () => 1 });
+    await withinCap.stamp(
+      "org-1",
+      {
+        seats: { max: 1 },
+        canInviteMembers: false,
+        meters: { "executions.monthly": { limit: null } },
+      },
+      { source: "plan_stamp", planId: "plan-free" },
+    );
+    assert.deepEqual(await withinCap.overages("org-1"), []);
+
+    const unlimited = serviceWith(createMemoryDatabase(), { seats: async () => 9999 });
+    await unlimited.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    assert.deepEqual(await unlimited.overages("org-1"), []);
+  });
+
   it("allows headroom under the cap and denies it at the cap", async () => {
     let seatsInUse = 1;
     const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });

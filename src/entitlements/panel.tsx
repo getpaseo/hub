@@ -1,6 +1,7 @@
 import { useCallback, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { TriangleAlert } from "lucide-react";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
@@ -29,18 +30,27 @@ import {
 import { Skeleton } from "../components/ui/skeleton.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { EntitlementChangeSource } from "../db/types.js";
-import type { EntitlementPatch } from "./catalog.js";
+import type { EntitlementPatch, OverrideKey } from "./catalog.js";
 import type { EntitlementsDashboard } from "./dashboard.js";
-import { entitlementsOverride, entitlementsSnapshot } from "./functions.js";
+import {
+  entitlementsClearOverride,
+  entitlementsOverride,
+  entitlementsSnapshot,
+} from "./functions.js";
 
 type EntitlementsSnapshot = Awaited<ReturnType<EntitlementsDashboard["snapshot"]>>;
 type OverrideResult = Awaited<ReturnType<typeof entitlementsOverride>>;
+type ClearOverrideResult = Awaited<ReturnType<typeof entitlementsClearOverride>>;
 
-/** Which entitlement an override dialog is editing, carrying the value to prefill. */
+/**
+ * Which entitlement an override dialog is editing, carrying the value to prefill and whether an
+ * override is currently set (which is what unlocks "Reset to plan default"). `key` is the
+ * override identity the clear path removes.
+ */
 type OverrideTarget =
-  | { kind: "seats"; max: number | null }
-  | { kind: "canInviteMembers"; value: boolean }
-  | { kind: "executionsMonthly"; limit: number | null };
+  | { kind: "seats"; key: OverrideKey; hasOverride: boolean; max: number | null }
+  | { kind: "canInviteMembers"; key: OverrideKey; hasOverride: boolean; value: boolean }
+  | { kind: "executionsMonthly"; key: OverrideKey; hasOverride: boolean; limit: number | null };
 
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "Entitlement" },
@@ -96,18 +106,39 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
   const canManage = snapshot.capabilities.manageResources;
   const [target, setTarget] = useState<OverrideTarget | null>(null);
   const closeEditor = useCallback(() => setTarget(null), []);
+  const seatsOverridden = overrides.seats?.max !== undefined;
   const editSeats = useCallback(
-    () => setTarget({ kind: "seats", max: effective.seats.max }),
-    [effective.seats.max],
+    () =>
+      setTarget({
+        kind: "seats",
+        key: "seats",
+        hasOverride: seatsOverridden,
+        max: effective.seats.max,
+      }),
+    [effective.seats.max, seatsOverridden],
   );
+  const invitesOverridden = overrides.canInviteMembers !== undefined;
   const editInvites = useCallback(
-    () => setTarget({ kind: "canInviteMembers", value: effective.canInviteMembers }),
-    [effective.canInviteMembers],
+    () =>
+      setTarget({
+        kind: "canInviteMembers",
+        key: "canInviteMembers",
+        hasOverride: invitesOverridden,
+        value: effective.canInviteMembers,
+      }),
+    [effective.canInviteMembers, invitesOverridden],
   );
   const effectiveExecutionsLimit = effective.meters["executions.monthly"].limit;
+  const executionsOverridden = overrides.meters?.["executions.monthly"]?.limit !== undefined;
   const editExecutionsMonthly = useCallback(
-    () => setTarget({ kind: "executionsMonthly", limit: effectiveExecutionsLimit }),
-    [effectiveExecutionsLimit],
+    () =>
+      setTarget({
+        kind: "executionsMonthly",
+        key: "executions.monthly",
+        hasOverride: executionsOverridden,
+        limit: effectiveExecutionsLimit,
+      }),
+    [effectiveExecutionsLimit, executionsOverridden],
   );
 
   return (
@@ -116,6 +147,7 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
         title="Entitlements"
         description={`What ${snapshot.organization.name} is currently allowed to do.`}
       />
+      <OverLimitBanner overages={snapshot.overages} />
       <Section
         title="Entitlements"
         description="Effective values, granted by your plan and adjusted by any manual overrides."
@@ -216,6 +248,36 @@ function OverrideAction({
   );
 }
 
+/**
+ * Shown after a downgrade leaves an organization above a plan cap. Grandfathering means nothing
+ * was deleted, so the tone is a warning, not an error: it says what is over and by how much, and
+ * what the admin can do, without alarming them about data they still have. Renders nothing when
+ * every cap has headroom.
+ */
+function OverLimitBanner({ overages }: { overages: EntitlementsSnapshot["overages"] }) {
+  if (overages.length === 0) return null;
+  return (
+    <Alert aria-label="Over plan limit" className="border-warning/40 bg-warning-surface">
+      <TriangleAlert className="text-warning" />
+      <AlertTitle>You're over your plan's limits</AlertTitle>
+      <AlertDescription>
+        {overages.map((overage) => (
+          <p key={overage.entitlement}>{overageSentence(overage)}</p>
+        ))}
+        <p>
+          Your existing seats are kept — nothing was removed. To add more, upgrade your plan or
+          remove members and pending invitations to fit.
+        </p>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/** `seats` is the only cap today, so the noun is fixed; the loop above already handles more. */
+function overageSentence(overage: EntitlementsSnapshot["overages"][number]): string {
+  return `You have ${overage.current} seats in use, but your current plan includes ${overage.limit}.`;
+}
+
 function OverrideDialog({
   target,
   slug,
@@ -226,31 +288,50 @@ function OverrideDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const onSaved = useCallback(
+    async (status: "ok" | "error") => {
+      if (status !== "ok") return;
+      await queryClient.invalidateQueries({ queryKey: ["entitlements"] });
+      onClose();
+    },
+    [onClose, queryClient],
+  );
   const save = useMutation({
     mutationFn: useServerFn(entitlementsOverride) as (
       input: Parameters<typeof entitlementsOverride>[0],
     ) => Promise<OverrideResult>,
-    onSuccess: async (result) => {
-      if (result.status !== "ok") return;
-      await queryClient.invalidateQueries({ queryKey: ["entitlements"] });
-      onClose();
-    },
+    onSuccess: (result) => onSaved(result.status),
   });
-  const error = save.data?.status === "error" ? save.data.error.message : undefined;
+  const clear = useMutation({
+    mutationFn: useServerFn(entitlementsClearOverride) as (
+      input: Parameters<typeof entitlementsClearOverride>[0],
+    ) => Promise<ClearOverrideResult>,
+    onSuccess: (result) => onSaved(result.status),
+  });
+  const saveError = save.data?.status === "error" ? save.data.error.message : undefined;
+  const clearError = clear.data?.status === "error" ? clear.data.error.message : undefined;
+  const error = saveError ?? clearError;
+  const pending = save.isPending || clear.isPending;
 
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const data = new FormData(event.currentTarget);
-      save.mutate({
-        data: {
-          organizationSlug: slug,
-          patch: patchFrom(target, data),
-          reason: formText(data, "reason").trim(),
-        },
-      });
+      // Which submit button was pressed decides set vs clear; reading it off the native
+      // SubmitEvent keeps the reason field's `required` validation firing for both buttons.
+      const native = event.nativeEvent;
+      const submitter = native instanceof SubmitEvent ? native.submitter : null;
+      const data = new FormData(
+        event.currentTarget,
+        submitter instanceof HTMLButtonElement ? submitter : null,
+      );
+      const reason = formText(data, "reason").trim();
+      if (data.get("intent") === "clear") {
+        clear.mutate({ data: { organizationSlug: slug, key: target.key, reason } });
+        return;
+      }
+      save.mutate({ data: { organizationSlug: slug, patch: patchFrom(target, data), reason } });
     },
-    [save, slug, target],
+    [clear, save, slug, target],
   );
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -265,8 +346,8 @@ function OverrideDialog({
         <DialogHeader>
           <DialogTitle>{overrideTitle(target)}</DialogTitle>
           <DialogDescription>
-            Overrides are hand-set and survive plan changes. Every override is recorded in the audit
-            trail with the reason you give.
+            Overrides are hand-set and survive plan changes. Every override — and every reset back
+            to the plan default — is recorded in the audit trail with the reason you give.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} aria-label="Override entitlement" className="grid gap-6">
@@ -289,7 +370,18 @@ function OverrideDialog({
             </Alert>
           )}
           <DialogFooter>
-            <Button type="submit" disabled={save.isPending}>
+            {target.hasOverride && (
+              <Button
+                type="submit"
+                name="intent"
+                value="clear"
+                variant="outline"
+                disabled={pending}
+              >
+                Reset to plan default
+              </Button>
+            )}
+            <Button type="submit" name="intent" value="save" disabled={pending}>
               Save override
             </Button>
           </DialogFooter>

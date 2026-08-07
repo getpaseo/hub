@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Database, EntitlementChangeSource } from "../db/types.js";
 import {
+  CAP_KEYS,
   capLimit,
   effectiveEntitlements,
   EntitlementDenied,
@@ -18,6 +19,7 @@ import {
   type EntitlementTemplate,
   type FlagKey,
   type MeterKey,
+  type OverrideKey,
 } from "./catalog.js";
 
 export interface Provenance {
@@ -60,6 +62,17 @@ export interface MeterUsage {
   meter: MeterKey;
   used: number;
   limit: number | null;
+}
+
+/**
+ * A cap whose live count already exceeds its effective limit — the state a downgrade leaves
+ * behind. Existing resources are grandfathered (never deleted to fit), so this is surfaced as a
+ * banner, not an enforcement action; growth past the cap is what enforcement blocks.
+ */
+export interface EntitlementOverage {
+  entitlement: CapKey;
+  limit: number;
+  current: number;
 }
 
 /**
@@ -134,6 +147,27 @@ export class EntitlementsService {
   }
 
   /**
+   * Take a hand-set override back out so the entitlement returns to its plan-granted value. The
+   * path back from `override()`: without it a hand-set `seats.max` could never return to
+   * plan-driven seats, which breaks the granted/overrides split's premise that overrides are the
+   * exception. Same required reason and audit row as setting one; the removal happens under the
+   * row lock, mirroring the merge.
+   */
+  async clearOverride(
+    organizationId: string,
+    key: OverrideKey,
+    by: string | null,
+    reason: string,
+  ): Promise<void> {
+    await this.database.clearOrganizationEntitlementsOverride({
+      organizationId,
+      key,
+      actor: by,
+      reason,
+    });
+  }
+
+  /**
    * Reject the caller when a capped entitlement has no room left for one more. Unlimited
    * caps return immediately; otherwise the module counts the live usage itself.
    */
@@ -143,6 +177,24 @@ export class EntitlementsService {
     if (limit === null) return;
     const current = await this.counters[cap](organizationId);
     if (current >= limit) throw new EntitlementDenied(cap, "cap", limit, current);
+  }
+
+  /**
+   * The caps whose live count already sits above their effective limit — what a downgrade to a
+   * smaller plan leaves behind once existing resources are grandfathered. Reads the same counters
+   * as `requireHeadroom`, so "over the limit" and "no headroom for one more" agree. An empty list
+   * means the organization is within every cap.
+   */
+  async overages(organizationId: string): Promise<EntitlementOverage[]> {
+    const { effective } = await this.read(organizationId);
+    const overages: EntitlementOverage[] = [];
+    for (const cap of CAP_KEYS) {
+      const limit = capLimit(effective, cap);
+      if (limit === null) continue;
+      const current = await this.counters[cap](organizationId);
+      if (current > limit) overages.push({ entitlement: cap, limit, current });
+    }
+    return overages;
   }
 
   /**
