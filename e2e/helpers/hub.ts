@@ -2266,10 +2266,7 @@ class HubUser {
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
-  async proveAuthenticationPendingLocksMode(
-    account: Account,
-    organization: string,
-  ): Promise<void> {
+  async proveAuthenticationPendingLocksMode(account: Account, organization: string): Promise<void> {
     const serverFunctions = "**/_serverFn/**";
     let authRequests = 0;
     let responseCompleted = () => {};
