@@ -30,3 +30,37 @@ export function parseEntitlementDenial(value: unknown): EntitlementDenialPayload
   const parsed = entitlementDenialSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
+
+/**
+ * Encode a denial as a run's `failure_reason` — one text column shared with reasons like
+ * `whole_run_timeout`. Storing the payload as its own JSON (tagged by the `entitlement_denied`
+ * literal) keeps the reason machine-parseable, so a consumer reads the structured denial instead
+ * of pattern-matching a human sentence. This is the field the run UI drives off.
+ */
+export function encodeEntitlementDenialFailureReason(denial: EntitlementDenialPayload): string {
+  return JSON.stringify(denial);
+}
+
+/**
+ * Decode a run's `failure_reason` back into a denial payload, or `undefined` for any other
+ * reason (timeouts, crashes, plain strings). Paired with the encoder above — the same single
+ * mapping in both directions.
+ */
+export function decodeEntitlementDenialFailureReason(
+  reason: string | null,
+): EntitlementDenialPayload | undefined {
+  if (reason === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(reason);
+  } catch {
+    return undefined;
+  }
+  return parseEntitlementDenial(parsed);
+}
+
+/** A short, human summary derived from the structured denial — for display only. */
+export function entitlementDenialSummary(denial: EntitlementDenialPayload): string {
+  if (denial.kind === "flag") return `Entitlement not enabled: ${denial.entitlement}`;
+  return `Entitlement limit reached: ${denial.entitlement} (${denial.current} of ${denial.limit})`;
+}

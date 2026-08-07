@@ -1,5 +1,5 @@
 import type { HubOperations, HubRuntime } from "../app.js";
-import type { BillingRuntime } from "../billing/index.js";
+import type { BillingRuntime, CurrentSubscriptionView } from "../billing/index.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { EntitlementsDashboard } from "../entitlements/dashboard.js";
 import type {
@@ -23,6 +23,36 @@ export interface PublicBillingPlan {
 export interface PublicBillingPlanPrice {
   unitAmount: number;
   currency: string;
+}
+
+/** The dashboard billing section: the organization's current plan plus the catalog to upgrade
+ * into. Only ever built on a billing-configured instance; the route guards on that. */
+export interface BillingOverviewView {
+  organization: { name: string; slug: string };
+  /** Whether the caller may open checkout or the Stripe portal (the manage-resources capability,
+   * the `authorizeReference` intent wired to `OrganizationAccess`). */
+  canManage: boolean;
+  subscription: CurrentSubscriptionView;
+  plans: PublicBillingPlan[];
+}
+
+export interface BillingCheckoutInput {
+  organizationSlug: string;
+  planSlug: string;
+  interval: BillingPlanPriceInterval;
+}
+
+/**
+ * Thrown when a member without the manage-resources capability tries to open checkout or the
+ * billing portal — the `authorizeReference` intent, wired to `OrganizationAccess`. Lives here
+ * (a composition root) so both `application-runtime.ts` (the thrower) and the billing UI server
+ * functions (the catcher) can name it without crossing the `src/billing/` import boundary.
+ */
+export class BillingForbiddenError extends Error {
+  constructor() {
+    super("managing billing requires the manage-resources capability");
+    this.name = "BillingForbiddenError";
+  }
 }
 
 export interface ApplicationRuntime {
@@ -50,11 +80,19 @@ export interface ApplicationRuntime {
   ): Promise<void>;
   organizationResources(request: Request): Promise<OrganizationResourceReader>;
   webhook(request: Request): Promise<Response>;
-  /** The Stripe product/price webhook. Unconfigured behaves as if the route did not exist. */
+  /** The Stripe product/price/subscription webhook. Unconfigured 404s as if unregistered. */
   billingWebhook(request: Request): Promise<Response>;
-  /** name/slug/prices/marketing bullets only — never the entitlement template. Always readable,
-   * empty on a self-hosted instance that has never synced. */
-  billingPlans(): Promise<PublicBillingPlan[]>;
+  /** name/slug/prices/marketing bullets only — never the entitlement template. Null when billing
+   * is unconfigured, so the public route 404s rather than serving a catalog on self-hosted. */
+  billingPlans(): Promise<PublicBillingPlan[] | null>;
+  /** Whether billing is configured — gates the dashboard billing route and navigation entry. */
+  billingConfigured(): boolean;
+  /** The organization's current plan plus the upgrade catalog. */
+  billingOverview(request: Request, organizationSlug: string): Promise<BillingOverviewView>;
+  /** A Stripe Checkout URL for the chosen plan/interval. Requires the manage-resources capability. */
+  billingCheckout(request: Request, input: BillingCheckoutInput): Promise<{ url: string }>;
+  /** A Stripe billing-portal URL, or null when the organization has no subscription to manage. */
+  billingPortal(request: Request, organizationSlug: string): Promise<{ url: string | null }>;
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
@@ -97,8 +135,33 @@ export async function handleBillingWebhook(request: Request): Promise<Response> 
   return (await getApplication()).billingWebhook(request);
 }
 
-export async function handleBillingPlans(): Promise<PublicBillingPlan[]> {
+export async function handleBillingPlans(): Promise<PublicBillingPlan[] | null> {
   return (await getApplication()).billingPlans();
+}
+
+export async function isBillingConfigured(): Promise<boolean> {
+  return (await getApplication()).billingConfigured();
+}
+
+export async function handleBillingOverview(
+  request: Request,
+  organizationSlug: string,
+): Promise<BillingOverviewView> {
+  return (await getApplication()).billingOverview(request, organizationSlug);
+}
+
+export async function handleBillingCheckout(
+  request: Request,
+  input: BillingCheckoutInput,
+): Promise<{ url: string }> {
+  return (await getApplication()).billingCheckout(request, input);
+}
+
+export async function handleBillingPortal(
+  request: Request,
+  organizationSlug: string,
+): Promise<{ url: string | null }> {
+  return (await getApplication()).billingPortal(request, organizationSlug);
 }
 
 export async function handleProviderRequest(name: string, request: Request): Promise<Response> {

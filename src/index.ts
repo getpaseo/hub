@@ -12,7 +12,12 @@ import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
-import { composeBilling, createStripeCatalogSource, readBillingConfig } from "./billing/index.js";
+import {
+  composeBilling,
+  createStripeBillingClient,
+  createStripeCatalogSource,
+  readBillingConfig,
+} from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
@@ -52,7 +57,9 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       : composeBilling({
           config: billingConfig,
           database,
+          entitlements: entitlements.service,
           catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
+          billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
         });
   // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
   // starting — only the marketing catalog goes stale until the next webhook or restart.

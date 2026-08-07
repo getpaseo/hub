@@ -3,8 +3,13 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
 import { createAuthServer } from "../../auth/server.js";
-import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
-import { composeEntitlements } from "../../auth/entitlements.js";
+import {
+  composeBilling,
+  type BillingConfig,
+  type BillingRuntime,
+  type StripeBillingClient,
+} from "../../billing/index.js";
+import { composeEntitlements, type ComposedEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createDatabase, createPostgresPool } from "../../db/pg.js";
 import type { Database } from "../../db/types.js";
@@ -23,7 +28,11 @@ import {
   type BrowserDiscordEvent,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
-import { FixtureStripeCatalogSource, type FixtureBillingProduct } from "./browser-billing.js";
+import {
+  FixtureStripeBillingClient,
+  FixtureStripeCatalogSource,
+  type FixtureBillingProduct,
+} from "./browser-billing.js";
 
 interface DiscordCommand {
   id: string;
@@ -88,7 +97,7 @@ async function main(): Promise<void> {
   const bot = new BrowserDiscordBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
-  const { billing, billingCatalog } = await composeFixtureBilling(database);
+  const { billing, billingCatalog } = await composeFixtureBilling(database, entitlements);
   const registrations =
     auth === null
       ? []
@@ -339,13 +348,17 @@ function readFixtureBillingConfig(): BillingConfig {
  */
 async function composeFixtureBilling(
   database: Database,
+  entitlements: ComposedEntitlements,
 ): Promise<{ billing: BillingRuntime | null; billingCatalog: FixtureStripeCatalogSource | null }> {
   if (!billingEnabled()) return { billing: null, billingCatalog: null };
   const billingCatalog = new FixtureStripeCatalogSource();
+  const billingClient: StripeBillingClient = new FixtureStripeBillingClient();
   const billing = composeBilling({
     config: readFixtureBillingConfig(),
     database,
+    entitlements: entitlements.service,
     catalogSource: billingCatalog,
+    billingClient,
   });
   await billing.syncCatalog();
   return { billing, billingCatalog };

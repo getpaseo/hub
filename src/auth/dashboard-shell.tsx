@@ -4,6 +4,7 @@ import {
   Check,
   ChevronsUpDown,
   Cpu,
+  CreditCard,
   FolderKanban,
   Gauge,
   History,
@@ -16,8 +17,9 @@ import {
   Users,
 } from "lucide-react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { billingConfigured } from "../billing-ui/functions.js";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 import { Page } from "../components/app/page.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";
@@ -352,6 +354,15 @@ function NavigationGroups({
   const organizationBase = `/o/${tenant.organization.slug}`;
   const projectBase =
     tenant.project === null ? undefined : `${organizationBase}/projects/${tenant.project.slug}`;
+  // Billing is hosted-only: the entry appears solely when the instance is billing-configured, so
+  // self-hosted deployments show no billing navigation at all (the route also 404s there).
+  const loadBillingConfigured = useServerFn(billingConfigured);
+  const billingQuery = useQuery({
+    queryKey: ["billing-configured"],
+    queryFn: () => loadBillingConfigured(),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const billingEnabled = billingQuery.data?.configured === true;
   return (
     <>
       <nav aria-label="Organization">
@@ -371,6 +382,9 @@ function NavigationGroups({
                   icon={destination.icon}
                 />
               ))}
+              {billingEnabled && (
+                <NavItem to={`${organizationBase}/billing`} label="Billing" icon={CreditCard} />
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -630,6 +644,7 @@ const ROUTE_SECTIONS = [
   { suffix: "/api-keys", label: "API keys" },
   { suffix: "/team", label: "Team" },
   { suffix: "/entitlements", label: "Entitlements" },
+  { suffix: "/billing", label: "Billing" },
 ] as const;
 
 function routeSection(pathname: string) {

@@ -204,6 +204,13 @@
       "when": 1786074362910,
       "tag": "0028_outstanding_famine",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1786084312502,
+      "tag": "0029_lean_miss_america",
+      "breakpoints": true
     }
   ]
 }

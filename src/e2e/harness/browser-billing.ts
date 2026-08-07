@@ -147,3 +147,70 @@ export class FixtureStripeCatalogSource {
     return this.prices.map((price) => ({ ...price }));
   }
 }
+
+/**
+ * The subscription state the fixture billing client re-reads. Structurally matches
+ * `StripeSubscriptionState` from `src/billing/stripe-billing-client.ts` without importing it —
+ * only `browser-child.ts` (this harness's composition root) crosses the billing boundary.
+ */
+export interface FixtureSubscriptionState {
+  id: string;
+  customerId: string;
+  organizationId: string;
+  priceId: string;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+const FIXTURE_SUBSCRIPTION_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The stable, per-organization fixture subscription id. The money test addresses it directly
+ * when it delivers the signed subscription webhook, so this must match on both sides. */
+export function fixtureSubscriptionId(organizationId: string): string {
+  return `sub_fixture_${organizationId}`;
+}
+
+/**
+ * The E2E fixture for Stripe customer/checkout/portal/subscription operations. No Stripe account,
+ * no network — checkout "completes" instantly (the subscription exists by the time the browser
+ * returns), and the money test then delivers a real HMAC-signed webhook that the billing runtime
+ * re-reads through `getSubscription`. One subscription per organization, keyed by organization id.
+ */
+export class FixtureStripeBillingClient {
+  private readonly subscriptions = new Map<string, FixtureSubscriptionState>();
+
+  async ensureCustomer(input: { organizationId: string }): Promise<string> {
+    return `cus_fixture_${input.organizationId}`;
+  }
+
+  async createCheckoutSession(input: {
+    organizationId: string;
+    customerId: string;
+    priceId: string;
+    successUrl: string;
+  }): Promise<{ url: string }> {
+    this.subscriptions.set(input.organizationId, {
+      id: fixtureSubscriptionId(input.organizationId),
+      customerId: input.customerId,
+      organizationId: input.organizationId,
+      priceId: input.priceId,
+      status: "active",
+      currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
+      cancelAtPeriodEnd: false,
+    });
+    return { url: `/test/stripe-checkout?success=${encodeURIComponent(input.successUrl)}` };
+  }
+
+  async createBillingPortalSession(input: { returnUrl: string }): Promise<{ url: string }> {
+    // No hosted portal to stand in for — the fixture just returns the user to the dashboard.
+    return { url: input.returnUrl };
+  }
+
+  async getSubscription(subscriptionId: string): Promise<FixtureSubscriptionState | undefined> {
+    for (const state of this.subscriptions.values()) {
+      if (state.id === subscriptionId) return { ...state };
+    }
+    return undefined;
+  }
+}

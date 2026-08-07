@@ -78,6 +78,8 @@ import type {
   ConsumeOrganizationUsageInput,
   BillingPlanRecord,
   SyncBillingPlanInput,
+  OrganizationSubscriptionRecord,
+  UpsertOrganizationSubscriptionInput,
 } from "./types.js";
 import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
@@ -147,6 +149,7 @@ class MemoryDatabase implements Database {
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
   private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
   private readonly billingPlans = new Map<string, BillingPlanRecord>();
+  private readonly organizationSubscriptions = new Map<string, OrganizationSubscriptionRecord>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -2054,6 +2057,29 @@ class MemoryDatabase implements Database {
 
   async listBillingPlans(): Promise<BillingPlanRecord[]> {
     return Array.from(this.billingPlans.values());
+  }
+
+  async upsertOrganizationSubscription(
+    input: UpsertOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord> {
+    const record: OrganizationSubscriptionRecord = {
+      organizationId: input.organizationId,
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscriptionId: input.stripeSubscriptionId,
+      planId: input.planId,
+      status: input.status,
+      currentPeriodEnd: input.currentPeriodEnd,
+      cancelAtPeriodEnd: input.cancelAtPeriodEnd,
+      updatedAt: this.now(),
+    };
+    this.organizationSubscriptions.set(input.organizationId, record);
+    return record;
+  }
+
+  async getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined> {
+    return this.organizationSubscriptions.get(organizationId);
   }
 
   async listProjectsForOrganization(organizationId: string) {

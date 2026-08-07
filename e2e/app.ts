@@ -22,8 +22,15 @@ import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
 let primaryApplication: BuiltApplication | undefined;
 
-export const test = base.extend<{ hub: PaseoHub; projectExternal: ProjectExternalFacts }>({
-  hub: async ({ browser, browserName, page, context }, provide, testInfo) => {
+export const test = base.extend<{
+  hub: PaseoHub;
+  projectExternal: ProjectExternalFacts;
+  billing: boolean;
+}>({
+  // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
+  // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
+  billing: [false, { option: true }],
+  hub: async ({ browser, browserName, page, context, billing }, provide, testInfo) => {
     if (browserName !== "chromium") {
       throw new Error(`unsupported Phase 0 browser: ${browserName}`);
     }
@@ -38,6 +45,7 @@ export const test = base.extend<{ hub: PaseoHub; projectExternal: ProjectExterna
       });
       const primary = await applications.start({
         databaseProfile: "fresh",
+        billing,
       });
       primaryApplication = primary;
       await provide(

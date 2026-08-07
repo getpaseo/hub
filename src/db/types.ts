@@ -843,6 +843,33 @@ export interface SyncBillingPlanInput {
   prices: readonly SyncBillingPlanPriceInput[];
 }
 
+/**
+ * The organization's current Stripe subscription mirror. `planId` is the resolved
+ * `billing_plans.id` (a soft reference), or null when the subscription's price is not in the
+ * mirror. Enforcement never reads this — the subscription webhook re-stamps
+ * `organization_entitlements` from the resolved plan's template.
+ */
+export interface OrganizationSubscriptionRecord {
+  organizationId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  planId: string | null;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+  updatedAt: Date;
+}
+
+export interface UpsertOrganizationSubscriptionInput {
+  organizationId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  planId: string | null;
+  status: string;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+}
+
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
   sourceKind: "github" | "manual";
@@ -1158,6 +1185,14 @@ export interface Database {
   syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord>;
   /** All synced plans (active and inactive) with their prices. Empty when never synced. */
   listBillingPlans(): Promise<BillingPlanRecord[]>;
+  /** Upserts the organization's current Stripe subscription mirror. `src/billing/` only. */
+  upsertOrganizationSubscription(
+    input: UpsertOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord>;
+  /** The organization's current subscription mirror, or undefined when it never subscribed. */
+  getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

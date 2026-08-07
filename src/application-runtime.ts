@@ -6,6 +6,7 @@ import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
+import { capabilitiesFor } from "./auth/organization-policy.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
 import { EntitlementsDashboard } from "./entitlements/dashboard.js";
 import type { EntitlementsService } from "./entitlements/service.js";
@@ -15,7 +16,13 @@ import type {
   ProviderIntegrationRegistration,
   ProviderRegistration,
 } from "./providers/registration.js";
-import type { ApplicationRuntime, PublicBillingPlan } from "./server/runtime.js";
+import {
+  BillingForbiddenError,
+  type ApplicationRuntime,
+  type BillingCheckoutInput,
+  type BillingOverviewView,
+  type PublicBillingPlan,
+} from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 
 export interface ApplicationCompositionOptions {
@@ -221,12 +228,84 @@ export async function createApplicationRuntime(
       Promise.resolve(new Response("Not Found", { status: 404 })),
     billingWebhook: (request) =>
       options.billing === null
-        ? Promise.resolve(unconfiguredBillingRouteResponse())
+        ? Promise.resolve(new Response("Not Found", { status: 404 }))
         : options.billing.handleWebhook(request),
     billingPlans: async () => {
-      if (options.database === null) return [];
+      // Unconfigured means self-hosted: the billing routes are not registered, so the public
+      // catalog endpoint does not exist rather than serving an empty list. Null tells the route
+      // to answer 404 — see the plan's "no config means billing routes are never registered".
+      if (options.billing === null || options.database === null) return null;
       const plans = await options.database.listBillingPlans();
       return plans.filter((plan) => plan.active).map(publicBillingPlan);
+    },
+    billingConfigured: () => options.billing !== null,
+    billingOverview: async (request, organizationSlug): Promise<BillingOverviewView> => {
+      const { billing, database } = requireBilling(options);
+      const { tenant } = await resolveRouteTenant(requireAuth(options), database, request, {
+        organizationSlug,
+      });
+      const [subscription, plans] = await Promise.all([
+        billing.subscriptionSnapshot(tenant.organization.id),
+        database.listBillingPlans(),
+      ]);
+      return {
+        organization: {
+          name: tenant.organization.name,
+          slug: tenant.organization.slug ?? organizationSlug,
+        },
+        canManage: capabilitiesFor(tenant.membership.role).manageResources,
+        subscription,
+        plans: plans.filter((plan) => plan.active).map(publicBillingPlan),
+      };
+    },
+    billingCheckout: async (request, input: BillingCheckoutInput) => {
+      const { billing, database } = requireBilling(options);
+      const { account, tenant } = await resolveRouteTenant(
+        requireAuth(options),
+        database,
+        request,
+        {
+          organizationSlug: input.organizationSlug,
+        },
+      );
+      if (!capabilitiesFor(tenant.membership.role).manageResources) {
+        throw new BillingForbiddenError();
+      }
+      const billingUrl = billingReturnUrl(
+        options,
+        request,
+        tenant.organization.slug,
+        input.organizationSlug,
+      );
+      return billing.createCheckout({
+        organizationId: tenant.organization.id,
+        planSlug: input.planSlug,
+        interval: input.interval,
+        successUrl: billingUrl,
+        cancelUrl: billingUrl,
+        accountEmail: account.account.email,
+        accountName: account.account.name,
+      });
+    },
+    billingPortal: async (request, organizationSlug) => {
+      const { billing, database } = requireBilling(options);
+      const { tenant } = await resolveRouteTenant(requireAuth(options), database, request, {
+        organizationSlug,
+      });
+      if (!capabilitiesFor(tenant.membership.role).manageResources) {
+        throw new BillingForbiddenError();
+      }
+      const returnUrl = billingReturnUrl(
+        options,
+        request,
+        tenant.organization.slug,
+        organizationSlug,
+      );
+      const portal = await billing.createPortal({
+        organizationId: tenant.organization.id,
+        returnUrl,
+      });
+      return { url: portal?.url ?? null };
     },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
@@ -238,15 +317,34 @@ export async function createApplicationRuntime(
 }
 
 /**
- * The exact response an unmatched route would produce, so an unconfigured instance is
- * indistinguishable from one where `/api/billing/webhook` was never registered at all — see
- * `e2e/billing-boundary.spec.ts`'s regression guard from slice 4.
+ * Billing operations are only reachable through the dashboard billing route, which the
+ * `billingConfigured()` guard keeps off self-hosted instances. A null here is therefore a
+ * routing bug, not a user-facing state — hence a thrown error rather than a returned outcome.
  */
-function unconfiguredBillingRouteResponse(): Response {
-  return new Response("<!doctype html><html><body><p>Not Found</p></body></html>", {
-    status: 404,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+function requireBilling(options: ApplicationCompositionOptions): {
+  billing: BillingRuntime;
+  database: Database;
+} {
+  if (options.billing === null || options.database === null) {
+    throw new Error("billing is not configured");
+  }
+  return { billing: options.billing, database: options.database };
+}
+
+function requireAuth(options: ApplicationCompositionOptions): AuthServer {
+  if (options.auth === null) throw new Error("browser auth is not configured");
+  return options.auth;
+}
+
+/** The dashboard billing page — where Stripe returns the user after checkout or the portal. */
+function billingReturnUrl(
+  options: ApplicationCompositionOptions,
+  request: Request,
+  organizationSlug: string | undefined,
+  fallbackSlug: string,
+): string {
+  const base = options.publicBaseUrl ?? new URL(request.url).origin;
+  return new URL(`/o/${organizationSlug ?? fallbackSlug}/billing`, base).toString();
 }
 
 const billingPlanMarketingSchema = z.object({ features: z.array(z.string()) });

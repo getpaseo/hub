@@ -15,6 +15,7 @@ import type { CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
+import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
 import type { EntitlementsService } from "../entitlements/service.js";
 import {
   buildLaunchMachineIntent,
@@ -323,7 +324,10 @@ export class DurableWorkflowEngine {
       denied.limit,
       denied.current,
     );
-    const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
+    // Store the machine-parseable denial, not the human message: the run UI decodes this back
+    // into a typed payload rather than pattern-matching a sentence. See src/entitlements/denial.ts.
+    const failureReason = encodeEntitlementDenialFailureReason(error.payload());
+    const failed = await database.failWorkflowRun(run.id, "failed", failureReason, step.id);
     if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
     await database.deleteWorkflowWakeup(run.id);
     return true;

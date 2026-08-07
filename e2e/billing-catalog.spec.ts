@@ -2,12 +2,12 @@ import { test } from "./app.js";
 
 const SLICE_5_DIR = "e2e/screenshots/slice-5";
 
-test("an unconfigured instance serves an empty plan catalog", async ({ hub, page }) => {
-  await test.step("the public plans endpoint returns an empty list", async () => {
-    await hub.expectEmptyPublicBillingPlansWhenUnconfigured();
+test("an unconfigured instance does not serve the plans endpoint", async ({ hub, page }) => {
+  await test.step("the public plans endpoint 404s as if it were never registered", async () => {
+    await hub.expectPublicBillingPlansUnavailableWhenUnconfigured();
     await hub.visitPublicBillingPlans();
     await page.screenshot({
-      path: `${SLICE_5_DIR}/01-unconfigured-empty-catalog.png`,
+      path: `${SLICE_5_DIR}/01-unconfigured-plans-unavailable.png`,
       fullPage: true,
     });
   });

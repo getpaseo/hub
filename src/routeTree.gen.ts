@@ -14,6 +14,7 @@ import { Route as HealthRouteImport } from './routes/health'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
+import { Route as TestStripeCheckoutRouteImport } from './routes/test/stripe-checkout'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
@@ -42,6 +43,7 @@ import { Route as ShellOOrganizationSlugProjectsRouteImport } from './routes/_sh
 import { Route as ShellOOrganizationSlugEntitlementsRouteImport } from './routes/_shell/o/$organizationSlug/entitlements'
 import { Route as ShellOOrganizationSlugDaemonsRouteImport } from './routes/_shell/o/$organizationSlug/daemons'
 import { Route as ShellOOrganizationSlugConnectionsRouteImport } from './routes/_shell/o/$organizationSlug/connections'
+import { Route as ShellOOrganizationSlugBillingRouteImport } from './routes/_shell/o/$organizationSlug/billing'
 import { Route as ShellOOrganizationSlugApiKeysRouteImport } from './routes/_shell/o/$organizationSlug/api-keys'
 import { Route as ShellOOrganizationSlugProjectsIndexRouteImport } from './routes/_shell/o/$organizationSlug/projects/index'
 import { Route as ShellOOrganizationSlugProjectsProjectSlugOverviewRouteImport } from './routes/_shell/o/$organizationSlug/projects/$projectSlug/overview'
@@ -73,6 +75,11 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
 const TestTriggerRoute = TestTriggerRouteImport.update({
   id: '/test/trigger',
   path: '/test/trigger',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TestStripeCheckoutRoute = TestStripeCheckoutRouteImport.update({
+  id: '/test/stripe-checkout',
+  path: '/test/stripe-checkout',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TestSmokeRoute = TestSmokeRouteImport.update({
@@ -231,6 +238,12 @@ const ShellOOrganizationSlugConnectionsRoute =
     path: '/o/$organizationSlug/connections',
     getParentRoute: () => ShellRoute,
   } as any)
+const ShellOOrganizationSlugBillingRoute =
+  ShellOOrganizationSlugBillingRouteImport.update({
+    id: '/o/$organizationSlug/billing',
+    path: '/o/$organizationSlug/billing',
+    getParentRoute: () => ShellRoute,
+  } as any)
 const ShellOOrganizationSlugApiKeysRoute =
   ShellOOrganizationSlugApiKeysRouteImport.update({
     id: '/o/$organizationSlug/api-keys',
@@ -292,6 +305,7 @@ export interface FileRoutesByFullPath {
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
+  '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -305,6 +319,7 @@ export interface FileRoutesByFullPath {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
+  '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
@@ -333,6 +348,7 @@ export interface FileRoutesByTo {
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
+  '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
   '/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
@@ -347,6 +363,7 @@ export interface FileRoutesByTo {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations': typeof ApiDeviceAuthorizationsIndexRoute
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
+  '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
@@ -375,6 +392,7 @@ export interface FileRoutesById {
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
   '/test/smoke': typeof TestSmokeRoute
+  '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
   '/_shell/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
@@ -389,6 +407,7 @@ export interface FileRoutesById {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
   '/_shell/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
+  '/_shell/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/_shell/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/_shell/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/_shell/o/$organizationSlug/entitlements': typeof ShellOOrganizationSlugEntitlementsRoute
@@ -420,6 +439,7 @@ export interface FileRouteTypes {
     | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
+    | '/test/stripe-checkout'
     | '/test/trigger'
     | '/agent-executions/$executionId/mcp'
     | '/api/auth/$'
@@ -433,6 +453,7 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/device-authorizations/'
     | '/o/$organizationSlug/api-keys'
+    | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/entitlements'
@@ -461,6 +482,7 @@ export interface FileRouteTypes {
     | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
+    | '/test/stripe-checkout'
     | '/test/trigger'
     | '/'
     | '/agent-executions/$executionId/mcp'
@@ -475,6 +497,7 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/device-authorizations'
     | '/o/$organizationSlug/api-keys'
+    | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/entitlements'
@@ -502,6 +525,7 @@ export interface FileRouteTypes {
     | '/api/reference'
     | '/assets/$'
     | '/test/smoke'
+    | '/test/stripe-checkout'
     | '/test/trigger'
     | '/_shell/'
     | '/agent-executions/$executionId/mcp'
@@ -516,6 +540,7 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/device-authorizations/'
     | '/_shell/o/$organizationSlug/api-keys'
+    | '/_shell/o/$organizationSlug/billing'
     | '/_shell/o/$organizationSlug/connections'
     | '/_shell/o/$organizationSlug/daemons'
     | '/_shell/o/$organizationSlug/entitlements'
@@ -545,6 +570,7 @@ export interface RootRouteChildren {
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
   TestSmokeRoute: typeof TestSmokeRoute
+  TestStripeCheckoutRoute: typeof TestStripeCheckoutRoute
   TestTriggerRoute: typeof TestTriggerRoute
   AgentExecutionsExecutionIdMcpRoute: typeof AgentExecutionsExecutionIdMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -600,6 +626,13 @@ declare module '@tanstack/react-router' {
       path: '/test/trigger'
       fullPath: '/test/trigger'
       preLoaderRoute: typeof TestTriggerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/test/stripe-checkout': {
+      id: '/test/stripe-checkout'
+      path: '/test/stripe-checkout'
+      fullPath: '/test/stripe-checkout'
+      preLoaderRoute: typeof TestStripeCheckoutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/test/smoke': {
@@ -798,6 +831,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugConnectionsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/o/$organizationSlug/billing': {
+      id: '/_shell/o/$organizationSlug/billing'
+      path: '/o/$organizationSlug/billing'
+      fullPath: '/o/$organizationSlug/billing'
+      preLoaderRoute: typeof ShellOOrganizationSlugBillingRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/o/$organizationSlug/api-keys': {
       id: '/_shell/o/$organizationSlug/api-keys'
       path: '/o/$organizationSlug/api-keys'
@@ -906,6 +946,7 @@ interface ShellRouteChildren {
   ShellActivateRoute: typeof ShellActivateRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellOOrganizationSlugApiKeysRoute: typeof ShellOOrganizationSlugApiKeysRoute
+  ShellOOrganizationSlugBillingRoute: typeof ShellOOrganizationSlugBillingRoute
   ShellOOrganizationSlugConnectionsRoute: typeof ShellOOrganizationSlugConnectionsRoute
   ShellOOrganizationSlugDaemonsRoute: typeof ShellOOrganizationSlugDaemonsRoute
   ShellOOrganizationSlugEntitlementsRoute: typeof ShellOOrganizationSlugEntitlementsRoute
@@ -917,6 +958,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellActivateRoute: ShellActivateRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellOOrganizationSlugApiKeysRoute: ShellOOrganizationSlugApiKeysRoute,
+  ShellOOrganizationSlugBillingRoute: ShellOOrganizationSlugBillingRoute,
   ShellOOrganizationSlugConnectionsRoute:
     ShellOOrganizationSlugConnectionsRoute,
   ShellOOrganizationSlugDaemonsRoute: ShellOOrganizationSlugDaemonsRoute,
@@ -938,6 +980,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,
   TestSmokeRoute: TestSmokeRoute,
+  TestStripeCheckoutRoute: TestStripeCheckoutRoute,
   TestTriggerRoute: TestTriggerRoute,
   AgentExecutionsExecutionIdMcpRoute: AgentExecutionsExecutionIdMcpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,

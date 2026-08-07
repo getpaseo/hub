@@ -98,6 +98,8 @@ import type {
   BillingPlanRecord,
   BillingPlanPriceRecord,
   SyncBillingPlanInput,
+  OrganizationSubscriptionRecord,
+  UpsertOrganizationSubscriptionInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2712,6 +2714,50 @@ class PgDatabase implements Database {
     return plans.rows.map((row) => toBillingPlanRecord(row, pricesByPlan.get(row.id) ?? []));
   }
 
+  async upsertOrganizationSubscription(
+    input: UpsertOrganizationSubscriptionInput,
+  ): Promise<OrganizationSubscriptionRecord> {
+    const rows = await query<OrganizationSubscriptionRow>(
+      this.pool,
+      `insert into organization_subscriptions
+         (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
+          current_period_end, cancel_at_period_end, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, now())
+       on conflict (organization_id) do update
+         set stripe_customer_id = excluded.stripe_customer_id,
+             stripe_subscription_id = excluded.stripe_subscription_id,
+             plan_id = excluded.plan_id,
+             status = excluded.status,
+             current_period_end = excluded.current_period_end,
+             cancel_at_period_end = excluded.cancel_at_period_end,
+             updated_at = now()
+       returning *`,
+      [
+        input.organizationId,
+        input.stripeCustomerId,
+        input.stripeSubscriptionId,
+        input.planId,
+        input.status,
+        input.currentPeriodEnd,
+        input.cancelAtPeriodEnd,
+      ],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) throw new Error("organization subscription upsert returned no row");
+    return toOrganizationSubscriptionRecord(row);
+  }
+
+  async getOrganizationSubscription(
+    organizationId: string,
+  ): Promise<OrganizationSubscriptionRecord | undefined> {
+    const rows = await query<OrganizationSubscriptionRow>(
+      this.pool,
+      `select * from organization_subscriptions where organization_id = $1`,
+      [organizationId],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationSubscriptionRecord(rows.rows[0]);
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -4327,6 +4373,32 @@ function toBillingPlanRecord(
       currency: price.currency,
       active: price.active,
     })),
+  };
+}
+
+export interface OrganizationSubscriptionRow extends QueryResultRow {
+  organization_id: string;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  plan_id: string | null;
+  status: string;
+  current_period_end: Date | null;
+  cancel_at_period_end: boolean;
+  updated_at: Date;
+}
+
+function toOrganizationSubscriptionRecord(
+  row: OrganizationSubscriptionRow,
+): OrganizationSubscriptionRecord {
+  return {
+    organizationId: row.organization_id,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    planId: row.plan_id,
+    status: row.status,
+    currentPeriodEnd: row.current_period_end,
+    cancelAtPeriodEnd: row.cancel_at_period_end,
+    updatedAt: row.updated_at,
   };
 }
 

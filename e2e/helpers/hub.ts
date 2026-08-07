@@ -18,6 +18,7 @@ import type { SourcePaseo, SourceRegistration } from "./source-paseo.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
+import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { slugify } from "../../src/slug.js";
@@ -504,18 +505,16 @@ export class PaseoHub {
       headers: { "content-type": "application/json" },
       data: Buffer.from("{}"),
     });
-    // No billing route is registered at all, so this falls through to the app's generic
-    // not-found page rather than a route handler's plain-text 404 (contrast /webhook, which is
-    // a real registered route and answers unsigned requests with text/plain).
+    // On a self-hosted instance the billing routes are never registered, so the webhook 404s
+    // as if it did not exist rather than mimicking any particular not-found body.
     expect(response.status()).toBe(404);
-    expect(response.headers()["content-type"]).toBe(HTML_TYPE);
-    expect(await response.text()).toContain("Not Found");
   }
 
-  async expectEmptyPublicBillingPlansWhenUnconfigured(): Promise<void> {
+  async expectPublicBillingPlansUnavailableWhenUnconfigured(): Promise<void> {
     const response = await this.requests.get(`${this.primary.origin}/api/billing/plans`);
-    expect(response.status()).toBe(200);
-    expect(await response.json()).toEqual({ plans: [] });
+    // Unconfigured means no billing surface at all: the public catalog endpoint 404s rather
+    // than serving an empty list, so self-hosted instances expose nothing billing-shaped.
+    expect(response.status()).toBe(404);
   }
 
   async visitPublicBillingPlans(origin?: string): Promise<void> {
@@ -569,16 +568,31 @@ export class PaseoHub {
     eventType: string,
     objectId: string,
   ): Promise<void> {
+    await this.postSignedBillingWebhook(application.origin, eventType, {
+      id: objectId,
+      object: "product",
+    });
+  }
+
+  /**
+   * Sign a Stripe webhook payload with the fixture secret and POST it — the same HMAC scheme
+   * Stripe uses, so signature verification is exercised for real. No Stripe account, no network.
+   */
+  private async postSignedBillingWebhook(
+    origin: string,
+    eventType: string,
+    object: Record<string, unknown>,
+  ): Promise<void> {
     const payload = JSON.stringify({
       id: `evt_${randomUUID()}`,
       type: eventType,
-      data: { object: { id: objectId, object: "product" } },
+      data: { object },
     });
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
       .update(`${timestamp}.${payload}`)
       .digest("hex");
-    const response = await this.requests.post(`${application.origin}/api/billing/webhook`, {
+    const response = await this.requests.post(`${origin}/api/billing/webhook`, {
       headers: {
         "content-type": "application/json",
         "stripe-signature": `t=${timestamp},v1=${signature}`,
@@ -586,6 +600,65 @@ export class PaseoHub {
       data: Buffer.from(payload),
     });
     expect(response.status()).toBe(200);
+  }
+
+  /**
+   * Deliver the subscription webhook for an organization's fixture subscription. The billing
+   * runtime re-reads live state through the fixture client and stamps — driven by the read, not
+   * this payload — so a replay of the exact same signed event is idempotent.
+   */
+  async deliverSubscriptionWebhook(alias: string): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await this.postSignedBillingWebhook(this.primary.origin, "customer.subscription.created", {
+      id: fixtureSubscriptionId(organizationId),
+      object: "subscription",
+    });
+  }
+
+  async subscribeToPlan(
+    alias: string,
+    plan: { plan: string; interval: "Monthly" | "Annual" },
+  ): Promise<void> {
+    await this.requireUser(alias).subscribeToPlan(plan.plan, plan.interval);
+  }
+
+  async openPlanDialog(alias: string): Promise<void> {
+    await this.requireUser(alias).openPlanDialog();
+  }
+
+  async choosePlan(
+    alias: string,
+    plan: { plan: string; interval: "Monthly" | "Annual" },
+  ): Promise<void> {
+    await this.requireUser(alias).choosePlan(plan.plan, plan.interval);
+  }
+
+  async expectCurrentPlan(alias: string, plan: string): Promise<void> {
+    await this.requireUser(alias).expectCurrentPlan(plan);
+  }
+
+  async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
+    await this.requireUser(alias).expectInviteBlockedByPlan(email);
+  }
+
+  async expectPendingInvitation(alias: string, email: string): Promise<void> {
+    await this.requireUser(alias).expectPendingInvitation(email);
+  }
+
+  private async organizationIdForAlias(alias: string): Promise<string> {
+    const rows = z.array(z.object({ id: z.string() })).parse(
+      await this.queryDatabaseRows(
+        this.primary.databaseUrl,
+        `select active_organization_id as id from session
+         join "user" on "user".id = session.user_id
+         where lower("user".email) = $1 and active_organization_id is not null
+         order by session.updated_at desc limit 1`,
+        [this.requireUser(alias).accountEmail],
+      ),
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) throw new Error(`no active organization for ${alias}`);
+    return id;
   }
 
   async openSeatOverrideEditor(
@@ -3276,6 +3349,56 @@ class HubUser {
     expect(response?.status()).toBe(404);
   }
 
+  async openPlanDialog(): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.getByRole("button", { name: /^(Choose a plan|Change plan)$/u }).click();
+    await expect(
+      this.page.getByRole("dialog").getByRole("heading", { name: "Choose a plan" }),
+    ).toBeVisible();
+  }
+
+  async choosePlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: interval, exact: true }).click();
+    // Choosing a plan redirects through the fixture checkout back to the billing page.
+    await dialog.getByRole("button", { name: `Choose ${plan}`, exact: true }).click();
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
+  }
+
+  async subscribeToPlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
+    await this.openPlanDialog();
+    await this.choosePlan(plan, interval);
+  }
+
+  async expectCurrentPlan(plan: string): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.reload();
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
+    await expect(this.page.getByText(plan, { exact: true })).toBeVisible();
+    await expectAccessible(this.page);
+  }
+
+  async expectInviteBlockedByPlan(email: string): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    const form = await this.openInvitationForm();
+    await form.getByLabel("Invitee email").fill(email);
+    await form.getByRole("button", { name: "Create invitation" }).click();
+    await expect(form).toBeHidden();
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText("Inviting members isn't enabled");
+    await expect(this.invitationRow(email)).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectPendingInvitation(email: string): Promise<void> {
+    await this.openOrganizationSection("Team");
+    await expect(this.invitationRow(email)).toBeVisible();
+  }
+
   private async expectConnectionShell(): Promise<void> {
     await this.openOrganizationSection("Connections");
     await this.expectConnectionContents();
@@ -3854,7 +3977,7 @@ class HubUser {
   }
 
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements",
+    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Entitlements" | "Billing",
   ): Promise<void> {
     const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
     if (await mobileSidebar.isVisible().catch(() => false)) {

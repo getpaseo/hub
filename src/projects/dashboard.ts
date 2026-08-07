@@ -15,6 +15,10 @@ import type {
   ProviderEventReceiptSummary,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
+import {
+  decodeEntitlementDenialFailureReason,
+  entitlementDenialSummary,
+} from "../entitlements/denial.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
 
@@ -431,7 +435,7 @@ function activityRunView(activity: ProjectActivityRunRecord) {
       deadlineKind: step.deadlineKind,
       startedAt: step.startedAt?.toISOString() ?? null,
       output: step.output === null ? null : jsonValue(step.output),
-      failureReason: step.failureReason,
+      failureReason: displayFailureReason(step.failureReason),
       completedAt: step.completedAt?.toISOString() ?? null,
     })),
   };
@@ -452,7 +456,7 @@ function activityRunView(activity: ProjectActivityRunRecord) {
     status: run.status,
     deadlineAt: run.deadlineAt.toISOString(),
     deadlineKind: run.deadlineKind,
-    failureReason: run.failureReason,
+    failureReason: displayFailureReason(run.failureReason),
     rejectionReason: null,
   };
 }
@@ -493,9 +497,19 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
     status: run.status,
     deadlineAt: run.deadlineAt.toISOString(),
     deadlineKind: run.deadlineKind,
-    failureReason: run.failureReason,
+    failureReason: displayFailureReason(run.failureReason),
     rejectionReason: null,
   };
+}
+
+/**
+ * A run/step `failure_reason` for display. An entitlement denial is stored as a machine-parseable
+ * payload (see engine.ts), so it is decoded into a typed denial and summarized here rather than
+ * shown as raw JSON; every other reason (timeouts, crashes) passes through unchanged.
+ */
+function displayFailureReason(reason: string | null): string | null {
+  const denial = decodeEntitlementDenialFailureReason(reason);
+  return denial === undefined ? reason : entitlementDenialSummary(denial);
 }
 
 function unroutedEventView(receipt: ProviderEventReceiptSummary) {
