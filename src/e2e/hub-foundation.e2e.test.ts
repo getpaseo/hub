@@ -46,7 +46,12 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
 
     assert.equal(connected.state, "connected");
     assert.deepEqual(completed, {
-      prompt: "Deploy requested for phase-five-operator",
+      prompt: [
+        "Capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Deploy requested for phase-five-operator",
+      ].join("\n"),
       output: "phase-five:requested",
       status: "succeeded",
       daemonId: enrollment.daemonId,
@@ -122,7 +127,12 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const recovered = await hub.completedRun(run.executionId);
 
     assert.deepEqual(recovered, {
-      prompt: "Deploy requested for phase-five-operator",
+      prompt: [
+        "Capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Deploy requested for phase-five-operator",
+      ].join("\n"),
       output: "phase-five:requested",
       status: "succeeded",
       daemonId: enrollment.daemonId,

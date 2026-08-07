@@ -18,7 +18,12 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
 import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
-import { OutputExecutorRegistry, replyOutputTool, type OutputCapability } from "./outputs.js";
+import {
+  OutputExecutorRegistry,
+  replyCapabilityMetadata,
+  replyOutputTool,
+  type OutputCapability,
+} from "./outputs.js";
 import { createExecutionCapabilityServer } from "./server.js";
 
 const RpcResponseSchema = z
@@ -515,6 +520,7 @@ describe("execution capability MCP boundary", () => {
       [
         {
           type: "manual.reply",
+          hub: replyCapabilityMetadata,
           tool: { ...replyOutputTool, name: "send_manual_reply" },
           execute: async () => undefined,
         },
@@ -680,6 +686,7 @@ async function capabilityFixture(
   const outputs = new OutputExecutorRegistry();
   outputs.register({
     type: "slack.reply",
+    hub: replyCapabilityMetadata,
     tool: outputTool,
     execute: async (input) => {
       outbound.push(input);

@@ -18,6 +18,21 @@ Configuration YAML may include an optional non-empty top-level string `project` 
 
 The configuration install body may also include an optional `partials` array. Each item is `{ "path": "docs/safety.md", "content": "..." }`, where `path` is a normalized relative path under `.paseo/partials/`. When YAML prompt blocks use `include`, the bundle must contain exactly those referenced files; missing, duplicate, unsafe, unexpected, or oversized files are rejected before a revision is recorded. Hub resolves the submitted content into the compiled revision and preserves it in source evidence, so changing only a partial creates a new revision. Requests without partial includes remain compatible with the YAML-only body.
 
+## Workflow prompt capability inventory
+
+Each workflow step's agent prompt begins with a factual inventory of the capabilities available to that execution by default. It uses the header `Capabilities available in this execution:`, lists only the available capabilities, then leaves a blank line before the authored prompt. The inventory uses stable semantic names: `hub.finalize` records the current agent execution as complete and returns its result to the workflow, while `hub.reply` sends a message to the conversation that triggered the execution when that output is allowed and available. Finalizing an execution does not necessarily complete the whole workflow.
+
+Authors may opt out for an individual step with `inject_tool_inventory: false`:
+
+```yaml
+steps:
+  - id: classify
+    inject_tool_inventory: false
+    # ...the remaining step fields
+```
+
+The setting affects prompt discoverability only; server-side capability permissions and completion rules remain enforced.
+
 `deliveryKey` is caller-supplied request identity for the existing durable manual-event path. Hub namespaces it by the authenticated organization and resolved project before persistence, so the same caller key can be used independently in different tenants or projects. Existing receipt/run de-duplication applies, but this API does not promise exactly-once execution or guaranteed response replay; retries can still fail or conflict during restart and timing races. A successful representation contains `deliveryKey`, `providerEventReceiptId`, `triggerRunId`, `configuredTriggerName`, and the durable `workflowStatus`.
 
 The self-hosted Scalar reference is served with a restrictive Content Security Policy and does not require external fonts, scripts, telemetry, registries, or proxies.
@@ -62,3 +77,4 @@ The public Hub docs live in the separate `getpaseo/paseo` repository under `publ
 4. Replace the manual-run success example with the five durable fields listed above.
 5. Describe RFC 9457 errors, structured `issues`, `requestId`, `X-Request-ID`, and narrow delivery-key semantics.
 6. Document `GET /api/billing/plans` (unauthenticated, no scopes) — this is what paseo.sh's pricing page will fetch.
+7. Document workflow-step `inject_tool_inventory` and the semantic `hub.finalize` / `hub.reply` inventory names.

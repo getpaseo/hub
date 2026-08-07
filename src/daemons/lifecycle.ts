@@ -21,6 +21,8 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { logger as defaultLogger } from "../logger.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ProviderIntegrationRegistration } from "../providers/registration.js";
+import { composeExecutionPrompt } from "../execution-capabilities/prompt.js";
+import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import {
   notifyAgentExecutionCompleted,
   notifyAgentExecutionFailed,
@@ -90,6 +92,7 @@ const systemExecutionDeadlineClock: ExecutionDeadlineClock = {
 export interface DaemonDispatchLifecycleOptions {
   database: Database;
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
+  executionCapabilities?: OutputExecutorRegistry;
   providers?: readonly TriggerProvider[];
   integrations?: readonly ProviderIntegrationRegistration[];
   publicBaseUrl?: string;
@@ -135,6 +138,7 @@ export class AgentExecutionOutputValidationFailure extends Error {
 
 export class DaemonDispatchLifecycle {
   private readonly providersByName: Map<string, TriggerProvider>;
+  private readonly executionCapabilities: OutputExecutorRegistry;
   private readonly startedExecutions = new Set<string>();
   private readonly pendingStreamHandlersByExecution = new Map<string, Promise<void>>();
   private readonly completionWatchersByExecution = new Map<
@@ -149,6 +153,7 @@ export class DaemonDispatchLifecycle {
   private stopping = false;
 
   constructor(private readonly options: DaemonDispatchLifecycleOptions) {
+    this.executionCapabilities = options.executionCapabilities ?? new OutputExecutorRegistry();
     this.providersByName = new Map(
       (options.providers ?? []).map((provider) => [provider.name, provider]),
     );
@@ -506,27 +511,41 @@ export class DaemonDispatchLifecycle {
     provider: TriggerProvider | undefined,
     executionId: string,
   ): Promise<LaunchMachineIntent> {
+    const composed = {
+      ...intent,
+      prompt: composeExecutionPrompt({
+        prompt: intent.prompt,
+        ...(intent.injectToolInventory === undefined
+          ? {}
+          : { injectToolInventory: intent.injectToolInventory }),
+        allowOutputs: intent.allowOutputs,
+        outputContext: intent.outputContext,
+        capabilities: this.executionCapabilities,
+      }),
+    };
     const persistedWorktree = intent.environment.worktree;
     if (provider?.materializeLaunch === undefined) {
-      return intent;
+      return composed;
     }
     const materialized = await provider.materializeLaunch({
       executionId,
-      organizationId: intent.organizationId,
-      projectId: intent.projectId,
-      prompt: intent.prompt,
-      ...(intent.environment.env === undefined ? {} : { environmentEnv: intent.environment.env }),
+      organizationId: composed.organizationId,
+      projectId: composed.projectId,
+      prompt: composed.prompt,
+      ...(composed.environment.env === undefined
+        ? {}
+        : { environmentEnv: composed.environment.env }),
       ...(persistedWorktree === undefined ? {} : { environmentWorktree: persistedWorktree }),
-      triggerContext: intent.triggerContext,
+      triggerContext: composed.triggerContext,
     });
     const {
       env: _persistedEnvironmentEnv,
       worktree: _persistedWorktree,
       ...environment
-    } = intent.environment;
+    } = composed.environment;
     const environmentWorktree = materialized.environmentWorktree ?? persistedWorktree;
     return {
-      ...intent,
+      ...composed,
       prompt: materialized.prompt,
       environment: {
         ...environment,

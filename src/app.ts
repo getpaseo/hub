@@ -134,8 +134,13 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   const providers = [manualProvider, ...configuredProviders, ...(options.providers ?? [])].filter(
     (provider): provider is TriggerProvider => provider !== undefined,
   );
-  const daemonModule = createAppDaemonModule(options, daemons, providers);
-  const capabilityServer = createAppExecutionCapabilityServer(options, daemonModule);
+  const outputRegistry = options.outputRegistry ?? new OutputExecutorRegistry();
+  const daemonModule = createAppDaemonModule(options, daemons, providers, outputRegistry);
+  const capabilityServer = createAppExecutionCapabilityServer(
+    options,
+    daemonModule,
+    outputRegistry,
+  );
   const registration =
     options.database === null || daemons === null
       ? null
@@ -284,13 +289,14 @@ function createAppPublicOperations(
 function createAppExecutionCapabilityServer(
   options: HubRuntimeOptions,
   daemonModule: DaemonModule | null,
+  outputRegistry: OutputExecutorRegistry,
 ) {
   if (options.database === null || daemonModule === null) {
     return null;
   }
   return createExecutionCapabilityServer({
     database: options.database,
-    outputs: options.outputRegistry ?? new OutputExecutorRegistry(),
+    outputs: outputRegistry,
     completeExecution: (input) =>
       daemonModule.lifecycle.completeAgentExecutionFromCallback(input, { deferHubAction: true }),
   });
@@ -335,6 +341,7 @@ function createAppDaemonModule(
   options: HubRuntimeOptions,
   daemons: ActiveDaemonRegistry | null,
   providers: readonly TriggerProvider[],
+  outputRegistry: OutputExecutorRegistry,
 ): DaemonModule | null {
   if (options.database === null) {
     return null;
@@ -345,6 +352,7 @@ function createAppDaemonModule(
   return createDaemonModule({
     database: options.database,
     connectionForDaemon: options.daemonConnectionForId ?? ((id) => daemons?.connection(id)),
+    executionCapabilities: outputRegistry,
     ...(options.completionTokenSecret === undefined
       ? {}
       : { completionTokenSecret: options.completionTokenSecret }),

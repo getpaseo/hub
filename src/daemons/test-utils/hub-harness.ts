@@ -42,6 +42,7 @@ import type { WorktreeTarget } from "../../config/index.js";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
+  replyCapabilityMetadata,
   replyOutputTool,
 } from "../../execution-capabilities/outputs.js";
 import type { DaemonClock } from "../registry.js";
@@ -1321,6 +1322,7 @@ export class HubHarness {
     const registry = new OutputExecutorRegistry();
     registry.register({
       type: "discord.reply",
+      hub: replyCapabilityMetadata,
       tool: replyOutputTool,
       available: outputContextProvider("discord"),
       execute: async () => undefined,

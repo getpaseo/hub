@@ -16,6 +16,11 @@ export interface OutputToolSchema extends OutputToolSchemaNode {
   readonly required?: string[];
 }
 
+export interface HubCapabilityMetadata {
+  readonly name: `hub.${string}`;
+  readonly description: string;
+}
+
 export interface OutputToolDefinition {
   readonly name: string;
   readonly description: string;
@@ -34,6 +39,7 @@ export type OutputExecutor = (input: OutputExecutionInput) => Promise<void>;
 
 export interface OutputCapability {
   readonly type: string;
+  readonly hub: HubCapabilityMetadata;
   readonly tool: OutputToolDefinition;
   readonly available?: (outputContext: unknown) => boolean;
   readonly execute: OutputExecutor;
@@ -43,6 +49,17 @@ export interface MaterializedOutputCapability {
   readonly declaration: AllowedOutput;
   readonly capability: OutputCapability;
 }
+
+export const finalizeCapabilityMetadata = {
+  name: "hub.finalize",
+  description:
+    "records the current agent execution as complete and returns its result to the workflow.",
+} as const satisfies HubCapabilityMetadata;
+
+export const replyCapabilityMetadata = {
+  name: "hub.reply",
+  description: "sends a message to the conversation that triggered the execution.",
+} as const satisfies HubCapabilityMetadata;
 
 export const replyOutputTool: OutputToolDefinition = {
   name: "reply",
@@ -71,6 +88,16 @@ export class OutputCapabilityValidationError extends Error {
 
 export class OutputExecutorRegistry {
   private readonly capabilities = new Map<string, OutputCapability>();
+  private readonly registeredCapabilities = new Map<
+    string,
+    { metadata: HubCapabilityMetadata; outputType?: string }
+  >();
+
+  constructor() {
+    this.registeredCapabilities.set(finalizeCapabilityMetadata.name, {
+      metadata: finalizeCapabilityMetadata,
+    });
+  }
 
   register(capability: OutputCapability): void {
     if (capability.type.length === 0) throw new Error("output capability type is required");
@@ -81,6 +108,10 @@ export class OutputExecutorRegistry {
       throw new Error(`output capability is already registered: ${capability.type}`);
     }
     this.capabilities.set(capability.type, capability);
+    this.registeredCapabilities.set(capability.type, {
+      metadata: capability.hub,
+      outputType: capability.type,
+    });
   }
 
   validateRequiredOutputs(allowedOutputs: readonly AllowedOutput[], outputContext: unknown): void {
@@ -100,12 +131,7 @@ export class OutputExecutorRegistry {
     outputContext: unknown,
   ): readonly MaterializedOutputCapability[] {
     this.validateRequiredOutputs(allowedOutputs, outputContext);
-    const materialized = allowedOutputs.flatMap((declaration) => {
-      const capability = this.capabilities.get(declaration.type);
-      return capability !== undefined && this.isAvailable(declaration.type, outputContext)
-        ? [{ declaration, capability }]
-        : [];
-    });
+    const materialized = this.availableOutputs(allowedOutputs, outputContext);
     const byToolName = new Map<string, MaterializedOutputCapability>();
     for (const output of materialized) {
       const previous = byToolName.get(output.capability.tool.name);
@@ -117,6 +143,34 @@ export class OutputExecutorRegistry {
       byToolName.set(output.capability.tool.name, output);
     }
     return materialized;
+  }
+
+  availableCapabilities(
+    allowedOutputs: readonly AllowedOutput[],
+    outputContext: unknown,
+  ): readonly HubCapabilityMetadata[] {
+    const availableTypes = new Set(
+      this.availableOutputs(allowedOutputs, outputContext).map((output) => output.declaration.type),
+    );
+    const byName = new Map<string, HubCapabilityMetadata>();
+    for (const capability of this.registeredCapabilities.values()) {
+      if (capability.outputType !== undefined && !availableTypes.has(capability.outputType))
+        continue;
+      byName.set(capability.metadata.name, capability.metadata);
+    }
+    return [...byName.values()];
+  }
+
+  private availableOutputs(
+    allowedOutputs: readonly AllowedOutput[],
+    outputContext: unknown,
+  ): readonly MaterializedOutputCapability[] {
+    return allowedOutputs.flatMap((declaration) => {
+      const capability = this.capabilities.get(declaration.type);
+      return capability !== undefined && this.isAvailable(declaration.type, outputContext)
+        ? [{ declaration, capability }]
+        : [];
+    });
   }
 
   private isAvailable(type: string, outputContext: unknown): boolean {

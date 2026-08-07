@@ -111,7 +111,15 @@ describe("daemon enrollment and execution", () => {
     const agent = hub.createdAgentLaunch();
     assert.deepEqual({ worktree: agent.worktree }, { worktree: undefined });
     assert.equal(agent.cwd, "/workspace");
-    assert.equal(agent.prompt, "Reply pong.");
+    assert.equal(
+      agent.prompt,
+      [
+        "Capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Reply pong.",
+      ].join("\n"),
+    );
     assert.equal(agent.thinkingOptionId, "xhigh");
     assert.deepEqual(agent.env, {
       USER_DEFINED: "yes",
@@ -128,6 +136,47 @@ describe("daemon enrollment and execution", () => {
         headers: { Authorization: "Bearer <private>" },
       },
     });
+  });
+
+  it("inventories available Hub capabilities in the agent prompt", async () => {
+    await hub.connectDaemon();
+
+    await hub.dispatch({
+      outputContext: { provider: "discord", channelId: "channel-1" },
+    });
+    assert.equal(
+      hub.createdAgentLaunch().prompt,
+      [
+        "Capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "- hub.reply: sends a message to the conversation that triggered the execution.",
+        "",
+        "Reply pong.",
+      ].join("\n"),
+    );
+
+    await hub.dispatch({
+      outputContext: { provider: "manual", channelId: "channel-1" },
+    });
+    assert.equal(
+      hub.createdAgentLaunch().prompt,
+      [
+        "Capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+        "",
+        "Reply pong.",
+      ].join("\n"),
+    );
+  });
+
+  it("allows an execution to opt out of the Hub capability inventory", async () => {
+    await hub.connectDaemon();
+    await hub.dispatch({
+      injectToolInventory: false,
+      outputContext: { provider: "discord", channelId: "channel-1" },
+    });
+
+    assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
   });
 
   it("deduplicates durable fan-out per configured trigger match", async () => {
@@ -217,7 +266,7 @@ describe("daemon enrollment and execution", () => {
 
       hub.releaseLaunchMaterialization();
       await hub.waitForRecoveredExecution(handedOff.execution.id);
-      assert.match(String(hub.createdAgentLaunch().prompt), /^token=resolved-secret/u);
+      assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
@@ -268,7 +317,7 @@ describe("daemon enrollment and execution", () => {
     assert(execution !== undefined);
     await hub.waitForRecoveredExecution(execution.id);
 
-    assert.match(String(hub.createdAgentLaunch().prompt), /^token=resolved-secret/u);
+    assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",
