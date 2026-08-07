@@ -5,7 +5,8 @@ import {
   parseCompiledHubConfig,
   rawConfigurationHash,
 } from "../config/compiler.js";
-import { ProjectConfigurationStore } from "./store.js";
+import { resolvePromptPartials } from "../config/prompt-partials.js";
+import { ProjectConfigurationStore, revisionPromptPartials } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import type { DiscordConnectionRecord } from "../db/types.js";
@@ -68,6 +69,47 @@ describe("ProjectConfigurationStore resource compilation", () => {
       switched.revision.contentHash,
       compiledConfigurationHash(parseCompiledHubConfig(switched.revision.normalizedConfiguration)),
     );
+  });
+
+  it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "GitHub partials project",
+      slug: "github-partials-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const rawConfiguration = includeConfiguration();
+    const resolvedPromptPartials = await resolvePromptPartials({
+      configuration: rawConfiguration,
+      read: (path) =>
+        Promise.resolve(
+          path === ".paseo/partials/triage.md"
+            ? { kind: "file" as const, content: PARTIAL_CONTENT }
+            : undefined,
+        ),
+    });
+    const revision = await store.insertGitHubRevision({
+      rawYaml: "triggers:\n  - name: triage\n",
+      rawConfiguration,
+      githubConnectionId: "github-connection-1",
+      githubRepositoryId: 9001,
+      githubRepositoryFullName: "acme/repo",
+      githubDefaultBranch: "main",
+      commitSha: "sha-with-partials",
+      path: ".paseo/hub.yml",
+      webhookDeliveryId: null,
+      resolvedPromptPartials,
+    });
+    await store.activate(revision.id);
+
+    const switched = await store.switchToManual("user-1");
+
+    assert.deepEqual(revisionPromptPartials(switched.revision), [
+      { path: ".paseo/partials/triage.md", content: PARTIAL_CONTENT },
+    ]);
   });
 
   it("resolves a unique guild without requiring a connection slug", async () => {
@@ -290,6 +332,31 @@ function discordConfiguration(filters: Record<string, string>) {
             idle_timeout: "5m",
             agent: { provider: "test", mode: "default" },
             prompt: [{ text: "Handle the mention" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+const PARTIAL_CONTENT = "Triage the request before labeling it.";
+
+function includeConfiguration() {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
+    triggers: [
+      {
+        name: "triage",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "work",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "test", mode: "default" },
+            prompt: [{ include: "triage.md" }],
           },
         ],
       },

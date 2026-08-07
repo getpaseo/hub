@@ -61,6 +61,12 @@ export class ProjectConfiguration {
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }
 
+  /** Activate the open documents exactly as they are — the preserved switch-to-manual bundle. */
+  async saveUnmodified() {
+    await this.startEditing();
+    await this.save();
+  }
+
   async save() {
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }

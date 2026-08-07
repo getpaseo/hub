@@ -2352,6 +2352,7 @@ class MemoryDatabase implements Database {
       sourceEvidence: {
         kind: "authority-switch",
         formattingPreserved: input.formattingPreserved,
+        ...(input.promptPartials.length === 0 ? {} : { partials: input.promptPartials }),
       },
       rawYaml: input.rawYaml,
       normalizedConfiguration: input.normalizedConfiguration,

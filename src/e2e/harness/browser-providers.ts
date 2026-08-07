@@ -12,6 +12,10 @@ import type {
 } from "../../triggers/github/provider.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import {
+  validatePromptPartialPath,
+  type PromptPartialBundleFile,
+} from "../../config/prompt-partials.js";
 
 const GITHUB_INSTALLATIONS: readonly GitHubInstallationIdentity[] = [
   {
@@ -150,20 +154,35 @@ export class BrowserGitHubConfiguration implements GitHubConfigurationProvider {
     return Promise.resolve(head);
   }
 
-  readFileAtCommit(input: { repositoryId: number; commitSha: string }) {
-    const rawYaml = this.files.get(`${input.repositoryId}:${input.commitSha}`);
-    return Promise.resolve(
-      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
-    );
+  readFileAtCommit(input: { repositoryId: number; commitSha: string; path: string }) {
+    const content = this.files.get(`${input.repositoryId}:${input.commitSha}:${input.path}`);
+    return Promise.resolve(content === undefined ? undefined : { kind: "file" as const, content });
   }
 
-  setRevision(input: { repositoryId: number; commitSha: string; rawYaml?: string }) {
+  setRevision(input: {
+    repositoryId: number;
+    commitSha: string;
+    rawYaml?: string;
+    partials?: readonly PromptPartialBundleFile[];
+  }) {
     this.heads.set(input.repositoryId, input.commitSha);
     if (input.rawYaml !== undefined) {
-      this.files.set(`${input.repositoryId}:${input.commitSha}`, input.rawYaml);
+      this.files.set(
+        `${input.repositoryId}:${input.commitSha}:${BROWSER_CONFIGURATION_PATH}`,
+        input.rawYaml,
+      );
+    }
+    for (const partial of input.partials ?? []) {
+      this.files.set(
+        `${input.repositoryId}:${input.commitSha}:${validatePromptPartialPath(partial.path)}`,
+        partial.content,
+      );
     }
   }
 }
+
+/** The repository path the hub reads its configuration from — see github-sync.ts. */
+const BROWSER_CONFIGURATION_PATH = ".paseo/hub.yml";
 
 export class BrowserDiscordConnections implements DiscordConnectionClient {
   private readonly guilds = new Map(DISCORD_GUILDS.map((guild) => [guild.guildId, guild]));

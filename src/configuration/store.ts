@@ -227,6 +227,7 @@ export class ProjectConfigurationStore {
       normalizedConfiguration: active.normalizedConfiguration,
       contentHash: compiledConfigurationHash(configuration),
       formattingPreserved,
+      promptPartials: revisionPromptPartials(active),
       routes,
     });
     return { revision, configuration: parseProjectConfiguration(revision) };

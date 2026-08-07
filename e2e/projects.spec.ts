@@ -129,6 +129,37 @@ test("keeps the GitHub source controls inside the editor rail", async ({ hub, pa
   await app.configuration.expectSourceControlsClearOfTheEditor();
 });
 
+test("keeps GitHub-authored partials openable after switching to manual", async ({
+  hub,
+  page,
+  projectExternal,
+}) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
+  await app.navigation.openOrganizationSection("Connections");
+  await app.connections.connectGitHub();
+  await app.navigation.openOrganizationSection("Projects");
+  await app.navigation.openProject("Default");
+  await app.configuration.useRepository("acme-inc/app");
+  await projectExternal.setGitHubRevision(9001, "partial-sha", includeConfiguration, [
+    { path: "triage/preamble.md", content: "Triage before labelling." },
+  ]);
+  await app.configuration.syncNow();
+  await app.configuration.expectActiveRevision(1);
+  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
+  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+
+  await app.configuration.switchToManual();
+
+  await app.configuration.expectActiveRevision(2);
+  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
+  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+  await app.configuration.saveUnmodified();
+  await app.configuration.expectConfigurationActivated(3);
+});
+
 test("explains invalid manual configuration and allows a corrected retry", async ({
   hub,
   page,
