@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { EntitlementsService } from "../entitlements/service.js";
 import { ProjectDashboard } from "./dashboard.js";
 
 describe("project dashboard activity read models", () => {
@@ -107,9 +106,6 @@ function accountAuth(): AuthServer {
         account: { id: "user-1", name: "User", email: "user@example.test" },
       }),
     rejectCookieMutation: () => undefined,
-    entitlements: new EntitlementsService(createMemoryDatabase(), {
-      seats: () => Promise.resolve(0),
-    }),
     close: () => Promise.resolve(),
   };
 }

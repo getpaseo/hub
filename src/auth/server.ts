@@ -18,15 +18,13 @@ import type {
   OrganizationResources,
 } from "../organizations/resources.js";
 import {
-  countOrganizationSeatUsage,
   OrganizationAccess,
   type AccountAccessValue,
   type AccountSession,
   type OrganizationAccessValue,
 } from "./organization-access.js";
 import { paseoOrganizationPlugin } from "./organization-policy.js";
-import { EntitlementsService } from "../entitlements/service.js";
-import type { Database } from "../db/types.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -51,14 +49,13 @@ export interface AuthServer {
   rejectCookieMutation(request: Request): Response | undefined;
   initialize?(): Promise<void>;
   apiKeys?: OrganizationApiKeys;
-  /** The organization entitlements module, shared with the dashboard so there is one owner. */
-  entitlements: EntitlementsService;
   close(): Promise<void>;
 }
 
 interface AuthServerOptions {
-  database: Database;
   databaseUrl: string;
+  /** Owned by the composition root, injected here — auth consumes entitlements, never owns them. */
+  entitlements: EntitlementsService;
   secret: string;
   baseURL: string;
   policy?: InstanceAuthPolicy;
@@ -147,16 +144,13 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       };
     },
   };
-  const entitlements = new EntitlementsService(options.database, {
-    seats: (organizationId) => countOrganizationSeatUsage(pool, organizationId),
-  });
   const access = new OrganizationAccess({
     pool,
     sessions,
     baseURL: options.baseURL,
     policy,
     apiKeys,
-    entitlements,
+    entitlements: options.entitlements,
   });
   const browserOrigin = new URL(options.baseURL).origin;
 
@@ -231,7 +225,6 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
     initialize: () => bootstrapInstance(pool, policy),
     apiKeys,
-    entitlements,
     close: () => pool.end(),
   };
 

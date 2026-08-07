@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
 import { createAuthServer } from "../../auth/server.js";
+import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createDatabase, createPostgresPool } from "../../db/pg.js";
 import { createFetchServer } from "../../http/node-server.js";
@@ -40,11 +41,12 @@ async function main(): Promise<void> {
   const publicBaseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
   const scenario = readScenario();
   const database = await createDatabase(databaseUrl);
+  const entitlements = composeEntitlements(database, databaseUrl);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
-        database,
         databaseUrl,
+        entitlements: entitlements.service,
         baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,
         policy: readInstanceAuthPolicy(),
@@ -127,6 +129,7 @@ async function main(): Promise<void> {
   const runtime = await createApplicationRuntime({
     database,
     auth,
+    entitlements: entitlements.service,
     publicApi:
       machineKey === undefined || auth?.apiKeys === undefined
         ? { status: "unavailable" }
@@ -136,6 +139,7 @@ async function main(): Promise<void> {
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     async close() {
       await auth?.close();
+      await entitlements.close();
       await database.close();
     },
   });
@@ -162,6 +166,12 @@ async function seedMachineAuthTarget(databaseUrl: string): Promise<void> {
       insert into organization (id, name, slug)
       values ('phase-zero', 'E2E machine organization', 'phase-zero')
       on conflict (id) do nothing;
+      insert into organization_entitlements
+        (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+      values ('phase-zero',
+              '{"seats":{"max":null},"canInviteMembers":true,"meters":{"executions.monthly":{"limit":null}}}'::jsonb,
+              '{}'::jsonb, null, null, now(), now())
+      on conflict (organization_id) do nothing;
       insert into "user" (id, name, email, email_verified)
       values ('phase-zero-user', 'E2E machine user', 'phase-zero@example.test', true)
       on conflict (id) do nothing;

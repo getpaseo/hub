@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { EntitlementsService } from "../entitlements/service.js";
 import { resolveRouteTenant, TenantRouteNotFoundError } from "./access.js";
 
 describe("URL tenant resolution", () => {
@@ -85,9 +84,6 @@ function accountAuth(activeOrganizationId: string | null): AuthServer {
         account: { id: "user-1", name: "User", email: "user@example.test" },
       }),
     rejectCookieMutation: () => undefined,
-    entitlements: new EntitlementsService(createMemoryDatabase(), {
-      seats: () => Promise.resolve(0),
-    }),
     close: () => Promise.resolve(),
   };
 }

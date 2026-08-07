@@ -5,6 +5,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Client } from "pg";
 import { createDatabase } from "../db/pg.js";
 import { createAuthServer, type AuthServer } from "./server.js";
+import { composeEntitlements } from "./entitlements.js";
 
 describe("registration policy boundary", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -103,9 +104,10 @@ describe("registration policy boundary", () => {
   async function startAuth(registrationMode: "open" | "invite_only" | "disabled") {
     const url = await isolatedDatabaseUrl(postgres.getConnectionUri(), registrationMode);
     const database = await createDatabase(url);
+    const entitlements = composeEntitlements(database, url);
     const auth = createAuthServer({
-      database,
       databaseUrl: url,
+      entitlements: entitlements.service,
       secret: "registration-policy-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
       policy: { registrationMode, organizationCreation: "disabled", bootstrap: undefined },
@@ -115,6 +117,7 @@ describe("registration policy boundary", () => {
         ...auth,
         close: async () => {
           await auth.close();
+          await entitlements.close();
           await database.close();
         },
       },

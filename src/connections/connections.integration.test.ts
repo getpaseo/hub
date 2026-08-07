@@ -4,12 +4,10 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { Client, type Pool } from "pg";
 import { createDatabase, createPostgresPool } from "../db/pg.js";
-import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import type { AuthServer } from "../auth/server.js";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
 import { ProductRequestError } from "../auth/organization-access.js";
-import { EntitlementsService } from "../entitlements/service.js";
 import type { DiscordConnectionClient, DiscordGuildIdentity } from "../providers/discord/client.js";
 import type {
   GitHubConnectionClient,
@@ -475,9 +473,6 @@ class ConnectionAuth implements AuthServer {
   rejectCookieMutation(): Response | undefined {
     return undefined;
   }
-  entitlements = new EntitlementsService(createMemoryDatabase(), {
-    seats: () => Promise.resolve(0),
-  });
   close(): Promise<void> {
     return Promise.resolve();
   }
@@ -500,9 +495,6 @@ class FailingConnectionAuth implements AuthServer {
   rejectCookieMutation(): Response | undefined {
     return undefined;
   }
-  entitlements = new EntitlementsService(createMemoryDatabase(), {
-    seats: () => Promise.resolve(0),
-  });
   close(): Promise<void> {
     return Promise.resolve();
   }

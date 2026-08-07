@@ -4,6 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Client } from "pg";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
+import { composeEntitlements } from "../auth/entitlements.js";
 import { createDatabase } from "../db/pg.js";
 import { EnrollmentTokenSchema, InstalledConfigurationSchema, ProblemSchema } from "./contracts.js";
 import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
@@ -46,9 +47,10 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         createdByUserId: userId,
       });
     }
+    const entitlements = composeEntitlements(database, databaseUrl);
     auth = createAuthServer({
-      database,
       databaseUrl,
+      entitlements: entitlements.service,
       secret: "built-public-api-test-secret".padEnd(32, "-"),
       baseURL: "http://hub.test",
       policy: {
@@ -71,9 +73,11 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     const runtime = await createApplicationRuntime({
       database,
       auth,
+      entitlements: entitlements.service,
       publicApi: { status: "enabled", authenticator: auth.apiKeys! },
       async close() {
         await auth.close();
+        await entitlements.close();
         await database.close();
       },
     });

@@ -6,6 +6,7 @@ import { Client } from "pg";
 import { createDatabase } from "../db/pg.js";
 import type { Database } from "../db/types.js";
 import { createAuthServer, type AuthServer } from "./server.js";
+import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
@@ -15,6 +16,7 @@ const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uu
 describe("organization API-key boundary", () => {
   let postgres: StartedPostgreSqlContainer;
   let auth: AuthServer;
+  let authEntitlements: ComposedEntitlements;
   let authDatabase: Database;
   let databaseUrl: string;
 
@@ -36,9 +38,10 @@ describe("organization API-key boundary", () => {
         ('member-b', 'organization-b', 'user-b', 'owner');
     `);
     await client.end();
+    authEntitlements = composeEntitlements(authDatabase, databaseUrl);
     auth = createAuthServer({
-      database: authDatabase,
       databaseUrl,
+      entitlements: authEntitlements.service,
       secret: "test".repeat(8),
       baseURL: "http://localhost:3000",
       policy: {
@@ -52,6 +55,7 @@ describe("organization API-key boundary", () => {
   afterAll(async () => {
     await authDatabase.close();
     await auth.close();
+    await authEntitlements.close();
     await postgres.stop();
   }, 120_000);
 

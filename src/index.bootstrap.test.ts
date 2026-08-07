@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { HubHarness } from "./daemons/test-utils/hub-harness.js";
 import { createDatabase } from "./db/pg.js";
 import { createAuthServer } from "./auth/server.js";
+import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { startProductionRuntime, stopProductionRuntime } from "./index.js";
 
 describe("production Hub runtime", () => {
@@ -167,6 +168,7 @@ describe("production Hub cold start", () => {
     process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"] = "production-temporary-password";
     let keyAuthority: ReturnType<typeof createAuthServer> | undefined;
     let keyAuthorityDatabase: Awaited<ReturnType<typeof createDatabase>> | undefined;
+    let keyAuthorityEntitlements: ComposedEntitlements | undefined;
     try {
       const runtime = await startProductionRuntime();
       const client = new Client({ connectionString: databaseUrl });
@@ -178,9 +180,10 @@ describe("production Hub cold start", () => {
       const identity = owner.rows[0];
       assert.ok(identity);
       keyAuthorityDatabase = await createDatabase(databaseUrl);
+      keyAuthorityEntitlements = composeEntitlements(keyAuthorityDatabase, databaseUrl);
       keyAuthority = createAuthServer({
-        database: keyAuthorityDatabase,
         databaseUrl,
+        entitlements: keyAuthorityEntitlements.service,
         secret,
         baseURL: "http://localhost:3000",
         policy: {
@@ -210,6 +213,7 @@ describe("production Hub cold start", () => {
       assert.equal(response.status, 404);
     } finally {
       await keyAuthority?.close();
+      await keyAuthorityEntitlements?.close();
       await keyAuthorityDatabase?.close();
       await stopProductionRuntime();
       for (const [name, value] of previous) restoreEnvironment(name, value);

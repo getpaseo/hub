@@ -6,6 +6,7 @@ import {
   EntitlementDenied,
   effectiveEntitlements,
   hashTemplate,
+  normalizeStoredEntitlements,
   UNLIMITED_TEMPLATE,
 } from "./catalog.js";
 import { EntitlementsService, type EntitlementCounters } from "./service.js";
@@ -274,5 +275,27 @@ describe("effectiveEntitlements", () => {
   it("falls back to granted when no override is set", () => {
     const effective = effectiveEntitlements(UNLIMITED_TEMPLATE, {});
     assert.deepEqual(effective, UNLIMITED_TEMPLATE);
+  });
+});
+
+describe("normalizeStoredEntitlements", () => {
+  // Guards the versioned upgrade boundary: a document written before `meters` existed (the
+  // shape migration 0025 backfilled) must still read. If a future required field is added to
+  // the catalog without a default here, this test fails rather than the bug reaching a read.
+  it("defaults meters to unlimited for a pre-meters granted document", () => {
+    const normalized = normalizeStoredEntitlements({
+      seats: { max: null },
+      canInviteMembers: true,
+    });
+    assert.deepEqual(normalized, UNLIMITED_TEMPLATE);
+  });
+
+  it("keeps a fully current document unchanged", () => {
+    const current = {
+      seats: { max: 3 },
+      canInviteMembers: false,
+      meters: { "executions.monthly": { limit: 10 } },
+    };
+    assert.deepEqual(normalizeStoredEntitlements(current), current);
   });
 });

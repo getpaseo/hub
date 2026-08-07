@@ -13,6 +13,7 @@ import {
   type ActiveAccountState,
 } from "./organization-contract.js";
 import { createAuthServer, type AuthServer } from "./server.js";
+import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
 
 type ActiveState = ActiveAccountState;
 
@@ -318,6 +319,7 @@ class PaseoAccounts {
   private constructor(
     private readonly url: string,
     private readonly database: Database,
+    private readonly entitlements: ComposedEntitlements,
     private readonly auth: AuthServer,
   ) {
     this.resources = new OrganizationResources(database);
@@ -326,12 +328,14 @@ class PaseoAccounts {
   static async start(postgres: StartedPostgreSqlContainer): Promise<PaseoAccounts> {
     const url = isolatedDatabaseUrl(postgres);
     const database = await createDatabase(url);
+    const entitlements = composeEntitlements(database, url);
     return new PaseoAccounts(
       url,
       database,
+      entitlements,
       createAuthServer({
-        database,
         databaseUrl: url,
+        entitlements: entitlements.service,
         secret: "phase-one-auth-secret-at-least-32-characters",
         baseURL: "http://localhost:3000",
         policy: { registrationMode: "open", organizationCreation: "open", bootstrap: undefined },
@@ -389,7 +393,7 @@ class PaseoAccounts {
   }
 
   async capSeats(organizationId: string, max: number, reason: string): Promise<void> {
-    await this.auth.entitlements.override(organizationId, { seats: { max } }, null, reason);
+    await this.entitlements.service.override(organizationId, { seats: { max } }, null, reason);
   }
 
   async removeMembership(email: string, organizationId: string): Promise<void> {
@@ -562,6 +566,7 @@ class PaseoAccounts {
 
   async stop(): Promise<void> {
     await this.auth.close();
+    await this.entitlements.close();
     await this.database.close();
   }
 

@@ -4,7 +4,6 @@ import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import { EntitlementsService } from "../../entitlements/service.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
@@ -522,9 +521,6 @@ class RegistrationAuth implements AuthServer {
   rejectCookieMutation(): Response | undefined {
     return undefined;
   }
-  entitlements = new EntitlementsService(createMemoryDatabase(), {
-    seats: () => Promise.resolve(0),
-  });
   close(): Promise<void> {
     return Promise.resolve();
   }

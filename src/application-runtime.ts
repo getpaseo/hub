@@ -19,6 +19,8 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 export interface ApplicationCompositionOptions {
   database: Database | null;
   auth: AuthServer | null;
+  /** The composition root's single EntitlementsService; present whenever a database is. */
+  entitlements: EntitlementsService | null;
   publicApi: PublicApiComposition;
   registrations?: readonly ProviderRegistration[];
   publicBaseUrl?: string;
@@ -75,7 +77,7 @@ export async function createApplicationRuntime(
 
   const application = createHubApplication({
     database: options.database,
-    entitlements: entitlementsFor(options.auth),
+    entitlements: options.entitlements,
     providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
     integrations: [...integrations.values()],
     attachmentResolvers: Object.fromEntries(
@@ -124,9 +126,9 @@ export async function createApplicationRuntime(
         ? null
         : new ProjectDashboard(options.database, options.auth, githubConfigurations[0]),
     entitlementsDashboard:
-      options.database === null || options.auth === null
+      options.database === null || options.auth === null || options.entitlements === null
         ? null
-        : new EntitlementsDashboard(options.database, options.auth, options.auth.entitlements),
+        : new EntitlementsDashboard(options.database, options.auth, options.entitlements),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
       if (options.database === null) {
@@ -219,8 +221,4 @@ export async function createApplicationRuntime(
       await options.close();
     },
   };
-}
-
-function entitlementsFor(auth: AuthServer | null): EntitlementsService | null {
-  return auth === null ? null : auth.entitlements;
 }

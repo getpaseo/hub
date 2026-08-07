@@ -228,6 +228,16 @@ async function prepareDatabase(
     `insert into organization (id, name, slug)
      values ('phase-zero', 'Phase Zero', 'phase-zero')`,
   );
+  // A faithful legacy organization: it predates the meters field, so its granted document has
+  // the exact shape migration 0025 backfilled. Enforcement reads it on every provider event
+  // through the versioned normalization boundary, so the built server exercises that upgrade
+  // path end to end — without a row here, metering would throw and manual runs would 500.
+  await client.query(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ('phase-zero', '{"seats":{"max":null},"canInviteMembers":true}'::jsonb,
+             '{}'::jsonb, null, null, now(), now())`,
+  );
   await client.query(
     `insert into "user" (id, name, email, email_verified)
      values ('phase-zero-user', 'Phase Zero', 'phase-zero@example.test', true)`,

@@ -31,6 +31,36 @@ export const entitlementsSchema = z
 
 export type Entitlements = z.infer<typeof entitlementsSchema>;
 
+/**
+ * Stored entitlement documents can predate any field the catalog added later: `meters`
+ * landed after `seats`/`canInviteMembers`, and no migration upgraded the `granted` jsonb or
+ * the audit snapshots written before it. Every read parses those documents, so a strict
+ * parse throws for every pre-meters organization.
+ *
+ * This is the single versioned upgrade boundary. It parses leniently, fills the default a
+ * later schema version introduced, then commits to the strict shape. When you add a required
+ * field to `entitlementsSchema`, add its default here — every historical document keeps
+ * reading, which is what stops the missing-backfill class of bug (shipped twice) from
+ * recurring. `entitlementsSchema` stays the one authority on the current shape; this only
+ * decides how an older shape maps onto it.
+ */
+const storedEntitlementsSchema = z.object({
+  seats: z.object({ max: z.number().int().positive().nullable() }),
+  canInviteMembers: z.boolean(),
+  meters: z
+    .object({
+      "executions.monthly": z
+        .object({ limit: z.number().int().positive().nullable() })
+        .default({ limit: null }),
+    })
+    .default({ "executions.monthly": { limit: null } }),
+});
+
+/** Upgrade a stored entitlements document to the current strict shape. */
+export function normalizeStoredEntitlements(raw: unknown): Entitlements {
+  return entitlementsSchema.parse(storedEntitlementsSchema.parse(raw));
+}
+
 /** A template is entitlements data prior to being stamped onto an organization. */
 export type EntitlementTemplate = Entitlements;
 

@@ -12,6 +12,7 @@ import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
+import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
 import { createSlackRegistration } from "./providers/slack/index.js";
@@ -42,16 +43,14 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const config = loadRuntimeConfig();
   const identity = readHubIdentity();
   const database = await createDatabaseHandle(config.databaseUrl);
-  const auth =
-    database === null
-      ? null
-      : createProductionAuthServer(
-          database,
-          config.databaseUrl,
-          config.authPolicy,
-          identity,
-          config.trustedClientIpHeader,
-        );
+  const entitlements = composeEntitlements(database, config.databaseUrl);
+  const auth = createProductionAuthServer(
+    entitlements,
+    config.databaseUrl,
+    config.authPolicy,
+    identity,
+    config.trustedClientIpHeader,
+  );
   if (config.authPolicy.bootstrap !== undefined && auth === null) {
     throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
   }
@@ -70,6 +69,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   return createApplicationRuntime({
     database,
     auth,
+    entitlements: entitlements.service,
     publicApi:
       auth?.apiKeys === undefined
         ? { status: "unavailable" }
@@ -79,13 +79,14 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),
     async close() {
       await auth?.close();
+      await entitlements.close();
       await database?.close();
     },
   });
 }
 
 function createProductionAuthServer(
-  database: Database,
+  entitlements: ComposedEntitlements,
   databaseUrl: string,
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
@@ -96,8 +97,8 @@ function createProductionAuthServer(
     return null;
   }
   return createAuthServer({
-    database,
     databaseUrl,
+    entitlements: entitlements.service,
     secret: identity.authSecret,
     baseURL: identity.appUrl,
     policy: authPolicy,

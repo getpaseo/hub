@@ -38,6 +38,58 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
     return organizationId;
   }
 
+  // The exact document shapes migration 0025 wrote: `granted` and the audit `after` snapshot
+  // predate the `meters` field slice 3 added. A strict read would throw for every such row.
+  const PRE_METERS_GRANTED = '{"seats":{"max":null},"canInviteMembers":true}';
+  const PRE_METERS_SNAPSHOT =
+    '{"granted":{"seats":{"max":null},"canInviteMembers":true},"overrides":{}}';
+  const BACKFILL_PLAN_VERSION = "2753dc123b7b4fd0d9ac36dbc00f6e676737fbf6fdcc19e2b79ff930dab6f51d";
+
+  async function seedPreMetersOrganization(): Promise<string> {
+    const organizationId = await seedOrganization();
+    const client = new Client({ connectionString: postgres.getConnectionUri() });
+    await client.connect();
+    try {
+      await client.query(
+        `insert into organization_entitlements
+           (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+         values ($1, $2::jsonb, '{}'::jsonb, null, $3, now(), now())`,
+        [organizationId, PRE_METERS_GRANTED, BACKFILL_PLAN_VERSION],
+      );
+      await client.query(
+        `insert into entitlement_changes
+           (organization_id, actor, source, before, after, reason)
+         values ($1, null, 'provisioning', null, $2::jsonb, $3)`,
+        [organizationId, PRE_METERS_SNAPSHOT, "Backfilled unlimited entitlements."],
+      );
+    } finally {
+      await client.end();
+    }
+    return organizationId;
+  }
+
+  it("read() upgrades a granted document written before the meters field existed", async () => {
+    const organizationId = await seedPreMetersOrganization();
+    const service = new EntitlementsService(database, { seats: async () => 0 });
+
+    const record = await service.read(organizationId);
+    assert.deepEqual(record.granted.meters, { "executions.monthly": { limit: null } });
+    assert.deepEqual(record.effective.meters, { "executions.monthly": { limit: null } });
+    // The meter still enforces once it is read, proving the upgraded shape is usable, not just
+    // parseable: consuming against the unlimited default succeeds.
+    await service.consume(organizationId, "executions.monthly", 1);
+  });
+
+  it("history() upgrades audit snapshots written before the meters field existed", async () => {
+    const organizationId = await seedPreMetersOrganization();
+    const service = new EntitlementsService(database, { seats: async () => 0 });
+
+    const history = await service.history(organizationId, 10);
+    assert.equal(history.length, 1);
+    assert.equal(history[0]?.source, "provisioning");
+    assert.deepEqual(history[0]?.effective.meters, { "executions.monthly": { limit: null } });
+  });
+
   it("lets exactly the limit succeed under concurrent racing consumers, never over", async () => {
     const organizationId = await seedOrganization();
     const service = new EntitlementsService(database, { seats: async () => 0 });

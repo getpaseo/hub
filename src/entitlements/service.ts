@@ -10,6 +10,7 @@ import {
   mergeOverrides,
   meterLimit,
   meterPeriodStart,
+  normalizeStoredEntitlements,
   type CapKey,
   type EntitlementOverrides,
   type EntitlementPatch,
@@ -79,7 +80,7 @@ export class EntitlementsService {
     if (row === undefined) {
       throw new Error(`organization has no entitlements record: ${organizationId}`);
     }
-    const granted = entitlementsSchema.parse(row.granted);
+    const granted = normalizeStoredEntitlements(row.granted);
     const overrides = entitlementOverridesSchema.parse(row.overrides);
     return {
       organizationId: row.organizationId,
@@ -176,7 +177,7 @@ export class EntitlementsService {
   async history(organizationId: string, limit: number): Promise<EntitlementChange[]> {
     const changes = await this.database.listEntitlementChanges(organizationId, limit);
     return changes.map((change) => {
-      const after = auditSnapshotSchema.parse(change.after);
+      const after = normalizeAuditSnapshot(change.after);
       return {
         id: change.id,
         actor: change.actor,
@@ -191,7 +192,20 @@ export class EntitlementsService {
   }
 }
 
-/** The `{ granted, overrides }` snapshot every audit row stores as its before/after. */
-const auditSnapshotSchema = z
-  .object({ granted: entitlementsSchema, overrides: entitlementOverridesSchema })
-  .strict();
+/**
+ * The `{ granted, overrides }` snapshot every audit row stores as its before/after. `granted`
+ * passes through the same versioned upgrade boundary as a live read, so snapshots written
+ * before `meters` existed still resolve.
+ */
+const auditSnapshotSchema = z.object({ granted: z.unknown(), overrides: z.unknown() });
+
+function normalizeAuditSnapshot(raw: unknown): {
+  granted: Entitlements;
+  overrides: EntitlementOverrides;
+} {
+  const snapshot = auditSnapshotSchema.parse(raw);
+  return {
+    granted: normalizeStoredEntitlements(snapshot.granted),
+    overrides: entitlementOverridesSchema.parse(snapshot.overrides ?? {}),
+  };
+}

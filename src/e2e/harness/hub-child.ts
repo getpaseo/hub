@@ -12,6 +12,7 @@ import {
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createAuthServer } from "../../auth/server.js";
+import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
@@ -65,9 +66,10 @@ async function main(): Promise<void> {
       await appendFile(outputFile, `${JSON.stringify(output)}\n`);
     },
   });
+  const entitlements = composeEntitlements(database, databaseUrl);
   const auth = createAuthServer({
-    database,
     databaseUrl,
+    entitlements: entitlements.service,
     baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
     secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     policy: readInstanceAuthPolicy(),
@@ -135,7 +137,7 @@ async function main(): Promise<void> {
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,
-    entitlements: auth.entitlements,
+    entitlements: entitlements.service,
     publicApi:
       auth.apiKeys === undefined
         ? { status: "unavailable" }
@@ -215,6 +217,7 @@ async function main(): Promise<void> {
     async stop() {
       await hub?.stop();
       await auth.close();
+      await entitlements.close();
     },
   }));
   const server = createFetchServer((request) => start.default.fetch(request));
@@ -230,6 +233,7 @@ async function main(): Promise<void> {
     );
     await attempt(() => hub?.stop(), failures);
     await attempt(() => auth.close(), failures);
+    await attempt(() => entitlements.close(), failures);
     if ("closeIdleConnections" in server) server.closeIdleConnections();
     if ("closeAllConnections" in server) server.closeAllConnections();
     await attempt(() => listenerClosed, failures);

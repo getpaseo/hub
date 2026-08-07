@@ -6,6 +6,7 @@ import { z } from "zod";
 import { createDatabase, createPostgresPool } from "../db/pg.js";
 import { bootstrapInstance, InstanceBootstrapError } from "./bootstrap.js";
 import { createAuthServer, type AuthServer } from "./server.js";
+import { composeEntitlements } from "./entitlements.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 
 const policy: InstanceAuthPolicy = {
@@ -131,9 +132,10 @@ describe("instance bootstrap and first-login boundary", () => {
     await bootstrapInstance(pool, policy);
     await pool.end();
     const database = await createDatabase(isolated);
+    const entitlements = composeEntitlements(database, isolated);
     const auth = createAuthServer({
-      database,
       databaseUrl: isolated,
+      entitlements: entitlements.service,
       secret: "bootstrap-gate-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
       policy,
@@ -170,6 +172,7 @@ describe("instance bootstrap and first-login boundary", () => {
     );
     assert.equal(z.object({ status: z.string() }).parse(await active.json()).status, "active");
     await auth.close();
+    await entitlements.close();
     await database.close();
   }, 120_000);
 });
