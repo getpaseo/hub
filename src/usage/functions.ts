@@ -3,7 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { logger } from "../logger.js";
-import { TenantRouteNotFoundError } from "../projects/access.js";
+import { tenantRouteNotFoundMessage } from "../projects/access.js";
 import { getApplication } from "../server/runtime.js";
 import type { UsageDashboard } from "./dashboard.js";
 
@@ -20,11 +20,10 @@ export const usageSnapshot = createServerFn({ method: "GET" })
       return respondOk(await dashboard.snapshot(getRequest(), data));
     } catch (error) {
       logger.error({ err: error, data }, "usage snapshot read failed");
-      return respondError({
-        message:
-          error instanceof TenantRouteNotFoundError
-            ? "Organization unavailable."
-            : "We couldn't load this organization's usage.",
-      });
+      return respondError({ message: usageSnapshotErrorMessage(error) });
     }
   });
+
+export function usageSnapshotErrorMessage(error: unknown): string {
+  return tenantRouteNotFoundMessage(error) ?? "We couldn't load this organization's usage.";
+}

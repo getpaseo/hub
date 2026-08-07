@@ -3,9 +3,8 @@ import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondError, respondOk, type Result } from "../../contract/respond.js";
 import { logger } from "../../logger.js";
-import { TenantRouteNotFoundError } from "../../projects/access.js";
+import { tenantRouteNotFoundMessage } from "../../projects/access.js";
 import {
-  BillingForbiddenError,
   handleBillingCheckout,
   handleBillingOverview,
   handleBillingPortal,
@@ -38,12 +37,7 @@ export const billingOverview = createServerFn({ method: "GET" })
       return respondOk(await handleBillingOverview(getRequest(), data.organizationSlug));
     } catch (error) {
       logger.error({ err: error, data }, "billing overview read failed");
-      return respondError({
-        message:
-          error instanceof TenantRouteNotFoundError
-            ? "Organization unavailable."
-            : "We couldn't load billing for this organization.",
-      });
+      return respondError({ message: billingOverviewErrorMessage(error) });
     }
   });
 
@@ -69,8 +63,18 @@ export const billingPortal = createServerFn({ method: "POST" })
     }
   });
 
-function billingActionErrorMessage(error: unknown): string {
-  if (error instanceof BillingForbiddenError) {
+export function billingOverviewErrorMessage(error: unknown): string {
+  return tenantRouteNotFoundMessage(error) ?? "We couldn't load billing for this organization.";
+}
+
+/**
+ * `handleBillingCheckout`/`handleBillingPortal` live in the composition root, a different
+ * bundler chunk than this handler, so a thrown `BillingForbiddenError` can carry a different
+ * class identity here — `instanceof` is unreliable across that boundary. Map by the stable
+ * `name` instead, the way the operator path does.
+ */
+export function billingActionErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === "BillingForbiddenError") {
     return "Only an organization owner or admin can change billing.";
   }
   return "We couldn't reach billing. Please try again.";

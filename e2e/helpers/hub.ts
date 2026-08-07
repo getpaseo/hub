@@ -3384,6 +3384,10 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
     ).toBeVisible();
+    // The heading renders immediately, before the organization list has loaded — wait for the
+    // real picker (a combobox) rather than its loading skeleton, so this fails if the list never
+    // arrives instead of racing ahead of it.
+    await expect(this.page.getByRole("combobox", { name: "Manage organization" })).toBeVisible();
   }
 
   private limitRow(table: Locator, resource: string): Locator {

@@ -43,3 +43,16 @@ export class TenantRouteNotFoundError extends Error {
     this.name = "TenantRouteNotFoundError";
   }
 }
+
+/**
+ * `createServerFn` handlers live in a different bundler chunk than this module, so a thrown
+ * `TenantRouteNotFoundError` can carry a different class identity by the time a handler's catch
+ * block sees it — `instanceof` is unreliable across that boundary. Every caller that wants a
+ * friendly message for this error maps by the stable `name` here instead, once, rather than
+ * repeating the same fragile `instanceof` check at each call site.
+ */
+export function tenantRouteNotFoundMessage(error: unknown): string | undefined {
+  return error instanceof Error && error.name === "TenantRouteNotFoundError"
+    ? "Organization unavailable."
+    : undefined;
+}
