@@ -373,7 +373,7 @@ describe("workflow compiler", () => {
             },
           ],
         }),
-      /manual configurations cannot include repository files/iu,
+      /compiled without a prompt partial bundle/iu,
     );
   });
 

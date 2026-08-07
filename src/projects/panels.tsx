@@ -14,7 +14,7 @@ import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { cn } from "../lib/utils.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
 import {
@@ -26,7 +26,6 @@ import {
 } from "../components/ui/dialog.js";
 import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import {
   connectionStatus,
@@ -36,24 +35,26 @@ import {
   type ConnectionStatus,
 } from "../connections/functions.js";
 import { useRouteTenant } from "./context.js";
-import type { ManualConfigurationSaveResult, ProjectDashboard } from "./dashboard.js";
-import { RepositoryCombobox, type ComboboxRepository } from "./repository-combobox.js";
+import type { ProjectDashboard } from "./dashboard.js";
+import {
+  CommandError,
+  formatDate,
+  invalidateOrganization,
+  invalidateScope,
+  projectScope,
+  queryState,
+  useOrganizationSnapshot,
+  useProjectCommand,
+  useProjectSnapshot,
+  type OrganizationSnapshot,
+  type ProjectSnapshot,
+} from "./panel-state.js";
 import {
   archiveProject,
   activityRunSnapshot,
-  availableGitHubRepositories,
   createProject,
-  organizationSnapshot,
-  projectSnapshot,
-  saveManualConfiguration,
-  switchConfigurationToManual,
-  syncProjectConfiguration,
   updateProjectSlug,
-  useGitHubConfiguration,
 } from "./functions.js";
-
-type OrganizationSnapshot = Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>;
-type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>;
 export function ProjectsPanel() {
   const tenant = useRouteTenant();
   const queryClient = useQueryClient();
@@ -419,323 +420,6 @@ export function ProjectOverviewPanel() {
   );
 }
 
-export function ProjectConfigurationPanel() {
-  const tenant = useRouteTenant();
-  if (tenant.project === null) throw new Error("configuration route has no project");
-  return <ProjectConfigurationPanelState key={tenant.project.id} />;
-}
-
-function ProjectConfigurationPanelState() {
-  const tenant = useRouteTenant();
-  const queryClient = useQueryClient();
-  const scope = projectScope(tenant);
-  const snapshot = useProjectSnapshot();
-  const sync = useProjectCommand(syncProjectConfiguration, queryClient, scope);
-  const manual = useProjectCommand(switchConfigurationToManual, queryClient, scope);
-  const save = useProjectCommand<
-    Parameters<typeof saveManualConfiguration>[0],
-    ManualConfigurationSaveResult
-  >(saveManualConfiguration, queryClient, scope);
-  const configure = useProjectCommand(useGitHubConfiguration, queryClient, scope);
-  const loadRepositories = useServerFn(availableGitHubRepositories);
-  const repositories = useQuery({
-    queryKey: ["github-repositories", tenant.organization.id, tenant.project?.id],
-    queryFn: () => loadRepositories({ data: scope }),
-  });
-  const [sourceMode, setSourceMode] = useState<"manual" | "github" | null>(null);
-  const [stagedRepository, setStagedRepository] = useState<ComboboxRepository | null>(null);
-  if (!snapshot.ok) return snapshot.element;
-  const data = snapshot.data;
-  const configuration = data.configuration;
-  const mode = sourceMode ?? configuration.authority;
-  const selectMode = (next: "manual" | "github") => {
-    setSourceMode(next);
-    setStagedRepository(null);
-    if (next === "manual" && configuration.authority === "github") {
-      manual.mutate({ data: scope });
-    }
-  };
-  const submitManual = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    save.mutate({
-      data: { ...scope, rawYaml: formString(new FormData(event.currentTarget), "rawYaml") },
-    });
-  };
-  const availableRepositories = repositories.data?.status === "ok" ? repositories.data.data : [];
-  return (
-    <>
-      <PageHeader
-        title="Configuration"
-        description={`Setup and source for ${data.project.name}.`}
-      />
-      <CommandError mutations={[sync, manual, save, configure]} />
-      <ManualConfigurationResult result={save.data} />
-      <Section title="Active revision">
-        <div className="rounded-lg border bg-card p-5">
-          {configuration.activeRevision === null ? (
-            <p role="status">No active configuration.</p>
-          ) : (
-            <div className="grid gap-2">
-              <p className="font-medium">Revision {configuration.activeRevision.version}</p>
-              <p className="text-sm text-muted-foreground">
-                {configuration.activeRevision.sourceKind === "github" ? "GitHub-managed" : "Manual"}{" "}
-                · {formatDate(configuration.activeRevision.createdAt)}
-              </p>
-              {configuration.activeRevision.rawYaml === null ? null : (
-                <pre className="max-h-72 overflow-auto rounded-md bg-muted p-4 text-xs">
-                  {configuration.activeRevision.rawYaml}
-                </pre>
-              )}
-            </div>
-          )}
-        </div>
-      </Section>
-      <ConfigurationSourceSection
-        configuration={configuration}
-        manageResources={data.capabilities.manageResources}
-        mode={mode}
-        onSelectMode={selectMode}
-        switchToManualPending={manual.isPending}
-        repositories={availableRepositories}
-        repositoriesLoading={repositories.isPending}
-        stagedRepository={stagedRepository}
-        onStageRepository={setStagedRepository}
-        onSaveRepository={() => {
-          if (stagedRepository === null) return;
-          configure.mutate(
-            {
-              data: {
-                ...scope,
-                connectionId: stagedRepository.connectionId,
-                repositoryId: stagedRepository.repositoryId,
-              },
-            },
-            { onSuccess: () => setStagedRepository(null) },
-          );
-        }}
-        saveRepositoryPending={configure.isPending}
-        onSync={() => sync.mutate({ data: scope })}
-        syncPending={sync.isPending}
-        onSubmitManual={submitManual}
-        saveManualPending={save.isPending}
-      />
-    </>
-  );
-}
-
-function ManualConfigurationResult({
-  result,
-}: {
-  result: Result<ManualConfigurationSaveResult> | undefined;
-}) {
-  if (result?.status !== "ok") return null;
-  if (result.data.outcome === "activated") {
-    return (
-      <Alert role="status" className="mb-5">
-        <AlertDescription>
-          Configuration saved and activated as Revision {result.data.revision.version}.
-        </AlertDescription>
-      </Alert>
-    );
-  }
-  return (
-    <Alert variant="destructive" className="mb-5">
-      <AlertTitle>Configuration couldn't be activated</AlertTitle>
-      <AlertDescription>
-        <p>Correct the YAML and try again. The active revision was not changed.</p>
-        <ul className="list-disc pl-5">
-          {result.data.errors.map((error) => (
-            <li key={error}>{error}</li>
-          ))}
-        </ul>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
-function ConfigurationSourceSection({
-  configuration,
-  manageResources,
-  mode,
-  onSelectMode,
-  switchToManualPending,
-  repositories,
-  repositoriesLoading,
-  stagedRepository,
-  onStageRepository,
-  onSaveRepository,
-  saveRepositoryPending,
-  onSync,
-  syncPending,
-  onSubmitManual,
-  saveManualPending,
-}: {
-  configuration: ProjectSnapshot["configuration"];
-  manageResources: boolean;
-  mode: "manual" | "github";
-  onSelectMode: (mode: "manual" | "github") => void;
-  switchToManualPending: boolean;
-  repositories: ComboboxRepository[];
-  repositoriesLoading: boolean;
-  stagedRepository: ComboboxRepository | null;
-  onStageRepository: (repository: ComboboxRepository) => void;
-  onSaveRepository: () => void;
-  saveRepositoryPending: boolean;
-  onSync: () => void;
-  syncPending: boolean;
-  onSubmitManual: (event: FormEvent<HTMLFormElement>) => void;
-  saveManualPending: boolean;
-}) {
-  const currentRepository: ComboboxRepository | null =
-    configuration.sourceState.kind === "github"
-      ? {
-          connectionId: configuration.sourceState.githubConnectionId,
-          repositoryId: configuration.sourceState.githubRepositoryId,
-          fullName: configuration.sourceState.githubRepositoryFullName,
-          defaultBranch: configuration.sourceState.githubDefaultBranch,
-        }
-      : null;
-
-  if (!manageResources) {
-    return (
-      <Section title="Configuration source">
-        <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
-          {currentRepository === null ? "Manual" : `GitHub · ${currentRepository.fullName}`}
-        </p>
-      </Section>
-    );
-  }
-
-  const manualUnavailable =
-    configuration.authority === "github" && configuration.activeRevision === null;
-
-  return (
-    <Section
-      title="Configuration source"
-      description="Where this project's configuration comes from."
-    >
-      <div
-        role="radiogroup"
-        aria-label="Configuration source mode"
-        className="inline-flex w-fit gap-1 rounded-md border bg-muted p-1"
-      >
-        <SourceModeButton
-          active={mode === "manual"}
-          disabled={switchToManualPending || manualUnavailable}
-          title={
-            manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined
-          }
-          onClick={() => onSelectMode("manual")}
-        >
-          Manual
-        </SourceModeButton>
-        <SourceModeButton
-          active={mode === "github"}
-          disabled={switchToManualPending}
-          onClick={() => onSelectMode("github")}
-        >
-          <ProviderGlyph provider="github" />
-          GitHub
-        </SourceModeButton>
-      </div>
-      {mode === "github" ? (
-        <div className="grid gap-3 rounded-lg border bg-card p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <RepositoryCombobox
-              repositories={repositories}
-              loading={repositoriesLoading}
-              selected={stagedRepository ?? currentRepository}
-              placeholder="Select repository…"
-              disabled={saveRepositoryPending}
-              onSelect={onStageRepository}
-            />
-            <Button
-              disabled={stagedRepository === null || saveRepositoryPending}
-              aria-busy={saveRepositoryPending}
-              onClick={onSaveRepository}
-            >
-              Save
-            </Button>
-            {configuration.authority === "github" ? (
-              <Button
-                variant="outline"
-                disabled={syncPending}
-                aria-busy={syncPending}
-                onClick={onSync}
-              >
-                {syncPending ? "Syncing…" : "Sync now"}
-              </Button>
-            ) : null}
-          </div>
-          {configuration.authority === "github" ? (
-            <p role="status" className="text-sm text-muted-foreground">
-              {configuration.lastSyncAttempt === null
-                ? "No synchronization attempt yet."
-                : `${syncOutcome(configuration.lastSyncAttempt.outcome)} at ${formatDate(configuration.lastSyncAttempt.createdAt)}${configuration.lastSyncAttempt.commitSha === null ? "" : ` · ${configuration.lastSyncAttempt.commitSha.slice(0, 12)}`}`}
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <form aria-label="Manual configuration" className="grid gap-3" onSubmit={onSubmitManual}>
-          <label className="text-sm font-medium" htmlFor="manual-configuration">
-            Configuration YAML
-          </label>
-          <textarea
-            id="manual-configuration"
-            name="rawYaml"
-            className="min-h-72 rounded-md border bg-background p-3 font-mono text-xs"
-            defaultValue={
-              configuration.activeRevision?.rawYaml ?? "environments: []\ntriggers: []\n"
-            }
-          />
-          <div>
-            <Button
-              type="submit"
-              disabled={saveManualPending || switchToManualPending}
-              aria-busy={saveManualPending || switchToManualPending}
-            >
-              Save and activate
-            </Button>
-          </div>
-        </form>
-      )}
-    </Section>
-  );
-}
-
-function SourceModeButton({
-  active,
-  disabled,
-  title,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  title?: string | undefined;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={active}
-      disabled={disabled}
-      title={title}
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
-        active
-          ? "bg-background text-foreground shadow-xs"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 export function ProjectActivityPanel() {
   const tenant = useRouteTenant();
   const snapshot = useProjectSnapshot();
@@ -930,118 +614,6 @@ export function ProjectGeneralSettingsPanel() {
   );
 }
 
-function useOrganizationSnapshot() {
-  const tenant = useRouteTenant();
-  const load = useServerFn(organizationSnapshot);
-  const query = useQuery({
-    queryKey: ["organization", tenant.account.id, tenant.organization.id],
-    queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
-  });
-  return queryState<OrganizationSnapshot>(query, "Organization unavailable");
-}
-
-function useProjectSnapshot() {
-  const tenant = useRouteTenant();
-  const load = useServerFn(projectSnapshot);
-  const scope = projectScope(tenant);
-  const query = useQuery({
-    queryKey: ["project", tenant.account.id, tenant.organization.id, tenant.project?.id],
-    queryFn: () => load({ data: scope }),
-  });
-  return queryState<ProjectSnapshot>(query, "Project unavailable");
-}
-
-function queryState<T>(
-  query: { isPending: boolean; isError: boolean; data: Result<T> | undefined },
-  title: string,
-): { ok: true; data: T } | { ok: false; element: ReactNode } {
-  if (query.isPending)
-    return {
-      ok: false,
-      element: (
-        <section
-          aria-label={`Loading ${title.toLowerCase()}`}
-          aria-busy="true"
-          className="grid gap-5"
-        >
-          <Skeleton className="h-12 w-64" />
-          <Skeleton className="h-72 w-full" />
-        </section>
-      ),
-    };
-  if (query.isError || query.data?.status !== "ok")
-    return {
-      ok: false,
-      element: (
-        <Alert variant="destructive">
-          <AlertTitle>{title}</AlertTitle>
-          <AlertDescription>
-            {query.data?.status === "error" ? query.data.error.message : `${title}.`}
-          </AlertDescription>
-        </Alert>
-      ),
-    };
-  return { ok: true, data: query.data.data };
-}
-
-function useProjectCommand<TInput, TOutput = { state: "complete" }>(
-  command: (input: TInput) => Promise<Result<TOutput>>,
-  queryClient: ReturnType<typeof useQueryClient>,
-  scope: { organizationSlug: string; projectSlug?: string },
-) {
-  return useMutation({
-    mutationFn: useServerFn(command as never) as unknown as (
-      input: TInput,
-    ) => Promise<Result<TOutput>>,
-    onSuccess: async (result) => {
-      if (result.status === "ok") await invalidateScope(queryClient, scope);
-    },
-  });
-}
-
-function CommandError({
-  mutations,
-}: {
-  mutations: Array<{ data: Result<unknown> | undefined; isError: boolean }>;
-}) {
-  const failed = mutations.find(
-    (mutation) => mutation.isError || mutation.data?.status === "error",
-  );
-  if (failed === undefined) return null;
-  return (
-    <Alert variant="destructive" className="mb-5">
-      <AlertDescription>
-        {failed.data?.status === "error"
-          ? failed.data.error.message
-          : "We couldn't complete that action."}
-      </AlertDescription>
-    </Alert>
-  );
-}
-
-async function invalidateScope(
-  queryClient: ReturnType<typeof useQueryClient>,
-  scope: { organizationSlug: string; projectSlug?: string },
-) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["organization"] }),
-    queryClient.invalidateQueries({ queryKey: ["project"] }),
-    queryClient.invalidateQueries({ queryKey: ["tenant", scope.organizationSlug] }),
-  ]);
-}
-
-async function invalidateOrganization(
-  queryClient: ReturnType<typeof useQueryClient>,
-  organizationSlug: string,
-) {
-  await invalidateScope(queryClient, { organizationSlug });
-}
-
-function projectScope(tenant: ReturnType<typeof useRouteTenant>) {
-  if (tenant.project === null) throw new Error("project route has no project context");
-  return { organizationSlug: tenant.organization.slug, projectSlug: tenant.project.slug };
-}
-
 function SettingsPage({ title, children }: { title: string; children: ReactNode }) {
   const tenant = useRouteTenant();
   if (tenant.project === null) throw new Error("settings route has no project");
@@ -1212,22 +784,10 @@ function statusLabel(status: string): string {
   if (status === "requiresReauthorization") return "Reauthorization required";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
-function syncOutcome(outcome: string) {
-  if (outcome === "activated") return "Activated";
-  if (outcome === "invalid") return "Invalid revision; active revision preserved";
-  if (outcome === "superseded") return "Superseded push ignored";
-  return "Fetch failed; active revision preserved";
-}
 function formString(form: FormData, name: string) {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
 }
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(
-    new Date(value),
-  );
-}
-
 function LabeledInput({
   label,
   name,

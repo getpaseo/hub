@@ -15,6 +15,17 @@ export function configurationValidationErrors(error: z.ZodError): ConfigurationV
   };
 }
 
+/** Prompt partial bundle rejections, stored in the same shape as schema failures. */
+export function promptPartialValidationErrors(
+  issues: readonly { path: readonly (string | number)[]; message: string }[],
+): ConfigurationValidationErrors {
+  return {
+    formErrors: issues.map((issue) =>
+      issue.path.length === 0 ? issue.message : `${issue.path.join(".")}: ${issue.message}`,
+    ),
+  };
+}
+
 export function configurationValidationMessages(errors: unknown): string[] {
   const parsed = storedValidationErrorsSchema.safeParse(errors);
   if (!parsed.success) return ["Configuration validation failed."];

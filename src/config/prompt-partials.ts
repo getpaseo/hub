@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
+import {
+  MAX_PROMPT_PARTIAL_BUNDLE_BYTES,
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
+  MAX_PROMPT_PARTIAL_COUNT,
+  MAX_PROMPT_PARTIAL_PATH_LENGTH,
+  PROMPT_PARTIAL_ROOT,
+} from "./prompt-partial-limits.js";
 
-export const PROMPT_PARTIAL_ROOT = ".paseo/partials";
-export const MAX_PROMPT_PARTIAL_COUNT = 100;
-export const MAX_PROMPT_PARTIAL_PATH_LENGTH = 512;
-export const MAX_PROMPT_PARTIAL_CONTENT_BYTES = 1_000_000;
-export const MAX_PROMPT_PARTIAL_BUNDLE_BYTES = 5_000_000;
+export {
+  MAX_PROMPT_PARTIAL_BUNDLE_BYTES,
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
+  MAX_PROMPT_PARTIAL_COUNT,
+  MAX_PROMPT_PARTIAL_PATH_LENGTH,
+  PROMPT_PARTIAL_ROOT,
+};
 
 export interface ResolvedPromptPartial {
   path: string;
@@ -75,6 +84,15 @@ export function validateResolvedPromptPartialPath(value: string): string {
     throw new PromptPartialResolutionError(`resolved path is not canonical: ${value}`);
   }
   return validated;
+}
+
+/**
+ * The `include:` form of a stored partial path — the inverse of
+ * {@link validatePromptPartialPath}. Bundles and YAML name partials relative to
+ * {@link PROMPT_PARTIAL_ROOT}; only stored paths carry the root.
+ */
+export function promptPartialIncludePath(repositoryPath: string): string {
+  return validateResolvedPromptPartialPath(repositoryPath).slice(`${PROMPT_PARTIAL_ROOT}/`.length);
 }
 
 export function hashPromptPartialContent(content: string): string {

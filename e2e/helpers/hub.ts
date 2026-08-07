@@ -1500,6 +1500,11 @@ export class PaseoHub {
     );
   }
 
+  /** An enrolled daemon whose slug configurations can reference by name. */
+  async seedDaemonSlug(alias: string, slug: string): Promise<string> {
+    return this.seedDaemon(alias, slug);
+  }
+
   private async seedDaemon(alias: string, displayName: string): Promise<string> {
     const daemonId = randomUUID();
     const machineId = randomUUID();
