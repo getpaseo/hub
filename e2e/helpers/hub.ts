@@ -3200,6 +3200,7 @@ class HubUser {
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
     const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
+    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
@@ -3214,6 +3215,8 @@ class HubUser {
     await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(usage).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3243,6 +3246,7 @@ class HubUser {
     const connections = this.page.getByRole("link", { name: "Connections", exact: true });
     const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
+    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
@@ -3259,6 +3263,8 @@ class HubUser {
     await expect(apiKeys).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(team).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(usage).toBeFocused();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
