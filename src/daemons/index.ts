@@ -16,6 +16,7 @@ import type {
   DaemonCreateAgentOptions,
 } from "./protocol.js";
 import type { Logger } from "pino";
+import type { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 
 export type {
   DaemonAgentStreamEvent,
@@ -35,6 +36,7 @@ interface DaemonModuleTestOptions {
 
 export interface DaemonModuleOptions {
   database: Database;
+  executionCapabilities?: OutputExecutorRegistry;
   providers?: readonly TriggerProvider[];
   integrations?: readonly ProviderIntegrationRegistration[];
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
@@ -54,6 +56,9 @@ export function createDaemonModule(options: DaemonModuleOptions): DaemonModule {
     lifecycle: createDaemonDispatchLifecycle({
       database: options.database,
       connectionForDaemon: (daemonId) => options.connectionForDaemon(daemonId),
+      ...(options.executionCapabilities === undefined
+        ? {}
+        : { executionCapabilities: options.executionCapabilities }),
       providers: options.providers ?? [],
       integrations: options.integrations ?? [],
       ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),

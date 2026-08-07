@@ -28,7 +28,15 @@ describe("production Hub runtime", () => {
     assert.equal(run.status, 200);
     const execution = await hub.waitForPendingExecution();
     await hub.waitForRecoveredExecution(execution.id);
-    assert.equal(hub.createdAgentLaunch().prompt, "Deploy the requested service");
+    assert.equal(
+      hub.createdAgentLaunch().prompt,
+      [
+        "Deploy the requested service",
+        "",
+        "Hub capabilities available in this execution:",
+        "- hub.finalize: records the current agent execution as complete and returns its result to the workflow.",
+      ].join("\n"),
+    );
   });
 });
 
