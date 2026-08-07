@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 /**
- * The entitlement catalog: caps and flags checked against live state. Meters
- * (executions per month, ...) are a separate table — see the plan's data model.
+ * The entitlement catalog: caps and flags checked against live state, plus meter limits.
+ * Meter *usage* (executions consumed so far this period) lives in `organization_usage`,
+ * keyed by period — see the plan's data model. Only the limit lives here, so a meter
+ * limit is overridable by an admin exactly like a cap.
  */
 export const entitlementsSchema = z
   .object({
@@ -14,6 +16,16 @@ export const entitlementsSchema = z
       })
       .strict(),
     canInviteMembers: z.boolean(),
+    meters: z
+      .object({
+        "executions.monthly": z
+          .object({
+            /** null means unlimited. */
+            limit: z.number().int().positive().nullable(),
+          })
+          .strict(),
+      })
+      .strict(),
   })
   .strict();
 
@@ -31,6 +43,17 @@ export const entitlementOverridesSchema = z
       .strict()
       .partial(),
     canInviteMembers: z.boolean(),
+    meters: z
+      .object({
+        "executions.monthly": z
+          .object({
+            limit: z.number().int().positive().nullable(),
+          })
+          .strict()
+          .partial(),
+      })
+      .strict()
+      .partial(),
   })
   .strict()
   .partial();
@@ -43,9 +66,13 @@ export type EntitlementPatch = EntitlementOverrides;
 /** Caps carry a numeric limit checked against a live count by `requireHeadroom`. */
 export type CapKey = "seats";
 
+/** Meters carry a numeric limit checked against period usage by `consume`. */
+export type MeterKey = "executions.monthly";
+
 export const UNLIMITED_TEMPLATE: EntitlementTemplate = {
   seats: { max: null },
   canInviteMembers: true,
+  meters: { "executions.monthly": { limit: null } },
 };
 
 /** The effective limit for a cap, or null when the cap is unlimited. */
@@ -54,6 +81,22 @@ export function capLimit(effective: Entitlements, cap: CapKey): number | null {
     seats: effective.seats.max,
   };
   return limits[cap];
+}
+
+/** The effective limit for a meter, or null when the meter is unlimited. */
+export function meterLimit(effective: Entitlements, meter: MeterKey): number | null {
+  const limits: Record<MeterKey, number | null> = {
+    "executions.monthly": effective.meters["executions.monthly"].limit,
+  };
+  return limits[meter];
+}
+
+/**
+ * The UTC-monthly period a moment in time falls into, as the timestamp of its start.
+ * The single named function for period derivation — never inline this at call sites.
+ */
+export function meterPeriodStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
 /**
@@ -69,16 +112,27 @@ export function mergeOverrides(
     ...existing,
     ...patch,
     ...(patch.seats === undefined ? {} : { seats: { ...existing.seats, ...patch.seats } }),
+    ...(patch.meters === undefined
+      ? {}
+      : {
+          meters: {
+            "executions.monthly": {
+              ...existing.meters?.["executions.monthly"],
+              ...patch.meters["executions.monthly"],
+            },
+          },
+        }),
   });
 }
 
 /**
- * Thrown when a capped entitlement has no headroom left. Mapped to a machine-readable
- * HTTP payload once at each boundary — never caught and reshaped per call site.
+ * Thrown when a capped entitlement or metered usage has no headroom left. Mapped to a
+ * machine-readable HTTP payload once at each boundary — never caught and reshaped per
+ * call site.
  */
 export class EntitlementDenied extends Error {
   constructor(
-    readonly entitlement: CapKey,
+    readonly entitlement: CapKey | MeterKey,
     readonly limit: number,
     readonly current: number,
   ) {
@@ -95,6 +149,14 @@ export function effectiveEntitlements(
   return {
     seats: { max: overrides.seats?.max !== undefined ? overrides.seats.max : granted.seats.max },
     canInviteMembers: overrides.canInviteMembers ?? granted.canInviteMembers,
+    meters: {
+      "executions.monthly": {
+        limit:
+          overrides.meters?.["executions.monthly"]?.limit !== undefined
+            ? overrides.meters["executions.monthly"].limit
+            : granted.meters["executions.monthly"].limit,
+      },
+    },
   };
 }
 

@@ -40,6 +40,7 @@ export class EntitlementsDashboard {
     });
     const record = await this.entitlements.read(tenant.organization.id);
     const history = await this.entitlements.history(tenant.organization.id, HISTORY_LIMIT);
+    const usage = await this.entitlements.usage(tenant.organization.id, "executions.monthly");
     return {
       account: account.account,
       organization: tenant.organization,
@@ -47,6 +48,7 @@ export class EntitlementsDashboard {
       capabilities: capabilitiesFor(tenant.membership.role),
       entitlements: entitlementsView(record),
       history: history.map(historyView),
+      usage,
     };
   }
 

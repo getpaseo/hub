@@ -92,6 +92,8 @@ import type {
   OverrideOrganizationEntitlementsInput,
   EntitlementChangeRecord,
   EntitlementChangeSource,
+  OrganizationUsageRecord,
+  ConsumeOrganizationUsageInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2551,6 +2553,44 @@ class PgDatabase implements Database {
     return rows.rows.map(toEntitlementChangeRecord);
   }
 
+  async consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    // A single conditional upsert. On conflict, the accumulation guard (`where` on the
+    // update) is what makes concurrent consumers race-safe: Postgres serializes concurrent
+    // inserts targeting the same conflict key, so only one attempt "wins" the fresh insert
+    // and every other concurrent caller is forced through the guarded update branch. The
+    // `select ... where` guard on the insert branch rejects a single call whose amount
+    // alone would exceed the limit, without ever touching the table.
+    const rows = await query<OrganizationUsageRow>(
+      this.pool,
+      `insert into organization_usage (organization_id, meter, period_start, used)
+       select $1, $2, $3, $4::bigint
+       where $5::bigint is null or $4::bigint <= $5::bigint
+       on conflict (organization_id, meter, period_start) do update
+         set used = organization_usage.used + excluded.used
+       where $5::bigint is null or organization_usage.used + excluded.used <= $5::bigint
+       returning *`,
+      [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
+  }
+
+  async getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    const rows = await query<OrganizationUsageRow>(
+      this.pool,
+      `select * from organization_usage
+       where organization_id = $1 and meter = $2 and period_start = $3
+       limit 1`,
+      [organizationId, meter, periodStart],
+    );
+    return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -4086,6 +4126,22 @@ function toEntitlementChangeRecord(row: EntitlementChangeRow): EntitlementChange
     after: row.after,
     reason: row.reason,
     createdAt: row.created_at,
+  };
+}
+
+export interface OrganizationUsageRow extends QueryResultRow {
+  organization_id: string;
+  meter: string;
+  period_start: Date;
+  used: number | string;
+}
+
+function toOrganizationUsageRecord(row: OrganizationUsageRow): OrganizationUsageRecord {
+  return {
+    organizationId: row.organization_id,
+    meter: row.meter,
+    periodStart: row.period_start,
+    used: Number(row.used),
   };
 }
 

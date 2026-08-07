@@ -427,7 +427,7 @@ export class PaseoHub {
     deliveryKey: string;
     trigger?: string;
     apiKey?: string;
-  }): Promise<{ status: number; error?: string; reason?: string }> {
+  }): Promise<{ status: number; error?: string; reason?: string; workflowStatus?: string }> {
     const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
       headers: {
         ...(input.apiKey === undefined
@@ -444,13 +444,18 @@ export class PaseoHub {
       },
     });
     const body = z
-      .object({ error: z.string().optional(), reason: z.string().optional() })
+      .object({
+        error: z.string().optional(),
+        reason: z.string().optional(),
+        workflowStatus: z.string().optional(),
+      })
       .passthrough()
       .parse(await response.json());
     return {
       status: response.status(),
       ...(body.error === undefined ? {} : { error: body.error }),
       ...(body.reason === undefined ? {} : { reason: body.reason }),
+      ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
     };
   }
 
@@ -483,6 +488,21 @@ export class PaseoHub {
 
   async saveSeatOverride(alias: string, expectedSeats: number): Promise<void> {
     await this.requireUser(alias).saveSeatOverride(expectedSeats);
+  }
+
+  async openMeterOverrideEditor(
+    alias: string,
+    input: { limit: number; reason: string },
+  ): Promise<void> {
+    await this.requireUser(alias).openMeterOverrideEditor(input);
+  }
+
+  async saveMeterOverride(alias: string, expectedLimit: number): Promise<void> {
+    await this.requireUser(alias).saveMeterOverride(expectedLimit);
+  }
+
+  async expectMeterUsage(alias: string, expected: { used: number; limit: number }): Promise<void> {
+    await this.requireUser(alias).expectMeterUsage(expected);
   }
 
   async expectInviteRefusedBySeatLimit(
@@ -3072,6 +3092,37 @@ class HubUser {
     const table = this.page.getByRole("table", { name: "Entitlements" });
     await expect(this.entitlementRow(table, "Seats")).toContainText(String(expectedSeats));
     await expectAccessible(this.page);
+  }
+
+  async openMeterOverrideEditor(input: { limit: number; reason: string }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await this.entitlementRow(table, "Executions this month")
+      .getByRole("button", { name: "Override executions this month" })
+      .click();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Executions this month").fill(String(input.limit));
+    await dialog.getByLabel("Reason").fill(input.reason);
+  }
+
+  async saveMeterOverride(expectedLimit: number): Promise<void> {
+    const dialog = this.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Save override" }).click();
+    await expect(dialog).toBeHidden();
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Executions this month")).toContainText(
+      String(expectedLimit),
+    );
+    await expectAccessible(this.page);
+  }
+
+  async expectMeterUsage(expected: { used: number; limit: number }): Promise<void> {
+    await this.openOrganizationSection("Entitlements");
+    const table = this.page.getByRole("table", { name: "Entitlements" });
+    await expect(this.entitlementRow(table, "Executions this month")).toContainText(
+      `${expected.used}/${expected.limit}`,
+    );
   }
 
   async expectInviteRefusedBySeatLimit(

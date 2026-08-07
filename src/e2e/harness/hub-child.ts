@@ -15,6 +15,7 @@ import { createAuthServer } from "../../auth/server.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
+import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -29,6 +30,13 @@ async function main(): Promise<void> {
   await client.query(
     `insert into organization (id, name, slug) values ($1, $2, $3) on conflict (id) do nothing`,
     [organizationId, "Hub E2E", organizationId],
+  );
+  await client.query(
+    `insert into organization_entitlements
+       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
+     values ($1, $2::jsonb, '{}'::jsonb, null, $3, now(), now())
+     on conflict (organization_id) do nothing`,
+    [organizationId, JSON.stringify(UNLIMITED_TEMPLATE), hashTemplate(UNLIMITED_TEMPLATE)],
   );
   await client.query(
     `insert into "user" (id, name, email, email_verified)
@@ -127,6 +135,7 @@ async function main(): Promise<void> {
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,
+    entitlements: auth.entitlements,
     publicApi:
       auth.apiKeys === undefined
         ? { status: "unavailable" }

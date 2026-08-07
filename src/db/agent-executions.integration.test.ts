@@ -14,6 +14,7 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import type { DurableProviderEvent } from "../db/types.js";
 import type { RejectedTriggerProviderMatch, TriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 
 describe("agent execution PostgreSQL repository", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -160,6 +161,7 @@ describe("agent execution PostgreSQL repository", () => {
       const providerMatch = phaseOneMatch(fixture.execution.configurationRevisionId);
       const { handler, engine } = createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [
           {
             name: "test",
@@ -470,6 +472,7 @@ describe("agent execution PostgreSQL repository", () => {
       const createEngine = () =>
         createDurableWorkflowHandler({
           database: fixture.database,
+          entitlements: createUnlimitedEntitlementsService(),
           providers: [
             {
               name: "test",
@@ -548,6 +551,7 @@ describe("agent execution PostgreSQL repository", () => {
     const createEngine = (crashBeforeHandoff: boolean) =>
       createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [
           {
             name: "test",
@@ -647,6 +651,7 @@ describe("agent execution PostgreSQL repository", () => {
 
       const restarted = createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [],
         onWorkflowRunTerminal: async (terminalRun) => {
           delivered.push(terminalRun.id);
@@ -700,6 +705,7 @@ describe("agent execution PostgreSQL repository", () => {
 
       const engine = createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [],
         now: () => now,
         leaseMs: 1_000,
@@ -747,6 +753,7 @@ describe("agent execution PostgreSQL repository", () => {
       try {
         const { handler, engine } = createDurableWorkflowHandler({
           database: fixture.database,
+          entitlements: createUnlimitedEntitlementsService(),
           providers: [
             {
               name: "test",
@@ -830,6 +837,7 @@ describe("agent execution PostgreSQL repository", () => {
       ];
       const { handler, engine } = createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [
           {
             name: "test",
@@ -985,6 +993,7 @@ describe("agent execution PostgreSQL repository", () => {
       };
       const { handler, engine } = createDurableWorkflowHandler({
         database: fixture.database,
+        entitlements: createUnlimitedEntitlementsService(),
         providers: [
           {
             name: "test",
@@ -1316,6 +1325,7 @@ function postgresDeadlineEngine(
 ) {
   return createDurableWorkflowHandler({
     database,
+    entitlements: createUnlimitedEntitlementsService(),
     now,
     providers: [
       {

@@ -39,13 +39,15 @@ type OverrideResult = Awaited<ReturnType<typeof entitlementsOverride>>;
 /** Which entitlement an override dialog is editing, carrying the value to prefill. */
 type OverrideTarget =
   | { kind: "seats"; max: number | null }
-  | { kind: "canInviteMembers"; value: boolean };
+  | { kind: "canInviteMembers"; value: boolean }
+  | { kind: "executionsMonthly"; limit: number | null };
 
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "Entitlement" },
   { header: "Granted" },
   { header: "Override" },
   { header: "Effective" },
+  { header: "Used" },
   { header: "", align: "end" },
 ];
 const ENTITLEMENTS_EMPTY = { title: "No entitlements" };
@@ -102,6 +104,11 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
     () => setTarget({ kind: "canInviteMembers", value: effective.canInviteMembers }),
     [effective.canInviteMembers],
   );
+  const effectiveExecutionsLimit = effective.meters["executions.monthly"].limit;
+  const editExecutionsMonthly = useCallback(
+    () => setTarget({ kind: "executionsMonthly", limit: effectiveExecutionsLimit }),
+    [effectiveExecutionsLimit],
+  );
 
   return (
     <>
@@ -126,6 +133,7 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
               {overrides.seats?.max === undefined ? "—" : seatLimitLabel(overrides.seats.max)}
             </DataCell>
             <DataCell>{seatLimitLabel(effective.seats.max)}</DataCell>
+            <DataCell muted>—</DataCell>
             <DataCell align="end">
               <OverrideAction
                 canManage={canManage}
@@ -149,11 +157,30 @@ function EntitlementsContent({ snapshot, slug }: { snapshot: EntitlementsSnapsho
             <DataCell>
               <InviteBadge canInvite={effective.canInviteMembers} />
             </DataCell>
+            <DataCell muted>—</DataCell>
             <DataCell align="end">
               <OverrideAction
                 canManage={canManage}
                 label="Override members can invite"
                 onClick={editInvites}
+              />
+            </DataCell>
+          </DataRow>
+          <DataRow>
+            <DataCell>Executions this month</DataCell>
+            <DataCell muted>{meterLimitLabel(granted.meters["executions.monthly"].limit)}</DataCell>
+            <DataCell muted>
+              {overrides.meters?.["executions.monthly"]?.limit === undefined
+                ? "—"
+                : meterLimitLabel(overrides.meters["executions.monthly"].limit)}
+            </DataCell>
+            <DataCell>{meterLimitLabel(effectiveExecutionsLimit)}</DataCell>
+            <DataCell>{meterUsageLabel(snapshot.usage)}</DataCell>
+            <DataCell align="end">
+              <OverrideAction
+                canManage={canManage}
+                label="Override executions this month"
+                onClick={editExecutionsMonthly}
               />
             </DataCell>
           </DataRow>
@@ -243,11 +270,9 @@ function OverrideDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} aria-label="Override entitlement" className="grid gap-6">
-          {target.kind === "seats" ? (
-            <SeatsControl max={target.max} />
-          ) : (
-            <InviteControl value={target.value} />
-          )}
+          {target.kind === "seats" && <SeatsControl max={target.max} />}
+          {target.kind === "canInviteMembers" && <InviteControl value={target.value} />}
+          {target.kind === "executionsMonthly" && <ExecutionsMonthlyControl limit={target.limit} />}
           <Field>
             <FieldLabel htmlFor="override-reason">Reason</FieldLabel>
             <Input
@@ -309,6 +334,23 @@ function InviteControl({ value }: { value: boolean }) {
   );
 }
 
+function ExecutionsMonthlyControl({ limit }: { limit: number | null }) {
+  return (
+    <Field>
+      <FieldLabel htmlFor="override-executions-monthly">Executions this month</FieldLabel>
+      <Input
+        id="override-executions-monthly"
+        name="executionsMonthly"
+        type="number"
+        min={1}
+        step={1}
+        defaultValue={limit === null ? "" : String(limit)}
+        placeholder="Leave blank for unlimited"
+      />
+    </Field>
+  );
+}
+
 function AuditTrail({ history }: { history: EntitlementsSnapshot["history"] }) {
   return (
     <DataTable
@@ -357,6 +399,10 @@ function patchFrom(target: OverrideTarget, data: FormData): EntitlementPatch {
     const raw = formText(data, "seats").trim();
     return { seats: { max: raw === "" ? null : Number(raw) } };
   }
+  if (target.kind === "executionsMonthly") {
+    const raw = formText(data, "executionsMonthly").trim();
+    return { meters: { "executions.monthly": { limit: raw === "" ? null : Number(raw) } } };
+  }
   return { canInviteMembers: data.get("invite") === "allowed" };
 }
 
@@ -366,12 +412,15 @@ function formText(data: FormData, name: string): string {
 }
 
 function overrideTitle(target: OverrideTarget): string {
-  return target.kind === "seats" ? "Override seat limit" : "Override members can invite";
+  if (target.kind === "seats") return "Override seat limit";
+  if (target.kind === "executionsMonthly") return "Override executions this month";
+  return "Override members can invite";
 }
 
 function effectiveLabel(effective: EntitlementsSnapshot["entitlements"]["effective"]): string {
   const invite = effective.canInviteMembers ? "Allowed" : "Not allowed";
-  return `Seats: ${seatLimitLabel(effective.seats.max)} · Invites: ${invite}`;
+  const executions = meterLimitLabel(effective.meters["executions.monthly"].limit);
+  return `Seats: ${seatLimitLabel(effective.seats.max)} · Invites: ${invite} · Executions: ${executions}`;
 }
 
 function sourceBadgeVariant(source: EntitlementChangeSource): "default" | "secondary" | "outline" {
@@ -382,6 +431,14 @@ function sourceBadgeVariant(source: EntitlementChangeSource): "default" | "secon
 
 function seatLimitLabel(max: number | null): string {
   return max === null ? "Unlimited" : String(max);
+}
+
+function meterLimitLabel(limit: number | null): string {
+  return limit === null ? "Unlimited" : String(limit);
+}
+
+function meterUsageLabel(usage: EntitlementsSnapshot["usage"]): string {
+  return usage.limit === null ? String(usage.used) : `${usage.used}/${usage.limit}`;
 }
 
 function EntitlementsLoading() {

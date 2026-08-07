@@ -46,6 +46,7 @@ import {
 } from "../../execution-capabilities/outputs.js";
 import type { DaemonClock } from "../registry.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
+import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 import type { TriggerProvider } from "../../triggers/index.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
@@ -94,6 +95,7 @@ const ExecutionSessionRequestSchema = z.object({
 export class HubHarness {
   private postgres: StartedPostgreSqlContainer | undefined;
   private database: Database | undefined;
+  private readonly entitlements = createUnlimitedEntitlementsService();
   private server: Server | undefined;
   private hub: HubRuntime | undefined;
   private connectedDaemon: TestDaemon | undefined;
@@ -1325,6 +1327,7 @@ export class HubHarness {
     });
     const application = createHubApplication({
       database: this.databaseForApplication(),
+      entitlements: this.entitlements,
       providers: [this.recordingProvider()],
       providerFactories: [
         ({ configurationStoreForProject, attachments }) =>

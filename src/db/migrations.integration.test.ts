@@ -13,6 +13,7 @@ import { bootstrapInstance } from "../auth/bootstrap.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
+import { EntitlementsService } from "../entitlements/service.js";
 
 const LEGACY_MIGRATIONS = join(process.cwd(), "src/db/migrations");
 const DRIZZLE_MIGRATIONS = join(process.cwd(), "drizzle");
@@ -301,7 +302,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 24,
+      drizzleMigrations: 27,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -1476,6 +1477,7 @@ class LegacyUpgrade {
     };
     const application = createHubApplication({
       database,
+      entitlements: new EntitlementsService(database, { seats: async () => 0 }),
       publicApi: { status: "enabled", authenticator: operationAuth },
     });
     await application.hub.start();

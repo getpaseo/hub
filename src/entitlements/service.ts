@@ -8,11 +8,14 @@ import {
   entitlementsSchema,
   hashTemplate,
   mergeOverrides,
+  meterLimit,
+  meterPeriodStart,
   type CapKey,
   type EntitlementOverrides,
   type EntitlementPatch,
   type Entitlements,
   type EntitlementTemplate,
+  type MeterKey,
 } from "./catalog.js";
 
 export interface Provenance {
@@ -50,6 +53,13 @@ export interface EntitlementChange {
 /** cap key -> live count of what the cap governs, wired once at composition. */
 export type EntitlementCounters = Record<CapKey, (organizationId: string) => Promise<number>>;
 
+/** A meter's usage for its current period, resolved against the effective limit. */
+export interface MeterUsage {
+  meter: MeterKey;
+  used: number;
+  limit: number | null;
+}
+
 /**
  * CORE. What an organization is allowed to do. Never imports Stripe or anything
  * billing-related — `src/billing/` is the only writer that knows about plans.
@@ -61,6 +71,7 @@ export class EntitlementsService {
   constructor(
     private readonly database: Database,
     private readonly counters: EntitlementCounters,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async read(organizationId: string): Promise<OrganizationEntitlements> {
@@ -129,6 +140,37 @@ export class EntitlementsService {
     if (limit === null) return;
     const current = await this.counters[cap](organizationId);
     if (current >= limit) throw new EntitlementDenied(cap, limit, current);
+  }
+
+  /**
+   * Record `amount` of usage against a meter for its current period, denying when doing
+   * so would exceed the effective limit. Backed by a single conditional upsert in the
+   * database layer — see `Database.consumeOrganizationUsage` — so concurrent callers
+   * racing the same cap cannot both succeed.
+   */
+  async consume(organizationId: string, meter: MeterKey, amount: number): Promise<void> {
+    const { effective } = await this.read(organizationId);
+    const limit = meterLimit(effective, meter);
+    const periodStart = meterPeriodStart(this.now());
+    const result = await this.database.consumeOrganizationUsage({
+      organizationId,
+      meter,
+      periodStart,
+      amount,
+      limit,
+    });
+    if (result !== undefined) return;
+    if (limit === null) throw new Error("unreachable: an unlimited meter cannot be denied");
+    const usage = await this.database.getOrganizationUsage(organizationId, meter, periodStart);
+    throw new EntitlementDenied(meter, limit, usage?.used ?? 0);
+  }
+
+  /** The current period's usage for a meter, resolved against the effective limit. */
+  async usage(organizationId: string, meter: MeterKey): Promise<MeterUsage> {
+    const { effective } = await this.read(organizationId);
+    const periodStart = meterPeriodStart(this.now());
+    const record = await this.database.getOrganizationUsage(organizationId, meter, periodStart);
+    return { meter, used: record?.used ?? 0, limit: meterLimit(effective, meter) };
   }
 
   async history(organizationId: string, limit: number): Promise<EntitlementChange[]> {

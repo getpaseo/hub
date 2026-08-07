@@ -12,6 +12,8 @@ import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../c
 import type { CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
+import { EntitlementDenied } from "../entitlements/catalog.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 import {
   buildLaunchMachineIntent,
   type LaunchMachineIntent,
@@ -53,6 +55,8 @@ interface PreparedWorkflowWakeup {
 
 export interface DurableWorkflowEngineOptions {
   database: Database | null;
+  /** Required end to end so the executions meter can never be silently skipped. */
+  entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
   validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
@@ -104,6 +108,9 @@ export class DurableWorkflowEngine {
 
   async enqueue(trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome> {
     if (this.options.database === null) throw new DatabaseUnavailableError();
+    if (this.options.entitlements === null) {
+      throw new Error("durable workflow engine requires entitlements when a database is wired");
+    }
     const matches = await collectProviderMatches(this.options.providers ?? [], trigger);
     if (matches.length === 0) {
       return { providerEventReceiptId: trigger.providerEventReceiptId };
@@ -144,7 +151,7 @@ export class DurableWorkflowEngine {
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${acceptedMatch.triggerName}`);
         const runDeadline = new Date(createdAt.getTime() + compiledTrigger.maxRuntimeMs);
-        await this.options.database!.createAcceptedTriggerRun({
+        const created = await this.options.database!.createAcceptedTriggerRun({
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           configurationRevisionId,
@@ -159,6 +166,15 @@ export class DurableWorkflowEngine {
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
         });
+        // Only a genuinely new trigger run reserves meter budget — a duplicate/idempotent
+        // replay of an already-accepted delivery must not consume a second time.
+        if (!created.created) return;
+        try {
+          await this.options.entitlements!.consume(trigger.organizationId, "executions.monthly", 1);
+        } catch (error) {
+          if (!(error instanceof EntitlementDenied)) throw error;
+          await this.options.database!.failWorkflowRun(created.run.id, "failed", error.message);
+        }
       }),
     );
     return { providerEventReceiptId: trigger.providerEventReceiptId };

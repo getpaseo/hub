@@ -8,6 +8,7 @@ import type { Database } from "../db/types.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
@@ -159,6 +160,7 @@ describe("organization API-key boundary", () => {
     });
     const application = createHubApplication({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       publicApi: { status: "enabled", authenticator: auth.apiKeys! },
     });
     await application.hub.start();

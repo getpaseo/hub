@@ -10,6 +10,7 @@ import type {
 import { createDaemonDispatchLifecycle, type DaemonDispatchLifecycle } from "./lifecycle.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import type { TriggerProvider } from "../triggers/index.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
@@ -80,6 +81,7 @@ describe("durable Hub action acknowledgement state", () => {
 
     const engine = createDurableWorkflowHandler({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [],
       onWorkflowRunTerminal: (terminalRun) => lifecycle.notifyWorkflowRunTerminal(terminalRun),
     }).engine;

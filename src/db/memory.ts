@@ -74,6 +74,8 @@ import type {
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   EntitlementChangeRecord,
+  OrganizationUsageRecord,
+  ConsumeOrganizationUsageInput,
 } from "./types.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
@@ -91,6 +93,10 @@ export interface MemoryDatabaseOptions {
     role: "owner" | "admin" | "member";
   }[];
   now?: () => Date;
+}
+
+function usageKey(organizationId: string, meter: string, periodStart: Date): string {
+  return `${organizationId}:${meter}:${periodStart.toISOString()}`;
 }
 
 function transitionWithTerminalRun(
@@ -126,6 +132,7 @@ class MemoryDatabase implements Database {
   private readonly daemons = new Map<string, DaemonRecord>();
   private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
+  private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -1940,6 +1947,33 @@ class MemoryDatabase implements Database {
       actorName: null,
       createdAt: this.now(),
     });
+  }
+
+  async consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    // No `await` between read and write, so this is as atomic as the single-statement
+    // Postgres upsert it mirrors: nothing can interleave on Node's single thread.
+    const key = usageKey(input.organizationId, input.meter, input.periodStart);
+    const existing = this.organizationUsage.get(key);
+    const used = (existing?.used ?? 0) + input.amount;
+    if (input.limit !== null && used > input.limit) return undefined;
+    const record: OrganizationUsageRecord = {
+      organizationId: input.organizationId,
+      meter: input.meter,
+      periodStart: input.periodStart,
+      used,
+    };
+    this.organizationUsage.set(key, record);
+    return record;
+  }
+
+  async getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined> {
+    return this.organizationUsage.get(usageKey(organizationId, meter, periodStart));
   }
 
   async listProjectsForOrganization(organizationId: string) {

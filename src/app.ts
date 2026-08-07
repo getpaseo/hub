@@ -39,9 +39,12 @@ import { DaemonRegistration, type BrowserOrganizationAccess } from "./daemons/re
 import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
 import { createPublicOperations } from "./public-operations/index.js";
 import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
+import type { EntitlementsService } from "./entitlements/service.js";
 
 export interface HubRuntimeOptions {
   database: Database | null;
+  /** Required end to end so the executions meter can never be silently skipped. */
+  entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   providerFactories?: readonly TriggerProviderFactory[];
   integrations?: readonly ProviderIntegrationRegistration[];
@@ -154,6 +157,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
           daemonModule.lifecycle.handoffLaunchMachineIntent(intent);
   const dispatcherOptions = {
     database: options.database,
+    entitlements: options.entitlements,
     providers,
     ...(options.configurationRevisionId === undefined
       ? {}

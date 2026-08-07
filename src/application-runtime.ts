@@ -6,6 +6,7 @@ import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
 import { EntitlementsDashboard } from "./entitlements/dashboard.js";
+import type { EntitlementsService } from "./entitlements/service.js";
 import { OrganizationResources } from "./organizations/resources.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
 import type {
@@ -74,6 +75,7 @@ export async function createApplicationRuntime(
 
   const application = createHubApplication({
     database: options.database,
+    entitlements: entitlementsFor(options.auth),
     providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
     integrations: [...integrations.values()],
     attachmentResolvers: Object.fromEntries(
@@ -217,4 +219,8 @@ export async function createApplicationRuntime(
       await options.close();
     },
   };
+}
+
+function entitlementsFor(auth: AuthServer | null): EntitlementsService | null {
+  return auth === null ? null : auth.entitlements;
 }

@@ -42,7 +42,11 @@ describe("EntitlementsService", () => {
   it("re-stamping replaces granted without touching overrides", async () => {
     const service = serviceWith();
     await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
-    const capped = { seats: { max: 3 }, canInviteMembers: false };
+    const capped = {
+      seats: { max: 3 },
+      canInviteMembers: false,
+      meters: { "executions.monthly": { limit: null } },
+    };
 
     await service.stamp("org-1", capped, { source: "plan_stamp", planId: "plan-solo" });
     const record = await service.read("org-1");
@@ -57,7 +61,11 @@ describe("EntitlementsService", () => {
     await assert.rejects(() =>
       service.stamp(
         "org-1",
-        { seats: { max: -1 }, canInviteMembers: true },
+        {
+          seats: { max: -1 },
+          canInviteMembers: true,
+          meters: { "executions.monthly": { limit: null } },
+        },
         { source: "provisioning", planId: null },
       ),
     );
@@ -70,14 +78,15 @@ describe("EntitlementsService", () => {
 
     // The whole point of the granted/overrides split: a plan sync writes granted and must
     // never clobber a hand-set override.
-    await service.stamp(
-      "org-1",
-      { seats: { max: 25 }, canInviteMembers: true },
-      { source: "plan_stamp", planId: "plan-team" },
-    );
+    const restamped = {
+      seats: { max: 25 },
+      canInviteMembers: true,
+      meters: { "executions.monthly": { limit: null } },
+    };
+    await service.stamp("org-1", restamped, { source: "plan_stamp", planId: "plan-team" });
     const record = await service.read("org-1");
 
-    assert.deepEqual(record.granted, { seats: { max: 25 }, canInviteMembers: true });
+    assert.deepEqual(record.granted, restamped);
     assert.deepEqual(record.overrides, { seats: { max: 2 } });
     assert.equal(record.effective.seats.max, 2);
   });
@@ -97,7 +106,11 @@ describe("EntitlementsService", () => {
     const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });
     await service.stamp(
       "org-1",
-      { seats: { max: 2 }, canInviteMembers: true },
+      {
+        seats: { max: 2 },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: null } },
+      },
       { source: "plan_stamp", planId: "plan-solo" },
     );
 
@@ -154,6 +167,95 @@ describe("EntitlementsService", () => {
     assert.equal(history[0]?.effective.seats.max, 2);
     assert.equal(history[1]?.source, "provisioning");
   });
+
+  it("consumes usage under the meter limit and denies at the limit", async () => {
+    const service = serviceWith();
+    await service.stamp(
+      "org-1",
+      {
+        seats: { max: null },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: 2 } },
+      },
+      { source: "provisioning", planId: null },
+    );
+
+    await service.consume("org-1", "executions.monthly", 1);
+    assert.deepEqual(await service.usage("org-1", "executions.monthly"), {
+      meter: "executions.monthly",
+      used: 1,
+      limit: 2,
+    });
+
+    await service.consume("org-1", "executions.monthly", 1);
+    const denied = await service.consume("org-1", "executions.monthly", 1).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(denied instanceof EntitlementDenied);
+    assert.equal(denied.entitlement, "executions.monthly");
+    assert.equal(denied.limit, 2);
+    assert.equal(denied.current, 2);
+    assert.deepEqual(await service.usage("org-1", "executions.monthly"), {
+      meter: "executions.monthly",
+      used: 2,
+      limit: 2,
+    });
+  });
+
+  it("never denies consumption for an unlimited meter", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+
+    await service.consume("org-1", "executions.monthly", 1000);
+    assert.deepEqual(await service.usage("org-1", "executions.monthly"), {
+      meter: "executions.monthly",
+      used: 1000,
+      limit: null,
+    });
+  });
+
+  it("enforces an overridden meter limit even when the plan grants more", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+    await service.override(
+      "org-1",
+      { meters: { "executions.monthly": { limit: 1 } } },
+      "admin-1",
+      "Trial cap",
+    );
+
+    await service.consume("org-1", "executions.monthly", 1);
+    const denied = await service.consume("org-1", "executions.monthly", 1).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(denied instanceof EntitlementDenied);
+  });
+
+  it("resets usage in a new period", async () => {
+    let now = new Date("2026-01-15T00:00:00.000Z");
+    const database = createMemoryDatabase();
+    const service = new EntitlementsService(database, { seats: async () => 0 }, () => now);
+    await service.stamp(
+      "org-1",
+      {
+        seats: { max: null },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: 1 } },
+      },
+      { source: "provisioning", planId: null },
+    );
+
+    await service.consume("org-1", "executions.monthly", 1);
+    now = new Date("2026-02-01T00:00:00.000Z");
+    await service.consume("org-1", "executions.monthly", 1);
+    assert.deepEqual(await service.usage("org-1", "executions.monthly"), {
+      meter: "executions.monthly",
+      used: 1,
+      limit: 1,
+    });
+  });
 });
 
 describe("effectiveEntitlements", () => {
@@ -162,7 +264,11 @@ describe("effectiveEntitlements", () => {
       seats: { max: 2 },
     });
 
-    assert.deepEqual(effective, { seats: { max: 2 }, canInviteMembers: true });
+    assert.deepEqual(effective, {
+      seats: { max: 2 },
+      canInviteMembers: true,
+      meters: { "executions.monthly": { limit: null } },
+    });
   });
 
   it("falls back to granted when no override is set", () => {

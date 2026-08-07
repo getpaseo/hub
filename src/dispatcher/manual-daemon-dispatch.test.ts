@@ -9,6 +9,7 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { ManualTriggerInput } from "../triggers/manual/schema.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import { createManualTriggerSource, dispatchManualTrigger } from "../triggers/manual/source.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 import { createDispatcherWithEngine } from "./index.js";
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -20,6 +21,7 @@ describe("manual trigger durable workflow boundary", () => {
     const source = createManualTriggerSource(database);
     const { handler } = createDispatcherWithEngine({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [noMatchingProvider()],
       configurationRevisionId: revision.id,
     });
@@ -59,6 +61,7 @@ describe("manual trigger durable workflow boundary", () => {
     const dispatches: string[] = [];
     const { handler, engine } = createDispatcherWithEngine({
       database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [matchingProvider(configuration, revision.id)],
       configurationRevisionId: revision.id,
       dispatchLaunchMachineIntent: async (intent) => {

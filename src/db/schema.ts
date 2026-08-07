@@ -10,6 +10,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -1066,5 +1067,21 @@ export const entitlementChanges = pgTable(
       "entitlement_changes_source_check",
       sql`${table.source} in ('provisioning', 'plan_stamp', 'override')`,
     ),
+  ],
+);
+
+export const organizationUsage = pgTable(
+  "organization_usage",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    meter: text().notNull(),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    used: bigint({ mode: "number" }).notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.meter, table.periodStart] }),
+    index("organization_usage_organization_meter_idx").on(table.organizationId, table.meter),
   ],
 );

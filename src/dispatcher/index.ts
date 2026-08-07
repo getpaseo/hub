@@ -1,4 +1,5 @@
 import type { Database } from "../db/types.js";
+import type { EntitlementsService } from "../entitlements/service.js";
 import type { TriggerHandler, TriggerProvider } from "../triggers/index.js";
 import {
   createDurableWorkflowHandler,
@@ -11,6 +12,8 @@ export { buildLaunchMachineIntent, type LaunchMachineIntent } from "./launch-mac
 
 export interface DispatcherOptions {
   database: Database | null;
+  /** Required end to end so the executions meter can never be silently skipped. */
+  entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
   validateLaunchMachineIntent?: DurableWorkflowEngineOptions["validateLaunchMachineIntent"];
@@ -34,6 +37,7 @@ export function createDispatcherWithEngine(options: DispatcherOptions): {
 } {
   const engineOptions: DurableWorkflowEngineOptions = {
     database: options.database,
+    entitlements: options.entitlements,
     ...(options.providers === undefined ? {} : { providers: options.providers }),
     ...(options.dispatchLaunchMachineIntent === undefined
       ? {}

@@ -19,6 +19,7 @@ import type {
 } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import { parseInvocation } from "../triggers/invocation.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
@@ -33,6 +34,7 @@ describe("durable multi-step workflow engine", () => {
     process.on("unhandledRejection", onUnhandled);
     const { engine } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
       workerIntervalMs: 10,
       dispatchLaunchMachineIntent: async (intent) => {
@@ -105,6 +107,7 @@ describe("durable multi-step workflow engine", () => {
     let failFirst = true;
     const { handler, engine } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
       now: () => now,
       leaseMs: 1_000,
@@ -278,6 +281,7 @@ describe("durable multi-step workflow engine", () => {
     });
     const { handler } = createDurableWorkflowHandler({
       database: fixture.database,
+      entitlements: createUnlimitedEntitlementsService(),
       providers: [
         {
           name: "manual",
@@ -988,6 +992,7 @@ function engineFor(
 ) {
   return createDurableWorkflowHandler({
     database: fixture.database,
+    entitlements: createUnlimitedEntitlementsService(),
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],
     ...(now === undefined ? {} : { now }),
     ...(onWorkflowRunTerminal === undefined ? {} : { onWorkflowRunTerminal }),

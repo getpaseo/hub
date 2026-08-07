@@ -744,6 +744,22 @@ export interface EntitlementChangeRecord {
   createdAt: Date;
 }
 
+export interface OrganizationUsageRecord {
+  organizationId: string;
+  meter: string;
+  periodStart: Date;
+  used: number;
+}
+
+export interface ConsumeOrganizationUsageInput {
+  organizationId: string;
+  meter: string;
+  periodStart: Date;
+  amount: number;
+  /** null means unlimited: the conditional upsert never denies. */
+  limit: number | null;
+}
+
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
   sourceKind: "github" | "manual";
@@ -1040,6 +1056,19 @@ export interface Database {
     input: OverrideOrganizationEntitlementsInput,
   ): Promise<OrganizationEntitlementsRecord>;
   listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
+  /**
+   * Single atomic conditional upsert: increments `used` by `amount` and returns the new
+   * row, unless doing so would exceed `limit` (when non-null), in which case it returns
+   * `undefined` and leaves usage unchanged. Never read-then-write — see the plan.
+   */
+  consumeOrganizationUsage(
+    input: ConsumeOrganizationUsageInput,
+  ): Promise<OrganizationUsageRecord | undefined>;
+  getOrganizationUsage(
+    organizationId: string,
+    meter: string,
+    periodStart: Date,
+  ): Promise<OrganizationUsageRecord | undefined>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,
