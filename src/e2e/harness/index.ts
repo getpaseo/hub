@@ -9,6 +9,7 @@ import { chromium } from "@playwright/test";
 import { Pool } from "pg";
 import { z } from "zod";
 import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
+import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
 import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
@@ -47,7 +48,13 @@ interface ManualRun {
   processDescriptions?: string[];
 }
 
+interface PublicManualRun extends ManualRun {
+  deliveryKey: string;
+  providerEventReceiptId: string;
+}
+
 interface AmbiguousRunEvidence {
+  providerEventReceiptId: string;
   executionId: string;
   beforeRestart: {
     receipts: number;
@@ -70,6 +77,7 @@ interface HubE2EOptions {
 }
 
 type RealAgentProvider = "claude" | "codex";
+type DispatchedManualRun = z.infer<typeof DispatchedManualRunSchema>;
 
 export interface ShutdownEvidence {
   durationMs: number;
@@ -399,44 +407,25 @@ export class HubE2E {
     assertStatus(response, 201, "install real-agent routing configuration");
   }
 
-  async runManual(deliveryKey: string, service: string, trigger = "deploy"): Promise<ManualRun> {
-    const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${MACHINE_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        projectSlug: PROJECT_SLUG,
-        trigger,
-        actor: "phase-five-operator",
-        deliveryKey,
-        input: { service },
-      }),
+  async runManual(
+    deliveryKey: string,
+    service: string,
+    trigger = "deploy",
+  ): Promise<PublicManualRun> {
+    const dispatch = await this.dispatchManualRun({
+      trigger,
+      actor: "phase-five-operator",
+      deliveryKey,
+      input: { service },
     });
-    if (response.status !== 200) {
-      const daemon = await this.requirePool().query<{
-        id: string;
-        slug: string;
-        presence: string;
-      }>("select id, slug, presence from daemons order by presence = 'connected' desc limit 1");
-      throw new Error(
-        `run manual trigger returned HTTP ${
-          response.status
-        }: ${await response.text()} daemon=${JSON.stringify(
-          daemon.rows[0],
-        )}\n${this.failureArtifacts()}`,
-      );
-    }
-    await response.json();
-    return this.waitForManualRun(deliveryKey);
+    return this.waitForManualRun(dispatch);
   }
 
-  async runRealAgentManual(deliveryKey: string): Promise<ManualRun> {
+  async runRealAgentManual(deliveryKey: string): Promise<PublicManualRun> {
     return this.runRealAgentWorkflow(deliveryKey, "", "finalize", "real-agent-operator");
   }
 
-  async runRealAgentRouting(deliveryKey: string, input: string): Promise<ManualRun> {
+  async runRealAgentRouting(deliveryKey: string, input: string): Promise<PublicManualRun> {
     return this.runRealAgentWorkflow(deliveryKey, input, "route", "real-agent-routing-operator");
   }
 
@@ -445,28 +434,9 @@ export class HubE2E {
     input: string,
     trigger: string,
     actor: string,
-  ): Promise<ManualRun> {
-    const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${MACHINE_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        projectSlug: PROJECT_SLUG,
-        trigger,
-        actor,
-        deliveryKey,
-        input,
-      }),
-    });
-    if (response.status !== 200) {
-      throw new Error(
-        `run real-agent manual trigger returned HTTP ${response.status}: ${await response.text()}`,
-      );
-    }
-    await response.json();
-    const run = await this.waitForManualRun(deliveryKey);
+  ): Promise<PublicManualRun> {
+    const dispatch = await this.dispatchManualRun({ trigger, actor, deliveryKey, input });
+    const run = await this.waitForManualRun(dispatch);
     const source = this.requireSource();
     const [provider, processDescriptions] = await Promise.all([
       source.agentProvider(run.agentId),
@@ -480,7 +450,7 @@ export class HubE2E {
   }
 
   async realAgentRoutingEvidence(
-    deliveryKey: string,
+    run: PublicManualRun,
     provider: RealAgentProvider = "codex",
   ): Promise<{
     runStatus: string;
@@ -525,9 +495,9 @@ export class HubE2E {
          join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
          join workflow_step_runs steps on steps.trigger_run_id = runs.id
          left join agent_executions executions on executions.id = steps.agent_execution_id
-         where receipts.delivery_id = $1
+         where receipts.id = $1
          order by steps.ordinal`,
-          [deliveryKey],
+          [run.providerEventReceiptId],
         );
         if (result.rows.length !== 3 || result.rows[0]?.run_status !== "succeeded") return false;
         evidence = {
@@ -562,7 +532,7 @@ export class HubE2E {
           const sourceProvider = await source.agentProvider(step.agentId);
           const rawTimeline = await source.canonicalAgentTimeline(step.agentId);
           const processDescriptions =
-            this.realAgentLaunchEvidence.get(deliveryKey)?.processDescriptions ??
+            this.realAgentLaunchEvidence.get(run.deliveryKey)?.processDescriptions ??
             (await source.processDescriptions());
           const timeline = rawTimeline.flatMap((item) => {
             const parsed = CanonicalToolCallSchema.safeParse(item);
@@ -711,7 +681,7 @@ export class HubE2E {
         `run capability trigger returned HTTP ${response.status}: ${await response.text()}\n${this.failureArtifacts()}`,
       );
     }
-    const executionId = await this.executionForDelivery(deliveryKey);
+    const executionId = await this.executionForTestTriggerDelivery(deliveryKey);
     await this.observe(async () => {
       const execution = await this.requirePool().query<{
         daemon_agent_id: string | null;
@@ -840,20 +810,28 @@ export class HubE2E {
   async beginAmbiguousManualRun(): Promise<AmbiguousRunEvidence> {
     await rm(this.completionGate, { force: true });
     this.requireProxy().loseNextCreateResponse();
-    void this.runManual("replayed-delivery", "recovery").catch(() => undefined);
+    const dispatch = await this.dispatchManualRun({
+      trigger: "deploy",
+      actor: "phase-five-operator",
+      deliveryKey: "replayed-delivery",
+      input: { service: "recovery" },
+    });
+    void this.waitForManualRun(dispatch).catch(() => undefined);
     await this.requireProxy().createResponseWasDropped();
-    const executionId = await this.executionForDelivery("replayed-delivery");
+    const executionId = await this.executionForManualRun(dispatch.providerEventReceiptId);
     await this.observe(
       async () => this.outputIsPersisted(executionId),
       "ambiguous agent output to persist before Hub restart",
     );
     await this.observe(
-      async () => (await this.deliveryEvidence("replayed-delivery")).status === "running",
+      async () =>
+        (await this.manualRunEvidence(dispatch.providerEventReceiptId)).status === "running",
       "ambiguous execution to enter running state before Hub restart",
     );
     return {
+      providerEventReceiptId: dispatch.providerEventReceiptId,
       executionId,
-      beforeRestart: await this.deliveryEvidence("replayed-delivery"),
+      beforeRestart: await this.manualRunEvidence(dispatch.providerEventReceiptId),
     };
   }
 
@@ -884,7 +862,7 @@ export class HubE2E {
     await writeFile(this.completionGate, "recovered\n");
   }
 
-  async beginDaemonRestartRun(): Promise<ManualRun> {
+  async beginDaemonRestartRun(): Promise<PublicManualRun> {
     await rm(this.completionGate, { force: true });
     const run = await this.runManual("daemon-restart-delivery", "daemon-restart", "restart");
     await this.observe(
@@ -957,13 +935,13 @@ export class HubE2E {
     };
   }
 
-  async replayEvidence(executionId: string) {
+  async replayEvidence(executionId: string, providerEventReceiptId: string) {
     const [result, delivery, persistedAgents] = await Promise.all([
       this.requirePool().query<{
         daemon_agent_id: string;
         daemon_id: string;
       }>("select daemon_agent_id, daemon_id from agent_executions where id = $1", [executionId]),
-      this.deliveryEvidence("replayed-delivery"),
+      this.manualRunEvidence(providerEventReceiptId),
       this.persistedDaemonAgents(executionId),
     ]);
     const row = result.rows[0];
@@ -989,11 +967,11 @@ export class HubE2E {
     };
   }
 
-  private async deliveryEvidence(deliveryId: string) {
+  private async manualRunEvidence(providerEventReceiptId: string) {
     const [receipts, executions] = await Promise.all([
       this.requirePool().query<{ count: number }>(
-        "select count(*)::int as count from provider_event_receipts where delivery_id = $1",
-        [deliveryId],
+        "select count(*)::int as count from provider_event_receipts where id = $1",
+        [providerEventReceiptId],
       ),
       this.requirePool().query<{
         status: string;
@@ -1005,12 +983,12 @@ export class HubE2E {
          join workflow_step_runs steps on steps.agent_execution_id = ae.id
          join trigger_runs runs on runs.id = steps.trigger_run_id
          join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
-         where receipts.delivery_id = $1`,
-        [deliveryId],
+         where receipts.id = $1`,
+        [providerEventReceiptId],
       ),
     ]);
     const execution = executions.rows[0];
-    if (!execution) throw new Error(`Delivery ${deliveryId} has no execution`);
+    if (!execution) throw new Error(`Manual run ${providerEventReceiptId} has no execution`);
     return {
       receipts: receipts.rows[0]?.count ?? 0,
       executions: executions.rows.length,
@@ -1301,7 +1279,54 @@ export class HubE2E {
     return this.requireSource().run(args);
   }
 
-  private async executionForDelivery(deliveryId: string): Promise<string> {
+  private async dispatchManualRun(input: {
+    trigger: string;
+    actor: string;
+    deliveryKey: string;
+    input: unknown;
+  }): Promise<DispatchedManualRun> {
+    const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${MACHINE_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, ...input }),
+    });
+    if (response.status !== 200) {
+      throw new Error(
+        `manual run dispatch returned HTTP ${response.status}: ${await response.text()}\n${this.failureArtifacts()}`,
+      );
+    }
+    return DispatchedManualRunSchema.parse(await response.json());
+  }
+
+  private async executionForManualRun(providerEventReceiptId: string): Promise<string> {
+    await this.observe(async () => {
+      const row = await this.requirePool().query<{ id: string }>(
+        `select distinct ae.id
+         from agent_executions ae
+         join workflow_step_runs steps on steps.agent_execution_id = ae.id
+         join trigger_runs runs on runs.id = steps.trigger_run_id
+         join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+         where runs.provider_event_receipt_id = $1`,
+        [providerEventReceiptId],
+      );
+      return row.rows[0] !== undefined;
+    }, "manual execution to persist");
+    const row = await this.requirePool().query<{ id: string }>(
+      `select distinct ae.id
+       from agent_executions ae
+       join workflow_step_runs steps on steps.agent_execution_id = ae.id
+       join trigger_runs runs on runs.id = steps.trigger_run_id
+       join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+       where runs.provider_event_receipt_id = $1`,
+      [providerEventReceiptId],
+    );
+    return row.rows[0]!.id;
+  }
+
+  private async executionForTestTriggerDelivery(deliveryId: string): Promise<string> {
     await this.observe(async () => {
       const row = await this.requirePool().query<{ id: string }>(
         `select distinct ae.id
@@ -1313,7 +1338,7 @@ export class HubE2E {
         [deliveryId],
       );
       return row.rows[0] !== undefined;
-    }, "ambiguous execution to persist");
+    }, "test trigger execution to persist");
     const row = await this.requirePool().query<{ id: string }>(
       `select distinct ae.id
        from agent_executions ae
@@ -1326,8 +1351,8 @@ export class HubE2E {
     return row.rows[0]!.id;
   }
 
-  private async waitForManualRun(deliveryId: string): Promise<ManualRun> {
-    const executionId = await this.executionForDelivery(deliveryId);
+  private async waitForManualRun(dispatch: DispatchedManualRun): Promise<PublicManualRun> {
+    const executionId = await this.executionForManualRun(dispatch.providerEventReceiptId);
     await this.observe(async () => {
       const row = await this.requirePool().query<{
         daemon_agent_id: string | null;
@@ -1338,6 +1363,8 @@ export class HubE2E {
       daemon_agent_id: string | null;
     }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
     return {
+      deliveryKey: dispatch.deliveryKey,
+      providerEventReceiptId: dispatch.providerEventReceiptId,
       executionId,
       agentId: requiredString({ agentId: row.rows[0]?.daemon_agent_id }, "agentId"),
     };

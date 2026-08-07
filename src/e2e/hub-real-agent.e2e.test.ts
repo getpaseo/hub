@@ -52,8 +52,11 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     await hub.daemonIsConnected();
     await hub.installRealAgentRoutingConfiguration("codex");
 
-    await hub.runRealAgentRouting("routing-deterministic", "repo=paseo task");
-    const deterministic = await hub.realAgentRoutingEvidence("routing-deterministic", "codex");
+    const deterministicRun = await hub.runRealAgentRouting(
+      "routing-deterministic",
+      "repo=paseo task",
+    );
+    const deterministic = await hub.realAgentRoutingEvidence(deterministicRun, "codex");
     assert.deepEqual(
       deterministic.steps.map((step) => [step.stepId, step.status]),
       [
@@ -63,8 +66,8 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
       ],
     );
 
-    await hub.runRealAgentRouting("routing-classifier", "investigate");
-    const classified = await hub.realAgentRoutingEvidence("routing-classifier", "codex");
+    const classifiedRun = await hub.runRealAgentRouting("routing-classifier", "investigate");
+    const classified = await hub.realAgentRoutingEvidence(classifiedRun, "codex");
     assert.deepEqual(
       classified.steps.map((step) => [step.stepId, step.status]),
       [
@@ -82,8 +85,11 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     await hub.daemonIsConnected();
     await hub.installRealAgentRoutingConfiguration("claude");
 
-    await hub.runRealAgentRouting("claude-routing-classifier", "investigate Hub workflows");
-    const evidence = await hub.realAgentRoutingEvidence("claude-routing-classifier", "claude");
+    const run = await hub.runRealAgentRouting(
+      "claude-routing-classifier",
+      "investigate Hub workflows",
+    );
+    const evidence = await hub.realAgentRoutingEvidence(run, "claude");
 
     assert.deepEqual(
       evidence.steps.map((step) => [step.stepId, step.status]),
