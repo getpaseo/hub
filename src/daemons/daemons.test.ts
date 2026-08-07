@@ -198,12 +198,16 @@ describe("daemon enrollment and execution", () => {
       .split("\n\n", 1)[0]!
       .split("\n")
       .slice(1)
-      .map((line) => line.slice(2, line.indexOf(":", 2)));
+      .map((line) => {
+        const separator = line.indexOf(": ", 2);
+        if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);
+        return { name: line.slice(2, separator), description: line.slice(separator + 2) };
+      });
     const exposedTools = await hub.listExecutionTools(result.execution.id);
 
     assert.deepEqual(
       advertisedTools,
-      exposedTools.map((tool) => tool.name),
+      exposedTools.map(({ name, description }) => ({ name, description })),
     );
     assert.deepEqual(exposedTools[0]?.inputSchema, {
       type: "object",

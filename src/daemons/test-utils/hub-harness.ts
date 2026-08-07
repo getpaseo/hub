@@ -877,7 +877,7 @@ export class HubHarness {
 
   async listExecutionTools(
     executionId: string,
-  ): Promise<readonly { name: string; inputSchema: unknown }[]> {
+  ): Promise<readonly { name: string; description: string; inputSchema: unknown }[]> {
     const token = this.requireDaemon().completionToken(executionId);
     const response = await fetch(`${this.origin}/agent-executions/${executionId}/mcp`, {
       method: "POST",
@@ -896,7 +896,15 @@ export class HubHarness {
     return z
       .object({
         result: z.object({
-          tools: z.array(z.object({ name: z.string(), inputSchema: z.unknown() }).passthrough()),
+          tools: z.array(
+            z
+              .object({
+                name: z.string(),
+                description: z.string(),
+                inputSchema: z.unknown(),
+              })
+              .passthrough(),
+          ),
         }),
       })
       .parse(await response.json()).result.tools;

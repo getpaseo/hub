@@ -198,11 +198,19 @@ describe("execution capability MCP boundary", () => {
         .split("\n\n", 1)[0]!
         .split("\n")
         .slice(1)
-        .map((line) => line.slice(2, line.indexOf(":", 2)));
+        .map((line) => {
+          const separator = line.indexOf(": ", 2);
+          if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);
+          return { name: line.slice(2, separator), description: line.slice(separator + 2) };
+        });
 
       assert.deepEqual(
         advertisedTools,
-        exposedTools.tools.map((tool) => tool.name),
+        exposedTools.tools.map(({ name, description }) => ({ name, description })),
+      );
+      assert.equal(
+        exposedTools.tools.find((tool) => tool.name === "finish_execution")?.description,
+        "Completes this execution and records the configured structured output.",
       );
       assert.deepEqual(
         exposedTools.tools.find((tool) => tool.name === "finish_execution")?.inputSchema,

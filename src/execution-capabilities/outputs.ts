@@ -46,8 +46,12 @@ export interface MaterializedOutputCapability {
 }
 
 export const finishExecutionToolName = "finish_execution" as const;
-const finishExecutionToolDescription =
-  "Completes this execution and records its optional structured output.";
+
+function finishExecutionToolDescription(outputSchema: JsonValue | undefined): string {
+  return outputSchema === undefined
+    ? "Completes this execution and records its optional structured output."
+    : "Completes this execution and records the configured structured output.";
+}
 
 export const replyOutputTool: OutputToolDefinition = {
   name: "reply",
@@ -152,7 +156,7 @@ export function executionToolDefinitions(
   return [
     {
       name: finishExecutionToolName,
-      description: finishExecutionToolDescription,
+      description: finishExecutionToolDescription(outputSchema),
       inputSchema: toolSchema(compileFinishExecutionArguments(outputSchema).schema),
     },
     ...materializedOutputs.map(({ declaration, capability }) => ({
