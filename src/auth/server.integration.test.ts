@@ -153,12 +153,34 @@ describe("account and organization boundary", () => {
     assert.deepEqual(denied, {
       error: "entitlement_denied",
       entitlement: "seats",
+      kind: "cap",
       limit: 1,
       current: 1,
     });
     assert.equal(await hub.pendingInvitationCount(organizationId, "blocked@example.com"), 0);
 
     await hub.capSeats(organizationId, 2, "regression test: raise the seat cap");
+    const invitation = await alice.invite("allowed@example.com", "member");
+    assert.ok(invitation.id);
+  });
+
+  it("refuses invitations when the can-invite flag is disabled, and admits them once restored", async () => {
+    const hub = await startAccounts(postgres);
+    const alice = await hub.signUp("Alice", "alice@example.com");
+    const organizationId = await alice.createOrganization("Acme");
+    await hub.disableInvites(organizationId, "regression test: enforce the can-invite flag");
+
+    const denied = await alice.createInvitationDenied("blocked@example.com", "member");
+    assert.deepEqual(denied, {
+      error: "entitlement_denied",
+      entitlement: "canInviteMembers",
+      kind: "flag",
+      limit: null,
+      current: null,
+    });
+    assert.equal(await hub.pendingInvitationCount(organizationId, "blocked@example.com"), 0);
+
+    await hub.restoreInvites(organizationId, "regression test: restore the can-invite flag");
     const invitation = await alice.invite("allowed@example.com", "member");
     assert.ok(invitation.id);
   });
@@ -394,6 +416,24 @@ class PaseoAccounts {
 
   async capSeats(organizationId: string, max: number, reason: string): Promise<void> {
     await this.entitlements.service.override(organizationId, { seats: { max } }, null, reason);
+  }
+
+  async disableInvites(organizationId: string, reason: string): Promise<void> {
+    await this.entitlements.service.override(
+      organizationId,
+      { canInviteMembers: false },
+      null,
+      reason,
+    );
+  }
+
+  async restoreInvites(organizationId: string, reason: string): Promise<void> {
+    await this.entitlements.service.override(
+      organizationId,
+      { canInviteMembers: true },
+      null,
+      reason,
+    );
   }
 
   async removeMembership(email: string, organizationId: string): Promise<void> {
@@ -675,15 +715,22 @@ class AccountBrowser {
   async createInvitationDenied(
     email: string,
     role: "admin" | "member",
-  ): Promise<{ error: string; entitlement: string; limit: number; current: number }> {
+  ): Promise<{
+    error: string;
+    entitlement: string;
+    kind: string;
+    limit: number | null;
+    current: number | null;
+  }> {
     const response = await this.post("/api/auth/paseo/create-invitation", { email, role });
     assert.equal(response.status, 409);
     return z
       .object({
         error: z.string(),
         entitlement: z.string(),
-        limit: z.number(),
-        current: z.number(),
+        kind: z.string(),
+        limit: z.number().nullable(),
+        current: z.number().nullable(),
       })
       .parse(await response.json());
   }

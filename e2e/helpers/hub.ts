@@ -427,7 +427,13 @@ export class PaseoHub {
     deliveryKey: string;
     trigger?: string;
     apiKey?: string;
-  }): Promise<{ status: number; error?: string; reason?: string; workflowStatus?: string }> {
+  }): Promise<{
+    status: number;
+    error?: string;
+    reason?: string;
+    workflowStatus?: string;
+    triggerRunId?: string;
+  }> {
     const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
       headers: {
         ...(input.apiKey === undefined
@@ -448,6 +454,7 @@ export class PaseoHub {
         error: z.string().optional(),
         reason: z.string().optional(),
         workflowStatus: z.string().optional(),
+        triggerRunId: z.string().optional(),
       })
       .passthrough()
       .parse(await response.json());
@@ -456,6 +463,7 @@ export class PaseoHub {
       ...(body.error === undefined ? {} : { error: body.error }),
       ...(body.reason === undefined ? {} : { reason: body.reason }),
       ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
+      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
     };
   }
 

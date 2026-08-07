@@ -6,6 +6,7 @@ import {
   EntitlementDenied,
   entitlementOverridesSchema,
   entitlementsSchema,
+  flagEnabled,
   hashTemplate,
   mergeOverrides,
   meterLimit,
@@ -16,6 +17,7 @@ import {
   type EntitlementPatch,
   type Entitlements,
   type EntitlementTemplate,
+  type FlagKey,
   type MeterKey,
 } from "./catalog.js";
 
@@ -140,7 +142,16 @@ export class EntitlementsService {
     const limit = capLimit(effective, cap);
     if (limit === null) return;
     const current = await this.counters[cap](organizationId);
-    if (current >= limit) throw new EntitlementDenied(cap, limit, current);
+    if (current >= limit) throw new EntitlementDenied(cap, "cap", limit, current);
+  }
+
+  /**
+   * Reject the caller when a boolean flag is disabled. Unlike a cap there is nothing to count;
+   * an organization either has the permission or it does not.
+   */
+  async requireFlag(organizationId: string, flag: FlagKey): Promise<void> {
+    const { effective } = await this.read(organizationId);
+    if (!flagEnabled(effective, flag)) throw new EntitlementDenied(flag, "flag", null, null);
   }
 
   /**
@@ -163,7 +174,25 @@ export class EntitlementsService {
     if (result !== undefined) return;
     if (limit === null) throw new Error("unreachable: an unlimited meter cannot be denied");
     const usage = await this.database.getOrganizationUsage(organizationId, meter, periodStart);
-    throw new EntitlementDenied(meter, limit, usage?.used ?? 0);
+    throw new EntitlementDenied(meter, "meter", limit, usage?.used ?? 0);
+  }
+
+  /**
+   * The reservation parameters for a meter: the current period and effective limit. The durable
+   * engine passes these to execution creation so a unit is consumed atomically with — and only
+   * when — an execution is created. Reading the limit here keeps the catalog lookup inside this
+   * module; the caller never learns how a limit is resolved.
+   */
+  async meterReservation(
+    organizationId: string,
+    meter: MeterKey,
+  ): Promise<{ meter: MeterKey; periodStart: Date; limit: number | null }> {
+    const { effective } = await this.read(organizationId);
+    return {
+      meter,
+      periodStart: meterPeriodStart(this.now()),
+      limit: meterLimit(effective, meter),
+    };
   }
 
   /** The current period's usage for a meter, resolved against the effective limit. */

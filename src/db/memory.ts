@@ -99,6 +99,16 @@ function usageKey(organizationId: string, meter: string, periodStart: Date): str
   return `${organizationId}:${meter}:${periodStart.toISOString()}`;
 }
 
+/** Audit before/after snapshot carrying plan provenance, mirroring the Postgres store. */
+function entitlementSnapshot(record: OrganizationEntitlementsRecord): unknown {
+  return {
+    granted: record.granted,
+    overrides: record.overrides,
+    planId: record.planId,
+    planVersion: record.planVersion,
+  };
+}
+
 function transitionWithTerminalRun(
   transition: TransitionAgentExecutionResult,
   run: TriggerRunRecord | undefined,
@@ -401,6 +411,39 @@ class MemoryDatabase implements Database {
         execution: undefined,
         created: false,
       };
+    }
+    // Reserve one meter unit before creating the execution, so a denied reservation creates
+    // nothing — the in-memory single-threaded model gives the same atomicity the Postgres
+    // transaction does. A replay hits the `agentExecutionId !== null` branch above and never
+    // reaches here, so it cannot double-consume.
+    if (input.reservation !== undefined) {
+      const reserved = await this.consumeOrganizationUsage({
+        organizationId: input.execution.organizationId,
+        meter: input.reservation.meter,
+        periodStart: input.reservation.periodStart,
+        amount: 1,
+        limit: input.reservation.limit,
+      });
+      if (reserved === undefined) {
+        if (input.reservation.limit === null) {
+          throw new Error("unreachable: an unlimited meter reservation cannot be denied");
+        }
+        const usage = await this.getOrganizationUsage(
+          input.execution.organizationId,
+          input.reservation.meter,
+          input.reservation.periodStart,
+        );
+        return {
+          stepRun: step,
+          execution: undefined,
+          created: false,
+          reservationDenied: {
+            meter: input.reservation.meter,
+            limit: input.reservation.limit,
+            current: usage?.used ?? 0,
+          },
+        };
+      }
     }
     const deadlineAt = new Date(
       Math.min(input.execution.deadlineAt.getTime(), run.deadlineAt.getTime()),
@@ -1879,6 +1922,16 @@ class MemoryDatabase implements Database {
     input: StampOrganizationEntitlementsInput,
   ): Promise<OrganizationEntitlementsRecord> {
     const existing = this.organizationEntitlements.get(input.organizationId);
+    // Idempotent: an identical granted template and plan provenance is a no-op — no timestamp
+    // bump, no duplicate audit row — mirroring the Postgres conditional stamp.
+    if (
+      existing !== undefined &&
+      existing.planId === input.planId &&
+      existing.planVersion === input.planVersion &&
+      JSON.stringify(existing.granted) === JSON.stringify(input.granted)
+    ) {
+      return existing;
+    }
     const now = this.now();
     const record: OrganizationEntitlementsRecord = {
       organizationId: input.organizationId,
@@ -1894,11 +1947,8 @@ class MemoryDatabase implements Database {
       organizationId: input.organizationId,
       actor: input.actor,
       source: input.source,
-      before:
-        existing === undefined
-          ? null
-          : { granted: existing.granted, overrides: existing.overrides },
-      after: { granted: record.granted, overrides: record.overrides },
+      before: existing === undefined ? null : entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
       reason: input.reason,
     });
     return record;
@@ -1921,8 +1971,8 @@ class MemoryDatabase implements Database {
       organizationId: input.organizationId,
       actor: input.actor,
       source: "override",
-      before: { granted: existing.granted, overrides: existing.overrides },
-      after: { granted: record.granted, overrides: record.overrides },
+      before: entitlementSnapshot(existing),
+      after: entitlementSnapshot(record),
       reason: input.reason,
     });
     return record;

@@ -658,6 +658,26 @@ export interface CreateRejectedTriggerRunInput {
   createdAt?: Date;
 }
 
+/**
+ * A meter reservation the durable engine attaches to execution creation. One unit is consumed
+ * in the same transaction that creates the execution, so metering is exactly per-execution:
+ * a genuinely new execution reserves, a replay or recovery of an existing one does not, and a
+ * denial prevents the execution from being created at all. `limit` null means unlimited — the
+ * unit is still counted (for usage display) but never denied.
+ */
+export interface MeterReservation {
+  meter: string;
+  periodStart: Date;
+  limit: number | null;
+}
+
+/** Returned when a reservation would exceed a non-null limit; the execution is not created. */
+export interface MeterReservationDenied {
+  meter: string;
+  limit: number;
+  current: number;
+}
+
 export interface WorkflowStepExecutionInput {
   triggerRunId: string;
   stepId: string;
@@ -668,6 +688,8 @@ export interface WorkflowStepExecutionInput {
     idleDeadlineAt: Date;
     startedAt: Date;
   };
+  /** When set, one meter unit is reserved atomically with creating the execution. */
+  reservation?: MeterReservation;
 }
 
 export interface WorkflowAgentCompletionInput {
@@ -874,6 +896,8 @@ export interface Database {
     stepRun: WorkflowStepRunRecord;
     execution: AgentExecutionRecord | undefined;
     created: boolean;
+    /** Present only when a reservation was requested and denied; no execution was created. */
+    reservationDenied?: MeterReservationDenied;
   }>;
   linkWorkflowStepRunExecution(
     stepRunId: string,

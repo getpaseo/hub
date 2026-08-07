@@ -90,6 +90,30 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
     assert.deepEqual(history[0]?.effective.meters, { "executions.monthly": { limit: null } });
   });
 
+  it("re-stamps idempotently and appends an audit row only on a real change", async () => {
+    const organizationId = await seedOrganization();
+    const service = new EntitlementsService(database, { seats: async () => 0 });
+    const template = {
+      seats: { max: 3 },
+      canInviteMembers: false,
+      meters: { "executions.monthly": { limit: null } },
+    };
+    await service.stamp(organizationId, template, { source: "plan_stamp", planId: "plan-solo" });
+    const first = await service.read(organizationId);
+
+    await service.stamp(organizationId, template, { source: "plan_stamp", planId: "plan-solo" });
+    const second = await service.read(organizationId);
+    assert.equal(second.stampedAt.getTime(), first.stampedAt.getTime());
+    assert.equal((await service.history(organizationId, 10)).length, 1);
+
+    await service.stamp(
+      organizationId,
+      { ...template, seats: { max: 5 } },
+      { source: "plan_stamp", planId: "plan-solo" },
+    );
+    assert.equal((await service.history(organizationId, 10)).length, 2);
+  });
+
   it("lets exactly the limit succeed under concurrent racing consumers, never over", async () => {
     const organizationId = await seedOrganization();
     const service = new EntitlementsService(database, { seats: async () => 0 });

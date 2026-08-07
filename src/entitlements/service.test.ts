@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import {
@@ -55,6 +56,44 @@ describe("EntitlementsService", () => {
     assert.deepEqual(record.granted, capped);
     assert.equal(record.planId, "plan-solo");
     assert.deepEqual(record.overrides, {});
+  });
+
+  it("re-stamping the identical template and plan is a no-op", async () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const database = createMemoryDatabase();
+    const service = new EntitlementsService(database, { seats: async () => 0 }, () => now);
+    const template = {
+      seats: { max: 3 },
+      canInviteMembers: false,
+      meters: { "executions.monthly": { limit: null } },
+    };
+    await service.stamp("org-1", template, { source: "plan_stamp", planId: "plan-solo" });
+    const first = await service.read("org-1");
+
+    // A later webhook replays the same plan state; nothing should move.
+    now = new Date("2026-02-01T00:00:00.000Z");
+    await service.stamp("org-1", template, { source: "plan_stamp", planId: "plan-solo" });
+    const second = await service.read("org-1");
+
+    assert.equal(second.stampedAt.getTime(), first.stampedAt.getTime());
+    assert.equal(second.updatedAt.getTime(), first.updatedAt.getTime());
+    assert.equal((await service.history("org-1", 10)).length, 1);
+  });
+
+  it("records plan provenance in the audit snapshot so identical templates stay distinguishable", async () => {
+    const database = createMemoryDatabase();
+    const service = new EntitlementsService(database, { seats: async () => 0 });
+    const template = {
+      seats: { max: 3 },
+      canInviteMembers: true,
+      meters: { "executions.monthly": { limit: null } },
+    };
+    await service.stamp("org-1", template, { source: "plan_stamp", planId: "plan-team" });
+
+    const [change] = await database.listEntitlementChanges("org-1", 10);
+    const after = z.object({ planId: z.string(), planVersion: z.string() }).parse(change?.after);
+    assert.equal(after.planId, "plan-team");
+    assert.equal(after.planVersion, hashTemplate(template));
   });
 
   it("rejects stamping an invalid template", async () => {
@@ -126,6 +165,24 @@ describe("EntitlementsService", () => {
     assert.equal(denied.entitlement, "seats");
     assert.equal(denied.limit, 2);
     assert.equal(denied.current, 2);
+  });
+
+  it("passes a flag that is enabled and denies one that is disabled", async () => {
+    const service = serviceWith();
+    await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
+
+    await service.requireFlag("org-1", "canInviteMembers");
+
+    await service.override("org-1", { canInviteMembers: false }, "admin-1", "Freeze invites");
+    const denied = await service.requireFlag("org-1", "canInviteMembers").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(denied instanceof EntitlementDenied);
+    assert.equal(denied.entitlement, "canInviteMembers");
+    assert.equal(denied.kind, "flag");
+    assert.equal(denied.limit, null);
+    assert.equal(denied.current, null);
   });
 
   it("never denies headroom for an unlimited cap", async () => {

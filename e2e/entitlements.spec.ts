@@ -74,7 +74,7 @@ test("an owner caps seats, a blocked invite explains itself, and the audit trail
 });
 
 test.describe("metered usage", () => {
-  test.describe.configure({ timeout: 120_000 });
+  test.describe.configure({ timeout: 180_000 });
 
   test("caps executions per month, denies the second run, and shows usage on the page", async ({
     hub,
@@ -140,21 +140,39 @@ test.describe("metered usage", () => {
       expect(first.workflowStatus).toBe("running");
     });
 
-    await test.step("a second execution in the same month is denied by the meter", async () => {
+    let deniedRunId = "";
+    await test.step("a second execution in the same month is accepted, then denied by the meter", async () => {
+      // Metering is per-execution now, so the trigger is accepted (200) and the denial lands
+      // when the durable engine creates the execution — surfaced on the run, not the response.
       const second = await hub.runManualInput({
         rawInput: "run it again",
         deliveryKey: "slice-3-run-2",
         apiKey: runApiKey,
       });
-      expect(second.workflowStatus).toBe("failed");
+      expect(second.status).toBe(200);
+      expect(second.triggerRunId).toBeDefined();
+      deniedRunId = second.triggerRunId ?? "";
     });
 
-    await test.step("the denied run is visible in project activity", async () => {
+    await test.step("the denied run fails with the entitlement reason, not a generic failure", async () => {
       await app.navigation.openOrganizationSection("Projects");
       await app.navigation.openProject("Default");
       await app.navigation.openProjectSection("Activity");
       const activity = page.getByRole("table", { name: "Project activity" });
-      await expect(activity).toContainText("failed");
+      const deniedRow = activity
+        .getByRole("row")
+        .filter({ has: page.locator(`a[href$="/activity/${deniedRunId}"]`) });
+      // The denial lands when the durable worker creates the second execution — asynchronous to
+      // the manual-run response — and the activity snapshot does not live-refetch, so reload
+      // until that exact run is marked failed. Targeting the run by id keeps this unambiguous
+      // even if an unrelated run also fails.
+      await expect(async () => {
+        await page.reload();
+        await expect(deniedRow).toContainText("failed");
+      }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
+      await deniedRow.getByRole("link", { name: "deploy", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible();
+      await expect(page.getByText("executions.monthly", { exact: false }).first()).toBeVisible();
       await page.screenshot({ path: `${SLICE_3_DIR}/02-execution-denied.png`, fullPage: true });
     });
 

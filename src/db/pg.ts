@@ -762,6 +762,43 @@ class PgDatabase implements Database {
         idleDeadlineAt,
         workflowStepRunId: step.id,
       });
+      // Reserve one meter unit in the same transaction that creates the execution. If the
+      // reservation is denied the whole transaction rolls back, so no execution is created and
+      // nothing is dispatched — metering is atomic with the work it permits.
+      if (input.reservation !== undefined) {
+        const reserved = await reserveOrganizationUsageOnClient(client, {
+          organizationId: input.execution.organizationId,
+          meter: input.reservation.meter,
+          periodStart: input.reservation.periodStart,
+          amount: 1,
+          limit: input.reservation.limit,
+        });
+        if (reserved === undefined) {
+          if (input.reservation.limit === null) {
+            throw new Error("unreachable: an unlimited meter reservation cannot be denied");
+          }
+          const usage = await client.query<OrganizationUsageRow>(
+            `select used from organization_usage
+             where organization_id = $1 and meter = $2 and period_start = $3`,
+            [
+              input.execution.organizationId,
+              input.reservation.meter,
+              input.reservation.periodStart,
+            ],
+          );
+          await client.query("rollback");
+          return {
+            stepRun: toWorkflowStepRunRecord(step),
+            execution: undefined,
+            created: false,
+            reservationDenied: {
+              meter: input.reservation.meter,
+              limit: input.reservation.limit,
+              current: Number(usage.rows[0]?.used ?? 0),
+            },
+          };
+        }
+      }
       const updated = await client.query<WorkflowStepRunRow>(
         `update workflow_step_runs
          set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3),
@@ -2447,11 +2484,22 @@ class PgDatabase implements Database {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      const existing = await client.query<OrganizationEntitlementsRow>(
-        `select * from organization_entitlements where organization_id = $1 for update`,
-        [input.organizationId],
+      // Idempotent by design: a stamp that lands the same granted template and the same plan
+      // provenance is a no-op — no timestamp bump, no duplicate audit row. That is what stops
+      // the webhook re-stamp ping-pong. jsonb `is distinct from` compares granted structurally.
+      const existing = await client.query<OrganizationEntitlementsRow & { changed: boolean }>(
+        `select *,
+            (granted is distinct from $2::jsonb
+             or plan_id is distinct from $3
+             or plan_version is distinct from $4) as changed
+         from organization_entitlements where organization_id = $1 for update`,
+        [input.organizationId, JSON.stringify(input.granted), input.planId, input.planVersion],
       );
       const before = existing.rows[0];
+      if (before !== undefined && !before.changed) {
+        await client.query("commit");
+        return toOrganizationEntitlementsRecord(before);
+      }
       const stamped = await client.query<OrganizationEntitlementsRow>(
         `insert into organization_entitlements
            (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
@@ -2474,10 +2522,8 @@ class PgDatabase implements Database {
           input.organizationId,
           input.actor,
           input.source,
-          before === undefined
-            ? null
-            : JSON.stringify({ granted: before.granted, overrides: before.overrides }),
-          JSON.stringify({ granted: after.granted, overrides: after.overrides }),
+          before === undefined ? null : JSON.stringify(entitlementSnapshot(before)),
+          JSON.stringify(entitlementSnapshot(after)),
           input.reason,
         ],
       );
@@ -2520,8 +2566,8 @@ class PgDatabase implements Database {
         [
           input.organizationId,
           input.actor,
-          JSON.stringify({ granted: before.granted, overrides: before.overrides }),
-          JSON.stringify({ granted: after.granted, overrides: after.overrides }),
+          JSON.stringify(entitlementSnapshot(before)),
+          JSON.stringify(entitlementSnapshot(after)),
           input.reason,
         ],
       );
@@ -2556,24 +2602,7 @@ class PgDatabase implements Database {
   async consumeOrganizationUsage(
     input: ConsumeOrganizationUsageInput,
   ): Promise<OrganizationUsageRecord | undefined> {
-    // A single conditional upsert. On conflict, the accumulation guard (`where` on the
-    // update) is what makes concurrent consumers race-safe: Postgres serializes concurrent
-    // inserts targeting the same conflict key, so only one attempt "wins" the fresh insert
-    // and every other concurrent caller is forced through the guarded update branch. The
-    // `select ... where` guard on the insert branch rejects a single call whose amount
-    // alone would exceed the limit, without ever touching the table.
-    const rows = await query<OrganizationUsageRow>(
-      this.pool,
-      `insert into organization_usage (organization_id, meter, period_start, used)
-       select $1, $2, $3, $4::bigint
-       where $5::bigint is null or $4::bigint <= $5::bigint
-       on conflict (organization_id, meter, period_start) do update
-         set used = organization_usage.used + excluded.used
-       where $5::bigint is null or organization_usage.used + excluded.used <= $5::bigint
-       returning *`,
-      [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
-    );
-    return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
+    return reserveOrganizationUsageOnClient(this.pool, input);
   }
 
   async getOrganizationUsage(
@@ -4089,6 +4118,24 @@ export interface OrganizationEntitlementsRow extends QueryResultRow {
   updated_at: Date;
 }
 
+/**
+ * The audit before/after snapshot. Carries planId and planVersion so two plans with identical
+ * templates stay historically distinguishable — the off-template query depends on it.
+ */
+function entitlementSnapshot(row: OrganizationEntitlementsRow): {
+  granted: unknown;
+  overrides: unknown;
+  planId: string | null;
+  planVersion: string | null;
+} {
+  return {
+    granted: row.granted,
+    overrides: row.overrides,
+    planId: row.plan_id,
+    planVersion: row.plan_version,
+  };
+}
+
 function toOrganizationEntitlementsRecord(
   row: OrganizationEntitlementsRow,
 ): OrganizationEntitlementsRecord {
@@ -4143,6 +4190,33 @@ function toOrganizationUsageRecord(row: OrganizationUsageRow): OrganizationUsage
     periodStart: row.period_start,
     used: Number(row.used),
   };
+}
+
+/**
+ * The single conditional upsert behind both standalone consumption and the durable engine's
+ * per-execution reservation, run against a pool or an open transaction client. On conflict the
+ * accumulation guard (`where` on the update) makes concurrent consumers race-safe: Postgres
+ * serializes concurrent inserts on the same conflict key, so one attempt wins the fresh insert
+ * and every other is forced through the guarded update. Returns `undefined` — usage unchanged —
+ * when a non-null limit would be exceeded.
+ */
+async function reserveOrganizationUsageOnClient(
+  client: Pool | PoolClient,
+  input: ConsumeOrganizationUsageInput,
+): Promise<OrganizationUsageRecord | undefined> {
+  const rows = await withDatabaseDeadline(
+    client.query<OrganizationUsageRow>(
+      `insert into organization_usage (organization_id, meter, period_start, used)
+       select $1, $2, $3, $4::bigint
+       where $5::bigint is null or $4::bigint <= $5::bigint
+       on conflict (organization_id, meter, period_start) do update
+         set used = organization_usage.used + excluded.used
+       where $5::bigint is null or organization_usage.used + excluded.used <= $5::bigint
+       returning *`,
+      [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
+    ),
+  );
+  return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
 }
 
 export interface ProjectRow extends QueryResultRow {

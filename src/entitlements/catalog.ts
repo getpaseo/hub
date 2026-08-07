@@ -99,6 +99,12 @@ export type CapKey = "seats";
 /** Meters carry a numeric limit checked against period usage by `consume`. */
 export type MeterKey = "executions.monthly";
 
+/** Flags are boolean permissions checked by `requireFlag` — no count, no limit. */
+export type FlagKey = "canInviteMembers";
+
+/** Which kind of entitlement a denial is about; flags carry no numeric limit or current. */
+export type EntitlementKind = "cap" | "meter" | "flag";
+
 export const UNLIMITED_TEMPLATE: EntitlementTemplate = {
   seats: { max: null },
   canInviteMembers: true,
@@ -119,6 +125,14 @@ export function meterLimit(effective: Entitlements, meter: MeterKey): number | n
     "executions.monthly": effective.meters["executions.monthly"].limit,
   };
   return limits[meter];
+}
+
+/** Whether a boolean flag is enabled in the effective entitlements. */
+export function flagEnabled(effective: Entitlements, flag: FlagKey): boolean {
+  const flags: Record<FlagKey, boolean> = {
+    canInviteMembers: effective.canInviteMembers,
+  };
+  return flags[flag];
 }
 
 /**
@@ -156,17 +170,23 @@ export function mergeOverrides(
 }
 
 /**
- * Thrown when a capped entitlement or metered usage has no headroom left. Mapped to a
- * machine-readable HTTP payload once at each boundary — never caught and reshaped per
- * call site.
+ * Thrown when a capped entitlement, metered usage, or a boolean flag denies an action. One
+ * denial type covers all three kinds: caps and meters carry a numeric `limit`/`current`;
+ * flags carry `null` for both because there is nothing to count. Mapped to a machine-readable
+ * payload once at each boundary — never caught and reshaped per call site.
  */
 export class EntitlementDenied extends Error {
   constructor(
-    readonly entitlement: CapKey | MeterKey,
-    readonly limit: number,
-    readonly current: number,
+    readonly entitlement: CapKey | MeterKey | FlagKey,
+    readonly kind: EntitlementKind,
+    readonly limit: number | null,
+    readonly current: number | null,
   ) {
-    super(`entitlement denied: ${entitlement} (${current}/${limit})`);
+    super(
+      kind === "flag"
+        ? `entitlement denied: ${entitlement}`
+        : `entitlement denied: ${entitlement} (${current}/${limit})`,
+    );
     this.name = "EntitlementDenied";
   }
 }

@@ -403,8 +403,11 @@ export class OrganizationAccess {
       );
       const pendingReinvite = alreadyPending.rows[0];
       if (pendingReinvite !== undefined) return pendingReinvite;
-      // A genuinely new invitee reserves a seat, so it must fit the seat cap. Re-inviting an
-      // existing member or pending invitee (handled above) reserves nothing and is exempt.
+      // A genuinely new invitee reserves a seat, so the organization must both be allowed to
+      // invite at all and have a free seat. Both checks run under the membership advisory lock
+      // held by this transaction, so a burst of concurrent invites is serialized against one
+      // another. Re-inviting an existing member or pending invitee (handled above) is exempt.
+      await this.options.entitlements.requireFlag(access.organization.id, "canInviteMembers");
       await this.options.entitlements.requireHeadroom(access.organization.id, "seats");
       const inserted = await client.query<InvitationRow>(
         `insert into invitation
@@ -864,6 +867,7 @@ function entitlementDeniedResponse(error: EntitlementDenied): Response {
     {
       error: "entitlement_denied",
       entitlement: error.entitlement,
+      kind: error.kind,
       limit: error.limit,
       current: error.current,
     },
