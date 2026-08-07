@@ -55,6 +55,7 @@ describe("application runtime provider composition", () => {
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => {
@@ -111,6 +112,7 @@ describe("application runtime provider composition", () => {
           database,
           auth: new RuntimeAuth(),
           entitlements: entitlementsForTest(database),
+          billing: null,
           publicApi: { status: "unavailable" },
           registrations: [first, second],
           close: () => Promise.resolve(),
@@ -125,6 +127,7 @@ describe("application runtime provider composition", () => {
       database,
       auth: new RuntimeAuth("member"),
       entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [fakeRegistration()],
       close: () => Promise.resolve(),
@@ -198,6 +201,7 @@ describe("application runtime provider composition", () => {
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [registration],
       close: () => Promise.resolve(),
@@ -237,6 +241,7 @@ describe("application runtime provider composition", () => {
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
+      billing: null,
       publicApi: { status: "unavailable" },
       registrations: [
         {

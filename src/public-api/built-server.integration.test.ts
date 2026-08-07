@@ -74,6 +74,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       database,
       auth,
       entitlements: entitlements.service,
+      billing: null,
       publicApi: { status: "enabled", authenticator: auth.apiKeys! },
       async close() {
         await auth.close();

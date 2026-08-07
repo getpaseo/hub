@@ -487,6 +487,27 @@ export class PaseoHub {
     await this.requireUser(alias).expectEntitlements();
   }
 
+  async expectNoBillingNavigation(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoBillingNavigation();
+  }
+
+  async expectBillingPageUnavailable(alias: string): Promise<void> {
+    await this.requireUser(alias).expectBillingPageUnavailable();
+  }
+
+  async expectBillingWebhookUnavailable(): Promise<void> {
+    const response = await this.requests.post(`${this.primary.origin}/api/billing/webhook`, {
+      headers: { "content-type": "application/json" },
+      data: Buffer.from("{}"),
+    });
+    // No billing route is registered at all, so this falls through to the app's generic
+    // not-found page rather than a route handler's plain-text 404 (contrast /webhook, which is
+    // a real registered route and answers unsigned requests with text/plain).
+    expect(response.status()).toBe(404);
+    expect(response.headers()["content-type"]).toBe(HTML_TYPE);
+    expect(await response.text()).toContain("Not Found");
+  }
+
   async openSeatOverrideEditor(
     alias: string,
     input: { max: number; reason: string },
@@ -3159,6 +3180,20 @@ class HubUser {
     await expect(auditRow).toContainText(expected.actor);
     await expect(auditRow).toContainText(expected.reason);
     await expectAccessible(this.page);
+  }
+
+  async expectNoBillingNavigation(): Promise<void> {
+    await this.openOrganizationSection("Projects");
+    await expect(this.page.getByRole("link", { name: "Billing", exact: true })).toHaveCount(0);
+    await expect(this.page.getByRole("button", { name: "Billing", exact: true })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  async expectBillingPageUnavailable(): Promise<void> {
+    const organizationSlug = new URL(this.page.url()).pathname.split("/")[2];
+    if (organizationSlug === undefined) throw new Error("organization slug is unavailable");
+    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/billing`);
+    expect(response?.status()).toBe(404);
   }
 
   private async expectConnectionShell(): Promise<void> {

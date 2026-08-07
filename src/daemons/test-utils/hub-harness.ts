@@ -1356,6 +1356,7 @@ export class HubHarness {
       operations: application.operations,
       publicApi: application.publicApi,
       resources: null,
+      billing: null,
       projectDashboard: null,
       entitlementsDashboard: null,
       testTriggerRoutes: true,

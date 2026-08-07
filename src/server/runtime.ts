@@ -1,4 +1,5 @@
 import type { HubOperations, HubRuntime } from "../app.js";
+import type { BillingRuntime } from "../billing/index.js";
 import type { EntitlementsDashboard } from "../entitlements/dashboard.js";
 import type {
   OrganizationResourceReader,
@@ -12,6 +13,8 @@ export interface ApplicationRuntime {
   operations: HubOperations;
   publicApi: PublicApi;
   resources: OrganizationResources | null;
+  /** HOSTED only. Null self-hosted; present when the composition root has a billing config. */
+  billing: BillingRuntime | null;
   projectDashboard: ProjectDashboard | null;
   entitlementsDashboard: EntitlementsDashboard | null;
   testTriggerRoutes: boolean;

@@ -1,5 +1,6 @@
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
+import type { BillingRuntime } from "./billing/index.js";
 import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { Database } from "./db/types.js";
@@ -21,6 +22,8 @@ export interface ApplicationCompositionOptions {
   auth: AuthServer | null;
   /** The composition root's single EntitlementsService; present whenever a database is. */
   entitlements: EntitlementsService | null;
+  /** HOSTED only. Present when `readBillingConfig()` finds `STRIPE_SECRET_KEY`; null self-hosted. */
+  billing: BillingRuntime | null;
   publicApi: PublicApiComposition;
   registrations?: readonly ProviderRegistration[];
   publicBaseUrl?: string;
@@ -121,6 +124,7 @@ export async function createApplicationRuntime(
     operations: application.operations,
     publicApi: application.publicApi,
     resources,
+    billing: options.billing,
     projectDashboard:
       options.database === null || options.auth === null
         ? null

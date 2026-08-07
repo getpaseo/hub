@@ -130,6 +130,7 @@ async function main(): Promise<void> {
     database,
     auth,
     entitlements: entitlements.service,
+    billing: null,
     publicApi:
       machineKey === undefined || auth?.apiKeys === undefined
         ? { status: "unavailable" }

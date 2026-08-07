@@ -199,6 +199,7 @@ async function main(): Promise<void> {
     operations: application.operations,
     publicApi: application.publicApi,
     resources,
+    billing: null,
     projectDashboard: null,
     entitlementsDashboard: null,
     testTriggerRoutes: true,

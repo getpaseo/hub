@@ -12,6 +12,7 @@ import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
+import { composeBilling, readBillingConfig } from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
@@ -44,6 +45,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const identity = readHubIdentity();
   const database = await createDatabaseHandle(config.databaseUrl);
   const entitlements = composeEntitlements(database, config.databaseUrl);
+  const billingConfig = readBillingConfig();
+  const billing = billingConfig === undefined ? null : composeBilling(billingConfig);
   const auth = createProductionAuthServer(
     entitlements,
     config.databaseUrl,
@@ -70,6 +73,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     database,
     auth,
     entitlements: entitlements.service,
+    billing,
     publicApi:
       auth?.apiKeys === undefined
         ? { status: "unavailable" }
