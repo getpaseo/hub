@@ -4,12 +4,9 @@ import { z } from "zod";
 import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
 import { logger } from "../logger.js";
-import { TenantRouteNotFoundError } from "./access.js";
-import {
-  ProjectCommandError,
-  type ManualConfigurationSaveResult,
-  type ProjectDashboard,
-} from "./dashboard.js";
+import { isTenantRouteNotFoundError } from "./access.js";
+import { ProjectCommandError, projectCommandErrorCode } from "./command-error.js";
+import { type ManualConfigurationSaveResult, type ProjectDashboard } from "./dashboard.js";
 
 const organizationScopeSchema = z
   .object({ organizationSlug: z.string().trim().min(1).max(100) })
@@ -160,9 +157,8 @@ async function commandResult<T>(
   try {
     return respondOk(await operation(await requireDashboard()));
   } catch (error) {
-    if (error instanceof ProjectCommandError && error.code === "forbidden") {
-      return respondError({ message: "You don't have permission to manage this project." });
-    }
+    const forbidden = commandForbiddenMessage(error);
+    if (forbidden !== undefined) return respondError({ message: forbidden });
     logger.error({ err: error, scope }, "project dashboard command failed");
     return respondError({ message: unavailableMessage(error, scope.projectSlug !== undefined) });
   }
@@ -176,11 +172,17 @@ function unavailable(): never {
   throw new ProjectCommandError("dashboard_unavailable");
 }
 
-function unavailableMessage(error: unknown, projectScoped: boolean): string {
-  if (error instanceof TenantRouteNotFoundError) {
+export function unavailableMessage(error: unknown, projectScoped: boolean): string {
+  if (isTenantRouteNotFoundError(error)) {
     return projectScoped ? "Project unavailable." : "Organization unavailable.";
   }
   return projectScoped
     ? "We couldn't update this project."
     : "We couldn't update this organization.";
+}
+
+export function commandForbiddenMessage(error: unknown): string | undefined {
+  return projectCommandErrorCode(error) === "forbidden"
+    ? "You don't have permission to manage this project."
+    : undefined;
 }

@@ -21,6 +21,7 @@ import {
 } from "../entitlements/denial.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
+import { ProjectCommandError } from "./command-error.js";
 
 /** A jsonb column value, cast at the DB boundary so it survives the server-fn serializer. */
 export type JsonValue =
@@ -312,13 +313,6 @@ function invalidManualConfiguration(
     revision: { id: revision.id, version: revision.version },
     errors: configurationValidationMessages(revision.validationErrors),
   };
-}
-
-export class ProjectCommandError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-    this.name = "ProjectCommandError";
-  }
 }
 
 function organizationScope(scope: ProjectRouteScope): ProjectRouteScope {
