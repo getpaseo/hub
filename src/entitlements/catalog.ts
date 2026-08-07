@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { EntitlementDenialPayload } from "./denial.js";
 
 /**
  * The entitlement catalog: caps and flags checked against live state, plus meter limits.
@@ -188,6 +189,17 @@ export class EntitlementDenied extends Error {
         : `entitlement denied: ${entitlement} (${current}/${limit})`,
     );
     this.name = "EntitlementDenied";
+  }
+
+  /** The transport-neutral payload every boundary maps this denial to. */
+  payload(): EntitlementDenialPayload {
+    return {
+      error: "entitlement_denied",
+      entitlement: this.entitlement,
+      kind: this.kind,
+      limit: this.limit,
+      current: this.current,
+    };
   }
 }
 

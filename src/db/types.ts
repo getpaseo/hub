@@ -1,6 +1,7 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
+import type { EntitlementPatch } from "../entitlements/catalog.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -748,7 +749,12 @@ export interface StampOrganizationEntitlementsInput {
 
 export interface OverrideOrganizationEntitlementsInput {
   organizationId: string;
-  overrides: unknown;
+  /**
+   * The hand-adjustment patch, merged against the locked row inside the persistence
+   * transaction — not a pre-merged document. Merging under the row lock is what stops two
+   * concurrent overrides from clobbering each other's keys.
+   */
+  patch: EntitlementPatch;
   actor: string | null;
   reason: string;
 }

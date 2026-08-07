@@ -25,6 +25,7 @@ import {
 import { invitationLockName } from "./registration-admission.js";
 import { provisionOrganization } from "../organizations/provisioning.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
+import { entitlementDenialResponse } from "../entitlements/denial.js";
 import type { EntitlementsService } from "../entitlements/service.js";
 
 const INVITATION_LIFETIME_HOURS = 48;
@@ -160,7 +161,7 @@ export class OrganizationAccess {
       return notFound();
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
-      if (error instanceof EntitlementDenied) return entitlementDeniedResponse(error);
+      if (error instanceof EntitlementDenied) return entitlementDenialResponse(error.payload());
       logger.error({ err: error }, "account organization request failed");
       return Response.json({ error: "request_failed" }, { status: 500 });
     }
@@ -860,19 +861,6 @@ export async function countOrganizationSeatUsage(
     [organizationId],
   );
   return Number(result.rows[0]?.count ?? 0);
-}
-
-function entitlementDeniedResponse(error: EntitlementDenied): Response {
-  return Response.json(
-    {
-      error: "entitlement_denied",
-      entitlement: error.entitlement,
-      kind: error.kind,
-      limit: error.limit,
-      current: error.current,
-    },
-    { status: 409 },
-  );
 }
 
 async function lockOrganizationMembers(client: PoolClient, organizationId: string): Promise<void> {

@@ -77,6 +77,7 @@ import type {
   OrganizationUsageRecord,
   ConsumeOrganizationUsageInput,
 } from "./types.js";
+import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
@@ -1961,9 +1962,15 @@ class MemoryDatabase implements Database {
     if (existing === undefined) {
       throw new Error(`organization has no entitlements record: ${input.organizationId}`);
     }
+    // Merge the patch against the current row, mirroring the Postgres locked-row merge. No await
+    // between read and write, so concurrent overrides cannot interleave and lose keys.
+    const overrides = mergeOverrides(
+      entitlementOverridesSchema.parse(existing.overrides),
+      input.patch,
+    );
     const record: OrganizationEntitlementsRecord = {
       ...existing,
-      overrides: input.overrides,
+      overrides,
       updatedAt: this.now(),
     };
     this.organizationEntitlements.set(input.organizationId, record);

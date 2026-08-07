@@ -8,6 +8,7 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
 import { slugify } from "../slug.js";
+import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
 import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
@@ -2551,12 +2552,18 @@ class PgDatabase implements Database {
       if (before === undefined) {
         throw new Error(`organization has no entitlements record: ${input.organizationId}`);
       }
+      // Merge the patch against the row we hold locked, so a concurrent override serializes
+      // behind this one instead of reading a stale base and clobbering its keys.
+      const overrides = mergeOverrides(
+        entitlementOverridesSchema.parse(before.overrides),
+        input.patch,
+      );
       const updated = await client.query<OrganizationEntitlementsRow>(
         `update organization_entitlements
            set overrides = $2::jsonb, updated_at = now()
          where organization_id = $1
          returning *`,
-        [input.organizationId, JSON.stringify(input.overrides)],
+        [input.organizationId, JSON.stringify(overrides)],
       );
       const after = updated.rows[0];
       if (after === undefined) throw new Error("entitlements override returned no row");

@@ -1083,5 +1083,8 @@ export const organizationUsage = pgTable(
   (table) => [
     primaryKey({ columns: [table.organizationId, table.meter, table.periodStart] }),
     index("organization_usage_organization_meter_idx").on(table.organizationId, table.meter),
+    // Usage only ever accumulates; a negative counter would be a corruption, so the database
+    // refuses it independently of any caller validation.
+    check("organization_usage_used_non_negative", sql`${table.used} >= 0`),
   ],
 );

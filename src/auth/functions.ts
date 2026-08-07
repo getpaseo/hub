@@ -11,6 +11,7 @@ import {
 } from "./organization-contract.js";
 import { PASSWORD_MIN_LENGTH } from "./instance-policy.js";
 import { API_KEY_SCOPES, apiKeyScopeSchema } from "./api-key-contract.js";
+import { parseEntitlementDenial, type EntitlementDenialPayload } from "../entitlements/denial.js";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -215,28 +216,17 @@ export const createInvitation = createServerFn({ method: "POST" })
     if (response.status === 401) return respondOk({ state: "sessionExpired" });
     if (response.status === 403) return respondOk({ state: "organizationRequired" });
     if (response.status === 409) {
-      const denial = await readEntitlementDenial(response);
-      if (denial !== undefined) return respondError({ message: seatLimitMessage(denial) });
+      const denial = parseEntitlementDenial(await response.json().catch(() => undefined));
+      if (denial !== undefined) return respondError({ message: invitationDenialMessage(denial) });
     }
     if (!response.ok) return respondError({ message: "We couldn't create that invitation." });
     return respondOk({ state: "complete" });
   });
 
-const entitlementDenialSchema = z.object({
-  error: z.literal("entitlement_denied"),
-  entitlement: z.string(),
-  limit: z.number(),
-  current: z.number(),
-});
-
-async function readEntitlementDenial(
-  response: Response,
-): Promise<z.infer<typeof entitlementDenialSchema> | undefined> {
-  const parsed = entitlementDenialSchema.safeParse(await response.json().catch(() => undefined));
-  return parsed.success ? parsed.data : undefined;
-}
-
-function seatLimitMessage(denial: z.infer<typeof entitlementDenialSchema>): string {
+function invitationDenialMessage(denial: EntitlementDenialPayload): string {
+  if (denial.entitlement === "canInviteMembers") {
+    return "Inviting members isn't enabled for this organization. An organization owner can enable it on the Entitlements page.";
+  }
   return `Seat limit reached — ${denial.current} of ${denial.limit} seats are in use. An organization owner can raise the limit on the Entitlements page before inviting more members.`;
 }
 

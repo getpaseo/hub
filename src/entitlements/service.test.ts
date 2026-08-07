@@ -261,6 +261,25 @@ describe("EntitlementsService", () => {
     });
   });
 
+  it("rejects a non-positive or non-integer consume amount before touching usage", async () => {
+    const service = serviceWith();
+    await service.stamp(
+      "org-1",
+      {
+        seats: { max: null },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: 5 } },
+      },
+      { source: "provisioning", planId: null },
+    );
+
+    for (const amount of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(() => service.consume("org-1", "executions.monthly", amount));
+    }
+    // A rejected amount never reached the meter.
+    assert.equal((await service.usage("org-1", "executions.monthly")).used, 0);
+  });
+
   it("never denies consumption for an unlimited meter", async () => {
     const service = serviceWith();
     await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });

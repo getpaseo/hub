@@ -8,7 +8,6 @@ import {
   entitlementsSchema,
   flagEnabled,
   hashTemplate,
-  mergeOverrides,
   meterLimit,
   meterPeriodStart,
   normalizeStoredEntitlements,
@@ -123,11 +122,12 @@ export class EntitlementsService {
     by: string | null,
     reason: string,
   ): Promise<void> {
-    const current = await this.read(organizationId);
-    const overrides = mergeOverrides(current.overrides, patch);
+    // The patch — not a pre-merged document — goes to the persistence boundary, which merges it
+    // against the row it holds locked. Read-merge-write here would let two concurrent overrides
+    // read the same base and clobber each other; the merge must happen under the row lock.
     await this.database.overrideOrganizationEntitlements({
       organizationId,
-      overrides,
+      patch: entitlementOverridesSchema.parse(patch),
       actor: by,
       reason,
     });
@@ -161,6 +161,11 @@ export class EntitlementsService {
    * racing the same cap cannot both succeed.
    */
   async consume(organizationId: string, meter: MeterKey, amount: number): Promise<void> {
+    // A meter only ever counts up. A negative or fractional amount is a caller bug, not a quota
+    // reset — reject it at the boundary so it can never reach the accumulating upsert.
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new Error(`consume amount must be a positive safe integer: ${amount}`);
+    }
     const { effective } = await this.read(organizationId);
     const limit = meterLimit(effective, meter);
     const periodStart = meterPeriodStart(this.now());

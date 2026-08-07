@@ -114,6 +114,32 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
     assert.equal((await service.history(organizationId, 10)).length, 2);
   });
 
+  it("preserves both keys when two overrides race", async () => {
+    const organizationId = await seedOrganization();
+    const service = new EntitlementsService(database, { seats: async () => 0 });
+    await service.stamp(organizationId, UNLIMITED_TEMPLATE, {
+      source: "provisioning",
+      planId: null,
+    });
+
+    // Two admins set different keys at the same time. With read-merge-write outside a
+    // transaction the later write would clobber the earlier key; merging under the row lock
+    // keeps both.
+    await Promise.all([
+      service.override(organizationId, { seats: { max: 3 } }, "admin-1", "cap seats"),
+      service.override(
+        organizationId,
+        { meters: { "executions.monthly": { limit: 7 } } },
+        "admin-2",
+        "cap runs",
+      ),
+    ]);
+
+    const record = await service.read(organizationId);
+    assert.equal(record.overrides.seats?.max, 3);
+    assert.equal(record.overrides.meters?.["executions.monthly"]?.limit, 7);
+  });
+
   it("lets exactly the limit succeed under concurrent racing consumers, never over", async () => {
     const organizationId = await seedOrganization();
     const service = new EntitlementsService(database, { seats: async () => 0 });
