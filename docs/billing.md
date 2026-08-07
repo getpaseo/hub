@@ -47,12 +47,16 @@ never the entitlement template.
 ## Free-tier provisioning
 
 A hosted organization is provisioned with the Free plan's template resolved from the mirror
-(`BillingRuntime.provisioningEntitlement`, `src/billing/index.ts:150`), not the unlimited default
-self-hosted gets. If the mirror has no active Free plan yet — first boot before sync, or a Stripe
-account missing the product — provisioning falls back to `FREE_TIER_FALLBACK`
-(`src/billing/index.ts:64`). The fallback fails closed rather than open to unlimited and logs
-loudly so the gap gets noticed; every organization stamped from it re-stamps to the real Free
-plan the moment it subscribes.
+(`BillingRuntime.provisioningEntitlement`), not the unlimited default self-hosted gets. If the
+mirror has no active Free plan yet — first boot before sync, or a Stripe account missing the
+product — provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails closed rather than
+open to unlimited and logs loudly so the gap gets noticed; every organization stamped from it
+re-stamps to the real Free plan the moment it subscribes.
+
+The billing view derives the current plan from what the organization was last *stamped* with, not
+from a Stripe subscription (`BillingRuntime.subscriptionSnapshot`) — so a provisioned Free
+organization reads "Free" rather than "No active plan", and a canceled one reads Free again. The
+subscription mirror only decides whether there is a live subscription to manage.
 
 ## Checkout, portal, subscriptions
 
@@ -85,6 +89,18 @@ state nothing would revisit.
 
 `organization_subscriptions` (`src/db/schema.ts:1133`) is a table this repo owns and keys
 directly by `organization_id`, deliberately not part of Better Auth's schema.
+
+## Seats
+
+Paid plans are billed post-paid on actual seat usage (members + pending invitations), not a fixed
+quantity. The seat count is a core auth fact; the auth server fires an injected post-commit hook on
+every membership change (invite, cancel, accept, remove), and the composition root wires that hook
+to `BillingRuntime.reportSeatUsage`. The reporter reads the live count and writes it to Stripe only
+when it differs from what the subscription is currently billed for — so the resulting
+`customer.subscription.updated` echo carries no delta and cannot ping-pong with reconciliation.
+Reconciliation re-checks the count on every subscription webhook, the durable backstop if a
+post-commit report is lost. Only paid plans report; the Free plan caps seats instead
+(`ent_seats_max=1`, `ent_can_invite=false`).
 
 ### Why not `@better-auth/stripe`
 

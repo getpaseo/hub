@@ -158,6 +158,7 @@ export interface FixtureSubscriptionState {
   customerId: string;
   organizationId: string;
   priceId: string;
+  quantity: number;
   status: string;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
@@ -197,6 +198,7 @@ export class FixtureStripeBillingClient {
     organizationId: string;
     customerId: string;
     priceId: string;
+    quantity: number;
     successUrl: string;
   }): Promise<{ url: string }> {
     const id = fixtureSubscriptionId(input.organizationId);
@@ -208,6 +210,7 @@ export class FixtureStripeBillingClient {
         customerId: input.customerId,
         organizationId: input.organizationId,
         priceId: input.priceId,
+        quantity: input.quantity,
         status: "active",
         currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
         cancelAtPeriodEnd: false,
@@ -221,9 +224,18 @@ export class FixtureStripeBillingClient {
     if (subscription === undefined) {
       throw new Error(`fixture subscription not found: ${input.subscriptionId}`);
     }
-    // A plan change updates the existing subscription's item in place — same id, new price.
+    // A plan change updates the existing subscription's item in place — same id, new price,
+    // quantity carried over.
     subscription.priceId = input.priceId;
     subscription.status = "active";
+  }
+
+  async reportSeatQuantity(input: { subscriptionId: string; quantity: number }): Promise<void> {
+    const subscription = this.find(input.subscriptionId);
+    if (subscription === undefined) {
+      throw new Error(`fixture subscription not found: ${input.subscriptionId}`);
+    }
+    subscription.quantity = input.quantity;
   }
 
   async createBillingPortalSession(input: { returnUrl: string }): Promise<{ url: string }> {
@@ -247,6 +259,12 @@ export class FixtureStripeBillingClient {
     subscription.status = "canceled";
     subscription.cancelAtPeriodEnd = false;
     return true;
+  }
+
+  /** Test-only: the seat quantity Stripe was last told to bill — what the seat-quantity E2E
+   * asserts. Null when the organization has no fixture subscription. */
+  reportedSeatQuantity(organizationId: string): number | null {
+    return this.subscriptions.get(fixtureSubscriptionId(organizationId))?.quantity ?? null;
   }
 
   private find(subscriptionId: string): FixtureSubscriptionState | undefined {

@@ -67,6 +67,9 @@ interface AuthServerOptions {
   /** How a new organization is provisioned. Defaults to unlimited (self-hosted); the composition
    * root passes a billing-backed resolver when Stripe is configured. */
   provisioningEntitlements?: ProvisioningEntitlementResolver;
+  /** Post-commit hook fired when a membership change alters an organization's seat count. The
+   * composition root wires billing's seat-quantity reporter here; undefined self-hosted. */
+  onMembershipChanged?: (organizationId: string) => Promise<void>;
 }
 
 const sessionSchema = z.object({
@@ -161,6 +164,9 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     apiKeys,
     entitlements: options.entitlements,
     provisioningEntitlements,
+    ...(options.onMembershipChanged === undefined
+      ? {}
+      : { onMembershipChanged: options.onMembershipChanged }),
   });
   const browserOrigin = new URL(options.baseURL).origin;
 

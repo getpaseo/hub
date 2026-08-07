@@ -23,11 +23,12 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
   hub,
   page,
 }) => {
-  await test.step("sign up, create an organization, and put it on the free plan", async () => {
+  await test.step("sign up and create an organization provisioned on the free plan", async () => {
     await hub.signUpAs("owner", owner);
     await hub.createOrganization("owner", "Acme");
-    await hub.subscribeToPlan("owner", { plan: "Free", interval: "Monthly" });
-    await hub.deliverSubscriptionWebhook("owner");
+    // Hosted provisioning stamps the mirrored Free plan; there is no Stripe subscription yet. The
+    // billing view derives the plan from that stamp, so a provisioned org reads "Free", not
+    // "No active plan" — the provisioning path now has real coverage instead of being skipped.
     await hub.expectCurrentPlan("owner", "Free");
     await page.screenshot({ path: `${SLICE_6_DIR}/01-free-plan.png`, fullPage: true });
   });
@@ -43,15 +44,19 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
     await hub.choosePlan("owner", { plan: "Solo", interval: "Monthly" });
   });
 
-  await test.step("the subscription webhook stamps the paid plan onto the organization", async () => {
+  await test.step("the subscription webhook stamps the paid plan and bills for one seat", async () => {
     await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", "Solo");
+    // Post-paid seats: with only the owner, Stripe is billed for one seat.
+    await hub.expectReportedSeatQuantity("owner", 1);
     await page.screenshot({ path: `${SLICE_6_DIR}/04-solo-plan.png`, fullPage: true });
   });
 
-  await test.step("the same invite now succeeds", async () => {
+  await test.step("the same invite now succeeds and the second seat is reported to Stripe", async () => {
     await hub.inviteMember("owner", invitee, "member");
     await hub.expectPendingInvitation("owner", invitee);
+    // The pending invitation is a reserved seat: billing re-reports the count as two.
+    await hub.expectReportedSeatQuantity("owner", 2);
     await page.screenshot({ path: `${SLICE_6_DIR}/05-invite-succeeds.png`, fullPage: true });
   });
 

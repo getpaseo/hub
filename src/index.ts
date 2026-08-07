@@ -60,6 +60,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
           database,
           catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
           billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
+          seatUsage: entitlements.seatUsage,
         });
   // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
   // starting — only the marketing catalog goes stale until the next webhook or restart.
@@ -132,7 +133,10 @@ function createProductionAuthServer(
     // (billing null) keeps the createAuthServer default, which stamps unlimited.
     ...(billing === null
       ? {}
-      : { provisioningEntitlements: () => billing.provisioningEntitlement() }),
+      : {
+          provisioningEntitlements: () => billing.provisioningEntitlement(),
+          onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
+        }),
   });
 }
 

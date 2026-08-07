@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
+import { z } from "zod";
 import {
   PaseoHub,
   setBuiltApplicationMachineKey,
@@ -19,6 +20,8 @@ import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.j
 import type { BrowserProviderScenario } from "../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.js";
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
+
+const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
 
 let primaryApplication: BuiltApplication | undefined;
 
@@ -116,6 +119,13 @@ class BuiltApplications {
         deliverCommand(server, { type: "billing-product", product }),
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
+      reportedSeatQuantity: async (organizationId: string) => {
+        const data = await deliverCommandForData(server, {
+          type: "billing-inspect",
+          organizationId,
+        });
+        return billingInspectSchema.parse(data).reportedSeatQuantity;
+      },
     };
     this.running.push(application);
     await serverReady(server, origin, output);
@@ -215,20 +225,28 @@ async function deliverCommand(
   server: ChildProcess,
   command: Record<string, unknown>,
 ): Promise<void> {
+  await deliverCommandForData(server, command);
+}
+
+/** Like `deliverCommand`, but resolves with the reply's `data` payload for inspection commands. */
+async function deliverCommandForData(
+  server: ChildProcess,
+  command: Record<string, unknown>,
+): Promise<unknown> {
   const id = randomUUID();
-  const result = new Promise<void>((resolve, reject) => {
+  const result = new Promise<unknown>((resolve, reject) => {
     const receive = (message: unknown) => {
       if (typeof message !== "object" || message === null || Reflect.get(message, "id") !== id) {
         return;
       }
       server.off("message", receive);
-      if (Reflect.get(message, "ok") === true) resolve();
+      if (Reflect.get(message, "ok") === true) resolve(Reflect.get(message, "data"));
       else reject(new Error(String(Reflect.get(message, "error"))));
     };
     server.on("message", receive);
   });
   server.send({ id, ...command });
-  await result;
+  return result;
 }
 
 async function prepareDatabase(

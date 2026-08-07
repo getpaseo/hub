@@ -16,7 +16,12 @@ import { syncBillingCatalog } from "./catalog-sync.js";
 import type { BillingConfig } from "./config.js";
 import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
-import type { StripeBillingClient } from "./stripe-billing-client.js";
+import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
+
+/** The organization's live seat count (members + pending invitations). Injected by the
+ * composition root — the count reads Better Auth tables the `Database` interface does not model,
+ * so billing receives it as a narrow function rather than reaching for a pool. */
+export type SeatUsageReader = (organizationId: string) => Promise<number>;
 
 export { readBillingConfig } from "./config.js";
 export type { BillingConfig } from "./config.js";
@@ -99,6 +104,8 @@ export interface ComposeBillingOptions {
   catalogSource: StripeCatalogSource;
   /** Production wires the real Stripe SDK; the E2E harness wires a fixture. See stripe-billing-client.ts. */
   billingClient: StripeBillingClient;
+  /** Reads an organization's live seat count for post-paid quantity reporting. */
+  seatUsage: SeatUsageReader;
 }
 
 export interface CreateCheckoutInput {
@@ -155,6 +162,7 @@ export class BillingRuntime {
     private readonly database: Database,
     private readonly catalogSource: StripeCatalogSource,
     private readonly billingClient: StripeBillingClient,
+    private readonly seatUsage: SeatUsageReader,
   ) {
     this.stripe = new StripeSDK(config.stripeSecretKey);
   }
@@ -219,9 +227,37 @@ export class BillingRuntime {
       organizationId: input.organizationId,
       customerId,
       priceId: price.priceId,
+      // Start the subscription billed for the organization's actual seats, not a hardcoded one.
+      quantity: await this.seatUsage(input.organizationId),
       successUrl: input.successUrl,
       cancelUrl: input.cancelUrl,
     });
+  }
+
+  /**
+   * Re-report the organization's seat count to Stripe after a membership change. Driven post-commit
+   * by the auth server (member/invitation writes) and, as a durable backstop, by every subscription
+   * webhook reconciliation. It only writes when the count actually moved, so the resulting
+   * subscription webhook echo carries no delta and cannot ping-pong. No subscription means nothing
+   * to bill — a self-hosted or provisioned-Free organization returns immediately.
+   */
+  async reportSeatUsage(organizationId: string): Promise<void> {
+    const subscription = await this.database.getOrganizationSubscription(organizationId);
+    if (subscription === undefined) return;
+    await this.database.withAdvisoryLock(billingLockKey(organizationId), async () => {
+      const state = await this.billingClient.getSubscription(subscription.stripeSubscriptionId);
+      if (state !== undefined) await this.settleSeatQuantity(state);
+    });
+  }
+
+  /** Report the live seat count when — and only when — it differs from what the subscription is
+   * currently billed for. Both the membership-driven path and reconciliation share this, so the
+   * change-only rule (which stops the webhook echo looping) lives in exactly one place. */
+  private async settleSeatQuantity(state: StripeSubscriptionState): Promise<void> {
+    if (!STAMPABLE_SUBSCRIPTION_STATUSES.has(state.status)) return;
+    const quantity = await this.seatUsage(state.organizationId);
+    if (quantity === state.quantity) return;
+    await this.billingClient.reportSeatQuantity({ subscriptionId: state.id, quantity });
   }
 
   /** Open the Stripe billing portal for the organization's customer, or undefined when it has
@@ -235,28 +271,29 @@ export class BillingRuntime {
     });
   }
 
-  /** The organization's current plan and subscription status, for the billing section. */
+  /**
+   * The organization's current plan and subscription status, for the billing section. The plan
+   * shown is the plan enforced: it is derived from what the organization was last *stamped* with
+   * (its entitlements provenance), not from the Stripe subscription — so a provisioned Free
+   * organization reads "Free" rather than "No active plan", and a canceled one reads Free again.
+   * The subscription mirror only decides whether there is a live subscription to manage.
+   */
   async subscriptionSnapshot(organizationId: string): Promise<CurrentSubscriptionView> {
-    const subscription = await this.database.getOrganizationSubscription(organizationId);
-    if (subscription === undefined) {
-      return {
-        planSlug: null,
-        planName: null,
-        status: null,
-        cancelAtPeriodEnd: false,
-        currentPeriodEnd: null,
-        manageable: false,
-      };
-    }
-    const plans = await this.database.listBillingPlans();
-    const plan = plans.find((candidate) => candidate.id === subscription.planId);
+    const [subscription, plans, entitlements] = await Promise.all([
+      this.database.getOrganizationSubscription(organizationId),
+      this.database.listBillingPlans(),
+      this.database.getOrganizationEntitlements(organizationId),
+    ]);
+    const stampedPlan = plans.find((plan) => plan.id === entitlements?.planId);
+    const live =
+      subscription !== undefined && !TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status);
     return {
-      planSlug: plan?.slug ?? null,
-      planName: plan?.name ?? null,
-      status: subscription.status,
-      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-      currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
-      manageable: true,
+      planSlug: stampedPlan?.slug ?? null,
+      planName: stampedPlan?.name ?? null,
+      status: live ? subscription.status : null,
+      cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
+      currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
+      manageable: live,
     };
   }
 
@@ -348,6 +385,9 @@ export class BillingRuntime {
       cancelAtPeriodEnd: state.cancelAtPeriodEnd,
       ...(stamp === undefined ? {} : { stamp }),
     });
+    // Durable backstop for the membership-driven reporter: any subscription webhook re-reports the
+    // seat count if it drifted. Runs under the same lock, and only writes on a change.
+    await this.settleSeatQuantity(state);
     return "reconciled";
   }
 
@@ -436,5 +476,6 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.database,
     options.catalogSource,
     options.billingClient,
+    options.seatUsage,
   );
 }

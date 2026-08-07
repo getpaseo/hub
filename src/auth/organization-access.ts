@@ -82,6 +82,10 @@ interface OrganizationAccessOptions {
   /** What a newly created organization is stamped with — unlimited self-hosted, the Free plan
    * on a billing-configured instance. Resolved per creation so a later Free-plan sync is seen. */
   provisioningEntitlements: ProvisioningEntitlementResolver;
+  /** Post-commit hook fired when an organization's seat count may have changed (invite, cancel,
+   * accept, remove). The composition root wires billing's seat-quantity reporter here; undefined
+   * self-hosted. Never blocks or fails the member action. */
+  onMembershipChanged?: (organizationId: string) => Promise<void>;
 }
 
 interface MembershipRow extends QueryResultRow {
@@ -453,6 +457,7 @@ export class OrganizationAccess {
       if (pending === undefined) throw new Error("pending invitation conflict returned no row");
       return pending;
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json(managerInvitationSummary(invitation, this.options.baseURL), {
       status: 201,
     });
@@ -480,6 +485,7 @@ export class OrganizationAccess {
       );
       if (result.rowCount !== 1) throw new ProductRequestError(404, "invitation_unavailable");
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json({ canceled: true });
   }
 
@@ -532,6 +538,7 @@ export class OrganizationAccess {
       await activateSession(client, session, invitation.organization_id);
       return invitation.organization_id;
     });
+    await this.notifyMembershipChanged(organizationId);
     return Response.json({ organizationId });
   }
 
@@ -581,7 +588,24 @@ export class OrganizationAccess {
         [target.user_id, access.organization.id],
       );
     });
+    await this.notifyMembershipChanged(access.organization.id);
     return Response.json({ removed: true });
+  }
+
+  /**
+   * Post-commit: the organization's seat count may have changed, so billing re-reports it to
+   * Stripe. Awaited so a test sees the report immediately, but wrapped — a reporting failure must
+   * never fail the member action, and the subscription-webhook reconcile re-reports as a backstop.
+   */
+  private async notifyMembershipChanged(organizationId: string): Promise<void> {
+    try {
+      await this.options.onMembershipChanged?.(organizationId);
+    } catch (error) {
+      logger.warn(
+        { err: error, organizationId },
+        "seat-usage notification after membership change failed",
+      );
+    }
   }
 
   private async requireSession(request: Request): Promise<AccountSession> {

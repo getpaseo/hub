@@ -15,6 +15,7 @@ const unusedBillingClient: StripeBillingClient = {
   ensureCustomer: () => Promise.reject(new Error("unused")),
   createCheckoutSession: () => Promise.reject(new Error("unused")),
   changeSubscriptionPrice: () => Promise.reject(new Error("unused")),
+  reportSeatQuantity: () => Promise.reject(new Error("unused")),
   createBillingPortalSession: () => Promise.reject(new Error("unused")),
   getSubscription: (): Promise<StripeSubscriptionState | undefined> =>
     Promise.reject(new Error("unused")),
@@ -26,6 +27,7 @@ function billingOver(database: Database): BillingRuntime {
     database,
     catalogSource: unusedCatalogSource,
     billingClient: unusedBillingClient,
+    seatUsage: () => Promise.resolve(0),
   });
 }
 

@@ -12,6 +12,7 @@ import type {
 } from "./stripe-catalog-source.js";
 import type {
   ChangeSubscriptionPriceInput,
+  ReportSeatQuantityInput,
   StripeBillingClient,
   StripeSubscriptionState,
 } from "./stripe-billing-client.js";
@@ -110,6 +111,7 @@ class FakeBillingClient implements StripeBillingClient {
       customerId: `cus_${organizationId}`,
       organizationId,
       priceId,
+      quantity: 1,
       status,
       currentPeriodEnd: new Date("2030-01-01T00:00:00Z"),
       cancelAtPeriodEnd: false,
@@ -132,6 +134,11 @@ class FakeBillingClient implements StripeBillingClient {
     if (state === undefined) throw new Error("unused");
     state.priceId = input.priceId;
   }
+  async reportSeatQuantity(input: ReportSeatQuantityInput): Promise<void> {
+    const state = this.subscriptions.get(input.subscriptionId);
+    if (state === undefined) throw new Error("unused");
+    state.quantity = input.quantity;
+  }
   async createBillingPortalSession(): Promise<{ url: string }> {
     throw new Error("unused");
   }
@@ -145,17 +152,20 @@ async function setup(): Promise<{
   database: Database;
   billingClient: FakeBillingClient;
   billing: BillingRuntime;
+  seats: { count: number };
 }> {
   const database = createMemoryDatabase();
   const billingClient = new FakeBillingClient();
+  const seats = { count: 1 };
   const billing = composeBilling({
     config: { stripeSecretKey: "sk_test_fake", stripeWebhookSecret: WEBHOOK_SECRET },
     database,
     catalogSource: new FakeCatalogSource(),
     billingClient,
+    seatUsage: () => Promise.resolve(seats.count),
   });
   await billing.syncCatalog();
-  return { database, billingClient, billing };
+  return { database, billingClient, billing, seats };
 }
 
 function subscriptionWebhook(type: string, subscriptionId: string): Request {
@@ -261,5 +271,21 @@ describe("subscription webhook reconciliation", () => {
     assert.equal(response.status, 503);
     // Nothing was stamped: an unresolved active subscription must be revisited, not acknowledged.
     assert.equal(await database.getOrganizationEntitlements("org_1"), undefined);
+  });
+
+  it("reports the live seat count on demand and only when it changed", async () => {
+    const { billingClient, billing, seats } = await setup();
+    billingClient.setSubscription("sub_1", "org_1", SOLO_PRICE);
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.created", "sub_1"));
+    assert.equal((await billingClient.getSubscription("sub_1"))?.quantity, 1); // owner only
+
+    seats.count = 3;
+    await billing.reportSeatUsage("org_1");
+    assert.equal((await billingClient.getSubscription("sub_1"))?.quantity, 3);
+
+    // The reported quantity already matches the live count, so the subscription webhook echo
+    // reconciles without re-reporting — no ping-pong.
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.updated", "sub_1"));
+    assert.equal((await billingClient.getSubscription("sub_1"))?.quantity, 3);
   });
 });

@@ -55,6 +55,12 @@ interface BillingCancelSubscriptionCommand {
   organizationId: string;
 }
 
+interface BillingInspectCommand {
+  id: string;
+  type: "billing-inspect";
+  organizationId: string;
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
@@ -73,7 +79,7 @@ async function main(): Promise<void> {
     billing,
     billingCatalog,
     billingClient: billingFixtureClient,
-  } = await composeFixtureBilling(database);
+  } = await composeFixtureBilling(database, entitlements.seatUsage);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
@@ -82,7 +88,7 @@ async function main(): Promise<void> {
         baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,
         policy: readInstanceAuthPolicy(),
-        ...provisioningResolverOption(billing),
+        ...billingAuthOptions(billing),
       })
     : null;
   await auth?.initialize?.();
@@ -193,11 +199,15 @@ async function main(): Promise<void> {
   process.once("SIGINT", stop);
 }
 
-/** Hosted harness: new organizations start on the Free plan; self-hosted keeps the unlimited
- * default. Kept out of `main` so its branch does not push that function past the complexity cap. */
-function provisioningResolverOption(billing: BillingRuntime | null) {
+/** Hosted harness: new organizations start on the Free plan and membership changes re-report
+ * seats to Stripe; self-hosted keeps the unlimited default and no reporting. Kept out of `main` so
+ * its branch does not push that function past the complexity cap. */
+function billingAuthOptions(billing: BillingRuntime | null) {
   if (billing === null) return {};
-  return { provisioningEntitlements: () => billing.provisioningEntitlement() };
+  return {
+    provisioningEntitlements: () => billing.provisioningEntitlement(),
+    onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
+  };
 }
 
 async function seedMachineAuthTarget(databaseUrl: string): Promise<void> {
@@ -237,30 +247,7 @@ async function acceptCommand(
     process.send?.({ id: message.id, ok: true });
     return;
   }
-  if (isBillingProductCommand(message)) {
-    if (billingCatalog === null) {
-      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
-      return;
-    }
-    billingCatalog.setProduct(message.product);
-    process.send?.({ id: message.id, ok: true });
-    return;
-  }
-  if (isBillingCancelSubscriptionCommand(message)) {
-    if (billingClient === null) {
-      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
-      return;
-    }
-    // Stand in for the customer canceling in the Stripe portal: the subscription now reads
-    // canceled, and the caller then delivers the signed customer.subscription.deleted webhook.
-    const canceled = billingClient.cancelSubscription(message.organizationId);
-    process.send?.({
-      id: message.id,
-      ok: canceled,
-      error: canceled ? undefined : "no subscription",
-    });
-    return;
-  }
+  if (acceptBillingCommand(message, billingCatalog, billingClient)) return;
   if (!isDiscordCommand(message)) return;
   try {
     await bot.deliver(message.event);
@@ -272,6 +259,54 @@ async function acceptCommand(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/** Handle the fixture billing IPC commands (product edit, cancel, seat inspection). Returns true
+ * when it recognized and replied to a billing command, keeping `acceptCommand` under the
+ * complexity cap. */
+function acceptBillingCommand(
+  message: unknown,
+  billingCatalog: FixtureStripeCatalogSource | null,
+  billingClient: FixtureStripeBillingClient | null,
+): boolean {
+  if (isBillingProductCommand(message)) {
+    if (billingCatalog === null) {
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
+      return true;
+    }
+    billingCatalog.setProduct(message.product);
+    process.send?.({ id: message.id, ok: true });
+    return true;
+  }
+  if (isBillingCancelSubscriptionCommand(message)) {
+    if (billingClient === null) {
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
+      return true;
+    }
+    // Stand in for the customer canceling in the Stripe portal: the subscription now reads
+    // canceled, and the caller then delivers the signed customer.subscription.deleted webhook.
+    const canceled = billingClient.cancelSubscription(message.organizationId);
+    process.send?.({
+      id: message.id,
+      ok: canceled,
+      error: canceled ? undefined : "no subscription",
+    });
+    return true;
+  }
+  if (isBillingInspectCommand(message)) {
+    if (billingClient === null) {
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
+      return true;
+    }
+    // The seat quantity Stripe was last told to bill — what the seat-quantity E2E asserts.
+    process.send?.({
+      id: message.id,
+      ok: true,
+      data: { reportedSeatQuantity: billingClient.reportedSeatQuantity(message.organizationId) },
+    });
+    return true;
+  }
+  return false;
 }
 
 function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurationCommand {
@@ -304,6 +339,16 @@ function isBillingCancelSubscriptionCommand(
     typeof value === "object" &&
     value !== null &&
     Reflect.get(value, "type") === "billing-cancel-subscription" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "organizationId") === "string"
+  );
+}
+
+function isBillingInspectCommand(value: unknown): value is BillingInspectCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "billing-inspect" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "organizationId") === "string"
   );
@@ -390,7 +435,10 @@ function readFixtureBillingConfig(): BillingConfig {
  * does in production with the real Stripe SDK. `billingCatalog` is returned separately so the
  * IPC handler can mutate it later — see the `billing-product` command below.
  */
-async function composeFixtureBilling(database: Database): Promise<{
+async function composeFixtureBilling(
+  database: Database,
+  seatUsage: (organizationId: string) => Promise<number>,
+): Promise<{
   billing: BillingRuntime | null;
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
@@ -403,6 +451,7 @@ async function composeFixtureBilling(database: Database): Promise<{
     database,
     catalogSource: billingCatalog,
     billingClient,
+    seatUsage,
   });
   await billing.syncCatalog();
   return { billing, billingCatalog, billingClient };

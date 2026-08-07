@@ -9,6 +9,7 @@ import type {
   CreateBillingPortalSessionInput,
   CreateCheckoutSessionInput,
   EnsureCustomerInput,
+  ReportSeatQuantityInput,
   StripeBillingClient,
   StripeSubscriptionState,
 } from "./stripe-billing-client.js";
@@ -93,7 +94,7 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         customer: input.customerId,
-        line_items: [{ price: input.priceId, quantity: 1 }],
+        line_items: [{ price: input.priceId, quantity: input.quantity }],
         success_url: input.successUrl,
         cancel_url: input.cancelUrl,
         client_reference_id: input.organizationId,
@@ -115,6 +116,20 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       }
       await stripe.subscriptions.update(input.subscriptionId, {
         items: [{ id: item.id, price: input.priceId }],
+        proration_behavior: "create_prorations",
+      });
+    },
+    async reportSeatQuantity(input: ReportSeatQuantityInput): Promise<void> {
+      // Post-paid seat billing: set the item's quantity to the organization's live seat count.
+      // The caller only calls this on a change, so the resulting subscription.updated echo carries
+      // no delta and reconciliation converges without re-reporting.
+      const subscription = await stripe.subscriptions.retrieve(input.subscriptionId);
+      const item = subscription.items.data[0];
+      if (item === undefined) {
+        throw new Error(`subscription ${input.subscriptionId} has no item to report seats on`);
+      }
+      await stripe.subscriptions.update(input.subscriptionId, {
+        items: [{ id: item.id, quantity: input.quantity }],
         proration_behavior: "create_prorations",
       });
     },
@@ -140,6 +155,7 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
             : subscription.customer.id,
         organizationId,
         priceId: item.price.id,
+        quantity: item.quantity ?? 1,
         status: subscription.status,
         currentPeriodEnd: new Date(item.current_period_end * 1000),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,

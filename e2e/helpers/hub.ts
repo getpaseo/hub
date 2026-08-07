@@ -38,6 +38,8 @@ export interface BuiltApplication {
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
   cancelSubscription(organizationId: string): Promise<void>;
+  /** The seat quantity billing last reported to the fixture Stripe for this organization. */
+  reportedSeatQuantity(organizationId: string): Promise<number | null>;
 }
 
 let MACHINE_KEY = "";
@@ -629,6 +631,16 @@ export class PaseoHub {
       id: fixtureSubscriptionId(organizationId),
       object: "subscription",
     });
+  }
+
+  /**
+   * The seat quantity billing reported to Stripe for the organization's subscription — the proof
+   * that a multi-seat paid organization is billed for its actual seats, not one. Polled because the
+   * report is post-commit off the membership change.
+   */
+  async expectReportedSeatQuantity(alias: string, quantity: number): Promise<void> {
+    const organizationId = await this.organizationIdForAlias(alias);
+    await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
   }
 
   async subscribeToPlan(

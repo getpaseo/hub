@@ -5,6 +5,9 @@ import { countOrganizationSeatUsage } from "./organization-access.js";
 
 export interface ComposedEntitlements {
   service: EntitlementsService;
+  /** The organization's live seat count (members + pending invitations). Shared with billing's
+   * post-paid seat reporter so both read the same pool-backed count. */
+  seatUsage: (organizationId: string) => Promise<number>;
   close(): Promise<void>;
 }
 
@@ -22,8 +25,7 @@ export interface ComposedEntitlements {
  */
 export function composeEntitlements(database: Database, databaseUrl: string): ComposedEntitlements {
   const pool = createPostgresPool(databaseUrl);
-  const service = new EntitlementsService(database, {
-    seats: (organizationId) => countOrganizationSeatUsage(pool, organizationId),
-  });
-  return { service, close: () => pool.end() };
+  const seatUsage = (organizationId: string) => countOrganizationSeatUsage(pool, organizationId);
+  const service = new EntitlementsService(database, { seats: seatUsage });
+  return { service, seatUsage, close: () => pool.end() };
 }

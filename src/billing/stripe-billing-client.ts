@@ -21,6 +21,10 @@ export interface StripeBillingClient {
    * place. Stripe models a plan change as an update to the existing subscription, not a second
    * one, so this is the only path a change ever takes. */
   changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void>;
+  /** Report the subscription's per-seat quantity (post-paid billing). Called only when the count
+   * actually changed, so the `customer.subscription.updated` echo carries no further change and
+   * cannot ping-pong with reconciliation. */
+  reportSeatQuantity(input: ReportSeatQuantityInput): Promise<void>;
   /** A Billing Portal session — Stripe owns payment methods, invoices, and cancellation. */
   createBillingPortalSession(input: CreateBillingPortalSessionInput): Promise<{ url: string }>;
   /** Re-read the authoritative subscription state. The webhook is driven by this, never by the
@@ -39,6 +43,9 @@ export interface CreateCheckoutSessionInput {
   organizationId: string;
   customerId: string;
   priceId: string;
+  /** The organization's seat count at checkout, so the subscription starts billed for its actual
+   * seats rather than pinned at one. */
+  quantity: number;
   successUrl: string;
   cancelUrl: string;
 }
@@ -46,6 +53,11 @@ export interface CreateCheckoutSessionInput {
 export interface ChangeSubscriptionPriceInput {
   subscriptionId: string;
   priceId: string;
+}
+
+export interface ReportSeatQuantityInput {
+  subscriptionId: string;
+  quantity: number;
 }
 
 export interface CreateBillingPortalSessionInput {
@@ -60,6 +72,8 @@ export interface StripeSubscriptionState {
   organizationId: string;
   /** The Stripe price the subscription is on; the mirror resolves this to a plan template. */
   priceId: string;
+  /** The subscription item's current seat quantity, so the seat reporter only writes on a change. */
+  quantity: number;
   /** Stripe's own status vocabulary, verbatim (`active`, `trialing`, `canceled`, …). */
   status: string;
   currentPeriodEnd: Date | null;
