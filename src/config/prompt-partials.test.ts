@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
   hashPromptPartialContent,
   resolvePromptPartials,
+  resolvePromptPartialsFromBundle,
+  PromptPartialBundleError,
   validatePromptPartialPath,
 } from "./prompt-partials.js";
 
@@ -65,6 +68,78 @@ describe("prompt partial resolution", () => {
         read: async () => undefined,
       }),
       /does not exist at exact commit/iu,
+    );
+  });
+
+  it("resolves an API bundle using only normalized submitted files", async () => {
+    const content = "Use the submitted instructions.";
+    const resolved = await resolvePromptPartialsFromBundle({
+      configuration: { triggers: [{ steps: [{ prompt: [{ include: "docs/safety.md" }] }] }] },
+      files: [{ path: "docs\\safety.md", content }],
+    });
+
+    assert.deepEqual(
+      [...resolved.values()],
+      [
+        {
+          path: ".paseo/partials/docs/safety.md",
+          content,
+          contentHash: hashPromptPartialContent(content),
+        },
+      ],
+    );
+  });
+
+  it.each([
+    {
+      name: "missing",
+      configuration: { triggers: [{ steps: [{ prompt: [{ include: "missing.md" }] }] }] },
+      files: [],
+      path: ["partials", ".paseo/partials/missing.md"],
+    },
+    {
+      name: "unsafe",
+      configuration: { triggers: [] },
+      files: [{ path: "../secret.md", content: "secret" }],
+      path: ["partials", 0, "path"],
+    },
+    {
+      name: "duplicate",
+      configuration: { triggers: [] },
+      files: [
+        { path: "safety.md", content: "one" },
+        { path: "safety%2emd", content: "two" },
+      ],
+      path: ["partials", 1, "path"],
+    },
+    {
+      name: "unexpected",
+      configuration: { triggers: [] },
+      files: [{ path: "unused.md", content: "unused" }],
+      path: ["partials", 0, "path"],
+    },
+  ])("rejects $name API bundle files", async ({ configuration, files, path }) => {
+    await assert.rejects(
+      resolvePromptPartialsFromBundle({ configuration, files }),
+      (error: unknown) => {
+        assert.ok(error instanceof PromptPartialBundleError);
+        assert.deepEqual(error.issues[0]?.path, path);
+        return true;
+      },
+    );
+  });
+
+  it("rejects an oversized API partial", async () => {
+    await assert.rejects(
+      resolvePromptPartialsFromBundle({
+        configuration: { triggers: [] },
+        files: [{ path: "large.md", content: "x".repeat(MAX_PROMPT_PARTIAL_CONTENT_BYTES + 1) }],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof PromptPartialBundleError);
+        assert.deepEqual(error.issues[0]?.path, ["partials", 0, "content"]);
+        return true;
+      },
     );
   });
 });

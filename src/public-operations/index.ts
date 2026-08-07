@@ -1,6 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { configurationValidationIssues } from "../configuration/validation-errors.js";
 import { parseDeploymentDocument } from "../configuration/deployment-document.js";
+import {
+  PromptPartialBundleError,
+  resolvePromptPartialsFromBundle,
+} from "../config/prompt-partials.js";
 import type { DaemonClock } from "../daemons/index.js";
 import { DaemonDispatchFailure } from "../daemons/index.js";
 import { ENROLLMENT_LIFETIME_MS } from "../daemons/registration.js";
@@ -34,12 +38,25 @@ export function createPublicOperations(
         if (!document.success) {
           return { status: document.kind, issues: document.issues };
         }
+        let resolvedPromptPartials;
+        try {
+          resolvedPromptPartials = await resolvePromptPartialsFromBundle({
+            configuration: document.configuration,
+            files: input.partials ?? [],
+          });
+        } catch (error) {
+          if (error instanceof PromptPartialBundleError) {
+            return { status: "invalid_bundle", issues: error.issues };
+          }
+          throw error;
+        }
         const configuration = capabilities.configurationForProject(project.id);
         const record = await configuration.insertManualRevision({
           rawYaml: input.yaml,
           rawConfiguration: document.configuration,
           userId: null,
           sourceEvidence: { kind: "api-key", keyId: authorization.keyId },
+          resolvedPromptPartials,
         });
         if (record.validationErrors !== null) {
           return {

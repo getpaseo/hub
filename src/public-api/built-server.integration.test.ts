@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { createDatabase } from "../db/pg.js";
+import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { EnrollmentTokenSchema, InstalledConfigurationSchema, ProblemSchema } from "./contracts.js";
 import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
 
@@ -44,6 +46,34 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         name: "Shared slug",
         slug: "same-project",
         createdByUserId: userId,
+      });
+      await database.createProject({
+        organizationId,
+        name: "Bundle project",
+        slug: "bundle-project",
+        createdByUserId: userId,
+      });
+      const daemonId =
+        organizationId === "organization-a"
+          ? "10000000-0000-4000-8000-000000000001"
+          : "10000000-0000-4000-8000-000000000002";
+      const tokenVerifier = `built-token-${organizationId}`;
+      await database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier: tokenVerifier,
+        organizationId,
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+        consumedAt: null,
+      });
+      await database.enrollDaemon({
+        tokenVerifier,
+        daemonId,
+        idempotencyKey: `built-daemon-${organizationId}`,
+        serverId: "built-test-server",
+        daemonPublicKey: `built-public-key-${organizationId}`,
+        credentialVerifier: `built-credential-${organizationId}`,
+        scopes: ["hub.execution.*"],
+        now: new Date("2026-08-07T00:00:00.000Z"),
       });
     }
     auth = createAuthServer({
@@ -159,8 +189,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       },
     ]);
     assert.deepEqual(enrollments.rows, [
-      { organization_id: "organization-a", count: "1" },
-      { organization_id: "organization-b", count: "1" },
+      { organization_id: "organization-a", count: "2" },
+      { organization_id: "organization-b", count: "2" },
     ]);
   }, 120_000);
 
@@ -174,12 +204,126 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       projectSlug: "same-project",
       yaml: "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
     });
+    const restore = new Client({ connectionString: databaseUrl });
+    await restore.connect();
+    await restore.query("alter table projects_unavailable_for_boundary_test rename to projects");
+    await restore.end();
     assert.equal(response.status, 500);
     const serialized = JSON.stringify(await response.json());
     assert.equal(ProblemSchema.parse(JSON.parse(serialized)).code, "internal_error");
     assert.equal(serialized.includes("projects_unavailable_for_boundary_test"), false);
     assert.equal(serialized.includes("relation"), false);
     assert.equal(serialized.includes("42P01"), false);
+  }, 120_000);
+
+  it("installs exact submitted partial bundles and rejects invalid bundle boundaries", async () => {
+    const yaml = partialConfigurationYaml();
+    const cases = [
+      {
+        name: "missing",
+        body: { projectSlug: "bundle-project", yaml },
+        expectedPath: ["partials", ".paseo/partials/docs/safety.md"],
+      },
+      {
+        name: "unsafe",
+        body: {
+          projectSlug: "bundle-project",
+          yaml,
+          partials: [{ path: "../secret.md", content: "secret" }],
+        },
+        expectedPath: ["partials", 0, "path"],
+      },
+      {
+        name: "duplicate",
+        body: {
+          projectSlug: "bundle-project",
+          yaml,
+          partials: [
+            { path: "docs/safety.md", content: "one" },
+            { path: "docs/safety%2emd", content: "two" },
+          ],
+        },
+        expectedPath: ["partials", 1, "path"],
+      },
+      {
+        name: "unexpected",
+        body: {
+          projectSlug: "bundle-project",
+          yaml: [
+            "environments:",
+            "  - name: runner",
+            "    kind: daemon",
+            `    daemon: ${TEST_DAEMON_SLUG}`,
+            "    cwd: /repo",
+            "triggers: []",
+          ].join("\n"),
+          partials: [{ path: "unused.md", content: "unused" }],
+        },
+        expectedPath: ["partials", 0, "path"],
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const response = await post(
+        "/api/v1/configurations/install",
+        secrets["organization-a"],
+        testCase.body,
+      );
+      assert.equal(response.status, 422, testCase.name);
+      const problem = ProblemSchema.parse(await response.json());
+      assert.equal(problem.code, "invalid_configuration_bundle", testCase.name);
+      assert.deepEqual(problem.issues?.[0]?.path, testCase.expectedPath, testCase.name);
+    }
+
+    const malformed = await post("/api/v1/configurations/install", secrets["organization-a"], {
+      projectSlug: "bundle-project",
+      yaml,
+      partials: [{ path: "docs/safety.md", content: 42 }],
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal(ProblemSchema.parse(await malformed.json()).code, "invalid_request");
+
+    const first = await post("/api/v1/configurations/install", secrets["organization-a"], {
+      projectSlug: "bundle-project",
+      yaml,
+      partials: [{ path: "docs/safety.md", content: "First instructions" }],
+    });
+    const second = await post("/api/v1/configurations/install", secrets["organization-a"], {
+      projectSlug: "bundle-project",
+      yaml,
+      partials: [{ path: "docs/safety.md", content: "Second instructions" }],
+    });
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    const firstInstalled = InstalledConfigurationSchema.parse(await first.json());
+    const secondInstalled = InstalledConfigurationSchema.parse(await second.json());
+    assert.notEqual(firstInstalled.versionId, secondInstalled.versionId);
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    const revisions = await client.query<{
+      raw_yaml: string;
+      partial_content: string;
+    }>(
+      `select raw_yaml, source_evidence->'partials'->0->>'content' as partial_content
+       from project_configuration_revisions revision
+       join projects project on project.id = revision.project_id
+       where project.organization_id = 'organization-a' and project.slug = 'bundle-project'
+       order by revision.version`,
+    );
+    await client.end();
+    assert.deepEqual(
+      revisions.rows.map((row) => row.partial_content),
+      ["First instructions", "Second instructions"],
+    );
+    assert.equal(revisions.rows[0]?.raw_yaml, yaml);
+    assert.equal(revisions.rows[1]?.raw_yaml, yaml);
+
+    const otherTenant = await post("/api/v1/configurations/install", secrets["organization-b"], {
+      projectSlug: "bundle-project",
+      yaml,
+      partials: [{ path: "docs/safety.md", content: "Organization B" }],
+    });
+    assert.equal(otherTenant.status, 201);
   }, 120_000);
 
   async function post(path: string, secret: string, body?: unknown): Promise<Response> {
@@ -193,5 +337,27 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
     );
+  }
+
+  function partialConfigurationYaml(): string {
+    return [
+      "environments:",
+      "  - name: runner",
+      "    kind: daemon",
+      `    daemon: ${TEST_DAEMON_SLUG}`,
+      "    cwd: /repo",
+      "triggers:",
+      "  - name: request",
+      "    on: manual.run",
+      "    max_runtime: 1h",
+      "    steps:",
+      "      - id: work",
+      "        environment: runner",
+      "        max_runtime: 10m",
+      "        idle_timeout: 1m",
+      "        agent: { provider: test }",
+      "        prompt:",
+      "          - include: docs/safety.md",
+    ].join("\n");
   }
 });

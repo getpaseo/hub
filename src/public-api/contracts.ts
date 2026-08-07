@@ -1,5 +1,10 @@
 import { extendZodWithOpenApi } from "@asteasolutions/zod-to-openapi";
 import { z } from "zod";
+import {
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
+  MAX_PROMPT_PARTIAL_COUNT,
+  MAX_PROMPT_PARTIAL_PATH_LENGTH,
+} from "../config/prompt-partials.js";
 
 extendZodWithOpenApi(z);
 
@@ -36,16 +41,51 @@ export const ProblemSchema = z
     },
   });
 
+export const ConfigurationPartialSchema = z
+  .object({
+    path: z.string().min(1).max(MAX_PROMPT_PARTIAL_PATH_LENGTH),
+    content: z.string().max(MAX_PROMPT_PARTIAL_CONTENT_BYTES),
+  })
+  .strict()
+  .openapi("ConfigurationPartial", {
+    description:
+      "A UTF-8 prompt partial path relative to .paseo/partials/ and its exact text content.",
+    example: { path: "docs/safety.md", content: "Follow the safety checklist." },
+  });
+
 export const InstallConfigurationRequestSchema = z
   .object({
     projectSlug: z.string().trim().min(1).max(100),
     yaml: z.string().min(1).max(1_000_000),
+    partials: z.array(ConfigurationPartialSchema).max(MAX_PROMPT_PARTIAL_COUNT).optional(),
   })
   .strict()
   .openapi("InstallConfigurationRequest", {
+    description:
+      "Install YAML and, when prompt include references are used, exactly the referenced UTF-8 partial files. Partial paths are relative to .paseo/partials/; at most 100 files and 5,000,000 combined content bytes are accepted.",
     example: {
       projectSlug: "payments",
-      yaml: "project: acme/payments\nenvironments: []\ntriggers: []",
+      yaml: [
+        "project: acme/payments",
+        "environments:",
+        "  - name: runner",
+        "    kind: daemon",
+        "    daemon: build-server",
+        "    cwd: /workspace",
+        "triggers:",
+        "  - name: deploy",
+        "    on: manual.run",
+        "    max_runtime: 1h",
+        "    steps:",
+        "      - id: deploy",
+        "        environment: runner",
+        "        max_runtime: 30m",
+        "        idle_timeout: 5m",
+        "        agent: { provider: test }",
+        "        prompt:",
+        "          - include: docs/safety.md",
+      ].join("\n"),
+      partials: [{ path: "docs/safety.md", content: "Follow the safety checklist." }],
     },
   });
 

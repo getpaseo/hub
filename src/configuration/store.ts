@@ -10,7 +10,10 @@ import {
   type CompiledTrigger,
 } from "../config/compiler.js";
 import type { EnvironmentConfig } from "../config/schema.js";
-import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
+import {
+  resolvedPromptPartialsEvidence,
+  type ResolvedPromptPartials,
+} from "../config/prompt-partials.js";
 import type {
   ConnectionProvider,
   Database,
@@ -35,6 +38,25 @@ export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments
   triggers: readonly CompiledTrigger[];
 };
 
+function addPromptPartialsEvidence(
+  sourceEvidence: unknown,
+  resolvedPromptPartials: ResolvedPromptPartials | undefined,
+): unknown {
+  if (resolvedPromptPartials === undefined || resolvedPromptPartials.size === 0) {
+    return sourceEvidence;
+  }
+  if (typeof sourceEvidence === "object" && sourceEvidence !== null) {
+    return {
+      ...sourceEvidence,
+      partials: resolvedPromptPartialsEvidence(resolvedPromptPartials),
+    };
+  }
+  return {
+    sourceEvidence,
+    partials: resolvedPromptPartialsEvidence(resolvedPromptPartials),
+  };
+}
+
 export class ProjectConfigurationStore {
   constructor(
     private readonly database: Database,
@@ -46,15 +68,24 @@ export class ProjectConfigurationStore {
     rawConfiguration: unknown;
     userId: string | null;
     sourceEvidence?: unknown;
+    resolvedPromptPartials?: ResolvedPromptPartials;
   }): Promise<ProjectConfigurationRevisionRecord> {
-    const prepared = await prepareRevision(this.database, this.projectId, input.rawConfiguration);
+    const prepared = await prepareRevision(
+      this.database,
+      this.projectId,
+      input.rawConfiguration,
+      input.resolvedPromptPartials,
+    );
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
       sourceKind: "manual",
-      sourceEvidence: input.sourceEvidence ?? {
-        kind: "manual",
-        userId: input.userId,
-      },
+      sourceEvidence: addPromptPartialsEvidence(
+        input.sourceEvidence ?? {
+          kind: "manual",
+          userId: input.userId,
+        },
+        input.resolvedPromptPartials,
+      ),
       rawYaml: input.rawYaml,
       normalizedConfiguration: prepared.normalizedConfiguration,
       ...(prepared.validationErrors === undefined
@@ -106,11 +137,7 @@ export class ProjectConfigurationStore {
         ...(input.resolvedPromptPartials === undefined
           ? {}
           : {
-              partials: [...input.resolvedPromptPartials.values()].map((partial) => ({
-                path: partial.path,
-                content: partial.content,
-                contentHash: partial.contentHash,
-              })),
+              partials: resolvedPromptPartialsEvidence(input.resolvedPromptPartials),
             }),
       },
       rawYaml: input.rawYaml,

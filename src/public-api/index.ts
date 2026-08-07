@@ -292,6 +292,15 @@ function installationResponse(
         "Correct the deployment metadata and submit the configuration again.",
         result.issues,
       );
+    case "invalid_bundle":
+      return problem(
+        requestId,
+        422,
+        "invalid_configuration_bundle",
+        "Invalid configuration bundle",
+        "Supply exactly the prompt partial files referenced by the YAML configuration.",
+        result.issues,
+      );
     case "invalid_configuration":
       return problem(
         requestId,
@@ -505,6 +514,8 @@ function legacyInstallationResponse(result: InstallConfigurationResult): Respons
       return legacyError(422, "invalid_yaml");
     case "invalid_document":
       return legacyError(422, "invalid_config");
+    case "invalid_bundle":
+      return legacyError(422, "invalid_config");
     case "invalid_configuration":
       return legacyError(422, "invalid_config", { versionId: result.versionId });
     case "infrastructure_unavailable":
@@ -556,6 +567,7 @@ function isInstallationResult(result: PublicOperationResult): result is InstallC
     "project_not_found",
     "invalid_yaml",
     "invalid_document",
+    "invalid_bundle",
     "invalid_configuration",
     "infrastructure_unavailable",
   ].includes(result.status);

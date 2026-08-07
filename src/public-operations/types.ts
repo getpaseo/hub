@@ -1,4 +1,5 @@
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
+import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
 import type { TriggerRunRecord } from "../db/types.js";
 
 export interface PublicAuthorization {
@@ -10,6 +11,12 @@ export interface PublicAuthorization {
 export interface InstallConfigurationInput {
   projectSlug: string;
   yaml: string;
+  partials?: readonly InstallConfigurationPartial[] | undefined;
+}
+
+export interface InstallConfigurationPartial {
+  path: string;
+  content: string;
 }
 
 export type InstallConfigurationResult =
@@ -23,6 +30,7 @@ export type InstallConfigurationResult =
   | { status: "project_not_found" }
   | { status: "invalid_yaml"; issues: readonly DomainIssue[] }
   | { status: "invalid_document"; issues: readonly DomainIssue[] }
+  | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
   | {
       status: "invalid_configuration";
       versionId: string;
@@ -112,6 +120,7 @@ export interface PublicOperationCapabilities {
       rawConfiguration: unknown;
       userId: null;
       sourceEvidence: { kind: "api-key"; keyId: string };
+      resolvedPromptPartials?: ResolvedPromptPartials;
     }): Promise<{ id: string; validationErrors: unknown }>;
     activate(id: string): Promise<{ revision: { id: string; version: number } }>;
   };
