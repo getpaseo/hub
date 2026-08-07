@@ -16,15 +16,26 @@ export class ProjectLifecycle {
     await expect(this.page.getByRole("link", { name })).toBeVisible();
   }
 
+  /** Archiving lives in project settings; the list is only for choosing a project. */
   async archive(name: string) {
-    await this.page.getByRole("button", { name: `Actions for ${name}` }).click();
-    await this.page.getByRole("menuitem", { name: "Archive" }).click();
+    await this.page.getByRole("link", { name }).click();
+    await this.page
+      .getByRole("navigation", { name: "Project" })
+      .getByRole("link", {
+        name: "Settings",
+      })
+      .click();
+    await this.page.getByRole("button", { name: "Archive project" }).click();
     await this.page
       .getByRole("alertdialog")
       .getByRole("button", { name: "Archive project" })
       .click();
-    await expect(this.page.getByRole("row", { name: new RegExp(name, "u") })).toContainText(
-      "Archived",
-    );
+    // Back on the list, an archived project keeps its row and loses its link.
+    const row = this.page
+      .getByRole("list", { name: "Projects" })
+      .getByRole("listitem")
+      .filter({ hasText: name });
+    await expect(row).toContainText("Archived");
+    await expect(row.getByRole("link")).toHaveCount(0);
   }
 }

@@ -2,10 +2,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
+import { ChevronRight } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { EmptyState } from "../components/app/empty-state.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
@@ -60,7 +62,6 @@ export function ProjectsPanel() {
   const [connectionResult] = useState(consumeConnectionResult);
   const [creating, setCreating] = useState(false);
   const create = useProjectCommand(createProject, queryClient, scope);
-  const archive = useProjectCommand(archiveProject, queryClient, scope);
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const submitCreate = (event: FormEvent<HTMLFormElement>) => {
@@ -77,10 +78,7 @@ export function ProjectsPanel() {
   };
   return (
     <>
-      <PageHeader
-        title="Projects"
-        description={`Operational boundaries in ${data.organization.name}.`}
-      >
+      <PageHeader title="Projects" description="Select a project to work in.">
         {data.capabilities.manageResources ? (
           <Button onClick={() => setCreating(true)}>New project</Button>
         ) : null}
@@ -90,59 +88,26 @@ export function ProjectsPanel() {
           <AlertDescription>{connectionResultCopy(connectionResult)}</AlertDescription>
         </Alert>
       )}
-      <CommandError mutations={[create, archive]} />
-      <DataTable
-        label="Projects"
-        columns={[
-          { header: "Project" },
-          { header: "Status" },
-          { header: "Created" },
-          { header: "" },
-        ]}
-        isEmpty={data.projects.length === 0}
-        empty={{ title: "No projects" }}
-      >
-        {data.projects.map((project) => (
-          <DataRow key={project.id}>
-            <DataCell>
-              {project.status === "active" ? (
-                <Link
-                  className="font-medium hover:underline"
-                  to={`/o/${data.organization.slug}/projects/${project.slug}/overview` as never}
-                >
-                  {project.name}
-                </Link>
-              ) : (
-                <span className="font-medium">{project.name}</span>
-              )}
-              <span className="block font-mono text-xs text-muted-foreground">{project.slug}</span>
-            </DataCell>
-            <DataCell>
-              <StatusPill tone={project.status === "active" ? "success" : "neutral"}>
-                {project.status === "active" ? "Active" : "Archived"}
-              </StatusPill>
-            </DataCell>
-            <DataCell muted>{formatDate(project.createdAt)}</DataCell>
-            <DataCell align="end">
-              {data.capabilities.manageResources && project.status === "active" ? (
-                <RowActions label={`Actions for ${project.name}`}>
-                  <ConfirmMenuItem
-                    destructive
-                    label="Archive"
-                    title={`Archive ${project.name}?`}
-                    description="Routing is released. History remains available from this list."
-                    confirmLabel="Archive project"
-                    cancelLabel="Cancel"
-                    onConfirm={() =>
-                      archive.mutate({ data: { ...scope, projectSlug: project.slug } })
-                    }
-                  />
-                </RowActions>
-              ) : null}
-            </DataCell>
-          </DataRow>
-        ))}
-      </DataTable>
+      <CommandError mutations={[create]} />
+      {data.projects.length === 0 ? (
+        <div className="rounded-lg border bg-card">
+          <EmptyState
+            title="No projects"
+            description="Create a project to route provider events at a daemon."
+          />
+        </div>
+      ) : (
+        <ul aria-label="Projects" className="grid gap-2">
+          {data.projects.map((project) => (
+            <li key={project.id}>
+              <ProjectCard
+                project={project}
+                to={`/o/${data.organization.slug}/projects/${project.slug}/overview`}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent>
           <DialogHeader>
@@ -164,6 +129,60 @@ export function ProjectsPanel() {
       </Dialog>
     </>
   );
+}
+
+/**
+ * The project chooser row. Choosing a project is the whole job of that screen, so the
+ * card itself is the target rather than the name inside a cell. Archived projects keep
+ * their row but lose every affordance — their routes stop resolving once archived.
+ */
+function ProjectCard({
+  project,
+  to,
+}: {
+  project: OrganizationSnapshot["projects"][number];
+  to: string;
+}) {
+  const card = "flex items-center gap-4 rounded-lg border bg-card px-4 py-3.5";
+  const body = (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-link"
+      >
+        {monogram(project.name)}
+      </span>
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <span className="flex items-center gap-2">
+          <span className="truncate font-medium group-hover:text-link">{project.name}</span>
+          {project.status === "active" ? null : <StatusPill tone="neutral">Archived</StatusPill>}
+        </span>
+        <span className="truncate font-mono text-xs text-muted-foreground">{project.slug}</span>
+      </span>
+      <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+        Created {formatDate(project.createdAt)}
+      </span>
+    </>
+  );
+  if (project.status !== "active") {
+    return <div className={cn(card, "opacity-60")}>{body}</div>;
+  }
+  return (
+    <Link
+      to={to as never}
+      className={cn(card, "group transition-colors hover:border-primary/60 hover:bg-accent/40")}
+    >
+      {body}
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
+    </Link>
+  );
+}
+
+function monogram(name: string) {
+  const words = name.split(/\s+/).filter((word) => word.length > 0);
+  const letters =
+    words.length > 1 ? `${words[0]?.[0] ?? ""}${words[1]?.[0] ?? ""}` : name.slice(0, 2);
+  return letters.toUpperCase();
 }
 
 export function OrganizationConnectionsPanel() {
@@ -841,7 +860,18 @@ export function ProjectGeneralSettingsPanel() {
   const scope = projectScope(tenant);
   const snapshot = useProjectSnapshot();
   const updateSlug = useProjectCommand(updateProjectSlug, queryClient, scope);
-  const archive = useProjectCommand(archiveProject, queryClient, scope);
+  // Archiving deletes the route this panel is standing on: the project stops resolving
+  // for every project URL. Leave for the project list before invalidating, or the
+  // refetch lands on a project route that can no longer answer.
+  const archiveProjectFn = useServerFn(archiveProject);
+  const archive = useMutation({
+    mutationFn: archiveProjectFn,
+    onSuccess: async (result) => {
+      if (result.status !== "ok") return;
+      await navigate({ to: `/o/${tenant.organization.slug}/projects` as never });
+      await invalidateScope(queryClient, scope);
+    },
+  });
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -890,17 +920,8 @@ export function ProjectGeneralSettingsPanel() {
               description="Routing is released; running recovery and history remain."
               confirmLabel="Archive project"
               cancelLabel="Cancel"
-              onConfirm={() =>
-                archive.mutate(
-                  { data: scope },
-                  {
-                    onSuccess: (result) => {
-                      if (result.status === "ok")
-                        void navigate({ to: `/o/${tenant.organization.slug}/projects` as never });
-                    },
-                  },
-                )
-              }
+              busy={archive.isPending}
+              onConfirm={() => archive.mutate({ data: scope })}
             />
           </Section>
         </>
