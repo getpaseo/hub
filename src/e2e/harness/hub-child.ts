@@ -214,6 +214,8 @@ async function main(): Promise<void> {
     connectionAction: () =>
       Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
     webhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    billingWebhook: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+    billingPlans: () => Promise.resolve([]),
     providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
     async stop() {
       await hub?.stop();

@@ -27,6 +27,8 @@ import { Route as ApiDaemonsEnrollmentTokensRouteImport } from './routes/api/dae
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
 import { Route as ApiDaemonsDaemonIdRouteImport } from './routes/api/daemons/$daemonId'
 import { Route as ApiConfigurationsInstallRouteImport } from './routes/api/configurations/install'
+import { Route as ApiBillingWebhookRouteImport } from './routes/api/billing/webhook'
+import { Route as ApiBillingPlansRouteImport } from './routes/api/billing/plans'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AgentExecutionsExecutionIdMcpRouteImport } from './routes/agent-executions/$executionId/mcp'
 import { Route as ApiIntegrationsSlackEventsRouteImport } from './routes/api/integrations/slack/events'
@@ -142,6 +144,16 @@ const ApiConfigurationsInstallRoute =
     path: '/api/configurations/install',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiBillingWebhookRoute = ApiBillingWebhookRouteImport.update({
+  id: '/api/billing/webhook',
+  path: '/api/billing/webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBillingPlansRoute = ApiBillingPlansRouteImport.update({
+  id: '/api/billing/plans',
+  path: '/api/billing/plans',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -283,6 +295,8 @@ export interface FileRoutesByFullPath {
   '/test/trigger': typeof TestTriggerRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/billing/plans': typeof ApiBillingPlansRoute
+  '/api/billing/webhook': typeof ApiBillingWebhookRoute
   '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
@@ -323,6 +337,8 @@ export interface FileRoutesByTo {
   '/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/billing/plans': typeof ApiBillingPlansRoute
+  '/api/billing/webhook': typeof ApiBillingWebhookRoute
   '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
@@ -363,6 +379,8 @@ export interface FileRoutesById {
   '/_shell/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/billing/plans': typeof ApiBillingPlansRoute
+  '/api/billing/webhook': typeof ApiBillingWebhookRoute
   '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
@@ -405,6 +423,8 @@ export interface FileRouteTypes {
     | '/test/trigger'
     | '/agent-executions/$executionId/mcp'
     | '/api/auth/$'
+    | '/api/billing/plans'
+    | '/api/billing/webhook'
     | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
@@ -445,6 +465,8 @@ export interface FileRouteTypes {
     | '/'
     | '/agent-executions/$executionId/mcp'
     | '/api/auth/$'
+    | '/api/billing/plans'
+    | '/api/billing/webhook'
     | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
@@ -484,6 +506,8 @@ export interface FileRouteTypes {
     | '/_shell/'
     | '/agent-executions/$executionId/mcp'
     | '/api/auth/$'
+    | '/api/billing/plans'
+    | '/api/billing/webhook'
     | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
@@ -524,6 +548,8 @@ export interface RootRouteChildren {
   TestTriggerRoute: typeof TestTriggerRoute
   AgentExecutionsExecutionIdMcpRoute: typeof AgentExecutionsExecutionIdMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiBillingPlansRoute: typeof ApiBillingPlansRoute
+  ApiBillingWebhookRoute: typeof ApiBillingWebhookRoute
   ApiConfigurationsInstallRoute: typeof ApiConfigurationsInstallRoute
   ApiDaemonsDaemonIdRoute: typeof ApiDaemonsDaemonIdRoute
   ApiDaemonsEnrollRoute: typeof ApiDaemonsEnrollRoute
@@ -665,6 +691,20 @@ declare module '@tanstack/react-router' {
       path: '/api/configurations/install'
       fullPath: '/api/configurations/install'
       preLoaderRoute: typeof ApiConfigurationsInstallRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/billing/webhook': {
+      id: '/api/billing/webhook'
+      path: '/api/billing/webhook'
+      fullPath: '/api/billing/webhook'
+      preLoaderRoute: typeof ApiBillingWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/billing/plans': {
+      id: '/api/billing/plans'
+      path: '/api/billing/plans'
+      fullPath: '/api/billing/plans'
+      preLoaderRoute: typeof ApiBillingPlansRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
@@ -901,6 +941,8 @@ const rootRouteChildren: RootRouteChildren = {
   TestTriggerRoute: TestTriggerRoute,
   AgentExecutionsExecutionIdMcpRoute: AgentExecutionsExecutionIdMcpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiBillingPlansRoute: ApiBillingPlansRoute,
+  ApiBillingWebhookRoute: ApiBillingWebhookRoute,
   ApiConfigurationsInstallRoute: ApiConfigurationsInstallRoute,
   ApiDaemonsDaemonIdRoute: ApiDaemonsDaemonIdRoute,
   ApiDaemonsEnrollRoute: ApiDaemonsEnrollRoute,

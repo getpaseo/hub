@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { SourcePaseo, SourceRegistration } from "./source-paseo.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
+import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { slugify } from "../../src/slug.js";
@@ -33,6 +34,7 @@ export interface BuiltApplication {
     commitSha: string;
     rawYaml?: string;
   }): Promise<void>;
+  setBillingProduct(product: FixtureBillingProduct): Promise<void>;
 }
 
 let MACHINE_KEY = "";
@@ -55,6 +57,8 @@ export interface BuiltApplicationOptions {
     ownerEmail: string;
     ownerPassword: string;
   };
+  /** Configures billing with the fixture Stripe catalog (Free/Solo/Team). Default: unconfigured. */
+  billing?: boolean;
 }
 
 export interface Account {
@@ -506,6 +510,82 @@ export class PaseoHub {
     expect(response.status()).toBe(404);
     expect(response.headers()["content-type"]).toBe(HTML_TYPE);
     expect(await response.text()).toContain("Not Found");
+  }
+
+  async expectEmptyPublicBillingPlansWhenUnconfigured(): Promise<void> {
+    const response = await this.requests.get(`${this.primary.origin}/api/billing/plans`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ plans: [] });
+  }
+
+  async visitPublicBillingPlans(origin?: string): Promise<void> {
+    await this.page.goto(`${origin ?? this.primary.origin}/api/billing/plans`);
+  }
+
+  /**
+   * Starts a second, billing-configured application serving the fixture Free/Solo/Team
+   * catalog, verifies the public plans endpoint mirrors it, then simulates a Stripe dashboard
+   * typo (invalid `ent_seats_max`) on the Team product and delivers a real HMAC-signed
+   * `product.updated` webhook. The catalog sync must reject that one product, log loudly, and
+   * leave the previously synced row untouched — the other two plans are unaffected throughout.
+   */
+  async proveStripePlanCatalogMirror(): Promise<string> {
+    const application = await this.startApplication({ databaseProfile: "fresh", billing: true });
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
+
+    await application.setBillingProduct({
+      id: "prod_fixture_team",
+      name: "Team",
+      active: true,
+      metadata: {
+        paseo_plan: "true",
+        paseo_plan_slug: "team",
+        ent_seats_max: "not-a-number",
+        ent_can_invite: "true",
+        ent_executions_monthly_limit: "unlimited",
+      },
+      marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
+    });
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
+
+    await expect
+      .poll(() => application.logs())
+      .toContain("rejected product with invalid entitlement metadata");
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
+    return application.origin;
+  }
+
+  private async expectPublicBillingPlans(
+    application: BuiltApplication,
+    expected: readonly PublicBillingPlanExpectation[],
+  ): Promise<void> {
+    const response = await this.requests.get(`${application.origin}/api/billing/plans`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ plans: expected });
+  }
+
+  private async deliverBillingWebhook(
+    application: BuiltApplication,
+    eventType: string,
+    objectId: string,
+  ): Promise<void> {
+    const payload = JSON.stringify({
+      id: `evt_${randomUUID()}`,
+      type: eventType,
+      data: { object: { id: objectId, object: "product" } },
+    });
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+      .update(`${timestamp}.${payload}`)
+      .digest("hex");
+    const response = await this.requests.post(`${application.origin}/api/billing/webhook`, {
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": `t=${timestamp},v1=${signature}`,
+      },
+      data: Buffer.from(payload),
+    });
+    expect(response.status()).toBe(200);
   }
 
   async openSeatOverrideEditor(
@@ -3947,6 +4027,49 @@ interface HttpResponse {
 }
 
 const WEBHOOK_SECRET = "phase-zero-webhook-secret";
+// Must match e2e/app.ts's STRIPE_WEBHOOK_SECRET env value and browser-child.ts's fixture config.
+const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
+
+interface PublicBillingPlanExpectation {
+  slug: string;
+  name: string;
+  marketingFeatures: readonly string[];
+  prices: {
+    monthly: { unitAmount: number; currency: string } | null;
+    annual: { unitAmount: number; currency: string } | null;
+  };
+}
+
+// Mirrors src/e2e/harness/browser-billing.ts's FIXTURE_BILLING_PRODUCTS/FIXTURE_BILLING_PRICES.
+const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
+  {
+    slug: "free",
+    name: "Free",
+    marketingFeatures: ["1 seat", "100 executions / month", "Community support"],
+    prices: {
+      monthly: { unitAmount: 0, currency: "usd" },
+      annual: { unitAmount: 0, currency: "usd" },
+    },
+  },
+  {
+    slug: "solo",
+    name: "Solo",
+    marketingFeatures: ["Unlimited seats", "2,000 executions / month", "Email support"],
+    prices: {
+      monthly: { unitAmount: 2900, currency: "usd" },
+      annual: { unitAmount: 29000, currency: "usd" },
+    },
+  },
+  {
+    slug: "team",
+    name: "Team",
+    marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
+    prices: {
+      monthly: { unitAmount: 9900, currency: "usd" },
+      annual: { unitAmount: 99000, currency: "usd" },
+    },
+  },
+];
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const ORGANIZATION_POST_PATHS = [

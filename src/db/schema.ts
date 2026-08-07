@@ -1088,3 +1088,39 @@ export const organizationUsage = pgTable(
     check("organization_usage_used_non_negative", sql`${table.used} >= 0`),
   ],
 );
+
+export const BILLING_PLAN_PRICE_INTERVALS = ["monthly", "annual"] as const;
+
+// Mirror of Stripe's plan catalog (products + prices tagged `metadata.paseo_plan=true`).
+// `id` is the Stripe product id; nothing else in the schema references it — see the plan's
+// "materialize, don't reference" decision. Self-hosted instances never sync, so these tables
+// stay empty rather than absent.
+export const billingPlans = pgTable("billing_plans", {
+  id: text().primaryKey(),
+  slug: text().notNull(),
+  name: text().notNull(),
+  template: jsonb().notNull(),
+  templateHash: text("template_hash").notNull(),
+  marketing: jsonb().notNull(),
+  active: boolean().notNull(),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+});
+
+export const billingPlanPrices = pgTable(
+  "billing_plan_prices",
+  {
+    id: text().primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => billingPlans.id, { onDelete: "cascade" }),
+    lookupKey: text("lookup_key").notNull(),
+    interval: text().$type<(typeof BILLING_PLAN_PRICE_INTERVALS)[number]>().notNull(),
+    unitAmount: integer("unit_amount").notNull(),
+    currency: text().notNull(),
+    active: boolean().notNull(),
+  },
+  (table) => [
+    index("billing_plan_prices_plan_id_idx").on(table.planId),
+    check("billing_plan_prices_interval_check", sql`${table.interval} in ('monthly', 'annual')`),
+  ],
+);

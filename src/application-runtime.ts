@@ -1,9 +1,10 @@
+import { z } from "zod";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import type { BillingRuntime } from "./billing/index.js";
 import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
-import type { Database } from "./db/types.js";
+import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
 import { EntitlementsDashboard } from "./entitlements/dashboard.js";
@@ -14,7 +15,7 @@ import type {
   ProviderIntegrationRegistration,
   ProviderRegistration,
 } from "./providers/registration.js";
-import type { ApplicationRuntime } from "./server/runtime.js";
+import type { ApplicationRuntime, PublicBillingPlan } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 
 export interface ApplicationCompositionOptions {
@@ -218,6 +219,15 @@ export async function createApplicationRuntime(
     webhook: (request) =>
       requests.get("webhook")?.(request) ??
       Promise.resolve(new Response("Not Found", { status: 404 })),
+    billingWebhook: (request) =>
+      options.billing === null
+        ? Promise.resolve(unconfiguredBillingRouteResponse())
+        : options.billing.handleWebhook(request),
+    billingPlans: async () => {
+      if (options.database === null) return [];
+      const plans = await options.database.listBillingPlans();
+      return plans.filter((plan) => plan.active).map(publicBillingPlan);
+    },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     async stop() {
@@ -225,4 +235,44 @@ export async function createApplicationRuntime(
       await options.close();
     },
   };
+}
+
+/**
+ * The exact response an unmatched route would produce, so an unconfigured instance is
+ * indistinguishable from one where `/api/billing/webhook` was never registered at all — see
+ * `e2e/billing-boundary.spec.ts`'s regression guard from slice 4.
+ */
+function unconfiguredBillingRouteResponse(): Response {
+  return new Response("<!doctype html><html><body><p>Not Found</p></body></html>", {
+    status: 404,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+const billingPlanMarketingSchema = z.object({ features: z.array(z.string()) });
+
+/**
+ * Strips everything but marketing copy and pricing — the entitlement template never leaves
+ * this function. See the plan's public plans endpoint section for why.
+ */
+function publicBillingPlan(record: BillingPlanRecord): PublicBillingPlan {
+  return {
+    slug: record.slug,
+    name: record.name,
+    marketingFeatures: billingPlanMarketingSchema.parse(record.marketing).features,
+    prices: {
+      monthly: activePriceForInterval(record, "monthly"),
+      annual: activePriceForInterval(record, "annual"),
+    },
+  };
+}
+
+function activePriceForInterval(
+  record: BillingPlanRecord,
+  interval: BillingPlanPriceInterval,
+): PublicBillingPlan["prices"][BillingPlanPriceInterval] {
+  const price = record.prices.find(
+    (candidate) => candidate.interval === interval && candidate.active,
+  );
+  return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
 }

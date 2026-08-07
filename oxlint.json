@@ -111,7 +111,8 @@
         "src/index.ts",
         "src/application-runtime.ts",
         "src/server/runtime.ts",
-        "src/billing/**"
+        "src/billing/**",
+        "src/e2e/harness/browser-child.ts"
       ],
       "rules": {
         "no-restricted-imports": "off"

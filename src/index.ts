@@ -12,7 +12,7 @@ import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
-import { composeBilling, readBillingConfig } from "./billing/index.js";
+import { composeBilling, createStripeCatalogSource, readBillingConfig } from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
@@ -46,7 +46,19 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const database = await createDatabaseHandle(config.databaseUrl);
   const entitlements = composeEntitlements(database, config.databaseUrl);
   const billingConfig = readBillingConfig();
-  const billing = billingConfig === undefined ? null : composeBilling(billingConfig);
+  const billing =
+    billingConfig === undefined
+      ? null
+      : composeBilling({
+          config: billingConfig,
+          database,
+          catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
+        });
+  // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
+  // starting — only the marketing catalog goes stale until the next webhook or restart.
+  await billing?.syncCatalog().catch((error: unknown) => {
+    logger.error({ err: error }, "billing catalog sync failed at boot");
+  });
   const auth = createProductionAuthServer(
     entitlements,
     config.databaseUrl,

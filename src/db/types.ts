@@ -1,7 +1,7 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
-import type { EntitlementPatch } from "../entitlements/catalog.js";
+import type { EntitlementPatch, EntitlementTemplate } from "../entitlements/catalog.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -788,6 +788,61 @@ export interface ConsumeOrganizationUsageInput {
   limit: number | null;
 }
 
+export type BillingPlanPriceInterval = "monthly" | "annual";
+
+export interface BillingPlanMarketing {
+  features: readonly string[];
+}
+
+export interface BillingPlanPriceRecord {
+  id: string;
+  planId: string;
+  lookupKey: string;
+  interval: BillingPlanPriceInterval;
+  unitAmount: number;
+  currency: string;
+  active: boolean;
+}
+
+/**
+ * `template` and `marketing` are `unknown` at the storage boundary, matching
+ * `OrganizationEntitlementsRecord` above — both were validated once by `src/billing/` before
+ * `syncBillingPlan` was called. The public plans projection re-parses `marketing`
+ * (`application-runtime.ts`) and never reads `template` at all; the (future) stamping path
+ * re-parses `template`.
+ */
+export interface BillingPlanRecord {
+  id: string;
+  slug: string;
+  name: string;
+  template: unknown;
+  templateHash: string;
+  marketing: unknown;
+  active: boolean;
+  syncedAt: Date;
+  prices: BillingPlanPriceRecord[];
+}
+
+export interface SyncBillingPlanPriceInput {
+  id: string;
+  lookupKey: string;
+  interval: BillingPlanPriceInterval;
+  unitAmount: number;
+  currency: string;
+  active: boolean;
+}
+
+export interface SyncBillingPlanInput {
+  id: string;
+  slug: string;
+  name: string;
+  template: EntitlementTemplate;
+  templateHash: string;
+  marketing: BillingPlanMarketing;
+  active: boolean;
+  prices: readonly SyncBillingPlanPriceInput[];
+}
+
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
   sourceKind: "github" | "manual";
@@ -1099,6 +1154,10 @@ export interface Database {
     meter: string,
     periodStart: Date,
   ): Promise<OrganizationUsageRecord | undefined>;
+  /** Upserts the plan and replaces its price set. `src/billing/` is the only caller. */
+  syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord>;
+  /** All synced plans (active and inactive) with their prices. Empty when never synced. */
+  listBillingPlans(): Promise<BillingPlanRecord[]>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

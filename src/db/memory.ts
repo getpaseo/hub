@@ -76,6 +76,8 @@ import type {
   EntitlementChangeRecord,
   OrganizationUsageRecord,
   ConsumeOrganizationUsageInput,
+  BillingPlanRecord,
+  SyncBillingPlanInput,
 } from "./types.js";
 import { entitlementOverridesSchema, mergeOverrides } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
@@ -144,6 +146,7 @@ class MemoryDatabase implements Database {
   private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
   private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
+  private readonly billingPlans = new Map<string, BillingPlanRecord>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
   private readonly configurationAuthorities = new Map<string, "manual" | "github">();
@@ -2031,6 +2034,26 @@ class MemoryDatabase implements Database {
     periodStart: Date,
   ): Promise<OrganizationUsageRecord | undefined> {
     return this.organizationUsage.get(usageKey(organizationId, meter, periodStart));
+  }
+
+  async syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord> {
+    const record: BillingPlanRecord = {
+      id: input.id,
+      slug: input.slug,
+      name: input.name,
+      template: input.template,
+      templateHash: input.templateHash,
+      marketing: input.marketing,
+      active: input.active,
+      syncedAt: this.now(),
+      prices: input.prices.map((price) => ({ ...price, planId: input.id })),
+    };
+    this.billingPlans.set(input.id, record);
+    return record;
+  }
+
+  async listBillingPlans(): Promise<BillingPlanRecord[]> {
+    return Array.from(this.billingPlans.values());
   }
 
   async listProjectsForOrganization(organizationId: string) {

@@ -197,6 +197,13 @@
       "when": 1786071206093,
       "tag": "0027_familiar_skin",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786074362910,
+      "tag": "0028_outstanding_famine",
+      "breakpoints": true
     }
   ]
 }

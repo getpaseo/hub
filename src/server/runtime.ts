@@ -1,5 +1,6 @@
 import type { HubOperations, HubRuntime } from "../app.js";
 import type { BillingRuntime } from "../billing/index.js";
+import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { EntitlementsDashboard } from "../entitlements/dashboard.js";
 import type {
   OrganizationResourceReader,
@@ -7,6 +8,22 @@ import type {
 } from "../organizations/resources.js";
 import type { ProjectDashboard } from "../projects/dashboard.js";
 import type { PublicApi } from "../public-api/index.js";
+
+/**
+ * The public plan catalog shape — name, slug, prices by interval, marketing bullets. Never
+ * carries the entitlement template; see the plan's public plans endpoint section.
+ */
+export interface PublicBillingPlan {
+  slug: string;
+  name: string;
+  marketingFeatures: readonly string[];
+  prices: Record<BillingPlanPriceInterval, PublicBillingPlanPrice | null>;
+}
+
+export interface PublicBillingPlanPrice {
+  unitAmount: number;
+  currency: string;
+}
 
 export interface ApplicationRuntime {
   hub: HubRuntime;
@@ -33,6 +50,11 @@ export interface ApplicationRuntime {
   ): Promise<void>;
   organizationResources(request: Request): Promise<OrganizationResourceReader>;
   webhook(request: Request): Promise<Response>;
+  /** The Stripe product/price webhook. Unconfigured behaves as if the route did not exist. */
+  billingWebhook(request: Request): Promise<Response>;
+  /** name/slug/prices/marketing bullets only — never the entitlement template. Always readable,
+   * empty on a self-hosted instance that has never synced. */
+  billingPlans(): Promise<PublicBillingPlan[]>;
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
@@ -69,6 +91,14 @@ export async function handleAuth(request: Request): Promise<Response> {
 
 export async function handleWebhook(request: Request): Promise<Response> {
   return (await getApplication()).webhook(request);
+}
+
+export async function handleBillingWebhook(request: Request): Promise<Response> {
+  return (await getApplication()).billingWebhook(request);
+}
+
+export async function handleBillingPlans(): Promise<PublicBillingPlan[]> {
+  return (await getApplication()).billingPlans();
 }
 
 export async function handleProviderRequest(name: string, request: Request): Promise<Response> {

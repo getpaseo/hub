@@ -95,6 +95,9 @@ import type {
   EntitlementChangeSource,
   OrganizationUsageRecord,
   ConsumeOrganizationUsageInput,
+  BillingPlanRecord,
+  BillingPlanPriceRecord,
+  SyncBillingPlanInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -2627,6 +2630,88 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
   }
 
+  async syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const planRow = await client.query<BillingPlanRow>(
+        `insert into billing_plans (id, slug, name, template, template_hash, marketing, active, synced_at)
+         values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, now())
+         on conflict (id) do update
+           set slug = excluded.slug,
+               name = excluded.name,
+               template = excluded.template,
+               template_hash = excluded.template_hash,
+               marketing = excluded.marketing,
+               active = excluded.active,
+               synced_at = now()
+         returning *`,
+        [
+          input.id,
+          input.slug,
+          input.name,
+          JSON.stringify(input.template),
+          input.templateHash,
+          JSON.stringify(input.marketing),
+          input.active,
+        ],
+      );
+      const plan = planRow.rows[0];
+      if (plan === undefined) throw new Error("billing plan sync returned no row");
+      // Prices are replaced wholesale rather than diffed: the catalog is small and this runs
+      // only on boot or a product/price webhook, so a delete-and-reinsert is simple and correct.
+      await client.query(`delete from billing_plan_prices where plan_id = $1`, [input.id]);
+      const prices: BillingPlanPriceRow[] = [];
+      for (const price of input.prices) {
+        const priceRow = await client.query<BillingPlanPriceRow>(
+          `insert into billing_plan_prices (id, plan_id, lookup_key, interval, unit_amount, currency, active)
+           values ($1, $2, $3, $4, $5, $6, $7)
+           returning *`,
+          [
+            price.id,
+            input.id,
+            price.lookupKey,
+            price.interval,
+            price.unitAmount,
+            price.currency,
+            price.active,
+          ],
+        );
+        const insertedPrice = priceRow.rows[0];
+        if (insertedPrice === undefined)
+          throw new Error("billing plan price insert returned no row");
+        prices.push(insertedPrice);
+      }
+      await client.query("commit");
+      return toBillingPlanRecord(plan, prices);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  async listBillingPlans(): Promise<BillingPlanRecord[]> {
+    const plans = await query<BillingPlanRow>(
+      this.pool,
+      `select * from billing_plans order by name`,
+      [],
+    );
+    const prices = await query<BillingPlanPriceRow>(
+      this.pool,
+      `select * from billing_plan_prices`,
+      [],
+    );
+    const pricesByPlan = new Map<string, BillingPlanPriceRow[]>();
+    for (const row of prices.rows) {
+      const list = pricesByPlan.get(row.plan_id) ?? [];
+      list.push(row);
+      pricesByPlan.set(row.plan_id, list);
+    }
+    return plans.rows.map((row) => toBillingPlanRecord(row, pricesByPlan.get(row.id) ?? []));
+  }
+
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
     const rows = await query<ProjectRow>(
       this.pool,
@@ -4196,6 +4281,52 @@ function toOrganizationUsageRecord(row: OrganizationUsageRow): OrganizationUsage
     meter: row.meter,
     periodStart: row.period_start,
     used: Number(row.used),
+  };
+}
+
+export interface BillingPlanRow extends QueryResultRow {
+  id: string;
+  slug: string;
+  name: string;
+  template: unknown;
+  template_hash: string;
+  marketing: unknown;
+  active: boolean;
+  synced_at: Date;
+}
+
+export interface BillingPlanPriceRow extends QueryResultRow {
+  id: string;
+  plan_id: string;
+  lookup_key: string;
+  interval: BillingPlanPriceRecord["interval"];
+  unit_amount: number;
+  currency: string;
+  active: boolean;
+}
+
+function toBillingPlanRecord(
+  row: BillingPlanRow,
+  priceRows: readonly BillingPlanPriceRow[],
+): BillingPlanRecord {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    template: row.template,
+    templateHash: row.template_hash,
+    marketing: row.marketing,
+    active: row.active,
+    syncedAt: row.synced_at,
+    prices: priceRows.map((price) => ({
+      id: price.id,
+      planId: price.plan_id,
+      lookupKey: price.lookup_key,
+      interval: price.interval,
+      unitAmount: price.unit_amount,
+      currency: price.currency,
+      active: price.active,
+    })),
   };
 }
 

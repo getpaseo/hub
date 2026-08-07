@@ -17,6 +17,7 @@ import { createDatabase } from "../src/db/pg.js";
 import { SourcePaseo } from "./helpers/source-paseo.js";
 import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../src/e2e/harness/browser-providers.js";
+import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.js";
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
 let primaryApplication: BuiltApplication | undefined;
@@ -103,6 +104,8 @@ class BuiltApplications {
         commitSha: string;
         rawYaml?: string;
       }) => deliverCommand(server, { type: "github-configuration", ...input }),
+      setBillingProduct: (product: FixtureBillingProduct) =>
+        deliverCommand(server, { type: "billing-product", product }),
     };
     this.running.push(application);
     await serverReady(server, origin, output);
@@ -152,6 +155,7 @@ interface ApplicationEnvironmentInput {
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
+  billing?: BuiltApplicationOptions["billing"];
 }
 
 function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.ProcessEnv {
@@ -174,6 +178,8 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     PASEO_E2E_MACHINE_KEY_FILE: input.machineKeyFile,
     PASEO_E2E_DATABASE_PROFILE: input.databaseProfile ?? "legacy",
     GITHUB_WEBHOOK_SECRET: "phase-zero-webhook-secret",
+    STRIPE_WEBHOOK_SECRET: "whsec_phase_zero_fixture_secret",
+    PASEO_BROWSER_BILLING_SCENARIO: input.billing === true ? "configured" : "unconfigured",
     PASEO_BROWSER_PROVIDER_SCENARIO:
       input.providerScenario ??
       (input.providerConnections === false

@@ -3,9 +3,11 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
 import { createAuthServer } from "../../auth/server.js";
+import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createDatabase, createPostgresPool } from "../../db/pg.js";
+import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
@@ -21,6 +23,7 @@ import {
   type BrowserDiscordEvent,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
+import { FixtureStripeCatalogSource, type FixtureBillingProduct } from "./browser-billing.js";
 
 interface DiscordCommand {
   id: string;
@@ -35,6 +38,17 @@ interface GitHubConfigurationCommand {
   commitSha: string;
   rawYaml?: string;
 }
+
+interface BillingProductCommand {
+  id: string;
+  type: "billing-product";
+  product: FixtureBillingProduct;
+}
+
+// Fixture-only: signature verification is local HMAC, so any well-formed secret works
+// identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
+// webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
+const FIXTURE_STRIPE_SECRET_KEY = "sk_test_e2e_fixture_0000000000000000000000";
 
 async function main(): Promise<void> {
   const databaseUrl = requiredEnvironment("DATABASE_URL");
@@ -74,6 +88,7 @@ async function main(): Promise<void> {
   const bot = new BrowserDiscordBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
+  const { billing, billingCatalog } = await composeFixtureBilling(database);
   const registrations =
     auth === null
       ? []
@@ -130,7 +145,7 @@ async function main(): Promise<void> {
     database,
     auth,
     entitlements: entitlements.service,
-    billing: null,
+    billing,
     publicApi:
       machineKey === undefined || auth?.apiKeys === undefined
         ? { status: "unavailable" }
@@ -153,7 +168,7 @@ async function main(): Promise<void> {
   server.listen(Number(requiredEnvironment("PORT")), "127.0.0.1");
 
   process.on("message", (message: unknown) => {
-    void acceptCommand(message, bot, githubConfiguration);
+    void acceptCommand(message, bot, githubConfiguration, billingCatalog);
   });
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
@@ -189,9 +204,19 @@ async function acceptCommand(
   message: unknown,
   bot: BrowserDiscordBot,
   githubConfiguration: BrowserGitHubConfiguration,
+  billingCatalog: FixtureStripeCatalogSource | null,
 ): Promise<void> {
   if (isGitHubConfigurationCommand(message)) {
     githubConfiguration.setRevision(message);
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isBillingProductCommand(message)) {
+    if (billingCatalog === null) {
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
+      return;
+    }
+    billingCatalog.setProduct(message.product);
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -218,6 +243,16 @@ function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurat
     typeof Reflect.get(value, "commitSha") === "string" &&
     (Reflect.get(value, "rawYaml") === undefined ||
       typeof Reflect.get(value, "rawYaml") === "string")
+  );
+}
+
+function isBillingProductCommand(value: unknown): value is BillingProductCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "billing-product" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "product") === "object"
   );
 }
 
@@ -284,6 +319,36 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.length === 0) throw new Error(`${name} is required`);
   return value;
+}
+
+function billingEnabled(): boolean {
+  return process.env["PASEO_BROWSER_BILLING_SCENARIO"] === "configured";
+}
+
+function readFixtureBillingConfig(): BillingConfig {
+  return {
+    stripeSecretKey: FIXTURE_STRIPE_SECRET_KEY,
+    stripeWebhookSecret: requiredEnvironment("STRIPE_WEBHOOK_SECRET"),
+  };
+}
+
+/**
+ * Composes the fixture billing runtime and syncs it on boot, mirroring what `src/index.ts`
+ * does in production with the real Stripe SDK. `billingCatalog` is returned separately so the
+ * IPC handler can mutate it later — see the `billing-product` command below.
+ */
+async function composeFixtureBilling(
+  database: Database,
+): Promise<{ billing: BillingRuntime | null; billingCatalog: FixtureStripeCatalogSource | null }> {
+  if (!billingEnabled()) return { billing: null, billingCatalog: null };
+  const billingCatalog = new FixtureStripeCatalogSource();
+  const billing = composeBilling({
+    config: readFixtureBillingConfig(),
+    database,
+    catalogSource: billingCatalog,
+  });
+  await billing.syncCatalog();
+  return { billing, billingCatalog };
 }
 
 main().catch((error: unknown) => {
