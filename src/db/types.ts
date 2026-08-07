@@ -1,4 +1,5 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type { PromptPartialBundleFile } from "../config/prompt-partials.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type {
@@ -923,6 +924,8 @@ export interface SwitchProjectConfigurationToManualInput {
   normalizedConfiguration: unknown;
   contentHash: string;
   formattingPreserved: boolean;
+  /** Authored partial files carried over from the superseded revision's source evidence. */
+  promptPartials: readonly PromptPartialBundleFile[];
   routes: readonly ProjectTriggerRoute[];
 }
 

@@ -3221,20 +3221,21 @@ class PgDatabase implements Database {
          ) values (
            $1, $2,
            coalesce((select max(version) + 1 from project_configuration_revisions where project_id = $1), 1),
-           'manual', jsonb_build_object(
-             'kind', 'authority-switch', 'fromRevisionId', $3::text,
-             'formattingPreserved', $8::boolean
-           ), $4, $5, $6, $7, clock_timestamp(), clock_timestamp()
+           'manual', $3, $4, $5, $6, $7, clock_timestamp(), clock_timestamp()
          ) returning *`,
         [
           input.projectId,
           projectRow.organization_id,
-          projectRow.active_configuration_revision_id,
+          {
+            kind: "authority-switch",
+            fromRevisionId: projectRow.active_configuration_revision_id,
+            formattingPreserved: input.formattingPreserved,
+            ...(input.promptPartials.length === 0 ? {} : { partials: input.promptPartials }),
+          },
           input.rawYaml,
           input.normalizedConfiguration,
           input.contentHash,
           input.userId,
-          input.formattingPreserved,
         ],
       );
       const revision = inserted.rows[0]!;

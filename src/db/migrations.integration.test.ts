@@ -8,7 +8,8 @@ import { Client, type QueryResultRow } from "pg";
 import { z } from "zod";
 import { createDatabase, createPostgresPool } from "./pg.js";
 import { createHubApplication } from "../app.js";
-import { ProjectConfigurationStore } from "../configuration/store.js";
+import { ProjectConfigurationStore, revisionPromptPartials } from "../configuration/store.js";
+import { resolvePromptPartials } from "../config/prompt-partials.js";
 import { bootstrapInstance } from "../auth/bootstrap.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
@@ -715,6 +716,71 @@ describe("database migration application", () => {
       assert.equal(accepted.status, "accepted");
       if (accepted.status !== "accepted") return;
       assert.equal(accepted.events[0]?.projectId, project.id);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
+  it("preserves authored prompt partials when switching a GitHub-managed project to manual", async () => {
+    const url = databaseUrl(postgres, "manual_authority_partials");
+    const database = await createDatabase(url);
+    try {
+      const [project] = await createProjectFixtures(database, url);
+      await seedTestDaemon(url, "organization-a");
+      const store = new ProjectConfigurationStore(database, project.id);
+      const rawConfiguration = {
+        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
+        triggers: [
+          {
+            name: "triage",
+            on: "manual.run",
+            max_runtime: "1h",
+            steps: [
+              {
+                id: "work",
+                environment: "runner",
+                max_runtime: "10m",
+                idle_timeout: "1m",
+                agent: { provider: "test", mode: "default" },
+                prompt: [{ include: "triage.md" }],
+              },
+            ],
+          },
+        ],
+      };
+      const partialContent = "Triage the request before labeling it.";
+      const resolvedPromptPartials = await resolvePromptPartials({
+        configuration: rawConfiguration,
+        read: (path) =>
+          Promise.resolve(
+            path === ".paseo/partials/triage.md"
+              ? { kind: "file" as const, content: partialContent }
+              : undefined,
+          ),
+      });
+      const githubRevision = await store.insertGitHubRevision({
+        rawYaml: "triggers:\n  - name: triage\n",
+        rawConfiguration,
+        githubConnectionId: "github-connection-1",
+        githubRepositoryId: 9251,
+        githubRepositoryFullName: "acme/repo",
+        githubDefaultBranch: "main",
+        commitSha: "sha-with-partials",
+        path: ".paseo/hub.yml",
+        webhookDeliveryId: null,
+        resolvedPromptPartials,
+      });
+      await store.activate(githubRevision.id);
+
+      const switched = await store.switchToManual("project-user");
+      const persisted = await database.findActiveProjectConfiguration(project.id);
+
+      const expectedPartials = [{ path: ".paseo/partials/triage.md", content: partialContent }];
+      assert.deepEqual(revisionPromptPartials(switched.revision), expectedPartials);
+      assert.deepEqual(
+        persisted === undefined ? undefined : revisionPromptPartials(persisted),
+        expectedPartials,
+      );
     } finally {
       await database.close();
     }

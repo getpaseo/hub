@@ -41,6 +41,7 @@ interface GitHubConfigurationCommand {
   repositoryId: number;
   commitSha: string;
   rawYaml?: string;
+  partials?: readonly { path: string; content: string }[];
 }
 
 interface BillingProductCommand {
@@ -318,7 +319,22 @@ function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurat
     typeof Reflect.get(value, "repositoryId") === "number" &&
     typeof Reflect.get(value, "commitSha") === "string" &&
     (Reflect.get(value, "rawYaml") === undefined ||
-      typeof Reflect.get(value, "rawYaml") === "string")
+      typeof Reflect.get(value, "rawYaml") === "string") &&
+    (Reflect.get(value, "partials") === undefined ||
+      isPartialFileList(Reflect.get(value, "partials")))
+  );
+}
+
+function isPartialFileList(value: unknown): value is readonly { path: string; content: string }[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (file) =>
+        typeof file === "object" &&
+        file !== null &&
+        typeof Reflect.get(file, "path") === "string" &&
+        typeof Reflect.get(file, "content") === "string",
+    )
   );
 }
 

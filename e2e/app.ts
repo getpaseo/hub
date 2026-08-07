@@ -114,6 +114,7 @@ class BuiltApplications {
         repositoryId: number;
         commitSha: string;
         rawYaml?: string;
+        partials?: readonly { path: string; content: string }[];
       }) => deliverCommand(server, { type: "github-configuration", ...input }),
       setBillingProduct: (product: FixtureBillingProduct) =>
         deliverCommand(server, { type: "billing-product", product }),

@@ -15,6 +15,7 @@ import { WebSocket, type RawData } from "ws";
 import { Client } from "pg";
 import { z } from "zod";
 import type { SourcePaseo, SourceRegistration } from "./source-paseo.js";
+import type { PromptPartialBundleFile } from "../../src/config/prompt-partials.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
@@ -34,6 +35,7 @@ export interface BuiltApplication {
     repositoryId: number;
     commitSha: string;
     rawYaml?: string;
+    partials?: readonly PromptPartialBundleFile[];
   }): Promise<void>;
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */

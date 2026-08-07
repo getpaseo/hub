@@ -8,11 +8,17 @@ export class ProjectExternalFacts {
     private readonly requests: APIRequestContext,
   ) {}
 
-  setGitHubRevision(repositoryId: number, commitSha: string, rawYaml?: string) {
+  setGitHubRevision(
+    repositoryId: number,
+    commitSha: string,
+    rawYaml?: string,
+    partials?: readonly { path: string; content: string }[],
+  ) {
     return this.application.setGitHubConfiguration({
       repositoryId,
       commitSha,
       ...(rawYaml === undefined ? {} : { rawYaml }),
+      ...(partials === undefined ? {} : { partials }),
     });
   }
 
