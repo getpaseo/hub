@@ -23,11 +23,10 @@ The self-hosted Scalar reference is served with a restrictive Content Security P
 ## Plan catalog
 
 `GET /api/billing/plans` is unauthenticated and read-only. It returns the plan catalog mirrored
-from Stripe — see the entitlements/billing plan's "Stripe is the plan catalog's source of truth"
-section — as marketing copy and pricing only. It never includes the entitlement template
-(`granted` caps/flags/meters); that stays internal to `src/billing/` and `src/entitlements/`.
-This is the shape the marketing site (paseo.sh) fetches to render pricing; Hub itself has no
-pricing page.
+from Stripe (see docs/billing.md) as marketing copy and pricing only. It never includes the
+entitlement template (`granted` caps/flags/meters); that stays internal to `src/billing/` and
+`src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
+Hub itself has no pricing page.
 
 ```json
 {
@@ -47,8 +46,9 @@ pricing page.
 
 `unitAmount` is in the smallest currency unit (cents for `usd`), matching Stripe's own `Price`
 convention. An interval is `null` when the plan has no active price at that interval. A
-self-hosted instance without `STRIPE_SECRET_KEY` returns `{ "plans": [] }` — it has never
-synced a catalog, not an error.
+self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
+catalog — the billing boundary means the route is never registered on an unconfigured instance.
+See docs/billing.md.
 
 ## Public documentation follow-up
 

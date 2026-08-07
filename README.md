@@ -48,6 +48,8 @@ PASEO_BOOTSTRAP_OWNER_EMAIL=me@example.com
 PASEO_BOOTSTRAP_OWNER_PASSWORD=replace-with-a-temporary-password
 ```
 
+Billing is optional and hosted-only: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
+
 Then start Hub and PostgreSQL:
 
 ```sh
