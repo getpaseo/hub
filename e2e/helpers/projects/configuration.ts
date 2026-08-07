@@ -21,6 +21,21 @@ export class ProjectConfiguration {
     await this.page.getByRole("radio", { name: "Manual" }).click();
   }
 
+  async switchToGitHub() {
+    await this.page.getByRole("radio", { name: "GitHub" }).click();
+  }
+
+  /**
+   * The source controls live in the editor's fixed left rail. A control wider
+   * than the rail runs under the document pane instead of being reachable.
+   */
+  async expectSourceControlsClearOfTheEditor() {
+    const picker = await this.page.getByRole("combobox").boundingBox();
+    const document = await this.editor().boundingBox();
+    if (picker === null || document === null) throw new Error("source controls are not rendered");
+    expect(picker.x + picker.width).toBeLessThanOrEqual(document.x);
+  }
+
   /** The open document. CodeMirror exposes its content as a textbox labelled by path. */
   private editor(label = "Configuration YAML") {
     return this.page.getByRole("textbox", { name: label });

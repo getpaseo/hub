@@ -119,6 +119,16 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await app.configuration.expectActiveRevision(3);
 });
 
+test("keeps the GitHub source controls inside the editor rail", async ({ hub, page }) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await app.navigation.openProject("Default");
+  await app.navigation.openProjectSection("Configuration");
+  await app.configuration.switchToGitHub();
+  await app.configuration.expectSourceControlsClearOfTheEditor();
+});
+
 test("explains invalid manual configuration and allows a corrected retry", async ({
   hub,
   page,
