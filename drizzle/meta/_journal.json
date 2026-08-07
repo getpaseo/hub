@@ -211,6 +211,13 @@
       "when": 1786084312502,
       "tag": "0029_lean_miss_america",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786093287524,
+      "tag": "0030_chemical_darwin",
+      "breakpoints": true
     }
   ]
 }

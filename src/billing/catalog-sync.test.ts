@@ -144,4 +144,45 @@ describe("syncBillingCatalog", () => {
     assert.equal(plans.length, 1);
     assert.equal(plans[0]?.prices.length, 2);
   });
+
+  it("deactivates a plan whose product left the catalog", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([soloProduct()], soloPrices());
+    await syncBillingCatalog(source, database);
+    assert.equal((await database.listBillingPlans())[0]?.active, true);
+
+    // The product lost its paseo_plan tag or was deleted: the snapshot no longer contains it.
+    source.setProducts([]);
+    await syncBillingCatalog(source, database);
+
+    const [plan] = await database.listBillingPlans();
+    assert.equal(plan?.id, "prod_solo"); // still mirrored, so it can reactivate later
+    assert.equal(plan?.active, false); // but no longer selectable
+  });
+
+  it("rejects both products when two claim the same plan slug", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource(
+      [soloProduct(), soloProduct({ id: "prod_solo_dupe", name: "Solo Duplicate" })],
+      soloPrices(),
+    );
+    await syncBillingCatalog(source, database);
+
+    // Ambiguous identity: neither product is synced rather than an arbitrary winner.
+    assert.equal((await database.listBillingPlans()).length, 0);
+  });
+
+  it("keeps the last known good row when a later sync introduces a duplicate slug", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([soloProduct()], soloPrices());
+    await syncBillingCatalog(source, database);
+    const [before] = await database.listBillingPlans();
+    assert.ok(before);
+
+    source.setProducts([soloProduct(), soloProduct({ id: "prod_solo_dupe" })]);
+    await syncBillingCatalog(source, database);
+
+    const [after] = await database.listBillingPlans();
+    assert.deepEqual(after, before);
+  });
 });

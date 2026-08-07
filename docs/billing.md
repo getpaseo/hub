@@ -53,7 +53,7 @@ product — provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails 
 open to unlimited and logs loudly so the gap gets noticed; every organization stamped from it
 re-stamps to the real Free plan the moment it subscribes.
 
-The billing view derives the current plan from what the organization was last *stamped* with, not
+The billing view derives the current plan from what the organization was last _stamped_ with, not
 from a Stripe subscription (`BillingRuntime.subscriptionSnapshot`) — so a provisioned Free
 organization reads "Free" rather than "No active plan", and a canceled one reads Free again. The
 subscription mirror only decides whether there is a live subscription to manage.

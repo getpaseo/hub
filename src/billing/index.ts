@@ -17,6 +17,7 @@ import type { BillingConfig } from "./config.js";
 import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
+import { selectActivePlanPrice } from "./plan-prices.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -32,6 +33,7 @@ export type {
   StripeCatalogPrice,
 } from "./stripe-catalog-source.js";
 export type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
+export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js";
 
 /**
  * The four Stripe events that mean "the plan catalog may have changed" — see the plan's
@@ -422,9 +424,9 @@ export class BillingRuntime {
     const plans = await this.database.listBillingPlans();
     const plan = plans.find((candidate) => candidate.slug === slug && candidate.active);
     if (plan === undefined) throw new BillingRequestError(`unknown plan: ${slug}`);
-    const price = plan.prices.find(
-      (candidate) => candidate.interval === interval && candidate.active,
-    );
+    // Exact `{slug}_{interval}` lookup-key identity — a second active monthly price is an ambiguity
+    // (`AmbiguousPlanPriceError`), never an arbitrary charge.
+    const price = selectActivePlanPrice(plan.prices, slug, interval);
     if (price === undefined) {
       throw new BillingRequestError(`plan ${slug} has no active ${interval} price`);
     }

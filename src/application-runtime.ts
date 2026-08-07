@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
-import type { BillingRuntime } from "./billing/index.js";
+import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
+import { logger } from "./logger.js";
 import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
@@ -369,8 +370,17 @@ function activePriceForInterval(
   record: BillingPlanRecord,
   interval: BillingPlanPriceInterval,
 ): PublicBillingPlan["prices"][BillingPlanPriceInterval] {
-  const price = record.prices.find(
-    (candidate) => candidate.interval === interval && candidate.active,
-  );
-  return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
+  // Exact `{slug}_{interval}` lookup-key identity, matching checkout. Ambiguous pricing (two active
+  // prices for one key) is surfaced as "unavailable" and logged, never displayed as an arbitrary
+  // amount the customer might not be charged.
+  try {
+    const price = selectActivePlanPrice(record.prices, record.slug, interval);
+    return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
+  } catch (error) {
+    logger.warn(
+      { err: error, slug: record.slug, interval },
+      "billing plan has ambiguous pricing; omitting the price from the public catalog",
+    );
+    return null;
+  }
 }

@@ -2091,6 +2091,13 @@ class MemoryDatabase implements Database {
     return record;
   }
 
+  async deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void> {
+    const keep = new Set(activeIds);
+    for (const [id, plan] of this.billingPlans) {
+      if (!keep.has(id) && plan.active) this.billingPlans.set(id, { ...plan, active: false });
+    }
+  }
+
   async listBillingPlans(): Promise<BillingPlanRecord[]> {
     return Array.from(this.billingPlans.values());
   }

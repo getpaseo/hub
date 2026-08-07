@@ -1208,6 +1208,12 @@ export interface Database {
   ): Promise<OrganizationUsageRecord | undefined>;
   /** Upserts the plan and replaces its price set. `src/billing/` is the only caller. */
   syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord>;
+  /**
+   * Deactivates every synced plan whose id is not in `activeIds` — the sync applies its catalog as
+   * one reconciled snapshot, so a product that lost its `paseo_plan` tag or was deleted stops being
+   * active and selectable rather than lingering. `src/billing/` only.
+   */
+  deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void>;
   /** All synced plans (active and inactive) with their prices. Empty when never synced. */
   listBillingPlans(): Promise<BillingPlanRecord[]>;
   /**

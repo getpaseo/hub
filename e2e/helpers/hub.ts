@@ -555,6 +555,19 @@ export class PaseoHub {
       .poll(() => application.logs())
       .toContain("rejected product with invalid entitlement metadata");
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
+
+    // A product that loses its paseo_plan tag drops out of the reconciled snapshot: the sync
+    // deactivates its mirrored row, so the public catalog stops serving it rather than leaving a
+    // removed plan selectable. Free and Solo are unaffected.
+    await application.setBillingProduct({
+      id: "prod_fixture_team",
+      name: "Team",
+      active: true,
+      metadata: { paseo_plan: "false" },
+      marketingFeatures: [],
+    });
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS.slice(0, 2));
     return application.origin;
   }
 

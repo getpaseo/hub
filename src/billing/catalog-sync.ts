@@ -1,7 +1,7 @@
 import type { Database, SyncBillingPlanInput, SyncBillingPlanPriceInput } from "../db/types.js";
 import { hashTemplate } from "../entitlements/catalog.js";
 import { logger } from "../logger.js";
-import { parsePlanMetadata } from "./plan-template.js";
+import { parsePlanMetadata, type ParsedPlanTemplate } from "./plan-template.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
@@ -11,14 +11,19 @@ import type {
 const MAX_MARKETING_FEATURES = 15;
 
 /**
- * Mirrors the Stripe plan catalog into `billing_plans`/`billing_plan_prices`. Runs on boot and
- * on `product.created`, `product.updated`, `price.created`, `price.updated` — always a full
- * resync rather than an incremental one, since the catalog is a handful of products and this
- * keeps there from being two sync code paths to keep correct.
+ * Mirrors the Stripe plan catalog into `billing_plans`/`billing_plan_prices` as one reconciled
+ * snapshot. Runs on boot and on `product.created`/`product.updated`/`price.created`/`price.updated`
+ * — always a full resync, since the catalog is a handful of products and one code path is easier
+ * to keep correct than an incremental one plus a full one.
  *
- * Per product, invalid entitlement metadata rejects only that product's sync: the previously
- * synced row is left untouched and the rejection is logged loudly. Nothing here ever calls
- * `database.syncBillingPlan` with an unvalidated template.
+ * Two products claiming one `paseo_plan_slug` is an ambiguity: both are rejected (slug is catalog
+ * identity, and picking a winner would be arbitrary). Invalid entitlement metadata rejects only
+ * that product. A rejected product keeps its last known good row and is logged loudly — nothing
+ * here ever syncs an unvalidated template or an ambiguous slug.
+ *
+ * After upserting the valid, unambiguous products, every plan absent from the snapshot (a product
+ * that lost its `paseo_plan` tag or was deleted) is deactivated, so it stops being selectable
+ * rather than lingering active in the mirror.
  */
 export async function syncBillingCatalog(
   source: StripeCatalogSource,
@@ -26,35 +31,59 @@ export async function syncBillingCatalog(
 ): Promise<void> {
   const [products, prices] = await Promise.all([source.listProducts(), source.listPrices()]);
   const pricesByProduct = groupPricesByProduct(prices);
-  for (const product of products) {
-    await syncProduct(product, pricesByProduct.get(product.id) ?? [], database);
+  const parsed = products.map((product) => ({
+    product,
+    result: parsePlanMetadata(product.metadata),
+  }));
+  const ambiguousSlugs = duplicateValidSlugs(parsed);
+  for (const { product, result } of parsed) {
+    if (!result.success) {
+      logger.error(
+        { productId: product.id, productName: product.name, reason: result.message },
+        "billing catalog sync: rejected product with invalid entitlement metadata; keeping the last known good row",
+      );
+      continue;
+    }
+    if (ambiguousSlugs.has(result.data.slug)) {
+      logger.error(
+        { productId: product.id, slug: result.data.slug },
+        "billing catalog sync: rejected product whose plan slug is claimed by another product; keeping the last known good row",
+      );
+      continue;
+    }
+    await database.syncBillingPlan(
+      planInput(product, result.data, pricesByProduct.get(product.id) ?? []),
+    );
   }
+  await database.deactivateBillingPlansExcept(products.map((product) => product.id));
 }
 
-async function syncProduct(
-  product: StripeCatalogProduct,
-  productPrices: readonly StripeCatalogPrice[],
-  database: Database,
-): Promise<void> {
-  const parsed = parsePlanMetadata(product.metadata);
-  if (!parsed.success) {
-    logger.error(
-      { productId: product.id, productName: product.name, reason: parsed.message },
-      "billing catalog sync: rejected product with invalid entitlement metadata; keeping the last known good row",
-    );
-    return;
+/** The plan slugs that more than one valid product claims — rejected as ambiguous identity. */
+function duplicateValidSlugs(
+  parsed: readonly { result: ReturnType<typeof parsePlanMetadata> }[],
+): Set<string> {
+  const counts = new Map<string, number>();
+  for (const { result } of parsed) {
+    if (result.success) counts.set(result.data.slug, (counts.get(result.data.slug) ?? 0) + 1);
   }
-  const input: SyncBillingPlanInput = {
+  return new Set([...counts].filter(([, count]) => count > 1).map(([slug]) => slug));
+}
+
+function planInput(
+  product: StripeCatalogProduct,
+  parsed: ParsedPlanTemplate,
+  productPrices: readonly StripeCatalogPrice[],
+): SyncBillingPlanInput {
+  return {
     id: product.id,
-    slug: parsed.data.slug,
+    slug: parsed.slug,
     name: product.name,
-    template: parsed.data.template,
-    templateHash: hashTemplate(parsed.data.template),
+    template: parsed.template,
+    templateHash: hashTemplate(parsed.template),
     marketing: { features: product.marketingFeatures.slice(0, MAX_MARKETING_FEATURES) },
     active: product.active,
     prices: syncablePrices(product.id, productPrices),
   };
-  await database.syncBillingPlan(input);
 }
 
 function syncablePrices(

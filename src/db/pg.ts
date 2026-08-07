@@ -2707,6 +2707,15 @@ class PgDatabase implements Database {
     }
   }
 
+  async deactivateBillingPlansExcept(activeIds: readonly string[]): Promise<void> {
+    // An empty snapshot means no Paseo plans remain, so every mirrored plan is deactivated.
+    await query(
+      this.pool,
+      `update billing_plans set active = false where id <> all($1::text[]) and active`,
+      [activeIds],
+    );
+  }
+
   async listBillingPlans(): Promise<BillingPlanRecord[]> {
     const plans = await query<BillingPlanRow>(
       this.pool,

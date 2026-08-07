@@ -1097,7 +1097,10 @@ export const BILLING_PLAN_PRICE_INTERVALS = ["monthly", "annual"] as const;
 // stay empty rather than absent.
 export const billingPlans = pgTable("billing_plans", {
   id: text().primaryKey(),
-  slug: text().notNull(),
+  // Unique: `slug` is catalog identity (`{slug}_{interval}` lookup keys resolve prices, and
+  // checkout selects a plan by slug). Two products claiming one slug is a rejected ambiguity, not
+  // an arbitrary winner — the sync drops the colliding products and this constraint is the backstop.
+  slug: text().notNull().unique(),
   name: text().notNull(),
   template: jsonb().notNull(),
   templateHash: text("template_hash").notNull(),
