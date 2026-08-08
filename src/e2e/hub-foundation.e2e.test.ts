@@ -46,8 +46,13 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.equal(connected.state, "connected");
     assert.deepEqual(completed, {
       prompt: [
-        "Capabilities available in this execution:",
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
         "- finish_execution: Completes this execution and records its optional structured output.",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
         "",
         "Deploy requested for phase-five-operator",
       ].join("\n"),
@@ -126,8 +131,13 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
 
     assert.deepEqual(recovered, {
       prompt: [
-        "Capabilities available in this execution:",
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
         "- finish_execution: Completes this execution and records its optional structured output.",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
         "",
         "Deploy requested for phase-five-operator",
       ].join("\n"),

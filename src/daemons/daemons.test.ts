@@ -114,8 +114,13 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       agent.prompt,
       [
-        "Capabilities available in this execution:",
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
         "- finish_execution: Completes this execution and records its optional structured output.",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -141,7 +146,7 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
-  it("inventories available Hub capabilities in the agent prompt", async () => {
+  it("identifies available Hub MCP tools in the agent prompt", async () => {
     await hub.connectDaemon();
 
     await hub.dispatch({
@@ -150,9 +155,14 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       hub.createdAgentLaunch().prompt,
       [
-        "Capabilities available in this execution:",
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
         "- finish_execution: Completes this execution and records its optional structured output.",
         "- reply: Sends a reply to the conversation that triggered this execution. (up to 1 times).",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -170,8 +180,13 @@ describe("daemon enrollment and execution", () => {
     assert.equal(
       hub.createdAgentLaunch().prompt,
       [
-        "Capabilities available in this execution:",
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
         "- finish_execution: Completes this execution and records its optional structured output.",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
         "",
         "Reply pong.",
       ].join("\n"),
@@ -277,9 +292,8 @@ describe("daemon enrollment and execution", () => {
     const launch = hub.createdAgentLaunch();
     if (typeof launch.prompt !== "string") throw new Error("agent prompt is unavailable");
     const advertisedTools = launch.prompt
-      .split("\n\n", 1)[0]!
       .split("\n")
-      .slice(1)
+      .filter((line) => line.startsWith("- "))
       .map((line) => {
         const separator = line.indexOf(": ", 2);
         if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);

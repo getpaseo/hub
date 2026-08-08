@@ -22,9 +22,9 @@ Configuration YAML may include an optional non-empty top-level string `project` 
 
 Configuration validation and installation accept the same YAML, `projectSlug`, and optional `partials` bundle. Both use the same parser, compiler, daemon/provider resolution, and business validation. Validation returns success or structured issues without creating a revision or changing the active configuration; installation records and activates only after those boundaries pass.
 
-## Workflow prompt capability inventory
+## Workflow MCP tool inventory
 
-Each workflow step's agent prompt begins with a factual inventory of the MCP tools available to that execution by default. It uses the header `Capabilities available in this execution:`, lists the actual callable tool names and descriptions, then leaves a blank line before the authored prompt. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
+Each workflow step's agent prompt begins with a `<system-tools>` block identifying the MCP tools provided by Paseo Hub for that execution. The block lists the callable tool names and descriptions and tells the agent to invoke the MCP tool directly rather than printing an equivalent text or JSON representation. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
 
 Authors may opt out for an individual step with `inject_tool_inventory: false`:
 

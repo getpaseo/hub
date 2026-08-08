@@ -22,8 +22,13 @@ export function composeExecutionPrompt(input: ExecutionPromptInput): string {
     input.capabilities.materialize(input.allowOutputs, input.outputContext),
   );
   return [
-    "Capabilities available in this execution:",
+    "<system-tools>",
+    "The following MCP tools are provided by Paseo Hub for this execution:",
+    "",
     ...inventory.map((capability) => `- ${capability.name}: ${capability.description}`),
+    "",
+    "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+    "</system-tools>",
     "",
     input.prompt,
   ].join("\n");
