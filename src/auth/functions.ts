@@ -46,6 +46,13 @@ const apiKeySummarySchema = z.object({
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
 });
+const cliCredentialSummarySchema = z.object({
+  id: z.string().uuid(),
+  prefix: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+});
 const apiKeyCreateResultSchema = z.object({
   key: apiKeySummarySchema,
   secret: z.string().min(1),
@@ -133,13 +140,23 @@ export const changePassword = createServerFn({ method: "POST" })
   });
 
 export const listApiKeys = createServerFn({ method: "GET" }).handler(
-  async (): Promise<Result<{ keys: z.infer<typeof apiKeySummarySchema>[] }>> => {
+  async (): Promise<
+    Result<{
+      keys: z.infer<typeof apiKeySummarySchema>[];
+      cliCredentials: z.infer<typeof cliCredentialSummarySchema>[];
+    }>
+  > => {
     const response = await sendAccountQuery("/api/auth/paseo/api-keys");
     if (response === undefined) return respondError({ message: "We couldn't load API keys." });
     if (!response.ok) return respondError({ message: "We couldn't load API keys." });
     try {
       return respondOk(
-        z.object({ keys: z.array(apiKeySummarySchema) }).parse(await response.json()),
+        z
+          .object({
+            keys: z.array(apiKeySummarySchema),
+            cliCredentials: z.array(cliCredentialSummarySchema),
+          })
+          .parse(await response.json()),
       );
     } catch {
       return respondError({ message: "We couldn't load API keys." });
@@ -168,6 +185,16 @@ export const revokeApiKey = createServerFn({ method: "POST" })
     const response = await sendAccountCommand("/api/auth/paseo/revoke-api-key", data);
     if (response === undefined || !response.ok) {
       return respondError({ message: "We couldn't revoke that API key." });
+    }
+    return respondOk({});
+  });
+
+export const revokeCliCredential = createServerFn({ method: "POST" })
+  .validator(apiKeyIdSchema)
+  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+    const response = await sendAccountCommand("/api/auth/paseo/revoke-cli-credential", data);
+    if (response === undefined || !response.ok) {
+      return respondError({ message: "We couldn't revoke that CLI login." });
     }
     return respondOk({});
   });

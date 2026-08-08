@@ -427,27 +427,18 @@ export const machines = pgTable(
   ],
 );
 
-export const daemonEnrollmentTokens = pgTable(
-  "daemon_enrollment_tokens",
-  {
-    id: uuid().primaryKey(),
-    verifier: text().notNull().unique(),
-    organizationId: text("organization_id"),
-    authorizationId: uuid("authorization_id").unique(),
-    slug: text("slug"),
-    approvedByUserId: text("approved_by_user_id"),
-    issuedByApiKeyId: uuid("issued_by_api_key_id"),
-    registrationMethod: text("registration_method").default("operator").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    consumedAt: timestamp("consumed_at", { withTimezone: true }),
-  },
-  (table) => [
-    check(
-      "daemon_enrollment_tokens_registration_method_check",
-      sql`${table.registrationMethod} in ('operator', 'device')`,
-    ),
-  ],
-);
+export const daemonEnrollmentTokens = pgTable("daemon_enrollment_tokens", {
+  id: uuid().primaryKey(),
+  verifier: text().notNull().unique(),
+  organizationId: text("organization_id"),
+  issuedByApiKeyId: uuid("issued_by_api_key_id"),
+  issuedByCliCredentialId: uuid("issued_by_cli_credential_id").references(
+    (): AnyPgColumn => organizationCliCredentials.id,
+    { onDelete: "set null" },
+  ),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+});
 
 export const daemons = pgTable(
   "daemons",
@@ -462,9 +453,11 @@ export const daemons = pgTable(
     daemonPublicKey: text("daemon_public_key").notNull(),
     credentialVerifier: text("credential_verifier").notNull(),
     scopes: jsonb().$type<string[]>().notNull(),
-    approvedByUserId: text("approved_by_user_id"),
     registeredByApiKeyId: uuid("registered_by_api_key_id"),
-    registrationMethod: text("registration_method").default("operator").notNull(),
+    registeredByCliCredentialId: uuid("registered_by_cli_credential_id").references(
+      (): AnyPgColumn => organizationCliCredentials.id,
+      { onDelete: "set null" },
+    ),
     status: text().$type<"active" | "revoked">().notNull(),
     presence: text().$type<"offline" | "connected">().default("offline").notNull(),
     connectedAt: timestamp("connected_at", { withTimezone: true }),
@@ -483,46 +476,58 @@ export const daemons = pgTable(
     }),
     check("daemons_status_check", sql`${table.status} in ('active', 'revoked')`),
     check("daemons_presence_check", sql`${table.presence} in ('offline', 'connected')`),
-    check(
-      "daemons_registration_method_check",
-      sql`${table.registrationMethod} in ('operator', 'device')`,
-    ),
   ],
 );
 
-export const daemonDeviceAuthorizations = pgTable(
-  "daemon_device_authorizations",
+export const cliAuthorizations = pgTable(
+  "cli_authorizations",
   {
     id: uuid().primaryKey(),
     deviceVerifier: text("device_verifier").notNull().unique(),
     userCodeVerifier: text("user_code_verifier").notNull().unique(),
     fingerprintVerifier: text("fingerprint_verifier").notNull(),
-    suggestedSlug: text("suggested_slug").notNull(),
-    status: text().$type<"pending" | "approved" | "denied" | "expired" | "enrolled">().notNull(),
+    status: text().$type<"pending" | "approved" | "denied" | "expired" | "disclosed">().notNull(),
     pollIntervalSeconds: integer("poll_interval_seconds").notNull(),
     nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
     approvedOrganizationId: text("approved_organization_id"),
     approvedByUserId: text("approved_by_user_id"),
-    approvedSlug: text("approved_slug"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
-    enrollmentTokenId: uuid("enrollment_token_id").unique(),
-    enrolledDaemonId: uuid("enrolled_daemon_id").unique(),
+    credentialId: uuid("credential_id").unique(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    index("daemon_device_authorizations_fingerprint_idx").on(
-      table.fingerprintVerifier,
-      table.expiresAt,
-    ),
-    index("daemon_device_authorizations_status_expiry_idx").on(table.status, table.expiresAt),
+    index("cli_authorizations_fingerprint_idx").on(table.fingerprintVerifier, table.expiresAt),
+    index("cli_authorizations_status_expiry_idx").on(table.status, table.expiresAt),
     check(
-      "daemon_device_authorizations_status_check",
-      sql`${table.status} in ('pending', 'approved', 'denied', 'expired', 'enrolled')`,
+      "cli_authorizations_status_check",
+      sql`${table.status} in ('pending', 'approved', 'denied', 'expired', 'disclosed')`,
     ),
-    check(
-      "daemon_device_authorizations_poll_interval_check",
-      sql`${table.pollIntervalSeconds} >= 5`,
+    check("cli_authorizations_poll_interval_check", sql`${table.pollIntervalSeconds} >= 5`),
+  ],
+);
+
+export const organizationCliCredentials = pgTable(
+  "organization_cli_credentials",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    prefix: text().notNull(),
+    verifier: text().notNull(),
+    createdByUserId: text("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("organization_cli_credentials_prefix_unique").on(table.prefix),
+    index("organization_cli_credentials_organization_created_idx").on(
+      table.organizationId,
+      table.createdAt.desc(),
     ),
   ],
 );
@@ -1026,7 +1031,7 @@ export const organizationApiKeys = pgTable(
     ),
     check(
       "organization_api_keys_scopes_check",
-      sql`${table.scopes} <@ ARRAY['configuration:install', 'runs:dispatch', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
+      sql`${table.scopes} <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
     ),
   ],
 );

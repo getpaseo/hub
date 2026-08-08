@@ -167,9 +167,8 @@ export interface DaemonRecord {
   daemonPublicKey: string;
   credentialVerifier: string;
   scopes: string[];
-  approvedByUserId: string | null;
   registeredByApiKeyId: string | null;
-  registrationMethod: "operator" | "device";
+  registeredByCliCredentialId: string | null;
   status: "active" | "revoked";
   presence: "offline" | "connected";
   connectedAt: Date | null;
@@ -189,42 +188,37 @@ export interface EnrollmentTokenRecord {
   id: string;
   verifier: string;
   organizationId: string;
-  authorizationId?: string | null;
-  slug?: string | null;
-  approvedByUserId?: string | null;
   issuedByApiKeyId?: string | null;
-  registrationMethod?: "operator" | "device";
+  issuedByCliCredentialId?: string | null;
   expiresAt: Date;
   consumedAt: Date | null;
 }
 
-export interface DeviceAuthorizationRecord {
+export interface CliAuthorizationRecord {
   id: string;
-  suggestedSlug: string;
-  status: "pending" | "approved" | "denied" | "expired" | "enrolled";
+  status: "pending" | "approved" | "denied" | "expired" | "disclosed";
   pollIntervalSeconds: number;
   approvedOrganizationId: string | null;
   approvedByUserId: string | null;
-  approvedSlug: string | null;
   createdAt: Date;
   expiresAt: Date;
 }
 
-export interface StartDeviceAuthorizationInput {
+export interface StartCliAuthorizationInput {
   id: string;
   deviceVerifier: string;
   userCodeVerifier: string;
   fingerprintVerifier: string;
-  suggestedSlug: string;
   lifetimeSeconds: number;
   pollIntervalSeconds: number;
   perFingerprintLimit: number;
   globalLimit: number;
 }
 
-export type DevicePollResult =
-  | { status: "pending" | "slow_down" | "approved"; intervalSeconds: number }
-  | { status: "denied" | "expired" | "enrolled"; intervalSeconds: number };
+export type CliAuthorizationPollResult =
+  | { status: "pending" | "slow_down"; intervalSeconds: number }
+  | { status: "authorized"; intervalSeconds: number; organizationId: string }
+  | { status: "denied" | "expired" | "disclosed"; intervalSeconds: number };
 
 export interface DeviceDecisionAccess {
   sessionId: string;
@@ -233,10 +227,10 @@ export interface DeviceDecisionAccess {
   organizationId: string;
 }
 
-export type DeviceAuthorizationDecisionInput = {
+export type CliAuthorizationDecisionInput = {
   userCodeVerifier: string;
   access: DeviceDecisionAccess;
-} & ({ decision: "approve"; slug: string } | { decision: "deny" });
+} & { decision: "approve" | "deny" };
 
 export interface ProjectRecord {
   id: string;
@@ -1100,19 +1094,17 @@ export interface Database {
     input: InsertAgentExecutionInput & { id: string },
   ): Promise<AgentExecutionRecord | undefined>;
   issueEnrollmentToken(input: EnrollmentTokenRecord): Promise<boolean>;
-  startDeviceAuthorization(
-    input: StartDeviceAuthorizationInput,
-  ): Promise<DeviceAuthorizationRecord | undefined>;
-  inspectDeviceAuthorization(
-    userCodeVerifier: string,
-  ): Promise<DeviceAuthorizationRecord | undefined>;
-  decideDeviceAuthorization(
-    input: DeviceAuthorizationDecisionInput,
+  startCliAuthorization(
+    input: StartCliAuthorizationInput,
+  ): Promise<CliAuthorizationRecord | undefined>;
+  inspectCliAuthorization(userCodeVerifier: string): Promise<CliAuthorizationRecord | undefined>;
+  decideCliAuthorization(
+    input: CliAuthorizationDecisionInput,
   ): Promise<"approved" | "denied" | "unavailable" | "forbidden">;
-  pollDeviceAuthorization(input: {
+  pollCliAuthorization(input: {
     deviceVerifier: string;
-    enrollmentTokenVerifier: string;
-  }): Promise<DevicePollResult>;
+    credential: { id: string; prefix: string; verifier: string };
+  }): Promise<CliAuthorizationPollResult>;
   enrollDaemon(input: EnrollDaemonInput): Promise<DaemonWriteResult>;
   findDaemonBySlugForOrganization(
     organizationId: string,

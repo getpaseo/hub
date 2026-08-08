@@ -3,7 +3,6 @@ import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
 import { logger } from "./logger.js";
-import type { PublicApiComposition } from "./public-api/index.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
@@ -34,7 +33,6 @@ export interface ApplicationCompositionOptions {
   entitlements: EntitlementsService | null;
   /** HOSTED only. Present when `readBillingConfig()` finds `STRIPE_SECRET_KEY`; null self-hosted. */
   billing: BillingRuntime | null;
-  publicApi: PublicApiComposition;
   registrations?: readonly ProviderRegistration[];
   publicBaseUrl?: string;
   completionTokenSecret?: string;
@@ -102,7 +100,10 @@ export async function createApplicationRuntime(
     ),
     connectionsForProject,
     ...(options.auth === null ? {} : { browserOrganizationAccess: options.auth }),
-    publicApi: options.publicApi,
+    publicApi:
+      options.auth?.publicCredentials === undefined
+        ? { status: "unavailable" }
+        : { status: "enabled", authenticator: options.auth.publicCredentials },
     ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
     ...(options.completionTokenSecret === undefined
       ? {}

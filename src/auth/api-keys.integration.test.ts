@@ -86,7 +86,7 @@ describe("organization API-key boundary", () => {
     assert.equal(authorized.status, "authorized");
     if (authorized.status === "authorized") {
       assert.equal(authorized.access.organizationId, "organization-a");
-      assert.equal(authorized.access.keyId, keyA.summary.id);
+      assert.equal(authorized.access.credentialId, keyA.summary.id);
     }
     assert.equal(
       (await auth.apiKeys!.authorize(request(keyA.secret), "daemons:enroll")).status,
@@ -165,7 +165,7 @@ describe("organization API-key boundary", () => {
     const application = createHubApplication({
       database,
       entitlements: createUnlimitedEntitlementsService(),
-      publicApi: { status: "enabled", authenticator: auth.apiKeys! },
+      publicApi: { status: "enabled", authenticator: auth.publicCredentials! },
     });
     await application.hub.start();
     try {

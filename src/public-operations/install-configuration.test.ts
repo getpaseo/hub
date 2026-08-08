@@ -9,7 +9,8 @@ import { createDatabasePublicOperationRepository } from "./database-adapter.js";
 import { createPublicOperations } from "./index.js";
 
 const authorization = {
-  keyId: "api-key-1",
+  kind: "apiKey" as const,
+  credentialId: "api-key-1",
   organizationId: "organization-1",
   scopes: ["configuration:install" as const],
 };
@@ -110,7 +111,7 @@ describe("public configuration installation", () => {
     ]);
     assert.deepEqual(revision.sourceEvidence, {
       kind: "api-key",
-      keyId: authorization.keyId,
+      credentialId: authorization.credentialId,
       partials: [
         {
           path: ".paseo/partials/docs/safety.md",
@@ -119,6 +120,18 @@ describe("public configuration installation", () => {
         },
       ],
     });
+  });
+
+  it("validates through the project compiler without creating a revision", async () => {
+    const harness = await installHarness();
+
+    const valid = await harness.validate(workflowYaml);
+    const invalid = await harness.validate(`unknown: true\n${workflowYaml}`);
+
+    assert.deepEqual(valid, { status: "valid", projectSlug: "payments", valid: true });
+    assert.equal(invalid.status, "invalid_configuration");
+    assert.equal(harness.insertions, 0);
+    assert.equal((await harness.readModel()).activeRevision, null);
   });
 
   it.each([
@@ -197,6 +210,8 @@ async function installHarness() {
   const store = new ProjectConfigurationStore(database, project.id);
   const operations = createPublicOperations(createDatabasePublicOperationRepository(database), {
     configurationForProject: () => ({
+      validateManualConfiguration: (rawConfiguration, resolvedPromptPartials) =>
+        store.validateManualConfiguration(rawConfiguration, resolvedPromptPartials),
       async insertManualRevision(input) {
         insertions += 1;
         insertedConfigurationHasProject =
@@ -212,6 +227,12 @@ async function installHarness() {
   return {
     install: (yaml: string, partials: readonly { path: string; content: string }[] = []) =>
       operations.installConfiguration(authorization, {
+        projectSlug: project.slug,
+        yaml,
+        partials,
+      }),
+    validate: (yaml: string, partials: readonly { path: string; content: string }[] = []) =>
+      operations.validateConfiguration(authorization, {
         projectSlug: project.slug,
         yaml,
         partials,

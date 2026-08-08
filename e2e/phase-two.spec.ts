@@ -26,23 +26,23 @@ const dana = {
   password: "dana-phase-two-password",
 };
 
-test("registers and manages a source-built Paseo daemon", async ({ hub }) => {
+test("enrolls and manages a source-built Paseo daemon", async ({ hub }) => {
   await hub.signUpAs("alice", alice);
   await hub.createOrganization("alice", "Acme");
   await hub.startDaemonRegistration("alice");
   const daemonId = await hub.approveDaemon("alice", "Build Studio");
-  hub.expectRegistrationResponseRecovery();
   await hub.expectDaemon("alice", "build-studio", daemonId, "Connected");
   await hub.proveDaemonAccessBoundaries("alice", "bob", bob, "build-studio");
   await hub.renameDaemon("alice", "build-studio", "release-studio");
   await hub.revokeDaemon("alice", "release-studio");
 });
 
-test("keeps denied and expired registrations terminal", async ({ hub }) => {
+test("approves, denies, and expires CLI login requests", async ({ hub }) => {
   await hub.signUpAs("alice", alice);
   await hub.createOrganization("alice", "Acme");
-  await hub.denyRegistration("alice", "Denied Mac");
-  await hub.expireRegistration("alice", "Expired Mac");
+  await hub.approveCliLogin("alice");
+  await hub.denyCliLogin("alice");
+  await hub.expireCliLogin("alice");
 });
 
 test("keeps daemon browser state inside the current identity", async ({ hub }) => {

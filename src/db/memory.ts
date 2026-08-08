@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { slugify } from "../slug.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
@@ -18,10 +17,10 @@ import type {
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
-  DeviceAuthorizationRecord,
-  DeviceAuthorizationDecisionInput,
-  DevicePollResult,
-  StartDeviceAuthorizationInput,
+  CliAuthorizationRecord,
+  CliAuthorizationDecisionInput,
+  CliAuthorizationPollResult,
+  StartCliAuthorizationInput,
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
@@ -149,7 +148,7 @@ class MemoryDatabase implements Database {
   private readonly attachments = new Map<string, AttachmentRecord>();
   private readonly attachmentIdsBySource = new Map<string, string>();
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
-  private readonly deviceAuthorizations = new Map<string, MemoryDeviceAuthorization>();
+  private readonly cliAuthorizations = new Map<string, MemoryCliAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
   private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
@@ -1316,11 +1315,11 @@ class MemoryDatabase implements Database {
     this.enrollmentTokens.set(input.verifier, input);
     return true;
   }
-  async startDeviceAuthorization(
-    input: StartDeviceAuthorizationInput,
-  ): Promise<DeviceAuthorizationRecord | undefined> {
+  async startCliAuthorization(
+    input: StartCliAuthorizationInput,
+  ): Promise<CliAuthorizationRecord | undefined> {
     const now = this.options.now?.() ?? new Date();
-    const active = Array.from(this.deviceAuthorizations.values()).filter(
+    const active = Array.from(this.cliAuthorizations.values()).filter(
       (authorization) =>
         (authorization.status === "pending" || authorization.status === "approved") &&
         authorization.expiresAt > now,
@@ -1331,28 +1330,26 @@ class MemoryDatabase implements Database {
     if (fingerprintCount >= input.perFingerprintLimit || active.length >= input.globalLimit) {
       return undefined;
     }
-    const authorization: MemoryDeviceAuthorization = {
+    const authorization: MemoryCliAuthorization = {
       id: input.id,
       deviceVerifier: input.deviceVerifier,
       userCodeVerifier: input.userCodeVerifier,
       fingerprintVerifier: input.fingerprintVerifier,
-      suggestedSlug: input.suggestedSlug,
       status: "pending",
       pollIntervalSeconds: input.pollIntervalSeconds,
       nextPollAt: now,
       approvedOrganizationId: null,
       approvedByUserId: null,
-      approvedSlug: null,
-      enrollmentTokenVerifier: null,
+      credential: null,
       createdAt: now,
       expiresAt: new Date(now.getTime() + input.lifetimeSeconds * 1_000),
     };
-    this.deviceAuthorizations.set(input.deviceVerifier, authorization);
+    this.cliAuthorizations.set(input.deviceVerifier, authorization);
     return authorization;
   }
-  async inspectDeviceAuthorization(userCodeVerifier: string) {
+  async inspectCliAuthorization(userCodeVerifier: string) {
     const now = this.options.now?.() ?? new Date();
-    const authorization = Array.from(this.deviceAuthorizations.values()).find(
+    const authorization = Array.from(this.cliAuthorizations.values()).find(
       (candidate) => candidate.userCodeVerifier === userCodeVerifier,
     );
     if (authorization !== undefined && authorization.expiresAt <= now) {
@@ -1363,11 +1360,11 @@ class MemoryDatabase implements Database {
     }
     return authorization;
   }
-  async decideDeviceAuthorization(
-    input: DeviceAuthorizationDecisionInput,
+  async decideCliAuthorization(
+    input: CliAuthorizationDecisionInput,
   ): Promise<"approved" | "denied" | "unavailable" | "forbidden"> {
     const now = this.options.now?.() ?? new Date();
-    const authorization = Array.from(this.deviceAuthorizations.values()).find(
+    const authorization = Array.from(this.cliAuthorizations.values()).find(
       (candidate) => candidate.userCodeVerifier === input.userCodeVerifier,
     );
     if (authorization !== undefined && authorization.expiresAt <= now) {
@@ -1381,16 +1378,15 @@ class MemoryDatabase implements Database {
     if (input.decision === "approve") {
       authorization.approvedOrganizationId = input.access.organizationId;
       authorization.approvedByUserId = input.access.userId;
-      authorization.approvedSlug = input.slug;
     }
     return status;
   }
-  async pollDeviceAuthorization(input: {
+  async pollCliAuthorization(input: {
     deviceVerifier: string;
-    enrollmentTokenVerifier: string;
-  }): Promise<DevicePollResult> {
+    credential: { id: string; prefix: string; verifier: string };
+  }): Promise<CliAuthorizationPollResult> {
     const now = this.options.now?.() ?? new Date();
-    const authorization = this.deviceAuthorizations.get(input.deviceVerifier);
+    const authorization = this.cliAuthorizations.get(input.deviceVerifier);
     if (authorization !== undefined && authorization.expiresAt <= now) {
       authorization.status = "expired";
     }
@@ -1400,7 +1396,7 @@ class MemoryDatabase implements Database {
         intervalSeconds: authorization?.pollIntervalSeconds ?? 5,
       };
     }
-    if (authorization.status === "denied" || authorization.status === "enrolled") {
+    if (authorization.status === "denied" || authorization.status === "disclosed") {
       return {
         status: authorization.status,
         intervalSeconds: authorization.pollIntervalSeconds,
@@ -1418,19 +1414,13 @@ class MemoryDatabase implements Database {
     }
     authorization.nextPollAt = new Date(now.getTime() + authorization.pollIntervalSeconds * 1_000);
     if (authorization.status === "approved") {
-      authorization.enrollmentTokenVerifier = input.enrollmentTokenVerifier;
-      this.enrollmentTokens.set(input.enrollmentTokenVerifier, {
-        id: randomUUID(),
-        verifier: input.enrollmentTokenVerifier,
+      authorization.credential = input.credential;
+      authorization.status = "disclosed";
+      return {
+        status: "authorized",
+        intervalSeconds: authorization.pollIntervalSeconds,
         organizationId: authorization.approvedOrganizationId!,
-        authorizationId: authorization.id,
-        slug: authorization.approvedSlug,
-        approvedByUserId: authorization.approvedByUserId,
-        issuedByApiKeyId: null,
-        registrationMethod: "device",
-        expiresAt: authorization.expiresAt,
-        consumedAt: null,
-      });
+      };
     }
     return {
       status: authorization.status,
@@ -1442,7 +1432,7 @@ class MemoryDatabase implements Database {
     if (replay) return replay;
     const token = this.enrollmentTokens.get(input.tokenVerifier);
     if (!token || token.consumedAt || token.expiresAt <= input.now) return undefined;
-    const slug = slugify(token.slug ?? "", `daemon-${input.daemonId.slice(0, 8)}`);
+    const slug = `daemon-${input.daemonId.slice(0, 8)}`;
     const slugTaken = Array.from(this.daemons.values()).some(
       (daemon) =>
         daemon.slug === slug && this.machines.get(daemon.machineId)?.orgId === token.organizationId,
@@ -1465,9 +1455,8 @@ class MemoryDatabase implements Database {
       daemonPublicKey: input.daemonPublicKey,
       credentialVerifier: input.credentialVerifier,
       scopes: input.scopes,
-      approvedByUserId: token.approvedByUserId ?? null,
       registeredByApiKeyId: token.issuedByApiKeyId ?? null,
-      registrationMethod: token.registrationMethod ?? "operator",
+      registeredByCliCredentialId: token.issuedByCliCredentialId ?? null,
       status: "active",
       presence: "offline",
       connectedAt: null,
@@ -1476,12 +1465,6 @@ class MemoryDatabase implements Database {
       createdAt: input.now,
     };
     this.daemons.set(daemon.id, daemon);
-    if (token.authorizationId !== null && token.authorizationId !== undefined) {
-      const authorization = Array.from(this.deviceAuthorizations.values()).find(
-        (candidate) => candidate.id === token.authorizationId,
-      );
-      if (authorization !== undefined) authorization.status = "enrolled";
-    }
     return daemon;
   }
   async findDaemonBySlugForOrganization(organizationId: string, slug: string) {
@@ -2860,12 +2843,12 @@ function slackDropReason(
   return undefined;
 }
 
-interface MemoryDeviceAuthorization extends DeviceAuthorizationRecord {
+interface MemoryCliAuthorization extends CliAuthorizationRecord {
   deviceVerifier: string;
   userCodeVerifier: string;
   fingerprintVerifier: string;
   nextPollAt: Date;
-  enrollmentTokenVerifier: string | null;
+  credential: { id: string; prefix: string; verifier: string } | null;
 }
 
 function workflowDeadlineKind(

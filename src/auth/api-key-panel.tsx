@@ -30,7 +30,7 @@ import { Field, FieldDescription, FieldLabel, FieldSet } from "../components/ui/
 import { Input } from "../components/ui/input.js";
 import type { Result } from "../contract/respond.js";
 import { apiKeyScopeSchema, type ApiKeyScope } from "./api-key-contract.js";
-import { createApiKey, listApiKeys, revokeApiKey } from "./functions.js";
+import { createApiKey, listApiKeys, revokeApiKey, revokeCliCredential } from "./functions.js";
 import { useActiveAccount } from "./active-account.js";
 import { API_KEY_MUTATION_KEY } from "./tenant-mutation.js";
 
@@ -44,10 +44,28 @@ interface ApiKeyRecord {
   revokedAt: string | null;
 }
 
-type ListResult = Result<{ keys: ApiKeyRecord[] }>;
+interface CliCredentialRecord {
+  id: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+type ListResult = Result<{ keys: ApiKeyRecord[]; cliCredentials: CliCredentialRecord[] }>;
 type CreateResult = Result<{ key: ApiKeyRecord; secret: string }>;
 
 const SCOPE_OPTIONS = [
+  {
+    value: "projects:read",
+    label: "List projects",
+    description: "List active projects in the organization.",
+  },
+  {
+    value: "configuration:validate",
+    label: "Validate configuration",
+    description: "Validate configuration without creating a revision.",
+  },
   {
     value: "configuration:install",
     label: "Install configuration",
@@ -80,6 +98,17 @@ const EMPTY_TABLE = {
   description:
     "Create a key to install configuration, start runs, or enroll daemons from automation.",
 };
+const EMPTY_CLI_TABLE = {
+  title: "No CLI logins",
+  description: "Run paseo hub login to create one.",
+};
+const CLI_COLUMNS = [
+  { header: "Prefix" },
+  { header: "Created" },
+  { header: "Last used" },
+  { header: "Status" },
+  { header: "", align: "end" as const },
+];
 
 export function ApiKeys() {
   const account = useActiveAccount();
@@ -107,6 +136,17 @@ export function ApiKeys() {
     mutationKey: API_KEY_MUTATION_KEY,
     mutationFn: useServerFn(revokeApiKey) as (
       input: Parameters<typeof revokeApiKey>[0],
+    ) => Promise<Result<Record<string, never>>>,
+    onSuccess: async (result) => {
+      if (result.status === "ok") {
+        await queryClient.invalidateQueries({ queryKey: ["api-keys", account.organization.id] });
+      }
+    },
+  });
+  const revokeCli = useMutation({
+    mutationKey: API_KEY_MUTATION_KEY,
+    mutationFn: useServerFn(revokeCliCredential) as (
+      input: Parameters<typeof revokeCliCredential>[0],
     ) => Promise<Result<Record<string, never>>>,
     onSuccess: async (result) => {
       if (result.status === "ok") {
@@ -162,6 +202,9 @@ export function ApiKeys() {
     const revoked = Number(left.revokedAt !== null) - Number(right.revokedAt !== null);
     return revoked || right.createdAt.localeCompare(left.createdAt);
   });
+  const cliCredentials = [...snapshot.data.data.cliCredentials].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt),
+  );
   const createResponseError =
     create.data?.status === "error" ? create.data.error.message : undefined;
   const error =
@@ -204,6 +247,31 @@ export function ApiKeys() {
           />
         ))}
       </DataTable>
+      <section className="mt-10 grid gap-4" aria-labelledby="cli-logins-heading">
+        <div>
+          <h2 id="cli-logins-heading" className="text-lg font-semibold">
+            CLI logins
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            Durable terminal credentials created through browser approval.
+          </p>
+        </div>
+        <DataTable
+          label="CLI logins"
+          columns={CLI_COLUMNS}
+          isEmpty={cliCredentials.length === 0}
+          empty={EMPTY_CLI_TABLE}
+        >
+          {cliCredentials.map((record) => (
+            <CliCredentialRow
+              key={record.id}
+              record={record}
+              busy={revokeCli.isPending}
+              onRevoke={revokeCli.mutate}
+            />
+          ))}
+        </DataTable>
+      </section>
       <ApiKeyDialog
         open={creating}
         onOpenChange={close}
@@ -213,6 +281,50 @@ export function ApiKeys() {
         onSubmit={submit}
       />
     </>
+  );
+}
+
+function CliCredentialRow({
+  record,
+  busy,
+  onRevoke,
+}: {
+  record: CliCredentialRecord;
+  busy: boolean;
+  onRevoke: (input: { data: { id: string } }) => void;
+}) {
+  const revoke = useCallback(() => onRevoke({ data: { id: record.id } }), [onRevoke, record.id]);
+  return (
+    <DataRow>
+      <DataCell>
+        <span className="font-mono text-xs">{record.prefix}</span>
+      </DataCell>
+      <DataCell muted>{formatDate(record.createdAt)}</DataCell>
+      <DataCell muted>
+        {record.lastUsedAt === null ? "Never" : formatDate(record.lastUsedAt)}
+      </DataCell>
+      <DataCell>
+        <StatusPill tone={record.revokedAt === null ? "success" : "danger"}>
+          {record.revokedAt === null ? "Active" : "Revoked"}
+        </StatusPill>
+      </DataCell>
+      <DataCell align="end">
+        {record.revokedAt === null ? (
+          <RowActions label={`Actions for ${record.prefix}`}>
+            <ConfirmMenuItem
+              label="Revoke"
+              destructive
+              title="Revoke CLI login?"
+              description="This terminal credential stops working immediately."
+              confirmLabel="Revoke login"
+              cancelLabel="Cancel"
+              busy={busy}
+              onConfirm={revoke}
+            />
+          </RowActions>
+        ) : null}
+      </DataCell>
+    </DataRow>
   );
 }
 

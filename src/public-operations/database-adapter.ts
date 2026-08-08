@@ -6,6 +6,11 @@ export function createDatabasePublicOperationRepository(
   database: Database,
 ): PublicOperationRepository {
   return {
+    async listActiveProjects(organizationId) {
+      return (await database.listProjectsForOrganization(organizationId))
+        .filter((project) => project.status === "active")
+        .map(({ id, name, slug }) => ({ id, name, slug }));
+    },
     async findActiveProject(organizationId, projectSlug) {
       const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
       return project === undefined || project.status !== "active"
@@ -22,8 +27,9 @@ export function createDatabasePublicOperationRepository(
         id: randomUUID(),
         verifier: createHash("sha256").update(input.token).digest("base64url"),
         organizationId: authorization.organizationId,
-        issuedByApiKeyId: authorization.keyId,
-        registrationMethod: "operator",
+        ...(authorization.kind === "apiKey"
+          ? { issuedByApiKeyId: authorization.credentialId }
+          : { issuedByCliCredentialId: authorization.credentialId }),
         expiresAt: input.expiresAt,
         consumedAt: null,
       });

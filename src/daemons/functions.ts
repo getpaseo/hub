@@ -12,16 +12,9 @@ const daemonSchema = z.object({
   connectedAt: z.string().datetime().nullable(),
   lastSeenAt: z.string().datetime(),
   registeredAt: z.string().datetime(),
-  registrationMethod: z.enum(["operator", "device"]),
 });
 const daemonListSchema = z.object({
   daemons: z.array(daemonSchema),
-  canManage: z.boolean(),
-});
-const registrationSchema = z.object({
-  slug: z.string(),
-  expiresAt: z.string().datetime(),
-  organization: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
   canManage: z.boolean(),
 });
 const renameSchema = z.object({ daemonId: z.string().uuid(), slug: z.string() });
@@ -29,16 +22,8 @@ const daemonIdSchema = z.object({ daemonId: z.string().uuid() });
 const organizationScopeSchema = z.object({ organizationSlug: z.string().min(1) });
 const scopedRenameSchema = organizationScopeSchema.extend(renameSchema.shape);
 const scopedDaemonIdSchema = organizationScopeSchema.extend(daemonIdSchema.shape);
-const userCodeSchema = z.object({ userCode: z.string().min(1) });
-const decisionSchema = z.object({
-  userCode: z.string().min(1),
-  decision: z.enum(["approve", "deny"]),
-  slug: z.string().optional(),
-  organizationId: z.string().optional(),
-});
 
 export type BrowserDaemon = z.infer<typeof daemonSchema>;
-export type RegistrationRequest = z.infer<typeof registrationSchema>;
 export interface DaemonCommand {
   state: "complete" | "sessionExpired" | "organizationRequired";
 }
@@ -123,49 +108,6 @@ export const revokeDaemon = createServerFn({ method: "POST" })
       return respondOk({ state: "complete" });
     } catch {
       return respondError({ message: "We couldn't revoke that daemon." });
-    }
-  });
-
-export const inspectRegistration = createServerFn({ method: "POST" })
-  .validator(userCodeSchema)
-  .handler(async ({ data }): Promise<Result<RegistrationRequest>> => {
-    try {
-      const response = await (
-        await getApplication()
-      ).operations.handleDeviceAuthorizationInspect(
-        operationRequest("POST", "/device-authorizations/inspect", data),
-      );
-      if (!response.ok) {
-        return respondError({ message: "This daemon registration request is unavailable." });
-      }
-      return respondOk(registrationSchema.parse(await response.json()));
-    } catch {
-      return respondError({ message: "This daemon registration request is unavailable." });
-    }
-  });
-
-export const decideRegistration = createServerFn({ method: "POST" })
-  .validator(decisionSchema)
-  .handler(async ({ data }): Promise<Result<{ decision: "approved" | "denied" }>> => {
-    try {
-      const response = await (
-        await getApplication()
-      ).operations.handleDeviceAuthorizationDecision(
-        operationRequest("POST", "/device-authorizations/decision", data),
-      );
-      if (response.status === 401 || response.status === 403) {
-        return respondError({
-          message: "This daemon registration request is unavailable for the active account.",
-        });
-      }
-      if (!response.ok) {
-        return respondError({ message: "We couldn't decide this registration request." });
-      }
-      return respondOk({
-        decision: data.decision === "approve" ? ("approved" as const) : ("denied" as const),
-      });
-    } catch {
-      return respondError({ message: "We couldn't decide this registration request." });
     }
   });
 

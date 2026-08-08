@@ -18,6 +18,47 @@ export const FieldIssueSchema = z
     example: { path: ["projectSlug"], message: "Required" },
   });
 
+export const StartCliAuthorizationRequestSchema = z
+  .object({})
+  .strict()
+  .openapi("StartCliAuthorizationRequest");
+
+export const CliAuthorizationSchema = z
+  .object({
+    deviceCode: z.string(),
+    userCode: z.string(),
+    verificationUri: z.string().url(),
+    verificationUriComplete: z.string().url(),
+    expiresAt: z.string().datetime({ offset: true }),
+    interval: z.number().int().positive(),
+  })
+  .strict()
+  .openapi("CliAuthorization");
+
+export const PollCliAuthorizationRequestSchema = z
+  .object({ deviceCode: z.string().min(32).max(200) })
+  .strict()
+  .openapi("PollCliAuthorizationRequest");
+
+export const CliAuthorizationPollSchema = z
+  .discriminatedUnion("status", [
+    z
+      .object({
+        status: z.literal("authorized"),
+        interval: z.number().int().positive(),
+        credential: z.string().min(1),
+        organizationId: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.enum(["pending", "slow_down", "denied", "expired", "disclosed"]),
+        interval: z.number().int().positive(),
+      })
+      .strict(),
+  ])
+  .openapi("CliAuthorizationPoll");
+
 export const ProblemSchema = z
   .object({
     type: z.string().url(),
@@ -103,6 +144,40 @@ export const InstalledConfigurationSchema = z
       versionId: "84af3583-23ff-4fcc-9838-ed3262499be2",
       version: 4,
       active: true,
+    },
+  });
+
+export const ValidatedConfigurationSchema = z
+  .object({
+    projectSlug: z.string(),
+    valid: z.literal(true),
+  })
+  .strict()
+  .openapi("ValidatedConfiguration", {
+    example: { projectSlug: "payments", valid: true },
+  });
+
+export const ProjectSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    slug: z.string(),
+  })
+  .strict()
+  .openapi("Project");
+
+export const ProjectListSchema = z
+  .object({ projects: z.array(ProjectSchema) })
+  .strict()
+  .openapi("ProjectList", {
+    example: {
+      projects: [
+        {
+          id: "84af3583-23ff-4fcc-9838-ed3262499be2",
+          name: "Payments",
+          slug: "payments",
+        },
+      ],
     },
   });
 

@@ -3,7 +3,8 @@ import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
 import type { TriggerRunRecord } from "../db/types.js";
 
 export interface PublicAuthorization {
-  keyId: string;
+  kind: "apiKey" | "cliCredential";
+  credentialId: string;
   organizationId: string;
   scopes: readonly ApiKeyScope[];
 }
@@ -13,6 +14,27 @@ export interface InstallConfigurationInput {
   yaml: string;
   partials?: readonly InstallConfigurationPartial[] | undefined;
 }
+
+export type ValidateConfigurationInput = InstallConfigurationInput;
+
+export type ValidateConfigurationResult =
+  | { status: "valid"; projectSlug: string; valid: true }
+  | { status: "project_not_found" }
+  | { status: "invalid_yaml"; issues: readonly DomainIssue[] }
+  | { status: "invalid_document"; issues: readonly DomainIssue[] }
+  | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
+  | { status: "invalid_configuration"; issues: readonly DomainIssue[] }
+  | InfrastructureUnavailable;
+
+export interface PublicProject {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export type ListProjectsResult =
+  | { status: "listed"; projects: readonly PublicProject[] }
+  | InfrastructureUnavailable;
 
 export interface InstallConfigurationPartial {
   path: string;
@@ -87,6 +109,11 @@ export interface InfrastructureUnavailable {
 }
 
 export interface PublicOperations {
+  listProjects(authorization: PublicAuthorization): Promise<ListProjectsResult>;
+  validateConfiguration(
+    authorization: PublicAuthorization,
+    input: ValidateConfigurationInput,
+  ): Promise<ValidateConfigurationResult>;
   installConfiguration(
     authorization: PublicAuthorization,
     input: InstallConfigurationInput,
@@ -99,6 +126,7 @@ export interface PublicOperations {
 }
 
 export interface PublicOperationRepository {
+  listActiveProjects(organizationId: string): Promise<readonly PublicProject[]>;
   findActiveProject(
     organizationId: string,
     projectSlug: string,
@@ -115,11 +143,18 @@ export interface PublicOperationRepository {
 
 export interface PublicOperationCapabilities {
   configurationForProject(projectId: string): {
+    validateManualConfiguration(
+      rawConfiguration: unknown,
+      resolvedPromptPartials?: ResolvedPromptPartials,
+    ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }>;
     insertManualRevision(input: {
       rawYaml: string;
       rawConfiguration: unknown;
       userId: null;
-      sourceEvidence: { kind: "api-key"; keyId: string };
+      sourceEvidence: {
+        kind: "api-key" | "cli-credential";
+        credentialId: string;
+      };
       resolvedPromptPartials?: ResolvedPromptPartials;
     }): Promise<{ id: string; validationErrors: unknown }>;
     activate(id: string): Promise<{ revision: { id: string; version: number } }>;

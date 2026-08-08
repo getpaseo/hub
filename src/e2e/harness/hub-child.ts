@@ -139,9 +139,9 @@ async function main(): Promise<void> {
     database,
     entitlements: entitlements.service,
     publicApi:
-      auth.apiKeys === undefined
+      auth.publicCredentials === undefined
         ? { status: "unavailable" }
-        : { status: "enabled", authenticator: auth.apiKeys },
+        : { status: "enabled", authenticator: auth.publicCredentials },
     outputRegistry: outputs,
     providers: [
       {

@@ -95,10 +95,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     auth,
     entitlements: entitlements.service,
     billing,
-    publicApi:
-      auth?.apiKeys === undefined
-        ? { status: "unavailable" }
-        : { status: "enabled", authenticator: auth.apiKeys },
     registrations,
     publicBaseUrl: identity.appUrl,
     ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),

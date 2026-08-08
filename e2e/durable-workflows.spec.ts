@@ -66,7 +66,7 @@ test("shows invalid typed manual input in Activity without creating an execution
   expect(result).toEqual({
     status: 400,
     error: "invalid_input",
-    reason: expect.stringContaining("rejected_input:deploy"),
+    reason: expect.stringContaining("declared choices"),
     triggerRunId: expect.any(String),
   });
 

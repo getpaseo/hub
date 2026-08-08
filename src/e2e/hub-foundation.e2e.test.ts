@@ -17,8 +17,9 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
   }, 120_000);
 
-  it("connects the source-built daemon through device authorization", async () => {
-    const enrollment = await hub.connectWithDeviceAuthorization("Build Studio");
+  it("connects the source-built daemon through an enrollment token", async () => {
+    const enrollment = await hub.issueEnrollment();
+    await hub.connect(enrollment);
     await hub.daemonIsConnected();
 
     assert.equal((await hub.status()).state, "connected");
