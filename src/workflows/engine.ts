@@ -702,7 +702,11 @@ function buildStepIntent(
       renderExpressionTemplate(step.agent.provider, context),
       "agent.provider",
     ),
-    mode: authorityString(renderExpressionTemplate(step.agent.mode, context), "agent.mode"),
+    ...(step.agent.mode === undefined
+      ? {}
+      : {
+          mode: authorityString(renderExpressionTemplate(step.agent.mode, context), "agent.mode"),
+        }),
     ...(step.agent.model === undefined
       ? {}
       : {
@@ -719,6 +723,7 @@ function buildStepIntent(
             "agent.thinkingOptionId",
           ),
         }),
+    ...(step.agent.options === undefined ? {} : { options: structuredClone(step.agent.options) }),
   };
   return {
     ...buildLaunchMachineIntent({

@@ -28,6 +28,68 @@ const secondary: DiscordConnectionRecord = {
 };
 
 describe("ProjectConfigurationStore resource compilation", () => {
+  it("preserves provider options in immutable revision evidence", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Provider options project",
+      slug: "provider-options-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const options = {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+    };
+    const rawConfiguration = {
+      environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
+      triggers: [
+        {
+          name: "run",
+          on: "manual.run",
+          max_runtime: "1h",
+          steps: [
+            {
+              id: "work",
+              environment: "runner",
+              max_runtime: "10m",
+              idle_timeout: "1m",
+              agent: { provider: "codex", options },
+              prompt: [{ text: "Run" }],
+            },
+          ],
+        },
+      ],
+    };
+    const rawYaml = [
+      "agent:",
+      "  provider: codex",
+      "  options:",
+      "    sandbox_workspace_write:",
+      "      writable_roots: [/var/cache/npm]",
+      "      network_access: false",
+    ].join("\n");
+
+    const revision = await store.insertManualRevision({
+      rawYaml,
+      rawConfiguration,
+      userId: "user-1",
+      sourceEvidence: { kind: "manual", authoredBy: "user-1" },
+    });
+    const active = await store.activate(revision.id);
+
+    assert.equal(revision.rawYaml, rawYaml);
+    assert.deepEqual(revision.sourceEvidence, { kind: "manual", authoredBy: "user-1" });
+    assert.deepEqual(active.configuration.triggers[0]?.steps[0]?.agent.options, options);
+    assert.deepEqual(
+      parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.steps[0]?.agent.options,
+      options,
+    );
+  });
+
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);

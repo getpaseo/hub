@@ -1,4 +1,5 @@
 import type { WorktreeTarget } from "../config/index.js";
+import type { JsonValue } from "../config/compiler.js";
 import type {
   HubExecutionAgentSnapshot,
   HubExecutionAgentStreamEvent,
@@ -13,14 +14,26 @@ export interface DaemonAgentSnapshot {
 export interface DaemonCreateAgentOptions {
   executionId: string;
   provider: string;
-  mode: string;
+  mode?: string;
   model?: string;
   thinkingOptionId?: string;
+  providerOptions?: Readonly<Record<string, JsonValue>>;
+  toolPolicy: ToolPolicy;
   cwd: string;
   prompt: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
   worktree?: WorktreeTarget;
+}
+
+export interface McpToolRef {
+  kind: "mcp";
+  server: "hub";
+  tool: string;
+}
+
+export interface ToolPolicy {
+  preapproved: readonly McpToolRef[];
 }
 
 export interface McpHttpServerConfig {
@@ -72,5 +85,20 @@ export class DaemonCreateResponseLostError extends Error {
   constructor() {
     super("daemon create response was lost");
     this.name = "DaemonCreateResponseLostError";
+  }
+}
+
+export class DaemonCreateRejectedError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+    readonly provider?: string,
+    readonly issues?: readonly {
+      path: readonly (string | number)[];
+      message: string;
+    }[],
+  ) {
+    super(message);
+    this.name = "DaemonCreateRejectedError";
   }
 }

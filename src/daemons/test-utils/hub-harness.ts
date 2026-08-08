@@ -555,6 +555,16 @@ export class HubHarness {
     await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
     return this.execution(id);
   }
+  async waitForExecutionStatus(
+    id: string,
+    status: AgentExecutionRecord["status"],
+  ): Promise<AgentExecutionRecord> {
+    await waitFor(async () => (await this.execution(id)).status === status);
+    return this.execution(id);
+  }
+  rejectNextCreate(error: HubCreateError): void {
+    this.requireDaemon().rejectNextCreate(error);
+  }
   advanceDispatchTime(ms: number): Promise<void> {
     return this.clock.advanceBy(ms);
   }
@@ -572,9 +582,12 @@ export class HubHarness {
       mcpServers["hub"]["headers"] = { Authorization: "Bearer <private>" };
     }
     return {
+      modeId: agent["modeId"],
       cwd: agent["cwd"],
       prompt: agent["prompt"],
       thinkingOptionId: agent["thinkingOptionId"],
+      providerOptions: agent["providerOptions"],
+      toolPolicy: agent["toolPolicy"],
       env: agent["env"],
       mcpServers,
       worktree: agent["worktree"],
@@ -1746,6 +1759,7 @@ class TestDaemon {
   private holdControlAck = false;
   private materializeSpawn = true;
   private omitSnapshotOnReconnect = false;
+  private nextCreateError: HubCreateError | undefined;
   private resolveSpawn!: () => void;
   private readonly spawnObserved = new Promise<void>((resolve) => {
     this.resolveSpawn = resolve;
@@ -1858,6 +1872,9 @@ class TestDaemon {
   }
   omitAgentSnapshotOnReconnect(): void {
     this.omitSnapshotOnReconnect = true;
+  }
+  rejectNextCreate(error: HubCreateError): void {
+    this.nextCreateError = error;
   }
   holdSpawnAcknowledgement(): void {
     this.holdAck = true;
@@ -2132,6 +2149,23 @@ class TestDaemon {
     else this.acknowledge(pending);
   }
   private acknowledge(pending: { requestId: string; executionId: string }): void {
+    const error = this.nextCreateError;
+    this.nextCreateError = undefined;
+    if (error !== undefined) {
+      this.send({
+        type: "hub.execution.agent.create.response",
+        payload: {
+          requestId: pending.requestId,
+          executionId: pending.executionId,
+          agentId: null,
+          agent: null,
+          success: false,
+          error,
+        },
+      });
+      this.pendingCreate = undefined;
+      return;
+    }
     const agentId = `agent-${pending.executionId}`;
     const status = readAgentStatus(this.agents.get(agentId)?.["status"]);
     this.send({
@@ -2142,6 +2176,7 @@ class TestDaemon {
         agentId,
         agent: this.omitSnapshotOnReconnect ? null : agentSnapshot(agentId, status),
         success: true,
+        toolPolicyApplied: true,
         error: null,
       },
     });
@@ -2172,6 +2207,16 @@ class TestDaemon {
     this.socket?.send(JSON.stringify({ type: "session", message: value }));
   }
 }
+
+type HubCreateError =
+  | {
+      code: "provider_options_invalid";
+      provider: string;
+      issues: readonly { path: readonly (string | number)[]; message: string }[];
+      message: string;
+    }
+  | { code: "tool_policy_unsupported"; provider: string; message: string }
+  | { code: "create_failed"; message: string };
 
 function agentSnapshot(
   agentId: string,

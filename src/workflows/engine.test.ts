@@ -18,12 +18,49 @@ import type {
   TriggerRunRecord,
 } from "../db/types.js";
 import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
+  it("carries provider options unchanged into persisted and dispatched launch intent", async () => {
+    const rawConfiguration = deadlineConfiguration();
+    const options = {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+    };
+    const triggers = readUnknownArray(rawConfiguration["triggers"]);
+    if (triggers === undefined) throw new Error("test trigger unavailable");
+    const trigger = triggers[0];
+    if (!isRecord(trigger)) throw new Error("test trigger unavailable");
+    const steps = readUnknownArray(trigger["steps"]);
+    if (steps === undefined) throw new Error("test steps unavailable");
+    const authoredStep = steps[0];
+    if (!isRecord(authoredStep)) throw new Error("test step unavailable");
+    const agent = authoredStep["agent"];
+    if (!isRecord(agent)) throw new Error("test agent unavailable");
+    Reflect.set(agent, "options", options);
+    const fixture = await workflowFixture({ rawConfiguration });
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = engineFor(fixture, [], async (intent) => {
+      dispatched = intent;
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.deepEqual(dispatched?.agent, { provider: "codex", options });
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const persistedStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.deepEqual(persistedStep.dispatchIntent?.agent, { provider: "codex", options });
+  });
+
   it("logs an initial recovery rejection and retries on the next interval", async () => {
     vi.useFakeTimers();
     const fixture = await workflowFixture();
@@ -1177,7 +1214,7 @@ function partialRuntimeConfiguration(): Record<string, unknown> {
 function engineFor(
   fixture: Fixture,
   dispatches: string[],
-  beforeDispatch?: (intent: { prompt: string }) => Promise<void>,
+  beforeDispatch?: (intent: LaunchMachineIntent) => Promise<void>,
   now?: () => Date,
   onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<void>,
 ) {
@@ -1470,4 +1507,8 @@ async function settlesQuickly<T>(promise: Promise<T>): Promise<boolean> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readUnknownArray(value: unknown): readonly unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
 }

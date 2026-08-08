@@ -17,8 +17,7 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
   }, 120_000);
 
   it("lets a real Codex agent finalize a production manual run through MCP", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    await hub.connect();
     await hub.daemonIsConnected();
     await hub.installRealAgentConfiguration("codex");
 
@@ -32,8 +31,7 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
   }, 300_000);
 
   it("lets a real Claude agent finalize a production manual run through MCP", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    await hub.connect();
     await hub.daemonIsConnected();
     await hub.installRealAgentConfiguration("claude");
 
@@ -46,9 +44,22 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
 
+  it("lets a permissioned real OpenCode agent finalize through preapproved Hub MCP", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.installRealAgentConfiguration("opencode");
+
+    const run = await hub.runRealAgentManual("real-opencode-finalize");
+    const evidence = await hub.realAgentCompletionEvidence(run, "opencode");
+
+    assert.equal(evidence.status, "succeeded");
+    assert.equal(evidence.completedByAgent, true);
+    assert.equal(evidence.completedToolCall, true);
+    assert.equal(evidence.completionHelperLaunched, false);
+  }, 300_000);
+
   it("routes deterministic input and classifier fallback through the real daemon", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    await hub.connect();
     await hub.daemonIsConnected();
     await hub.installRealAgentRoutingConfiguration("codex");
 
@@ -80,8 +91,7 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
   }, 600_000);
 
   it("routes classifier fallback through a real Claude multi-step workflow", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    await hub.connect();
     await hub.daemonIsConnected();
     await hub.installRealAgentRoutingConfiguration("claude");
 

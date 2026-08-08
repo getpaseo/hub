@@ -8,12 +8,14 @@ import { ActiveDaemonRegistry } from "../registry.js";
 
 const SessionRequestSchema = z.object({
   type: z.literal("session"),
-  message: z.object({
-    type: z.string(),
-    requestId: z.string(),
-    executionId: z.string(),
-    action: z.enum(["interrupt", "archive"]).optional(),
-  }),
+  message: z
+    .object({
+      type: z.string(),
+      requestId: z.string(),
+      executionId: z.string(),
+      action: z.enum(["interrupt", "archive"]).optional(),
+    })
+    .passthrough(),
 });
 
 interface PendingRequest<T> {
@@ -47,6 +49,10 @@ export class DaemonRegistryHarness {
       cwd: "/workspace",
       prompt: "Do the work",
       env: {},
+      providerOptions: { permission: { edit: "ask", bash: "deny" } },
+      toolPolicy: {
+        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+      },
     });
     void promise.catch(() => undefined);
     return {
@@ -117,6 +123,23 @@ export class DaemonRegistryHarness {
         requestId: pending.request.requestId,
         executionId,
         agentId,
+        agent: null,
+        success: true,
+        toolPolicyApplied: true,
+        error: null,
+      },
+    });
+    return pending.promise;
+  }
+
+  async completeCreateWithoutContract(executionId: string): Promise<DaemonAgentSnapshot> {
+    const pending = await this.pendingCreate(executionId);
+    this.currentSocket().send({
+      type: "hub.execution.agent.create.response",
+      payload: {
+        requestId: pending.request.requestId,
+        executionId,
+        agentId: `agent-${executionId}`,
         agent: null,
         success: true,
         error: null,

@@ -66,6 +66,30 @@ The image is published as `ghcr.io/getpaseo/hub:latest`.
 
 See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, `.paseo/hub.yml`, Docker, and Fly deployment.
 
+## Provider options and Hub tools
+
+Workflow steps may pass a JSON-compatible, provider-native `agent.options` object. Hub preserves
+the names and nesting exactly; the selected Paseo provider validates and applies them:
+
+```yaml
+agent:
+  provider: codex
+  model: gpt-5.5
+  thinkingOptionId: high
+  options:
+    sandbox_workspace_write:
+      writable_roots:
+        - /var/cache/npm
+      network_access: false
+```
+
+Options are specific to the selected provider and are not portable. Omit `mode` to inherit the
+provider or daemon default. Tool preapproval is not configurable in Hub YAML: Hub grants only the
+execution-scoped MCP tools it materializes (`finish_execution`, plus an allowed output tool such as
+`reply`). Provider or machine policy still controls every unrelated tool. A read-only provider
+configuration is defense in depth; Hub output authorization remains enforced by the execution MCP
+server.
+
 ## Public API
 
 Each Hub serves a self-hosted API reference at `/api/reference` and its generated OpenAPI 3.1 contract at `/api/openapi.json`. The short [public API guide](docs/public-api.md) covers CLI login, versioning, credential scopes, and request correlation.

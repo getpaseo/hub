@@ -1285,7 +1285,11 @@ function launchIntent(
       cwd: "/repo",
     },
     prompt: "run",
-    agent: { provider: "test", mode: "full-access" },
+    agent: {
+      provider: "test",
+      mode: "full-access",
+      options: { permission: { edit: "ask", bash: "deny" } },
+    },
     allowOutputs: [],
     autoArchive: false,
     triggerContext: { provider: "slack" },

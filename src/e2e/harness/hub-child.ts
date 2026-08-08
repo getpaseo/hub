@@ -123,7 +123,7 @@ async function main(): Promise<void> {
               environment: "hub-e2e",
               max_runtime: "1h",
               idle_timeout: "5m",
-              agent: { provider: "hub-e2e", mode: "default" },
+              agent: { provider: "hub-e2e" },
               prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
             },
           ],

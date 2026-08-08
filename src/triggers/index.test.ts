@@ -22,5 +22,13 @@ describe("cleanTriggerAgent", () => {
       provider: "codex",
       mode: "full-access",
     });
+    assert.deepEqual(cleanTriggerAgent({ provider: "codex" }), { provider: "codex" });
+  });
+
+  it("copies opaque provider options without interpreting their keys", () => {
+    const options = { permission: { edit: "ask", bash: "deny" } };
+    const cleaned = cleanTriggerAgent({ provider: "opencode", options });
+    assert.deepEqual(cleaned, { provider: "opencode", options });
+    assert.notEqual(cleaned.options, options);
   });
 });

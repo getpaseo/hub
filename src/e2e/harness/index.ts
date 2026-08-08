@@ -35,7 +35,6 @@ const CanonicalToolCallSchema = z
   .passthrough();
 
 interface Enrollment {
-  token: string;
   daemonId: string;
 }
 
@@ -74,7 +73,7 @@ interface HubE2EOptions {
   realAgent?: boolean;
 }
 
-type RealAgentProvider = "claude" | "codex";
+type RealAgentProvider = "claude" | "codex" | "opencode";
 type DispatchedManualRun = z.infer<typeof DispatchedManualRunSchema>;
 
 export interface ShutdownEvidence {
@@ -121,29 +120,13 @@ export class HubE2E {
     }
   }
 
-  async issueEnrollment(): Promise<Enrollment> {
-    const response = await fetch(`${this.requireProxy().origin}/api/v1/daemons/enrollment-tokens`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${MACHINE_KEY}` },
-    });
-    assertStatus(response, 201, "issue enrollment");
-    const body = asRecord(await response.json());
-    return { token: requiredString(body, "token"), daemonId: "" };
-  }
-
-  async connect(enrollment: Enrollment): Promise<void> {
+  async connect(): Promise<Enrollment> {
     let status: Record<string, unknown>;
     try {
-      status = await this.cli([
-        "hub",
-        "connect",
+      status = await this.requireSource().connectWithCredential(
         this.requireProxy().origin,
-        "--token",
-        enrollment.token,
-        "--host",
-        this.daemonHost,
-        "--json",
-      ]);
+        MACHINE_KEY,
+      );
     } catch (error) {
       const enrollmentState = await this.requirePool().query<{
         enrollment_tokens: string;
@@ -158,7 +141,7 @@ export class HubE2E {
         { cause: error },
       );
     }
-    enrollment.daemonId = requiredString(status, "daemonId");
+    return { daemonId: requiredString(status, "daemonId") };
   }
 
   async daemonIsConnected(): Promise<void> {
@@ -219,7 +202,6 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       "          provider: hub-e2e",
-      "          mode: default",
       '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
       "        allow_outputs:",
       "          - type: hub.e2e",
@@ -236,7 +218,6 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       "          provider: hub-e2e",
-      "          mode: default",
       '        prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }] ',
       "        allow_outputs:",
       "          - type: discord.reply",
@@ -253,7 +234,6 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       "          provider: hub-e2e",
-      "          mode: default",
       '        prompt: [{ text: "daemon-restart" }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
@@ -277,7 +257,6 @@ export class HubE2E {
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
-    const mode = provider === "claude" ? "bypassPermissions" : "full-access";
     const yaml = [
       "environments:",
       "  - name: real-agent",
@@ -298,7 +277,7 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       `          provider: ${provider}`,
-      `          mode: ${mode}`,
+      ...realAgentOptionsYaml(provider),
       '        prompt: [{ text: "Call the finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
@@ -318,7 +297,6 @@ export class HubE2E {
     );
     const slug = daemon.rows[0]?.slug;
     if (!slug) throw new Error("Connected daemon has no daemon slug");
-    const mode = provider === "claude" ? "bypassPermissions" : "full-access";
     const yaml = [
       "environments:",
       "  - name: real-agent-routing",
@@ -346,7 +324,7 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       `          provider: ${provider}`,
-      `          mode: ${mode}`,
+      ...realAgentOptionsYaml(provider),
       '        prompt: [{ text: "Classify the request and call finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP. Request: ${{ paseo.prompt }}" }] ',
       "        output:",
       "          schema:",
@@ -365,7 +343,7 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       `          provider: ${provider}`,
-      `          mode: ${mode}`,
+      ...realAgentOptionsYaml(provider),
       '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
       "      - id: work-hub",
       "        if: \"${{ values.selected == 'hub' }}\"",
@@ -375,7 +353,7 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       `          provider: ${provider}`,
-      `          mode: ${mode}`,
+      ...realAgentOptionsYaml(provider),
       '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
@@ -538,7 +516,7 @@ export class HubE2E {
       if (!item.completedToolCall) {
         throw new Error(`real ${provider} step ${item.stepId} has no completed finish tool call`);
       }
-      const binary = provider === "codex" ? /(?:^|\/)codex(?:\s|$)/u : /(?:^|\/)claude(?:\s|$)/u;
+      const binary = realAgentProcessPattern(provider);
       if (!item.processDescriptions.some((description) => binary.test(description))) {
         throw new Error(
           `real ${provider} process evidence missing for step ${item.stepId}: ${JSON.stringify(item.processDescriptions)}`,
@@ -630,7 +608,7 @@ export class HubE2E {
       );
     }
     const processDescriptions = run.processDescriptions ?? [];
-    const binary = provider === "codex" ? /(?:^|\/)codex(?:\s|$)/u : /(?:^|\/)claude(?:\s|$)/u;
+    const binary = realAgentProcessPattern(provider);
     if (!processDescriptions.some((description) => binary.test(description))) {
       throw new Error(
         `real ${provider} process evidence missing: ${JSON.stringify(processDescriptions)}`,
@@ -1150,6 +1128,9 @@ export class HubE2E {
         PASEO_HUB_AUTH_SECRET: "hub-e2e-browser-auth-secret-at-least-32-characters",
         PASEO_REGISTRATION_MODE: "open",
         PASEO_ORGANIZATION_CREATION: "open",
+        PASEO_BOOTSTRAP_ORGANIZATION: "",
+        PASEO_BOOTSTRAP_OWNER_EMAIL: "",
+        PASEO_BOOTSTRAP_OWNER_PASSWORD: "",
         HUB_E2E_OUTPUT_FILE: this.outputFile,
       },
     });
@@ -1347,6 +1328,40 @@ export class HubE2E {
   }
 }
 
+function realAgentOptionsYaml(provider: RealAgentProvider): string[] {
+  if (provider === "codex") {
+    return [
+      "          options:",
+      "            approval_policy: never",
+      "            sandbox_mode: read-only",
+      "            web_search: disabled",
+    ];
+  }
+  if (provider === "claude") {
+    return [
+      "          options:",
+      "            disallowedTools: [Bash, Edit, Write, NotebookEdit, WebFetch, WebSearch]",
+      "            sandbox:",
+      "              enabled: true",
+      "              failIfUnavailable: true",
+    ];
+  }
+  return [
+    "          options:",
+    "            permission:",
+    "              edit: deny",
+    "              bash: deny",
+    "              task: deny",
+    "              webfetch: deny",
+    "              websearch: deny",
+  ];
+}
+
+function realAgentProcessPattern(provider: RealAgentProvider): RegExp {
+  if (provider === "codex") return /(?:^|\/)codex(?:\s|$)/u;
+  if (provider === "claude") return /(?:^|\/)claude(?:\s|$)/u;
+  return /(?:^|\/)opencode(?:\s|$)/u;
+}
 async function initializeGitWorkspace(workspace: string): Promise<void> {
   await runCommand("git", ["init", "-q"], workspace, {});
   await writeFile(join(workspace, "README.md"), "phase five\n");

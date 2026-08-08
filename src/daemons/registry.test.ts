@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { DaemonCreateResponseLostError } from "./protocol.js";
+import { DaemonCreateRejectedError, DaemonCreateResponseLostError } from "./protocol.js";
 import { DaemonRegistryHarness } from "./test-utils/daemon-registry-harness.js";
 
 describe("daemon socket generations", () => {
@@ -29,6 +29,17 @@ describe("daemon socket generations", () => {
     });
   });
 
+  it("forwards only structured MCP grants with opaque provider options", async () => {
+    const pending = await daemon.pendingCreate("contract-create");
+
+    assert.deepEqual(pending.request["providerOptions"], {
+      permission: { edit: "ask", bash: "deny" },
+    });
+    assert.deepEqual(pending.request["toolPolicy"], {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 
@@ -38,6 +49,14 @@ describe("daemon socket generations", () => {
     assert.equal(await daemon.shutdownCompleted(), false);
     daemon.persistOfflinePresence();
     await daemon.shutdownCompletes();
+  });
+
+  it("fails closed when a daemon does not acknowledge the Hub execution contract", async () => {
+    await assert.rejects(daemon.completeCreateWithoutContract("legacy-create"), {
+      name: DaemonCreateRejectedError.name,
+      message:
+        "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
+    });
   });
 
   it("forwards agent status updates to the execution subscriber", async () => {

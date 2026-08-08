@@ -121,6 +121,9 @@ describe("daemon enrollment and execution", () => {
       ].join("\n"),
     );
     assert.equal(agent.thinkingOptionId, "xhigh");
+    assert.deepEqual(agent.toolPolicy, {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
     assert.deepEqual(agent.env, {
       USER_DEFINED: "yes",
       PASEO_AGENT_PROVIDER: "opencode",
@@ -154,6 +157,12 @@ describe("daemon enrollment and execution", () => {
         "Reply pong.",
       ].join("\n"),
     );
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      preapproved: [
+        { kind: "mcp", server: "hub", tool: "finish_execution" },
+        { kind: "mcp", server: "hub", tool: "reply" },
+      ],
+    });
 
     await hub.dispatch({
       outputContext: { provider: "manual", channelId: "channel-1" },
@@ -167,6 +176,79 @@ describe("daemon enrollment and execution", () => {
         "Reply pong.",
       ].join("\n"),
     );
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
+  });
+
+  it("passes provider options unchanged and keeps an omitted mode omitted", async () => {
+    await hub.connectDaemon();
+    const options = {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+    };
+
+    const result = await hub.dispatch({
+      agent: { provider: "codex", options },
+      allowOutputs: [],
+    });
+    const launch = hub.createdAgentLaunch();
+    const persisted = await hub.execution(result.execution.id);
+
+    assert.equal(launch.modeId, undefined);
+    assert.deepEqual(launch.providerOptions, options);
+    assert.deepEqual(persisted.launchIntent?.agent, { provider: "codex", options });
+    assert.equal(isRecord(launch.env) ? launch.env["PASEO_AGENT_MODE"] : undefined, undefined);
+  });
+
+  it("surfaces daemon provider-option validation at the authored YAML path", async () => {
+    await hub.connectDaemon();
+    hub.rejectNextCreate({
+      code: "provider_options_invalid",
+      provider: "codex",
+      issues: [
+        {
+          path: ["sandbox_workspace_write", "network-access"],
+          message: "Expected boolean, received string",
+        },
+      ],
+      message:
+        "Invalid providerOptions for 'codex': providerOptions.sandbox_workspace_write.network_access: Expected boolean, received string",
+    });
+
+    const handedOff = await hub.handoff({
+      agent: {
+        provider: "codex",
+        options: { sandbox_workspace_write: { network_access: "sometimes" } },
+      },
+    });
+    const failed = await hub.waitForExecutionStatus(handedOff.execution.id, "failed");
+
+    assert.deepEqual(failed.result, {
+      status: "failed",
+      reason:
+        "provider 'codex': agent.options.sandbox_workspace_write[\"network-access\"]: Expected boolean, received string",
+    });
+  });
+
+  it("surfaces unsupported exact MCP preapproval without waiting for a timeout", async () => {
+    await hub.connectDaemon();
+    hub.rejectNextCreate({
+      code: "tool_policy_unsupported",
+      provider: "test-provider",
+      message: "Provider test-provider does not support exact MCP tool preapproval",
+    });
+
+    const handedOff = await hub.handoff({ agent: { provider: "test-provider" } });
+    const failed = await hub.waitForExecutionStatus(handedOff.execution.id, "failed");
+
+    assert.deepEqual(failed.result, {
+      status: "failed",
+      reason:
+        "tool_policy_unsupported: Provider test-provider does not support exact MCP tool preapproval",
+    });
   });
 
   it("allows an execution to opt out of the Hub capability inventory", async () => {

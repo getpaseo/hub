@@ -40,6 +40,7 @@ const AgentSchema = z
     model: z.string().min(1).optional(),
     mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
+    options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
   })
   .strict();
 
@@ -192,8 +193,9 @@ export type CompiledPromptBlock =
 export interface CompiledAgent {
   provider: string;
   model?: string | undefined;
-  mode: string;
+  mode?: string | undefined;
   thinkingOptionId?: string | undefined;
+  options?: Readonly<Record<string, JsonValue>> | undefined;
 }
 
 export interface CompiledInput {
@@ -268,8 +270,9 @@ const CompiledAgentSchema: z.ZodType<CompiledAgent> = z
   .object({
     provider: z.string().min(1),
     model: z.string().min(1).optional(),
-    mode: z.string().min(1),
+    mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
+    options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
   })
   .strict();
 
@@ -487,7 +490,10 @@ function compileStep(
     environment: step.environment,
     maxRuntimeMs,
     idleTimeoutMs,
-    agent: { ...step.agent, mode: step.agent.mode ?? "default" },
+    agent: {
+      ...step.agent,
+      ...(step.agent.options === undefined ? {} : { options: cloneJsonObject(step.agent.options) }),
+    },
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
@@ -1055,6 +1061,12 @@ function cloneJsonValue(value: unknown): JsonValue {
   const cloned: unknown = structuredClone(value);
   if (!isJsonValue(cloned)) throw new Error("value is not valid JSON");
   return cloned;
+}
+
+function cloneJsonObject(value: Record<string, JsonValue>): Record<string, JsonValue> {
+  const cloned = cloneJsonValue(value);
+  if (!isRecord(cloned)) throw new Error("value is not a JSON object");
+  return cloned as Record<string, JsonValue>;
 }
 
 function deepFreeze<T>(value: T): T {

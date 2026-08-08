@@ -18,8 +18,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   }, 120_000);
 
   it("connects the source-built daemon through an enrollment token", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    const enrollment = await hub.connect();
     await hub.daemonIsConnected();
 
     assert.equal((await hub.status()).state, "connected");
@@ -31,8 +30,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   }, 120_000);
 
   it("connects a real daemon and completes an isolated manual run without relay authority", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    const enrollment = await hub.connect();
     await hub.daemonIsConnected();
     const connected = await hub.status();
     const unrelatedAgent = await hub.createUnrelatedLocalAgent();
@@ -93,8 +91,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   }, 120_000);
 
   it("replays a lost create response across reconnection without duplicating the daemon agent", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    const enrollment = await hub.connect();
     await hub.daemonIsConnected();
     await hub.installProductionConfiguration();
     const run = await hub.beginAmbiguousManualRun();
@@ -142,8 +139,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   }, 120_000);
 
   it("fails the same owned running agent when a real daemon restart interrupts it", async () => {
-    const enrollment = await hub.issueEnrollment();
-    await hub.connect(enrollment);
+    const enrollment = await hub.connect();
     await hub.daemonIsConnected();
     await hub.installProductionConfiguration();
     const run = await hub.beginDaemonRestartRun();

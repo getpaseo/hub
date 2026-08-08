@@ -23,6 +23,7 @@ import type { TriggerProvider } from "../triggers/index.js";
 import type { ProviderIntegrationRegistration } from "../providers/registration.js";
 import { composeExecutionPrompt } from "../execution-capabilities/prompt.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
+import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
 import {
   notifyAgentExecutionCompleted,
   notifyAgentExecutionFailed,
@@ -31,6 +32,7 @@ import {
   notifyMachineTerminated,
 } from "../triggers/lifecycle.js";
 import {
+  DaemonCreateRejectedError,
   DaemonCreateResponseLostError,
   type DaemonAgentSnapshot,
   type DaemonAgentStreamEvent,
@@ -564,6 +566,7 @@ export class DaemonDispatchLifecycle {
     return buildCreateAgentOptions(
       await this.materializeLaunch(intent, provider, hubExecutionEnv.executionId),
       hubExecutionEnv,
+      this.executionCapabilities,
     );
   }
 
@@ -1886,6 +1889,10 @@ function toDaemonDispatchFailure(error: unknown): DaemonDispatchFailure {
     return new DaemonDispatchFailure("daemon_timeout", { cause: error });
   }
 
+  if (error instanceof DaemonCreateRejectedError) {
+    return new DaemonDispatchFailure(daemonCreateFailureReason(error), { cause: error });
+  }
+
   return new DaemonDispatchFailure("daemon_unreachable", { cause: error });
 }
 
@@ -1900,21 +1907,31 @@ async function buildCreateAgentOptions(
     completionToken: string;
     publicBaseUrl: string;
   },
+  capabilities: OutputExecutorRegistry,
 ): Promise<DaemonCreateAgentOptions> {
   return {
     executionId: hubExecutionEnv.executionId,
     provider: intent.agent.provider,
-    mode: intent.agent.mode ?? "default",
+    ...(intent.agent.mode === undefined ? {} : { mode: intent.agent.mode }),
     ...(intent.agent.model === undefined ? {} : { model: intent.agent.model }),
     ...(intent.agent.thinkingOptionId === undefined
       ? {}
       : { thinkingOptionId: intent.agent.thinkingOptionId }),
+    ...(intent.agent.options === undefined
+      ? {}
+      : { providerOptions: structuredClone(intent.agent.options) }),
     cwd: intent.environment.cwd,
     prompt: intent.prompt,
     env: buildAgentEnv(intent),
     mcpServers: {
       hub: buildExecutionCapabilityMcpServer(hubExecutionEnv),
     },
+    toolPolicy: executionToolPolicy({
+      allowOutputs: intent.allowOutputs,
+      outputContext: intent.outputContext,
+      ...(intent.outputSchema === undefined ? {} : { outputSchema: intent.outputSchema }),
+      capabilities,
+    }),
     ...(intent.environment.worktree === undefined
       ? {}
       : {
@@ -1927,9 +1944,29 @@ function buildAgentEnv(intent: LaunchMachineIntent): Record<string, string> {
   return {
     ...intent.environment.env,
     PASEO_AGENT_PROVIDER: intent.agent.provider,
-    PASEO_AGENT_MODE: intent.agent.mode ?? "default",
+    ...(intent.agent.mode === undefined ? {} : { PASEO_AGENT_MODE: intent.agent.mode }),
     PASEO_HUB_CONFIG_JSON: JSON.stringify(intent.hubConfig),
   };
+}
+
+function daemonCreateFailureReason(error: DaemonCreateRejectedError): string {
+  if (error.code === "provider_options_invalid" && error.issues !== undefined) {
+    const provider = error.provider === undefined ? "provider" : `provider '${error.provider}'`;
+    const issues = error.issues
+      .map((issue) => `${yamlProviderOptionPath(issue.path)}: ${issue.message}`)
+      .join("; ");
+    return `${provider}: ${issues}`;
+  }
+  return error.code === undefined ? error.message : `${error.code}: ${error.message}`;
+}
+
+function yamlProviderOptionPath(path: readonly (string | number)[]): string {
+  return path.reduce<string>((formatted, segment) => {
+    if (typeof segment === "number") return `${formatted}[${segment}]`;
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment)
+      ? `${formatted}.${segment}`
+      : `${formatted}[${JSON.stringify(segment)}]`;
+  }, "agent.options");
 }
 
 function optionalDeliveryId(triggerContext: unknown): { deliveryId?: string } {

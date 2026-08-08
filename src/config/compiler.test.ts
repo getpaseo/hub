@@ -56,6 +56,54 @@ function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
 }
 
 describe("workflow compiler", () => {
+  it("preserves opaque provider options and leaves an omitted mode omitted", () => {
+    const sourceOptions = {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+      native_null: null,
+      native_template_string: "${{ provider.owns.this }}",
+    };
+    const raw = configuration();
+    setAgent(raw, {
+      provider: "codex",
+      model: "gpt-5.5",
+      options: sourceOptions,
+    });
+
+    const compiled = compileHubConfig(raw);
+    const options = compiled.triggers[0]?.steps[0]?.agent.options;
+
+    assert.deepEqual(options, sourceOptions);
+    assert.equal(compiled.triggers[0]?.steps[0]?.agent.mode, undefined);
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.notEqual(options, sourceOptions);
+  });
+
+  it.each([null, [], "native", true, 1])("rejects non-object provider options %#", (options) => {
+    const raw = configuration();
+    setAgent(raw, { provider: "codex", options });
+    assert.throws(() => compileHubConfig(raw), /options/iu);
+  });
+
+  it("rejects non-JSON provider option values and authored tool policy", () => {
+    const raw = configuration();
+    setAgent(raw, {
+      provider: "codex",
+      options: { native: undefined },
+    });
+    assert.throws(() => compileHubConfig(raw), /options/iu);
+
+    setAgent(raw, {
+      provider: "codex",
+      toolPolicy: {
+        preapproved: [{ kind: "mcp", server: "hub", tool: "arbitrary" }],
+      },
+    });
+    assert.throws(() => compileHubConfig(raw), /unrecognized key.*toolPolicy/iu);
+  });
+
   it("compiles the complete multi-step contract and freezes it", () => {
     const compiled = compileHubConfig({
       ...configuration(),
@@ -446,3 +494,7 @@ describe("workflow compiler", () => {
     );
   });
 });
+
+function setAgent(raw: ReturnType<typeof configuration>, agent: unknown): void {
+  Reflect.set(raw.triggers[0]!.steps[0]!, "agent", agent);
+}
