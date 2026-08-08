@@ -106,7 +106,7 @@ type StartSourcePaseo = () => Promise<SourcePaseo>;
 
 export class PaseoHub {
   private readonly users = new Map<string, HubUser>();
-  private readonly enrollmentTokens = new Map<string, string>();
+  private readonly hubCredentials = new Map<string, string>();
   private sourcePaseo: SourcePaseo | undefined;
 
   constructor(
@@ -1251,26 +1251,32 @@ export class PaseoHub {
 
   async startDaemonRegistration(alias: string): Promise<void> {
     this.sourcePaseo ??= await this.startSourcePaseo();
-    const token = randomUUID();
+    const credential = `paseo_cli_${randomUUID().replaceAll("-", "").slice(0, 12)}_${randomUUID().replaceAll("-", "")}`;
+    const prefix = credential.slice(0, "paseo_cli_".length + 12);
     await this.queryDatabase(
       this.primary.databaseUrl,
-      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
-       select $1, $2, session.active_organization_id, now() + interval '10 minutes'
+      `insert into organization_cli_credentials
+         (id, organization_id, prefix, verifier, created_by_user_id)
+       select $1, session.active_organization_id, $2, $3, "user".id
        from session join "user" on "user".id = session.user_id
-       where lower("user".email) = $3 and session.active_organization_id is not null
+       where lower("user".email) = $4 and session.active_organization_id is not null
          and session.expires_at > now()`,
       [
         randomUUID(),
-        createHash("sha256").update(token).digest("base64url"),
+        prefix,
+        createHash("sha256").update(credential).digest("base64url"),
         this.requireUser(alias).accountEmail,
       ],
     );
-    this.enrollmentTokens.set(alias, token);
+    this.hubCredentials.set(alias, credential);
   }
 
   async approveDaemon(alias: string, displayName: string): Promise<string> {
-    const token = this.requireEnrollmentToken(alias);
-    const result = await this.requireSourcePaseo().connectWithToken(this.primary.origin, token);
+    const credential = this.requireHubCredential(alias);
+    const result = await this.requireSourcePaseo().connectWithCredential(
+      this.primary.origin,
+      credential,
+    );
     const daemonId = z.string().uuid().parse(result["daemonId"]);
     await this.queryDatabase(
       this.primary.databaseUrl,
@@ -1607,10 +1613,10 @@ export class PaseoHub {
     return user;
   }
 
-  private requireEnrollmentToken(alias: string): string {
-    const token = this.enrollmentTokens.get(alias);
-    if (token === undefined) throw new Error(`no daemon enrollment token for ${alias}`);
-    return token;
+  private requireHubCredential(alias: string): string {
+    const credential = this.hubCredentials.get(alias);
+    if (credential === undefined) throw new Error(`no Hub credential for ${alias}`);
+    return credential;
   }
 
   private requireSourcePaseo(): SourcePaseo {

@@ -35,7 +35,6 @@ const CanonicalToolCallSchema = z
   .passthrough();
 
 interface Enrollment {
-  token: string;
   daemonId: string;
 }
 
@@ -121,29 +120,13 @@ export class HubE2E {
     }
   }
 
-  async issueEnrollment(): Promise<Enrollment> {
-    const response = await fetch(`${this.requireProxy().origin}/api/v1/daemons/enrollment-tokens`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${MACHINE_KEY}` },
-    });
-    assertStatus(response, 201, "issue enrollment");
-    const body = asRecord(await response.json());
-    return { token: requiredString(body, "token"), daemonId: "" };
-  }
-
-  async connect(enrollment: Enrollment): Promise<void> {
+  async connect(): Promise<Enrollment> {
     let status: Record<string, unknown>;
     try {
-      status = await this.cli([
-        "hub",
-        "connect",
+      status = await this.requireSource().connectWithCredential(
         this.requireProxy().origin,
-        "--token",
-        enrollment.token,
-        "--host",
-        this.daemonHost,
-        "--json",
-      ]);
+        MACHINE_KEY,
+      );
     } catch (error) {
       const enrollmentState = await this.requirePool().query<{
         enrollment_tokens: string;
@@ -158,7 +141,7 @@ export class HubE2E {
         { cause: error },
       );
     }
-    enrollment.daemonId = requiredString(status, "daemonId");
+    return { daemonId: requiredString(status, "daemonId") };
   }
 
   async daemonIsConnected(): Promise<void> {

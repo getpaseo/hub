@@ -84,14 +84,17 @@ export class SourcePaseo {
     }
   }
 
-  async connectWithToken(hubOrigin: string, token: string): Promise<Record<string, unknown>> {
+  async connectWithCredential(
+    hubOrigin: string,
+    credential: string,
+  ): Promise<Record<string, unknown>> {
     this.rememberedHubOrigin = hubOrigin;
     const result = await this.run([
       "hub",
       "connect",
       hubOrigin,
-      "--token",
-      token,
+      "--api-key",
+      credential,
       "--host",
       this.paths.daemonHost,
       "--json",
