@@ -87,7 +87,7 @@ describe("production Phase 1 manual runs", () => {
     assert.equal(accepted.status, 200);
     assert.deepEqual(
       { status: stale.status, error: stale.error },
-      { status: 409, error: "expected_config_version_not_current" },
+      { status: 409, error: "configuration_changed" },
     );
   });
 });

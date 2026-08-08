@@ -15,16 +15,24 @@ import {
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
+  ProjectListSchema,
   ProblemSchema,
   publicOperationManifest,
   publicOpenApiDocument,
+  ValidatedConfigurationSchema,
 } from "./index.js";
 
 const authorization = {
   kind: "apiKey" as const,
-  keyId: "key-1",
+  credentialId: "key-1",
   organizationId: "organization-1",
-  scopes: ["configuration:install", "runs:dispatch", "daemons:enroll"] as const,
+  scopes: [
+    "projects:read",
+    "configuration:validate",
+    "configuration:install",
+    "runs:dispatch",
+    "daemons:enroll",
+  ] as const,
 };
 
 describe("public API interface", () => {
@@ -118,6 +126,18 @@ describe("public API interface", () => {
     InstalledConfigurationSchema.parse(
       await (await successApi.handle(installRequest("/api/v1/configurations/install"))).json(),
     );
+    ProjectListSchema.parse(
+      await (
+        await successApi.handle(
+          new Request("https://hub.test/api/v1/projects", {
+            headers: { authorization: "Bearer valid" },
+          }),
+        )
+      ).json(),
+    );
+    ValidatedConfigurationSchema.parse(
+      await (await successApi.handle(installRequest("/api/v1/configurations/validate"))).json(),
+    );
     DispatchedManualRunSchema.parse(
       await (await successApi.handle(manualRequest("/api/v1/manual-runs"))).json(),
     );
@@ -209,56 +229,6 @@ describe("public API interface", () => {
     }
   });
 
-  it("preserves legacy alias envelopes and media types through thin operation adapters", async () => {
-    const api = createPublicApi(
-      { status: "enabled", authenticator: authenticator() },
-      successfulOperations(),
-    );
-    const cases = [
-      {
-        id: "installConfiguration" as const,
-        canonical: installRequest("/api/v1/configurations/install", "same-request"),
-        alias: installRequest("/api/configurations/install", "same-request"),
-      },
-      {
-        id: "dispatchManualRun" as const,
-        canonical: manualRequest("/api/v1/manual-runs", "same-request"),
-        alias: manualRequest("/api/manual-runs", "same-request"),
-      },
-      {
-        id: "issueEnrollmentToken" as const,
-        canonical: request("/api/v1/daemons/enrollment-tokens", {
-          contentType: false,
-          requestId: "same-request",
-        }),
-        alias: request("/api/daemons/enrollment-tokens", {
-          contentType: false,
-          requestId: "same-request",
-        }),
-      },
-    ];
-    for (const comparison of cases) {
-      const alias = await api.handleLegacyOperation(comparison.id, comparison.alias);
-      assert.ok(alias.headers.get("content-type")?.startsWith("application/json"));
-      assert.equal(alias.headers.get("x-request-id"), null);
-      assert.equal(alias.status, comparison.id === "dispatchManualRun" ? 200 : 201);
-    }
-    const legacyFailure = await createPublicApi(
-      { status: "enabled", authenticator: authenticator("forbidden") },
-      successfulOperations(),
-    ).handleLegacyOperation(
-      "dispatchManualRun",
-      manualRequest("/api/manual-runs", "legacy-request"),
-    );
-    assert.deepEqual(await legacyFailure.json(), { error: "forbidden" });
-    assert.ok(legacyFailure.headers.get("content-type")?.startsWith("application/json"));
-    const legacyUnauthorized = await createPublicApi(
-      { status: "enabled", authenticator: authenticator("unauthorized") },
-      successfulOperations(),
-    ).handleLegacyOperation("issueEnrollmentToken", comparisonRequest());
-    assert.equal(legacyUnauthorized.headers.get("www-authenticate"), "Bearer");
-  });
-
   it("maps unexpected operation failures to a logged opaque internal_error boundary", async () => {
     const api = createPublicApi(
       { status: "enabled", authenticator: authenticator() },
@@ -292,15 +262,24 @@ describe("generated public OpenAPI", () => {
       await rm(temporaryDirectory, { recursive: true });
     }
     assert.deepEqual(Object.keys(publicOpenApiDocument.paths ?? {}).sort(), [
+      "/api/v1/cli-authorizations",
+      "/api/v1/cli-authorizations/poll",
       "/api/v1/configurations/install",
+      "/api/v1/configurations/validate",
       "/api/v1/daemons/enrollment-tokens",
       "/api/v1/manual-runs",
+      "/api/v1/projects",
     ]);
     const expectations = {
       "/api/v1/configurations/install": [
         "configuration:install",
         ["201", "400", "401", "403", "404", "422", "500", "503"],
       ],
+      "/api/v1/configurations/validate": [
+        "configuration:validate",
+        ["200", "400", "401", "403", "404", "422", "500", "503"],
+      ],
+      "/api/v1/projects": ["projects:read", ["200", "401", "403", "500", "503"]],
       "/api/v1/manual-runs": [
         "runs:dispatch",
         ["200", "400", "401", "403", "404", "409", "500", "503"],
@@ -308,7 +287,10 @@ describe("generated public OpenAPI", () => {
       "/api/v1/daemons/enrollment-tokens": ["daemons:enroll", ["201", "401", "403", "500", "503"]],
     } as const;
     for (const [path, [scope, statuses]] of Object.entries(expectations)) {
-      const operation = publicOpenApiDocument.paths?.[path]?.post;
+      const operation =
+        path === "/api/v1/projects"
+          ? publicOpenApiDocument.paths?.[path]?.get
+          : publicOpenApiDocument.paths?.[path]?.post;
       assert.ok(operation?.operationId);
       assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
       assert.deepEqual(Reflect.get(operation, "x-required-scopes"), [scope]);
@@ -348,17 +330,20 @@ describe("generated public OpenAPI", () => {
         scope,
         responses: Object.keys(responses).sort(),
       })),
-      Object.entries(publicOpenApiDocument.paths ?? {}).map(([path, item]) => {
-        const operation = item?.post;
-        const extension = z.object({ "x-required-scopes": z.array(z.string()) }).parse(operation);
-        return {
-          id: operation?.operationId,
-          method: "post",
-          path,
-          scope: extension["x-required-scopes"][0],
-          responses: Object.keys(operation?.responses ?? {}).sort(),
-        };
-      }),
+      Object.entries(publicOpenApiDocument.paths ?? {})
+        .filter(([path]) => !path.startsWith("/api/v1/cli-authorizations"))
+        .map(([path, item]) => {
+          const method = item?.get === undefined ? "post" : "get";
+          const operation = item?.[method];
+          const extension = z.object({ "x-required-scopes": z.array(z.string()) }).parse(operation);
+          return {
+            id: operation?.operationId,
+            method,
+            path,
+            scope: extension["x-required-scopes"][0],
+            responses: Object.keys(operation?.responses ?? {}).sort(),
+          };
+        }),
     );
   });
 
@@ -394,6 +379,19 @@ function authenticator(
 
 function successfulOperations(): PublicOperations {
   return {
+    listProjects: () =>
+      Promise.resolve({
+        status: "listed",
+        projects: [
+          {
+            id: "84af3583-23ff-4fcc-9838-ed3262499be2",
+            name: "Project",
+            slug: "project",
+          },
+        ],
+      }),
+    validateConfiguration: () =>
+      Promise.resolve({ status: "valid", projectSlug: "project", valid: true }),
     installConfiguration: () =>
       Promise.resolve({
         status: "installed",
@@ -453,8 +451,4 @@ function manualRequest(path: string, requestId?: string): Request {
       input: {},
     }),
   });
-}
-
-function comparisonRequest(): Request {
-  return request("/api/daemons/enrollment-tokens", { contentType: false });
 }

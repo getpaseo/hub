@@ -19,20 +19,17 @@ import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
-import { Route as ApiManualRunsRouteImport } from './routes/api/manual-runs'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
-import { Route as ShellActivateRouteImport } from './routes/_shell/activate'
-import { Route as ApiDeviceAuthorizationsIndexRouteImport } from './routes/api/device-authorizations/index'
+import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
+import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
-import { Route as ApiDeviceAuthorizationsPollRouteImport } from './routes/api/device-authorizations/poll'
-import { Route as ApiDaemonsEnrollmentTokensRouteImport } from './routes/api/daemons/enrollment-tokens'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
 import { Route as ApiDaemonsDaemonIdRouteImport } from './routes/api/daemons/$daemonId'
-import { Route as ApiConfigurationsInstallRouteImport } from './routes/api/configurations/install'
 import { Route as ApiBillingWebhookRouteImport } from './routes/api/billing/webhook'
 import { Route as ApiBillingPlansRouteImport } from './routes/api/billing/plans'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AgentExecutionsExecutionIdMcpRouteImport } from './routes/agent-executions/$executionId/mcp'
+import { Route as ApiV1CliAuthorizationsPollRouteImport } from './routes/api/v1/cli-authorizations/poll'
 import { Route as ApiIntegrationsSlackEventsRouteImport } from './routes/api/integrations/slack/events'
 import { Route as ApiIntegrationsSlackCallbackRouteImport } from './routes/api/integrations/slack/callback'
 import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/integrations/github/setup'
@@ -103,44 +100,26 @@ const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
   path: '/api/openapi.json',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiManualRunsRoute = ApiManualRunsRouteImport.update({
-  id: '/api/manual-runs',
-  path: '/api/manual-runs',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ShellOperatorRoute = ShellOperatorRouteImport.update({
   id: '/operator',
   path: '/operator',
   getParentRoute: () => ShellRoute,
 } as any)
-const ShellActivateRoute = ShellActivateRouteImport.update({
-  id: '/activate',
-  path: '/activate',
+const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
+  id: '/cli-login',
+  path: '/cli-login',
   getParentRoute: () => ShellRoute,
 } as any)
-const ApiDeviceAuthorizationsIndexRoute =
-  ApiDeviceAuthorizationsIndexRouteImport.update({
-    id: '/api/device-authorizations/',
-    path: '/api/device-authorizations/',
-    getParentRoute: () => rootRouteImport,
-  } as any)
+const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
+  id: '/api/v1/cli-authorizations',
+  path: '/api/v1/cli-authorizations',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiV1SplatRoute = ApiV1SplatRouteImport.update({
   id: '/api/v1/$',
   path: '/api/v1/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiDeviceAuthorizationsPollRoute =
-  ApiDeviceAuthorizationsPollRouteImport.update({
-    id: '/api/device-authorizations/poll',
-    path: '/api/device-authorizations/poll',
-    getParentRoute: () => rootRouteImport,
-  } as any)
-const ApiDaemonsEnrollmentTokensRoute =
-  ApiDaemonsEnrollmentTokensRouteImport.update({
-    id: '/api/daemons/enrollment-tokens',
-    path: '/api/daemons/enrollment-tokens',
-    getParentRoute: () => rootRouteImport,
-  } as any)
 const ApiDaemonsEnrollRoute = ApiDaemonsEnrollRouteImport.update({
   id: '/api/daemons/enroll',
   path: '/api/daemons/enroll',
@@ -151,12 +130,6 @@ const ApiDaemonsDaemonIdRoute = ApiDaemonsDaemonIdRouteImport.update({
   path: '/api/daemons/$daemonId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiConfigurationsInstallRoute =
-  ApiConfigurationsInstallRouteImport.update({
-    id: '/api/configurations/install',
-    path: '/api/configurations/install',
-    getParentRoute: () => rootRouteImport,
-  } as any)
 const ApiBillingWebhookRoute = ApiBillingWebhookRouteImport.update({
   id: '/api/billing/webhook',
   path: '/api/billing/webhook',
@@ -177,6 +150,12 @@ const AgentExecutionsExecutionIdMcpRoute =
     id: '/agent-executions/$executionId/mcp',
     path: '/agent-executions/$executionId/mcp',
     getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiV1CliAuthorizationsPollRoute =
+  ApiV1CliAuthorizationsPollRouteImport.update({
+    id: '/poll',
+    path: '/poll',
+    getParentRoute: () => ApiV1CliAuthorizationsRoute,
   } as any)
 const ApiIntegrationsSlackEventsRoute =
   ApiIntegrationsSlackEventsRouteImport.update({
@@ -305,9 +284,8 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
-  '/activate': typeof ShellActivateRoute
+  '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
-  '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -318,13 +296,10 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
-  '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
-  '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
-  '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
-  '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
+  '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -338,6 +313,7 @@ export interface FileRoutesByFullPath {
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
+  '/api/v1/cli-authorizations/poll': typeof ApiV1CliAuthorizationsPollRoute
   '/o/$organizationSlug/projects/': typeof ShellOOrganizationSlugProjectsIndexRoute
   '/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren
   '/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
@@ -349,9 +325,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
-  '/activate': typeof ShellActivateRoute
+  '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
-  '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -363,13 +338,10 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
-  '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
-  '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
-  '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
-  '/api/device-authorizations': typeof ApiDeviceAuthorizationsIndexRoute
+  '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -382,6 +354,7 @@ export interface FileRoutesByTo {
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
+  '/api/v1/cli-authorizations/poll': typeof ApiV1CliAuthorizationsPollRoute
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsIndexRoute
   '/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
   '/o/$organizationSlug/projects/$projectSlug/overview': typeof ShellOOrganizationSlugProjectsProjectSlugOverviewRoute
@@ -394,9 +367,8 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
-  '/_shell/activate': typeof ShellActivateRoute
+  '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/operator': typeof ShellOperatorRoute
-  '/api/manual-runs': typeof ApiManualRunsRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -408,13 +380,10 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
-  '/api/configurations/install': typeof ApiConfigurationsInstallRoute
   '/api/daemons/$daemonId': typeof ApiDaemonsDaemonIdRoute
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
-  '/api/daemons/enrollment-tokens': typeof ApiDaemonsEnrollmentTokensRoute
-  '/api/device-authorizations/poll': typeof ApiDeviceAuthorizationsPollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
-  '/api/device-authorizations/': typeof ApiDeviceAuthorizationsIndexRoute
+  '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/_shell/o/$organizationSlug/api-keys': typeof ShellOOrganizationSlugApiKeysRoute
   '/_shell/o/$organizationSlug/billing': typeof ShellOOrganizationSlugBillingRoute
   '/_shell/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
@@ -428,6 +397,7 @@ export interface FileRoutesById {
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
   '/api/integrations/slack/events': typeof ApiIntegrationsSlackEventsRoute
+  '/api/v1/cli-authorizations/poll': typeof ApiV1CliAuthorizationsPollRoute
   '/_shell/o/$organizationSlug/projects/': typeof ShellOOrganizationSlugProjectsIndexRoute
   '/_shell/o/$organizationSlug/projects/$projectSlug/activity': typeof ShellOOrganizationSlugProjectsProjectSlugActivityRouteWithChildren
   '/_shell/o/$organizationSlug/projects/$projectSlug/configuration': typeof ShellOOrganizationSlugProjectsProjectSlugConfigurationRoute
@@ -442,9 +412,8 @@ export interface FileRouteTypes {
     | '/'
     | '/health'
     | '/webhook'
-    | '/activate'
+    | '/cli-login'
     | '/operator'
-    | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -455,13 +424,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
-    | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
-    | '/api/daemons/enrollment-tokens'
-    | '/api/device-authorizations/poll'
     | '/api/v1/$'
-    | '/api/device-authorizations/'
+    | '/api/v1/cli-authorizations'
     | '/o/$organizationSlug/api-keys'
     | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
@@ -475,6 +441,7 @@ export interface FileRouteTypes {
     | '/api/integrations/github/setup'
     | '/api/integrations/slack/callback'
     | '/api/integrations/slack/events'
+    | '/api/v1/cli-authorizations/poll'
     | '/o/$organizationSlug/projects/'
     | '/o/$organizationSlug/projects/$projectSlug/activity'
     | '/o/$organizationSlug/projects/$projectSlug/configuration'
@@ -486,9 +453,8 @@ export interface FileRouteTypes {
   to:
     | '/health'
     | '/webhook'
-    | '/activate'
+    | '/cli-login'
     | '/operator'
-    | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -500,13 +466,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
-    | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
-    | '/api/daemons/enrollment-tokens'
-    | '/api/device-authorizations/poll'
     | '/api/v1/$'
-    | '/api/device-authorizations'
+    | '/api/v1/cli-authorizations'
     | '/o/$organizationSlug/api-keys'
     | '/o/$organizationSlug/billing'
     | '/o/$organizationSlug/connections'
@@ -519,6 +482,7 @@ export interface FileRouteTypes {
     | '/api/integrations/github/setup'
     | '/api/integrations/slack/callback'
     | '/api/integrations/slack/events'
+    | '/api/v1/cli-authorizations/poll'
     | '/o/$organizationSlug/projects'
     | '/o/$organizationSlug/projects/$projectSlug/configuration'
     | '/o/$organizationSlug/projects/$projectSlug/overview'
@@ -530,9 +494,8 @@ export interface FileRouteTypes {
     | '/_shell'
     | '/health'
     | '/webhook'
-    | '/_shell/activate'
+    | '/_shell/cli-login'
     | '/_shell/operator'
-    | '/api/manual-runs'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -544,13 +507,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
-    | '/api/configurations/install'
     | '/api/daemons/$daemonId'
     | '/api/daemons/enroll'
-    | '/api/daemons/enrollment-tokens'
-    | '/api/device-authorizations/poll'
     | '/api/v1/$'
-    | '/api/device-authorizations/'
+    | '/api/v1/cli-authorizations'
     | '/_shell/o/$organizationSlug/api-keys'
     | '/_shell/o/$organizationSlug/billing'
     | '/_shell/o/$organizationSlug/connections'
@@ -564,6 +524,7 @@ export interface FileRouteTypes {
     | '/api/integrations/github/setup'
     | '/api/integrations/slack/callback'
     | '/api/integrations/slack/events'
+    | '/api/v1/cli-authorizations/poll'
     | '/_shell/o/$organizationSlug/projects/'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/activity'
     | '/_shell/o/$organizationSlug/projects/$projectSlug/configuration'
@@ -577,7 +538,6 @@ export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
-  ApiManualRunsRoute: typeof ApiManualRunsRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
@@ -588,13 +548,10 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiBillingPlansRoute: typeof ApiBillingPlansRoute
   ApiBillingWebhookRoute: typeof ApiBillingWebhookRoute
-  ApiConfigurationsInstallRoute: typeof ApiConfigurationsInstallRoute
   ApiDaemonsDaemonIdRoute: typeof ApiDaemonsDaemonIdRoute
   ApiDaemonsEnrollRoute: typeof ApiDaemonsEnrollRoute
-  ApiDaemonsEnrollmentTokensRoute: typeof ApiDaemonsEnrollmentTokensRoute
-  ApiDeviceAuthorizationsPollRoute: typeof ApiDeviceAuthorizationsPollRoute
   ApiV1SplatRoute: typeof ApiV1SplatRoute
-  ApiDeviceAuthorizationsIndexRoute: typeof ApiDeviceAuthorizationsIndexRoute
+  ApiV1CliAuthorizationsRoute: typeof ApiV1CliAuthorizationsRouteWithChildren
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
@@ -675,13 +632,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/manual-runs': {
-      id: '/api/manual-runs'
-      path: '/api/manual-runs'
-      fullPath: '/api/manual-runs'
-      preLoaderRoute: typeof ApiManualRunsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_shell/operator': {
       id: '/_shell/operator'
       path: '/operator'
@@ -689,18 +639,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOperatorRouteImport
       parentRoute: typeof ShellRoute
     }
-    '/_shell/activate': {
-      id: '/_shell/activate'
-      path: '/activate'
-      fullPath: '/activate'
-      preLoaderRoute: typeof ShellActivateRouteImport
+    '/_shell/cli-login': {
+      id: '/_shell/cli-login'
+      path: '/cli-login'
+      fullPath: '/cli-login'
+      preLoaderRoute: typeof ShellCliLoginRouteImport
       parentRoute: typeof ShellRoute
     }
-    '/api/device-authorizations/': {
-      id: '/api/device-authorizations/'
-      path: '/api/device-authorizations'
-      fullPath: '/api/device-authorizations/'
-      preLoaderRoute: typeof ApiDeviceAuthorizationsIndexRouteImport
+    '/api/v1/cli-authorizations': {
+      id: '/api/v1/cli-authorizations'
+      path: '/api/v1/cli-authorizations'
+      fullPath: '/api/v1/cli-authorizations'
+      preLoaderRoute: typeof ApiV1CliAuthorizationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/v1/$': {
@@ -708,20 +658,6 @@ declare module '@tanstack/react-router' {
       path: '/api/v1/$'
       fullPath: '/api/v1/$'
       preLoaderRoute: typeof ApiV1SplatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/device-authorizations/poll': {
-      id: '/api/device-authorizations/poll'
-      path: '/api/device-authorizations/poll'
-      fullPath: '/api/device-authorizations/poll'
-      preLoaderRoute: typeof ApiDeviceAuthorizationsPollRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/daemons/enrollment-tokens': {
-      id: '/api/daemons/enrollment-tokens'
-      path: '/api/daemons/enrollment-tokens'
-      fullPath: '/api/daemons/enrollment-tokens'
-      preLoaderRoute: typeof ApiDaemonsEnrollmentTokensRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/daemons/enroll': {
@@ -736,13 +672,6 @@ declare module '@tanstack/react-router' {
       path: '/api/daemons/$daemonId'
       fullPath: '/api/daemons/$daemonId'
       preLoaderRoute: typeof ApiDaemonsDaemonIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/configurations/install': {
-      id: '/api/configurations/install'
-      path: '/api/configurations/install'
-      fullPath: '/api/configurations/install'
-      preLoaderRoute: typeof ApiConfigurationsInstallRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/billing/webhook': {
@@ -772,6 +701,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/agent-executions/$executionId/mcp'
       preLoaderRoute: typeof AgentExecutionsExecutionIdMcpRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/v1/cli-authorizations/poll': {
+      id: '/api/v1/cli-authorizations/poll'
+      path: '/poll'
+      fullPath: '/api/v1/cli-authorizations/poll'
+      preLoaderRoute: typeof ApiV1CliAuthorizationsPollRouteImport
+      parentRoute: typeof ApiV1CliAuthorizationsRoute
     }
     '/api/integrations/slack/events': {
       id: '/api/integrations/slack/events'
@@ -962,7 +898,7 @@ const ShellOOrganizationSlugProjectsRouteWithChildren =
   )
 
 interface ShellRouteChildren {
-  ShellActivateRoute: typeof ShellActivateRoute
+  ShellCliLoginRoute: typeof ShellCliLoginRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellOOrganizationSlugApiKeysRoute: typeof ShellOOrganizationSlugApiKeysRoute
@@ -975,7 +911,7 @@ interface ShellRouteChildren {
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
-  ShellActivateRoute: ShellActivateRoute,
+  ShellCliLoginRoute: ShellCliLoginRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellOOrganizationSlugApiKeysRoute: ShellOOrganizationSlugApiKeysRoute,
@@ -991,11 +927,24 @@ const ShellRouteChildren: ShellRouteChildren = {
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 
+interface ApiV1CliAuthorizationsRouteChildren {
+  ApiV1CliAuthorizationsPollRoute: typeof ApiV1CliAuthorizationsPollRoute
+}
+
+const ApiV1CliAuthorizationsRouteChildren: ApiV1CliAuthorizationsRouteChildren =
+  {
+    ApiV1CliAuthorizationsPollRoute: ApiV1CliAuthorizationsPollRoute,
+  }
+
+const ApiV1CliAuthorizationsRouteWithChildren =
+  ApiV1CliAuthorizationsRoute._addFileChildren(
+    ApiV1CliAuthorizationsRouteChildren,
+  )
+
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
-  ApiManualRunsRoute: ApiManualRunsRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,
@@ -1006,13 +955,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiBillingPlansRoute: ApiBillingPlansRoute,
   ApiBillingWebhookRoute: ApiBillingWebhookRoute,
-  ApiConfigurationsInstallRoute: ApiConfigurationsInstallRoute,
   ApiDaemonsDaemonIdRoute: ApiDaemonsDaemonIdRoute,
   ApiDaemonsEnrollRoute: ApiDaemonsEnrollRoute,
-  ApiDaemonsEnrollmentTokensRoute: ApiDaemonsEnrollmentTokensRoute,
-  ApiDeviceAuthorizationsPollRoute: ApiDeviceAuthorizationsPollRoute,
   ApiV1SplatRoute: ApiV1SplatRoute,
-  ApiDeviceAuthorizationsIndexRoute: ApiDeviceAuthorizationsIndexRoute,
+  ApiV1CliAuthorizationsRoute: ApiV1CliAuthorizationsRouteWithChildren,
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
     AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,

@@ -6,14 +6,18 @@ import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
+  ListProjectsResult,
   PublicAuthorization,
   PublicOperations,
+  ValidateConfigurationResult,
 } from "../public-operations/index.js";
 import {
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
+  ProjectListSchema,
   ProblemSchema,
+  ValidatedConfigurationSchema,
   type Problem,
 } from "./contracts.js";
 import { publicOpenApiDocument } from "./openapi.js";
@@ -26,6 +30,8 @@ import {
 export type { PublicOperationId } from "./operation-manifest.js";
 
 type PublicOperationResult =
+  | ListProjectsResult
+  | ValidateConfigurationResult
   | InstallConfigurationResult
   | DispatchManualRunResult
   | IssueEnrollmentTokenResult;
@@ -33,7 +39,6 @@ type PublicOperationResult =
 export interface PublicApi {
   handle(request: Request): Promise<Response>;
   handleOperation(id: PublicOperationId, request: Request): Promise<Response>;
-  handleLegacyOperation(id: PublicOperationId, request: Request): Promise<Response>;
   openapi(): Response;
 }
 
@@ -81,15 +86,11 @@ export function createPublicApi(
         );
         return Promise.resolve(response);
       }
-      return executeSafely(route.id, request, requestId, "canonical", composition, operations);
+      return executeSafely(route.id, request, requestId, composition, operations);
     },
     handleOperation(id, request) {
       const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
-      return executeSafely(id, request, requestId, "canonical", composition, operations);
-    },
-    handleLegacyOperation(id, request) {
-      const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
-      return executeSafely(id, request, requestId, "legacy", composition, operations);
+      return executeSafely(id, request, requestId, composition, operations);
     },
     openapi() {
       return Response.json(publicOpenApiDocument, {
@@ -99,41 +100,34 @@ export function createPublicApi(
   };
 }
 
-type ResponseMode = "canonical" | "legacy";
-
 async function executeSafely(
   id: PublicOperationId,
   request: Request,
   requestId: string,
-  mode: ResponseMode,
   composition: PublicApiComposition,
   operations: PublicOperations | null,
 ): Promise<Response> {
   try {
     if (composition.status === "unavailable" || operations === null) {
-      return mode === "legacy"
-        ? legacyError(503, "auth_unavailable")
-        : problem(
-            requestId,
-            503,
-            "infrastructure_unavailable",
-            "Service unavailable",
-            "Public API authentication or storage is currently unavailable.",
-          );
+      return problem(
+        requestId,
+        503,
+        "infrastructure_unavailable",
+        "Service unavailable",
+        "Public API authentication or storage is currently unavailable.",
+      );
     }
-    return await execute(id, request, requestId, mode, composition.authenticator, operations);
+    return await execute(id, request, requestId, composition.authenticator, operations);
   } catch (error) {
-    if (isDatabaseUnavailableError(error)) return infrastructureProblem(requestId, mode);
+    if (isDatabaseUnavailableError(error)) return infrastructureProblem(requestId);
     logger.error({ err: error, requestId, operationId: id }, "public API internal error");
-    return mode === "legacy"
-      ? legacyError(500, "internal_error")
-      : problem(
-          requestId,
-          500,
-          "internal_error",
-          "Internal server error",
-          "The operation failed unexpectedly. Contact the Hub operator with the request ID.",
-        );
+    return problem(
+      requestId,
+      500,
+      "internal_error",
+      "Internal server error",
+      "The operation failed unexpectedly. Contact the Hub operator with the request ID.",
+    );
   }
 }
 
@@ -141,7 +135,6 @@ async function execute(
   id: PublicOperationId,
   request: Request,
   requestId: string,
-  mode: ResponseMode,
   authenticator: OperationAuthenticator,
   operations: PublicOperations,
 ): Promise<Response> {
@@ -152,74 +145,133 @@ async function execute(
     authorization = await authenticator.authorize(request, scope);
   } catch (error) {
     if (!isDatabaseUnavailableError(error)) throw error;
-    return mode === "legacy"
-      ? legacyError(503, "auth_unavailable")
-      : problem(
-          requestId,
-          503,
-          "authentication_unavailable",
-          "Authentication unavailable",
-          "API-key authentication is currently unavailable. Retry the request later.",
-        );
+    return problem(
+      requestId,
+      503,
+      "authentication_unavailable",
+      "Authentication unavailable",
+      "Bearer-credential authentication is currently unavailable. Retry the request later.",
+    );
   }
   if (authorization.status === "unauthorized") {
-    return mode === "legacy"
-      ? legacyError(401, "unauthorized")
-      : problem(
-          requestId,
-          401,
-          "unauthorized",
-          "Authentication required",
-          "Provide an active Paseo API key in the Authorization: Bearer header.",
-        );
+    return problem(
+      requestId,
+      401,
+      "unauthorized",
+      "Authentication required",
+      "Provide an active Paseo organization credential in the Authorization: Bearer header.",
+    );
   }
   if (authorization.status === "forbidden") {
-    return mode === "legacy"
-      ? legacyError(403, "forbidden")
-      : problem(
-          requestId,
-          403,
-          "insufficient_scope",
-          "Insufficient scope",
-          `This operation requires the ${scope} scope.`,
-        );
+    return problem(
+      requestId,
+      403,
+      "insufficient_scope",
+      "Insufficient scope",
+      `This operation requires the ${scope} scope.`,
+    );
   }
   const access: PublicAuthorization = authorization.access;
   let input: unknown;
   if (definition.requestSchema !== undefined) {
     const parsedBody = await readJson(request);
     if (!parsedBody.success) {
-      return mode === "legacy"
-        ? legacyError(400, "invalid_request")
-        : problem(
-            requestId,
-            400,
-            "invalid_json",
-            "Invalid JSON",
-            "Send a JSON request body using Content-Type: application/json.",
-          );
+      return problem(
+        requestId,
+        400,
+        "invalid_json",
+        "Invalid JSON",
+        "Send a JSON request body using Content-Type: application/json.",
+      );
     }
     const parsed = definition.requestSchema.safeParse(parsedBody.value);
     if (!parsed.success) {
-      return mode === "legacy"
-        ? legacyError(400, "invalid_request")
-        : validationProblem(requestId, parsed.error.issues);
+      return validationProblem(requestId, parsed.error.issues);
     }
     input = parsed.data;
   }
   const result = await definition.invoke(operations, access, input);
   switch (definition.resultMapping) {
+    case "projects":
+      if (!isProjectsResult(result)) throw new Error("invalid projects operation result");
+      return projectsResponse(requestId, result);
+    case "validation":
+      if (!isValidationResult(result)) throw new Error("invalid validation operation result");
+      return validationResponse(requestId, result);
     case "configuration":
       if (!isInstallationResult(result)) throw new Error("invalid configuration operation result");
-      return installationResponse(requestId, result, mode);
+      return installationResponse(requestId, result);
     case "manual-run":
       if (!isManualRunResult(result)) throw new Error("invalid manual-run operation result");
-      return manualRunResponse(requestId, result, mode);
+      return manualRunResponse(requestId, result);
     case "enrollment-token":
       if (!isEnrollmentResult(result)) throw new Error("invalid enrollment operation result");
-      return enrollmentResponse(requestId, result, mode);
+      return enrollmentResponse(requestId, result);
   }
   return assertNever(definition.resultMapping);
+}
+
+function projectsResponse(requestId: string, result: ListProjectsResult): Response {
+  return result.status === "listed"
+    ? success(requestId, 200, ProjectListSchema, { projects: result.projects })
+    : infrastructureProblem(requestId);
+}
+
+function validationResponse(requestId: string, result: ValidateConfigurationResult): Response {
+  switch (result.status) {
+    case "valid":
+      return success(requestId, 200, ValidatedConfigurationSchema, {
+        projectSlug: result.projectSlug,
+        valid: true,
+      });
+    case "project_not_found":
+      return problem(
+        requestId,
+        404,
+        "project_not_found",
+        "Project not found",
+        "No active project with that slug exists in the credential's organization.",
+      );
+    case "invalid_yaml":
+      return problem(
+        requestId,
+        422,
+        "invalid_yaml",
+        "Invalid YAML",
+        "Correct the YAML syntax.",
+        result.issues,
+      );
+    case "invalid_document":
+      return problem(
+        requestId,
+        422,
+        "invalid_configuration_document",
+        "Invalid configuration document",
+        "Correct the deployment metadata.",
+        result.issues,
+      );
+    case "invalid_bundle":
+      return problem(
+        requestId,
+        422,
+        "invalid_configuration_bundle",
+        "Invalid configuration bundle",
+        "Supply exactly the prompt partial files referenced by the YAML configuration.",
+        result.issues,
+      );
+    case "invalid_configuration":
+      return problem(
+        requestId,
+        422,
+        "invalid_configuration",
+        "Invalid configuration",
+        "The configuration does not resolve against the project's Hub resources.",
+        result.issues,
+      );
+    case "infrastructure_unavailable":
+      return infrastructureProblem(requestId);
+  }
+  return assertNever(result);
 }
 
 async function readJson(
@@ -252,12 +304,7 @@ function validationProblem(
   );
 }
 
-function installationResponse(
-  requestId: string,
-  result: InstallConfigurationResult,
-  mode: ResponseMode,
-): Response {
-  if (mode === "legacy") return legacyInstallationResponse(result);
+function installationResponse(requestId: string, result: InstallConfigurationResult): Response {
   switch (result.status) {
     case "installed":
       return success(requestId, 201, InstalledConfigurationSchema, {
@@ -272,7 +319,7 @@ function installationResponse(
         404,
         "project_not_found",
         "Project not found",
-        "No active project with that slug exists in the API key's organization.",
+        "No active project with that slug exists in the credential's organization.",
       );
     case "invalid_yaml":
       return problem(
@@ -316,12 +363,7 @@ function installationResponse(
   return assertNever(result);
 }
 
-function manualRunResponse(
-  requestId: string,
-  result: DispatchManualRunResult,
-  mode: ResponseMode,
-): Response {
-  if (mode === "legacy") return legacyManualRunResponse(result);
+function manualRunResponse(requestId: string, result: DispatchManualRunResult): Response {
   switch (result.status) {
     case "dispatched":
       return success(requestId, 200, DispatchedManualRunSchema, {
@@ -337,7 +379,7 @@ function manualRunResponse(
         404,
         "project_not_found",
         "Project not found",
-        "No active project with that slug exists in the API key's organization.",
+        "No active project with that slug exists in the credential's organization.",
       );
     case "actor_forbidden":
       return problem(
@@ -402,22 +444,7 @@ function manualRunResponse(
   return assertNever(result);
 }
 
-function enrollmentResponse(
-  requestId: string,
-  result: IssueEnrollmentTokenResult,
-  mode: ResponseMode,
-): Response {
-  if (mode === "legacy") {
-    return result.status === "issued"
-      ? Response.json(
-          { token: result.token, expiresAt: result.expiresAt.toISOString() },
-          { status: 201 },
-        )
-      : legacyError(
-          result.status === "credential_revoked" ? 401 : 503,
-          result.status === "credential_revoked" ? "unauthorized" : "database_unavailable",
-        );
-  }
+function enrollmentResponse(requestId: string, result: IssueEnrollmentTokenResult): Response {
   switch (result.status) {
     case "issued":
       return success(requestId, 201, EnrollmentTokenSchema, {
@@ -430,7 +457,7 @@ function enrollmentResponse(
         401,
         "unauthorized",
         "Authentication required",
-        "The API key was revoked before the enrollment token could be issued.",
+        "The organization credential was revoked before the enrollment token could be issued.",
       );
     case "infrastructure_unavailable":
       return infrastructureProblem(requestId);
@@ -438,8 +465,7 @@ function enrollmentResponse(
   return assertNever(result);
 }
 
-function infrastructureProblem(requestId: string, mode: ResponseMode = "canonical"): Response {
-  if (mode === "legacy") return legacyError(503, "database_unavailable");
+function infrastructureProblem(requestId: string): Response {
   return problem(
     requestId,
     503,
@@ -489,81 +515,25 @@ function problem(
   });
 }
 
-function legacyError(status: number, error: string, extra: Record<string, unknown> = {}): Response {
-  return Response.json(
-    { error, ...extra },
-    { status, ...(status === 401 ? { headers: { "www-authenticate": "Bearer" } } : {}) },
-  );
-}
-
-function legacyInstallationResponse(result: InstallConfigurationResult): Response {
-  switch (result.status) {
-    case "installed":
-      return Response.json(
-        {
-          projectSlug: result.projectSlug,
-          versionId: result.versionId,
-          version: result.version,
-          active: true,
-        },
-        { status: 201 },
-      );
-    case "project_not_found":
-      return legacyError(404, "project_not_found");
-    case "invalid_yaml":
-      return legacyError(422, "invalid_yaml");
-    case "invalid_document":
-      return legacyError(422, "invalid_config");
-    case "invalid_bundle":
-      return legacyError(422, "invalid_config");
-    case "invalid_configuration":
-      return legacyError(422, "invalid_config", { versionId: result.versionId });
-    case "infrastructure_unavailable":
-      return legacyError(503, "database_unavailable");
-  }
-  return assertNever(result);
-}
-
-function legacyManualRunResponse(result: DispatchManualRunResult): Response {
-  switch (result.status) {
-    case "dispatched":
-      return Response.json({
-        deliveryKey: result.deliveryKey,
-        providerEventReceiptId: result.providerEventReceiptId,
-        triggerRunId: result.triggerRunId,
-        configuredTriggerName: result.configuredTriggerName,
-        workflowStatus: result.workflowStatus,
-      });
-    case "project_not_found":
-      return legacyError(404, "project_not_found");
-    case "actor_forbidden":
-      return legacyError(403, "actor_forbidden");
-    case "daemon_offline":
-      return legacyError(409, "daemon_offline");
-    case "expected_configuration_not_current":
-      return legacyError(409, "expected_config_version_not_current");
-    case "configuration_not_found":
-      return legacyError(404, "manual_config_not_found");
-    case "trigger_not_found":
-      return legacyError(404, "manual_trigger_not_found");
-    case "invalid_input":
-      return legacyError(400, "invalid_input", {
-        reason: `rejected_input:${result.configuredTriggerName}:${result.issues[0]?.message ?? "invalid input"}`,
-        providerEventReceiptId: result.providerEventReceiptId,
-        triggerRunId: result.triggerRunId,
-        configuredTriggerName: result.configuredTriggerName,
-      });
-    case "dispatch_conflict":
-      return legacyError(409, "manual_run_not_dispatched");
-    case "infrastructure_unavailable":
-      return legacyError(503, "database_unavailable");
-  }
-  return assertNever(result);
-}
-
 function isInstallationResult(result: PublicOperationResult): result is InstallConfigurationResult {
   return [
     "installed",
+    "project_not_found",
+    "invalid_yaml",
+    "invalid_document",
+    "invalid_bundle",
+    "invalid_configuration",
+    "infrastructure_unavailable",
+  ].includes(result.status);
+}
+
+function isProjectsResult(result: PublicOperationResult): result is ListProjectsResult {
+  return ["listed", "infrastructure_unavailable"].includes(result.status);
+}
+
+function isValidationResult(result: PublicOperationResult): result is ValidateConfigurationResult {
+  return [
+    "valid",
     "project_not_found",
     "invalid_yaml",
     "invalid_document",

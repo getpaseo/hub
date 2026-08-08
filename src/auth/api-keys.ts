@@ -25,8 +25,8 @@ export interface CreatedApiKey {
 }
 
 export interface OperationAuthorization {
-  kind: "apiKey";
-  keyId: string;
+  kind: "apiKey" | "cliCredential";
+  credentialId: string;
   organizationId: string;
   scopes: readonly ApiKeyScope[];
 }
@@ -151,7 +151,7 @@ export class OrganizationApiKeys {
       status: "authorized",
       access: {
         kind: "apiKey",
-        keyId: row.id,
+        credentialId: row.id,
         organizationId: row.organization_id,
         scopes,
       },

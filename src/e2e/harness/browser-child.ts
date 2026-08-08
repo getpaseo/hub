@@ -171,10 +171,6 @@ async function main(): Promise<void> {
     auth,
     entitlements: entitlements.service,
     billing,
-    publicApi:
-      machineKey === undefined || auth?.apiKeys === undefined
-        ? { status: "unavailable" }
-        : { status: "enabled", authenticator: auth.apiKeys },
     registrations,
     publicBaseUrl,
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),

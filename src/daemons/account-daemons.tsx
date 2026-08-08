@@ -1,8 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { AuthCard } from "../components/app/auth-layout.js";
+import { useCallback, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
@@ -18,13 +16,11 @@ import {
   DialogTitle,
 } from "../components/ui/dialog.js";
 import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
-import { Field, FieldDescription, FieldLabel } from "../components/ui/field.js";
+import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import {
   daemonList,
-  decideRegistration,
-  inspectRegistration,
   renameDaemon,
   revokeDaemon,
   type BrowserDaemon,
@@ -320,194 +316,6 @@ function DaemonLoading() {
       <Skeleton className="h-12 w-64" />
       <Skeleton className="h-64 w-full" />
     </section>
-  );
-}
-
-/** Approval is a single focused task, so it sits in a narrow column inside the page. */
-function CenteredPanel({ children }: { children: ReactNode }) {
-  return <div className="mx-auto w-full max-w-lg py-8">{children}</div>;
-}
-
-function RegistrationComplete({
-  decision,
-  organizationSlug,
-}: {
-  decision: "approved" | "denied";
-  organizationSlug: string;
-}) {
-  const daemonRouteParams = useMemo(() => ({ organizationSlug }), [organizationSlug]);
-  return (
-    <CenteredPanel>
-      <AuthCard title={`Registration ${decision}`} description="You can return to the terminal.">
-        <Button asChild variant="outline">
-          <Link to="/o/$organizationSlug/daemons" params={daemonRouteParams}>
-            Go to daemons
-          </Link>
-        </Button>
-      </AuthCard>
-    </CenteredPanel>
-  );
-}
-
-export function RegistrationApproval({
-  accountId,
-  organizationId,
-}: {
-  accountId: string;
-  organizationId: string;
-}) {
-  const [code, setCode] = useState(() =>
-    typeof window === "undefined"
-      ? undefined
-      : (new URLSearchParams(window.location.search).get("code") ?? undefined),
-  );
-  const inspect = useServerFn(inspectRegistration);
-  const snapshot = useQuery({
-    queryKey: ["registration", accountId, organizationId, code],
-    queryFn: () => inspect({ data: { userCode: code! } }),
-    enabled: code !== undefined,
-  });
-  const decide = useMutation({
-    mutationKey: DAEMON_MUTATION_KEY,
-    mutationFn: useServerFn(decideRegistration) as (
-      input: Parameters<typeof decideRegistration>[0],
-    ) => Promise<Result<{ decision: "approved" | "denied" }>>,
-  });
-  const submitDecision = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (snapshot.data?.status !== "ok" || code === undefined) return;
-      const data = new FormData(event.currentTarget);
-      const slug = data.get("slug");
-      const nativeEvent = event.nativeEvent;
-      const submitter = "submitter" in nativeEvent ? nativeEvent.submitter : undefined;
-      const value = submitter instanceof HTMLButtonElement ? submitter.value : "approve";
-      if (typeof slug === "string" && (value === "approve" || value === "deny")) {
-        decide.mutate({
-          data: {
-            userCode: code,
-            decision: value,
-            ...(value === "approve"
-              ? { slug, organizationId: snapshot.data.data.organization.id }
-              : {}),
-          },
-        });
-      }
-    },
-    [code, decide, snapshot.data],
-  );
-
-  if (code !== undefined && snapshot.isPending) return <DaemonLoading />;
-  if (snapshot.isError || snapshot.data?.status === "error") {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>Registration unavailable</AlertTitle>
-        <AlertDescription>
-          {snapshot.data?.status === "error"
-            ? snapshot.data.error.message
-            : "This daemon registration request is unavailable."}
-        </AlertDescription>
-      </Alert>
-    );
-  }
-  if (decide.data?.status === "ok" && snapshot.data?.status === "ok") {
-    return (
-      <RegistrationComplete
-        decision={decide.data.data.decision}
-        organizationSlug={snapshot.data.data.organization.slug}
-      />
-    );
-  }
-  if (code === undefined || snapshot.data === undefined) return <CodeEntry onCode={setCode} />;
-  const request = snapshot.data.data;
-  let message = decide.data?.status === "error" ? decide.data.error.message : undefined;
-  if (decide.isError) message = "We couldn't decide this registration request.";
-
-  return (
-    <CenteredPanel>
-      <AuthCard
-        titleId="approval-heading"
-        title="Approve daemon"
-        description="Confirm that you started this request before granting access."
-      >
-        <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2.5 text-sm">
-          <span className="text-muted-foreground">Organization</span>
-          <span className="truncate">{request.organization.name}</span>
-        </div>
-        {request.canManage ? (
-          <form className="grid gap-6" onSubmit={submitDecision} aria-label="Approve daemon">
-            <Field>
-              <FieldLabel htmlFor="registration-slug">Daemon slug</FieldLabel>
-              <Input
-                id="registration-slug"
-                name="slug"
-                defaultValue={request.slug}
-                maxLength={100}
-                required
-                disabled={decide.isPending}
-              />
-              <FieldDescription>
-                This slug is used in hub.yml and can be changed later.
-              </FieldDescription>
-            </Field>
-            {message === undefined ? null : (
-              <Alert variant="destructive">
-                <AlertDescription>{message}</AlertDescription>
-              </Alert>
-            )}
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button
-                type="submit"
-                name="decision"
-                value="deny"
-                variant="outline"
-                disabled={decide.isPending}
-              >
-                Deny
-              </Button>
-              <Button type="submit" name="decision" value="approve" disabled={decide.isPending}>
-                Approve daemon
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <Alert>
-            <AlertTitle>Approval required</AlertTitle>
-            <AlertDescription>
-              An organization owner or admin must decide this request.
-            </AlertDescription>
-          </Alert>
-        )}
-      </AuthCard>
-    </CenteredPanel>
-  );
-}
-
-function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
-  const submitCode = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const code = new FormData(event.currentTarget).get("code");
-      if (typeof code === "string") {
-        window.history.replaceState({}, "", `/activate?code=${encodeURIComponent(code)}`);
-        onCode(code);
-      }
-    },
-    [onCode],
-  );
-
-  return (
-    <CenteredPanel>
-      <AuthCard title="Register a daemon" description="Enter the code shown by the Paseo CLI.">
-        <form className="grid gap-6" onSubmit={submitCode}>
-          <Field>
-            <FieldLabel htmlFor="registration-code">Verification code</FieldLabel>
-            <Input id="registration-code" name="code" autoComplete="one-time-code" required />
-          </Field>
-          <Button type="submit">Continue</Button>
-        </form>
-      </AuthCard>
-    </CenteredPanel>
   );
 }
 

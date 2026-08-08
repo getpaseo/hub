@@ -2,14 +2,13 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse } fro
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import { DaemonRegistration } from "../daemons/registration.js";
-import { ActiveDaemonRegistry } from "../daemons/registry.js";
+import { CliAuthorizations } from "../cli-authorizations/index.js";
 import { createFetchServer } from "./node-server.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 
-describe("device issuance client address", () => {
+describe("CLI authorization client address", () => {
   it("uses the socket peer regardless of caller-supplied proxy headers or user agents", async () => {
-    const hub = await DeviceIssuanceServer.start();
+    const hub = await CliAuthorizationServer.start();
 
     try {
       const statuses = [];
@@ -32,7 +31,7 @@ describe("device issuance client address", () => {
   });
 
   it("uses only the configured valid single-IP header", async () => {
-    const hub = await DeviceIssuanceServer.start("fly-client-ip");
+    const hub = await CliAuthorizationServer.start("fly-client-ip");
 
     try {
       const statuses = [];
@@ -55,7 +54,7 @@ describe("device issuance client address", () => {
   });
 
   it("falls back to the socket peer when the configured header is missing or invalid", async () => {
-    const hub = await DeviceIssuanceServer.start("fly-client-ip");
+    const hub = await CliAuthorizationServer.start("fly-client-ip");
     const headers = [
       {},
       { "fly-client-ip": "not-an-ip" },
@@ -135,36 +134,32 @@ function closeServer(server: ReturnType<typeof createFetchServer>): Promise<void
   });
 }
 
-class DeviceIssuanceServer {
+class CliAuthorizationServer {
   private constructor(
     private readonly origin: string,
     private readonly server: ReturnType<typeof createFetchServer>,
   ) {}
 
-  static async start(trustedClientIpHeader?: string): Promise<DeviceIssuanceServer> {
+  static async start(trustedClientIpHeader?: string): Promise<CliAuthorizationServer> {
     const database = createMemoryDatabase({ organizationIds: ["acme"] });
-    const registration = new DaemonRegistration({
-      database,
-      activeDaemons: new ActiveDaemonRegistry(database),
-      publicBaseUrl: "https://hub.paseo.test",
-    });
+    const authorizations = new CliAuthorizations(database, undefined, "https://hub.paseo.test");
     const server = createFetchServer(
-      (request) => registration.start(request),
+      (request) => authorizations.start(request),
       trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader },
     );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (address === null || typeof address === "string") {
-      throw new Error("device issuance server did not bind a TCP address");
+      throw new Error("CLI authorization server did not bind a TCP address");
     }
-    return new DeviceIssuanceServer(`http://127.0.0.1:${address.port}`, server);
+    return new CliAuthorizationServer(`http://127.0.0.1:${address.port}`, server);
   }
 
   async request(headers: Record<string, string>): Promise<number> {
-    const response = await fetch(`${this.origin}/api/device-authorizations/`, {
+    const response = await fetch(`${this.origin}/api/v1/cli-authorizations`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify({ displayName: "Build daemon" }),
+      body: JSON.stringify({}),
     });
     await response.body?.cancel();
     return response.status;

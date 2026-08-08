@@ -207,8 +207,9 @@ describe("production Hub cold start", () => {
         ["configuration:install"],
       );
 
-      const response = await runtime.operations.handleConfigurationInstall(
-        new Request("http://localhost:3000/api/configurations/install", {
+      const response = await runtime.publicApi.handleOperation(
+        "installConfiguration",
+        new Request("http://localhost:3000/api/v1/configurations/install", {
           method: "POST",
           headers: {
             authorization: `Bearer ${key.secret}`,

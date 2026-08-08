@@ -1,1 +1,1 @@
-export { SourcePaseo, SourceRegistration } from "../../src/e2e/harness/source-paseo.js";
+export { SourcePaseo } from "../../src/e2e/harness/source-paseo.js";

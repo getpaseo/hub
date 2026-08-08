@@ -113,6 +113,21 @@ export class ProjectConfigurationStore {
     });
   }
 
+  async validateManualConfiguration(
+    rawConfiguration: unknown,
+    resolvedPromptPartials?: ResolvedPromptPartials,
+  ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
+    const prepared = await prepareRevision(
+      this.database,
+      this.projectId,
+      rawConfiguration,
+      resolvedPromptPartials,
+    );
+    return prepared.validationErrors === undefined
+      ? { valid: true }
+      : { valid: false, validationErrors: prepared.validationErrors };
+  }
+
   async insertGitHubRevision(input: {
     rawYaml: string;
     rawConfiguration: unknown;

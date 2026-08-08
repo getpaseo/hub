@@ -1,13 +1,11 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { WebSocket, WebSocketServer, type RawData } from "ws";
+import { WebSocket } from "ws";
 import { z } from "zod";
 import { runCommand } from "./command.js";
 
@@ -23,21 +21,6 @@ const activeRelationshipSchema = z.object({
   credential: z.object({ secret: z.string().min(1) }),
   transport: z.object({ webSocketUrl: z.string().url() }),
 });
-const enrollmentAttemptSchema = z.object({
-  daemonId: z.string().uuid(),
-  idempotencyKey: z.string().min(1),
-});
-const approvedPollSchema = z.object({
-  status: z.literal("approved"),
-  enrollmentToken: z.string().min(32),
-});
-const pollRequestSchema = z.object({ deviceCode: z.string().min(32) });
-
-interface SourceRegistrationOptions {
-  loseFirstApprovedPollResponse?: boolean;
-  loseFirstEnrollmentResponse?: boolean;
-}
-
 interface SourcePaseoOptions {
   root?: string;
   paseoHome?: string;
@@ -70,7 +53,6 @@ export class SourcePaseo {
   private readonly ownsRoot: boolean;
   private rememberedAuthority: RememberedAuthority | undefined;
   private rememberedHubOrigin: string | undefined;
-  private registrationProxy: RegistrationReplayProxy | undefined;
 
   private constructor(
     private readonly root: string,
@@ -102,35 +84,9 @@ export class SourcePaseo {
     }
   }
 
-  async beginRegistration(
-    hubOrigin: string,
-    options: SourceRegistrationOptions = {},
-  ): Promise<SourceRegistration> {
-    this.rememberedHubOrigin = hubOrigin;
-    const needsProxy =
-      options.loseFirstApprovedPollResponse === true ||
-      options.loseFirstEnrollmentResponse === true;
-    const connectOrigin = needsProxy
-      ? await this.startRegistrationReplayProxy(hubOrigin, options)
-      : hubOrigin;
-    const child = this.spawnCli([
-      "hub",
-      "connect",
-      connectOrigin,
-      "--host",
-      this.paths.daemonHost,
-      "--json",
-    ]);
-    this.cli = child;
-    const output = new SourceCommandOutput(child);
-    const userCode = await output.waitForUserCode();
-    const verificationUrl = new URL("/activate", hubOrigin);
-    verificationUrl.searchParams.set("code", userCode);
-    return new SourceRegistration(this, child, output, verificationUrl.toString());
-  }
-
   async connectWithToken(hubOrigin: string, token: string): Promise<Record<string, unknown>> {
-    return this.run([
+    this.rememberedHubOrigin = hubOrigin;
+    const result = await this.run([
       "hub",
       "connect",
       hubOrigin,
@@ -140,6 +96,8 @@ export class SourcePaseo {
       this.paths.daemonHost,
       "--json",
     ]);
+    await this.rememberActiveAuthority();
+    return result;
   }
 
   async run(args: string[]): Promise<Record<string, unknown>> {
@@ -230,33 +188,6 @@ export class SourcePaseo {
     });
   }
 
-  enrollmentReplayEvidence(): { attempts: number; sameCeremony: boolean } {
-    const attempts = this.registrationProxy?.enrollmentAttempts ?? [];
-    return {
-      attempts: attempts.length,
-      sameCeremony:
-        attempts.length >= 2 &&
-        attempts.every(
-          (attempt) =>
-            attempt.daemonId === attempts[0]!.daemonId &&
-            attempt.idempotencyKey === attempts[0]!.idempotencyKey,
-        ),
-    };
-  }
-
-  approvedPollReplayEvidence(): { attempts: number; sameAuthority: boolean } {
-    const authorities = this.registrationProxy?.approvedPollAuthorities ?? [];
-    return {
-      attempts: authorities.length,
-      sameAuthority:
-        authorities.length >= 2 && authorities.every((authority) => authority === authorities[0]),
-    };
-  }
-
-  registrationSecretsAbsentFrom(output: string): boolean {
-    return this.registrationProxy?.registrationSecretsAbsentFrom(output) ?? true;
-  }
-
   attemptedRelayConnection(): boolean {
     return this.daemonOutput.some((line) => /relay.+(?:connect|dial|socket)/iu.test(line));
   }
@@ -268,7 +199,6 @@ export class SourcePaseo {
     const ownedProcesses = await describeProcesses(family);
     await this.stopDaemon();
     await waitForProcessFamilyExit(family, 5_000);
-    await this.registrationProxy?.stop();
     if (this.ownsRoot) await rm(this.root, { recursive: true, force: true });
     return {
       durationMs: Math.round(performance.now() - startedAt),
@@ -277,7 +207,7 @@ export class SourcePaseo {
     };
   }
 
-  async rememberActiveAuthority(): Promise<void> {
+  private async rememberActiveAuthority(): Promise<void> {
     let active: z.infer<typeof activeRelationshipSchema> | undefined;
     await observe(async () => {
       const value: unknown = JSON.parse(
@@ -331,204 +261,6 @@ export class SourcePaseo {
   private async stopDaemon(): Promise<void> {
     await stopProcess(this.daemon, true);
     this.daemon = undefined;
-  }
-
-  private spawnCli(args: string[]): ChildProcess {
-    return spawn(join(this.paths.packagesRoot, "node_modules/.bin/paseo"), args, {
-      cwd: this.paths.packagesRoot,
-      env: sourceEnvironment(this.paths.paseoHome),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  }
-
-  private async startRegistrationReplayProxy(
-    hubOrigin: string,
-    options: SourceRegistrationOptions,
-  ): Promise<string> {
-    this.registrationProxy = await RegistrationReplayProxy.start(hubOrigin, options);
-    return this.registrationProxy.origin;
-  }
-}
-
-export class SourceRegistration {
-  constructor(
-    private readonly source: SourcePaseo,
-    private readonly child: ChildProcess,
-    private readonly output: SourceCommandOutput,
-    readonly verificationUrl: string,
-  ) {}
-
-  async complete(): Promise<Record<string, unknown>> {
-    await waitForExit(this.child, 30_000);
-    if (this.child.exitCode !== 0) {
-      throw new Error(`source-built hub connect failed: ${this.output.safeError()}`);
-    }
-    const result = parseCliResult(this.output.stdout);
-    await this.source.rememberActiveAuthority();
-    return result;
-  }
-}
-
-class SourceCommandOutput {
-  stdout = "";
-  private stderr = "";
-
-  constructor(private readonly child: ChildProcess) {
-    child.stdout?.on("data", (chunk: Buffer) => (this.stdout += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (this.stderr += chunk.toString()));
-  }
-
-  async waitForUserCode(): Promise<string> {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      const match = /Open https?:\/\/\S+ and enter code ([A-Z2-7-]+)/u.exec(this.stderr);
-      if (match?.[1] !== undefined) return match[1];
-      if (this.child.exitCode !== null)
-        throw new Error("source CLI exited before browser approval");
-      await delay(50);
-    }
-    throw new Error("source CLI did not print browser approval instructions");
-  }
-
-  safeError(): string {
-    return this.stderr.replace(/[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{5}/gu, "[verification code]");
-  }
-}
-
-class RegistrationReplayProxy {
-  readonly enrollmentAttempts: Array<z.infer<typeof enrollmentAttemptSchema>> = [];
-  readonly approvedPollAuthorities: string[] = [];
-  private loseApprovedPollResponse: boolean;
-  private loseEnrollmentResponse: boolean;
-  private readonly registrationSecrets = new Set<string>();
-  private readonly sockets = new WebSocketServer({ noServer: true });
-
-  private constructor(
-    private readonly targetOrigin: string,
-    readonly origin: string,
-    private readonly server: ReturnType<typeof createServer>,
-    options: SourceRegistrationOptions,
-  ) {
-    this.loseApprovedPollResponse = options.loseFirstApprovedPollResponse === true;
-    this.loseEnrollmentResponse = options.loseFirstEnrollmentResponse === true;
-  }
-
-  static async start(
-    targetOrigin: string,
-    options: SourceRegistrationOptions,
-  ): Promise<RegistrationReplayProxy> {
-    const port = await availablePort();
-    let proxy: RegistrationReplayProxy;
-    const server = createServer((request, response) => void proxy.forward(request, response));
-    proxy = new RegistrationReplayProxy(targetOrigin, `http://127.0.0.1:${port}`, server, options);
-    server.on("upgrade", (request, socket, head) => {
-      proxy.sockets.handleUpgrade(request, socket, head, (downstream) => {
-        const target = new URL(request.url ?? "/", targetOrigin);
-        target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-        const upstream = new WebSocket(target.toString(), {
-          headers: Object.fromEntries(forwardedHeaders(request)),
-        });
-        const queued: Buffer[] = [];
-        downstream.on("message", (data) => {
-          const value = readWebSocketData(data);
-          if (upstream.readyState === WebSocket.OPEN) upstream.send(value);
-          else queued.push(value);
-        });
-        upstream.on("open", () => {
-          for (const value of queued) upstream.send(value);
-        });
-        upstream.on("message", (data) => {
-          if (downstream.readyState === WebSocket.OPEN) downstream.send(data);
-        });
-        downstream.on("close", () => upstream.terminate());
-        upstream.on("close", (code, reason) => downstream.close(code, reason.toString()));
-        downstream.on("error", () => upstream.terminate());
-        upstream.on("error", () => downstream.terminate());
-      });
-    });
-    await new Promise<void>((resolveListen, reject) => {
-      server.once("error", reject);
-      server.listen(port, "127.0.0.1", resolveListen);
-    });
-    return proxy;
-  }
-
-  async stop(): Promise<void> {
-    for (const socket of this.sockets.clients) socket.terminate();
-    await new Promise<void>((resolveSockets) => this.sockets.close(() => resolveSockets()));
-    this.server.closeIdleConnections();
-    this.server.closeAllConnections();
-    await new Promise<void>((resolveClose) => this.server.close(() => resolveClose()));
-  }
-
-  registrationSecretsAbsentFrom(output: string): boolean {
-    return Array.from(this.registrationSecrets).every((secret) => !output.includes(secret));
-  }
-
-  private async forward(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    try {
-      const body = await readRequestBody(request);
-      if (request.url === "/api/device-authorizations/poll") {
-        const poll = pollRequestSchema.parse(JSON.parse(body.toString("utf8")));
-        this.registrationSecrets.add(poll.deviceCode);
-      }
-      if (request.url === "/api/daemons/enroll") {
-        this.enrollmentAttempts.push(
-          enrollmentAttemptSchema.parse(JSON.parse(body.toString("utf8"))),
-        );
-      }
-      const upstream = await fetch(new URL(request.url ?? "/", this.targetOrigin), {
-        method: request.method ?? "GET",
-        headers: forwardedHeaders(request),
-        ...(body.length === 0 ? {} : { body: new Uint8Array(body) }),
-      });
-      let responseBody = Buffer.from(await upstream.arrayBuffer());
-      if (request.url === "/api/device-authorizations/poll" && upstream.ok) {
-        const poll = approvedPollSchema.safeParse(JSON.parse(responseBody.toString("utf8")));
-        if (poll.success) {
-          this.registrationSecrets.add(poll.data.enrollmentToken);
-          this.approvedPollAuthorities.push(
-            createHash("sha256").update(poll.data.enrollmentToken).digest("hex"),
-          );
-          if (this.loseApprovedPollResponse) {
-            this.loseApprovedPollResponse = false;
-            response.destroy();
-            return;
-          }
-        }
-      }
-      if (request.url === "/api/daemons/enroll" && upstream.ok) {
-        const enrollment = z
-          .object({ webSocketUrl: z.string().url() })
-          .passthrough()
-          .parse(JSON.parse(responseBody.toString("utf8")));
-        const webSocketUrl = new URL(enrollment.webSocketUrl);
-        const proxy = new URL(this.origin);
-        webSocketUrl.protocol = proxy.protocol === "https:" ? "wss:" : "ws:";
-        webSocketUrl.host = proxy.host;
-        responseBody = Buffer.from(
-          JSON.stringify({
-            ...enrollment,
-            webSocketUrl: webSocketUrl.toString(),
-          }),
-        );
-      }
-      if (request.url === "/api/daemons/enroll" && upstream.ok && this.loseEnrollmentResponse) {
-        this.loseEnrollmentResponse = false;
-        response.destroy();
-        return;
-      }
-      response.statusCode = upstream.status;
-      upstream.headers.forEach((value, name) => {
-        if (name !== "content-length" && name !== "content-encoding") {
-          response.setHeader(name, value);
-        }
-      });
-      response.end(responseBody);
-    } catch (error) {
-      response.statusCode = 502;
-      response.end(error instanceof Error ? error.message : String(error));
-    }
   }
 }
 
@@ -748,30 +480,6 @@ function isProcessAlive(pid: number): boolean {
 async function waitForProcessFamilyExit(pids: readonly number[], timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (pids.some(isProcessAlive) && Date.now() < deadline) await delay(50);
-}
-
-function forwardedHeaders(request: IncomingMessage): Headers {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (value === undefined || name === "host" || name === "content-length") continue;
-    headers.set(name, Array.isArray(value) ? value.join(", ") : value);
-  }
-  return headers;
-}
-
-async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const rawChunk of request) {
-    const chunk: unknown = rawChunk;
-    if (typeof chunk === "string" || chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
-
-function readWebSocketData(data: RawData): Buffer {
-  if (Array.isArray(data)) return Buffer.concat(data);
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  return Buffer.from(data);
 }
 
 function delay(milliseconds: number): Promise<void> {

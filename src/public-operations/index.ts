@@ -27,6 +27,38 @@ export function createPublicOperations(
   clock: DaemonClock = { nowDate: () => new Date() },
 ): PublicOperations {
   return {
+    async listProjects(authorization) {
+      try {
+        return {
+          status: "listed",
+          projects: await repository.listActiveProjects(authorization.organizationId),
+        };
+      } catch (error) {
+        return storageUnavailableOrThrow(error);
+      }
+    },
+    async validateConfiguration(authorization, input) {
+      try {
+        const project = await repository.findActiveProject(
+          authorization.organizationId,
+          input.projectSlug,
+        );
+        if (project === undefined) return { status: "project_not_found" };
+        const resolved = await resolveConfigurationInput(input);
+        if (!resolved.success) return resolved.result;
+        const result = await capabilities
+          .configurationForProject(project.id)
+          .validateManualConfiguration(resolved.configuration, resolved.promptPartials);
+        return result.valid
+          ? { status: "valid", projectSlug: project.slug, valid: true }
+          : {
+              status: "invalid_configuration",
+              issues: configurationValidationIssues(result.validationErrors),
+            };
+      } catch (error) {
+        return storageUnavailableOrThrow(error);
+      }
+    },
     async installConfiguration(authorization, input) {
       try {
         const project = await repository.findActiveProject(
@@ -34,29 +66,18 @@ export function createPublicOperations(
           input.projectSlug,
         );
         if (project === undefined) return { status: "project_not_found" };
-        const document = parseDeploymentDocument(input.yaml);
-        if (!document.success) {
-          return { status: document.kind, issues: document.issues };
-        }
-        let resolvedPromptPartials;
-        try {
-          resolvedPromptPartials = await resolvePromptPartialsFromBundle({
-            configuration: document.configuration,
-            files: input.partials ?? [],
-          });
-        } catch (error) {
-          if (error instanceof PromptPartialBundleError) {
-            return { status: "invalid_bundle", issues: error.issues };
-          }
-          throw error;
-        }
+        const resolved = await resolveConfigurationInput(input);
+        if (!resolved.success) return resolved.result;
         const configuration = capabilities.configurationForProject(project.id);
         const record = await configuration.insertManualRevision({
           rawYaml: input.yaml,
-          rawConfiguration: document.configuration,
+          rawConfiguration: resolved.configuration,
           userId: null,
-          sourceEvidence: { kind: "api-key", keyId: authorization.keyId },
-          resolvedPromptPartials,
+          sourceEvidence: {
+            kind: authorization.kind === "apiKey" ? "api-key" : "cli-credential",
+            credentialId: authorization.credentialId,
+          },
+          resolvedPromptPartials: resolved.promptPartials,
         });
         if (record.validationErrors !== null) {
           return {
@@ -124,7 +145,11 @@ export function createPublicOperations(
 async function dispatchManualRun(
   repository: PublicOperationRepository,
   capabilities: PublicOperationCapabilities,
-  authorization: { organizationId: string; keyId: string },
+  authorization: {
+    organizationId: string;
+    kind: "apiKey" | "cliCredential";
+    credentialId: string;
+  },
   projectId: string,
   input: DispatchManualRunInput,
   deliveryId: string,
@@ -143,7 +168,10 @@ async function dispatchManualRun(
       actor: input.actor,
       input: input.input,
       publicDeliveryKey: input.deliveryKey,
-      authenticatedBy: { kind: "api-key", keyId: authorization.keyId },
+      authenticatedBy: {
+        kind: authorization.kind === "apiKey" ? "api-key" : "cli-credential",
+        credentialId: authorization.credentialId,
+      },
     },
   });
   const providerEventReceiptId = outcome?.providerEventReceiptId;
@@ -167,6 +195,52 @@ async function dispatchManualRun(
     configuredTriggerName: run.configuredTriggerName,
     workflowStatus: run.status,
   };
+}
+
+async function resolveConfigurationInput(input: {
+  yaml: string;
+  partials?: readonly { path: string; content: string }[] | undefined;
+}): Promise<
+  | {
+      success: true;
+      configuration: unknown;
+      promptPartials: Awaited<ReturnType<typeof resolvePromptPartialsFromBundle>>;
+    }
+  | {
+      success: false;
+      result:
+        | {
+            status: "invalid_yaml" | "invalid_document";
+            issues: readonly { path: readonly (string | number)[]; message: string }[];
+          }
+        | {
+            status: "invalid_bundle";
+            issues: readonly { path: readonly (string | number)[]; message: string }[];
+          };
+    }
+> {
+  const document = parseDeploymentDocument(input.yaml);
+  if (!document.success) {
+    return { success: false, result: { status: document.kind, issues: document.issues } };
+  }
+  try {
+    return {
+      success: true,
+      configuration: document.configuration,
+      promptPartials: await resolvePromptPartialsFromBundle({
+        configuration: document.configuration,
+        files: input.partials ?? [],
+      }),
+    };
+  } catch (error) {
+    if (error instanceof PromptPartialBundleError) {
+      return {
+        success: false,
+        result: { status: "invalid_bundle", issues: error.issues },
+      };
+    }
+    throw error;
+  }
 }
 
 function internalDeliveryId(

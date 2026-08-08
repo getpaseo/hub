@@ -1,11 +1,9 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { chromium } from "@playwright/test";
 import { Pool } from "pg";
 import { z } from "zod";
 import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
@@ -124,7 +122,7 @@ export class HubE2E {
   }
 
   async issueEnrollment(): Promise<Enrollment> {
-    const response = await fetch(`${this.requireProxy().origin}/api/daemons/enrollment-tokens`, {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/daemons/enrollment-tokens`, {
       method: "POST",
       headers: { authorization: `Bearer ${MACHINE_KEY}` },
     });
@@ -161,22 +159,6 @@ export class HubE2E {
       );
     }
     enrollment.daemonId = requiredString(status, "daemonId");
-  }
-
-  async connectWithDeviceAuthorization(displayName: string): Promise<{ daemonId: string }> {
-    try {
-      const registration = await this.requireSource().beginRegistration(this.requireProxy().origin);
-      const userCode = new URL(registration.verificationUrl).searchParams.get("code");
-      if (userCode === null) throw new Error("Source registration did not contain a user code");
-      await this.approveDeviceAuthorization(userCode, displayName);
-      return {
-        daemonId: requiredString(await registration.complete(), "daemonId"),
-      };
-    } catch (error) {
-      throw new Error("Browser-approved Hub connection failed; sensitive CLI output discarded", {
-        cause: error,
-      });
-    }
   }
 
   async daemonIsConnected(): Promise<void> {
@@ -274,7 +256,7 @@ export class HubE2E {
       "          mode: default",
       '        prompt: [{ text: "daemon-restart" }] ',
     ].join("\n");
-    const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${MACHINE_KEY}`,
@@ -319,7 +301,7 @@ export class HubE2E {
       `          mode: ${mode}`,
       '        prompt: [{ text: "Call the finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
-    const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${MACHINE_KEY}`,
@@ -396,7 +378,7 @@ export class HubE2E {
       `          mode: ${mode}`,
       '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
-    const response = await fetch(`${this.requireProxy().origin}/api/configurations/install`, {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${MACHINE_KEY}`,
@@ -1173,59 +1155,6 @@ export class HubE2E {
     });
   }
 
-  private async approveDeviceAuthorization(userCode: string, displayName: string): Promise<void> {
-    const origin = this.requireProxy().origin;
-    const headers = {
-      "content-type": "application/json",
-      origin,
-      "sec-fetch-site": "same-origin",
-    };
-    const signUp = await fetch(`${origin}/api/auth/sign-up/email`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        name: "Hub Browser Approver",
-        email: `hub-browser-${randomUUID()}@example.test`,
-        password: "hub-browser-password",
-      }),
-    });
-    assertStatus(signUp, 200, "create browser approver");
-    const cookie = signUp.headers.get("set-cookie")?.match(/^([^=]+)=([^;]+)/u);
-    if (cookie?.[1] === undefined || cookie[2] === undefined) {
-      throw new Error("Browser approver session cookie was not issued");
-    }
-    const organization = await fetch(`${origin}/api/auth/paseo/create-organization`, {
-      method: "POST",
-      headers: { ...headers, cookie: `${cookie[1]}=${cookie[2]}` },
-      body: JSON.stringify({ name: "Device organization" }),
-    });
-    assertStatus(organization, 201, "create browser approver organization");
-    const organizationId = z
-      .object({ organizationId: z.string() })
-      .parse(await organization.json()).organizationId;
-    if (organizationId.length === 0)
-      throw new Error("browser approver organization was not created");
-    const browser = await chromium.launch();
-    try {
-      const context = await browser.newContext();
-      await context.addCookies([{ name: cookie[1], value: cookie[2], url: origin }]);
-      const page = await context.newPage();
-      try {
-        await page.goto(`${origin}/activate?code=${encodeURIComponent(userCode)}`);
-        await page.getByLabel("Daemon slug").fill(displayName);
-        await page.getByRole("button", { name: "Approve daemon" }).click();
-        await page.getByRole("heading", { name: "Registration approved" }).waitFor();
-      } catch (error) {
-        throw new Error(`Browser approval page did not render: ${await approvalPageState(page)}`, {
-          cause: error,
-        });
-      }
-      await context.close();
-    } finally {
-      await browser.close();
-    }
-  }
-
   private async restartHub(): Promise<void> {
     await stopChild(this.hub);
     this.hub = await this.startHub();
@@ -1285,7 +1214,7 @@ export class HubE2E {
     deliveryKey: string;
     input: unknown;
   }): Promise<DispatchedManualRun> {
-    const response = await fetch(`${this.requireProxy().origin}/api/manual-runs`, {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/manual-runs`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${MACHINE_KEY}`,
@@ -1416,16 +1345,6 @@ export class HubE2E {
     if (!this.postgres) throw new Error("Postgres is unavailable");
     return this.postgres;
   }
-}
-
-async function approvalPageState(page: import("@playwright/test").Page): Promise<string> {
-  const url = new URL(page.url());
-  const [headings, forms, alerts] = await Promise.all([
-    page.getByRole("heading").allTextContents(),
-    page.getByRole("form").count(),
-    page.getByRole("alert").allTextContents(),
-  ]);
-  return JSON.stringify({ pathname: url.pathname, headings, forms, alerts });
 }
 
 async function initializeGitWorkspace(workspace: string): Promise<void> {

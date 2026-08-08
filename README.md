@@ -68,7 +68,7 @@ See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, `.pas
 
 ## Public API
 
-Each Hub serves a self-hosted API reference at `/api/reference` and its generated OpenAPI 3.1 contract at `/api/openapi.json`. The short [public API guide](docs/public-api.md) covers versioning, API-key scopes, compatibility aliases, and request correlation.
+Each Hub serves a self-hosted API reference at `/api/reference` and its generated OpenAPI 3.1 contract at `/api/openapi.json`. The short [public API guide](docs/public-api.md) covers CLI login, versioning, credential scopes, and request correlation.
 
 ## License
 

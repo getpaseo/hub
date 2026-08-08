@@ -66,9 +66,15 @@ const hubOperationAuth: OperationAuthenticator = {
           status: "authorized" as const,
           access: {
             kind: "apiKey" as const,
-            keyId: HUB_API_KEY_ID,
+            credentialId: HUB_API_KEY_ID,
             organizationId: HUB_ORGANIZATION_ID,
-            scopes: ["configuration:install", "runs:dispatch", "daemons:enroll"] as const,
+            scopes: [
+              "projects:read",
+              "configuration:validate",
+              "configuration:install",
+              "runs:dispatch",
+              "daemons:enroll",
+            ] as const,
           },
         }
       : { status: "unauthorized" as const };
@@ -174,7 +180,7 @@ export class HubHarness {
     let authorization: string | undefined;
     if (auth === "valid") authorization = `Bearer ${HUB_API_KEY}`;
     if (auth === "wrong") authorization = "Bearer wrong";
-    const response = await fetch(`${this.origin}/api/daemons/enrollment-tokens`, {
+    const response = await fetch(`${this.origin}/api/v1/daemons/enrollment-tokens`, {
       method: "POST",
       ...(authorization === undefined ? {} : { headers: { authorization } }),
     });
@@ -1003,7 +1009,7 @@ export class HubHarness {
     auth?: "valid" | "missing" | "wrong";
   }): Promise<{ status: number; versionId?: string; validationErrors?: unknown }> {
     const headers = machineHeaders(input.auth ?? "valid");
-    const response = await fetch(`${this.origin}/api/configurations/install`, {
+    const response = await fetch(`${this.origin}/api/v1/configurations/install`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({
@@ -1116,7 +1122,7 @@ export class HubHarness {
       ...machineHeaders("valid"),
     };
     const [configuration, manual] = await Promise.all([
-      fetch(`${this.origin}/api/configurations/install`, {
+      fetch(`${this.origin}/api/v1/configurations/install`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -1125,7 +1131,7 @@ export class HubHarness {
           yaml: this.manualConfigurationYaml(),
         }),
       }),
-      fetch(`${this.origin}/api/manual-runs`, {
+      fetch(`${this.origin}/api/v1/manual-runs`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -1160,7 +1166,7 @@ export class HubHarness {
     configuredTriggerName?: string;
     workflowStatus?: string;
   }> {
-    const response = await fetch(`${this.origin}/api/manual-runs`, {
+    const response = await fetch(`${this.origin}/api/v1/manual-runs`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

@@ -35,7 +35,9 @@ import {
   handleManualTriggerRequest,
 } from "./triggers/manual/source.js";
 import { createManualRunProvider } from "./triggers/manual/provider.js";
-import { DaemonRegistration, type BrowserOrganizationAccess } from "./daemons/registration.js";
+import { DaemonRegistration } from "./daemons/registration.js";
+import { CliAuthorizations } from "./cli-authorizations/index.js";
+import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
 import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
 import { createPublicOperations } from "./public-operations/index.js";
 import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
@@ -74,13 +76,12 @@ export interface HubRuntime {
 }
 
 export interface HubOperations {
-  handleEnrollmentToken(request: Request): Promise<Response>;
   handleDaemonEnrollment(request: Request): Promise<Response>;
   handleDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
-  handleDeviceAuthorizationStart(request: Request): Promise<Response>;
-  handleDeviceAuthorizationPoll(request: Request): Promise<Response>;
-  handleDeviceAuthorizationInspect(request: Request): Promise<Response>;
-  handleDeviceAuthorizationDecision(request: Request): Promise<Response>;
+  handleCliAuthorizationStart(request: Request): Promise<Response>;
+  handleCliAuthorizationPoll(request: Request): Promise<Response>;
+  handleCliAuthorizationInspect(request: Request): Promise<Response>;
+  handleCliAuthorizationDecision(request: Request): Promise<Response>;
   handleOrganizationDaemons(request: Request): Promise<Response>;
   handleOrganizationDaemonRename(request: Request, daemonId: string): Promise<Response>;
   handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
@@ -90,8 +91,6 @@ export interface HubOperations {
     executionId: string,
     attachmentId: string,
   ): Promise<Response>;
-  handleConfigurationInstall(request: Request): Promise<Response>;
-  handleManualRun(request: Request): Promise<Response>;
   handleManualTrigger(request: Request, entrypoint: "trigger" | "smoke"): Promise<Response>;
 }
 
@@ -150,8 +149,15 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
           ...(options.browserOrganizationAccess === undefined
             ? {}
             : { access: options.browserOrganizationAccess }),
-          ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
         });
+  const cliAuthorizations =
+    options.database === null
+      ? null
+      : new CliAuthorizations(
+          options.database,
+          options.browserOrganizationAccess,
+          options.publicBaseUrl,
+        );
 
   const manualSource =
     options.database === null ? undefined : createManualTriggerSource(options.database);
@@ -227,8 +233,6 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   const publicOperations = createAppPublicOperations(options, manualSource, storeForProject);
   const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
-    handleEnrollmentToken: (request) =>
-      publicApi.handleLegacyOperation("issueEnrollmentToken", request),
     handleDaemonEnrollment: (request) =>
       options.database === null
         ? databaseUnavailable()
@@ -237,14 +241,14 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       options.database === null || daemons === null
         ? databaseUnavailable()
         : revokeDaemon(request, daemonId, options.database, daemons),
-    handleDeviceAuthorizationStart: (request) =>
-      registration === null ? databaseUnavailable() : registration.start(request),
-    handleDeviceAuthorizationPoll: (request) =>
-      registration === null ? databaseUnavailable() : registration.poll(request),
-    handleDeviceAuthorizationInspect: (request) =>
-      registration === null ? databaseUnavailable() : registration.inspect(request),
-    handleDeviceAuthorizationDecision: (request) =>
-      registration === null ? databaseUnavailable() : registration.decide(request),
+    handleCliAuthorizationStart: (request) =>
+      cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.start(request),
+    handleCliAuthorizationPoll: (request) =>
+      cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.poll(request),
+    handleCliAuthorizationInspect: (request) =>
+      cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.inspect(request),
+    handleCliAuthorizationDecision: (request) =>
+      cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.decide(request),
     handleOrganizationDaemons: (request) =>
       registration === null ? databaseUnavailable() : registration.list(request),
     handleOrganizationDaemonRename: (request, daemonId) =>
@@ -259,9 +263,6 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       attachments === undefined
         ? databaseUnavailable()
         : attachments.handle(request, executionId, attachmentId),
-    handleConfigurationInstall: (request) =>
-      publicApi.handleLegacyOperation("installConfiguration", request),
-    handleManualRun: (request) => publicApi.handleLegacyOperation("dispatchManualRun", request),
     handleManualTrigger: (request, entrypoint) =>
       manualSource === undefined
         ? databaseUnavailable()

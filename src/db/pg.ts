@@ -7,7 +7,6 @@ import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { logger } from "../logger.js";
-import { slugify } from "../slug.js";
 import {
   clearOverrideKey,
   entitlementOverridesSchema,
@@ -49,10 +48,10 @@ import type {
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
-  DeviceAuthorizationRecord,
-  DeviceAuthorizationDecisionInput,
-  DevicePollResult,
-  StartDeviceAuthorizationInput,
+  CliAuthorizationRecord,
+  CliAuthorizationDecisionInput,
+  CliAuthorizationPollResult,
+  StartCliAuthorizationInput,
   SwitchProjectConfigurationToManualInput,
   SetProjectGitHubConfigurationSourceInput,
   RecordConfigurationSyncAttemptInput,
@@ -1321,24 +1320,51 @@ class PgDatabase implements Database {
   }
 
   async issueEnrollmentToken(input: EnrollmentTokenRecord): Promise<boolean> {
+    if (input.issuedByCliCredentialId !== undefined && input.issuedByCliCredentialId !== null) {
+      const client = await this.pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [
+          input.issuedByCliCredentialId,
+        ]);
+        const credential = await client.query(
+          `select id from organization_cli_credentials
+           where id = $1 and organization_id = $2 and revoked_at is null for update`,
+          [input.issuedByCliCredentialId, input.organizationId],
+        );
+        if (credential.rowCount !== 1) {
+          await client.query("rollback");
+          return false;
+        }
+        await client.query(
+          `insert into daemon_enrollment_tokens
+             (id, verifier, organization_id, issued_by_cli_credential_id,
+              expires_at)
+           values ($1, $2, $3, $4, $5)`,
+          [
+            input.id,
+            input.verifier,
+            input.organizationId,
+            input.issuedByCliCredentialId,
+            input.expiresAt,
+          ],
+        );
+        await client.query("commit");
+        return true;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
     if (input.issuedByApiKeyId === undefined || input.issuedByApiKeyId === null) {
       await query(
         this.pool,
         `insert into daemon_enrollment_tokens
-           (id, verifier, organization_id, authorization_id, slug,
-            approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          input.id,
-          input.verifier,
-          input.organizationId,
-          input.authorizationId ?? null,
-          input.slug ?? null,
-          input.approvedByUserId ?? null,
-          null,
-          input.registrationMethod ?? "operator",
-          input.expiresAt,
-        ],
+           (id, verifier, organization_id, issued_by_api_key_id, expires_at)
+         values ($1, $2, $3, $4, $5)`,
+        [input.id, input.verifier, input.organizationId, null, input.expiresAt],
       );
       return true;
     }
@@ -1361,20 +1387,9 @@ class PgDatabase implements Database {
         }
         await client.query(
           `insert into daemon_enrollment_tokens
-             (id, verifier, organization_id, authorization_id, slug,
-              approved_by_user_id, issued_by_api_key_id, registration_method, expires_at)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            input.id,
-            input.verifier,
-            input.organizationId,
-            input.authorizationId ?? null,
-            input.slug ?? null,
-            input.approvedByUserId ?? null,
-            input.issuedByApiKeyId,
-            input.registrationMethod ?? "operator",
-            input.expiresAt,
-          ],
+             (id, verifier, organization_id, issued_by_api_key_id, expires_at)
+           values ($1, $2, $3, $4, $5)`,
+          [input.id, input.verifier, input.organizationId, input.issuedByApiKeyId, input.expiresAt],
         );
         await client.query("commit");
         return true;
@@ -1387,14 +1402,14 @@ class PgDatabase implements Database {
     });
   }
 
-  async startDeviceAuthorization(
-    input: StartDeviceAuthorizationInput,
-  ): Promise<DeviceAuthorizationRecord | undefined> {
+  async startCliAuthorization(
+    input: StartCliAuthorizationInput,
+  ): Promise<CliAuthorizationRecord | undefined> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
       await client.query(
-        `select pg_advisory_xact_lock(hashtext('paseo-device-authorization-issuance'))`,
+        `select pg_advisory_xact_lock(hashtext('paseo-cli-authorization-issuance'))`,
       );
       const capacity = await client.query<{
         fingerprint_count: number;
@@ -1403,7 +1418,7 @@ class PgDatabase implements Database {
         `select
            count(*) filter (where fingerprint_verifier = $1)::integer as fingerprint_count,
            count(*)::integer as global_count
-         from daemon_device_authorizations
+         from cli_authorizations
          where status in ('pending', 'approved') and expires_at > now()`,
         [input.fingerprintVerifier],
       );
@@ -1415,25 +1430,24 @@ class PgDatabase implements Database {
         await client.query("rollback");
         return undefined;
       }
-      const inserted = await client.query<DeviceAuthorizationRow>(
-        `insert into daemon_device_authorizations
+      const inserted = await client.query<CliAuthorizationRow>(
+        `insert into cli_authorizations
            (id, device_verifier, user_code_verifier, fingerprint_verifier,
-            suggested_slug, status, poll_interval_seconds, next_poll_at, expires_at)
-         values ($1, $2, $3, $4, $5, 'pending', $6, now(),
-                 now() + ($7 * interval '1 second'))
+            status, poll_interval_seconds, next_poll_at, expires_at)
+         values ($1, $2, $3, $4, 'pending', $5, now(),
+                 now() + ($6 * interval '1 second'))
          returning *`,
         [
           input.id,
           input.deviceVerifier,
           input.userCodeVerifier,
           input.fingerprintVerifier,
-          input.suggestedSlug,
           input.pollIntervalSeconds,
           input.lifetimeSeconds,
         ],
       );
       await client.query("commit");
-      return toDeviceAuthorization(inserted.rows[0]!);
+      return toCliAuthorization(inserted.rows[0]!);
     } catch (error) {
       await client.query("rollback");
       throw toDatabaseError(error);
@@ -1442,39 +1456,39 @@ class PgDatabase implements Database {
     }
   }
 
-  async inspectDeviceAuthorization(
+  async inspectCliAuthorization(
     userCodeVerifier: string,
-  ): Promise<DeviceAuthorizationRecord | undefined> {
+  ): Promise<CliAuthorizationRecord | undefined> {
     await query(
       this.pool,
-      `update daemon_device_authorizations set status = 'expired'
+      `update cli_authorizations set status = 'expired'
        where user_code_verifier = $1 and status in ('pending', 'approved')
          and expires_at <= now()`,
       [userCodeVerifier],
     );
-    const rows = await query<DeviceAuthorizationRow>(
+    const rows = await query<CliAuthorizationRow>(
       this.pool,
-      `select * from daemon_device_authorizations
+      `select * from cli_authorizations
        where user_code_verifier = $1 and status = 'pending' and expires_at > now()`,
       [userCodeVerifier],
     );
-    return rows.rows[0] === undefined ? undefined : toDeviceAuthorization(rows.rows[0]);
+    return rows.rows[0] === undefined ? undefined : toCliAuthorization(rows.rows[0]);
   }
 
-  async decideDeviceAuthorization(
-    input: DeviceAuthorizationDecisionInput,
+  async decideCliAuthorization(
+    input: CliAuthorizationDecisionInput,
   ): Promise<"approved" | "denied" | "unavailable" | "forbidden"> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
       await client.query(
-        `update daemon_device_authorizations set status = 'expired'
+        `update cli_authorizations set status = 'expired'
          where user_code_verifier = $1 and status in ('pending', 'approved')
            and expires_at <= now()`,
         [input.userCodeVerifier],
       );
-      const authorization = await client.query<DeviceAuthorizationRow>(
-        `select * from daemon_device_authorizations
+      const authorization = await client.query<CliAuthorizationRow>(
+        `select * from cli_authorizations
          where user_code_verifier = $1 and status = 'pending' and expires_at > now()
          for update`,
         [input.userCodeVerifier],
@@ -1505,19 +1519,12 @@ class PgDatabase implements Database {
       }
       const status = input.decision === "approve" ? "approved" : "denied";
       await client.query(
-        `update daemon_device_authorizations
+        `update cli_authorizations
          set status = $2, approved_organization_id = case when $2 = 'approved' then $3 end,
              approved_by_user_id = case when $2 = 'approved' then $4 end,
-             approved_slug = case when $2 = 'approved' then $5 end,
              decided_at = now()
          where id = $1`,
-        [
-          authorization.rows[0].id,
-          status,
-          input.access.organizationId,
-          input.access.userId,
-          input.decision === "approve" ? input.slug : null,
-        ],
+        [authorization.rows[0].id, status, input.access.organizationId, input.access.userId],
       );
       await client.query("commit");
       return status;
@@ -1529,24 +1536,23 @@ class PgDatabase implements Database {
     }
   }
 
-  async pollDeviceAuthorization(input: {
+  async pollCliAuthorization(input: {
     deviceVerifier: string;
-    enrollmentTokenVerifier: string;
-  }): Promise<DevicePollResult> {
+    credential: { id: string; prefix: string; verifier: string };
+  }): Promise<CliAuthorizationPollResult> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      const selected = await client.query<DeviceAuthorizationRow>(
+      const selected = await client.query<CliAuthorizationRow>(
         `select *, now() as database_now
-         from daemon_device_authorizations where device_verifier = $1 for update`,
+         from cli_authorizations where device_verifier = $1 for update`,
         [input.deviceVerifier],
       );
       const authorization = selected.rows[0];
       if (authorization !== undefined && authorization.expires_at <= authorization.database_now) {
-        await client.query(
-          `update daemon_device_authorizations set status = 'expired' where id = $1`,
-          [authorization.id],
-        );
+        await client.query(`update cli_authorizations set status = 'expired' where id = $1`, [
+          authorization.id,
+        ]);
         await client.query("commit");
         return {
           status: "expired",
@@ -1560,7 +1566,7 @@ class PgDatabase implements Database {
       if (
         authorization.status === "denied" ||
         authorization.status === "expired" ||
-        authorization.status === "enrolled"
+        authorization.status === "disclosed"
       ) {
         await client.query("commit");
         return {
@@ -1571,8 +1577,9 @@ class PgDatabase implements Database {
       if (authorization.next_poll_at > authorization.database_now) {
         const intervalSeconds = authorization.poll_interval_seconds + 5;
         await client.query(
-          `update daemon_device_authorizations
-           set poll_interval_seconds = $2, next_poll_at = now() + ($2 * interval '1 second')
+          `update cli_authorizations
+           set poll_interval_seconds = $2::integer,
+               next_poll_at = now() + ($2::integer * interval '1 second')
            where id = $1`,
           [authorization.id, intervalSeconds],
         );
@@ -1580,32 +1587,34 @@ class PgDatabase implements Database {
         return { status: "slow_down", intervalSeconds };
       }
       await client.query(
-        `update daemon_device_authorizations
+        `update cli_authorizations
          set next_poll_at = now() + (poll_interval_seconds * interval '1 second')
          where id = $1`,
         [authorization.id],
       );
       if (authorization.status === "approved") {
-        const token = await client.query<{ id: string }>(
-          `insert into daemon_enrollment_tokens
-             (id, verifier, organization_id, authorization_id, slug,
-              approved_by_user_id, registration_method, expires_at)
-           values (gen_random_uuid(), $1, $2, $3, $4, $5, 'device', $6)
-           on conflict (authorization_id) do update set verifier = excluded.verifier
-           returning id`,
+        await client.query(
+          `insert into organization_cli_credentials
+             (id, organization_id, prefix, verifier, created_by_user_id)
+           values ($1, $2, $3, $4, $5)`,
           [
-            input.enrollmentTokenVerifier,
+            input.credential.id,
             authorization.approved_organization_id,
-            authorization.id,
-            authorization.approved_slug,
+            input.credential.prefix,
+            input.credential.verifier,
             authorization.approved_by_user_id,
-            authorization.expires_at,
           ],
         );
         await client.query(
-          `update daemon_device_authorizations set enrollment_token_id = $2 where id = $1`,
-          [authorization.id, token.rows[0]!.id],
+          `update cli_authorizations set status = 'disclosed', credential_id = $2 where id = $1`,
+          [authorization.id, input.credential.id],
         );
+        await client.query("commit");
+        return {
+          status: "authorized",
+          intervalSeconds: authorization.poll_interval_seconds,
+          organizationId: authorization.approved_organization_id!,
+        };
       }
       await client.query("commit");
       return {
@@ -1640,18 +1649,14 @@ class PgDatabase implements Database {
       const token = await client.query<{
         id: string;
         organization_id: string | null;
-        authorization_id: string | null;
-        slug: string | null;
-        approved_by_user_id: string | null;
         issued_by_api_key_id: string | null;
-        registration_method: "operator" | "device";
+        issued_by_cli_credential_id: string | null;
       }>(
         `update daemon_enrollment_tokens
-         set consumed_at = case when registration_method = 'device' then now() else $2 end
+         set consumed_at = $2
          where verifier = $1 and organization_id is not null and consumed_at is null
-           and expires_at > case when registration_method = 'device' then now() else $2 end
-         returning id, organization_id, authorization_id, slug,
-                   approved_by_user_id, issued_by_api_key_id, registration_method`,
+           and expires_at > $2
+         returning id, organization_id, issued_by_api_key_id, issued_by_cli_credential_id`,
         [input.tokenVerifier, input.now],
       );
       const consumedToken = token.rows[0];
@@ -1664,15 +1669,14 @@ class PgDatabase implements Database {
         [consumedToken.organization_id, { kind: "daemon", daemonId: input.daemonId }],
       );
       const fallbackSlug = `daemon-${input.daemonId.slice(0, 8)}`;
-      const slug =
-        consumedToken.slug === null ? fallbackSlug : slugify(consumedToken.slug, fallbackSlug);
+      const slug = fallbackSlug;
       requestedSlug = slug;
       const daemon = await client.query<DaemonRow>(
         `insert into daemons
            (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
             daemon_public_key, credential_verifier, scopes,
-            approved_by_user_id, registered_by_api_key_id, registration_method, status)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active') returning *`,
+            registered_by_api_key_id, registered_by_cli_credential_id, status)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') returning *`,
         [
           input.daemonId,
           input.idempotencyKey,
@@ -1684,19 +1688,10 @@ class PgDatabase implements Database {
           input.daemonPublicKey,
           input.credentialVerifier,
           JSON.stringify(input.scopes),
-          consumedToken.approved_by_user_id,
           consumedToken.issued_by_api_key_id,
-          consumedToken.registration_method,
+          consumedToken.issued_by_cli_credential_id,
         ],
       );
-      if (consumedToken.authorization_id !== null) {
-        await client.query(
-          `update daemon_device_authorizations
-           set status = 'enrolled', enrolled_daemon_id = $2
-           where id = $1 and status = 'approved'`,
-          [consumedToken.authorization_id, input.daemonId],
-        );
-      }
       await client.query("commit");
       return toDaemon(daemon.rows[0]!);
     } catch (error) {
@@ -4260,9 +4255,8 @@ interface DaemonRow extends QueryResultRow {
   daemon_public_key: string;
   credential_verifier: string;
   scopes: string[];
-  approved_by_user_id: string | null;
   registered_by_api_key_id: string | null;
-  registration_method: "operator" | "device";
+  registered_by_cli_credential_id: string | null;
   status: "active" | "revoked";
   presence: "offline" | "connected";
   connected_at: Date | null;
@@ -4271,18 +4265,16 @@ interface DaemonRow extends QueryResultRow {
   created_at: Date;
 }
 
-interface DeviceAuthorizationRow extends QueryResultRow {
+interface CliAuthorizationRow extends QueryResultRow {
   id: string;
   device_verifier: string;
   user_code_verifier: string;
   fingerprint_verifier: string;
-  suggested_slug: string;
-  status: "pending" | "approved" | "denied" | "expired" | "enrolled";
+  status: "pending" | "approved" | "denied" | "expired" | "disclosed";
   poll_interval_seconds: number;
   next_poll_at: Date;
   approved_organization_id: string | null;
   approved_by_user_id: string | null;
-  approved_slug: string | null;
   created_at: Date;
   expires_at: Date;
   database_now: Date;
@@ -4297,9 +4289,8 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     daemonPublicKey: row.daemon_public_key,
     credentialVerifier: row.credential_verifier,
     scopes: row.scopes,
-    approvedByUserId: row.approved_by_user_id,
     registeredByApiKeyId: row.registered_by_api_key_id,
-    registrationMethod: row.registration_method,
+    registeredByCliCredentialId: row.registered_by_cli_credential_id,
     status: row.status,
     presence: row.presence,
     connectedAt: row.connected_at,
@@ -4309,15 +4300,13 @@ function toDaemon(row: DaemonRow): DaemonRecord {
   };
 }
 
-function toDeviceAuthorization(row: DeviceAuthorizationRow): DeviceAuthorizationRecord {
+function toCliAuthorization(row: CliAuthorizationRow): CliAuthorizationRecord {
   return {
     id: row.id,
-    suggestedSlug: row.suggested_slug,
     status: row.status,
     pollIntervalSeconds: row.poll_interval_seconds,
     approvedOrganizationId: row.approved_organization_id,
     approvedByUserId: row.approved_by_user_id,
-    approvedSlug: row.approved_slug,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };

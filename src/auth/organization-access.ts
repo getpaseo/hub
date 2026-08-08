@@ -3,6 +3,7 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { z } from "zod";
 import { logger } from "../logger.js";
 import { OrganizationApiKeys } from "./api-keys.js";
+import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import type {
@@ -82,6 +83,7 @@ interface OrganizationAccessOptions {
   baseURL: string;
   policy: InstanceAuthPolicy;
   apiKeys: OrganizationApiKeys;
+  cliCredentials: OrganizationCliCredentials;
   entitlements: EntitlementsService;
   /** What a newly created organization is stamped with — unlimited self-hosted, the Free plan
    * on a billing-configured instance. Resolved per creation so a later Free-plan sync is seen. */
@@ -172,6 +174,9 @@ export class OrganizationAccess {
       if (path === "/api/auth/paseo/remove-member") return await this.removeMember(request);
       if (path === "/api/auth/paseo/api-keys") return await this.createApiKey(request);
       if (path === "/api/auth/paseo/revoke-api-key") return await this.revokeApiKey(request);
+      if (path === "/api/auth/paseo/revoke-cli-credential") {
+        return await this.revokeCliCredential(request);
+      }
       return notFound();
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
@@ -317,6 +322,7 @@ export class OrganizationAccess {
       throw new ProductRequestError(403, "forbidden");
     }
     const keys = await this.options.apiKeys.list(access.organization.id);
+    const cliCredentials = await this.options.cliCredentials.list(access.organization.id);
     return Response.json({
       keys: keys.map((key) => ({
         id: key.id,
@@ -326,6 +332,13 @@ export class OrganizationAccess {
         createdAt: key.createdAt.toISOString(),
         lastUsedAt: key.lastUsedAt?.toISOString() ?? null,
         revokedAt: key.revokedAt?.toISOString() ?? null,
+      })),
+      cliCredentials: cliCredentials.map((credential) => ({
+        id: credential.id,
+        prefix: credential.prefix,
+        createdAt: credential.createdAt.toISOString(),
+        lastUsedAt: credential.lastUsedAt?.toISOString() ?? null,
+        revokedAt: credential.revokedAt?.toISOString() ?? null,
       })),
     });
   }
@@ -387,6 +400,23 @@ export class OrganizationAccess {
       }
       if (!(await this.options.apiKeys.revoke(access.organization.id, input.id, client))) {
         throw new ProductRequestError(404, "api_key_unavailable");
+      }
+    });
+    return Response.json({ revoked: true });
+  }
+
+  private async revokeCliCredential(request: Request): Promise<Response> {
+    const session = await this.requireSession(request);
+    const input = await parseBody(request, apiKeyIdBody);
+    const access = await this.requireActiveAccess(session);
+    await transaction(this.options.pool, async (client) => {
+      await lockOrganizationMembershipTransitions(client, access.organization.id);
+      const role = await currentActorRole(client, access);
+      if (!capabilitiesFor(role).manageResources) {
+        throw new ProductRequestError(403, "forbidden");
+      }
+      if (!(await this.options.cliCredentials.revoke(access.organization.id, input.id, client))) {
+        throw new ProductRequestError(404, "cli_credential_unavailable");
       }
     });
     return Response.json({ revoked: true });

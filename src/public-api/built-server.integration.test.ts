@@ -6,9 +6,18 @@ import { Client } from "pg";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { composeEntitlements } from "../auth/entitlements.js";
+import { CliAuthorizations } from "../cli-authorizations/index.js";
 import { createDatabase } from "../db/pg.js";
 import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
-import { EnrollmentTokenSchema, InstalledConfigurationSchema, ProblemSchema } from "./contracts.js";
+import {
+  EnrollmentTokenSchema,
+  CliAuthorizationPollSchema,
+  CliAuthorizationSchema,
+  InstalledConfigurationSchema,
+  ProblemSchema,
+  ProjectListSchema,
+  ValidatedConfigurationSchema,
+} from "./contracts.js";
 import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
 
 const builtServerTests = describe.runIf(process.env["RUN_BUILT_PUBLIC_API_TESTS"] === "1");
@@ -36,6 +45,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       insert into member (id, organization_id, user_id, role) values
         ('member-a', 'organization-a', 'user-a', 'owner'),
         ('member-b', 'organization-b', 'user-b', 'owner');
+      insert into session (id, token, user_id, active_organization_id, expires_at) values
+        ('session-a', 'session-token-a', 'user-a', 'organization-a', now() + interval '1 day');
     `);
     await client.end();
     for (const [organizationId, userId] of [
@@ -89,23 +100,66 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         bootstrap: undefined,
       },
     });
-    const keyA = await auth.apiKeys!.create("organization-a", "user-a", "built A", [
-      "configuration:install",
-      "runs:dispatch",
-      "daemons:enroll",
-    ]);
     const keyB = await auth.apiKeys!.create("organization-b", "user-b", "built B", [
+      "projects:read",
+      "configuration:validate",
       "configuration:install",
       "runs:dispatch",
       "daemons:enroll",
     ]);
-    secrets = { "organization-a": keyA.secret, "organization-b": keyB.secret };
+    const cliAuthorizations = new CliAuthorizations(database, {
+      resolveOrganizationAccess: () =>
+        Promise.resolve({
+          session: { id: "session-a" },
+          account: { id: "user-a", name: "Owner A", email: "owner-a@example.test" },
+          organization: { id: "organization-a", name: "Organization A", slug: "organization-a" },
+          membership: { id: "member-a", role: "owner" as const },
+          capabilities: {
+            view: true as const,
+            manageResources: true,
+            manageMembers: true,
+            manageOwners: true,
+          },
+        }),
+      resolveAccount: () => Promise.reject(new Error("unused")),
+      rejectCookieMutation: () => undefined,
+    });
+    const cliAuthorization = CliAuthorizationSchema.parse(
+      await (await cliAuthorizations.start(jsonRequest("/api/v1/cli-authorizations", {}))).json(),
+    );
+    assert.equal(
+      (
+        await cliAuthorizations.decide(
+          jsonRequest("/cli-authorizations/decision", {
+            userCode: cliAuthorization.userCode,
+            decision: "approve",
+            organizationId: "organization-a",
+          }),
+        )
+      ).status,
+      200,
+    );
+    const pollClient = new Client({ connectionString: databaseUrl });
+    await pollClient.connect();
+    await pollClient.query("update cli_authorizations set next_poll_at = now()");
+    await pollClient.end();
+    const cliPoll = CliAuthorizationPollSchema.parse(
+      await (
+        await cliAuthorizations.poll(
+          jsonRequest("/api/v1/cli-authorizations/poll", {
+            deviceCode: cliAuthorization.deviceCode,
+          }),
+        )
+      ).json(),
+    );
+    assert.equal(cliPoll.status, "authorized");
+    if (cliPoll.status !== "authorized") throw new Error("CLI login did not issue a credential");
+    secrets = { "organization-a": cliPoll.credential, "organization-b": keyB.secret };
     const runtime = await createApplicationRuntime({
       database,
       auth,
       entitlements: entitlements.service,
       billing: null,
-      publicApi: { status: "enabled", authenticator: auth.apiKeys! },
       async close() {
         await auth.close();
         await entitlements.close();
@@ -124,6 +178,18 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
 
   it("covers every canonical operation with isolated colliding tenants and persisted effects", async () => {
     for (const organizationId of ["organization-a", "organization-b"] as const) {
+      const projects = await get("/api/v1/projects", secrets[organizationId]);
+      assert.equal(projects.status, 200);
+      assert.deepEqual(
+        ProjectListSchema.parse(await projects.json()).projects.map(({ slug }) => slug),
+        ["bundle-project", "same-project"],
+      );
+      const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
+        projectSlug: "same-project",
+        yaml: `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
+      });
+      assert.equal(validation.status, 200);
+      ValidatedConfigurationSchema.parse(await validation.json());
       const install = await post("/api/v1/configurations/install", secrets[organizationId], {
         projectSlug: "same-project",
         yaml: `project: file/${organizationId}-project\nenvironments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
@@ -345,6 +411,14 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     );
   }
 
+  async function get(path: string, secret: string): Promise<Response> {
+    return built.default.fetch(
+      new Request(`http://hub.test${path}`, {
+        headers: { authorization: `Bearer ${secret}` },
+      }),
+    );
+  }
+
   function partialConfigurationYaml(): string {
     return [
       "environments:",
@@ -365,5 +439,13 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       "        prompt:",
       "          - include: docs/safety.md",
     ].join("\n");
+  }
+
+  function jsonRequest(path: string, body: unknown): Request {
+    return new Request(`http://hub.test${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
   }
 });

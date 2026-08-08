@@ -303,7 +303,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 32,
+      drizzleMigrations: 33,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -331,10 +331,12 @@ describe("database migration application", () => {
       assert.equal(await upgrade.issueEnrollmentToken(), 201);
       assert.equal(await upgrade.enrollLegacyDaemon(), 200);
       assert.equal(await upgrade.installConfiguration(), 201);
-      assert.deepEqual(await upgrade.runManualTrigger(), {
-        status: 404,
-        body: { error: "manual_trigger_not_found" },
-      });
+      const missingTrigger = await upgrade.runManualTrigger();
+      assert.equal(missingTrigger.status, 404);
+      assert.equal(
+        z.object({ code: z.literal("trigger_not_found") }).parse(missingTrigger.body).code,
+        "trigger_not_found",
+      );
     } finally {
       await upgrade.stop();
     }
@@ -1501,6 +1503,7 @@ class LegacyUpgrade {
   private constructor(
     private readonly database: Awaited<ReturnType<typeof createDatabase>>,
     private readonly operations: ReturnType<typeof createHubApplication>["operations"],
+    private readonly publicApi: ReturnType<typeof createHubApplication>["publicApi"],
     private readonly hub: ReturnType<typeof createHubApplication>["hub"],
     private readonly apiKey: string,
     private readonly legacyToken: string,
@@ -1533,7 +1536,7 @@ class LegacyUpgrade {
               status: "authorized" as const,
               access: {
                 kind: "apiKey" as const,
-                keyId: apiKeyId,
+                credentialId: apiKeyId,
                 organizationId,
                 scopes: ["configuration:install", "runs:dispatch", "daemons:enroll"] as const,
               },
@@ -1550,6 +1553,7 @@ class LegacyUpgrade {
     return new LegacyUpgrade(
       database,
       application.operations,
+      application.publicApi,
       application.hub,
       apiKey,
       legacyToken,
@@ -1558,8 +1562,9 @@ class LegacyUpgrade {
 
   async issueEnrollmentToken(): Promise<number> {
     return (
-      await this.operations.handleEnrollmentToken(
-        this.request("/api/daemons/enrollment-tokens", { method: "POST" }),
+      await this.publicApi.handleOperation(
+        "issueEnrollmentToken",
+        this.request("/api/v1/daemons/enrollment-tokens", { method: "POST" }),
       )
     ).status;
   }
@@ -1585,8 +1590,9 @@ class LegacyUpgrade {
   }
 
   async installConfiguration(): Promise<number> {
-    const response = await this.operations.handleConfigurationInstall(
-      this.request("/api/configurations/install", {
+    const response = await this.publicApi.handleOperation(
+      "installConfiguration",
+      this.request("/api/v1/configurations/install", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1599,8 +1605,9 @@ class LegacyUpgrade {
   }
 
   async runManualTrigger(): Promise<{ status: number; body: unknown }> {
-    const response = await this.operations.handleManualRun(
-      this.request("/api/manual-runs", {
+    const response = await this.publicApi.handleOperation(
+      "dispatchManualRun",
+      this.request("/api/v1/manual-runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

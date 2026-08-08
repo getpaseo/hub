@@ -14,7 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { WebSocket, type RawData } from "ws";
 import { Client } from "pg";
 import { z } from "zod";
-import type { SourcePaseo, SourceRegistration } from "./source-paseo.js";
+import type { SourcePaseo } from "./source-paseo.js";
 import type { PromptPartialBundleFile } from "../../src/config/prompt-partials.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
@@ -106,7 +106,7 @@ type StartSourcePaseo = () => Promise<SourcePaseo>;
 
 export class PaseoHub {
   private readonly users = new Map<string, HubUser>();
-  private readonly registrations = new Map<string, SourceRegistration>();
+  private readonly enrollmentTokens = new Map<string, string>();
   private sourcePaseo: SourcePaseo | undefined;
 
   constructor(
@@ -157,12 +157,22 @@ export class PaseoHub {
       },
     });
     await this.verifyExactContract(application, {
-      name: "machine config closes when machine auth is unavailable",
-      request: { path: "/api/configurations/install", method: "POST" },
+      name: "public API closes when organization credential auth is unavailable",
+      request: {
+        path: "/api/v1/configurations/install",
+        method: "POST",
+        headers: { "x-request-id": "phase-zero-unavailable" },
+      },
       expected: {
         status: 503,
-        body: '{"error":"auth_unavailable"}',
-        headers: { "content-type": JSON_TYPE },
+        body: problemBody(
+          "phase-zero-unavailable",
+          503,
+          "infrastructure_unavailable",
+          "Service unavailable",
+          "Public API authentication or storage is currently unavailable.",
+        ),
+        headers: { "content-type": PROBLEM_TYPE },
       },
     });
   }
@@ -449,7 +459,7 @@ export class PaseoHub {
     workflowStatus?: string;
     triggerRunId?: string;
   }> {
-    const response = await this.requests.post(`${this.primary.origin}/api/manual-runs`, {
+    const response = await this.requests.post(`${this.primary.origin}/api/v1/manual-runs`, {
       headers: {
         ...(input.apiKey === undefined
           ? machineHeaders()
@@ -466,6 +476,9 @@ export class PaseoHub {
     });
     const body = z
       .object({
+        code: z.string().optional(),
+        detail: z.string().optional(),
+        issues: z.array(z.object({ message: z.string() }).passthrough()).optional(),
         error: z.string().optional(),
         reason: z.string().optional(),
         workflowStatus: z.string().optional(),
@@ -473,12 +486,17 @@ export class PaseoHub {
       })
       .passthrough()
       .parse(await response.json());
+    const error = body.error ?? body.code;
+    const reason = body.reason ?? body.issues?.[0]?.message;
+    const triggerRunId =
+      body.triggerRunId ??
+      /^Run (?<triggerRunId>\S+) rejected/u.exec(body.detail ?? "")?.groups?.["triggerRunId"];
     return {
       status: response.status(),
-      ...(body.error === undefined ? {} : { error: body.error }),
-      ...(body.reason === undefined ? {} : { reason: body.reason }),
+      ...(error === undefined ? {} : { error }),
+      ...(reason === undefined ? {} : { reason }),
       ...(body.workflowStatus === undefined ? {} : { workflowStatus: body.workflowStatus }),
-      ...(body.triggerRunId === undefined ? {} : { triggerRunId: body.triggerRunId }),
+      ...(triggerRunId === undefined ? {} : { triggerRunId }),
     };
   }
 
@@ -1233,26 +1251,32 @@ export class PaseoHub {
 
   async startDaemonRegistration(alias: string): Promise<void> {
     this.sourcePaseo ??= await this.startSourcePaseo();
-    const registration = await this.sourcePaseo.beginRegistration(this.primary.origin, {
-      loseFirstApprovedPollResponse: true,
-      loseFirstEnrollmentResponse: true,
-    });
-    this.registrations.set(alias, registration);
-    await this.requireUser(alias).openDaemonApproval(
-      registration.verificationUrl,
-      undefined,
-      "Acme",
+    const token = randomUUID();
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
+       select $1, $2, session.active_organization_id, now() + interval '10 minutes'
+       from session join "user" on "user".id = session.user_id
+       where lower("user".email) = $3 and session.active_organization_id is not null
+         and session.expires_at > now()`,
+      [
+        randomUUID(),
+        createHash("sha256").update(token).digest("base64url"),
+        this.requireUser(alias).accountEmail,
+      ],
     );
+    this.enrollmentTokens.set(alias, token);
   }
 
   async approveDaemon(alias: string, displayName: string): Promise<string> {
-    const registration = this.requireRegistration(alias);
-    const user = this.requireUser(alias);
-    await user.approveDaemon(displayName);
-    await user.returnToDaemonsWithoutDocumentNavigation();
-    const result = await registration.complete();
-    expect(this.requireSourcePaseo().registrationSecretsAbsentFrom(this.primary.logs())).toBe(true);
+    const token = this.requireEnrollmentToken(alias);
+    const result = await this.requireSourcePaseo().connectWithToken(this.primary.origin, token);
     const daemonId = z.string().uuid().parse(result["daemonId"]);
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      "update daemons set slug = $2 where id = $1",
+      [daemonId, slugify(displayName, "daemon")],
+    );
     await expect
       .poll(async () => {
         const rows = await this.queryDatabaseRows(
@@ -1264,18 +1288,6 @@ export class PaseoHub {
       })
       .toBe("connected");
     return daemonId;
-  }
-
-  expectRegistrationResponseRecovery(): void {
-    const source = this.requireSourcePaseo();
-    expect(source.approvedPollReplayEvidence()).toEqual({
-      attempts: 2,
-      sameAuthority: true,
-    });
-    expect(source.enrollmentReplayEvidence()).toEqual({
-      attempts: 2,
-      sameCeremony: true,
-    });
   }
 
   async expectDaemon(
@@ -1341,23 +1353,15 @@ export class PaseoHub {
     await user.expectDaemon(displayName, daemonId, "Offline");
     await user.createAnotherOrganizationWithoutDisclosure("Orbit", displayName);
     await user.expectDaemonAbsent(displayName);
-    const registration = await this.startRegistrationRequest("Scoped registration");
-    await user.openDaemonApproval(registration.verificationUrl, "Scoped registration", "Orbit");
     await user.chooseOrganization("Acme");
     await user.expectDaemon(displayName, daemonId, "Offline");
     await user.replaceDaemonAccountWithoutDisclosure(daemonReplacement, "Replacement", displayName);
     const replacementDaemonId = await this.seedDaemon(alias, "replacement-studio");
     await user.expectDaemon("replacement-studio", replacementDaemonId, "Offline");
-    const replacementRegistration = await this.startRegistrationRequest("Replacement request");
-    await user.openDaemonApproval(
-      replacementRegistration.verificationUrl,
-      "Replacement request",
-      "Replacement",
-    );
-    await user.replaceApprovalAccountWithoutDisclosure(
+    await user.replaceDaemonAccountWithoutDisclosure(
       approvalReplacement,
       "Final organization",
-      "Replacement",
+      "replacement-studio",
     );
     await user.returnToProjects();
     const finalDaemonId = await this.seedDaemon(alias, "final-studio");
@@ -1385,14 +1389,6 @@ export class PaseoHub {
       revokeDaemonId,
       "Orbit",
     );
-
-    const registration = await this.startRegistrationRequest("Approve Pending Studio");
-    await user.openDaemonApproval(registration.verificationUrl, "Approve Pending Studio", "Acme");
-    await user.expectRegistrationDecisionLocksAccountContext(
-      "Approve Pending Studio",
-      "approved",
-      "Orbit",
-    );
   }
 
   async proveDaemonRenameConflict(alias: string): Promise<void> {
@@ -1404,26 +1400,54 @@ export class PaseoHub {
     );
   }
 
-  async denyRegistration(alias: string, displayName: string): Promise<void> {
-    const request = await this.startRegistrationRequest(displayName);
-    await this.requireUser(alias).openDaemonApproval(request.verificationUrl, displayName, "Acme");
-    await this.requireUser(alias).denyDaemon();
-    const poll = await this.requests.post(`${this.primary.origin}/api/device-authorizations/poll`, {
+  async approveCliLogin(alias: string): Promise<void> {
+    const request = await this.startRegistrationRequest("CLI login");
+    const user = this.requireUser(alias);
+    await user.openCliLoginApproval(request.verificationUrl, "Acme");
+    await user.approveCliLogin();
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      "update cli_authorizations set next_poll_at = now() where status = 'approved'",
+      [],
+    );
+    const poll = await this.requests.post(`${this.primary.origin}/api/v1/cli-authorizations/poll`, {
+      data: { deviceCode: request.deviceCode },
+    });
+    const credential = z
+      .object({ status: z.literal("authorized"), credential: z.string() })
+      .parse(await poll.json()).credential;
+    const projects = await this.requests.get(`${this.primary.origin}/api/v1/projects`, {
+      headers: { authorization: `Bearer ${credential}` },
+    });
+    expect(projects.status()).toBe(200);
+    const replay = await this.requests.post(
+      `${this.primary.origin}/api/v1/cli-authorizations/poll`,
+      { data: { deviceCode: request.deviceCode } },
+    );
+    expect(await replay.json()).toEqual(expect.objectContaining({ status: "disclosed" }));
+    this.expectRegistrationSecretsAbsentFromLogs(request.deviceCode);
+  }
+
+  async denyCliLogin(alias: string): Promise<void> {
+    const request = await this.startRegistrationRequest("CLI login");
+    await this.requireUser(alias).openCliLoginApproval(request.verificationUrl, "Acme");
+    await this.requireUser(alias).denyCliLogin();
+    const poll = await this.requests.post(`${this.primary.origin}/api/v1/cli-authorizations/poll`, {
       data: { deviceCode: request.deviceCode },
     });
     expect(await poll.json()).toEqual(expect.objectContaining({ status: "denied" }));
     this.expectRegistrationSecretsAbsentFromLogs(request.deviceCode);
-    await this.requireUser(alias).expectRegistrationUnavailable(request.verificationUrl);
+    await this.requireUser(alias).expectCliLoginUnavailable(request.verificationUrl);
   }
 
-  async expireRegistration(alias: string, displayName: string): Promise<void> {
-    const request = await this.startRegistrationRequest(displayName);
+  async expireCliLogin(alias: string): Promise<void> {
+    const request = await this.startRegistrationRequest("CLI login");
     await this.queryDatabase(
       this.primary.databaseUrl,
-      "update daemon_device_authorizations set expires_at = now() - interval '1 minute'",
+      "update cli_authorizations set expires_at = now() - interval '1 minute'",
       [],
     );
-    await this.requireUser(alias).expectRegistrationUnavailable(request.verificationUrl);
+    await this.requireUser(alias).expectCliLoginUnavailable(request.verificationUrl);
   }
 
   async establishOrganizationIsolation(journey: OrganizationIsolationJourney): Promise<void> {
@@ -1523,10 +1547,10 @@ export class PaseoHub {
       this.primary.databaseUrl,
       `insert into daemons
          (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
-          daemon_public_key, credential_verifier, scopes, registration_method, status)
+          daemon_public_key, credential_verifier, scopes, status)
        values ($1, $2, $3, $4, $5, (select org_id from machines where id = $5),
                'browser-boundary', 'public-key',
-               'credential-verifier', '["hub.execution.*"]'::jsonb, 'device', 'active')`,
+               'credential-verifier', '["hub.execution.*"]'::jsonb, 'active')`,
       [daemonId, randomUUID(), randomUUID(), displayName, machineId],
     );
     return daemonId;
@@ -1583,10 +1607,10 @@ export class PaseoHub {
     return user;
   }
 
-  private requireRegistration(alias: string): SourceRegistration {
-    const registration = this.registrations.get(alias);
-    if (registration === undefined) throw new Error(`no daemon registration for ${alias}`);
-    return registration;
+  private requireEnrollmentToken(alias: string): string {
+    const token = this.enrollmentTokens.get(alias);
+    if (token === undefined) throw new Error(`no daemon enrollment token for ${alias}`);
+    return token;
   }
 
   private requireSourcePaseo(): SourcePaseo {
@@ -1595,17 +1619,17 @@ export class PaseoHub {
   }
 
   private expectRegistrationSecretsAbsentFromLogs(deviceCode: string): void {
-    const enrollmentToken = createHash("sha256")
-      .update("paseo-device-enrollment\0")
+    const credentialSecret = createHash("sha256")
+      .update("paseo-cli-credential\0")
       .update(deviceCode)
       .digest("base64url");
     expect(this.primary.logs()).not.toContain(deviceCode);
-    expect(this.primary.logs()).not.toContain(enrollmentToken);
+    expect(this.primary.logs()).not.toContain(credentialSecret);
   }
 
-  private async startRegistrationRequest(displayName: string) {
-    const response = await this.requests.post(`${this.primary.origin}/api/device-authorizations/`, {
-      data: { slug: displayName },
+  private async startRegistrationRequest(_displayName: string) {
+    const response = await this.requests.post(`${this.primary.origin}/api/v1/cli-authorizations`, {
+      data: {},
     });
     expect(response.status()).toBe(201);
     const request = z
@@ -1619,22 +1643,19 @@ export class PaseoHub {
   }
 
   private async connectBrowserDaemon(
-    alias: string,
+    _alias: string,
     organizationName: string,
-    displayName: string,
+    _displayName: string,
   ): Promise<ContractDaemon> {
-    const registration = await this.startRegistrationRequest(displayName);
-    const user = this.requireUser(alias);
-    await user.openDaemonApproval(registration.verificationUrl, displayName, organizationName);
-    await user.approveDaemon(displayName);
-    const poll = await this.requests.post(`${this.primary.origin}/api/device-authorizations/poll`, {
-      data: { deviceCode: registration.deviceCode },
-    });
-    expect(poll.status()).toBe(200);
-    const enrollmentToken = z
-      .object({ status: z.literal("approved"), enrollmentToken: z.string() })
-      .parse(await poll.json()).enrollmentToken;
-    const daemon = new ContractDaemon(this.primary, this.requests, displayName);
+    const enrollmentToken = randomUUID();
+    const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
+       select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
+      [randomUUID(), verifier, organizationName],
+    );
+    const daemon = new ContractDaemon(this.primary, this.requests);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -1989,7 +2010,7 @@ export class PaseoHub {
     headers: Record<string, string> = machineHeaders(),
   ): Promise<string> {
     const response = await this.requests.post(
-      `${application.origin}/api/daemons/enrollment-tokens`,
+      `${application.origin}/api/v1/daemons/enrollment-tokens`,
       { headers },
     );
     expect(response.status()).toBe(201);
@@ -2005,13 +2026,16 @@ export class PaseoHub {
     application: BuiltApplication,
     daemonSlug: string,
   ): Promise<string> {
-    const response = await this.requests.post(`${application.origin}/api/configurations/install`, {
-      headers: machineHeaders(),
-      data: {
-        projectSlug: "default",
-        yaml: manualConfiguration(daemonSlug),
+    const response = await this.requests.post(
+      `${application.origin}/api/v1/configurations/install`,
+      {
+        headers: machineHeaders(),
+        data: {
+          projectSlug: "default",
+          yaml: manualConfiguration(daemonSlug),
+        },
       },
-    });
+    );
     expect(response.status()).toBe(201);
     expect(response.headers()["content-type"]).toBe(JSON_TYPE);
     const body = z
@@ -2030,7 +2054,7 @@ export class PaseoHub {
     application: BuiltApplication,
     versionId: string,
   ): Promise<{ executionId: string }> {
-    const response = await this.requests.post(`${application.origin}/api/manual-runs`, {
+    const response = await this.requests.post(`${application.origin}/api/v1/manual-runs`, {
       headers: machineHeaders(),
       data: {
         projectSlug: "default",
@@ -2185,7 +2209,7 @@ class HubUser {
     expect(revealedSecret).toMatch(/^paseo_pk_[A-Za-z0-9_-]+_[A-Za-z0-9_-]+$/u);
     await expect(
       this.page.evaluate(async (key) => {
-        const response = await fetch(`${window.location.origin}/api/daemons/enrollment-tokens`, {
+        const response = await fetch(`${window.location.origin}/api/v1/daemons/enrollment-tokens`, {
           method: "POST",
           headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
           body: JSON.stringify({}),
@@ -2222,7 +2246,7 @@ class HubUser {
     );
     await expect(
       this.page.evaluate(async (key) => {
-        const response = await fetch(`${window.location.origin}/api/daemons/enrollment-tokens`, {
+        const response = await fetch(`${window.location.origin}/api/v1/daemons/enrollment-tokens`, {
           method: "POST",
           headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
           body: JSON.stringify({}),
@@ -2711,67 +2735,37 @@ class HubUser {
     await this.page.unroute(serverFunctions);
   }
 
-  async openDaemonApproval(
-    verificationUrl: string,
-    displayName: string | undefined,
-    organizationName: string,
-  ): Promise<void> {
+  async openCliLoginApproval(verificationUrl: string, organizationName: string): Promise<void> {
     await this.page.goto(verificationUrl);
-    await expect(this.page.getByRole("heading", { name: "Approve daemon" })).toBeVisible();
-    const form = this.page.getByRole("form", { name: "Approve daemon" });
-    await expect(form.getByLabel("Daemon slug")).toHaveValue(
-      displayName === undefined ? /.+/u : slugify(displayName, "daemon"),
-    );
+    await expect(this.page.getByRole("heading", { name: "Approve CLI login" })).toBeVisible();
     await expect(
       this.page
-        .getByRole("region", { name: "Approve daemon" })
+        .getByRole("region", { name: "Approve CLI login" })
         .getByText(organizationName, { exact: true }),
     ).toBeVisible();
+    await expect(this.page.getByText(/list projects.*enroll daemons.*manual runs/su)).toBeVisible();
   }
 
-  async approveDaemon(displayName: string): Promise<void> {
-    const form = this.page.getByRole("form", { name: "Approve daemon" });
-    const name = form.getByLabel("Daemon slug");
-    await name.fill(displayName);
-    await name.focus();
-    await this.page.keyboard.press("Tab");
-    await expect(form.getByRole("button", { name: "Deny" })).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(form.getByRole("button", { name: "Approve daemon" })).toBeFocused();
-    await this.page.keyboard.press("Enter");
-    await expect(this.page.getByRole("heading", { name: "Registration approved" })).toBeVisible();
-  }
-
-  async denyDaemon(): Promise<void> {
+  async approveCliLogin(): Promise<void> {
     await this.page
-      .getByRole("form", { name: "Approve daemon" })
+      .getByRole("form", { name: "Approve CLI login" })
+      .getByRole("button", { name: "Approve CLI login" })
+      .click();
+    await expect(this.page.getByRole("heading", { name: "CLI login approved" })).toBeVisible();
+  }
+
+  async denyCliLogin(): Promise<void> {
+    await this.page
+      .getByRole("form", { name: "Approve CLI login" })
       .getByRole("button", { name: "Deny" })
       .click();
-    await expect(this.page.getByRole("heading", { name: "Registration denied" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "CLI login denied" })).toBeVisible();
   }
 
-  async returnToDaemonsWithoutDocumentNavigation(): Promise<void> {
-    const documentRequests: string[] = [];
-    const observeDocumentNavigation = (request: Request) => {
-      if (request.isNavigationRequest() && request.frame() === this.page.mainFrame()) {
-        documentRequests.push(request.url());
-      }
-    };
-    this.page.on("request", observeDocumentNavigation);
-    try {
-      await this.page.getByRole("link", { name: "Go to daemons" }).click();
-      await expect(this.page).toHaveURL(/\/o\/[^/]+\/daemons$/u);
-      await expect(this.page.getByRole("heading", { name: "Daemons" })).toBeVisible();
-      expect(documentRequests).toEqual([]);
-    } finally {
-      this.page.off("request", observeDocumentNavigation);
-    }
-  }
-
-  async expectRegistrationUnavailable(verificationUrl: string): Promise<void> {
+  async expectCliLoginUnavailable(verificationUrl: string): Promise<void> {
     await this.page.goto(verificationUrl);
     await expect(this.page.getByRole("alert")).toHaveText(
-      /This daemon registration request is unavailable/u,
+      /This CLI login request is unavailable or expired/u,
     );
   }
 
@@ -2961,35 +2955,6 @@ class HubUser {
     const daemon = this.page.getByRole("row").filter({ hasText: displayName });
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
     await expect(daemon.getByRole("button", { name: `Actions for ${displayName}` })).toHaveCount(0);
-  }
-
-  async expectRegistrationDecisionLocksAccountContext(
-    displayName: string,
-    decision: "approved" | "denied",
-    destinationOrganization: string,
-  ): Promise<void> {
-    const form = this.page.getByRole("form", { name: "Approve daemon" });
-    await form.getByLabel("Daemon slug").fill(displayName);
-    const pending = await this.holdDaemonCommand(
-      (request) => request.postData()?.includes(displayName) === true,
-    );
-    try {
-      await form.getByRole("button", { name: "Approve daemon" }).click();
-      await pending.commandReceived();
-      await expect(this.page.getByRole("heading", { name: "Approve daemon" })).toBeVisible();
-      await expect(form.getByLabel("Daemon slug")).toBeDisabled();
-      await this.expectTenantControlsLocked(destinationOrganization);
-    } finally {
-      await pending.release();
-    }
-    await expect(
-      this.page.getByRole("heading", { name: `Registration ${decision}` }),
-    ).toBeVisible();
-    await this.page.getByRole("link", { name: "Go to daemons" }).click();
-    await expect(this.page.getByText(displayName, { exact: true })).toHaveCount(0);
-    await this.chooseOrganization(destinationOrganization);
-    await expect(this.page.getByText(displayName, { exact: true })).toHaveCount(0);
-    await this.chooseOrganization("Acme");
   }
 
   private async expectTenantControlsLocked(destinationOrganization: string): Promise<void> {
@@ -4470,6 +4435,7 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
 ];
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
+const PROBLEM_TYPE = "application/problem+json";
 const ORGANIZATION_POST_PATHS = [
   "/api/auth/paseo/create-organization",
   "/api/auth/paseo/select-organization",
@@ -4482,11 +4448,18 @@ function manualFailureContracts(): readonly HttpContract[] {
     exact("health", "/health", "GET", 200, '{"ok":true}', JSON_TYPE),
     exact(
       "enrollment token requires machine authentication",
-      "/api/daemons/enrollment-tokens",
+      "/api/v1/daemons/enrollment-tokens",
       "POST",
       401,
-      '{"error":"unauthorized"}',
-      JSON_TYPE,
+      problemBody(
+        "phase-zero-contract",
+        401,
+        "unauthorized",
+        "Authentication required",
+        "Provide an active Paseo organization credential in the Authorization: Bearer header.",
+      ),
+      PROBLEM_TYPE,
+      { "x-request-id": "phase-zero-contract" },
     ),
     exact(
       "daemon enrollment requires a token",
@@ -4514,19 +4487,33 @@ function manualFailureContracts(): readonly HttpContract[] {
     ),
     exact(
       "configuration install requires admin",
-      "/api/configurations/install",
+      "/api/v1/configurations/install",
       "POST",
       401,
-      '{"error":"unauthorized"}',
-      JSON_TYPE,
+      problemBody(
+        "phase-zero-contract",
+        401,
+        "unauthorized",
+        "Authentication required",
+        "Provide an active Paseo organization credential in the Authorization: Bearer header.",
+      ),
+      PROBLEM_TYPE,
+      { "x-request-id": "phase-zero-contract" },
     ),
     exact(
       "manual run requires admin",
-      "/api/manual-runs",
+      "/api/v1/manual-runs",
       "POST",
       401,
-      '{"error":"unauthorized"}',
-      JSON_TYPE,
+      problemBody(
+        "phase-zero-contract",
+        401,
+        "unauthorized",
+        "Authentication required",
+        "Provide an active Paseo organization credential in the Authorization: Bearer header.",
+      ),
+      PROBLEM_TYPE,
+      { "x-request-id": "phase-zero-contract" },
     ),
     exact(
       "obsolete test trigger is unavailable",
@@ -4540,22 +4527,43 @@ function manualFailureContracts(): readonly HttpContract[] {
     exact("webhook requires a signature", "/webhook", "POST", 401, "Unauthorized", TEXT_TYPE),
     exact(
       "invalid configuration is not activated",
-      "/api/configurations/install",
+      "/api/v1/configurations/install",
       "POST",
       422,
-      '{"error":"invalid_yaml"}',
-      JSON_TYPE,
-      { ...machineHeaders(), "content-type": "application/json" },
+      problemBody(
+        "phase-zero-contract",
+        422,
+        "invalid_yaml",
+        "Invalid YAML",
+        "Correct the YAML syntax and submit the configuration again.",
+        [{ path: ["yaml"], message: "Invalid YAML at line 2, column 1." }],
+      ),
+      PROBLEM_TYPE,
+      {
+        ...machineHeaders(),
+        "content-type": "application/json",
+        "x-request-id": "phase-zero-contract",
+      },
       JSON.stringify({ projectSlug: "default", yaml: "environments: [" }),
     ),
     exact(
       "unknown manual config is visible",
-      "/api/manual-runs",
+      "/api/v1/manual-runs",
       "POST",
       404,
-      '{"error":"project_not_found"}',
-      JSON_TYPE,
-      { ...machineHeaders(), "content-type": "application/json" },
+      problemBody(
+        "phase-zero-contract",
+        404,
+        "project_not_found",
+        "Project not found",
+        "No active project with that slug exists in the credential's organization.",
+      ),
+      PROBLEM_TYPE,
+      {
+        ...machineHeaders(),
+        "content-type": "application/json",
+        "x-request-id": "phase-zero-contract",
+      },
       JSON.stringify({
         projectSlug: "missing",
         trigger: "deploy",
@@ -4627,6 +4635,25 @@ function exact(
     },
     expected: { status, body, headers: { "content-type": contentType } },
   };
+}
+
+function problemBody(
+  requestId: string,
+  status: number,
+  code: string,
+  title: string,
+  detail: string,
+  issues?: readonly { path: readonly (string | number)[]; message: string }[],
+): string {
+  return JSON.stringify({
+    type: `https://paseo.sh/problems/${code.replaceAll("_", "-")}`,
+    title,
+    status,
+    detail,
+    code,
+    requestId,
+    ...(issues === undefined ? {} : { issues }),
+  });
 }
 
 function machineHeaders(): Record<string, string> {

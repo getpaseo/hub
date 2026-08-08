@@ -3,7 +3,9 @@ import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
+  ListProjectsResult,
   PublicOperations,
+  ValidateConfigurationResult,
 } from "../public-operations/index.js";
 import {
   DispatchManualRunRequestSchema,
@@ -11,43 +13,102 @@ import {
   EnrollmentTokenSchema,
   InstallConfigurationRequestSchema,
   InstalledConfigurationSchema,
+  ProjectListSchema,
+  ValidatedConfigurationSchema,
 } from "./contracts.js";
 
 export type PublicOperationId =
+  | "listProjects"
+  | "validateConfiguration"
   | "installConfiguration"
   | "dispatchManualRun"
   | "issueEnrollmentToken";
 
 export interface PublicOperationDefinition {
   id: PublicOperationId;
-  method: "post";
+  method: "get" | "post";
   path: string;
-  legacyPath: string;
   scope: ApiKeyScope;
   requestSchema?: typeof InstallConfigurationRequestSchema | typeof DispatchManualRunRequestSchema;
   successSchema:
     | typeof InstalledConfigurationSchema
+    | typeof ValidatedConfigurationSchema
+    | typeof ProjectListSchema
     | typeof DispatchedManualRunSchema
     | typeof EnrollmentTokenSchema;
   successStatus: 200 | 201;
-  resultMapping: "configuration" | "manual-run" | "enrollment-token";
+  resultMapping: "projects" | "validation" | "configuration" | "manual-run" | "enrollment-token";
   summary: string;
   description: string;
-  tag: "Configurations" | "Runs" | "Daemons";
+  tag: "Projects" | "Configurations" | "Runs" | "Daemons";
   responses: Readonly<Record<number, string>>;
   invoke(
     operations: PublicOperations,
     authorization: Parameters<PublicOperations["issueEnrollmentToken"]>[0],
     input: unknown,
-  ): Promise<InstallConfigurationResult | DispatchManualRunResult | IssueEnrollmentTokenResult>;
+  ): Promise<
+    | ListProjectsResult
+    | ValidateConfigurationResult
+    | InstallConfigurationResult
+    | DispatchManualRunResult
+    | IssueEnrollmentTokenResult
+  >;
 }
 
 export const publicOperationManifest: readonly PublicOperationDefinition[] = [
   {
+    id: "listProjects",
+    method: "get",
+    path: "/api/v1/projects",
+    scope: "projects:read",
+    successSchema: ProjectListSchema,
+    successStatus: 200,
+    resultMapping: "projects",
+    summary: "List projects",
+    description: "Lists active projects in the authenticated organization.",
+    tag: "Projects",
+    responses: {
+      200: "The organization's active projects.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks projects:read.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization) => operations.listProjects(authorization),
+  },
+  {
+    id: "validateConfiguration",
+    method: "post",
+    path: "/api/v1/configurations/validate",
+    scope: "configuration:validate",
+    requestSchema: InstallConfigurationRequestSchema,
+    successSchema: ValidatedConfigurationSchema,
+    successStatus: 200,
+    resultMapping: "validation",
+    summary: "Validate configuration",
+    description:
+      "Validates and resolves the same YAML, prompt-partial bundle, project, daemon, and provider resources as installation without recording or activating a revision.",
+    tag: "Configurations",
+    responses: {
+      200: "The configuration is valid for the project.",
+      400: "The JSON request is malformed or has invalid fields.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:validate.",
+      404: "The project does not exist in the credential's organization.",
+      422: "The YAML, supplied prompt partial bundle, or Hub configuration is invalid.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization, input) =>
+      operations.validateConfiguration(
+        authorization,
+        InstallConfigurationRequestSchema.parse(input),
+      ),
+  },
+  {
     id: "installConfiguration",
     method: "post",
     path: "/api/v1/configurations/install",
-    legacyPath: "/api/configurations/install",
     scope: "configuration:install",
     requestSchema: InstallConfigurationRequestSchema,
     successSchema: InstalledConfigurationSchema,
@@ -60,9 +121,9 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     responses: {
       201: "The new configuration revision is active.",
       400: "The JSON request is malformed or has invalid fields.",
-      401: "The API key is missing, malformed, or revoked.",
-      403: "The API key lacks configuration:install.",
-      404: "The project does not exist in the key's organization.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:install.",
+      404: "The project does not exist in the credential's organization.",
       422: "The YAML, supplied prompt partial bundle, or Hub configuration is invalid.",
       500: "The operation failed unexpectedly.",
       503: "Hub authentication or storage is unavailable.",
@@ -77,7 +138,6 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     id: "dispatchManualRun",
     method: "post",
     path: "/api/v1/manual-runs",
-    legacyPath: "/api/manual-runs",
     scope: "runs:dispatch",
     requestSchema: DispatchManualRunRequestSchema,
     successSchema: DispatchedManualRunSchema,
@@ -90,8 +150,8 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     responses: {
       200: "The durable manual event resolved to a run.",
       400: "The JSON request or trigger input is invalid.",
-      401: "The API key is missing, malformed, or revoked.",
-      403: "The API key lacks runs:dispatch or the actor is forbidden.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks runs:dispatch or the actor is forbidden.",
       404: "The project, configuration, or manual trigger does not exist.",
       409: "The existing manual event path could not resolve a run.",
       500: "The operation failed unexpectedly.",
@@ -104,7 +164,6 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     id: "issueEnrollmentToken",
     method: "post",
     path: "/api/v1/daemons/enrollment-tokens",
-    legacyPath: "/api/daemons/enrollment-tokens",
     scope: "daemons:enroll",
     successSchema: EnrollmentTokenSchema,
     successStatus: 201,
@@ -114,8 +173,8 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     tag: "Daemons",
     responses: {
       201: "A short-lived enrollment token was issued.",
-      401: "The API key is missing, malformed, or revoked.",
-      403: "The API key lacks daemons:enroll.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks daemons:enroll.",
       500: "The operation failed unexpectedly.",
       503: "Hub authentication or storage is unavailable.",
     },

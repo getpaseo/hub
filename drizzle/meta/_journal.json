@@ -225,6 +225,13 @@
       "when": 1786104429874,
       "tag": "0031_old_jackal",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786190843844,
+      "tag": "0032_tired_bulldozer",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,8 @@ import { createPostgresPool } from "../db/pg.js";
 import { z } from "zod";
 import * as schema from "../db/schema.js";
 import { OrganizationApiKeys } from "./api-keys.js";
+import { OrganizationCliCredentials } from "./cli-credentials.js";
+import { PublicCredentialAuthenticator } from "./public-credentials.js";
 import { bootstrapInstance } from "./bootstrap.js";
 import {
   defaultInstanceAuthPolicy,
@@ -53,6 +55,8 @@ export interface AuthServer {
   rejectCookieMutation(request: Request): Response | undefined;
   initialize?(): Promise<void>;
   apiKeys?: OrganizationApiKeys;
+  cliCredentials?: OrganizationCliCredentials;
+  publicCredentials?: PublicCredentialAuthenticator;
   close(): Promise<void>;
 }
 
@@ -106,6 +110,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const provisioningEntitlements =
     options.provisioningEntitlements ?? (() => Promise.resolve(UNLIMITED_PROVISIONING));
   const apiKeys = new OrganizationApiKeys(pool);
+  const cliCredentials = new OrganizationCliCredentials(pool);
+  const publicCredentials = new PublicCredentialAuthenticator(apiKeys, cliCredentials);
   const registration = new RegistrationAdmission(pool, policy);
   const authSchema = {
     user: schema.users,
@@ -173,6 +179,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     baseURL: options.baseURL,
     policy,
     apiKeys,
+    cliCredentials,
     entitlements: options.entitlements,
     provisioningEntitlements,
     ...(options.onMembershipChanged === undefined
@@ -252,6 +259,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
     initialize: () => bootstrapInstance(pool, policy, provisioningEntitlements),
     apiKeys,
+    cliCredentials,
+    publicCredentials,
     close: () => pool.end(),
   };
 
