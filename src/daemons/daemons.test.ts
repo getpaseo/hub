@@ -276,7 +276,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
   });
 
-  it("keeps a structured classifier launch inventory aligned with its MCP tools", async () => {
+  it("renders the structured classifier MCP contract sent to the daemon", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({
       prompt: "Classify the request.",
@@ -290,20 +290,30 @@ describe("daemon enrollment and execution", () => {
     });
 
     const launch = hub.createdAgentLaunch();
-    if (typeof launch.prompt !== "string") throw new Error("agent prompt is unavailable");
-    const advertisedTools = launch.prompt
-      .split("\n")
-      .filter((line) => line.startsWith("- "))
-      .map((line) => {
-        const separator = line.indexOf(": ", 2);
-        if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);
-        return { name: line.slice(2, separator), description: line.slice(separator + 2) };
-      });
     const exposedTools = await hub.listExecutionTools(result.execution.id);
 
     assert.deepEqual(
-      advertisedTools,
       exposedTools.map(({ name, description }) => ({ name, description })),
+      [
+        {
+          name: "finish_execution",
+          description: "Completes this execution and records the configured structured output.",
+        },
+      ],
+    );
+    assert.equal(
+      launch.prompt,
+      [
+        "<system-tools>",
+        "The following MCP tools are provided by Paseo Hub for this execution:",
+        "",
+        "- finish_execution: Completes this execution and records the configured structured output.",
+        "",
+        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+        "</system-tools>",
+        "",
+        "Classify the request.",
+      ].join("\n"),
     );
     assert.deepEqual(exposedTools[0]?.inputSchema, {
       type: "object",

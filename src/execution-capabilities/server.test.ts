@@ -169,7 +169,7 @@ describe("execution capability MCP boundary", () => {
     }
   });
 
-  it("keeps a structured classifier inventory aligned with the exposed MCP tools", async () => {
+  it("renders the structured execution MCP contract exposed by the server", async () => {
     const fixture = await capabilityFixture(undefined, "succeeded", 1, {
       type: "object",
       additionalProperties: false,
@@ -194,18 +194,34 @@ describe("execution capability MCP boundary", () => {
           : { outputSchema: fixture.intent.outputSchema }),
         capabilities: fixture.outputs,
       });
-      const advertisedTools = launchedPrompt
-        .split("\n")
-        .filter((line) => line.startsWith("- "))
-        .map((line) => {
-          const separator = line.indexOf(": ", 2);
-          if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);
-          return { name: line.slice(2, separator), description: line.slice(separator + 2) };
-        });
-
       assert.deepEqual(
-        advertisedTools,
         exposedTools.tools.map(({ name, description }) => ({ name, description })),
+        [
+          {
+            name: "finish_execution",
+            description: "Completes this execution and records the configured structured output.",
+          },
+          {
+            name: "reply",
+            description:
+              "Sends a reply to the conversation that triggered this execution. (up to 1 times).",
+          },
+        ],
+      );
+      assert.equal(
+        launchedPrompt,
+        [
+          "<system-tools>",
+          "The following MCP tools are provided by Paseo Hub for this execution:",
+          "",
+          "- finish_execution: Completes this execution and records the configured structured output.",
+          "- reply: Sends a reply to the conversation that triggered this execution. (up to 1 times).",
+          "",
+          "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
+          "</system-tools>",
+          "",
+          "Classify the request.",
+        ].join("\n"),
       );
       assert.equal(
         exposedTools.tools.find((tool) => tool.name === "finish_execution")?.description,
