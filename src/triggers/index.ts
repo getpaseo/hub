@@ -1,5 +1,6 @@
 import type { DurableProviderEvent } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { JsonValue } from "../config/compiler.js";
 import type { InvocationParseResult } from "./invocation.js";
 
 export interface ExternalTrigger {
@@ -32,19 +33,19 @@ export type TriggerEventName = `${string}.${string}`;
 
 export interface TriggerAgentConfig {
   provider: string;
-  mode: string;
+  mode?: string | undefined;
   model?: string | undefined;
   thinkingOptionId?: string | undefined;
+  options?: Readonly<Record<string, JsonValue>> | undefined;
 }
 
-export function cleanTriggerAgent(
-  agent: Omit<TriggerAgentConfig, "mode"> & { mode?: string | undefined },
-): TriggerAgentConfig {
+export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig {
   return {
     provider: agent.provider,
-    mode: agent.mode ?? "default",
+    ...(agent.mode === undefined ? {} : { mode: agent.mode }),
     ...(agent.model === undefined ? {} : { model: agent.model }),
     ...(agent.thinkingOptionId === undefined ? {} : { thinkingOptionId: agent.thinkingOptionId }),
+    ...(agent.options === undefined ? {} : { options: structuredClone(agent.options) }),
   };
 }
 

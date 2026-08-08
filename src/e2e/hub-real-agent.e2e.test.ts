@@ -46,6 +46,21 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
 
+  it("lets a permissioned real OpenCode agent finalize through preapproved Hub MCP", async () => {
+    const enrollment = await hub.issueEnrollment();
+    await hub.connect(enrollment);
+    await hub.daemonIsConnected();
+    await hub.installRealAgentConfiguration("opencode");
+
+    const run = await hub.runRealAgentManual("real-opencode-finalize");
+    const evidence = await hub.realAgentCompletionEvidence(run, "opencode");
+
+    assert.equal(evidence.status, "succeeded");
+    assert.equal(evidence.completedByAgent, true);
+    assert.equal(evidence.completedToolCall, true);
+    assert.equal(evidence.completionHelperLaunched, false);
+  }, 300_000);
+
   it("routes deterministic input and classifier fallback through the real daemon", async () => {
     const enrollment = await hub.issueEnrollment();
     await hub.connect(enrollment);

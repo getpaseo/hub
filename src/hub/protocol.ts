@@ -9,6 +9,25 @@ const McpHttpServerConfigSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 
+const JsonValueSchema: z.ZodType = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(JsonValueSchema),
+    z.record(z.string(), JsonValueSchema),
+  ]),
+);
+
+const McpToolRefSchema = z
+  .object({
+    kind: z.literal("mcp"),
+    server: z.literal("hub"),
+    tool: z.string(),
+  })
+  .strict();
+
 export const HubExecutionAgentSnapshotSchema = z
   .object({
     id: z.string(),
@@ -99,6 +118,8 @@ export const HubExecutionAgentCreateRequestSchema = z.object({
   model: z.string().optional(),
   modeId: z.string().optional(),
   thinkingOptionId: z.string().optional(),
+  providerOptions: z.record(z.string(), JsonValueSchema).optional(),
+  toolPolicy: z.object({ preapproved: z.array(McpToolRefSchema) }).strict(),
   featureValues: z.record(z.string(), z.unknown()).optional(),
   env: z.record(z.string(), z.string()).optional(),
   mcpServers: z.record(z.string(), McpHttpServerConfigSchema).optional(),
@@ -113,7 +134,31 @@ export const HubExecutionAgentCreateResponseSchema = z.object({
     agentId: z.string().nullable(),
     agent: HubExecutionAgentSnapshotSchema.nullable(),
     success: z.boolean(),
-    error: z.string().nullable(),
+    toolPolicyApplied: z.literal(true).optional(),
+    error: z
+      .union([
+        z.string(),
+        z.discriminatedUnion("code", [
+          z.object({
+            code: z.literal("provider_options_invalid"),
+            provider: z.string(),
+            issues: z.array(
+              z.object({
+                path: z.array(z.union([z.string(), z.number()])),
+                message: z.string(),
+              }),
+            ),
+            message: z.string(),
+          }),
+          z.object({
+            code: z.literal("tool_policy_unsupported"),
+            provider: z.string(),
+            message: z.string(),
+          }),
+          z.object({ code: z.literal("create_failed"), message: z.string() }),
+        ]),
+      ])
+      .nullable(),
   }),
 });
 

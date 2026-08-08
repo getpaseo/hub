@@ -4360,6 +4360,7 @@ class ContractDaemon {
             agentId: `agent-${request.executionId}`,
             agent: { id: `agent-${request.executionId}`, status: "running" },
             success: true,
+            toolPolicyApplied: true,
             error: null,
           },
         },

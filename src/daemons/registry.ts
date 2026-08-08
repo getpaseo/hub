@@ -15,6 +15,7 @@ import {
 } from "../hub/protocol.js";
 import {
   DaemonCreateResponseLostError,
+  DaemonCreateRejectedError,
   type DaemonConnection,
   type DaemonAgentSnapshot,
   type DaemonCreateAgentOptions,
@@ -159,6 +160,8 @@ export class ActiveDaemonRegistry {
       model: options.model,
       modeId: options.mode,
       thinkingOptionId: options.thinkingOptionId,
+      providerOptions: options.providerOptions,
+      toolPolicy: options.toolPolicy,
       env: options.env,
       mcpServers: options.mcpServers,
       worktree: options.worktree,
@@ -280,9 +283,34 @@ export class ActiveDaemonRegistry {
         request.executionId === pending.executionId,
     );
     for (const [requestId] of related) requests.delete(requestId);
+    if (response.payload.success && response.payload.toolPolicyApplied !== true) {
+      for (const [, request] of related) {
+        request.reject(
+          new DaemonCreateRejectedError(
+            "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
+            "tool_policy_not_confirmed",
+          ),
+        );
+      }
+      return;
+    }
     if (!response.payload.success || !response.payload.agentId) {
-      for (const [, request] of related)
-        request.reject(new Error(response.payload.error ?? "daemon create failed"));
+      const error = response.payload.error;
+      for (const [, request] of related) {
+        request.reject(
+          typeof error === "object" && error !== null
+            ? new DaemonCreateRejectedError(
+                error.message,
+                error.code,
+                "provider" in error ? error.provider : undefined,
+                "issues" in error ? error.issues : undefined,
+              )
+            : new DaemonCreateRejectedError(
+                "The connected Paseo daemon returned the legacy Hub create error contract; update Paseo before running this workflow",
+                "tool_policy_not_confirmed",
+              ),
+        );
+      }
       return;
     }
     const snapshot = {
