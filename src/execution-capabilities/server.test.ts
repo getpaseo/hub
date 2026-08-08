@@ -195,9 +195,8 @@ describe("execution capability MCP boundary", () => {
         capabilities: fixture.outputs,
       });
       const advertisedTools = launchedPrompt
-        .split("\n\n", 1)[0]!
         .split("\n")
-        .slice(1)
+        .filter((line) => line.startsWith("- "))
         .map((line) => {
           const separator = line.indexOf(": ", 2);
           if (separator < 0) throw new Error(`malformed tool inventory line: ${line}`);
