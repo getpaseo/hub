@@ -50,9 +50,19 @@ export class ProjectConfiguration {
   private async startEditing() {
     const editing = this.page.getByText("Editing");
     const edit = this.page.getByRole("button", { name: "Edit", exact: true });
+    const save = this.page.getByRole("button", { name: "Save and activate" });
     // Switching the source to manual refetches the snapshot; neither control is on
-    // the page until it lands.
+    // the page until it lands. A caller may also follow a successful activation
+    // immediately; wait for that pending save to settle before opening another
+    // edit, because activation remounts the workbench on the new revision.
     await expect(edit.or(editing).first()).toBeVisible();
+    await expect
+      .poll(
+        async () =>
+          (await edit.isVisible()) ||
+          ((await editing.isVisible()) && (await save.getAttribute("aria-busy")) !== "true"),
+      )
+      .toBe(true);
     if (await edit.isVisible()) await edit.click();
     await expect(editing).toBeVisible();
   }

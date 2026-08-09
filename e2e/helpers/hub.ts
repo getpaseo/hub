@@ -4657,10 +4657,10 @@ function manualFailureContracts(): readonly HttpContract[] {
       problemBody(
         "phase-zero-contract",
         422,
-        "invalid_yaml",
-        "Invalid YAML",
-        "Correct the YAML syntax and submit the configuration again.",
-        [{ path: ["yaml"], message: "Invalid YAML at line 2, column 1." }],
+        "invalid_configuration_bundle",
+        "Invalid configuration bundle",
+        "Correct the canonical Hub bundle files and submit them again.",
+        [{ path: [".paseo/hub.yml"], message: "invalid YAML: line 2, column 1" }],
       ),
       PROBLEM_TYPE,
       {
