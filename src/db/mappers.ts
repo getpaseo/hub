@@ -1,5 +1,6 @@
+import type { QueryResultRow } from "pg";
+import type { AgentExecutionStatus } from "./schema.js";
 import type {
-  AgentExecutionRow,
   AttachmentRow,
   MachineRow,
   ProjectConfigurationRevisionRow,
@@ -17,6 +18,36 @@ import type {
   ProviderEventReceiptSummary,
   ProviderEventReceiptRecord,
 } from "./types.js";
+
+export interface AgentExecutionRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  machine_id: string | null;
+  status: AgentExecutionStatus;
+  started_at: Date;
+  completed_at: Date | null;
+  completed_by_agent_at: Date | null;
+  deadline_at: Date | null;
+  idle_deadline_at: Date | null;
+  result: unknown;
+  trigger_context: unknown;
+  output_context: unknown;
+  configuration_revision_id: string;
+  completion_token_hash: string | null;
+  reply_claimed_at: Date | null;
+  reply_claim_count: number;
+  output_emissions: unknown;
+  output_delivery_attempts: unknown;
+  launch_intent: AgentExecutionRecord["launchIntent"];
+  daemon_id: string | null;
+  daemon_agent_id: string | null;
+  workflow_step_run_id: string | null;
+  hub_action: "interrupt" | "archive" | null;
+  hub_action_completed_at: Date | null;
+  hub_action_ready_at: Date | null;
+  hub_action_acknowledgements: unknown;
+}
 
 type ProviderEventReceiptSummaryRow = Pick<
   ProviderEventReceiptRow,
