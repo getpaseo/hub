@@ -26,6 +26,7 @@ import type {
   ProviderEventReceiptSummary,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
+import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
 import {
   decodeEntitlementDenialFailureReason,
   entitlementDenialSummary,
@@ -598,7 +599,8 @@ function unroutedEventView(receipt: ProviderEventReceiptSummary) {
     status: "dropped" as const,
     deadlineAt: null,
     deadlineKind: null,
-    failureReason: receipt.droppedReason,
+    failureReason:
+      receipt.droppedReason === null ? null : providerEventDropReasonSummary(receipt.droppedReason),
     rejectionReason: null,
     steps: [],
   };

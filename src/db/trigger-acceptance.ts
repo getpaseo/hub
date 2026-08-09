@@ -57,7 +57,7 @@ export class ProviderEventAcceptanceRepository {
       const dropReason =
         input.dropReason ??
         (provider === "github" && "status" in connection && connection.status === "suspended"
-          ? "github_suspended"
+          ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
         organizationId: connection.organizationId,
@@ -112,7 +112,7 @@ export class ProviderEventAcceptanceRepository {
 
       const selectedRoutes = selectFirstRoutePerProject(routes);
       if (selectedRoutes.length === 0) {
-        const reason = `${provider}_unrouted`;
+        const reason = "no_project_route";
         await transaction
           .update(schema.providerEventReceipts)
           .set({ droppedReason: reason })

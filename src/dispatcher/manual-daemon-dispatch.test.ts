@@ -30,7 +30,7 @@ describe("manual trigger durable workflow boundary", () => {
     await dispatchManualTrigger(source, manualTrigger("manual-no-match", project.id));
 
     const receipt = await database.findProviderEventReceiptByDeliveryId("manual-no-match", "org_1");
-    assert.equal(receipt?.droppedReason, null);
+    assert.equal(receipt?.droppedReason, "no_trigger_for_source");
     assert.deepEqual(
       receipt === undefined
         ? []

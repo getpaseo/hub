@@ -439,6 +439,122 @@ export class PaseoHub {
     );
   }
 
+  async deliverSignedUnroutedSlackEvent(alias: string): Promise<void> {
+    const email = this.requireUser(alias).accountEmail;
+    const [target] = z
+      .array(
+        z.object({
+          project_id: z.string().uuid(),
+          organization_id: z.string(),
+          user_id: z.string(),
+        }),
+      )
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary.databaseUrl,
+          `select project.id project_id, project.organization_id, "user".id user_id
+           from session
+           join "user" on "user".id = session.user_id
+           join projects project on project.organization_id = session.active_organization_id
+           where lower("user".email) = $1 and project.slug = 'default'
+           order by session.expires_at desc limit 1`,
+          [email],
+        ),
+      );
+    if (target === undefined) throw new Error("Slack event project unavailable");
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      `insert into slack_connections
+         (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes, connected_by_user_id)
+       values ($1, 'T-drop-reason', 'drop-reason-slack', 'Drop Reason Slack', 'UBOT',
+               'PRIVATE-SLACK-TOKEN',
+               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write"]'::jsonb, $2)`,
+      [target.organization_id, target.user_id],
+    );
+    const database = await createDatabase(this.primary.databaseUrl);
+    try {
+      const verifier = `browser-drop-reason-${randomUUID()}`;
+      const now = new Date();
+      const issued = await database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier,
+        organizationId: target.organization_id,
+        expiresAt: new Date(now.getTime() + 10 * 60_000),
+        consumedAt: null,
+      });
+      if (!issued) throw new Error("Slack event daemon enrollment token unavailable");
+      const daemon = await database.enrollDaemon({
+        daemonId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        tokenVerifier: verifier,
+        serverId: randomUUID(),
+        daemonPublicKey: "browser-drop-reason-public-key",
+        credentialVerifier: createHash("sha256")
+          .update("browser-drop-reason-credential")
+          .digest("base64url"),
+        scopes: ["hub.execution.*"],
+        now,
+      });
+      if (daemon === undefined || daemon.status === "slug_conflict")
+        throw new Error("Slack event daemon enrollment failed");
+      const store = new ProjectConfigurationStore(database, target.project_id);
+      const revision = await store.insertManualRevision({
+        rawYaml: null,
+        rawConfiguration: browserUnroutedSlackConfiguration(daemon.slug),
+        userId: target.user_id,
+        sourceEvidence: { kind: "browser-drop-reason" },
+      });
+      await store.activate(revision.id);
+    } finally {
+      await database.close();
+    }
+
+    const body = JSON.stringify({
+      type: "event_callback",
+      team_id: "T-drop-reason",
+      api_app_id: "browser-slack-app",
+      event_id: "browser-unrouted-reason",
+      event_time: Math.floor(Date.now() / 1_000),
+      event: {
+        type: "app_mention",
+        user: "PRIVATE-EVENT-SENDER-ID",
+        channel: "PRIVATE-EVENT-CHANNEL-ID",
+        text: "<@UBOT> PRIVATE-EVENT-BODY",
+        ts: "1700000000.000001",
+        event_ts: "1700000000.000001",
+        files: [{ id: "PRIVATE-EVENT-ATTACHMENT-ID", name: "PRIVATE-EVENT-ATTACHMENT-NAME" }],
+      },
+    });
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const signature = createHmac("sha256", SLACK_WEBHOOK_SECRET)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex");
+    const response = await this.requests.post(
+      `${this.primary.origin}/api/integrations/slack/events`,
+      {
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": `v0=${signature}`,
+        },
+        data: Buffer.from(body),
+      },
+    );
+    expect(response.status()).toBe(200);
+
+    const reasons = z.array(z.object({ dropped_reason: z.string() })).parse(
+      await this.queryDatabaseRows(
+        this.primary.databaseUrl,
+        `select dropped_reason from provider_event_receipts
+           where delivery_id = 'slack-browser-unrouted-reason'`,
+        [],
+      ),
+    );
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]!.dropped_reason).toBe("trigger_filters_rejected");
+    expect(JSON.stringify(reasons)).not.toMatch(/PRIVATE-|TOKEN|SIGNATURE/u);
+  }
+
   async setDaemonSlug(daemonId: string, slug: string): Promise<void> {
     await this.queryDatabase(
       this.primary.databaseUrl,
@@ -4397,6 +4513,7 @@ interface HttpResponse {
 }
 
 const WEBHOOK_SECRET = "phase-zero-webhook-secret";
+const SLACK_WEBHOOK_SECRET = "phase-zero-slack-webhook-secret";
 // Must match e2e/app.ts's STRIPE_WEBHOOK_SECRET env value and browser-child.ts's fixture config.
 const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
 
@@ -4674,6 +4791,41 @@ function daemonEnrollment(daemonId: string, credential: string) {
     serverId: randomUUID(),
     daemonPublicKey: "built-contract-public-key",
     credentialVerifier: createHash("sha256").update(credential).digest("base64url"),
+  };
+}
+
+function browserUnroutedSlackConfiguration(daemonSlug: string) {
+  return {
+    environments: [
+      {
+        name: "runner",
+        kind: "daemon" as const,
+        daemon: daemonSlug,
+        cwd: "/workspace",
+      },
+    ],
+    triggers: [
+      {
+        name: "slack-run",
+        on: "slack.mention",
+        max_runtime: "1h",
+        filters: {
+          workspace: "T-drop-reason",
+          channels: ["SAFE-CONFIG-CHANNEL"],
+          from_users: ["SAFE-CONFIG-SENDER"],
+        },
+        steps: [
+          {
+            id: "work",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "test" },
+            prompt: [{ text: "Handle Slack event" }],
+          },
+        ],
+      },
+    ],
   };
 }
 

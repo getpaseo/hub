@@ -350,9 +350,9 @@ export function OrganizationConnectionsPanel() {
       </Section>
       <Section
         title="Known unrouted events"
-        description="Events whose credential belongs to this organization but no project route was available."
+        description="Events received for this organization that were not routed to a workflow."
       >
-        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" />
+        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
       </Section>
     </>
   );
@@ -672,6 +672,7 @@ function ActivityTable({
   activity,
   label,
   detailBasePath,
+  showReason = false,
 }: {
   activity: ReadonlyArray<
     | ProjectSnapshot["activity"][number]
@@ -679,6 +680,7 @@ function ActivityTable({
   >;
   label: string;
   detailBasePath?: string;
+  showReason?: boolean;
 }) {
   return (
     <DataTable
@@ -688,6 +690,7 @@ function ActivityTable({
         { header: "Provider" },
         { header: "Source" },
         { header: "Status" },
+        ...(showReason ? [{ header: "Reason" }] : []),
         { header: "Received" },
       ]}
       isEmpty={activity.length === 0}
@@ -715,6 +718,7 @@ function ActivityTable({
           <DataCell>{event.provider}</DataCell>
           <DataCell>{event.source}</DataCell>
           <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
+          {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
           <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
         </DataRow>
       ))}

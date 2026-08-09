@@ -101,7 +101,11 @@ export function createDiscordTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return [];
+      if (stored === undefined) return "configuration_unavailable";
+      if (
+        !stored.configuration.triggers.some((candidate) => candidate.on === externalTrigger.source)
+      )
+        return "no_trigger_for_source";
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
 
@@ -158,7 +162,7 @@ export function createDiscordTriggerProvider(options: {
         });
       }
 
-      return matches;
+      return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
     async materializeContext(launch) {
       const event = launch.triggerContext.event.discord;

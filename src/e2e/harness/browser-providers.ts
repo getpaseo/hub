@@ -10,6 +10,7 @@ import type {
   GitHubCreatedReaction,
   GitHubReactionClient,
 } from "../../triggers/github/provider.js";
+import type { SlackBotClient } from "../../triggers/slack/client.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import {
@@ -44,7 +45,8 @@ export type BrowserProviderScenario =
   | "approval"
   | "conflict"
   | "not-configured"
-  | "discord-only";
+  | "discord-only"
+  | "slack-only";
 
 export class BrowserGitHubAuth implements GitHubAuth, GitHubExecutionTokenAuth {
   getInstallation() {
@@ -249,6 +251,20 @@ export class BrowserDiscordBot extends MemoryDiscordBotClient {
     };
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     return this.emitMessage(message as Message);
+  }
+}
+
+export class BrowserSlackBot implements SlackBotClient {
+  sendMessage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  addReaction(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  removeReaction(): Promise<void> {
+    return Promise.resolve();
   }
 }
 

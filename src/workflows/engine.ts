@@ -29,6 +29,7 @@ import type {
   TriggerProviderMatch,
   AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import {
   ExpressionEvaluationError,
@@ -112,8 +113,15 @@ export class DurableWorkflowEngine {
 
   async enqueue(trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome> {
     if (this.options.database === null) throw new DatabaseUnavailableError();
-    const matches = await collectProviderMatches(this.options.providers ?? [], trigger);
+    const { matches, dropReason } = await collectProviderMatches(
+      this.options.providers ?? [],
+      trigger,
+    );
     if (matches.length === 0) {
+      await this.options.database.markProviderEventDropped(
+        trigger.providerEventReceiptId,
+        dropReason,
+      );
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
     const createdAt = this.now();
@@ -958,15 +966,27 @@ function truthy(value: unknown): boolean {
 async function collectProviderMatches(
   providers: readonly TriggerProvider[],
   trigger: DurableProviderEvent,
-): Promise<readonly TriggerProviderMatch[]> {
-  if (!isTriggerEventName(trigger.source)) return [];
+): Promise<{
+  matches: readonly TriggerProviderMatch[];
+  dropReason: ProviderEventDropReasonCode;
+}> {
+  if (!isTriggerEventName(trigger.source))
+    return { matches: [], dropReason: "no_trigger_for_source" };
   const matchingProviders = providers.filter((provider) =>
     provider.eventNames.some((name) => name === trigger.source),
   );
-  const nestedMatches = await Promise.all(
-    matchingProviders.map((provider) => provider.match(trigger)),
+  const results = await Promise.all(matchingProviders.map((provider) => provider.match(trigger)));
+  const matches = results.flatMap((result) => (typeof result === "string" ? [] : result));
+  const reasons = results.filter(
+    (result): result is ProviderEventDropReasonCode => typeof result === "string",
   );
-  return nestedMatches.flat();
+  return {
+    matches,
+    dropReason:
+      reasons.find((reason) => reason === "configuration_unavailable") ??
+      reasons.find((reason) => reason === "trigger_filters_rejected") ??
+      "no_trigger_for_source",
+  };
 }
 
 function readDispatchExecution(

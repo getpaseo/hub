@@ -88,6 +88,10 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
+import {
+  isProviderEventDropReasonCode,
+  type ProviderEventDropReasonCode,
+} from "../triggers/drop-reason.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -955,7 +959,10 @@ class MemoryDatabase implements Database {
     });
   }
 
-  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
+  async markProviderEventDropped(
+    providerEventReceiptId: string,
+    reason: ProviderEventDropReasonCode,
+  ): Promise<void> {
     const receipt = this.providerEventReceipts.get(providerEventReceiptId);
     if (receipt === undefined)
       throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
@@ -2529,7 +2536,11 @@ class MemoryDatabase implements Database {
     );
     return [...this.providerEventReceipts.values()]
       .filter(
-        (receipt) => receipt.organizationId === organizationId && !routedReceiptIds.has(receipt.id),
+        (receipt) =>
+          receipt.organizationId === organizationId &&
+          receipt.droppedReason !== null &&
+          isProviderEventDropReasonCode(receipt.droppedReason) &&
+          !routedReceiptIds.has(receipt.id),
       )
       .sort(
         (left, right) =>
@@ -2692,9 +2703,9 @@ class MemoryDatabase implements Database {
     if (routes.length === 0) {
       this.providerEventReceipts.set(receipt.id, {
         ...receipt,
-        droppedReason: "provider_unrouted",
+        droppedReason: "no_project_route",
       });
-      return { status: "dropped", receiptId: receipt.id, reason: "provider_unrouted" };
+      return { status: "dropped", receiptId: receipt.id, reason: "no_project_route" };
     }
     const projectRoutes = new Map<string, (typeof routes)[number]>();
     for (const route of routes) {
@@ -2821,7 +2832,7 @@ function githubDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "github_unbound";
-  if (binding.status === "suspended") return "github_suspended";
+  if (binding.status === "suspended") return "configuration_unavailable";
   return undefined;
 }
 

@@ -147,7 +147,11 @@ export function createGitHubTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return [];
+      if (stored === undefined) return "configuration_unavailable";
+      if (
+        !stored.configuration.triggers.some((candidate) => candidate.on === externalTrigger.source)
+      )
+        return "no_trigger_for_source";
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
 
       for (const match of matchTriggers(
@@ -196,7 +200,7 @@ export function createGitHubTriggerProvider(options: {
         });
       }
 
-      return matches;
+      return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
     async materializeLaunch(launch) {
       const state = executionTokenStates.get(launch.executionId) ?? {

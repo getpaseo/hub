@@ -107,18 +107,20 @@ export function createSlackTriggerProvider(options: {
         trigger.organizationId,
         rawEvent.teamId,
       );
-      if (botUserId === undefined) return [];
+      if (botUserId === undefined) return "configuration_unavailable";
       const stored = await options
         .configurationStoreForProject(trigger.projectId)
         .getRevision(trigger.configurationRevisionId);
-      if (stored === undefined) return [];
+      if (stored === undefined) return "configuration_unavailable";
+      if (!stored.configuration.triggers.some((candidate) => candidate.on === trigger.source))
+        return "no_trigger_for_source";
       const matchedTriggers = matchSlackTriggers(
         stored.configuration,
         rawEvent,
         botUserId,
         trigger.connectionId,
       );
-      if (matchedTriggers.length === 0) return [];
+      if (matchedTriggers.length === 0) return "trigger_filters_rejected";
       const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
 
       for (const match of matchedTriggers) {
@@ -169,7 +171,7 @@ export function createSlackTriggerProvider(options: {
           invocation,
         });
       }
-      return matches;
+      return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
     async materializeContext(launch): Promise<SlackMaterializedContext> {
       const locator = launch.triggerContext.event.slack.trigger_thread_context;

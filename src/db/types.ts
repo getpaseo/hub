@@ -2,6 +2,7 @@ import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schem
 import type { PromptPartialBundleFile } from "../config/prompt-partials.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
@@ -1050,7 +1051,10 @@ export interface Database {
   ): Promise<void>;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
-  markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;
+  markProviderEventDropped(
+    providerEventReceiptId: string,
+    reason: ProviderEventDropReasonCode,
+  ): Promise<void>;
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;

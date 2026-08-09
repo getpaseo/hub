@@ -71,7 +71,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     const wrongActor = await provider.match(
       external(project.id, revision.id, createEvent({ actor: "untrusted" })),
     );
-    assert.deepEqual(wrongActor, []);
+    assert.equal(wrongActor, "trigger_filters_rejected");
   });
 
   it("exposes safe issue and pull-request item context without the raw webhook", async () => {
@@ -276,6 +276,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     const { project, revision, store } = await activeFanoutConfiguration(database);
     const provider = createProvider(store, new TestReactions());
     const matches = await provider.match(external(project.id, revision.id, createEvent()));
+    if (typeof matches === "string") throw new Error("expected matches");
     assert.deepEqual(
       matches.map((match) => match.triggerName),
       ["github-mention", "github-mention-secondary"],

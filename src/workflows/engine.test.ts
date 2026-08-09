@@ -398,7 +398,7 @@ describe("durable multi-step workflow engine", () => {
           name: "manual",
           eventNames: ["manual.run"] as const,
           async match(external) {
-            if (external.projectId === fixture.projectId) return [];
+            if (external.projectId === fixture.projectId) return "no_trigger_for_source";
             throw new Error("enqueue unavailable");
           },
         },
@@ -428,7 +428,7 @@ describe("durable multi-step workflow engine", () => {
     const replayReceipt = await fixture.database.findProviderEventReceiptById(
       fixture.providerEventReceiptId,
     );
-    assert.equal(replayReceipt?.droppedReason, null);
+    assert.equal(replayReceipt?.droppedReason, "no_trigger_for_source");
   });
 
   it("launches the exact committed partial content with inline-equivalent interpolation", async () => {

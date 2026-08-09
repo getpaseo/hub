@@ -81,6 +81,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const matches = await provider.match(
       external(project.id, revision.id, { content: "<@UBOT> repo=hub investigate" }),
     );
+    if (typeof matches === "string") throw new Error("expected matches");
 
     assert.deepEqual(
       matches.map((match) => match.triggerName),
@@ -606,7 +607,7 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
     const matches = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
-    assert.deepEqual(matches, []);
+    assert.equal(matches, "trigger_filters_rejected");
     assert.deepEqual(client.threadReads, []);
   });
 });

@@ -29,11 +29,17 @@ export const test = base.extend<{
   hub: PaseoHub;
   projectExternal: ProjectExternalFacts;
   billing: boolean;
+  providerScenario: BrowserProviderScenario;
 }>({
   // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
   // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
   billing: [false, { option: true }],
-  hub: async ({ browser, browserName, page, context, billing }, provide, testInfo) => {
+  providerScenario: ["connected" as BrowserProviderScenario, { option: true }],
+  hub: async (
+    { browser, browserName, page, context, billing, providerScenario },
+    provide,
+    testInfo,
+  ) => {
     if (browserName !== "chromium") {
       throw new Error(`unsupported Phase 0 browser: ${browserName}`);
     }
@@ -49,6 +55,7 @@ export const test = base.extend<{
       const primary = await applications.start({
         databaseProfile: "fresh",
         billing,
+        providerScenario,
       });
       primaryApplication = primary;
       await provide(
@@ -199,6 +206,7 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     PASEO_E2E_MACHINE_KEY_FILE: input.machineKeyFile,
     PASEO_E2E_DATABASE_PROFILE: input.databaseProfile ?? "legacy",
     GITHUB_WEBHOOK_SECRET: "phase-zero-webhook-secret",
+    SLACK_SIGNING_SECRET: "phase-zero-slack-webhook-secret",
     STRIPE_WEBHOOK_SECRET: "whsec_phase_zero_fixture_secret",
     PASEO_BROWSER_BILLING_SCENARIO: input.billing === true ? "configured" : "unconfigured",
     PASEO_BROWSER_PROVIDER_SCENARIO:

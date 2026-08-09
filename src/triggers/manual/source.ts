@@ -58,7 +58,7 @@ export async function dispatchManualTrigger(
   if (state.handler === undefined) {
     await state.database.markProviderEventDropped(
       persisted.event.providerEventReceiptId,
-      "manual_no_handler",
+      "configuration_unavailable",
     );
     return { providerEventReceiptId: persisted.event.providerEventReceiptId };
   }

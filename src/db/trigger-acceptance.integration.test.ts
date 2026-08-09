@@ -67,6 +67,52 @@ describe("manual trigger tenant idempotency", () => {
     assert.equal(duplicate.event.projectId, "10000000-0000-4000-8000-000000000001");
     await database.close();
   }, 120_000);
+
+  it("lists only receipts with a committed bounded drop reason", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('drop-reason-org', 'Drop Reason', 'drop-reason');
+      insert into projects (id, organization_id, name, slug)
+      values ('30000000-0000-4000-8000-000000000001', 'drop-reason-org', 'Default', 'default');
+    `);
+    await client.end();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: "30000000-0000-4000-8000-000000000001",
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "drop-reason-config",
+    });
+    await database.activateProjectConfigurationRevision(
+      "30000000-0000-4000-8000-000000000001",
+      revision.id,
+    );
+    const receipt = await database.persistManualEvent({
+      organizationId: "drop-reason-org",
+      projectId: "30000000-0000-4000-8000-000000000001",
+      source: "manual.run",
+      deliveryId: "drop-reason-delivery",
+      receivedAt: new Date(),
+      payload: { private: "PRIVATE-EVENT-BODY" },
+    });
+    if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
+
+    assert.deepEqual(
+      await database.listUnroutedProviderEventsForOrganization("drop-reason-org"),
+      [],
+    );
+    await database.markProviderEventDropped(
+      receipt.event.providerEventReceiptId,
+      "trigger_filters_rejected",
+    );
+    const [unrouted] = await database.listUnroutedProviderEventsForOrganization("drop-reason-org");
+    assert.equal(unrouted?.droppedReason, "trigger_filters_rejected");
+    assert.equal("payload" in (unrouted ?? {}), false);
+    await database.close();
+  }, 120_000);
 });
 
 function input(organizationId: string, projectId: string) {

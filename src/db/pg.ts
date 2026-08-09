@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { logger } from "../logger.js";
 import {
   clearOverrideKey,
@@ -174,7 +175,10 @@ class PgDatabase implements Database {
     return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
   }
 
-  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
+  async markProviderEventDropped(
+    providerEventReceiptId: string,
+    reason: ProviderEventDropReasonCode,
+  ): Promise<void> {
     const rows = await query(
       this.pool,
       `update provider_event_receipts
@@ -3678,6 +3682,12 @@ class PgDatabase implements Database {
               receipts.repo, receipts.received_at, receipts.dropped_reason
        from provider_event_receipts receipts
        where receipts.organization_id = $1
+         and receipts.dropped_reason in (
+           'no_project_route',
+           'no_trigger_for_source',
+           'trigger_filters_rejected',
+           'configuration_unavailable'
+         )
          and not exists (
            select 1 from trigger_runs runs
            where runs.provider_event_receipt_id = receipts.id

@@ -103,7 +103,8 @@ export function createManualRunProvider(
         ];
       }
       if (invocation.status === "accepted") {
-        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) return [];
+        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs))
+          return "trigger_filters_rejected";
       }
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,

@@ -64,9 +64,9 @@ describe("Discord Phase 1 trigger provider", () => {
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
-    assert.deepEqual(
+    assert.equal(
       await provider.match(external(project.id, revision.id, event({ authorId: "401" }))),
-      [],
+      "trigger_filters_rejected",
     );
   });
 
@@ -115,6 +115,7 @@ describe("Discord Phase 1 trigger provider", () => {
       ...external(project.id, revision.id, event()),
       connectionId: "22222222-2222-4222-8222-222222222222",
     });
+    if (typeof matches === "string") throw new Error("expected matches");
     assert.deepEqual(
       matches.map((match) => match.triggerName),
       ["secondary-connection"],

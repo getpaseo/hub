@@ -7,6 +7,7 @@ import type { ProviderEventAcceptance } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
+import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_HEADER_LENGTH = 128;
@@ -21,7 +22,7 @@ export interface WebhookSourceOptions {
     repo?: string | null;
     payload: unknown;
     receivedAt: Date;
-    dropReason?: string;
+    dropReason?: ProviderEventDropReasonCode;
   }): Promise<ProviderEventAcceptance>;
   applyLifecycle(input: {
     installationId: number;
@@ -113,7 +114,7 @@ async function handleVerifiedWebhook(
       source: `github.${eventType}`,
       payload: body,
       receivedAt: new Date(),
-      dropReason: "github_unsupported",
+      dropReason: "no_trigger_for_source",
     });
     return new Response("OK", { status: 200 });
   }
@@ -127,7 +128,7 @@ async function handleVerifiedWebhook(
     repo: event.repo,
     payload: event,
     receivedAt: new Date(event.createdAt),
-    ...(handlers.size === 0 ? { dropReason: "github_no_handler" } : {}),
+    ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
   if (eventType === "push" && options.synchronizePush !== undefined) {
     await options.synchronizePush({

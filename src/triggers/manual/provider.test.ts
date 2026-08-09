@@ -50,7 +50,7 @@ describe("manual invocation provider", () => {
       })
     )[0];
 
-    assert.ok(match);
+    assert.ok(match && typeof match !== "string");
     assert.deepEqual(match.invocation, {
       status: "accepted",
       rawMessage: "repo=hub agent=opus investigate",
@@ -99,6 +99,7 @@ describe("manual invocation provider", () => {
       },
     });
 
+    if (typeof matches === "string") throw new Error("expected rejected match");
     assert.equal(matches.length, 1);
     assert.equal(matches[0]!.invocation.status, "rejected");
   });
