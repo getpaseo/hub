@@ -147,13 +147,15 @@ const EnvironmentSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
+
 const StepSchema = z
   .object({
     id: z.string().min(1),
     environment: z.string().min(1),
     max_runtime: z.string().min(1),
     idle_timeout: z.string().min(1),
-    agent: AgentSchema,
+    agent: AuthoredAgentSelectionSchema,
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
@@ -208,6 +210,13 @@ export interface CompiledAgent {
   options?: Readonly<Record<string, JsonValue>> | undefined;
 }
 
+export interface CompiledNamedAgentSelection {
+  selector: string;
+  choices: Readonly<Record<string, CompiledAgent>>;
+}
+
+export type CompiledAgentSelection = CompiledAgent | CompiledNamedAgentSelection;
+
 export interface CompiledInput {
   type: AuthoredInput["type"];
   required: boolean;
@@ -220,7 +229,7 @@ export interface CompiledStep {
   environment: string;
   maxRuntimeMs: number;
   idleTimeoutMs: number;
-  agent: CompiledAgent;
+  agent: CompiledAgentSelection;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
@@ -248,6 +257,7 @@ export type CompiledEnvironment =
 
 export interface CompiledTrigger {
   name: string;
+  sourceFile?: string | undefined;
   on: string;
   maxRuntimeMs: number;
   steps: CompiledSteps;
@@ -263,6 +273,8 @@ export interface CompiledHubConfig {
 
 export interface CompileHubConfigOptions {
   resolvedPromptPartials?: ResolvedPromptPartials;
+  namedAgents?: Readonly<Record<string, CompiledAgent>>;
+  sourceFiles?: Readonly<Record<string, string>>;
 }
 
 const CompiledPromptBlockSchema: z.ZodType<CompiledPromptBlock> = z.union([
@@ -286,6 +298,16 @@ const CompiledAgentSchema: z.ZodType<CompiledAgent> = z
     options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
   })
   .strict();
+
+const CompiledAgentSelectionSchema: z.ZodType<CompiledAgentSelection> = z.union([
+  CompiledAgentSchema,
+  z
+    .object({
+      selector: z.string().min(1),
+      choices: z.record(z.string(), CompiledAgentSchema),
+    })
+    .strict(),
+]);
 
 const CompiledInputSchema: z.ZodType<CompiledInput> = z
   .object({
@@ -335,7 +357,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     environment: z.string().min(1),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
     idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
-    agent: CompiledAgentSchema,
+    agent: CompiledAgentSelectionSchema,
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
@@ -357,6 +379,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
 const CompiledTriggerSchema: z.ZodType<CompiledTrigger> = z
   .object({
     name: z.string().regex(IDENTIFIER),
+    sourceFile: z.string().min(1).optional(),
     on: z.string().regex(EVENT_NAME),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
     steps: z.array(CompiledStepSchema),
@@ -385,7 +408,14 @@ export function compileHubConfig(
     authored.environments.map((environment) => [environment.name, environment]),
   );
   const triggers = authored.triggers.map((trigger) =>
-    compileTrigger(trigger, environmentNames, environments, options.resolvedPromptPartials),
+    compileTrigger(
+      trigger,
+      environmentNames,
+      environments,
+      options.resolvedPromptPartials,
+      options.namedAgents ?? {},
+      options.sourceFiles?.[trigger.name],
+    ),
   );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
   validateCompiledContract(compiled);
@@ -443,17 +473,20 @@ function compileTrigger(
   environmentNames: ReadonlySet<string>,
   environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
+  namedAgents: Readonly<Record<string, CompiledAgent>>,
+  sourceFile: string | undefined,
 ): CompiledTrigger {
   if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
   const inputs = compileInputs(trigger);
   validateInputFilters(trigger, inputs);
   validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments);
   const steps = trigger.steps.map((step) =>
-    compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials),
+    compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials, namedAgents),
   );
   const values = compileValues(trigger);
   const compiled = {
     name: trigger.name,
+    ...(sourceFile === undefined ? {} : { sourceFile }),
     on: trigger.on,
     maxRuntimeMs: parseDurationMs(trigger.max_runtime, `trigger ${trigger.name} max_runtime`),
     steps,
@@ -461,7 +494,7 @@ function compileTrigger(
     values,
     ...(trigger.filters === undefined ? {} : { filters: trigger.filters }),
   };
-  validateExpressionContract(trigger.name, compiled, environmentNames);
+  validateExpressionContract(trigger.name, compiled, environments);
   return compiled;
 }
 
@@ -471,8 +504,9 @@ function compileStep(
   environmentNames: ReadonlySet<string>,
   environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
+  namedAgents: Readonly<Record<string, CompiledAgent>>,
 ): CompiledStep {
-  if (!environmentNames.has(step.environment) && !DYNAMIC_INPUT_REFERENCE.test(step.environment)) {
+  if (!environmentNames.has(step.environment) && !step.environment.includes(EXPRESSION_START)) {
     throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
   }
   const staticEnvironment = environments.get(step.environment);
@@ -503,15 +537,13 @@ function compileStep(
       ? undefined
       : compileGitHubAuthority(step.github, `trigger ${trigger.name} step ${step.id} github`);
   validateStepEnvironmentContract(trigger.name, trigger.on, step.id, env, github);
+  const agent = compileAgentSelection(trigger.name, step.id, step.agent, namedAgents);
   return {
     id: step.id,
     environment: step.environment,
     maxRuntimeMs,
     idleTimeoutMs,
-    agent: {
-      ...step.agent,
-      ...(step.agent.options === undefined ? {} : { options: cloneJsonObject(step.agent.options) }),
-    },
+    agent,
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
@@ -523,6 +555,53 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
+  };
+}
+
+function compileAgentSelection(
+  triggerName: string,
+  stepId: string,
+  authored: AuthoredStep["agent"],
+  namedAgents: Readonly<Record<string, CompiledAgent>>,
+): CompiledAgentSelection {
+  if (typeof authored === "string") {
+    if (!authored.includes(EXPRESSION_START)) {
+      const selected = namedAgents[authored];
+      if (selected === undefined) {
+        throw new Error(
+          `trigger ${triggerName} step ${stepId} references unknown named agent ${authored}`,
+        );
+      }
+      return cloneAgent(selected);
+    }
+    return {
+      selector: authored,
+      choices: Object.fromEntries(
+        Object.entries(namedAgents)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([name, agent]) => [name, cloneAgent(agent)]),
+      ),
+    };
+  }
+  for (const value of [
+    authored.provider,
+    authored.model,
+    authored.mode,
+    authored.thinkingOptionId,
+  ]) {
+    if (value?.includes(EXPRESSION_START) === true) {
+      throw new Error(
+        `trigger ${triggerName} step ${stepId}: dynamic inline agent configurations are not allowed; select a complete named agent instead`,
+      );
+    }
+  }
+  return cloneAgent(authored);
+}
+
+function cloneAgent(agent: CompiledAgent): CompiledAgent {
+  return {
+    ...agent,
+    ...(agent.options === undefined ? {} : { options: cloneJsonObject(agent.options) }),
   };
 }
 
@@ -696,8 +775,9 @@ function validateCompiledInputs(trigger: CompiledTrigger): void {
 function validateExpressionContract(
   triggerName: string,
   trigger: CompiledTrigger,
-  environmentNames: ReadonlySet<string>,
+  environments: ReadonlyMap<string, AuthoredEnvironment | CompiledEnvironment>,
 ): void {
+  const environmentNames = new Set(environments.keys());
   const stepOrdinals = new Map(trigger.steps.map((step, ordinal) => [step.id, ordinal]));
   const valueNames = new Set(Object.keys(trigger.values));
   const visiting = new Set<string>();
@@ -707,15 +787,19 @@ function validateExpressionContract(
     if (step.condition !== undefined)
       validateExpression(step.condition, ordinal, `step ${step.id} if`, false);
     validateTemplate(step.environment, ordinal, `step ${step.id} environment`, true);
-    validateTemplate(step.agent.provider, ordinal, `step ${step.id} agent.provider`, true);
-    validateTemplate(step.agent.model, ordinal, `step ${step.id} agent.model`, true);
-    validateTemplate(step.agent.mode, ordinal, `step ${step.id} agent.mode`, true);
-    validateTemplate(
-      step.agent.thinkingOptionId,
-      ordinal,
-      `step ${step.id} agent.thinkingOptionId`,
-      true,
-    );
+    validateEnvironmentSelection(step.environment, ordinal, step.id);
+    if ("selector" in step.agent) {
+      validateTemplate(step.agent.selector, ordinal, `step ${step.id} agent`, true);
+      const selected = finiteTemplateValues(step.agent.selector, ordinal);
+      if (selected === undefined) {
+        throw new Error(`step ${step.id} agent must resolve from finite choices`);
+      }
+      for (const name of selected) {
+        if (!Object.hasOwn(step.agent.choices, name)) {
+          throw new Error(`step ${step.id} agent resolves to unknown named agent ${name}`);
+        }
+      }
+    }
     for (const [index, block] of step.prompt.entries()) {
       validateTemplate(
         block.kind === "text" ? block.value : block.content,
@@ -725,6 +809,87 @@ function validateExpressionContract(
         true,
       );
     }
+  }
+
+  function validateEnvironmentSelection(template: string, ordinal: number, stepId: string): void {
+    const selected = finiteTemplateValues(template, ordinal);
+    if (selected === undefined) {
+      throw new Error(`step ${stepId} environment must resolve from finite choices`);
+    }
+    for (const name of selected) {
+      if (!environmentNames.has(name)) {
+        throw new Error(`step ${stepId} resolves to unknown environment ${name}`);
+      }
+      if (environments.get(name)?.kind !== "daemon") {
+        throw new Error(`step ${stepId} environment ${name} must be a daemon environment`);
+      }
+    }
+  }
+
+  function finiteTemplateValues(template: string, ordinal: number): readonly string[] | undefined {
+    let results = [""];
+    let cursor = 0;
+    while (cursor < template.length) {
+      const start = template.indexOf(EXPRESSION_START, cursor);
+      if (start < 0) return results.map((prefix) => prefix + template.slice(cursor));
+      const end = template.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
+      if (end < 0) return undefined;
+      const literal = template.slice(cursor, start);
+      const choices = finiteExpressionValues(
+        parseExpression(template.slice(start + EXPRESSION_START.length, end)),
+        ordinal,
+      );
+      if (choices === undefined) return undefined;
+      results = results.flatMap((prefix) =>
+        choices.map((choice) => prefix + literal + interpolatedValue(choice)),
+      );
+      cursor = end + EXPRESSION_END.length;
+    }
+    return [...new Set(results)];
+  }
+
+  function finiteExpressionValues(
+    expression: Expression,
+    ordinal: number,
+  ): readonly JsonValue[] | undefined {
+    if (expression.kind === "literal") return [expression.value];
+    if (expression.kind === "path") return finitePathValues(expression.value, ordinal);
+    if (expression.kind === "not") {
+      const values = finiteExpressionValues(expression.value, ordinal);
+      return values === undefined ? undefined : [...new Set(values.map((value) => !truthy(value)))];
+    }
+    const left = finiteExpressionValues(expression.left, ordinal);
+    const right = finiteExpressionValues(expression.right, ordinal);
+    if (left === undefined || right === undefined) return undefined;
+    const results: JsonValue[] = [];
+    for (const leftValue of left) {
+      for (const rightValue of right) {
+        results.push(finiteBinaryValue(expression.operator, leftValue, rightValue));
+      }
+    }
+    return uniqueJsonValues(results);
+  }
+
+  function finitePathValues(
+    reference: ExpressionPath,
+    ordinal: number,
+  ): readonly JsonValue[] | undefined {
+    if (reference.namespace === "paseo") {
+      if (!Array.isArray(reference.path)) return undefined;
+      const input = trigger.inputs[reference.path[1]];
+      if (input?.choices === undefined) return undefined;
+      return input.required || input.default !== undefined
+        ? input.choices
+        : [...input.choices, null];
+    }
+    if (reference.namespace === "values") {
+      const value = trigger.values[reference.name];
+      return value === undefined ? undefined : finiteExpressionValues(value, ordinal);
+    }
+    const referencedOrdinal = stepOrdinals.get(reference.stepId);
+    if (referencedOrdinal === undefined || referencedOrdinal >= ordinal) return undefined;
+    const output = trigger.steps[referencedOrdinal]?.output;
+    return output === undefined ? undefined : finiteSchemaChoices(output.schema, reference.path);
   }
 
   function validateValue(name: string, ordinal = Number.POSITIVE_INFINITY): void {
@@ -849,11 +1014,41 @@ function validateExpressionContract(
   }
 
   if (
-    trigger.steps.some((step) => step.environment.startsWith("${{")) &&
+    trigger.steps.some((step) => step.environment.includes("${{")) &&
     environmentNames.size === 0
   ) {
     throw new Error(`trigger ${triggerName} has no configured environments`);
   }
+}
+
+function truthy(value: JsonValue): boolean {
+  return value !== false && value !== null && value !== 0 && value !== "";
+}
+
+function interpolatedValue(value: JsonValue): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function uniqueJsonValues(values: readonly JsonValue[]): JsonValue[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function finiteBinaryValue(
+  operator: Extract<Expression, { kind: "binary" }>["operator"],
+  left: JsonValue,
+  right: JsonValue,
+): JsonValue {
+  if (operator === "&&") return truthy(left) ? right : left;
+  if (operator === "||") return truthy(left) ? left : right;
+  if (operator === "??") return left === null ? right : left;
+  if (operator === "==") return JSON.stringify(left) === JSON.stringify(right);
+  return JSON.stringify(left) !== JSON.stringify(right);
 }
 
 function matchesInputType(value: JsonPrimitive | undefined, type: AuthoredInput["type"]): boolean {
@@ -886,10 +1081,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     for (const step of trigger.steps) {
       if (stepIds.has(step.id)) throw new Error(`duplicate step id: ${step.id}`);
       stepIds.add(step.id);
-      if (
-        !environmentIds.has(step.environment) &&
-        !DYNAMIC_INPUT_REFERENCE.test(step.environment)
-      ) {
+      if (!environmentIds.has(step.environment) && !step.environment.includes(EXPRESSION_START)) {
         throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
       }
       validateCompiledStepEnvironment(step, trigger.inputs, environments);
@@ -910,7 +1102,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
       if (!isExpression(expression))
         throw new Error(`value ${name} contains an invalid expression`);
     }
-    validateExpressionContract(trigger.name, trigger, environmentIds);
+    validateExpressionContract(trigger.name, trigger, environments);
     validateTriggerLaunchSecurity(trigger);
   }
 }

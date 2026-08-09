@@ -73,10 +73,13 @@ describe("workflow compiler", () => {
     });
 
     const compiled = compileHubConfig(raw);
-    const options = compiled.triggers[0]?.steps[0]?.agent.options;
+    const agent = compiled.triggers[0]?.steps[0]?.agent;
+    assert.ok(agent !== undefined && !("selector" in agent));
+    if (agent === undefined || "selector" in agent) return;
+    const options = agent.options;
 
     assert.deepEqual(options, sourceOptions);
-    assert.equal(compiled.triggers[0]?.steps[0]?.agent.mode, undefined);
+    assert.equal(agent.mode, undefined);
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
     assert.notEqual(options, sourceOptions);
   });
@@ -441,7 +444,7 @@ describe("workflow compiler", () => {
     );
   });
 
-  it("keeps authority finite and rejects prompt authority", () => {
+  it("rejects every dynamic inline agent configuration", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
@@ -454,7 +457,7 @@ describe("workflow compiler", () => {
             },
           ],
         }),
-      /authority/iu,
+      /dynamic inline agent configurations are not allowed/iu,
     );
     assert.throws(
       () =>
@@ -470,7 +473,7 @@ describe("workflow compiler", () => {
             },
           ],
         }),
-      /finite choices/iu,
+      /dynamic inline agent configurations are not allowed/iu,
     );
   });
 
@@ -516,7 +519,7 @@ describe("workflow compiler", () => {
             },
           ],
         }),
-      /paseo\.context outside a step prompt/iu,
+      /dynamic inline agent configurations are not allowed/iu,
     );
   });
 
@@ -547,52 +550,58 @@ describe("workflow compiler", () => {
       $defs: { provider: { enum: ["codex"] } },
     };
     assert.doesNotThrow(() =>
-      compileHubConfig({
-        ...configuration(),
-        triggers: [
-          {
-            ...trigger,
-            steps: [
-              { ...trigger.steps[0]!, id: "classify", output: { schema: outputSchema } },
-              {
-                ...trigger.steps[0]!,
-                id: "work",
-                agent: { provider: "${{ steps.classify.outputs.provider }}" },
-              },
-            ],
-          },
-        ],
-      }),
-    );
-    assert.throws(
-      () =>
-        compileHubConfig({
+      compileHubConfig(
+        {
           ...configuration(),
           triggers: [
             {
               ...trigger,
               steps: [
-                {
-                  ...trigger.steps[0]!,
-                  id: "classify",
-                  output: {
-                    schema: {
-                      type: "object",
-                      properties: {
-                        provider: { oneOf: [{ enum: ["codex"] }, { const: "opus" }] },
-                      },
-                    },
-                  },
-                },
+                { ...trigger.steps[0]!, id: "classify", output: { schema: outputSchema } },
                 {
                   ...trigger.steps[0]!,
                   id: "work",
-                  agent: { provider: "${{ steps.classify.outputs.provider }}" },
+                  agent: "${{ steps.classify.outputs.provider }}",
                 },
               ],
             },
           ],
-        }),
+        },
+        { namedAgents: { codex: { provider: "codex" } } },
+      ),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  {
+                    ...trigger.steps[0]!,
+                    id: "classify",
+                    output: {
+                      schema: {
+                        type: "object",
+                        properties: {
+                          provider: { oneOf: [{ enum: ["codex"] }, { const: "opus" }] },
+                        },
+                      },
+                    },
+                  },
+                  {
+                    ...trigger.steps[0]!,
+                    id: "work",
+                    agent: "${{ steps.classify.outputs.provider }}",
+                  },
+                ],
+              },
+            ],
+          },
+          { namedAgents: { codex: { provider: "codex" }, opus: { provider: "claude" } } },
+        ),
       /provable finite choices/iu,
     );
   });
@@ -653,7 +662,10 @@ describe("workflow compiler", () => {
             {
               ...configuration().triggers[0],
               steps: [
-                { ...configuration().triggers[0]!.steps[0], prompt: [{ include: "developer.md" }] },
+                {
+                  ...configuration().triggers[0]!.steps[0],
+                  prompt: [{ include: "partials/developer.md" }],
+                },
               ],
             },
           ],

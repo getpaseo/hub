@@ -30,12 +30,14 @@ import { RepositoryCombobox, type ComboboxRepository } from "../repository-combo
 import { CodeEditor } from "./code-editor.js";
 import {
   addPartial,
+  addWorkflow,
   configurationDraft,
   documentsOf,
   editSelected,
   isModified,
   PartialPathUnavailable,
   removePartial,
+  removeWorkflow,
   selectDocument,
   selectedDocument,
   type ConfigurationDraft,
@@ -92,7 +94,7 @@ function ProjectConfigurationScreen() {
         savePending={save.isPending || manual.isPending}
         onSave={(draft) =>
           save.mutate({
-            data: { ...scope, rawYaml: draft.yaml, partials: [...draft.partials] },
+            data: { ...scope, files: [...draft.files] },
           })
         }
         source={
@@ -148,21 +150,16 @@ function ConfigurationWorkbench({
   source: React.ReactNode;
 }) {
   const revision = configuration.activeRevision;
-  const [baseline] = useState(() =>
-    configurationDraft({
-      rawYaml: revision?.rawYaml ?? null,
-      partials: revision?.partials ?? [],
-    }),
-  );
+  const [baseline] = useState(() => configurationDraft({ files: revision?.files ?? [] }));
   const [draft, setDraft] = useState(baseline);
   const [editing, setEditing] = useState(false);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<"workflow" | "partial" | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
   const document = selectedDocument(draft);
   const modified = isModified(draft, baseline);
   const stopEditing = () => {
     setEditing(false);
-    setAdding(false);
+    setAdding(null);
     setPathError(null);
   };
   return (
@@ -182,14 +179,14 @@ function ConfigurationWorkbench({
           adding={adding}
           pathError={pathError}
           onSelect={(id) => setDraft(selectDocument(draft, id))}
-          onStartAdding={() => {
-            setAdding(true);
+          onStartAdding={(kind) => {
+            setAdding(kind);
             setPathError(null);
           }}
-          onAdd={(path) => {
+          onAdd={(kind, path) => {
             try {
-              setDraft(addPartial(draft, path));
-              setAdding(false);
+              setDraft(kind === "workflow" ? addWorkflow(draft, path) : addPartial(draft, path));
+              setAdding(null);
               setPathError(null);
             } catch (error) {
               if (!(error instanceof PartialPathUnavailable)) throw error;
@@ -197,10 +194,14 @@ function ConfigurationWorkbench({
             }
           }}
           onCancelAdding={() => {
-            setAdding(false);
+            setAdding(null);
             setPathError(null);
           }}
-          onRemove={(path) => setDraft(removePartial(draft, path))}
+          onRemove={(path) =>
+            setDraft(
+              path.endsWith(".yml") ? removeWorkflow(draft, path) : removePartial(draft, path),
+            )
+          }
         />
       </div>
       <div className="flex min-w-0 flex-col">
@@ -262,11 +263,7 @@ function ConfigurationWorkbench({
           <span>{revisionState(revision)}</span>
           {modified ? <span className="text-warning">Unsaved changes</span> : null}
           <span className="flex-1" />
-          <span>
-            {draft.partials.length === 0
-              ? "No partials"
-              : `${String(draft.partials.length)} partial${draft.partials.length === 1 ? "" : "s"}`}
-          </span>
+          <span>{`${String(draft.files.length)} file${draft.files.length === 1 ? "" : "s"}`}</span>
         </div>
       </div>
     </section>
@@ -312,11 +309,11 @@ function FileList({
 }: {
   draft: ConfigurationDraft;
   editing: boolean;
-  adding: boolean;
+  adding: "workflow" | "partial" | null;
   pathError: string | null;
   onSelect: (id: string) => void;
-  onStartAdding: () => void;
-  onAdd: (path: string) => void;
+  onStartAdding: (kind: "workflow" | "partial") => void;
+  onAdd: (kind: "workflow" | "partial", path: string) => void;
   onCancelAdding: () => void;
   onRemove: (path: string) => void;
 }) {
@@ -324,24 +321,28 @@ function FileList({
     <div className="grid gap-1.5">
       <div className="flex items-center justify-between">
         <RailLabel>Files</RailLabel>
-        {editing && !adding ? (
-          <button
-            type="button"
-            className="text-xs text-link hover:underline"
-            onClick={onStartAdding}
-          >
-            Add partial
-          </button>
+        {editing && adding === null ? (
+          <span className="flex gap-2">
+            <button
+              type="button"
+              className="text-xs text-link hover:underline"
+              onClick={() => onStartAdding("workflow")}
+            >
+              Add workflow
+            </button>
+            <button
+              type="button"
+              className="text-xs text-link hover:underline"
+              onClick={() => onStartAdding("partial")}
+            >
+              Add partial
+            </button>
+          </span>
         ) : null}
       </div>
       <ul aria-label="Configuration files" className="grid gap-0.5">
-        {documentsOf(draft).map((document, index) => (
+        {documentsOf(draft).map((document) => (
           <li key={document.id} className="flex flex-wrap items-center gap-1">
-            {document.isPartial && index === 1 ? (
-              <span className="w-full px-2 pt-2 font-mono text-[11px] text-muted-foreground">
-                .paseo/partials/
-              </span>
-            ) : null}
             <button
               type="button"
               aria-current={document.id === draft.selectedId}
@@ -356,7 +357,7 @@ function FileList({
             >
               {document.id}
             </button>
-            {editing && document.isPartial ? (
+            {editing && (document.isPartial || document.isWorkflow) ? (
               <button
                 type="button"
                 aria-label={`Remove ${document.id}`}
@@ -369,20 +370,20 @@ function FileList({
           </li>
         ))}
       </ul>
-      {adding ? (
+      {adding !== null ? (
         <form
           className="grid gap-1.5"
           onSubmit={(event) => {
             event.preventDefault();
             const form = new FormData(event.currentTarget);
-            const path = form.get("partialPath");
-            onAdd(typeof path === "string" ? path : "");
+            const path = form.get("filePath");
+            onAdd(adding, typeof path === "string" ? path : "");
           }}
         >
           <Input
-            name="partialPath"
-            aria-label="Partial path"
-            placeholder="triage/preamble.md"
+            name="filePath"
+            aria-label={adding === "workflow" ? "Workflow file name" : "Partial path"}
+            placeholder={adding === "workflow" ? "triage.yml" : "triage/preamble.md"}
             className="h-8 font-mono text-xs"
           />
           <div className="flex gap-1.5">
@@ -401,8 +402,9 @@ function FileList({
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        Partials are the <span className="font-mono">include:</span> targets under{" "}
-        <span className="font-mono">.paseo/partials/</span>. Saving activates them with the YAML.
+        Workflow YAML lives directly under <span className="font-mono">.paseo/workflows/</span>;
+        shared prompt files live under <span className="font-mono">partials/</span>. Saving
+        activates the complete bundle.
       </p>
     </div>
   );

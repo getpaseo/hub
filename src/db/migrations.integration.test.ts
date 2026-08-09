@@ -6,10 +6,11 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client, type QueryResultRow } from "pg";
 import { z } from "zod";
+import { dump } from "js-yaml";
 import { createDatabase, createPostgresPool } from "./pg.js";
 import { createHubApplication } from "../app.js";
-import { ProjectConfigurationStore, revisionPromptPartials } from "../configuration/store.js";
-import { resolvePromptPartials } from "../config/prompt-partials.js";
+import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { bootstrapInstance } from "../auth/bootstrap.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
@@ -697,9 +698,8 @@ describe("database migration application", () => {
           },
         ],
       };
-      const initial = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration: configuration,
+      const initial = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(configuration)),
         userId: "project-user",
       });
       await store.activate(initial.id);
@@ -744,44 +744,36 @@ describe("database migration application", () => {
                 max_runtime: "10m",
                 idle_timeout: "1m",
                 agent: { provider: "test", mode: "default" },
-                prompt: [{ include: "triage.md" }],
+                prompt: [{ include: "partials/triage.md" }],
               },
             ],
           },
         ],
       };
       const partialContent = "Triage the request before labeling it.";
-      const resolvedPromptPartials = await resolvePromptPartials({
-        configuration: rawConfiguration,
-        read: (path) =>
-          Promise.resolve(
-            path === ".paseo/partials/triage.md"
-              ? { kind: "file" as const, content: partialContent }
-              : undefined,
-          ),
-      });
-      const githubRevision = await store.insertGitHubRevision({
-        rawYaml: "triggers:\n  - name: triage\n",
-        rawConfiguration,
+      const files = [
+        ...configurationBundleFixture(dump(rawConfiguration)),
+        { path: ".paseo/workflows/partials/triage.md", content: partialContent },
+      ];
+      const githubRevision = await store.insertGitHubBundleRevision({
+        files,
         githubConnectionId: "github-connection-1",
         githubRepositoryId: 9251,
         githubRepositoryFullName: "acme/repo",
         githubDefaultBranch: "main",
         commitSha: "sha-with-partials",
-        path: ".paseo/hub.yml",
         webhookDeliveryId: null,
-        resolvedPromptPartials,
       });
       await store.activate(githubRevision.id);
 
       const switched = await store.switchToManual("project-user");
       const persisted = await database.findActiveProjectConfiguration(project.id);
 
-      const expectedPartials = [{ path: ".paseo/partials/triage.md", content: partialContent }];
-      assert.deepEqual(revisionPromptPartials(switched.revision), expectedPartials);
+      const expectedFiles = files.toSorted((a, b) => a.path.localeCompare(b.path));
+      assert.deepEqual(revisionBundleFiles(switched.revision), expectedFiles);
       assert.deepEqual(
-        persisted === undefined ? undefined : revisionPromptPartials(persisted),
-        expectedPartials,
+        persisted === undefined ? undefined : revisionBundleFiles(persisted),
+        expectedFiles,
       );
     } finally {
       await database.close();
@@ -1597,7 +1589,12 @@ class LegacyUpgrade {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           projectSlug: "default",
-          yaml: `environments:\n  - name: production\n    kind: daemon\n    daemon: daemon-${this.legacyDaemonId.slice(0, 8)}\n    cwd: /repo\ntriggers: []`,
+          files: [
+            {
+              path: ".paseo/hub.yml",
+              content: `environments:\n  production:\n    kind: daemon\n    daemon: daemon-${this.legacyDaemonId.slice(0, 8)}\n    cwd: /repo\nagents: {}`,
+            },
+          ],
         }),
       }),
     );

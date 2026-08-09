@@ -30,33 +30,39 @@ test("shows invalid typed manual input in Activity without creating an execution
   await app.configuration.saveManualConfiguration(
     [
       "environments:",
-      "  - name: phase-two-runner",
+      "  phase-two-runner:",
       "    kind: daemon",
       "    daemon: phase-two-runner",
       "    cwd: /workspace",
-      "triggers:",
-      "  - name: deploy",
-      "    on: manual.run",
-      "    max_runtime: 1h",
-      "    filters:",
-      "      from_users: [alice]",
-      "    inputs:",
-      "      repo:",
-      "        type: string",
-      "        required: true",
-      "        choices: [hub, paseo]",
-      "    steps:",
-      "      - id: deploy",
-      "        environment: phase-two-runner",
-      "        max_runtime: 10m",
-      "        idle_timeout: 1m",
-      "        agent:",
-      "          provider: opencode",
-      "        prompt:",
-      "          - text: '${{ paseo.prompt }}'",
+      "agents: {}",
     ].join("\n"),
   );
-  await app.configuration.expectActiveRevision(1);
+  await app.configuration.addWorkflow(
+    "deploy.yml",
+    [
+      "name: deploy",
+      "on: manual.run",
+      "max_runtime: 1h",
+      "filters:",
+      "  from_users: [alice]",
+      "inputs:",
+      "  repo:",
+      "    type: string",
+      "    required: true",
+      "    choices: [hub, paseo]",
+      "steps:",
+      "  - id: deploy",
+      "    environment: phase-two-runner",
+      "    max_runtime: 10m",
+      "    idle_timeout: 1m",
+      "    agent:",
+      "      provider: opencode",
+      "    prompt:",
+      "      - text: '${{ paseo.prompt }}'",
+    ].join("\n"),
+  );
+  await app.configuration.save();
+  await app.configuration.expectActiveRevision(2);
 
   const result = await hub.runManualInput({
     rawInput: "repo=unknown investigate",

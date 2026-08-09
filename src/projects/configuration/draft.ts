@@ -1,85 +1,65 @@
-/**
- * The set of files the configuration editor has open: the YAML document and the
- * prompt partials it includes. A revision is immutable, so a draft is never
- * partially saved — one save activates the whole set or none of it.
- *
- * Paths here are the `include:` form (relative to `.paseo/partials/`), which is
- * both what the YAML names and what the save boundary accepts.
- */
+import {
+  compareBundlePaths,
+  HUB_RESOURCE_PATH,
+  WORKFLOW_DIRECTORY,
+  WORKFLOW_PARTIAL_DIRECTORY,
+  type HubBundleFile,
+} from "../../config/bundle-contract.js";
 
-/** Identifies the YAML document in a draft. Partials are identified by their path. */
-export const CONFIGURATION_DOCUMENT_ID = "hub.yml";
+export const CONFIGURATION_DOCUMENT_ID = HUB_RESOURCE_PATH;
 
-export interface ConfigurationFile {
-  path: string;
-  content: string;
-}
-
-export interface ConfigurationDocument {
-  /** Stable id used for selection; also the label in the file list. */
+export interface ConfigurationDocument extends HubBundleFile {
   id: string;
-  /** Path as the daemon sees it, shown above the editor. */
   label: string;
-  content: string;
   language: "yaml" | "markdown";
   isPartial: boolean;
+  isWorkflow: boolean;
 }
 
 export interface ConfigurationDraft {
-  yaml: string;
-  partials: readonly ConfigurationFile[];
+  files: readonly HubBundleFile[];
   selectedId: string;
 }
 
+export const EMPTY_CONFIGURATION = "environments: {}\nagents: {}\n";
+
 export function configurationDraft(revision: {
-  rawYaml: string | null;
-  partials: readonly ConfigurationFile[];
+  files: readonly HubBundleFile[];
 }): ConfigurationDraft {
-  return {
-    yaml: revision.rawYaml ?? EMPTY_CONFIGURATION,
-    partials: [...revision.partials].sort(byPath),
-    selectedId: CONFIGURATION_DOCUMENT_ID,
-  };
+  const files =
+    revision.files.length === 0
+      ? [{ path: HUB_RESOURCE_PATH, content: EMPTY_CONFIGURATION }]
+      : [...revision.files].sort(byPath);
+  return { files, selectedId: HUB_RESOURCE_PATH };
 }
 
-export const EMPTY_CONFIGURATION = "environments: []\ntriggers: []\n";
-
 export function documentsOf(draft: ConfigurationDraft): readonly ConfigurationDocument[] {
-  return [
-    {
-      id: CONFIGURATION_DOCUMENT_ID,
-      label: CONFIGURATION_DOCUMENT_ID,
-      content: draft.yaml,
-      language: "yaml",
-      isPartial: false,
-    },
-    ...draft.partials.map((partial) => ({
-      id: partial.path,
-      label: `.paseo/partials/${partial.path}`,
-      content: partial.content,
-      language: "markdown" as const,
-      isPartial: true,
-    })),
-  ];
+  return draft.files.map((file) => ({
+    ...file,
+    id: file.path,
+    label: file.path,
+    language: file.path.endsWith(".md") ? "markdown" : "yaml",
+    isPartial: file.path.startsWith(`${WORKFLOW_PARTIAL_DIRECTORY}/`),
+    isWorkflow:
+      file.path.startsWith(`${WORKFLOW_DIRECTORY}/`) &&
+      !file.path.startsWith(`${WORKFLOW_PARTIAL_DIRECTORY}/`),
+  }));
 }
 
 export function selectedDocument(draft: ConfigurationDraft): ConfigurationDocument {
   const documents = documentsOf(draft);
-  return documents.find((document) => document.id === draft.selectedId) ?? documents[0]!;
+  return documents.find(({ id }) => id === draft.selectedId) ?? documents[0]!;
 }
 
 export function selectDocument(draft: ConfigurationDraft, id: string): ConfigurationDraft {
-  return documentsOf(draft).some((document) => document.id === id)
-    ? { ...draft, selectedId: id }
-    : draft;
+  return draft.files.some(({ path }) => path === id) ? { ...draft, selectedId: id } : draft;
 }
 
 export function editSelected(draft: ConfigurationDraft, content: string): ConfigurationDraft {
-  if (draft.selectedId === CONFIGURATION_DOCUMENT_ID) return { ...draft, yaml: content };
   return {
     ...draft,
-    partials: draft.partials.map((partial) =>
-      partial.path === draft.selectedId ? { ...partial, content } : partial,
+    files: draft.files.map((file) =>
+      file.path === draft.selectedId ? { ...file, content } : file,
     ),
   };
 }
@@ -91,42 +71,77 @@ export class PartialPathUnavailable extends Error {
   }
 }
 
-/** Adds an empty partial and selects it. The YAML must still `include:` it to save. */
 export function addPartial(draft: ConfigurationDraft, path: string): ConfigurationDraft {
-  const normalized = path.trim().replace(/^\/+/u, "");
-  if (normalized.length === 0) throw new PartialPathUnavailable("Enter a path for the partial.");
-  if (draft.partials.some((partial) => partial.path === normalized)) {
-    throw new PartialPathUnavailable(`A partial already exists at ${normalized}.`);
+  return addFile(draft, `${WORKFLOW_PARTIAL_DIRECTORY}/${normalizeRelative(path, ".md")}`, "");
+}
+
+export function addWorkflow(draft: ConfigurationDraft, path: string): ConfigurationDraft {
+  const relative = normalizeRelative(path, ".yml");
+  if (relative.includes("/")) {
+    throw new PartialPathUnavailable("Workflow files must be direct children of workflows/.");
   }
-  return {
-    ...draft,
-    partials: [...draft.partials, { path: normalized, content: "" }].sort(byPath),
-    selectedId: normalized,
-  };
+  return addFile(
+    draft,
+    `${WORKFLOW_DIRECTORY}/${relative}`,
+    "name: new-workflow\non: manual.run\nmax_runtime: 1h\nsteps: []\n",
+  );
 }
 
 export function removePartial(draft: ConfigurationDraft, path: string): ConfigurationDraft {
-  const partials = draft.partials.filter((partial) => partial.path !== path);
-  if (partials.length === draft.partials.length) return draft;
-  return {
-    ...draft,
-    partials,
-    selectedId: draft.selectedId === path ? CONFIGURATION_DOCUMENT_ID : draft.selectedId,
-  };
+  return removeFile(
+    draft,
+    path.startsWith(`${WORKFLOW_PARTIAL_DIRECTORY}/`)
+      ? path
+      : `${WORKFLOW_PARTIAL_DIRECTORY}/${path}`,
+  );
 }
 
-/** True once the draft differs from the revision it was opened from. */
+export function removeWorkflow(draft: ConfigurationDraft, path: string): ConfigurationDraft {
+  return removeFile(
+    draft,
+    path.startsWith(`${WORKFLOW_DIRECTORY}/`) ? path : `${WORKFLOW_DIRECTORY}/${path}`,
+  );
+}
+
 export function isModified(draft: ConfigurationDraft, baseline: ConfigurationDraft): boolean {
-  if (draft.yaml !== baseline.yaml) return true;
-  if (draft.partials.length !== baseline.partials.length) return true;
-  return draft.partials.some((partial, index) => {
-    const original = baseline.partials[index];
-    return original === undefined
-      ? true
-      : partial.path !== original.path || partial.content !== original.content;
+  if (draft.files.length !== baseline.files.length) return true;
+  return draft.files.some((file, index) => {
+    const original = baseline.files[index];
+    return original?.path !== file.path || original.content !== file.content;
   });
 }
 
-function byPath(left: ConfigurationFile, right: ConfigurationFile): number {
-  return left.path.localeCompare(right.path);
+function addFile(draft: ConfigurationDraft, path: string, content: string): ConfigurationDraft {
+  if (draft.files.some((file) => file.path === path)) {
+    throw new PartialPathUnavailable(`A file already exists at ${path}.`);
+  }
+  return {
+    files: [...draft.files, { path, content }].sort(byPath),
+    selectedId: path,
+  };
+}
+
+function removeFile(draft: ConfigurationDraft, path: string): ConfigurationDraft {
+  if (path === HUB_RESOURCE_PATH) return draft;
+  const files = draft.files.filter((file) => file.path !== path);
+  if (files.length === draft.files.length) return draft;
+  return {
+    files,
+    selectedId: draft.selectedId === path ? HUB_RESOURCE_PATH : draft.selectedId,
+  };
+}
+
+function normalizeRelative(path: string, extension: ".md" | ".yml"): string {
+  const normalized = path.trim().replace(/^\/+|\/+$/gu, "");
+  if (normalized.length === 0) throw new PartialPathUnavailable("Enter a file name.");
+  if (normalized.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new PartialPathUnavailable("Paths cannot contain '.' or '..' segments.");
+  }
+  return normalized.endsWith(extension) ? normalized : `${normalized}${extension}`;
+}
+
+function byPath(left: HubBundleFile, right: HubBundleFile): number {
+  if (left.path === HUB_RESOURCE_PATH) return -1;
+  if (right.path === HUB_RESOURCE_PATH) return 1;
+  return compareBundlePaths(left, right);
 }

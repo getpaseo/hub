@@ -11,6 +11,7 @@ import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
 import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -242,7 +243,7 @@ export class HubE2E {
         authorization: `Bearer ${MACHINE_KEY}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, files: configurationBundleFixture(yaml) }),
     });
     if (response.status !== 201) {
       throw new Error(
@@ -286,7 +287,7 @@ export class HubE2E {
         authorization: `Bearer ${MACHINE_KEY}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, files: configurationBundleFixture(yaml) }),
     });
     assertStatus(response, 201, "install real-agent configuration");
   }
@@ -362,7 +363,7 @@ export class HubE2E {
         authorization: `Bearer ${MACHINE_KEY}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ projectSlug: PROJECT_SLUG, yaml }),
+      body: JSON.stringify({ projectSlug: PROJECT_SLUG, files: configurationBundleFixture(yaml) }),
     });
     assertStatus(response, 201, "install real-agent routing configuration");
   }

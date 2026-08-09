@@ -9,6 +9,7 @@ import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
@@ -490,12 +491,31 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   readDefaultBranchHead() {
     return Promise.resolve(this.head);
   }
+  listFilesAtCommit(input: { commitSha: string }) {
+    const yaml = this.files[input.commitSha];
+    if (yaml === undefined) return Promise.resolve([]);
+    try {
+      return Promise.resolve(
+        configurationBundleFixture(yaml).map(({ path }) => ({ path, kind: "file" as const })),
+      );
+    } catch {
+      return Promise.resolve([{ path: ".paseo/hub.yml", kind: "file" as const }]);
+    }
+  }
   readFileAtCommit(input: { repositoryId: number; commitSha: string; path: string }) {
     this.reads.push(input);
     const rawYaml = this.files[input.commitSha];
-    return Promise.resolve(
-      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
-    );
+    let content: string | undefined;
+    if (rawYaml !== undefined) {
+      try {
+        content = configurationBundleFixture(rawYaml).find(
+          ({ path }) => path === input.path,
+        )?.content;
+      } catch {
+        content = input.path === ".paseo/hub.yml" ? rawYaml : undefined;
+      }
+    }
+    return Promise.resolve(content === undefined ? undefined : { kind: "file" as const, content });
   }
   async push(
     registration: ReturnType<typeof createGitHubRegistration>,

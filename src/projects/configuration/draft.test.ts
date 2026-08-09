@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
   addPartial,
+  addWorkflow,
   configurationDraft,
   documentsOf,
   editSelected,
   isModified,
   PartialPathUnavailable,
   removePartial,
+  removeWorkflow,
   selectDocument,
   selectedDocument,
   CONFIGURATION_DOCUMENT_ID,
@@ -15,102 +17,68 @@ import {
 } from "./draft.js";
 
 const revision = {
-  rawYaml: "environments: []\ntriggers: []\n",
-  partials: [
-    { path: "triage/preamble.md", content: "Triage first." },
-    { path: "shared/labels.md", content: "Labels." },
+  files: [
+    { path: ".paseo/workflows/triage.yml", content: "name: triage" },
+    { path: ".paseo/hub.yml", content: "environments: {}\nagents: {}\n" },
+    { path: ".paseo/workflows/partials/triage/preamble.md", content: "Triage first." },
   ],
 };
 
-describe("configuration draft", () => {
-  it("opens on the YAML document with partials listed under it", () => {
+describe("configuration bundle draft", () => {
+  it("lists every authored source path and opens hub.yml", () => {
     const draft = configurationDraft(revision);
-
     assert.equal(selectedDocument(draft).id, CONFIGURATION_DOCUMENT_ID);
-    assert.equal(selectedDocument(draft).language, "yaml");
     assert.deepEqual(
-      documentsOf(draft).map((document) => document.id),
-      [CONFIGURATION_DOCUMENT_ID, "shared/labels.md", "triage/preamble.md"],
-    );
-    assert.deepEqual(
-      documentsOf(draft).map((document) => document.label),
+      documentsOf(draft).map(({ label }) => label),
       [
-        CONFIGURATION_DOCUMENT_ID,
-        ".paseo/partials/shared/labels.md",
-        ".paseo/partials/triage/preamble.md",
+        ".paseo/hub.yml",
+        ".paseo/workflows/partials/triage/preamble.md",
+        ".paseo/workflows/triage.yml",
       ],
     );
   });
 
-  it("starts a project with no revision on an empty configuration", () => {
-    const draft = configurationDraft({ rawYaml: null, partials: [] });
-
-    assert.equal(draft.yaml, EMPTY_CONFIGURATION);
+  it("starts without a revision on the canonical resource document", () => {
+    const draft = configurationDraft({ files: [] });
+    assert.equal(selectedDocument(draft).content, EMPTY_CONFIGURATION);
     assert.equal(isModified(draft, draft), false);
   });
 
-  it("edits the selected document and leaves the others alone", () => {
+  it("edits only the selected source document", () => {
     const draft = configurationDraft(revision);
     const edited = editSelected(
-      selectDocument(draft, "triage/preamble.md"),
-      "Triage with the checklist.",
+      selectDocument(draft, ".paseo/workflows/triage.yml"),
+      "name: changed",
     );
-
-    assert.equal(selectedDocument(edited).content, "Triage with the checklist.");
-    assert.equal(edited.yaml, revision.rawYaml);
+    assert.equal(selectedDocument(edited).content, "name: changed");
     assert.equal(
-      edited.partials.find((partial) => partial.path === "shared/labels.md")?.content,
-      "Labels.",
+      edited.files.find(({ path }) => path === ".paseo/hub.yml")?.content,
+      revision.files[1]?.content,
     );
     assert.equal(isModified(edited, draft), true);
   });
 
-  it("reports no modification when content is retyped identically", () => {
-    const draft = configurationDraft(revision);
-
-    assert.equal(isModified(editSelected(draft, revision.rawYaml), draft), false);
-  });
-
-  it("adds an empty partial, selects it, and edits markdown", () => {
-    const draft = addPartial(configurationDraft(revision), "review/checklist.md");
-
-    assert.equal(draft.selectedId, "review/checklist.md");
-    assert.equal(selectedDocument(draft).language, "markdown");
-    assert.equal(selectedDocument(draft).content, "");
-    assert.equal(isModified(draft, configurationDraft(revision)), true);
-    assert.deepEqual(
-      editSelected(draft, "## Checklist").partials.find(
-        (partial) => partial.path === "review/checklist.md",
-      ),
-      { path: "review/checklist.md", content: "## Checklist" },
+  it("adds and removes direct workflows and shared partials", () => {
+    const baseline = configurationDraft(revision);
+    const withWorkflow = addWorkflow(baseline, "review");
+    assert.equal(withWorkflow.selectedId, ".paseo/workflows/review.yml");
+    const withPartial = addPartial(withWorkflow, "review/checklist");
+    assert.equal(withPartial.selectedId, ".paseo/workflows/partials/review/checklist.md");
+    assert.equal(selectedDocument(withPartial).language, "markdown");
+    assert.equal(
+      removeWorkflow(
+        removePartial(withPartial, ".paseo/workflows/partials/review/checklist.md"),
+        ".paseo/workflows/review.yml",
+      ).files.length,
+      baseline.files.length,
     );
   });
 
-  it("refuses a duplicate or empty partial path", () => {
+  it("rejects duplicate, empty, traversal, and nested workflow paths", () => {
     const draft = configurationDraft(revision);
-
-    assert.throws(() => addPartial(draft, "triage/preamble.md"), PartialPathUnavailable);
-    assert.throws(() => addPartial(draft, "   "), PartialPathUnavailable);
-    assert.equal(addPartial(draft, "/leading.md").selectedId, "leading.md");
-  });
-
-  it("returns to the YAML document when the open partial is removed", () => {
-    const draft = removePartial(
-      selectDocument(configurationDraft(revision), "triage/preamble.md"),
-      "triage/preamble.md",
-    );
-
-    assert.equal(draft.selectedId, CONFIGURATION_DOCUMENT_ID);
-    assert.deepEqual(
-      draft.partials.map((partial) => partial.path),
-      ["shared/labels.md"],
-    );
-    assert.equal(isModified(draft, configurationDraft(revision)), true);
-  });
-
-  it("ignores selection of a document the draft does not have", () => {
-    const draft = configurationDraft(revision);
-
-    assert.equal(selectDocument(draft, "missing.md").selectedId, CONFIGURATION_DOCUMENT_ID);
+    assert.throws(() => addWorkflow(draft, "triage.yml"), PartialPathUnavailable);
+    assert.throws(() => addWorkflow(draft, "nested/run.yml"), PartialPathUnavailable);
+    assert.throws(() => addPartial(draft, "../secret.md"), PartialPathUnavailable);
+    assert.throws(() => addPartial(draft, "  "), PartialPathUnavailable);
   });
 });

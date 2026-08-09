@@ -3228,8 +3228,8 @@ class PgDatabase implements Database {
           {
             kind: "authority-switch",
             fromRevisionId: projectRow.active_configuration_revision_id,
-            formattingPreserved: input.formattingPreserved,
-            ...(input.promptPartials.length === 0 ? {} : { partials: input.promptPartials }),
+            formattingPreserved: true,
+            bundle: input.bundle,
           },
           input.rawYaml,
           input.normalizedConfiguration,

@@ -268,7 +268,7 @@ function inputConfiguration() {
         steps: [
           {
             ...trigger.steps[0]!,
-            agent: { provider: "${{ paseo.inputs.agent }}", mode: "bypassPermissions" },
+            agent: { provider: "codex", mode: "bypassPermissions" },
             prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
           },
         ],

@@ -42,7 +42,9 @@ export class ProjectConfiguration {
   }
 
   private partialLabel(path: string) {
-    return `.paseo/partials/${path}`;
+    return path.startsWith(".paseo/workflows/partials/")
+      ? path
+      : `.paseo/workflows/partials/${path}`;
   }
 
   private async startEditing() {
@@ -86,7 +88,20 @@ export class ProjectConfiguration {
     await this.editor(this.partialLabel(path)).fill(content);
   }
 
+  async addWorkflow(name: string, content: string) {
+    await this.startEditing();
+    await this.page.getByRole("button", { name: "Add workflow" }).click();
+    await this.page.getByLabel("Workflow file name").fill(name);
+    await this.page.getByRole("button", { name: "Add", exact: true }).click();
+    await this.editor().fill(content);
+  }
+
   async removePartial(path: string) {
+    await this.startEditing();
+    await this.page.getByRole("button", { name: `Remove ${path}` }).click();
+  }
+
+  async removeWorkflow(path: string) {
     await this.startEditing();
     await this.page.getByRole("button", { name: `Remove ${path}` }).click();
   }

@@ -63,7 +63,7 @@ describe("public API interface", () => {
     assert.equal(body.code, "invalid_request");
     assert.deepEqual(
       body.issues?.map(({ path }) => path),
-      [["projectSlug"], ["yaml"], []],
+      [["projectSlug"], ["files"], []],
     );
   });
 
@@ -155,32 +155,6 @@ describe("public API interface", () => {
       status: number;
       code: string;
     }[] = [
-      {
-        operations: {
-          ...successfulOperations(),
-          installConfiguration: () =>
-            Promise.resolve({
-              status: "invalid_yaml",
-              issues: [{ path: ["yaml"], message: "line 2" }],
-            }),
-        },
-        request: installRequest("/api/v1/configurations/install"),
-        status: 422,
-        code: "invalid_yaml",
-      },
-      {
-        operations: {
-          ...successfulOperations(),
-          installConfiguration: () =>
-            Promise.resolve({
-              status: "invalid_document",
-              issues: [{ path: ["project"], message: "Project selector does not match." }],
-            }),
-        },
-        request: installRequest("/api/v1/configurations/install"),
-        status: 422,
-        code: "invalid_configuration_document",
-      },
       {
         operations: {
           ...successfulOperations(),
@@ -312,10 +286,10 @@ describe("generated public OpenAPI", () => {
     assert.deepEqual(publicOpenApiDocument.servers, [
       { url: "/", description: "This Hub instance" },
     ]);
-    const partialSchema = publicOpenApiDocument.components?.schemas?.["ConfigurationPartial"];
-    assert.ok(partialSchema);
-    assert.deepEqual(Reflect.get(partialSchema, "required"), ["path", "content"]);
-    assert.deepEqual(Reflect.get(partialSchema, "properties"), {
+    const fileSchema = publicOpenApiDocument.components?.schemas?.["ConfigurationFile"];
+    assert.ok(fileSchema);
+    assert.deepEqual(Reflect.get(fileSchema, "required"), ["path", "content"]);
+    assert.deepEqual(Reflect.get(fileSchema, "properties"), {
       path: { type: "string", minLength: 1, maxLength: 512 },
       content: { type: "string", maxLength: 1000000 },
     });
@@ -436,7 +410,15 @@ function request(
 function installRequest(path: string, requestId: string = randomUUID()): Request {
   return request(path, {
     requestId,
-    body: JSON.stringify({ projectSlug: "project", yaml: "environments: []\ntriggers: []" }),
+    body: JSON.stringify({
+      projectSlug: "project",
+      files: [
+        {
+          path: ".paseo/hub.yml",
+          content: "environments:\n  runner:\n    kind: docker\n    image: paseo/test\nagents: {}",
+        },
+      ],
+    }),
   });
 }
 

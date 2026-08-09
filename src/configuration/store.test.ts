@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { dump } from "js-yaml";
 import {
   compiledConfigurationHash,
   parseCompiledHubConfig,
   rawConfigurationHash,
 } from "../config/compiler.js";
-import { resolvePromptPartials } from "../config/prompt-partials.js";
-import { ProjectConfigurationStore, revisionPromptPartials } from "./store.js";
+import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import type { DiscordConnectionRecord } from "../db/types.js";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 
 const primary: DiscordConnectionRecord = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -83,11 +84,20 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.equal(revision.rawYaml, rawYaml);
     assert.deepEqual(revision.sourceEvidence, { kind: "manual", authoredBy: "user-1" });
-    assert.deepEqual(active.configuration.triggers[0]?.steps[0]?.agent.options, options);
-    assert.deepEqual(
-      parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.steps[0]?.agent.options,
-      options,
-    );
+    const activeAgent = active.configuration.triggers[0]?.steps[0]?.agent;
+    const storedAgent = parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]
+      ?.steps[0]?.agent;
+    assert.ok(activeAgent !== undefined && !("selector" in activeAgent));
+    assert.ok(storedAgent !== undefined && !("selector" in storedAgent));
+    if (
+      activeAgent === undefined ||
+      "selector" in activeAgent ||
+      storedAgent === undefined ||
+      "selector" in storedAgent
+    )
+      return;
+    assert.deepEqual(activeAgent.options, options);
+    assert.deepEqual(storedAgent.options, options);
   });
 
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
@@ -106,12 +116,15 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     const store = new ProjectConfigurationStore(database, project.id);
 
-    const revision = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: discordConfiguration({
-        guild: "100",
-        connection: "discord-primary",
-      }),
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump(
+          discordConfiguration({
+            guild: "100",
+            connection: "discord-primary",
+          }),
+        ),
+      ),
       userId: "user-1",
     });
     assert.equal(
@@ -144,34 +157,27 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     const store = new ProjectConfigurationStore(database, project.id);
     const rawConfiguration = includeConfiguration();
-    const resolvedPromptPartials = await resolvePromptPartials({
-      configuration: rawConfiguration,
-      read: (path) =>
-        Promise.resolve(
-          path === ".paseo/partials/triage.md"
-            ? { kind: "file" as const, content: PARTIAL_CONTENT }
-            : undefined,
-        ),
-    });
-    const revision = await store.insertGitHubRevision({
-      rawYaml: "triggers:\n  - name: triage\n",
-      rawConfiguration,
+    const files = [
+      ...configurationBundleFixture(dump(rawConfiguration)),
+      { path: ".paseo/workflows/partials/triage.md", content: PARTIAL_CONTENT },
+    ];
+    const revision = await store.insertGitHubBundleRevision({
+      files,
       githubConnectionId: "github-connection-1",
       githubRepositoryId: 9001,
       githubRepositoryFullName: "acme/repo",
       githubDefaultBranch: "main",
       commitSha: "sha-with-partials",
-      path: ".paseo/hub.yml",
       webhookDeliveryId: null,
-      resolvedPromptPartials,
     });
     await store.activate(revision.id);
 
     const switched = await store.switchToManual("user-1");
 
-    assert.deepEqual(revisionPromptPartials(switched.revision), [
-      { path: ".paseo/partials/triage.md", content: PARTIAL_CONTENT },
-    ]);
+    assert.deepEqual(
+      revisionBundleFiles(switched.revision),
+      files.toSorted((a, b) => a.path.localeCompare(b.path)),
+    );
   });
 
   it("resolves a unique guild without requiring a connection slug", async () => {
@@ -418,7 +424,7 @@ function includeConfiguration() {
             max_runtime: "10m",
             idle_timeout: "1m",
             agent: { provider: "test", mode: "default" },
-            prompt: [{ include: "triage.md" }],
+            prompt: [{ include: "partials/triage.md" }],
           },
         ],
       },

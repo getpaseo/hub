@@ -14,38 +14,45 @@ const owner = {
   password: "alice-projects-password",
 };
 const validConfiguration =
-  "environments:\n  - name: runner\n    kind: docker\n    image: paseo/test\ntriggers: []";
+  "environments:\n  runner:\n    kind: docker\n    image: paseo/test\nagents: {}";
 const unresolvedConfiguration =
-  "environments:\n  - name: runner\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\ntriggers: []";
+  "environments:\n  runner:\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\nagents: {}";
 /** Taller than the editor at any desktop viewport, so its last line starts out of sight. */
 const longConfiguration = [
   "environments:",
   ...Array.from({ length: 40 }, (_, index) => [
-    `  - name: runner-${String(index + 1)}`,
+    `  runner-${String(index + 1)}:`,
     "    kind: docker",
     "    image: paseo/test",
   ]).flat(),
-  "triggers: []",
+  "agents: {}",
 ].join("\n");
-const includeConfiguration = [
+const includeResources = [
   "environments:",
-  "  - name: runner",
+  "  runner:",
   "    kind: daemon",
   "    daemon: editor-daemon",
   "    cwd: /workspace",
-  "triggers:",
-  "  - name: triage",
-  "    on: manual.run",
-  "    max_runtime: 1h",
-  "    steps:",
-  "      - id: only",
-  "        environment: runner",
-  "        max_runtime: 10m",
-  "        idle_timeout: 1m",
-  "        agent: { provider: claude }",
-  "        prompt:",
-  "          - include: triage/preamble.md",
+  "agents: {}",
 ].join("\n");
+const includeWorkflow = [
+  "name: triage",
+  "on: manual.run",
+  "max_runtime: 1h",
+  "steps:",
+  "  - id: only",
+  "    environment: runner",
+  "    max_runtime: 10m",
+  "    idle_timeout: 1m",
+  "    agent: { provider: claude }",
+  "    prompt:",
+  "      - include: partials/triage/preamble.md",
+].join("\n");
+
+const bundle = (hub: string, files: readonly { path: string; content: string }[] = []) => [
+  { path: ".paseo/hub.yml", content: hub },
+  ...files,
+];
 
 test("creates and archives projects through the organization project list", async ({
   hub,
@@ -85,13 +92,13 @@ test("keeps the active exact-SHA revision when the next GitHub revision is inval
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
   await app.configuration.useRepository("acme-inc/app");
-  await projectExternal.setGitHubRevision(9001, "valid-sha", validConfiguration);
+  await projectExternal.setGitHubRevision(9001, "valid-sha", bundle(validConfiguration));
   await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
   await projectExternal.setGitHubRevision(
     9001,
     "invalid-sha",
-    "environments: []\ntriggers: invalid",
+    bundle("environments: []\nagents: {}"),
   );
   await projectExternal.pushGitHubDefaultBranch(9001, "invalid-sha", "invalid-delivery");
   await app.configuration.syncNow();
@@ -111,7 +118,7 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
   await app.configuration.useRepository("acme-inc/app");
-  await projectExternal.setGitHubRevision(9001, "valid-sha", validConfiguration);
+  await projectExternal.setGitHubRevision(9001, "valid-sha", bundle(validConfiguration));
   await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
   await app.configuration.switchToManual();
@@ -143,19 +150,41 @@ test("keeps GitHub-authored partials openable after switching to manual", async 
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
   await app.configuration.useRepository("acme-inc/app");
-  await projectExternal.setGitHubRevision(9001, "partial-sha", includeConfiguration, [
-    { path: "triage/preamble.md", content: "Triage before labelling." },
-  ]);
+  await projectExternal.setGitHubRevision(
+    9001,
+    "partial-sha",
+    bundle(includeResources, [
+      { path: ".paseo/workflows/triage.yml", content: includeWorkflow },
+      {
+        path: ".paseo/workflows/partials/triage/preamble.md",
+        content: "Triage before labelling.",
+      },
+    ]),
+  );
   await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
-  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
-  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+  await app.configuration.expectFiles([
+    ".paseo/hub.yml",
+    ".paseo/workflows/partials/triage/preamble.md",
+    ".paseo/workflows/triage.yml",
+  ]);
+  await app.configuration.expectPartialContent(
+    ".paseo/workflows/partials/triage/preamble.md",
+    "Triage before labelling.",
+  );
 
   await app.configuration.switchToManual();
 
   await app.configuration.expectActiveRevision(2);
-  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
-  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+  await app.configuration.expectFiles([
+    ".paseo/hub.yml",
+    ".paseo/workflows/partials/triage/preamble.md",
+    ".paseo/workflows/triage.yml",
+  ]);
+  await app.configuration.expectPartialContent(
+    ".paseo/workflows/partials/triage/preamble.md",
+    "Triage before labelling.",
+  );
   await app.configuration.saveUnmodified();
   await app.configuration.expectConfigurationActivated(3);
 });
@@ -210,20 +239,32 @@ test("edits configuration and prompt partials in the editor", async ({ hub, page
   await app.navigation.openProject("Default");
   await app.navigation.openProjectSection("Configuration");
 
-  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.saveManualConfiguration(includeResources);
   await app.configuration.expectConfigurationActivated(1);
   await app.configuration.expectReadOnlyEditor("environments:");
   await app.configuration.expectHighlightedYaml();
 
   await app.configuration.addPartial("triage/preamble.md", "Triage before labelling.");
-  await app.configuration.openFile("hub.yml");
-  await app.configuration.saveManualConfiguration(includeConfiguration);
+  await app.configuration.addWorkflow("triage.yml", includeWorkflow);
+  await app.configuration.save();
   await app.configuration.expectConfigurationActivated(2);
 
   await app.navigation.openProjectSection("Overview");
   await app.navigation.openProjectSection("Configuration");
-  await app.configuration.expectFiles(["hub.yml", "triage/preamble.md"]);
-  await app.configuration.expectPartialContent("triage/preamble.md", "Triage before labelling.");
+  await app.configuration.expectFiles([
+    ".paseo/hub.yml",
+    ".paseo/workflows/partials/triage/preamble.md",
+    ".paseo/workflows/triage.yml",
+  ]);
+  await app.configuration.expectPartialContent(
+    ".paseo/workflows/partials/triage/preamble.md",
+    "Triage before labelling.",
+  );
+  await app.configuration.removeWorkflow(".paseo/workflows/triage.yml");
+  await app.configuration.removePartial(".paseo/workflows/partials/triage/preamble.md");
+  await app.configuration.save();
+  await app.configuration.expectConfigurationActivated(3);
+  await app.configuration.expectFiles([".paseo/hub.yml"]);
 });
 
 test("scrolls a long configuration down to its last line", async ({ hub, page }) => {
@@ -254,7 +295,7 @@ test("rejects a partial the configuration does not include", async ({ hub, page 
   await app.configuration.addPartial("orphan.md", "Nothing includes this.");
   await app.configuration.save();
 
-  await app.configuration.expectValidationError("not referenced by the configuration");
+  await app.configuration.expectValidationError("not referenced by any workflow");
   await app.configuration.expectActiveRevision(1);
 });
 

@@ -207,7 +207,10 @@ describe("production Hub cold start", () => {
             authorization: `Bearer ${key.secret}`,
             "content-type": "application/json",
           },
-          body: JSON.stringify({ projectSlug: "not-present", yaml: "version: 1" }),
+          body: JSON.stringify({
+            projectSlug: "not-present",
+            files: [{ path: ".paseo/hub.yml", content: "environments: {}\nagents: {}" }],
+          }),
         }),
       );
 

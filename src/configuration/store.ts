@@ -11,6 +11,12 @@ import {
 } from "../config/compiler.js";
 import type { EnvironmentConfig } from "../config/schema.js";
 import {
+  compileHubBundle,
+  HUB_RESOURCE_PATH,
+  type CompiledHubBundle,
+  type HubBundleFile,
+} from "../config/bundle.js";
+import {
   resolvedPromptPartialsEvidence,
   type PromptPartialBundleFile,
   type ResolvedPromptPartials,
@@ -42,6 +48,30 @@ export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments
 const storedPromptPartialsSchema = z.object({
   partials: z.array(z.object({ path: z.string(), content: z.string() })),
 });
+
+const storedBundleSchema = z.object({
+  bundle: z.object({
+    authoredHash: z.string(),
+    files: z.array(z.object({ path: z.string(), content: z.string() })),
+  }),
+});
+
+export function revisionBundleFiles(
+  revision: Pick<ProjectConfigurationRevisionRecord, "sourceEvidence">,
+): readonly HubBundleFile[] {
+  const parsed = storedBundleSchema.safeParse(revision.sourceEvidence);
+  return parsed.success ? parsed.data.bundle.files : [];
+}
+
+function addBundleEvidence(sourceEvidence: unknown, bundle: CompiledHubBundle): unknown {
+  const evidence = {
+    authoredHash: bundle.authoredHash,
+    files: bundle.files.map(({ path, content }) => ({ path, content })),
+  };
+  return typeof sourceEvidence === "object" && sourceEvidence !== null
+    ? { ...sourceEvidence, bundle: evidence }
+    : { sourceEvidence, bundle: evidence };
+}
 
 /**
  * The partial files a revision was built from, read back out of the evidence this
@@ -79,6 +109,97 @@ export class ProjectConfigurationStore {
     private readonly database: Database,
     private readonly projectId: string,
   ) {}
+
+  async validateBundle(
+    files: readonly HubBundleFile[],
+  ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
+    let bundle: CompiledHubBundle;
+    try {
+      bundle = compileHubBundle(files);
+    } catch (error) {
+      return { valid: false, validationErrors: formatConfigurationError(error) };
+    }
+    const prepared = await prepareCompiledRevision(
+      this.database,
+      this.projectId,
+      bundle.configuration,
+    );
+    return prepared.validationErrors === undefined
+      ? { valid: true }
+      : { valid: false, validationErrors: prepared.validationErrors };
+  }
+
+  async insertManualBundleRevision(input: {
+    files: readonly HubBundleFile[];
+    userId: string | null;
+    sourceEvidence?: unknown;
+  }): Promise<ProjectConfigurationRevisionRecord> {
+    const bundle = compileHubBundle(input.files);
+    const prepared = await prepareCompiledRevision(
+      this.database,
+      this.projectId,
+      bundle.configuration,
+    );
+    return this.database.insertProjectConfigurationRevision({
+      projectId: this.projectId,
+      sourceKind: "manual",
+      sourceEvidence: addBundleEvidence(
+        input.sourceEvidence ?? { kind: "manual", userId: input.userId },
+        bundle,
+      ),
+      rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
+      normalizedConfiguration: prepared.normalizedConfiguration,
+      ...(prepared.validationErrors === undefined
+        ? {}
+        : { validationErrors: prepared.validationErrors }),
+      contentHash: prepared.contentHash,
+      createdByUserId: input.userId,
+    });
+  }
+
+  async insertGitHubBundleRevision(input: {
+    files: readonly HubBundleFile[];
+    githubConnectionId: string;
+    githubRepositoryId: number;
+    githubRepositoryFullName: string;
+    githubDefaultBranch: string;
+    commitSha: string;
+    webhookDeliveryId: string | null;
+    validationErrors?: unknown;
+  }): Promise<ProjectConfigurationRevisionRecord> {
+    const bundle = compileHubBundle(input.files);
+    const prepared =
+      input.validationErrors === undefined
+        ? await prepareCompiledRevision(this.database, this.projectId, bundle.configuration)
+        : {
+            normalizedConfiguration: bundle.configuration,
+            contentHash: bundle.authoredHash,
+            validationErrors: input.validationErrors,
+          };
+    return this.database.insertProjectConfigurationRevision({
+      projectId: this.projectId,
+      sourceKind: "github",
+      sourceEvidence: addBundleEvidence(
+        {
+          kind: "github",
+          githubConnectionId: input.githubConnectionId,
+          githubRepositoryId: input.githubRepositoryId,
+          githubRepositoryFullName: input.githubRepositoryFullName,
+          githubDefaultBranch: input.githubDefaultBranch,
+          commitSha: input.commitSha,
+          path: HUB_RESOURCE_PATH,
+          webhookDeliveryId: input.webhookDeliveryId,
+        },
+        bundle,
+      ),
+      rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
+      normalizedConfiguration: prepared.normalizedConfiguration,
+      ...(prepared.validationErrors === undefined
+        ? {}
+        : { validationErrors: prepared.validationErrors }),
+      contentHash: prepared.contentHash,
+    });
+  }
 
   async insertManualRevision(input: {
     rawYaml: string | null;
@@ -230,9 +351,12 @@ export class ProjectConfigurationStore {
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
     const active = await this.database.findActiveProjectConfiguration(this.projectId);
     if (active === undefined) throw new Error("active configuration not found");
-    const formattingPreserved = active.rawYaml !== null;
+    const files = revisionBundleFiles(active);
+    if (files.length === 0) throw new Error("active configuration has no authored bundle");
+    const bundle = compileHubBundle(files);
     const rawYaml =
-      active.rawYaml ?? dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
+      bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ??
+      dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
     const configuration = parseProjectConfiguration(active);
     const routes = await compileTriggerRoutes(this.database, this.projectId, configuration);
     const revision = await this.database.switchProjectConfigurationToManual({
@@ -241,8 +365,7 @@ export class ProjectConfigurationStore {
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
       contentHash: compiledConfigurationHash(configuration),
-      formattingPreserved,
-      promptPartials: revisionPromptPartials(active),
+      bundle: { authoredHash: bundle.authoredHash, files: bundle.files },
       routes,
     });
     return { revision, configuration: parseProjectConfiguration(revision) };
@@ -303,6 +426,29 @@ async function prepareRevision(
   };
 }
 
+async function prepareCompiledRevision(
+  database: Database,
+  projectId: string,
+  configuration: CompiledHubConfig,
+): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
+  const compiled = await resolveCompiledConfiguration(database, projectId, configuration);
+  if (!compiled.success) {
+    return {
+      kind: "compiled",
+      normalizedConfiguration: compiled.configuration,
+      contentHash: compiledConfigurationHash(compiled.configuration),
+      validationErrors: compiled.validationErrors ?? {
+        formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
+      },
+    };
+  }
+  return {
+    kind: "compiled",
+    normalizedConfiguration: compiled.configuration,
+    contentHash: compiledConfigurationHash(compiled.configuration),
+  };
+}
+
 type PreparedRevision =
   | {
       kind: "compiled";
@@ -353,6 +499,14 @@ async function compileConfiguration(
       validationErrors: formatConfigurationError(error),
     };
   }
+  return resolveCompiledConfiguration(database, projectId, configuration);
+}
+
+async function resolveCompiledConfiguration(
+  database: Database,
+  projectId: string,
+  configuration: CompiledHubConfig,
+): Promise<Exclude<CompileConfigurationResult, { kind: "raw" }>> {
   const project = await database.findProjectById(projectId);
   if (project === undefined) {
     return { success: false, kind: "compiled", missing: ["project"], configuration };

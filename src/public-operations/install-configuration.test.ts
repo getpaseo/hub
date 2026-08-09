@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { ProjectConfigurationStore } from "../configuration/store.js";
+import { revisionBundleFiles, ProjectConfigurationStore } from "../configuration/store.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
+import type { HubBundleFile } from "../config/bundle.js";
 import { hashPromptPartialContent } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
@@ -15,184 +16,112 @@ const authorization = {
   scopes: ["configuration:install" as const],
 };
 
-const workflowYaml = [
-  "environments:",
-  "  - name: runner",
-  "    kind: docker",
-  "    image: paseo/valid",
-  "triggers: []",
-].join("\n");
+function files(partial = "Follow the safety checklist."): HubBundleFile[] {
+  return [
+    {
+      path: ".paseo/hub.yml",
+      content: [
+        "environments:",
+        "  runner:",
+        "    kind: daemon",
+        "    daemon: daemon-10000000",
+        "    cwd: /repo",
+        "agents: {}",
+      ].join("\n"),
+    },
+    {
+      path: ".paseo/workflows/request.yml",
+      content: [
+        "name: request",
+        "on: manual.run",
+        "max_runtime: 1h",
+        "steps:",
+        "  - id: work",
+        "    environment: runner",
+        "    max_runtime: 10m",
+        "    idle_timeout: 1m",
+        "    agent: { provider: test }",
+        "    prompt:",
+        "      - include: partials/docs/safety.md",
+      ].join("\n"),
+    },
+    { path: ".paseo/workflows/partials/docs/safety.md", content: partial },
+  ];
+}
 
-const partialWorkflowYaml = [
-  "environments:",
-  "  - name: runner",
-  "    kind: daemon",
-  "    daemon: daemon-10000000",
-  "    cwd: /repo",
-  "triggers:",
-  "  - name: request",
-  "    on: manual.run",
-  "    max_runtime: 1h",
-  "    steps:",
-  "      - id: work",
-  "        environment: runner",
-  "        max_runtime: 10m",
-  "        idle_timeout: 1m",
-  "        agent: { provider: test }",
-  "        prompt:",
-  "          - include: docs/safety.md",
-].join("\n");
-
-describe("public configuration installation", () => {
-  it("installs selector-free YAML exactly as before", async () => {
+describe("public configuration bundle installation", () => {
+  it("installs and retains every exact authored file", async () => {
     const harness = await installHarness();
-
-    const result = await harness.install(workflowYaml);
+    const result = await harness.install(files());
 
     assert.equal(result.status, "installed");
     assert.equal(harness.insertions, 1);
-    assert.equal((await harness.readModel()).activeRevision?.rawYaml, workflowYaml);
-  });
-
-  it("lets the request project override different file metadata", async () => {
-    const harness = await installHarness();
-    const yaml = `project: another-organization/another-project\n${workflowYaml}`;
-
-    const result = await harness.install(yaml);
-
-    assert.equal(result.status, "installed");
-    assert.equal(result.status === "installed" ? result.projectSlug : undefined, "payments");
-    assert.equal(harness.insertedConfigurationHasProject, false);
-    assert.equal((await harness.readModel()).activeRevision?.rawYaml, yaml);
-  });
-
-  it("keeps strict workflow validation after removing deployment metadata", async () => {
-    const harness = await installHarness();
-
-    const result = await harness.install(`project: payments\nunknown: true\n${workflowYaml}`);
-
-    assert.equal(result.status, "invalid_configuration");
-    assert.deepEqual(result.issues, [{ path: [], message: 'Unrecognized key: "unknown"' }]);
-    assert.equal((await harness.readModel()).activeRevision, null);
-  });
-
-  it("reports invalid project metadata at the project field path without a revision", async () => {
-    const harness = await installHarness();
-
-    const result = await harness.install(`project: ""\n${workflowYaml}`);
-
-    assert.equal(result.status, "invalid_document");
-    assert.deepEqual(
-      result.issues.map((issue) => issue.path),
-      [["project"]],
-    );
-    assert.equal(harness.insertions, 0);
-    assert.equal((await harness.readModel()).activeRevision, null);
-  });
-
-  it("resolves submitted prompt partials and records their source evidence", async () => {
-    const harness = await installHarness();
-
-    const result = await harness.install(partialWorkflowYaml, [
-      { path: "docs/safety.md", content: "Follow the safety checklist." },
-    ]);
-
-    assert.equal(result.status, "installed");
     const revision = (await harness.readModel()).activeRevision;
     assert.ok(revision);
+    assert.deepEqual(
+      revisionBundleFiles(revision),
+      files().toSorted((left, right) => left.path.localeCompare(right.path)),
+    );
     const compiled = parseCompiledHubConfig(revision.normalizedConfiguration);
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.prompt, [
       {
         kind: "partial",
-        path: ".paseo/partials/docs/safety.md",
+        path: ".paseo/workflows/partials/docs/safety.md",
         content: "Follow the safety checklist.",
         contentHash: hashPromptPartialContent("Follow the safety checklist."),
       },
     ]);
-    assert.deepEqual(revision.sourceEvidence, {
-      kind: "api-key",
-      credentialId: authorization.credentialId,
-      partials: [
-        {
-          path: ".paseo/partials/docs/safety.md",
-          content: "Follow the safety checklist.",
-          contentHash: hashPromptPartialContent("Follow the safety checklist."),
-        },
-      ],
-    });
   });
 
-  it("validates through the project compiler without creating a revision", async () => {
+  it("validates without creating a revision", async () => {
     const harness = await installHarness();
-
-    const valid = await harness.validate(workflowYaml);
-    const invalid = await harness.validate(`unknown: true\n${workflowYaml}`);
-
-    assert.deepEqual(valid, { status: "valid", projectSlug: "payments", valid: true });
-    assert.equal(invalid.status, "invalid_configuration");
+    assert.deepEqual(await harness.validate(files()), {
+      status: "valid",
+      projectSlug: "payments",
+      valid: true,
+    });
     assert.equal(harness.insertions, 0);
-    assert.equal((await harness.readModel()).activeRevision, null);
   });
 
   it.each([
     {
-      name: "missing",
-      files: [],
-      expected: ["partials", ".paseo/partials/docs/safety.md"],
+      name: "missing workflow partial",
+      bundle: files().slice(0, 2),
+      path: [".paseo/workflows/partials/docs/safety.md"],
     },
     {
-      name: "unsafe",
-      files: [{ path: "../secret.md", content: "secret" }],
-      expected: ["partials", 0, "path"],
+      name: "duplicate source path",
+      bundle: [...files(), files()[1]!],
+      path: [".paseo/workflows/request.yml"],
     },
     {
-      name: "duplicate",
-      files: [
-        { path: "docs/safety.md", content: "one" },
-        { path: "docs/safety%2emd", content: "two" },
+      name: "monolithic trigger",
+      bundle: [
+        {
+          path: ".paseo/hub.yml",
+          content: `${files()[0]!.content}\ntriggers: []`,
+        },
       ],
-      expected: ["partials", 1, "path"],
+      path: [".paseo/hub.yml", "triggers"],
     },
-    {
-      name: "unexpected",
-      yaml: workflowYaml,
-      files: [{ path: "unused.md", content: "unused" }],
-      expected: ["partials", 0, "path"],
-    },
-  ])(
-    "rejects $name partial bundle at the operation boundary",
-    async ({ yaml, files, expected }) => {
-      const harness = await installHarness();
-
-      const result = await harness.install(yaml ?? partialWorkflowYaml, files);
-
-      assert.equal(result.status, "invalid_bundle");
-      if (result.status !== "invalid_bundle") return;
-      assert.deepEqual(result.issues[0]?.path, expected);
-      assert.equal(harness.insertions, 0);
-      assert.equal((await harness.readModel()).activeRevision, null);
-    },
-  );
-
-  it("creates a new revision when only supplied partial content changes", async () => {
+  ])("rejects $name before creating a revision", async ({ bundle, path }) => {
     const harness = await installHarness();
+    const result = await harness.install(bundle);
+    assert.equal(result.status, "invalid_bundle");
+    if (result.status !== "invalid_bundle") return;
+    assert.deepEqual(result.issues[0]?.path, path);
+    assert.equal(harness.insertions, 0);
+  });
 
-    const first = await harness.install(partialWorkflowYaml, [
-      { path: "docs/safety.md", content: "First instructions" },
-    ]);
-    const firstRevision = (await harness.readModel()).activeRevision;
-    const second = await harness.install(partialWorkflowYaml, [
-      { path: "docs/safety.md", content: "Second instructions" },
-    ]);
-    const secondRevision = (await harness.readModel()).activeRevision;
-
-    assert.equal(first.status, "installed");
-    assert.equal(second.status, "installed");
-    assert.ok(firstRevision);
-    assert.ok(secondRevision);
-    assert.notEqual(firstRevision.id, secondRevision.id);
-    assert.notEqual(firstRevision.contentHash, secondRevision.contentHash);
-    assert.equal(secondRevision.rawYaml, partialWorkflowYaml);
+  it("creates a distinct revision when only a partial changes", async () => {
+    const harness = await installHarness();
+    await harness.install(files("First instructions"));
+    const first = (await harness.readModel()).activeRevision;
+    await harness.install(files("Second instructions"));
+    const second = (await harness.readModel()).activeRevision;
+    assert.ok(first && second);
+    assert.notEqual(first.id, second.id);
+    assert.notEqual(first.contentHash, second.contentHash);
   });
 });
 
@@ -206,43 +135,32 @@ async function installHarness() {
     createdByUserId: "user-1",
   });
   let insertions = 0;
-  let insertedConfigurationHasProject = false;
   const store = new ProjectConfigurationStore(database, project.id);
   const operations = createPublicOperations(createDatabasePublicOperationRepository(database), {
     configurationForProject: () => ({
-      validateManualConfiguration: (rawConfiguration, resolvedPromptPartials) =>
-        store.validateManualConfiguration(rawConfiguration, resolvedPromptPartials),
-      async insertManualRevision(input) {
+      validateBundle: (bundle) => store.validateBundle(bundle),
+      async insertManualBundleRevision(input) {
         insertions += 1;
-        insertedConfigurationHasProject =
-          typeof input.rawConfiguration === "object" &&
-          input.rawConfiguration !== null &&
-          Object.hasOwn(input.rawConfiguration, "project");
-        return store.insertManualRevision(input);
+        return store.insertManualBundleRevision(input);
       },
       activate: (id) => store.activate(id),
     }),
     dispatchManualEvent: () => Promise.resolve(),
   });
   return {
-    install: (yaml: string, partials: readonly { path: string; content: string }[] = []) =>
+    install: (bundle: readonly HubBundleFile[]) =>
       operations.installConfiguration(authorization, {
         projectSlug: project.slug,
-        yaml,
-        partials,
+        files: bundle,
       }),
-    validate: (yaml: string, partials: readonly { path: string; content: string }[] = []) =>
+    validate: (bundle: readonly HubBundleFile[]) =>
       operations.validateConfiguration(authorization, {
         projectSlug: project.slug,
-        yaml,
-        partials,
+        files: bundle,
       }),
     readModel: () => database.projectConfigurationReadModel(project.id),
     get insertions() {
       return insertions;
-    },
-    get insertedConfigurationHasProject() {
-      return insertedConfigurationHasProject;
     },
   };
 }

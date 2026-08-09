@@ -15,13 +15,14 @@ import { WebSocket, type RawData } from "ws";
 import { Client } from "pg";
 import { z } from "zod";
 import type { SourcePaseo } from "./source-paseo.js";
-import type { PromptPartialBundleFile } from "../../src/config/prompt-partials.js";
+import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
+import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
 import { ProjectNavigation } from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
@@ -34,8 +35,7 @@ export interface BuiltApplication {
   setGitHubConfiguration(input: {
     repositoryId: number;
     commitSha: string;
-    rawYaml?: string;
-    partials?: readonly PromptPartialBundleFile[];
+    files?: readonly HubBundleFile[];
   }): Promise<void>;
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
@@ -2154,7 +2154,7 @@ export class PaseoHub {
         headers: machineHeaders(),
         data: {
           projectSlug: "default",
-          yaml: manualConfiguration(daemonSlug),
+          files: configurationBundleFixture(manualConfiguration(daemonSlug)),
         },
       },
     );
@@ -4668,7 +4668,10 @@ function manualFailureContracts(): readonly HttpContract[] {
         "content-type": "application/json",
         "x-request-id": "phase-zero-contract",
       },
-      JSON.stringify({ projectSlug: "default", yaml: "environments: [" }),
+      JSON.stringify({
+        projectSlug: "default",
+        files: [{ path: ".paseo/hub.yml", content: "environments: [" }],
+      }),
     ),
     exact(
       "unknown manual config is visible",

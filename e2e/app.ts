@@ -120,8 +120,7 @@ class BuiltApplications {
       setGitHubConfiguration: (input: {
         repositoryId: number;
         commitSha: string;
-        rawYaml?: string;
-        partials?: readonly { path: string; content: string }[];
+        files?: readonly { path: string; content: string }[];
       }) => deliverCommand(server, { type: "github-configuration", ...input }),
       setBillingProduct: (product: FixtureBillingProduct) =>
         deliverCommand(server, { type: "billing-product", product }),

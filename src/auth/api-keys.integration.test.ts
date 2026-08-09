@@ -176,7 +176,13 @@ describe("organization API-key boundary", () => {
           validStatus: 201,
           body: {
             projectSlug,
-            yaml: "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+            files: [
+              {
+                path: ".paseo/hub.yml",
+                content:
+                  "environments:\n  runner:\n    kind: docker\n    image: paseo/valid\nagents: {}",
+              },
+            ],
           },
         },
         {

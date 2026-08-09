@@ -1,7 +1,6 @@
-import { load } from "js-yaml";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
-import { ProjectConfigurationStore, revisionPromptPartials } from "../configuration/store.js";
+import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import {
   configurationValidationMessages,
   promptPartialValidationErrors,
@@ -9,12 +8,11 @@ import {
 } from "../configuration/validation-errors.js";
 import { rawConfigurationHash } from "../config/compiler.js";
 import {
-  promptPartialIncludePath,
-  PromptPartialBundleError,
-  resolvePromptPartialsFromBundle,
-  type PromptPartialBundleFile,
-  type ResolvedPromptPartials,
-} from "../config/prompt-partials.js";
+  compileHubBundle,
+  HUB_RESOURCE_PATH,
+  HubBundleError,
+  type HubBundleFile,
+} from "../config/bundle.js";
 import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
@@ -55,8 +53,7 @@ export type ManualConfigurationSaveResult =
 
 /** One save: the YAML and every partial file it includes, activated together. */
 export interface ManualConfigurationInput {
-  rawYaml: string;
-  partials: readonly PromptPartialBundleFile[];
+  files: readonly HubBundleFile[];
 }
 
 export class ProjectDashboard {
@@ -245,17 +242,15 @@ export class ProjectDashboard {
         await this.recordRejectedManualConfiguration({
           projectId: tenant.project.id,
           userId: account.account.id,
-          rawYaml: input.rawYaml,
+          files: input.files,
           validationErrors: authored.validationErrors,
         }),
       );
     }
     const store = new ProjectConfigurationStore(this.database, tenant.project.id);
-    const revision = await store.insertManualRevision({
-      rawYaml: input.rawYaml,
-      rawConfiguration: authored.configuration,
+    const revision = await store.insertManualBundleRevision({
+      files: input.files,
       userId: account.account.id,
-      resolvedPromptPartials: authored.resolvedPromptPartials,
     });
     if (revision.validationErrors !== null) return invalidManualConfiguration(revision);
     await store.activate(revision.id);
@@ -269,17 +264,21 @@ export class ProjectDashboard {
   private recordRejectedManualConfiguration(input: {
     projectId: string;
     userId: string;
-    rawYaml: string;
+    files: readonly HubBundleFile[];
     validationErrors: ConfigurationValidationErrors;
   }) {
     return this.database.insertProjectConfigurationRevision({
       projectId: input.projectId,
       sourceKind: "manual",
-      sourceEvidence: { kind: "manual", userId: input.userId },
-      rawYaml: input.rawYaml,
+      sourceEvidence: {
+        kind: "manual",
+        userId: input.userId,
+        bundle: { files: input.files, authoredHash: rawConfigurationHash(input.files) },
+      },
+      rawYaml: input.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
       normalizedConfiguration: null,
       validationErrors: input.validationErrors,
-      contentHash: rawConfigurationHash(input.rawYaml),
+      contentHash: rawConfigurationHash(input.files),
       createdByUserId: input.userId,
     });
   }
@@ -337,35 +336,18 @@ export class ProjectDashboard {
 }
 
 type AuthoredManualConfiguration =
-  | { success: true; configuration: unknown; resolvedPromptPartials: ResolvedPromptPartials }
+  | { success: true }
   | { success: false; validationErrors: ConfigurationValidationErrors };
 
-/** Parses the YAML and pins its `include:` targets to the partials supplied with it. */
+/** Validates the complete authored bundle before handing it to storage. */
 async function authorManualConfiguration(
   input: ManualConfigurationInput,
 ): Promise<AuthoredManualConfiguration> {
-  let configuration: unknown;
   try {
-    configuration = load(input.rawYaml);
+    compileHubBundle(input.files);
+    return { success: true };
   } catch (error) {
-    return {
-      success: false,
-      validationErrors: {
-        formErrors: [error instanceof Error ? error.message : "invalid_yaml"],
-      },
-    };
-  }
-  try {
-    return {
-      success: true,
-      configuration,
-      resolvedPromptPartials: await resolvePromptPartialsFromBundle({
-        configuration,
-        files: input.partials,
-      }),
-    };
-  } catch (error) {
-    if (error instanceof PromptPartialBundleError) {
+    if (error instanceof HubBundleError) {
       return { success: false, validationErrors: promptPartialValidationErrors(error.issues) };
     }
     throw error;
@@ -450,11 +432,7 @@ function configurationView(
             id: active.id,
             version: active.version,
             sourceKind: active.sourceKind,
-            rawYaml: active.rawYaml,
-            partials: revisionPromptPartials(active).map(({ path, content }) => ({
-              path: promptPartialIncludePath(path),
-              content,
-            })),
+            files: revisionBundleFiles(active),
             validation: active.validationErrors === null ? "valid" : "invalid",
             createdAt: active.createdAt.toISOString(),
           },

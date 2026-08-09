@@ -4,6 +4,7 @@ import { describe, it, vi } from "vitest";
 import {
   compileHubConfig,
   compiledConfigurationHash,
+  type CompiledAgent,
   type CompiledHubConfig,
 } from "../config/compiler.js";
 import {
@@ -437,9 +438,9 @@ describe("durable multi-step workflow engine", () => {
       rawConfiguration: partialRuntimeConfiguration(),
       resolvedPromptPartials: new Map([
         [
-          ".paseo/partials/instructions.md",
+          ".paseo/workflows/partials/instructions.md",
           {
-            path: ".paseo/partials/instructions.md",
+            path: ".paseo/workflows/partials/instructions.md",
             content,
             contentHash: hashPromptPartialContent(content),
           },
@@ -538,6 +539,65 @@ describe("durable multi-step workflow engine", () => {
       (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[1]!.status,
       "skipped",
     );
+  });
+
+  it("materializes finite named environment and agent selections from classifier output", async () => {
+    const fixture = await workflowFixture({
+      rawConfiguration: namedSelectionConfiguration(),
+      namedAgents: {
+        codex: {
+          provider: "codex",
+          model: "gpt-5.5",
+          options: {
+            sandbox_workspace_write: {
+              writable_roots: ["/var/cache/npm"],
+              network_access: false,
+            },
+          },
+        },
+        claude: { provider: "claude", model: "claude-opus-4-8" },
+      },
+    });
+    const dispatches: LaunchMachineIntent[] = [];
+    const { handler, engine } = engineFor(fixture, [], async (intent) => {
+      dispatches.push(intent);
+    });
+
+    await handler(fixture.trigger("investigate"));
+    await engine.processAvailable();
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const classifierStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      classifierStep.id,
+    );
+    assert.ok(classifier);
+
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: classifier.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: {
+        status: "succeeded",
+        output: { environment: "hub", agent: "codex" },
+      },
+      stepOutput: { environment: "hub", agent: "codex" },
+      completedByAgent: true,
+    });
+    await engine.processAvailable();
+
+    assert.equal(dispatches[1]?.environmentName, "hub");
+    assert.deepEqual(dispatches[1]?.agent, {
+      provider: "codex",
+      model: "gpt-5.5",
+      options: {
+        sandbox_workspace_write: {
+          writable_roots: ["/var/cache/npm"],
+          network_access: false,
+        },
+      },
+    });
   });
 
   it("fails when an unavailable output is evaluated outside a short-circuited branch", async () => {
@@ -1246,6 +1306,7 @@ async function workflowFixture(
     terminalRecovery?: boolean;
     rawConfiguration?: Record<string, unknown>;
     resolvedPromptPartials?: ResolvedPromptPartials;
+    namedAgents?: Record<string, CompiledAgent>;
   } = {},
 ): Promise<Fixture> {
   const database = createMemoryDatabase({ organizationIds: ["org-1"] });
@@ -1264,12 +1325,12 @@ async function workflowFixture(
   const raw =
     options.rawConfiguration ??
     (options.terminalRecovery ? terminalRecoveryConfiguration() : baseConfiguration(options));
-  const compiled = compileHubConfig(
-    raw,
-    options.resolvedPromptPartials === undefined
+  const compiled = compileHubConfig(raw, {
+    ...(options.resolvedPromptPartials === undefined
       ? {}
-      : { resolvedPromptPartials: options.resolvedPromptPartials },
-  );
+      : { resolvedPromptPartials: options.resolvedPromptPartials }),
+    ...(options.namedAgents === undefined ? {} : { namedAgents: options.namedAgents }),
+  });
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
       if (environment.kind !== "daemon") return environment;
@@ -1350,7 +1411,7 @@ function partialRuntimeConfiguration(): Record<string, unknown> {
             idle_timeout: "1m",
             agent: { provider: "codex" },
             prompt: [
-              { include: "instructions.md" },
+              { include: "partials/instructions.md" },
               { text: "Inline ${{ paseo.prompt }} / ${{ paseo.inputs.repo }}" },
             ],
           },
@@ -1521,6 +1582,55 @@ function skippedOutputPromptConfiguration(): Record<string, unknown> {
             idle_timeout: "1m",
             agent: { provider: "codex" },
             prompt: [{ text: "Repo ${{ steps.classify.outputs.repo }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function namedSelectionConfiguration(): Record<string, unknown> {
+  return {
+    environments: [
+      { name: "paseo", kind: "daemon", daemon: "runner", cwd: "/workspace/paseo" },
+      { name: "hub", kind: "daemon", daemon: "runner", cwd: "/workspace/hub" },
+    ],
+    triggers: [
+      {
+        name: "named-selection",
+        on: "manual.run",
+        max_runtime: "1h",
+        values: {
+          environment: "${{ steps.classifier.outputs.environment }}",
+          agent: "${{ steps.classifier.outputs.agent }}",
+        },
+        steps: [
+          {
+            id: "classifier",
+            environment: "paseo",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Classify" }],
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["environment", "agent"],
+                properties: {
+                  environment: { enum: ["paseo", "hub"] },
+                  agent: { enum: ["codex", "claude"] },
+                },
+              },
+            },
+          },
+          {
+            id: "worker",
+            environment: "${{ values.environment }}",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: "${{ values.agent }}",
+            prompt: [{ text: "Work" }],
           },
         ],
       },

@@ -783,34 +783,7 @@ function buildStepIntent(
   ) {
     throw new Error(`workflow environment ${environmentName} is unavailable`);
   }
-  const agent = {
-    provider: authorityString(
-      renderExpressionTemplate(step.agent.provider, context),
-      "agent.provider",
-    ),
-    ...(step.agent.mode === undefined
-      ? {}
-      : {
-          mode: authorityString(renderExpressionTemplate(step.agent.mode, context), "agent.mode"),
-        }),
-    ...(step.agent.model === undefined
-      ? {}
-      : {
-          model: authorityString(
-            renderExpressionTemplate(step.agent.model, context),
-            "agent.model",
-          ),
-        }),
-    ...(step.agent.thinkingOptionId === undefined
-      ? {}
-      : {
-          thinkingOptionId: authorityString(
-            renderExpressionTemplate(step.agent.thinkingOptionId, context),
-            "agent.thinkingOptionId",
-          ),
-        }),
-    ...(step.agent.options === undefined ? {} : { options: structuredClone(step.agent.options) }),
-  };
+  const agent = materializeAgent(step.agent, context);
   return {
     ...buildLaunchMachineIntent({
       organizationId: run.organizationId,
@@ -845,6 +818,23 @@ function buildStepIntent(
     workflowStepRunId: stepRunId,
     ...(step.output === undefined ? {} : { outputSchema: step.output.schema }),
     deadlineAt,
+  };
+}
+
+function materializeAgent(
+  selection: CompiledProjectConfiguration["triggers"][number]["steps"][number]["agent"],
+  context: ExpressionContext,
+) {
+  const agent =
+    "selector" in selection
+      ? selection.choices[
+          authorityString(renderExpressionTemplate(selection.selector, context), "agent")
+        ]
+      : selection;
+  if (agent === undefined) throw new Error("workflow named agent is unavailable");
+  return {
+    ...agent,
+    ...(agent.options === undefined ? {} : { options: structuredClone(agent.options) }),
   };
 }
 

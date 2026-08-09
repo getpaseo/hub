@@ -57,6 +57,7 @@ import {
   type ExecutionAuthority,
 } from "../../execution-authority/index.js";
 import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -1067,7 +1068,7 @@ export class HubHarness {
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({
         projectSlug: HUB_PROJECT_SLUG,
-        yaml: input.yaml,
+        files: configurationBundleFixture(input.yaml),
       }),
     });
     const body = z
@@ -1173,7 +1174,7 @@ export class HubHarness {
         body: JSON.stringify({
           organizationId,
           projectSlug: HUB_PROJECT_SLUG,
-          yaml: this.manualConfigurationYaml(),
+          files: configurationBundleFixture(this.manualConfigurationYaml()),
         }),
       }),
       fetch(`${this.origin}/api/v1/manual-runs`, {

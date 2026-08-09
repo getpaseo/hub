@@ -1,10 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { configurationValidationIssues } from "../configuration/validation-errors.js";
-import { parseDeploymentDocument } from "../configuration/deployment-document.js";
-import {
-  PromptPartialBundleError,
-  resolvePromptPartialsFromBundle,
-} from "../config/prompt-partials.js";
+import { compileHubBundle, HubBundleError } from "../config/bundle.js";
 import type { DaemonClock } from "../daemons/index.js";
 import { DaemonDispatchFailure } from "../daemons/index.js";
 import { ENROLLMENT_LIFETIME_MS } from "../daemons/registration.js";
@@ -44,11 +40,11 @@ export function createPublicOperations(
           input.projectSlug,
         );
         if (project === undefined) return { status: "project_not_found" };
-        const resolved = await resolveConfigurationInput(input);
+        const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
         const result = await capabilities
           .configurationForProject(project.id)
-          .validateManualConfiguration(resolved.configuration, resolved.promptPartials);
+          .validateBundle(resolved.files);
         return result.valid
           ? { status: "valid", projectSlug: project.slug, valid: true }
           : {
@@ -66,18 +62,16 @@ export function createPublicOperations(
           input.projectSlug,
         );
         if (project === undefined) return { status: "project_not_found" };
-        const resolved = await resolveConfigurationInput(input);
+        const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
         const configuration = capabilities.configurationForProject(project.id);
-        const record = await configuration.insertManualRevision({
-          rawYaml: input.yaml,
-          rawConfiguration: resolved.configuration,
+        const record = await configuration.insertManualBundleRevision({
+          files: resolved.files,
           userId: null,
           sourceEvidence: {
             kind: authorization.kind === "apiKey" ? "api-key" : "cli-credential",
             credentialId: authorization.credentialId,
           },
-          resolvedPromptPartials: resolved.promptPartials,
         });
         if (record.validationErrors !== null) {
           return {
@@ -197,43 +191,23 @@ async function dispatchManualRun(
   };
 }
 
-async function resolveConfigurationInput(input: {
-  yaml: string;
-  partials?: readonly { path: string; content: string }[] | undefined;
-}): Promise<
+function resolveConfigurationInput(input: { files: readonly { path: string; content: string }[] }):
   | {
       success: true;
-      configuration: unknown;
-      promptPartials: Awaited<ReturnType<typeof resolvePromptPartialsFromBundle>>;
+      files: readonly { path: string; content: string }[];
     }
   | {
       success: false;
-      result:
-        | {
-            status: "invalid_yaml" | "invalid_document";
-            issues: readonly { path: readonly (string | number)[]; message: string }[];
-          }
-        | {
-            status: "invalid_bundle";
-            issues: readonly { path: readonly (string | number)[]; message: string }[];
-          };
-    }
-> {
-  const document = parseDeploymentDocument(input.yaml);
-  if (!document.success) {
-    return { success: false, result: { status: document.kind, issues: document.issues } };
-  }
+      result: {
+        status: "invalid_bundle";
+        issues: readonly { path: readonly (string | number)[]; message: string }[];
+      };
+    } {
   try {
-    return {
-      success: true,
-      configuration: document.configuration,
-      promptPartials: await resolvePromptPartialsFromBundle({
-        configuration: document.configuration,
-        files: input.partials ?? [],
-      }),
-    };
+    compileHubBundle(input.files);
+    return { success: true, files: input.files };
   } catch (error) {
-    if (error instanceof PromptPartialBundleError) {
+    if (error instanceof HubBundleError) {
       return {
         success: false,
         result: { status: "invalid_bundle", issues: error.issues },
