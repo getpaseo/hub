@@ -63,6 +63,7 @@ export class BrowserGitHubAuth implements GitHubAuth {
 
   mintInstallationAccessToken(input: {
     installationId: number;
+    accountLogin: string;
     repositories: readonly string[];
     permissions: Readonly<Record<string, "read" | "write" | "admin">>;
   }) {

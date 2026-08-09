@@ -38,7 +38,8 @@ github:
 
 `connection` is the configured connection slug. It must be active and belong to
 the execution project's organization. `repositories` uses GitHub's repository
-scope and accepts full `owner/name` values. For non-GitHub triggers it is required;
+scope and accepts full `owner/name` values whose owner must match the selected
+connection account login case-insensitively. For non-GitHub triggers it is required;
 Hub never expands an omitted list to every repository in an installation. For a
 GitHub event only, omitting it deterministically scopes the token to that event's
 repository. An explicit list is recommended when the step is invoked by more than
@@ -46,9 +47,10 @@ one source. Hub validates the full names for the authored contract and passes th
 repository names in GitHub's native installation-token request format.
 
 `permissions` uses GitHub App installation-token permission names and levels
-directly. It defaults to `{ contents: read }`. Unsupported names or levels fail
-configuration activation with a path to the offending field. Hub forwards only the
-authored repository and permission restrictions to GitHub.
+directly. It defaults to `{ contents: read }`. Hub validates against its explicitly
+versioned copy of GitHub REST API version `2026-03-10`; unsupported names or levels
+fail configuration activation with a path to the offending field. Hub forwards only
+the authored repository and permission restrictions to GitHub.
 
 `duration` defaults to `1h`, matching GitHub's fixed installation-token lifetime.
 Positive shorter durations are supported; Hub revokes the token at the lease
@@ -74,6 +76,9 @@ activation fails instead of making precedence order observable. Authority is
 materialized independently for each running step. Classifier and skipped steps do
 not receive it, and no Git-specific RPC field is sent to Paseo.
 
-The public Paseo documentation needs the matching user-facing section; that
-follow-up is intentionally kept in the Paseo docs delivery rather than changing
-the Paseo checkout from this Hub change.
+Graceful Hub shutdown stops the authority owner and waits for active leases to revoke
+or reach their upstream expiry boundary. A hard process crash cannot run revocation;
+in that case GitHub's upstream one-hour token expiry is the unavoidable exposure
+boundary until a future persisted lease policy can provide stronger crash recovery.
+This file documents Hub runtime behavior only. The public Paseo documentation is
+maintained in the Paseo repository and follows in a separate change.

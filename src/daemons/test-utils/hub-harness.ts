@@ -52,7 +52,10 @@ import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
-import { createExecutionAuthority } from "../../execution-authority/index.js";
+import {
+  createExecutionAuthority,
+  type ExecutionAuthority,
+} from "../../execution-authority/index.js";
 import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
@@ -162,29 +165,7 @@ export class HubHarness {
   }> = [];
   private readonly authorityRevocations: string[] = [];
   private authorityTokenCount = 0;
-  private readonly executionAuthority = createExecutionAuthority({
-    connectionsForProject: () => async (connectionSlug, value) => {
-      if (connectionSlug !== "some-connection" || value !== "token") {
-        throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
-      }
-      return "resolved-secret";
-    },
-    githubAuthority: {
-      mint: async (input) => {
-        this.authorityMints.push(input);
-        this.authorityTokenCount += 1;
-        return {
-          token: `durable-scoped-token-${this.authorityTokenCount}`,
-          expiresAt: Date.now() + 60 * 60_000,
-          botUserId: 1234,
-          botLogin: "paseo[bot]",
-        };
-      },
-      revoke: async (token) => {
-        this.authorityRevocations.push(token);
-      },
-    } satisfies GitHubAuthorityRegistration,
-  });
+  private executionAuthority!: ExecutionAuthority;
 
   static async start(): Promise<HubHarness> {
     const harness = new HubHarness();
@@ -629,6 +610,9 @@ export class HubHarness {
   async waitForCreatedAgentLaunch() {
     await waitFor(async () => this.requireDaemon().createdAgentCount() > 0);
     return this.createdAgentLaunch();
+  }
+  async waitForCreatedAgentRequests(count: number): Promise<void> {
+    await waitFor(async () => this.requireDaemon().createdAgentRequestCount() >= count);
   }
   connectedDaemonSlug(): string {
     return this.requireDaemon().slug;
@@ -1403,6 +1387,7 @@ export class HubHarness {
   private async startApp(): Promise<void> {
     const port = await availablePort();
     this.origin = `http://127.0.0.1:${port}`;
+    this.executionAuthority = this.createExecutionAuthority();
     const registry = new OutputExecutorRegistry();
     registry.register({
       type: "discord.reply",
@@ -1473,6 +1458,32 @@ export class HubHarness {
     await new Promise<void>((resolve) => server.once("listening", resolve));
     this.hub = hub;
     this.server = server;
+  }
+
+  private createExecutionAuthority(): ExecutionAuthority {
+    return createExecutionAuthority({
+      connectionsForProject: () => async (connectionSlug, value) => {
+        if (connectionSlug !== "some-connection" || value !== "token") {
+          throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
+        }
+        return "resolved-secret";
+      },
+      githubAuthority: {
+        mint: async (input) => {
+          this.authorityMints.push(input);
+          this.authorityTokenCount += 1;
+          return {
+            token: `durable-scoped-token-${this.authorityTokenCount}`,
+            expiresAt: Date.now() + 60 * 60_000,
+            botUserId: 1234,
+            botLogin: "paseo[bot]",
+          };
+        },
+        revoke: async (token) => {
+          this.authorityRevocations.push(token);
+        },
+      } satisfies GitHubAuthorityRegistration,
+    });
   }
 
   private async stopApp(): Promise<void> {

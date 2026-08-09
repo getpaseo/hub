@@ -455,6 +455,27 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
   });
 
+  it("reconstructs authority on graceful restart and revokes the old lease before recovery remints", async () => {
+    await hub.connectDaemon();
+    await hub.handoff({
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write" },
+        durationMs: 60 * 60 * 1000,
+      },
+    });
+    await hub.waitForCreatedAgentLaunch();
+    assert.deepEqual(hub.authorityRevokedTokens(), []);
+
+    await hub.restartApp();
+    await hub.waitForCreatedAgentRequests(2);
+
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+    assert.equal(hub.authorityMintInputs().length, 2);
+    assert.equal(hub.createdAgentRequestCount(), 2);
+  });
+
   it("preserves literal worktree evidence during restart recovery", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });

@@ -287,6 +287,41 @@ describe("workflow compiler", () => {
     }
   });
 
+  it.each([
+    ["attestations", "write"],
+    ["artifact_metadata", "read"],
+    ["code_quality", "write"],
+    ["merge_queues", "write"],
+    ["organization_copilot_agent_settings", "read"],
+    ["enterprise_custom_properties_for_organizations", "admin"],
+  ] as const)("accepts the current GitHub App permission %s at level %s", (name, level) => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    Reflect.set(step, "github", {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+      permissions: { [name]: level },
+    });
+
+    const compiled = compileHubConfig(raw);
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github?.permissions, { [name]: level });
+  });
+
+  it.each(["actions_variables", "repository_advisories"])(
+    "rejects %s because it is not in the versioned installation-token request vocabulary",
+    (name) => {
+      const raw = configuration();
+      const step = raw.triggers[0]!.steps[0]!;
+      Reflect.set(step, "github", {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { [name]: "write" },
+      });
+
+      assert.throws(() => compileHubConfig(raw), /unknown GitHub permission/iu);
+    },
+  );
+
   it("rejects GitHub authority env collisions at the authored step boundary", () => {
     const raw = configuration();
     const step = raw.triggers[0]!.steps[0]!;

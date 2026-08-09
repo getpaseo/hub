@@ -27,12 +27,14 @@ describe("GitHub App authentication", () => {
     const internal = await auth.getInstallationToken(142);
     const firstExecution = await auth.mintInstallationAccessToken({
       installationId: 142,
+      accountLogin: "acme",
       repositories: ["acme/app"],
       permissions: { contents: "write" },
     });
     const stillCached = await auth.getInstallationToken(142);
     const secondExecution = await auth.mintInstallationAccessToken({
       installationId: 142,
+      accountLogin: "acme",
       repositories: ["acme/app"],
       permissions: { contents: "write" },
     });
@@ -45,7 +47,12 @@ describe("GitHub App authentication", () => {
   });
 
   it("sends exact authored repositories and native permissions, then revokes the token", async () => {
-    const requests: Array<{ method: string; pathname: string; body: unknown }> = [];
+    const requests: Array<{
+      method: string;
+      pathname: string;
+      apiVersion: string | null;
+      body: unknown;
+    }> = [];
     const auth = createGitHubAuth({
       appId: "12345",
       privateKey: testPrivateKey(),
@@ -56,6 +63,7 @@ describe("GitHub App authentication", () => {
         requests.push({
           method: request.method,
           pathname: new URL(request.url).pathname,
+          apiVersion: request.headers.get("x-github-api-version"),
           body: request.method === "POST" ? await request.json() : undefined,
         });
         if (request.method === "DELETE") return new Response(null, { status: 204 });
@@ -68,6 +76,7 @@ describe("GitHub App authentication", () => {
 
     const token = await auth.mintInstallationAccessToken({
       installationId: 142,
+      accountLogin: "acme",
       repositories: ["acme/app", "acme/docs"],
       permissions: { contents: "write", pull_requests: "write", issues: "read" },
     });
@@ -77,12 +86,18 @@ describe("GitHub App authentication", () => {
       {
         method: "POST",
         pathname: "/app/installations/142/access_tokens",
+        apiVersion: "2026-03-10",
         body: {
           repositories: ["app", "docs"],
           permissions: { contents: "write", pull_requests: "write", issues: "read" },
         },
       },
-      { method: "DELETE", pathname: "/installation/token", body: undefined },
+      {
+        method: "DELETE",
+        pathname: "/installation/token",
+        apiVersion: "2026-03-10",
+        body: undefined,
+      },
     ]);
   });
 

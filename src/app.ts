@@ -222,9 +222,13 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       await Promise.all(activeSources.map(async (source) => source.start(workflowDispatcher)));
     },
     async stop() {
-      await Promise.all(activeSources.map(async (source) => source.stop()));
-      activeSources = [];
-      await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      try {
+        await Promise.all(activeSources.map(async (source) => source.stop()));
+        activeSources = [];
+        await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      } finally {
+        await options.executionAuthority?.stop();
+      }
     },
   };
   const publicOperations = createAppPublicOperations(options, manualSource, storeForProject);

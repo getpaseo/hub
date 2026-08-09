@@ -343,6 +343,10 @@ function createRuntimeExecutionAuthority(
   return createExecutionAuthority({
     connectionsForProject,
     ...(githubAuthority === undefined ? {} : { githubAuthority }),
+    isExecutionActive: async (executionId) => {
+      const execution = await database.findAgentExecutionById(executionId);
+      return execution?.status === "spawning" || execution?.status === "running";
+    },
   });
 }
 

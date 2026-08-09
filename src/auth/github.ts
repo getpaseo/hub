@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { Octokit } from "octokit";
 import { z } from "zod";
 import { logger } from "../logger.js";
+import { GITHUB_APP_PERMISSION_VOCABULARY } from "../config/github-authority.js";
 import { GitHubInstallationSchema } from "./github-events.js";
 import type { GitHubInstallation } from "./github-events.js";
 
@@ -37,6 +38,7 @@ export interface GitHubAuth {
   mintInstallationToken(installationId: number): Promise<string>;
   mintInstallationAccessToken(input: {
     installationId: number;
+    accountLogin: string;
     repositories: readonly string[];
     permissions: Readonly<Record<string, GitHubAppPermissionLevel>>;
   }): Promise<GitHubInstallationAccessToken>;
@@ -99,11 +101,12 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
 
   async function mintInstallationAccessToken(input: {
     installationId: number;
+    accountLogin: string;
     repositories: readonly string[];
     permissions: Readonly<Record<string, GitHubAppPermissionLevel>>;
   }): Promise<GitHubInstallationAccessToken> {
     const data = await requestInstallationToken(input.installationId, {
-      repositories: input.repositories.map(repositoryName),
+      repositories: repositoryNamesForAccount(input.repositories, input.accountLogin),
       permissions: { ...input.permissions },
     });
     logger.debug(
@@ -116,9 +119,11 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
   async function revokeInstallationToken(token: string): Promise<void> {
     const octokit = new Octokit({
       auth: token,
-      ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
+      request: githubRequestOptions(options.fetch),
     });
-    await octokit.request("DELETE /installation/token");
+    await octokit.request("DELETE /installation/token", {
+      headers: githubApiVersionHeader(),
+    });
   }
 
   async function getAppBotIdentity(appSlug: string): Promise<GitHubAppBotIdentity> {
@@ -152,6 +157,7 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
       "POST /app/installations/{installation_id}/access_tokens",
       {
         installation_id: installationId,
+        headers: githubApiVersionHeader(),
         ...(restrictions === undefined
           ? {}
           : {
@@ -166,7 +172,7 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
   async function createInstallationOctokit(installationId: number): Promise<Octokit> {
     const token = await getInstallationToken(installationId);
 
-    return new Octokit({ auth: token });
+    return new Octokit({ auth: token, request: githubRequestOptions(options.fetch) });
   }
 
   async function getAppOctokit(): Promise<Octokit> {
@@ -174,7 +180,7 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
 
     return new Octokit({
       auth: jwtToken,
-      ...(options.fetch === undefined ? {} : { request: { fetch: options.fetch } }),
+      request: githubRequestOptions(options.fetch),
     });
   }
 
@@ -224,11 +230,32 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
   };
 }
 
-function repositoryName(repository: string): string {
+function githubRequestOptions(fetchOverride: typeof fetch | undefined) {
+  return fetchOverride === undefined ? {} : { fetch: fetchOverride };
+}
+
+function githubApiVersionHeader() {
+  return { "x-github-api-version": GITHUB_APP_PERMISSION_VOCABULARY.apiVersion };
+}
+
+export function repositoryNamesForAccount(
+  repositories: readonly string[],
+  accountLogin: string,
+): readonly string[] {
+  return repositories.map((repository) => repositoryName(repository, accountLogin));
+}
+
+function repositoryName(repository: string, accountLogin: string): string {
   const parts = repository.split("/");
+  const owner = parts.length === 2 ? parts[0] : undefined;
   const name = parts.length === 2 ? parts[1] : undefined;
-  if (name === undefined || name.length === 0)
+  if (owner === undefined || owner.length === 0 || name === undefined || name.length === 0)
     throw new Error(`invalid GitHub repository: ${repository}`);
+  if (owner.toLowerCase() !== accountLogin.toLowerCase()) {
+    throw new Error(
+      `GitHub repository owner ${owner} does not match selected installation account ${accountLogin}`,
+    );
+  }
   return name;
 }
 

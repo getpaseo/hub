@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AuthServer } from "../../auth/server.js";
-import { createGitHubAuth, type GitHubAuth } from "../../auth/github.js";
+import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { Database, GitHubConnectionRecord } from "../../db/types.js";
 import { logger } from "../../logger.js";
@@ -169,9 +169,11 @@ export function createGitHubRegistration(
           if (selectedConnection === undefined || selectedConnection.status !== "active") {
             throw new Error(`github connection is unavailable: ${input.connectionSlug}`);
           }
+          repositoryNamesForAccount(input.repositories, selectedConnection.accountLogin);
           const bot = await appAuth.getAppBotIdentity(configuration.appSlug);
           const token = await appAuth.mintInstallationAccessToken({
             installationId: selectedConnection.installationId,
+            accountLogin: selectedConnection.accountLogin,
             repositories: input.repositories,
             permissions: input.permissions,
           });

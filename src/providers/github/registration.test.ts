@@ -312,6 +312,7 @@ describe("GitHub registration", () => {
     assert.deepEqual(requests, [
       {
         installationId: 142,
+        accountLogin: "getpaseo",
         repositories: ["getpaseo/paseo", "getpaseo/hub"],
         permissions: { contents: "write", pull_requests: "read" },
       },
@@ -324,8 +325,35 @@ describe("GitHub registration", () => {
     });
     assert.equal(identityLookups, 1);
 
+    await assert.rejects(
+      () =>
+        authority.mint({
+          projectId: "project-1",
+          connectionSlug: "getpaseo-github",
+          repositories: ["other-owner/paseo"],
+          permissions: { contents: "read" },
+        }),
+      /repository owner.*other-owner.*getpaseo/iu,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(identityLookups, 1);
+
+    const caseInsensitive = await authority.mint({
+      projectId: "project-1",
+      connectionSlug: "getpaseo-github",
+      repositories: ["GETPASEO/private"],
+      permissions: { contents: "read" },
+    });
+    assert.deepEqual(requests[1], {
+      installationId: 142,
+      accountLogin: "getpaseo",
+      repositories: ["GETPASEO/private"],
+      permissions: { contents: "read" },
+    });
+
     await authority.revoke(minted.token);
-    assert.deepEqual(revoked, ["scoped-token"]);
+    await authority.revoke(caseInsensitive.token);
+    assert.deepEqual(revoked, ["scoped-token", "scoped-token"]);
     await assert.rejects(
       () =>
         authority.mint({
