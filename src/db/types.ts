@@ -54,12 +54,26 @@ export interface ProviderEventReceiptSummary {
   routingDecisions: readonly ProviderEventRoutingDecisionRecord[];
 }
 
-export interface RecordProviderEventRoutingDecisionsInput {
+export interface ProviderEventRoutingOutcomeRecord {
+  id: string;
+  organizationId: string;
+  providerEventReceiptId: string;
+  status: "pending" | "routed" | "dropped";
+  expectedProjectCount: number;
+  completedProjectCount: number;
+  routedProjectCount: number;
+  createdAt: Date;
+  finalizedAt: Date | null;
+}
+
+export interface CommitProviderEventRoutingResultInput {
   organizationId: string;
   providerEventReceiptId: string;
   projectId: string;
   configurationRevisionId: string;
+  outcome: "routed" | "dropped";
   decisions: readonly TriggerRoutingDecision[];
+  payload?: unknown;
 }
 
 export interface ProviderEventRouteSnapshot {
@@ -1072,10 +1086,7 @@ export interface Database {
   ): Promise<void>;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
-  markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;
-  recordProviderEventRoutingDecisions(
-    input: RecordProviderEventRoutingDecisionsInput,
-  ): Promise<void>;
+  commitProviderEventRoutingResult(input: CommitProviderEventRoutingResultInput): Promise<void>;
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
@@ -1093,6 +1104,9 @@ export interface Database {
     organizationId?: string,
   ): Promise<ProviderEventReceiptRecord | undefined>;
   findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined>;
+  findProviderEventRoutingOutcomeByReceiptId(
+    providerEventReceiptId: string,
+  ): Promise<ProviderEventRoutingOutcomeRecord | undefined>;
   insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord>;
   findAttachmentBySource(
     providerEventReceiptId: string,

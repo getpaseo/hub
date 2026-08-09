@@ -44,6 +44,15 @@ describe("project dashboard activity read models", () => {
       receivedAt: new Date("2026-08-06T12:00:00.000Z"),
     });
     if (receipt.status !== "accepted") throw new Error("dashboard receipt was not accepted");
+    await database.commitProviderEventRoutingResult({
+      organizationId: "org-1",
+      providerEventReceiptId: receipt.event.providerEventReceiptId,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      outcome: "routed",
+      decisions: [],
+      payload: rawPayload,
+    });
     const run = await database.createAcceptedTriggerRun({
       organizationId: "org-1",
       projectId: project.id,
@@ -59,13 +68,22 @@ describe("project dashboard activity read models", () => {
       stepIds: ["step"],
     });
     const unroutedPayload = { body: "unrouted-".repeat(20_000) };
-    await database.persistManualEvent({
+    const unroutedReceipt = await database.persistManualEvent({
       organizationId: "org-1",
       projectId: project.id,
       deliveryId: "dashboard-unrouted-large-payload",
       source: "manual.dashboard",
       payload: unroutedPayload,
       receivedAt: new Date("2026-08-06T12:01:00.000Z"),
+    });
+    if (unroutedReceipt.status !== "accepted") throw new Error("unrouted receipt was not accepted");
+    await database.commitProviderEventRoutingResult({
+      organizationId: "org-1",
+      providerEventReceiptId: unroutedReceipt.event.providerEventReceiptId,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      outcome: "dropped",
+      decisions: [{ triggerName: null, code: "configuration_unavailable" }],
     });
     const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
     const request = new Request("https://hub.test/o/acme/projects/hub");

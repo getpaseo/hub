@@ -17,9 +17,14 @@ import type {
   ProviderEventReceiptSummary,
   ProviderEventReceiptRecord,
   ProviderEventRoutingDecisionRecord,
+  ProviderEventRoutingOutcomeRecord,
 } from "./types.js";
-import type { ProviderEventRoutingDecisionRow } from "./pg.js";
-import { isRoutingDecisionCode, routingDecisionSummary } from "../triggers/routing-evidence.js";
+import type { ProviderEventRoutingDecisionRow, ProviderEventRoutingOutcomeRow } from "./pg.js";
+import {
+  isRoutingDecisionCode,
+  orderRoutingDecisions,
+  routingDecisionSummary,
+} from "../triggers/routing-evidence.js";
 
 type ProviderEventReceiptSummaryRow = Pick<
   ProviderEventReceiptRow,
@@ -52,7 +57,7 @@ export function toProviderEventReceiptSummary(
     repo: row.repo,
     receivedAt: row.received_at,
     droppedReason: row.dropped_reason,
-    routingDecisions,
+    routingDecisions: orderRoutingDecisions(routingDecisions),
   };
 }
 
@@ -72,7 +77,7 @@ export function toProviderEventReceiptRecordSummary(
     repo: receipt.repo,
     receivedAt: receipt.receivedAt,
     droppedReason: receipt.droppedReason,
-    routingDecisions,
+    routingDecisions: orderRoutingDecisions(routingDecisions),
   };
 }
 
@@ -95,6 +100,22 @@ export function toProviderEventRoutingDecisionRecord(
     code: row.code,
     summary: row.summary,
     createdAt: row.created_at,
+  };
+}
+
+export function toProviderEventRoutingOutcomeRecord(
+  row: ProviderEventRoutingOutcomeRow,
+): ProviderEventRoutingOutcomeRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    providerEventReceiptId: row.provider_event_receipt_id,
+    status: row.status,
+    expectedProjectCount: row.expected_project_count,
+    completedProjectCount: row.completed_project_count,
+    routedProjectCount: row.routed_project_count,
+    createdAt: row.created_at,
+    finalizedAt: row.finalized_at,
   };
 }
 

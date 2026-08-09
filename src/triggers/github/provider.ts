@@ -136,7 +136,12 @@ export function createGitHubTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return { matches: [], routingDecisions: [] };
+      if (stored === undefined) {
+        return {
+          matches: [],
+          routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
+        };
+      }
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
       const evaluation = evaluateGitHubTriggers(
         stored.configuration,

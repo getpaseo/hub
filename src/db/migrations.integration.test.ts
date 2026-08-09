@@ -117,7 +117,7 @@ describe("database migration application", () => {
     });
   }, 120_000);
 
-  it("destructively cuts over legacy execution evidence while preserving attachments and authorities", async () => {
+  it("destructively cuts over legacy execution evidence while preserving durable authorities", async () => {
     const url = await createHistoricalBaseline({
       postgres,
       prefix: "phase_six_destructive_cutover",
@@ -261,7 +261,7 @@ describe("database migration application", () => {
           trigger_connection_id: null,
           trigger_resource_id: null,
           provider_receipts: 1,
-          attachments: 1,
+          attachments: 0,
           runs: 0,
           steps: 0,
           wakeups: 0,
@@ -303,7 +303,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 34,
+      drizzleMigrations: 35,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -341,6 +341,93 @@ describe("database migration application", () => {
       await upgrade.stop();
     }
   });
+
+  it("scrubs historical accepted receipts that never produced a routed run", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "routing_privacy_backfill",
+      through: "0033_cooing_overlord",
+    });
+    await poolQuery(
+      url,
+      `insert into organization (id, name, slug)
+         values ('routing-privacy-org', 'Routing Privacy', 'routing-privacy');
+       insert into projects (id, organization_id, name, slug)
+         values ('b0000000-0000-4000-8000-000000000001',
+                 'routing-privacy-org', 'Default', 'default');
+       insert into project_configuration_revisions
+         (id, project_id, organization_id, version, source_kind, source_evidence,
+          normalized_configuration, content_hash)
+       values ('b1000000-0000-4000-8000-000000000001',
+               'b0000000-0000-4000-8000-000000000001', 'routing-privacy-org',
+               1, 'manual', '{}'::jsonb, '{"environments":[],"triggers":[]}'::jsonb,
+               'routing-privacy-config');
+       insert into provider_event_receipts
+         (id, organization_id, provider, delivery_id, source, signature_hash, payload,
+          accepted_routes, received_at)
+       values ('b2000000-0000-4000-8000-000000000001', 'routing-privacy-org', 'manual',
+               'routing-privacy-delivery', 'manual.run', 'PRIVATE-HISTORICAL-SIGNATURE',
+               '{"body":"PRIVATE-HISTORICAL-BODY","sender":"PRIVATE-HISTORICAL-SENDER"}'::jsonb,
+               jsonb_build_array(jsonb_build_object(
+                 'projectId', 'b0000000-0000-4000-8000-000000000001',
+                 'configurationRevisionId', 'b1000000-0000-4000-8000-000000000001',
+                 'connectionId', null, 'resourceId', null
+               )), now());`,
+    );
+    await poolQuery(
+      url,
+      `insert into attachment_capabilities
+         (provider_event_receipt_id, organization_id, connection_id, provider, source_id,
+          locator, filename)
+       values ('b2000000-0000-4000-8000-000000000001', 'routing-privacy-org',
+               'b3000000-0000-4000-8000-000000000001', 'slack',
+               'PRIVATE-HISTORICAL-ATTACHMENT-ID',
+               '{"token":"PRIVATE-HISTORICAL-ATTACHMENT-TOKEN"}'::jsonb,
+               'PRIVATE-HISTORICAL-ATTACHMENT-NAME')`,
+    );
+
+    const database = await createDatabase(url);
+    await database.close();
+
+    assert.deepEqual(
+      (
+        await poolQuery<{
+          payload: unknown;
+          signature_hash: string | null;
+          outcome_status: string;
+          project_status: string;
+          decision_code: string;
+          attachment_count: number;
+        }>(
+          url,
+          `select receipt.payload, receipt.signature_hash,
+                  outcome.status as outcome_status,
+                  project_result.status as project_status,
+                  decision.code as decision_code,
+                  (select count(*)::integer from attachment_capabilities attachment
+                   where attachment.provider_event_receipt_id = receipt.id) as attachment_count
+           from provider_event_receipts receipt
+           join provider_event_routing_outcomes outcome
+             on outcome.provider_event_receipt_id = receipt.id
+           join provider_event_routing_project_results project_result
+             on project_result.provider_event_receipt_id = receipt.id
+           join provider_event_routing_decisions decision
+             on decision.provider_event_receipt_id = receipt.id
+           where receipt.id = 'b2000000-0000-4000-8000-000000000001'`,
+        )
+      ).rows,
+      [
+        {
+          payload: null,
+          signature_hash: null,
+          outcome_status: "dropped",
+          project_status: "dropped",
+          decision_code: "configuration_unavailable",
+          attachment_count: 0,
+        },
+      ],
+    );
+  }, 120_000);
 
   it("attaches a migrated customer organization before removing its principal binding", async () => {
     const fixture = await createLegacyDatabase(postgres, "legacy_bootstrap_attach");
@@ -956,6 +1043,12 @@ describe("database migration application", () => {
       });
 
       assert.equal(result.status, "dropped");
+      const receipt = await database.findProviderEventReceiptByDeliveryId(
+        "unrouted-activity-receipt",
+        "organization-a",
+      );
+      assert.equal(receipt?.payload, null);
+      assert.equal(receipt?.signatureHash, null);
       assert.equal(
         (await database.listUnroutedProviderEventsForOrganization("organization-a")).some(
           (event) => event.deliveryId === "unrouted-activity-receipt",

@@ -39,6 +39,33 @@ describe("manual trigger durable workflow boundary", () => {
     );
   });
 
+  it("commits a scrubbed dropped receipt when the manual handler is unavailable", async () => {
+    const database = createMemoryDatabase();
+    const { project } = await createManualProject(database);
+    const source = createManualTriggerSource(database);
+
+    const outcome = await dispatchManualTrigger(
+      source,
+      manualTrigger("manual-no-handler", project.id),
+    );
+
+    const receipt = await database.findProviderEventReceiptByDeliveryId(
+      "manual-no-handler",
+      "org_1",
+    );
+    assert.ok(receipt);
+    assert.equal(outcome?.providerEventReceiptId, receipt.id);
+    assert.equal(receipt.payload, null);
+    assert.equal(
+      (await database.findProviderEventRoutingOutcomeByReceiptId(receipt.id))?.status,
+      "dropped",
+    );
+    assert.deepEqual(
+      (await database.listUnroutedProviderEventsForOrganization("org_1"))[0]?.routingDecisions,
+      [],
+    );
+  });
+
   it("persists one manual run and lets the workflow worker own the step dispatch", async () => {
     const database = createMemoryDatabase();
     const project = await database.createProject({

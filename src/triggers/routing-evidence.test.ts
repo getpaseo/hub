@@ -37,6 +37,7 @@ describe("provider routing evidence", () => {
     const payload = slackPayload();
     const acceptance = await database.acceptSlackEvent({
       deliveryId: "slack-audited-delivery",
+      signatureHash: "PRIVATE-SLACK-SIGNATURE",
       source: "slack.mention",
       payload,
       receivedAt: new Date("2026-08-09T12:00:00.000Z"),
@@ -44,6 +45,26 @@ describe("provider routing evidence", () => {
     });
     assert.equal(acceptance.status, "accepted");
     if (acceptance.status !== "accepted") throw new Error("Slack event was not accepted");
+
+    assert.deepEqual(
+      await database.listUnroutedProviderEventsForOrganization(connection.organizationId),
+      [],
+    );
+    assert.equal(
+      (await database.findProviderEventReceiptById(acceptance.receiptId))?.payload,
+      null,
+    );
+    const replay = await database.acceptSlackEvent({
+      deliveryId: "slack-audited-delivery",
+      signatureHash: "PRIVATE-SLACK-SIGNATURE",
+      source: "slack.mention",
+      payload,
+      receivedAt: new Date("2026-08-09T12:00:00.000Z"),
+      teamId: connection.teamId,
+    });
+    assert.equal(replay.status, "accepted");
+    if (replay.status !== "accepted") throw new Error("Slack replay was not accepted");
+    assert.deepEqual(replay.events[0]?.payload, payload);
 
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
@@ -70,6 +91,14 @@ describe("provider routing evidence", () => {
     )[0];
     assert.ok(receipt);
     assert.equal(receipt.droppedReason, null);
+    assert.equal(
+      (await database.findProviderEventReceiptById(acceptance.receiptId))?.payload,
+      null,
+    );
+    assert.equal(
+      (await database.findProviderEventReceiptById(acceptance.receiptId))?.signatureHash,
+      null,
+    );
     assert.deepEqual(
       receipt.routingDecisions.map(({ triggerName, code, summary }) => ({
         triggerName,
@@ -162,8 +191,45 @@ describe("provider routing evidence", () => {
       receipt.routingDecisions.map((decision) => decision.code),
       ["no_trigger_for_source"],
     );
+    assert.equal(receipt.routingDecisions[0]?.triggerName, null);
     assert.equal(receipt.routingDecisions[0]?.summary, "No configured trigger handles this event.");
     await engine.stop();
+  });
+
+  it("persists only safe metadata for an immediate provider drop", async () => {
+    const connection = slackConnection();
+    const database = createMemoryDatabase({ slackConnections: [connection] });
+
+    const result = await database.acceptSlackEvent({
+      deliveryId: "slack-no-handler",
+      source: "slack.mention",
+      payload: slackPayload(),
+      receivedAt: new Date("2026-08-09T12:00:00.000Z"),
+      teamId: connection.teamId,
+      dropReason: "slack_no_handler",
+    });
+
+    assert.equal(result.status, "dropped");
+    const receipt = await database.findProviderEventReceiptByDeliveryId(
+      "slack-no-handler",
+      connection.organizationId,
+    );
+    assert.ok(receipt);
+    assert.equal(result.receiptId, receipt.id);
+    assert.equal(receipt.payload, null);
+    assert.equal(receipt.signatureHash, null);
+    assert.equal(receipt.acceptedRoutes, null);
+    assert.equal(receipt.droppedReason, "slack_no_handler");
+    assert.equal(
+      (await database.findProviderEventRoutingOutcomeByReceiptId(receipt.id))?.status,
+      "dropped",
+    );
+    const unrouted = await database.listUnroutedProviderEventsForOrganization(
+      connection.organizationId,
+    );
+    assert.equal(unrouted.length, 1);
+    assert.deepEqual(unrouted[0]?.routingDecisions, []);
+    assert.doesNotMatch(JSON.stringify({ receipt, unrouted }), /PRIVATE-SLACK-CONTENT|U2|C1/gu);
   });
 });
 

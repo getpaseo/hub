@@ -13,15 +13,21 @@ export class RoutingAudit {
   async expandTriggerDecisions(): Promise<void> {
     const table = this.page.getByRole("table", { name: "Unrouted events" });
     await table.getByText("View trigger decisions", { exact: true }).click();
-    await expect(
-      table.getByRole("listitem").filter({ hasText: "sender_not_allowed" }),
-    ).toBeVisible();
-    await expect(table.getByRole("listitem").filter({ hasText: "pattern_mismatch" })).toBeVisible();
+    await expect(table.getByRole("listitem").filter({ hasText: "sender_not_allowed" })).toHaveCount(
+      2,
+    );
   }
 
   async expectNoSensitiveRoutingEvidence(): Promise<void> {
     const table = this.page.getByRole("table", { name: "Unrouted events" });
-    for (const value of ["PRIVATE-EVENT-BODY", "U2", "C1", "PRIVATE-TOKEN"]) {
+    for (const value of [
+      "PRIVATE-EVENT-BODY",
+      "PRIVATE-EVENT-SENDER-ID",
+      "PRIVATE-EVENT-CHANNEL-ID",
+      "PRIVATE-EVENT-ATTACHMENT-ID",
+      "PRIVATE-EVENT-ATTACHMENT-NAME",
+      "PRIVATE-TOKEN",
+    ]) {
       await expect(table).not.toContainText(value);
     }
   }

@@ -441,54 +441,170 @@ export class PaseoHub {
 
   async seedUnroutedRoutingDecision(alias: string): Promise<void> {
     const email = this.requireUser(alias).accountEmail;
+    const [target] = z
+      .array(
+        z.object({
+          project_id: z.string().uuid(),
+          organization_id: z.string(),
+          user_id: z.string(),
+        }),
+      )
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary.databaseUrl,
+          `select project.id project_id, project.organization_id, "user".id user_id
+           from session
+           join "user" on "user".id = session.user_id
+           join projects project on project.organization_id = session.active_organization_id
+           where lower("user".email) = $1 and project.slug = 'default'
+           order by session.expires_at desc limit 1`,
+          [email],
+        ),
+      );
+    if (target === undefined) throw new Error("routing audit project unavailable");
     await this.queryDatabase(
       this.primary.databaseUrl,
-      `with target as (
-         select project.id project_id, project.organization_id, project.active_configuration_revision_id revision_id
-         from session
-         join "user" on "user".id = session.user_id
-         join projects project on project.organization_id = session.active_organization_id
-         where lower("user".email) = $1 and project.slug = 'default'
-         order by session.expires_at desc limit 1
-       )
-       insert into provider_event_receipts
-         (organization_id, provider, delivery_id, source, payload, received_at, accepted_routes)
-       select organization_id, 'slack', 'browser-safe-routing', 'slack.mention',
-              '{"content":"PRIVATE-EVENT-BODY","author":{"id":"U2"},"channelId":"C1","attachments":["PRIVATE-TOKEN"]}'::jsonb,
-              '2026-08-09T12:00:00Z'::timestamptz,
-              jsonb_build_array(jsonb_build_object(
-                'projectId', project_id,
-                'configurationRevisionId', revision_id,
-                'connectionId', null,
-                'resourceId', null
-              ))
-       from target`,
-      [email],
+      `insert into slack_connections
+         (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes, connected_by_user_id)
+       values ($1, 'T-routing-audit', 'routing-audit-slack', 'Routing Audit Slack', 'UBOT',
+               'fixture-routing-audit-token',
+               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write"]'::jsonb,
+               $2)
+       on conflict (team_id) do update set organization_id = excluded.organization_id,
+                                           bot_user_id = excluded.bot_user_id,
+                                           bot_access_token = excluded.bot_access_token,
+                                           scopes = excluded.scopes,
+                                           connected_by_user_id = excluded.connected_by_user_id`,
+      [target.organization_id, target.user_id],
     );
-    await this.queryDatabase(
-      this.primary.databaseUrl,
-      `with target as (
-         select project.id project_id, project.organization_id, project.active_configuration_revision_id revision_id
-         from session
-         join "user" on "user".id = session.user_id
-         join projects project on project.organization_id = session.active_organization_id
-         where lower("user".email) = $1 and project.slug = 'default'
-         order by session.expires_at desc limit 1
-       )
-       insert into provider_event_routing_decisions
-         (organization_id, provider_event_receipt_id, project_id, configuration_revision_id,
-          trigger_name, code, summary, created_at)
-       select target.organization_id, receipt.id, target.project_id, target.revision_id,
-              decisions.trigger_name, decisions.code, decisions.summary, decisions.created_at
-       from target
-       join provider_event_receipts receipt
-         on receipt.organization_id = target.organization_id
-        and receipt.delivery_id = 'browser-safe-routing'
-       cross join (values
-         ('slack-run', 'sender_not_allowed', 'The sender is not allowed for this trigger.', '2026-08-09T12:00:00Z'::timestamptz),
-         ('slack-filter', 'pattern_mismatch', 'The event does not match the configured trigger pattern.', '2026-08-09T12:00:01Z'::timestamptz)
-       ) decisions(trigger_name, code, summary, created_at)`,
-      [email],
+    const database = await createDatabase(this.primary.databaseUrl);
+    try {
+      const enrollmentVerifier = `browser-routing-audit-${randomUUID()}`;
+      const enrollmentNow = new Date();
+      const enrollmentIssued = await database.issueEnrollmentToken({
+        id: randomUUID(),
+        verifier: enrollmentVerifier,
+        organizationId: target.organization_id,
+        expiresAt: new Date(enrollmentNow.getTime() + 10 * 60_000),
+        consumedAt: null,
+      });
+      if (!enrollmentIssued) throw new Error("routing audit daemon enrollment token unavailable");
+      const daemon = await database.enrollDaemon({
+        daemonId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        tokenVerifier: enrollmentVerifier,
+        serverId: randomUUID(),
+        daemonPublicKey: "browser-routing-audit-public-key",
+        credentialVerifier: createHash("sha256")
+          .update("browser-routing-audit-credential")
+          .digest("base64url"),
+        scopes: ["hub.execution.*"],
+        now: enrollmentNow,
+      });
+      if (daemon === undefined || daemon.status === "slug_conflict") {
+        throw new Error("routing audit daemon enrollment failed");
+      }
+      const store = new ProjectConfigurationStore(database, target.project_id);
+      const revision = await store.insertManualRevision({
+        rawYaml: null,
+        rawConfiguration: browserRoutingAuditConfiguration(daemon.slug),
+        userId: target.user_id,
+        sourceEvidence: { kind: "browser-routing-audit" },
+      });
+      await store.activate(revision.id);
+    } finally {
+      await database.close();
+    }
+
+    const body = JSON.stringify({
+      type: "event_callback",
+      team_id: "T-routing-audit",
+      api_app_id: "browser-slack-app",
+      event_id: "browser-safe-routing",
+      event_time: Math.floor(Date.now() / 1_000),
+      event: {
+        type: "app_mention",
+        user: "PRIVATE-EVENT-SENDER-ID",
+        channel: "PRIVATE-EVENT-CHANNEL-ID",
+        text: "<@UBOT> PRIVATE-EVENT-BODY",
+        ts: "1700000000.000001",
+        event_ts: "1700000000.000001",
+        files: [
+          {
+            id: "PRIVATE-EVENT-ATTACHMENT-ID",
+            name: "PRIVATE-EVENT-ATTACHMENT-NAME",
+            mimetype: "application/private",
+            size: 123,
+          },
+        ],
+      },
+    });
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const signature = createHmac("sha256", SLACK_WEBHOOK_SECRET)
+      .update("v0:")
+      .update(timestamp)
+      .update(":")
+      .update(body)
+      .digest("hex");
+    const response = await this.requests.post(
+      `${this.primary.origin}/api/integrations/slack/events`,
+      {
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": `v0=${signature}`,
+        },
+        data: Buffer.from(body),
+      },
+    );
+    expect(response.status()).toBe(200);
+  }
+
+  async expectRoutingAuditPersistenceSafe(): Promise<void> {
+    const rows = z
+      .array(
+        z.object({
+          payload: z.null(),
+          signature_hash: z.null(),
+          status: z.literal("dropped"),
+          attachment_count: z.number(),
+          decision_codes: z.array(z.string()),
+          decision_summaries: z.array(z.string()),
+        }),
+      )
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary.databaseUrl,
+          `select receipt.payload, receipt.signature_hash, outcome.status,
+                  count(distinct attachment.id)::integer as attachment_count,
+                  coalesce(jsonb_agg(decision.code order by decision.created_at, decision.id)
+                    filter (where decision.id is not null), '[]'::jsonb) as decision_codes,
+                  coalesce(jsonb_agg(decision.summary order by decision.created_at, decision.id)
+                    filter (where decision.id is not null), '[]'::jsonb) as decision_summaries
+           from provider_event_receipts receipt
+           join provider_event_routing_outcomes outcome
+             on outcome.provider_event_receipt_id = receipt.id
+           left join provider_event_routing_decisions decision
+             on decision.provider_event_receipt_id = receipt.id
+           left join attachment_capabilities attachment
+             on attachment.provider_event_receipt_id = receipt.id
+           where receipt.delivery_id = 'slack-browser-safe-routing'
+           group by receipt.id, outcome.status`,
+          [],
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.attachment_count).toBe(0);
+    expect([...rows[0]!.decision_codes].sort()).toEqual([
+      "sender_not_allowed",
+      "sender_not_allowed",
+    ]);
+    expect([...rows[0]!.decision_summaries].sort()).toEqual([
+      "The sender is not allowed for this trigger.",
+      "The sender is not allowed for this trigger.",
+    ]);
+    expect(this.primary.logs()).not.toMatch(
+      /PRIVATE-EVENT-(BODY|SENDER-ID|CHANNEL-ID|ATTACHMENT-ID|ATTACHMENT-NAME)|PRIVATE-TOKEN/gu,
     );
   }
 
@@ -4450,6 +4566,7 @@ interface HttpResponse {
 }
 
 const WEBHOOK_SECRET = "phase-zero-webhook-secret";
+const SLACK_WEBHOOK_SECRET = "phase-zero-slack-webhook-secret";
 // Must match e2e/app.ts's STRIPE_WEBHOOK_SECRET env value and browser-child.ts's fixture config.
 const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
 
@@ -4770,6 +4887,62 @@ function providerDispatchConfiguration(repo: string, guildId: string) {
             idle_timeout: "5m",
             agent: { provider: "opencode", mode: "full-access" },
             prompt: [{ text: "Handle Discord tenant dispatch" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function browserRoutingAuditConfiguration(daemonSlug: string) {
+  return {
+    environments: [
+      {
+        name: "routing-audit-runner",
+        kind: "daemon" as const,
+        daemon: daemonSlug,
+        cwd: "/workspace",
+      },
+    ],
+    triggers: [
+      {
+        name: "slack-run",
+        on: "slack.mention",
+        max_runtime: "1h",
+        filters: {
+          workspace: "T-routing-audit",
+          channels: ["SAFE-CONFIG-CHANNEL"],
+          from_users: ["allowed-sender"],
+        },
+        steps: [
+          {
+            id: "routing-audit-step",
+            environment: "routing-audit-runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "test" },
+            prompt: [{ text: "Routing audit" }],
+          },
+        ],
+      },
+      {
+        name: "slack-pattern",
+        on: "slack.mention",
+        max_runtime: "1h",
+        filters: {
+          workspace: "T-routing-audit",
+          channels: ["SAFE-CONFIG-CHANNEL"],
+          from_users: ["another-allowed-sender"],
+          pattern: "SAFE",
+        },
+        steps: [
+          {
+            id: "routing-audit-pattern-step",
+            environment: "routing-audit-runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "test" },
+            prompt: [{ text: "Routing audit pattern" }],
           },
         ],
       },

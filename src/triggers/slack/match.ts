@@ -25,12 +25,15 @@ export function evaluateSlackTriggers(
 ): SlackTriggerEvaluation {
   const matches: MatchedSlackTrigger[] = [];
   const routingDecisions: TriggerRoutingDecision[] = [];
+  const sourceTriggers = config.triggers.filter((trigger) => trigger.on === "slack.mention");
+  if (sourceTriggers.length === 0) {
+    return {
+      matches,
+      routingDecisions: [{ triggerName: null, code: "no_trigger_for_source" }],
+    };
+  }
 
-  for (const trigger of config.triggers) {
-    if (trigger.on !== "slack.mention") {
-      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
-      continue;
-    }
+  for (const trigger of sourceTriggers) {
     const mismatch = slackFilterMismatch(event, trigger.filters, botUserId, connectionId);
     if (mismatch !== undefined) {
       routingDecisions.push({ triggerName: trigger.name, code: mismatch });

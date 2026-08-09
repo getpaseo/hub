@@ -11,7 +11,9 @@ export const ROUTING_DECISION_CODES = [
   "pattern_mismatch",
   "input_filter_mismatch",
   "invocation_rejected",
+  "configuration_unavailable",
   "no_project_route",
+  "routing_evidence_truncated",
 ] as const;
 
 export type RoutingDecisionCode = (typeof ROUTING_DECISION_CODES)[number];
@@ -38,11 +40,46 @@ const ROUTING_DECISION_SUMMARIES: Record<RoutingDecisionCode, string> = {
   pattern_mismatch: "The event does not match the configured trigger pattern.",
   input_filter_mismatch: "The parsed inputs do not match this trigger.",
   invocation_rejected: "The trigger invocation was rejected.",
+  configuration_unavailable: "Trigger configuration is unavailable for this event.",
   no_project_route: "No project route is configured for this event.",
+  routing_evidence_truncated:
+    "Some trigger decisions were omitted because the evidence limit was reached.",
+};
+
+const ROUTING_DECISION_PRIORITIES: Record<RoutingDecisionCode, number> = {
+  no_project_route: 0,
+  configuration_unavailable: 1,
+  connection_mismatch: 10,
+  resource_mismatch: 11,
+  repository_mismatch: 12,
+  guild_mismatch: 13,
+  workspace_mismatch: 14,
+  channel_mismatch: 15,
+  sender_not_allowed: 20,
+  contains_mismatch: 30,
+  pattern_mismatch: 31,
+  input_filter_mismatch: 40,
+  invocation_rejected: 50,
+  no_trigger_for_source: 90,
+  routing_evidence_truncated: 100,
 };
 
 export function routingDecisionSummary(code: RoutingDecisionCode): string {
   return ROUTING_DECISION_SUMMARIES[code];
+}
+
+export function orderRoutingDecisions<
+  Decision extends Pick<TriggerRoutingDecision, "triggerName" | "code">,
+>(decisions: readonly Decision[]): Decision[] {
+  return [...decisions].sort((left, right) => {
+    const priority =
+      ROUTING_DECISION_PRIORITIES[left.code] - ROUTING_DECISION_PRIORITIES[right.code];
+    if (priority !== 0) return priority;
+    if (left.triggerName === right.triggerName) return 0;
+    if (left.triggerName === null) return 1;
+    if (right.triggerName === null) return -1;
+    return left.triggerName.localeCompare(right.triggerName);
+  });
 }
 
 export function isRoutingDecisionCode(value: unknown): value is RoutingDecisionCode {
@@ -69,10 +106,28 @@ export function normalizeRoutingDecision(
 export function normalizeRoutingDecisions(
   decisions: readonly TriggerRoutingDecision[],
 ): TriggerRoutingDecision[] {
-  return decisions
-    .flatMap((decision) => {
-      const normalized = normalizeRoutingDecision(decision);
-      return normalized === undefined ? [] : [normalized];
-    })
-    .slice(0, MAX_ROUTING_DECISIONS_PER_PROJECT);
+  const normalized = decisions.flatMap((decision) => {
+    const normalizedDecision = normalizeRoutingDecision(decision);
+    return normalizedDecision === undefined ? [] : [normalizedDecision];
+  });
+  const sourceRelevant = normalized.filter((decision) => decision.code !== "no_trigger_for_source");
+  let projectDecisions: TriggerRoutingDecision[] = [];
+  if (sourceRelevant.length > 0) {
+    projectDecisions = sourceRelevant;
+  } else if (normalized.some((decision) => decision.code === "no_trigger_for_source")) {
+    projectDecisions = [{ triggerName: null, code: "no_trigger_for_source" }];
+  }
+  const seen = new Set<string>();
+  const unique = projectDecisions.filter((decision) => {
+    const key = `${decision.triggerName ?? ""}:${decision.code}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (unique.length <= MAX_ROUTING_DECISIONS_PER_PROJECT) return unique;
+
+  return [
+    ...unique.slice(0, MAX_ROUTING_DECISIONS_PER_PROJECT - 1),
+    { triggerName: null, code: "routing_evidence_truncated" },
+  ];
 }

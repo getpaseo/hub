@@ -7,6 +7,27 @@ import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Slack Phase 1 trigger provider", () => {
+  it("reports missing bot identity as safe configuration evidence", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve(undefined),
+      client: new RecordingSlackClient(),
+    });
+
+    const result = await provider.match(external(project.id, revision.id));
+
+    assert.deepEqual(result, {
+      matches: [],
+      routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
+    });
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(

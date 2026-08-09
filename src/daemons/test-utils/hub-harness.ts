@@ -552,7 +552,10 @@ export class HubHarness {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
   }
   async waitForRecoveredExecution(id: string): Promise<AgentExecutionRecord> {
-    await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
+    await waitFor(async () => {
+      const execution = await this.execution(id);
+      return execution.daemonAgentId !== null && execution.status === "running";
+    });
     return this.execution(id);
   }
   async waitForExecutionStatus(

@@ -35,12 +35,15 @@ export function evaluateDiscordTriggers(
   const expectedEventName = `discord.${event.type}`;
   const matches: MatchedDiscordTrigger[] = [];
   const routingDecisions: TriggerRoutingDecision[] = [];
+  const sourceTriggers = config.triggers.filter((trigger) => trigger.on === expectedEventName);
+  if (sourceTriggers.length === 0) {
+    return {
+      matches,
+      routingDecisions: [{ triggerName: null, code: "no_trigger_for_source" }],
+    };
+  }
 
-  for (const trigger of config.triggers) {
-    if (trigger.on !== expectedEventName) {
-      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
-      continue;
-    }
+  for (const trigger of sourceTriggers) {
     const mismatch = discordFilterMismatch(event, trigger.filters, botClientId, connectionId);
     if (mismatch !== undefined) {
       routingDecisions.push({ triggerName: trigger.name, code: mismatch });

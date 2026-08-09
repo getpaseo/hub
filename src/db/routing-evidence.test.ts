@@ -35,24 +35,33 @@ describe("memory routing evidence persistence", () => {
     if (firstReceipt.status !== "accepted" || secondReceipt.status !== "accepted") {
       throw new Error("expected accepted receipts");
     }
+    await database.insertAttachment({
+      providerEventReceiptId: firstReceipt.event.providerEventReceiptId,
+      organizationId: "routing-org-a",
+      connectionId: "00000000-0000-4000-8000-000000000099",
+      provider: "slack",
+      sourceId: "PRIVATE-ATTACHMENT-ID",
+      locator: { token: "PRIVATE-ATTACHMENT-TOKEN" },
+      filename: "PRIVATE-ATTACHMENT-NAME",
+    });
 
-    for (const batch of [0, 1, 2]) {
-      await database.recordProviderEventRoutingDecisions({
-        organizationId: "routing-org-a",
-        providerEventReceiptId: firstReceipt.event.providerEventReceiptId,
-        projectId: first.project.id,
-        configurationRevisionId: first.revision.id,
-        decisions: Array.from({ length: 25 }, (_, index) => ({
-          triggerName: `candidate-${batch}-${index}-${"x".repeat(200)}`,
-          code: "contains_mismatch" as const,
-        })),
-      });
-    }
-    await database.recordProviderEventRoutingDecisions({
+    await database.commitProviderEventRoutingResult({
+      organizationId: "routing-org-a",
+      providerEventReceiptId: firstReceipt.event.providerEventReceiptId,
+      projectId: first.project.id,
+      configurationRevisionId: first.revision.id,
+      outcome: "dropped",
+      decisions: Array.from({ length: 75 }, (_, index) => ({
+        triggerName: `candidate-${index}-${"x".repeat(200)}`,
+        code: "contains_mismatch" as const,
+      })),
+    });
+    await database.commitProviderEventRoutingResult({
       organizationId: "routing-org-b",
       providerEventReceiptId: secondReceipt.event.providerEventReceiptId,
       projectId: second.project.id,
       configurationRevisionId: second.revision.id,
+      outcome: "dropped",
       decisions: [{ triggerName: "other-org-trigger", code: "sender_not_allowed" }],
     });
 
@@ -60,24 +69,91 @@ describe("memory routing evidence persistence", () => {
     const secondEvents = await database.listUnroutedProviderEventsForOrganization("routing-org-b");
     assert.equal(firstEvents.length, 1);
     assert.equal(secondEvents.length, 1);
-    assert.equal(firstEvents[0]?.routingDecisions.length, 50);
+    assert.equal(firstEvents[0]?.routingDecisions.length, 25);
     assert.equal(secondEvents[0]?.routingDecisions[0]?.triggerName, "other-org-trigger");
     assert.equal(
-      firstEvents[0]?.routingDecisions.every((decision) => decision.triggerName!.length <= 128),
+      firstEvents[0]?.routingDecisions.every(
+        (decision) => decision.triggerName === null || decision.triggerName.length <= 128,
+      ),
       true,
     );
     assert.equal(
-      firstEvents[0]?.routingDecisions.every(
-        (decision) =>
-          decision.summary === "The event does not contain the configured trigger marker.",
+      firstEvents[0]?.routingDecisions.some(
+        (decision) => decision.code === "routing_evidence_truncated",
       ),
       true,
     );
     assert.doesNotMatch(JSON.stringify(firstEvents), /PRIVATE-EVENT-BODY|PRIVATE-SENDER/gu);
     assert.doesNotMatch(JSON.stringify(secondEvents), /PRIVATE-OTHER-BODY/gu);
     assert.equal(
+      await database.findAttachmentBySource(
+        firstReceipt.event.providerEventReceiptId,
+        "slack",
+        "PRIVATE-ATTACHMENT-ID",
+      ),
+      undefined,
+    );
+    assert.equal(
       firstEvents[0]?.routingDecisions.some((decision) => decision.code === "sender_not_allowed"),
       false,
+    );
+  });
+
+  it("stores no-trigger evidence once and only when no source-relevant decision exists", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision } = await createActiveProjectConfiguration(
+      database,
+      emptyConfiguration(),
+      { organizationId: "routing-cardinality-org", projectSlug: "cardinality" },
+    );
+
+    const commit = async (
+      deliveryId: string,
+      decisions: Parameters<typeof database.commitProviderEventRoutingResult>[0]["decisions"],
+    ) => {
+      const receipt = await database.persistManualEvent({
+        organizationId: "routing-cardinality-org",
+        projectId: project.id,
+        deliveryId,
+        source: "manual.run",
+        payload: { body: `PRIVATE-${deliveryId}` },
+        receivedAt: new Date("2026-08-09T12:00:00.000Z"),
+      });
+      assert.equal(receipt.status, "accepted");
+      if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
+      await database.commitProviderEventRoutingResult({
+        organizationId: "routing-cardinality-org",
+        providerEventReceiptId: receipt.event.providerEventReceiptId,
+        projectId: project.id,
+        configurationRevisionId: revision.id,
+        outcome: "dropped",
+        decisions,
+      });
+    };
+
+    await commit(
+      "only-unrelated",
+      Array.from({ length: 30 }, (_, index) => ({
+        triggerName: `unrelated-${index}`,
+        code: "no_trigger_for_source" as const,
+      })),
+    );
+    await commit("source-relevant", [
+      { triggerName: null, code: "no_trigger_for_source" },
+      { triggerName: "relevant", code: "sender_not_allowed" },
+    ]);
+
+    const events =
+      await database.listUnroutedProviderEventsForOrganization("routing-cardinality-org");
+    const onlyUnrelated = events.find((event) => event.deliveryId === "only-unrelated");
+    const sourceRelevant = events.find((event) => event.deliveryId === "source-relevant");
+    assert.deepEqual(
+      onlyUnrelated?.routingDecisions.map(({ triggerName, code }) => ({ triggerName, code })),
+      [{ triggerName: null, code: "no_trigger_for_source" }],
+    );
+    assert.deepEqual(
+      sourceRelevant?.routingDecisions.map(({ triggerName, code }) => ({ triggerName, code })),
+      [{ triggerName: "relevant", code: "sender_not_allowed" }],
     );
   });
 });

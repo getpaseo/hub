@@ -116,18 +116,22 @@ export class DurableWorkflowEngine {
     const receipt = await this.options.database.findProviderEventReceiptById(
       trigger.providerEventReceiptId,
     );
-    if (receipt !== undefined && receipt.organizationId === trigger.organizationId) {
-      for (const routing of collected.routingDecisions) {
-        await this.options.database.recordProviderEventRoutingDecisions({
-          organizationId: trigger.organizationId,
-          providerEventReceiptId: trigger.providerEventReceiptId,
-          projectId: trigger.projectId,
-          configurationRevisionId: trigger.configurationRevisionId,
-          decisions: routing,
-        });
-      }
-    }
     const matches = collected.matches;
+    const routingDecisions = collected.routingDecisions.flat();
+    if (receipt !== undefined && receipt.organizationId === trigger.organizationId) {
+      await this.options.database.commitProviderEventRoutingResult({
+        organizationId: trigger.organizationId,
+        providerEventReceiptId: trigger.providerEventReceiptId,
+        projectId: trigger.projectId,
+        configurationRevisionId: trigger.configurationRevisionId,
+        outcome: matches.length === 0 ? "dropped" : "routed",
+        decisions:
+          matches.length === 0 && routingDecisions.length === 0
+            ? [{ triggerName: null, code: "configuration_unavailable" }]
+            : routingDecisions,
+        ...(matches.length === 0 ? {} : { payload: trigger.payload }),
+      });
+    }
     if (matches.length === 0) {
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
@@ -883,6 +887,12 @@ async function collectProviderMatches(
   const matchingProviders = providers.filter((provider) =>
     provider.eventNames.some((name) => name === trigger.source),
   );
+  if (matchingProviders.length === 0) {
+    return {
+      matches: [],
+      routingDecisions: [[{ triggerName: null, code: "no_trigger_for_source" }]],
+    };
+  }
   const nestedMatches = await Promise.all(
     matchingProviders.map((provider) => provider.match(trigger)),
   );

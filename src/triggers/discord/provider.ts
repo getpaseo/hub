@@ -68,7 +68,12 @@ export function createDiscordTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return { matches: [], routingDecisions: [] };
+      if (stored === undefined) {
+        return {
+          matches: [],
+          routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
+        };
+      }
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
       const evaluation = evaluateDiscordTriggers(
@@ -85,6 +90,21 @@ export function createDiscordTriggerProvider(options: {
         );
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          undefined,
+          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
+            routingDecisions.push({
+              triggerName: match.trigger.name,
+              code: "input_filter_mismatch",
+            });
+            continue;
+          }
+        }
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -104,21 +124,6 @@ export function createDiscordTriggerProvider(options: {
             options.attachments,
           ),
         };
-        const invocation = parseInvocation(
-          event.content,
-          compiledTrigger.inputs,
-          undefined,
-          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
-        );
-        if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
-            routingDecisions.push({
-              triggerName: match.trigger.name,
-              code: "input_filter_mismatch",
-            });
-            continue;
-          }
-        }
         if (invocation.status === "rejected") {
           routingDecisions.push({
             triggerName: match.trigger.name,

@@ -20,6 +20,7 @@ import {
   BrowserGitHubConnections,
   BrowserGitHubConfiguration,
   BrowserGitHubReactions,
+  BrowserSlackBot,
   type BrowserDiscordEvent,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
@@ -112,8 +113,10 @@ async function main(): Promise<void> {
     "utf8",
   );
   const bot = new BrowserDiscordBot();
+  const slackBot = new BrowserSlackBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
+  const slackConfigured = scenario === "slack-only";
   const registrations =
     auth === null
       ? []
@@ -146,7 +149,7 @@ async function main(): Promise<void> {
             applicationBaseUrl: publicBaseUrl,
             publicBaseUrl,
             configuration:
-              scenario === "not-configured"
+              scenario === "not-configured" || scenario === "slack-only"
                 ? null
                 : {
                     botToken: "token",
@@ -163,7 +166,15 @@ async function main(): Promise<void> {
             auth,
             applicationBaseUrl: publicBaseUrl,
             publicBaseUrl,
-            configuration: null,
+            configuration: slackConfigured
+              ? {
+                  appId: "browser-slack-app",
+                  clientId: "browser-slack-client",
+                  clientSecret: "browser-slack-client-secret",
+                  signingSecret: requiredEnvironment("SLACK_WEBHOOK_SECRET"),
+                }
+              : null,
+            ...(slackConfigured ? { botClient: slackBot } : {}),
           }),
         ];
   const runtime = await createApplicationRuntime({
@@ -400,7 +411,8 @@ function readScenario(): BrowserProviderScenario {
     value === "approval" ||
     value === "conflict" ||
     value === "not-configured" ||
-    value === "discord-only"
+    value === "discord-only" ||
+    value === "slack-only"
   ) {
     return value;
   }
@@ -408,7 +420,7 @@ function readScenario(): BrowserProviderScenario {
 }
 
 function hasBrowserGitHub(scenario: BrowserProviderScenario): boolean {
-  return scenario !== "not-configured" && scenario !== "discord-only";
+  return scenario !== "not-configured" && scenario !== "discord-only" && scenario !== "slack-only";
 }
 
 function browserAuthEnabled(): boolean {

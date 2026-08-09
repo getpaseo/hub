@@ -32,6 +32,7 @@ import {
   toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
   toProviderEventRoutingDecisionRecord,
+  toProviderEventRoutingOutcomeRecord,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type {
@@ -53,6 +54,8 @@ import type {
   ProviderEventReceiptRecord,
   ProviderEventReceiptSummary,
   ProviderEventRoutingDecisionRecord,
+  ProviderEventRoutingOutcomeRecord,
+  CommitProviderEventRoutingResultInput,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -113,7 +116,6 @@ import type {
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
   ReconcileOrganizationSubscriptionInput,
-  RecordProviderEventRoutingDecisionsInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -183,32 +185,54 @@ class PgDatabase implements Database {
     return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
   }
 
-  async markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void> {
-    const rows = await query(
-      this.pool,
-      `update provider_event_receipts
-      set dropped_reason = coalesce(dropped_reason, $2)
-      where id = $1`,
-      [providerEventReceiptId, reason],
-    );
-    if (rows.rowCount === 0)
-      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
-  }
-
-  async recordProviderEventRoutingDecisions(
-    input: RecordProviderEventRoutingDecisionsInput,
+  async commitProviderEventRoutingResult(
+    input: CommitProviderEventRoutingResultInput,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      const receipt = await client.query(
-        `select id from provider_event_receipts
+      const receipt = await client.query<{
+        id: string;
+        accepted_project_count: number;
+        project_accepted: boolean;
+      }>(
+        `select id,
+                coalesce(jsonb_array_length(accepted_routes), 0)::integer as accepted_project_count,
+                coalesce(
+                  accepted_routes @> jsonb_build_array(jsonb_build_object(
+                    'projectId', $3::text,
+                    'configurationRevisionId', $4::text
+                  )),
+                  false
+                ) as project_accepted
+         from provider_event_receipts
          where id = $1 and organization_id = $2
+         for update`,
+        [
+          input.providerEventReceiptId,
+          input.organizationId,
+          input.projectId,
+          input.configurationRevisionId,
+        ],
+      );
+      const receiptRow = receipt.rows[0];
+      if (receiptRow === undefined) {
+        throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+      }
+      if (!receiptRow.project_accepted) {
+        throw new Error("provider event project route unavailable");
+      }
+      const outcome = await client.query<ProviderEventRoutingOutcomeRow>(
+        `select * from provider_event_routing_outcomes
+         where provider_event_receipt_id = $1 and organization_id = $2
          for update`,
         [input.providerEventReceiptId, input.organizationId],
       );
-      if (receipt.rowCount !== 1) {
-        throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+      const outcomeRow = outcome.rows[0];
+      if (outcomeRow === undefined) {
+        throw new Error(
+          `provider event routing outcome not found: ${input.providerEventReceiptId}`,
+        );
       }
       const project = await client.query(
         `select 1
@@ -218,34 +242,64 @@ class PgDatabase implements Database {
         [input.configurationRevisionId, input.projectId, input.organizationId],
       );
       if (project.rowCount !== 1) throw new Error("routing decision project unavailable");
-      const countResult = await client.query<{ count: string }>(
-        `select count(*)::text as count
-         from provider_event_routing_decisions
+      const insertedResult = await client.query(
+        `insert into provider_event_routing_project_results
+           (organization_id, provider_event_receipt_id, project_id,
+            configuration_revision_id, status)
+         values ($1, $2, $3, $4, $5)
+         on conflict (provider_event_receipt_id, project_id) do nothing
+         returning id`,
+        [
+          input.organizationId,
+          input.providerEventReceiptId,
+          input.projectId,
+          input.configurationRevisionId,
+          input.outcome,
+        ],
+      );
+      if (insertedResult.rowCount === 1) {
+        await recordRoutingEvidenceOnClient(client, input);
+        if (input.outcome === "routed" && input.payload !== undefined) {
+          await client.query(
+            `update provider_event_receipts set payload = $2::jsonb where id = $1`,
+            [input.providerEventReceiptId, JSON.stringify(input.payload)],
+          );
+        }
+      }
+      const countResult = await client.query<{ completed: number; routed: number }>(
+        `select count(*)::integer as completed,
+                count(*) filter (where status = 'routed')::integer as routed
+         from provider_event_routing_project_results
          where provider_event_receipt_id = $1`,
         [input.providerEventReceiptId],
       );
-      let storedCount = Number(countResult.rows[0]?.count ?? 0);
-      for (const candidate of normalizeRoutingDecisions(input.decisions)) {
-        if (storedCount >= MAX_ROUTING_EVIDENCE_PER_RECEIPT) break;
-        const decision = normalizeRoutingDecision(candidate);
-        if (decision === undefined) continue;
-        const inserted = await client.query(
-          `insert into provider_event_routing_decisions
-             (organization_id, provider_event_receipt_id, project_id,
-              configuration_revision_id, trigger_name, code, summary)
-           values ($1, $2, $3, $4, $5, $6, $7)
-           on conflict do nothing`,
-          [
-            input.organizationId,
-            input.providerEventReceiptId,
-            input.projectId,
-            input.configurationRevisionId,
-            decision.triggerName,
-            decision.code,
-            routingDecisionSummary(decision.code),
-          ],
+      const completed = countResult.rows[0]?.completed ?? 0;
+      const routed = countResult.rows[0]?.routed ?? 0;
+      const finalized = completed >= receiptRow.accepted_project_count;
+      let status: ProviderEventRoutingOutcomeRow["status"] = "pending";
+      if (finalized && routed > 0) status = "routed";
+      if (finalized && routed === 0) status = "dropped";
+      await client.query(
+        `update provider_event_routing_outcomes
+         set expected_project_count = $2,
+             status = $3,
+             completed_project_count = $4,
+             routed_project_count = $5,
+             finalized_at = case when $6 then coalesce(finalized_at, clock_timestamp()) else null end
+         where id = $1`,
+        [outcomeRow.id, receiptRow.accepted_project_count, status, completed, routed, finalized],
+      );
+      if (status === "dropped") {
+        await client.query(
+          `update provider_event_receipts
+           set payload = null, signature_hash = null
+           where id = $1`,
+          [input.providerEventReceiptId],
         );
-        if (inserted.rowCount === 1) storedCount += 1;
+        await client.query(
+          `delete from attachment_capabilities where provider_event_receipt_id = $1`,
+          [input.providerEventReceiptId],
+        );
       }
       await client.query("commit");
     } catch (error) {
@@ -254,6 +308,19 @@ class PgDatabase implements Database {
     } finally {
       client.release();
     }
+  }
+
+  async findProviderEventRoutingOutcomeByReceiptId(
+    providerEventReceiptId: string,
+  ): Promise<ProviderEventRoutingOutcomeRecord | undefined> {
+    const rows = await query<ProviderEventRoutingOutcomeRow>(
+      this.pool,
+      `select * from provider_event_routing_outcomes
+       where provider_event_receipt_id = $1 limit 1`,
+      [providerEventReceiptId],
+    );
+    const row = rows.rows[0];
+    return row === undefined ? undefined : toProviderEventRoutingOutcomeRecord(row);
   }
 
   async findProviderEventReceiptByDeliveryId(
@@ -3747,11 +3814,11 @@ class PgDatabase implements Database {
               receipts.resource_id, receipts.delivery_id, receipts.signature_hash, receipts.source,
               receipts.repo, receipts.received_at, receipts.dropped_reason
        from provider_event_receipts receipts
+       join provider_event_routing_outcomes outcomes
+         on outcomes.provider_event_receipt_id = receipts.id
+        and outcomes.organization_id = receipts.organization_id
        where receipts.organization_id = $1
-         and not exists (
-           select 1 from trigger_runs runs
-           where runs.provider_event_receipt_id = receipts.id
-         )
+         and outcomes.status = 'dropped'
        order by receipts.received_at desc, receipts.id desc
        limit 50`,
       [organizationId],
@@ -4105,6 +4172,66 @@ async function insertAgentExecutionOnClient(
 
 const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
 
+async function recordRoutingEvidenceOnClient(
+  client: PoolClient,
+  input: CommitProviderEventRoutingResultInput,
+): Promise<void> {
+  const countResult = await client.query<{ count: number }>(
+    `select count(*)::integer as count
+     from provider_event_routing_decisions
+     where provider_event_receipt_id = $1`,
+    [input.providerEventReceiptId],
+  );
+  let storedCount = countResult.rows[0]?.count ?? 0;
+  for (const candidate of normalizeRoutingDecisions(input.decisions)) {
+    if (storedCount >= MAX_ROUTING_EVIDENCE_PER_RECEIPT) {
+      const marker = await client.query(
+        `select id from provider_event_routing_decisions
+         where provider_event_receipt_id = $1 and code = 'routing_evidence_truncated'
+         limit 1`,
+        [input.providerEventReceiptId],
+      );
+      if (marker.rowCount === 0 && storedCount > 0) {
+        await client.query(
+          `update provider_event_routing_decisions
+           set project_id = null,
+               configuration_revision_id = null,
+               trigger_name = null,
+               code = 'routing_evidence_truncated',
+               summary = $2
+           where id = (
+             select id from provider_event_routing_decisions
+             where provider_event_receipt_id = $1
+             order by created_at desc, id desc
+             limit 1
+           )`,
+          [input.providerEventReceiptId, routingDecisionSummary("routing_evidence_truncated")],
+        );
+      }
+      break;
+    }
+    const decision = normalizeRoutingDecision(candidate);
+    if (decision === undefined) continue;
+    const inserted = await client.query(
+      `insert into provider_event_routing_decisions
+         (organization_id, provider_event_receipt_id, project_id,
+          configuration_revision_id, trigger_name, code, summary)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict do nothing`,
+      [
+        input.organizationId,
+        input.providerEventReceiptId,
+        input.projectId,
+        input.configurationRevisionId,
+        decision.triggerName,
+        decision.code,
+        routingDecisionSummary(decision.code),
+      ],
+    );
+    if (inserted.rowCount === 1) storedCount += 1;
+  }
+}
+
 export interface ProviderEventReceiptRow extends QueryResultRow {
   id: string;
   organization_id: string;
@@ -4131,6 +4258,18 @@ export interface ProviderEventRoutingDecisionRow extends QueryResultRow {
   code: string;
   summary: string;
   created_at: Date;
+}
+
+export interface ProviderEventRoutingOutcomeRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  provider_event_receipt_id: string;
+  status: "pending" | "routed" | "dropped";
+  expected_project_count: number;
+  completed_project_count: number;
+  routed_project_count: number;
+  created_at: Date;
+  finalized_at: Date | null;
 }
 
 interface TriggerRunRow extends QueryResultRow {

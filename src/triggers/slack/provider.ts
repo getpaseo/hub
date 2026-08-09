@@ -78,11 +78,21 @@ export function createSlackTriggerProvider(options: {
         trigger.organizationId,
         rawEvent.teamId,
       );
-      if (botUserId === undefined) return { matches: [], routingDecisions: [] };
+      if (botUserId === undefined) {
+        return {
+          matches: [],
+          routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
+        };
+      }
       const stored = await options
         .configurationStoreForProject(trigger.projectId)
         .getRevision(trigger.configurationRevisionId);
-      if (stored === undefined) return { matches: [], routingDecisions: [] };
+      if (stored === undefined) {
+        return {
+          matches: [],
+          routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
+        };
+      }
       const evaluation = evaluateSlackTriggers(
         stored.configuration,
         rawEvent,
@@ -92,9 +102,9 @@ export function createSlackTriggerProvider(options: {
       if (evaluation.matches.length === 0) {
         return { matches: [], routingDecisions: evaluation.routingDecisions };
       }
-      const event = await hydrateSlackEvent(rawEvent, trigger.organizationId, options.client);
       const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
       const routingDecisions = [...evaluation.routingDecisions];
+      let event: NormalizedSlackMentionEvent | undefined;
 
       for (const match of evaluation.matches) {
         const compiledTrigger = stored.configuration.triggers.find(
@@ -102,6 +112,24 @@ export function createSlackTriggerProvider(options: {
         );
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
+        const invocation = parseInvocation(
+          rawEvent.content,
+          compiledTrigger.inputs,
+          undefined,
+          readSlackInvocationParserMessage(rawEvent, botUserId, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
+            routingDecisions.push({
+              triggerName: match.trigger.name,
+              code: "input_filter_mismatch",
+            });
+            continue;
+          }
+        }
+        if (event === undefined) {
+          event = await hydrateSlackEvent(rawEvent, trigger.organizationId, options.client);
+        }
         const outputContext: SlackOutputContext = {
           provider: "slack",
           organizationId: trigger.organizationId,
@@ -123,21 +151,6 @@ export function createSlackTriggerProvider(options: {
             options.attachments,
           ),
         };
-        const invocation = parseInvocation(
-          event.content,
-          compiledTrigger.inputs,
-          undefined,
-          readSlackInvocationParserMessage(event, botUserId, compiledTrigger.filters),
-        );
-        if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
-            routingDecisions.push({
-              triggerName: match.trigger.name,
-              code: "input_filter_mismatch",
-            });
-            continue;
-          }
-        }
         if (invocation.status === "rejected") {
           routingDecisions.push({
             triggerName: match.trigger.name,

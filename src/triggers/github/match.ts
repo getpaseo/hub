@@ -64,12 +64,15 @@ export function evaluateGitHubTriggers(
   const on = `github.${event.type}`;
   const matches: MatchedTriggerEvent[] = [];
   const routingDecisions: TriggerRoutingDecision[] = [];
+  const sourceTriggers = config.triggers.filter((trigger) => trigger.on === on);
+  if (sourceTriggers.length === 0) {
+    return {
+      matches,
+      routingDecisions: [{ triggerName: null, code: "no_trigger_for_source" }],
+    };
+  }
 
-  for (const trigger of config.triggers) {
-    if (trigger.on !== on) {
-      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
-      continue;
-    }
+  for (const trigger of sourceTriggers) {
     const mismatch = githubFilterMismatch(event, trigger.filters, connectionId);
     if (mismatch !== undefined) {
       routingDecisions.push({ triggerName: trigger.name, code: mismatch });

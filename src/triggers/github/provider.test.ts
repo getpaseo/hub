@@ -84,7 +84,31 @@ describe("GitHub Phase 1 trigger provider", () => {
     );
 
     assert.deepEqual(result.routingDecisions, [
-      { triggerName: "github-mention", code: "no_trigger_for_source" },
+      { triggerName: null, code: "no_trigger_for_source" },
+    ]);
+  });
+
+  it("keeps a source-relevant rejection ahead of unrelated trigger noise", async () => {
+    const base = githubConfiguration().triggers[0]!;
+    const { project, revision, store } = await activeConfiguration({
+      ...githubConfiguration(),
+      triggers: [
+        ...Array.from({ length: 25 }, (_, index) => ({
+          ...base,
+          name: `unrelated-${index}`,
+          on: "github.pull_request" as const,
+        })),
+        base,
+      ],
+    });
+    const provider = createProvider(store, new TestReactions());
+
+    const result = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "untrusted" })),
+    );
+
+    assert.deepEqual(result.routingDecisions, [
+      { triggerName: "github-mention", code: "sender_not_allowed" },
     ]);
   });
 
