@@ -2,6 +2,7 @@ import type { AllowedOutput } from "../execution-capabilities/outputs.js";
 import type { TriggerAgentConfig } from "../triggers/index.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
+import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 
 export interface DaemonEnvironmentTarget {
   kind: "daemon";
@@ -21,6 +22,8 @@ export interface LaunchMachineIntent {
   triggerName: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
+  env?: Readonly<Record<string, string>>;
+  github?: CompiledGitHubAuthority;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
@@ -43,6 +46,8 @@ export function buildLaunchMachineIntent(input: {
   triggerName: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
+  env?: Readonly<Record<string, string>>;
+  github?: CompiledGitHubAuthority;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
@@ -61,6 +66,8 @@ export function buildLaunchMachineIntent(input: {
     triggerName: input.triggerName,
     environmentName: input.environmentName,
     environment: input.environment,
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.github === undefined ? {} : { github: input.github }),
     prompt: input.prompt,
     agent: input.agent,
     allowOutputs: input.allowOutputs,

@@ -1,7 +1,6 @@
-import type { ConnectionResolver } from "../../config/connections.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
-import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
+import type { GitHubAuth } from "../../auth/github.js";
 import { logger } from "../../logger.js";
 import {
   matchTriggers,
@@ -21,15 +20,7 @@ import {
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { z } from "zod";
 
-const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const SafeRecordSchema = z.record(z.string(), z.unknown());
-
-interface ExecutionTokenState {
-  pendingMints: number;
-  terminal: boolean;
-  tokens: Set<string>;
-}
-
 export interface GitHubReactionClient {
   createReaction(input: {
     installationId: number;
@@ -128,11 +119,8 @@ export interface GitHubTriggerContext {
 
 export function createGitHubTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
-  connectionsForProject?: (projectId: string) => ConnectionResolver;
   reactions: GitHubReactionClient;
-  executionTokens: GitHubExecutionTokenAuth;
 }): TriggerProvider<"github", GitHubTriggerContext> {
-  const executionTokenStates = new Map<string, ExecutionTokenState>();
   return {
     name: "github",
     eventNames: [
@@ -202,51 +190,6 @@ export function createGitHubTriggerProvider(options: {
 
       return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
-    async materializeLaunch(launch) {
-      const state = executionTokenStates.get(launch.executionId) ?? {
-        pendingMints: 0,
-        terminal: false,
-        tokens: new Set<string>(),
-      };
-      if (state.terminal) {
-        throw new Error(`cannot materialize terminal execution ${launch.executionId}`);
-      }
-      executionTokenStates.set(launch.executionId, state);
-      state.pendingMints += 1;
-      let token: string;
-      try {
-        token = await options.executionTokens.mintExecutionToken({
-          installationId: launch.triggerContext.target.installationId,
-          repository: launch.triggerContext.target.repository,
-        });
-      } catch (error) {
-        state.pendingMints -= 1;
-        deleteEmptyExecutionTokenState(executionTokenStates, launch.executionId, state);
-        throw error;
-      }
-      state.pendingMints -= 1;
-      if (state.terminal) {
-        await revokeExecutionTokens(options.executionTokens, launch.executionId, [token]);
-        deleteEmptyExecutionTokenState(executionTokenStates, launch.executionId, state);
-        throw new Error(`cannot materialize terminal execution ${launch.executionId}`);
-      }
-      state.tokens.add(token);
-      state.pendingMints += 1;
-      try {
-        if (state.terminal) {
-          throw new Error(`cannot materialize terminal execution ${launch.executionId}`);
-        }
-        return {
-          environmentEnv: { ...launch.environmentEnv, GH_TOKEN: token },
-          ...(launch.environmentWorktree === undefined
-            ? {}
-            : { environmentWorktree: launch.environmentWorktree }),
-        };
-      } finally {
-        state.pendingMints -= 1;
-        deleteEmptyExecutionTokenState(executionTokenStates, launch.executionId, state);
-      }
-    },
     async materializeContext(launch) {
       return launch.triggerContext.event;
     },
@@ -272,58 +215,7 @@ export function createGitHubTriggerProvider(options: {
     async onMachineTerminated(triggerContext) {
       await reactToLifecycle(options.reactions, triggerContext, "-1");
     },
-    async onAgentExecutionTerminal(executionId) {
-      const state = executionTokenStates.get(executionId) ?? {
-        pendingMints: 0,
-        terminal: false,
-        tokens: new Set<string>(),
-      };
-      executionTokenStates.set(executionId, state);
-      state.terminal = true;
-      const tokens = [...state.tokens];
-      state.tokens.clear();
-      await revokeExecutionTokens(options.executionTokens, executionId, tokens);
-      deleteEmptyExecutionTokenState(executionTokenStates, executionId, state);
-    },
   };
-}
-
-function deleteEmptyExecutionTokenState(
-  states: Map<string, ExecutionTokenState>,
-  executionId: string,
-  state: ExecutionTokenState,
-): void {
-  if (states.get(executionId) === state && state.pendingMints === 0 && state.tokens.size === 0) {
-    states.delete(executionId);
-  }
-}
-
-async function revokeExecutionTokens(
-  executionTokens: GitHubExecutionTokenAuth,
-  executionId: string,
-  tokens: readonly string[],
-): Promise<void> {
-  const revocations = await Promise.allSettled(
-    tokens.map((token) =>
-      withTimeout(executionTokens.revokeInstallationToken(token), TOKEN_REVOCATION_TIMEOUT_MS),
-    ),
-  );
-  for (const result of revocations) {
-    if (result.status === "rejected") {
-      logger.warn({ err: result.reason, executionId }, "GitHub execution token revocation failed");
-    }
-  }
-}
-
-function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`operation timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-  return Promise.race([operation, deadline]).finally(() => clearTimeout(timeout));
 }
 
 function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {

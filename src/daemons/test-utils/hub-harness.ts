@@ -52,6 +52,8 @@ import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
+import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -152,6 +154,37 @@ export class HubHarness {
   private readonly terminalExecutionIds: string[] = [];
   private publicBaseUrlEnabled = true;
   private completionTokenSecretEnabled = true;
+  private readonly authorityMints: Array<{
+    projectId: string;
+    connectionSlug: string;
+    repositories: readonly string[];
+    permissions: Readonly<Record<string, "read" | "write" | "admin">>;
+  }> = [];
+  private readonly authorityRevocations: string[] = [];
+  private authorityTokenCount = 0;
+  private readonly executionAuthority = createExecutionAuthority({
+    connectionsForProject: () => async (connectionSlug, value) => {
+      if (connectionSlug !== "some-connection" || value !== "token") {
+        throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
+      }
+      return "resolved-secret";
+    },
+    githubAuthority: {
+      mint: async (input) => {
+        this.authorityMints.push(input);
+        this.authorityTokenCount += 1;
+        return {
+          token: `durable-scoped-token-${this.authorityTokenCount}`,
+          expiresAt: Date.now() + 60 * 60_000,
+          botUserId: 1234,
+          botLogin: "paseo[bot]",
+        };
+      },
+      revoke: async (token) => {
+        this.authorityRevocations.push(token);
+      },
+    } satisfies GitHubAuthorityRegistration,
+  });
 
   static async start(): Promise<HubHarness> {
     const harness = new HubHarness();
@@ -752,6 +785,12 @@ export class HubHarness {
   }
   terminalHookCount(): number {
     return this.terminalExecutionIds.length;
+  }
+  authorityMintInputs() {
+    return this.authorityMints;
+  }
+  authorityRevokedTokens(): readonly string[] {
+    return this.authorityRevocations;
   }
   hookContexts() {
     return { started: this.startedHooks, completed: this.completedHooks };
@@ -1393,6 +1432,7 @@ export class HubHarness {
       ...(this.publicBaseUrlEnabled ? { publicBaseUrl: this.origin } : {}),
       daemonClock: this.clock,
       executionDeadlineClock: this.clock,
+      executionAuthority: this.executionAuthority,
       dispatchTimeoutMs: 30_000,
     });
     const hub = application.hub;
@@ -1461,8 +1501,8 @@ export class HubHarness {
         daemonId: this.requireDaemon().daemonId,
         authoredSlug,
         cwd: "/workspace",
-        env: { USER_DEFINED: "yes" },
       },
+      env: { USER_DEFINED: "yes" },
       prompt: "Reply pong.",
       agent: {
         provider: "opencode",

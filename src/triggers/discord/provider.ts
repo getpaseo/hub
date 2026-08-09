@@ -1,4 +1,3 @@
-import type { ConnectionResolver } from "../../config/connections.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
@@ -84,7 +83,6 @@ export interface DiscordOutputContext {
 
 export function createDiscordTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
-  connectionsForProject?: (projectId: string) => ConnectionResolver;
   bot: DiscordBotClient;
   attachments?: AttachmentCapabilityRegistry;
 }): TriggerProvider<

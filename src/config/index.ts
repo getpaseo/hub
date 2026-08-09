@@ -38,6 +38,8 @@ export type {
   CompiledConfiguration,
   CompiledStepConfig,
   CompiledTriggerConfig,
+  CompiledGitHubAuthority,
+  GitHubPermissionLevel,
 } from "./schema.js";
 
 export interface RuntimeConfig {

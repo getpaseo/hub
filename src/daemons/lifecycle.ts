@@ -21,6 +21,7 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { logger as defaultLogger } from "../logger.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ProviderIntegrationRegistration } from "../providers/registration.js";
+import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
 import {
@@ -95,7 +96,7 @@ export interface DaemonDispatchLifecycleOptions {
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
   executionCapabilities?: OutputExecutorRegistry;
   providers?: readonly TriggerProvider[];
-  integrations?: readonly ProviderIntegrationRegistration[];
+  executionAuthority?: ExecutionAuthority;
   publicBaseUrl?: string;
   completionTokenSecret?: string;
   test?: {
@@ -511,26 +512,28 @@ export class DaemonDispatchLifecycle {
     intent: LaunchMachineIntent,
     provider: TriggerProvider | undefined,
     executionId: string,
-  ): Promise<LaunchMachineIntent> {
+  ): Promise<{ intent: LaunchMachineIntent; env: Record<string, string> }> {
     const persistedWorktree = intent.environment.worktree;
-    if (provider?.materializeLaunch === undefined) {
-      return intent;
-    }
-    const materialized = await provider.materializeLaunch({
-      executionId,
-      organizationId: intent.organizationId,
-      projectId: intent.projectId,
-      ...(intent.environment.env === undefined ? {} : { environmentEnv: intent.environment.env }),
-      ...(persistedWorktree === undefined ? {} : { environmentWorktree: persistedWorktree }),
-      triggerContext: intent.triggerContext,
-    });
+    const materialized =
+      provider?.materializeLaunch === undefined
+        ? {}
+        : await provider.materializeLaunch({
+            executionId,
+            organizationId: intent.organizationId,
+            projectId: intent.projectId,
+            ...(intent.environment.env === undefined
+              ? {}
+              : { environmentEnv: intent.environment.env }),
+            ...(persistedWorktree === undefined ? {} : { environmentWorktree: persistedWorktree }),
+            triggerContext: intent.triggerContext,
+          });
     const {
       env: _persistedEnvironmentEnv,
       worktree: _persistedWorktree,
       ...environment
     } = intent.environment;
     const environmentWorktree = materialized.environmentWorktree ?? persistedWorktree;
-    return {
+    const materializedIntent: LaunchMachineIntent = {
       ...intent,
       environment: {
         ...environment,
@@ -538,6 +541,31 @@ export class DaemonDispatchLifecycle {
         ...(environmentWorktree === undefined ? {} : { worktree: environmentWorktree }),
       },
     };
+    if (this.options.executionAuthority === undefined && materializedIntent.github !== undefined) {
+      throw new Error("GitHub step authority is unavailable");
+    }
+    const authoredEnv = {
+      ...(materialized.environmentEnv ?? intent.environment.env),
+      ...materializedIntent.env,
+    };
+    let env: Record<string, string>;
+    if (
+      this.options.executionAuthority === undefined ||
+      (Object.keys(authoredEnv).length === 0 && materializedIntent.github === undefined)
+    ) {
+      env = authoredEnv;
+    } else {
+      env = (
+        await this.options.executionAuthority.materialize({
+          executionId,
+          projectId: materializedIntent.projectId,
+          triggerContext: materializedIntent.triggerContext,
+          ...(Object.keys(authoredEnv).length === 0 ? {} : { env: authoredEnv }),
+          ...(materializedIntent.github === undefined ? {} : { github: materializedIntent.github }),
+        })
+      ).env;
+    }
+    return { intent: materializedIntent, env };
   }
 
   private async buildCreateAgentOptions(
@@ -545,10 +573,16 @@ export class DaemonDispatchLifecycle {
     hubExecutionEnv: HubExecutionEnv,
   ): Promise<DaemonCreateAgentOptions> {
     const provider = this.findProviderForTriggerContext(intent.triggerContext);
+    const materialized = await this.materializeLaunch(
+      intent,
+      provider,
+      hubExecutionEnv.executionId,
+    );
     return buildCreateAgentOptions(
-      await this.materializeLaunch(intent, provider, hubExecutionEnv.executionId),
+      materialized.intent,
       hubExecutionEnv,
       this.executionCapabilities,
+      materialized.env,
     );
   }
 
@@ -1334,15 +1368,18 @@ export class DaemonDispatchLifecycle {
       });
     }
     await Promise.all(
-      (this.options.integrations ?? []).map(async (integration) => {
-        if (integration.onExecutionTerminal === undefined) return;
-        await integration.onExecutionTerminal(execution.id).catch((error: unknown) => {
-          this.logger.warn(
-            { err: error, agent_execution_id: execution.id },
-            "integration terminal cleanup hook failed",
-          );
-        });
-      }),
+      this.options.executionAuthority === undefined
+        ? []
+        : [
+            this.options.executionAuthority
+              .onExecutionTerminal(execution.id)
+              .catch((error: unknown) => {
+                this.logger.warn(
+                  { err: error, agent_execution_id: execution.id },
+                  "execution authority terminal cleanup hook failed",
+                );
+              }),
+          ],
     );
   }
 
@@ -1890,6 +1927,7 @@ async function buildCreateAgentOptions(
     publicBaseUrl: string;
   },
   capabilities: OutputExecutorRegistry,
+  materializedEnv: Readonly<Record<string, string>>,
 ): Promise<DaemonCreateAgentOptions> {
   return {
     executionId: hubExecutionEnv.executionId,
@@ -1904,7 +1942,7 @@ async function buildCreateAgentOptions(
       : { providerOptions: structuredClone(intent.agent.options) }),
     cwd: intent.environment.cwd,
     prompt: intent.prompt,
-    env: buildAgentEnv(intent),
+    env: buildAgentEnv(intent, materializedEnv),
     mcpServers: {
       hub: buildExecutionCapabilityMcpServer(hubExecutionEnv),
     },
@@ -1922,9 +1960,12 @@ async function buildCreateAgentOptions(
   };
 }
 
-function buildAgentEnv(intent: LaunchMachineIntent): Record<string, string> {
+function buildAgentEnv(
+  intent: LaunchMachineIntent,
+  materializedEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
   return {
-    ...intent.environment.env,
+    ...materializedEnv,
     PASEO_AGENT_PROVIDER: intent.agent.provider,
     ...(intent.agent.mode === undefined ? {} : { PASEO_AGENT_MODE: intent.agent.mode }),
     PASEO_HUB_CONFIG_JSON: JSON.stringify(intent.hubConfig),

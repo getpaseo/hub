@@ -578,6 +578,38 @@ describe("durable multi-step workflow engine", () => {
     assert.deepEqual(dispatches, []);
   });
 
+  it("does not persist or dispatch skipped-step GitHub authority", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: skippedAuthorityConfiguration() });
+    const intents: LaunchMachineIntent[] = [];
+    const { handler, engine } = engineFor(fixture, [], async (intent) => {
+      intents.push(intent);
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    assert.deepEqual(
+      steps.map((step) => [step.stepId, step.status]),
+      [
+        ["classifier", "skipped"],
+        ["work", "running"],
+      ],
+    );
+    assert.equal(
+      await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id),
+      undefined,
+    );
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0]?.github, undefined);
+    assert.deepEqual(intents[0]?.env, {
+      SOME_TOKEN: "${{ paseo.connections.some-connection.token }}",
+    });
+  });
+
   it("persists final values composed from a one-step structured output", async () => {
     const fixture = await workflowFixture({ rawConfiguration: finalValueConfiguration() });
     const dispatches: string[] = [];
@@ -1489,6 +1521,45 @@ function skippedOutputPromptConfiguration(): Record<string, unknown> {
             idle_timeout: "1m",
             agent: { provider: "codex" },
             prompt: [{ text: "Repo ${{ steps.classify.outputs.repo }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function skippedAuthorityConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "skipped-authority",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "classifier",
+            if: "${{ false }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Classify" }],
+            github: {
+              connection: "getpaseo-github",
+              repositories: ["getpaseo/paseo"],
+              permissions: { contents: "write" },
+            },
+          },
+          {
+            id: "work",
+            if: "${{ true }}",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Work" }],
+            env: { SOME_TOKEN: "${{ paseo.connections.some-connection.token }}" },
           },
         ],
       },

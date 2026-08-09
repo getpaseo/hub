@@ -1,4 +1,3 @@
-import type { ConnectionResolver } from "../../config/connections.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
@@ -93,7 +92,6 @@ export interface SlackOutputContext {
 
 export function createSlackTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
-  connectionsForProject?: (projectId: string) => ConnectionResolver;
   botUserIdForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
   client: SlackBotClient;
   attachments?: AttachmentCapabilityRegistry;

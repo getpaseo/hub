@@ -133,6 +133,20 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
+  it("does not infer GitHub authority from a GitHub trigger source", async () => {
+    await hub.connectDaemon();
+    const result = await hub.dispatch({
+      triggerContext: { provider: "github", deliveryId: "github-authority" },
+    });
+    const launchEnv = hub.createdAgentLaunch().env;
+    assert.ok(isRecord(launchEnv));
+
+    assert.equal(launchEnv["GH_TOKEN"], undefined);
+    assert.equal(launchEnv["GIT_CONFIG_COUNT"], undefined);
+    assert.equal((await hub.execution(result.execution.id)).launchIntent?.github, undefined);
+    assert.deepEqual(hub.authorityMintInputs(), []);
+  });
+
   it("identifies available Hub MCP tools through daemon-native channels", async () => {
     await hub.connectDaemon();
 
@@ -385,12 +399,60 @@ describe("daemon enrollment and execution", () => {
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
-        branch: "branch-resolved-secret",
+        branch: "branch-<secret>",
       });
       assert.equal(hub.launchMaterializationCount(), 1);
     } finally {
       hub.releaseLaunchMaterialization();
     }
+  });
+
+  it("materializes step authority only at the durable daemon launch boundary", async () => {
+    await hub.connectDaemon();
+    const handedOff = await hub.handoff({
+      env: {
+        SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
+      },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write", pull_requests: "write" },
+        durationMs: 60 * 60 * 1000,
+      },
+      triggerContext: { provider: "manual", deliveryId: "authority-durable" },
+    });
+
+    const persisted = await hub.execution(handedOff.execution.id);
+    const persistedIntent = JSON.stringify(persisted.launchIntent);
+    assert.match(persistedIntent, /paseo\.connections\.some-connection\.token/iu);
+    assert.doesNotMatch(persistedIntent, /resolved-secret|durable-scoped-token/iu);
+    assert.deepEqual(persisted.launchIntent?.env, {
+      SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
+    });
+    assert.deepEqual(persisted.launchIntent?.github, {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+      permissions: { contents: "write", pull_requests: "write" },
+      durationMs: 60 * 60 * 1000,
+    });
+
+    const launch = await hub.waitForCreatedAgentLaunch();
+    const launchEnv = launch.env;
+    assert.ok(isRecord(launchEnv));
+    assert.equal(launchEnv["SOME_TOKEN"], "prefix-resolved-secret");
+    assert.equal(launchEnv["GH_TOKEN"], "durable-scoped-token-1");
+    assert.equal(launchEnv["GIT_CONFIG_COUNT"], "5");
+    assert.deepEqual(hub.authorityMintInputs(), [
+      {
+        projectId: "00000000-0000-4000-8000-000000000001",
+        connectionSlug: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write", pull_requests: "write" },
+      },
+    ]);
+
+    assert.equal(await hub.completeExecution(handedOff.execution.id), 200);
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
   });
 
   it("preserves literal worktree evidence during restart recovery", async () => {

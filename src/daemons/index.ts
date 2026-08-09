@@ -1,7 +1,7 @@
 import type { Database } from "../db/types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { TriggerProvider } from "../triggers/index.js";
-import type { ProviderIntegrationRegistration } from "../providers/registration.js";
+import type { ExecutionAuthority } from "../execution-authority/index.js";
 import {
   createDaemonDispatchLifecycle,
   AgentExecutionCompletionFailure,
@@ -38,7 +38,7 @@ export interface DaemonModuleOptions {
   database: Database;
   executionCapabilities?: OutputExecutorRegistry;
   providers?: readonly TriggerProvider[];
-  integrations?: readonly ProviderIntegrationRegistration[];
+  executionAuthority?: ExecutionAuthority;
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
   publicBaseUrl?: string;
   completionTokenSecret?: string;
@@ -60,7 +60,9 @@ export function createDaemonModule(options: DaemonModuleOptions): DaemonModule {
         ? {}
         : { executionCapabilities: options.executionCapabilities }),
       providers: options.providers ?? [],
-      integrations: options.integrations ?? [],
+      ...(options.executionAuthority === undefined
+        ? {}
+        : { executionAuthority: options.executionAuthority }),
       ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
       ...(options.completionTokenSecret === undefined
         ? {}

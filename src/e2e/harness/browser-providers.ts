@@ -1,5 +1,5 @@
 import type { Message } from "discord.js";
-import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
+import type { GitHubAuth } from "../../auth/github.js";
 import type { DiscordGuildIdentity } from "../../providers/discord/client.js";
 import type { DiscordConnectionClient } from "../../providers/discord/client.js";
 import type {
@@ -48,7 +48,7 @@ export type BrowserProviderScenario =
   | "discord-only"
   | "slack-only";
 
-export class BrowserGitHubAuth implements GitHubAuth, GitHubExecutionTokenAuth {
+export class BrowserGitHubAuth implements GitHubAuth {
   getInstallation() {
     return Promise.resolve(undefined);
   }
@@ -61,8 +61,19 @@ export class BrowserGitHubAuth implements GitHubAuth, GitHubExecutionTokenAuth {
     return Promise.resolve(`installation-token-${installationId}`);
   }
 
-  mintExecutionToken(input: { installationId: number; repository: string }) {
-    return Promise.resolve(`execution-token-${input.installationId}-${input.repository}`);
+  mintInstallationAccessToken(input: {
+    installationId: number;
+    repositories: readonly string[];
+    permissions: Readonly<Record<string, "read" | "write" | "admin">>;
+  }) {
+    return Promise.resolve({
+      token: `execution-token-${input.installationId}-${input.repositories.join(",")}`,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+  }
+
+  getAppBotIdentity() {
+    return Promise.resolve({ id: 12345, login: "paseo[bot]" });
   }
 
   revokeInstallationToken() {

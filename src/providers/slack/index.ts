@@ -115,10 +115,9 @@ export function createSlackRegistration(
   return {
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject, attachments }) =>
+      ({ configurationStoreForProject, attachments }) =>
         createSlackTriggerProvider({
           configurationStoreForProject,
-          connectionsForProject,
           ...(attachments === undefined ? {} : { attachments }),
           botUserIdForWorkspace: async (organizationId, teamId) =>
             (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,

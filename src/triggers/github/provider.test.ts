@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, it, vi } from "vitest";
+import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { createDurableWorkflowHandler } from "../../workflows/engine.js";
-import type { GitHubExecutionTokenAuth } from "../../auth/github.js";
 import type { GitHubReactionClient } from "./provider.js";
 import { createGitHubTriggerProvider } from "./provider.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
@@ -122,26 +121,11 @@ describe("GitHub Phase 1 trigger provider", () => {
     );
   });
 
-  it("injects and revokes the execution-scoped GitHub token at launch cleanup", async () => {
-    const { project, revision, store } = await activeConfiguration();
-    const reactions = new TestReactions();
-    const tokens = new TestExecutionTokens();
-    const provider = createProvider(store, reactions, tokens);
-    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+  it("does not materialize a GitHub credential for a GitHub trigger", async () => {
+    const { store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
 
-    const materialized = await provider.materializeLaunch?.({
-      executionId: "00000000-0000-4000-8000-000000000001",
-      organizationId: "org_1",
-      projectId: project.id,
-      triggerContext: match.triggerContext,
-    });
-    assert.deepEqual(materialized?.environmentEnv, { GH_TOKEN: "execution-token-1" });
-    await provider.onAgentExecutionTerminal?.(
-      "00000000-0000-4000-8000-000000000001",
-      match.triggerContext,
-    );
-    assert.deepEqual(tokens.revoked, ["execution-token-1"]);
+    assert.equal("materializeLaunch" in provider, false);
   });
 
   it("preserves lifecycle reactions and reply-capability configuration", async () => {
@@ -185,90 +169,6 @@ describe("GitHub Phase 1 trigger provider", () => {
       subject: { kind: "issue_comment", commentId: 123 },
       reactionId: 1,
     });
-  });
-
-  it("passes a static worktree target through durable launch recovery", async () => {
-    const { project, revision, store } = await activeConfiguration(githubWorktreeConfiguration());
-    const provider = createProvider(store, new TestReactions());
-    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    const worktree = {
-      mode: "branch-off",
-      newBranch: "github-recovery",
-      base: "main",
-    } as const;
-    const materialized = await provider.materializeLaunch?.({
-      executionId: "00000000-0000-4000-8000-000000000002",
-      organizationId: "org_1",
-      projectId: project.id,
-      environmentWorktree: worktree,
-      triggerContext: match.triggerContext,
-    });
-    assert.deepEqual(materialized?.environmentWorktree, worktree);
-  });
-
-  it("revokes every token minted before terminal cleanup", async () => {
-    const { project, revision, store } = await activeConfiguration();
-    const tokens = new TestExecutionTokens();
-    const provider = createProvider(store, new TestReactions(), tokens);
-    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    const launch = {
-      executionId: "00000000-0000-4000-8000-000000000003",
-      organizationId: "org_1",
-      projectId: project.id,
-      triggerContext: match.triggerContext,
-    };
-
-    await provider.materializeLaunch?.(launch);
-    await provider.materializeLaunch?.(launch);
-    await provider.onAgentExecutionTerminal?.(launch.executionId, match.triggerContext);
-    assert.deepEqual(tokens.revoked, ["execution-token-1", "execution-token-2"]);
-  });
-
-  it("rejects materialization when the execution becomes terminal mid-flight", async () => {
-    const { project, revision, store } = await activeConfiguration();
-    const tokens = new DeferredExecutionTokens();
-    const provider = createProvider(store, new TestReactions(), tokens);
-    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    const executionId = "00000000-0000-4000-8000-000000000004";
-    const materialization = provider.materializeLaunch?.({
-      executionId,
-      organizationId: "org_1",
-      projectId: project.id,
-      triggerContext: match.triggerContext,
-    });
-    assert.ok(materialization);
-    await provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);
-    tokens.resolve("racing-execution-token");
-    await assert.rejects(materialization, /cannot materialize terminal execution/u);
-    assert.deepEqual(tokens.revoked, ["racing-execution-token"]);
-  });
-
-  it("bounds cleanup when GitHub token revocation hangs", async () => {
-    vi.useFakeTimers();
-    try {
-      const { project, revision, store } = await activeConfiguration();
-      const tokens = new TestExecutionTokens(true);
-      const provider = createProvider(store, new TestReactions(), tokens);
-      const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
-      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-      const executionId = "00000000-0000-4000-8000-000000000005";
-      await provider.materializeLaunch?.({
-        executionId,
-        organizationId: "org_1",
-        projectId: project.id,
-        triggerContext: match.triggerContext,
-      });
-      const cleanup = provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);
-      assert.ok(cleanup);
-      await vi.advanceTimersByTimeAsync(10_000);
-      await cleanup;
-      assert.deepEqual(tokens.revoked, ["execution-token-1"]);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("hands every matching configured GitHub trigger to the durable fan-out boundary", async () => {
@@ -341,12 +241,10 @@ describe("GitHub Phase 1 trigger provider", () => {
 function createProvider(
   store: Awaited<ReturnType<typeof activeConfiguration>>["store"],
   reactions: TestReactions,
-  executionTokens: GitHubExecutionTokenAuth = new TestExecutionTokens(),
 ) {
   return createGitHubTriggerProvider({
     configurationStoreForProject: () => store,
     reactions,
-    executionTokens,
   });
 }
 
@@ -374,19 +272,6 @@ function inputConfiguration() {
             prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
           },
         ],
-      },
-    ],
-  };
-}
-
-function githubWorktreeConfiguration() {
-  const configuration = githubConfiguration();
-  return {
-    ...configuration,
-    environments: [
-      {
-        ...configuration.environments[0]!,
-        worktree: { mode: "branch-off" as const, newBranch: "github-recovery", base: "main" },
       },
     ],
   };
@@ -496,41 +381,5 @@ class TestReactions implements GitHubReactionClient {
 
   async deleteReaction(input: Parameters<GitHubReactionClient["deleteReaction"]>[0]) {
     this.deleted.push(input);
-  }
-}
-
-class TestExecutionTokens implements GitHubExecutionTokenAuth {
-  readonly revoked: string[] = [];
-  private count = 0;
-
-  constructor(private readonly hangRevocation = false) {}
-
-  async mintExecutionToken(): Promise<string> {
-    this.count += 1;
-    return `execution-token-${this.count}`;
-  }
-
-  async revokeInstallationToken(token: string): Promise<void> {
-    this.revoked.push(token);
-    if (this.hangRevocation) return new Promise(() => undefined);
-  }
-}
-
-class DeferredExecutionTokens implements GitHubExecutionTokenAuth {
-  readonly revoked: string[] = [];
-  private resolveMint!: (token: string) => void;
-
-  async mintExecutionToken(): Promise<string> {
-    return new Promise((resolve) => {
-      this.resolveMint = resolve;
-    });
-  }
-
-  resolve(token: string): void {
-    this.resolveMint(token);
-  }
-
-  async revokeInstallationToken(token: string): Promise<void> {
-    this.revoked.push(token);
   }
 }
