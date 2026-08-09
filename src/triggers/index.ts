@@ -110,6 +110,7 @@ export interface TriggerContextMaterialization<TriggerContext = unknown> {
   executionId: string;
   organizationId: string;
   projectId: string;
+  providerEventReceiptId: string;
   triggerContext: TriggerContext;
 }
 
@@ -122,6 +123,7 @@ export interface TriggerProvider<
   Name extends string = string,
   TriggerContext = unknown,
   OutputContext = TriggerContext,
+  MaterializedContext = unknown,
 > {
   name: Name;
   eventNames: readonly TriggerEventName[];
@@ -131,7 +133,9 @@ export interface TriggerProvider<
   materializeLaunch?(
     launch: TriggerLaunchMaterialization<TriggerContext>,
   ): Promise<MaterializedTriggerLaunch>;
-  materializeContext?(launch: TriggerContextMaterialization<TriggerContext>): Promise<unknown>;
+  materializeContext?(
+    launch: TriggerContextMaterialization<TriggerContext>,
+  ): Promise<MaterializedContext>;
   onDispatchAccepted?(triggerContext: TriggerContext, outputContext: OutputContext): Promise<void>;
   onAgentExecutionStarted?(
     triggerContext: TriggerContext,

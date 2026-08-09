@@ -3,7 +3,6 @@ import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
-  AttachmentReference,
 } from "../../attachments/capabilities.js";
 import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
@@ -15,7 +14,14 @@ import {
 } from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
-import type { NormalizedDiscordMessageEvent } from "./events.js";
+import type { NormalizedDiscordContextMessage, NormalizedDiscordMessageEvent } from "./events.js";
+
+export interface DiscordAttachmentLocator {
+  id: string;
+  filename: string;
+  contentType: string | null;
+  size: number;
+}
 
 export interface DiscordMergeMessage {
   id: string;
@@ -23,20 +29,42 @@ export interface DiscordMergeMessage {
   author: { id: string; username: string; bot?: boolean };
   channel: { id: string };
   created_at: string;
-  attachments: AttachmentReference[] | AttachmentDescriptor[];
+  attachments: DiscordAttachmentLocator[];
   referenced_message: { id: string; channel_id: string; guild_id: string | null } | null;
+}
+
+export interface DiscordMaterializedMessage {
+  id: string;
+  content: string;
+  author: { id: string; username: string; bot?: boolean };
+  channel: { id: string };
+  created_at: string;
+  attachments: AttachmentDescriptor[];
+  referenced_message: { id: string; channel_id: string; guild_id: string | null } | null;
+}
+
+export interface DiscordMaterializedContext {
+  discord: {
+    thread: {
+      id: string;
+      parent_channel_id: string | null;
+      context_url: string;
+      messages: DiscordMaterializedMessage[];
+    } | null;
+  };
 }
 
 export interface DiscordMergeData {
   discord: {
     event_type: "mention";
+    connection_id: string | null;
     guild: { id: string };
     trigger_message: DiscordMergeMessage & {
       body: string;
       url: string;
       thread: { id: string; parent_channel_id: string | null; context_url: string } | null;
     };
-    trigger_thread_context: { messages: DiscordMergeMessage[] };
+    trigger_thread_context: { status: "deferred" | "not_applicable" };
   };
 }
 
@@ -59,7 +87,12 @@ export function createDiscordTriggerProvider(options: {
   connectionsForProject?: (projectId: string) => ConnectionResolver;
   bot: DiscordBotClient;
   attachments?: AttachmentCapabilityRegistry;
-}): TriggerProvider<"discord", DiscordTriggerContext, DiscordOutputContext> {
+}): TriggerProvider<
+  "discord",
+  DiscordTriggerContext,
+  DiscordOutputContext,
+  DiscordMaterializedContext
+> {
   return {
     name: "discord",
     eventNames: ["discord.mention"],
@@ -93,14 +126,7 @@ export function createDiscordTriggerProvider(options: {
         const triggerContext: DiscordTriggerContext = {
           provider: "discord",
           target: outputContext,
-          event: await buildDiscordMergeData(
-            event,
-            botClientId,
-            externalTrigger.providerEventReceiptId,
-            externalTrigger.organizationId,
-            externalTrigger.connectionId,
-            options.attachments,
-          ),
+          event: buildDiscordMergeData(event, botClientId, externalTrigger.connectionId),
         };
         const invocation = parseInvocation(
           event.content,
@@ -135,20 +161,32 @@ export function createDiscordTriggerProvider(options: {
       return matches;
     },
     async materializeContext(launch) {
-      const event = await materializeDiscordMergeData(
-        launch.triggerContext.event,
-        launch.executionId,
-        options.attachments,
+      const event = launch.triggerContext.event.discord;
+      if (event.trigger_message.thread === null) {
+        return { discord: { thread: null } };
+      }
+      const messages = await options.bot.readThreadMessages({
+        channelId: event.trigger_message.thread.id,
+        beforeMessageId: event.trigger_message.id,
+      });
+      const contextMessages = await Promise.all(
+        messages.map((message) =>
+          materializeDiscordMessage(
+            message,
+            launch.providerEventReceiptId,
+            launch.organizationId,
+            launch.triggerContext.event.discord.connection_id,
+            launch.executionId,
+            options.attachments,
+          ),
+        ),
       );
       return {
         discord: {
-          thread:
-            event.discord.trigger_message.thread === null
-              ? null
-              : {
-                  ...event.discord.trigger_message.thread,
-                  messages: event.discord.trigger_thread_context.messages,
-                },
+          thread: {
+            ...event.trigger_message.thread,
+            messages: contextMessages,
+          },
         },
       };
     },
@@ -184,40 +222,19 @@ export function createDiscordTriggerProvider(options: {
   };
 }
 
-async function buildDiscordMergeData(
+function buildDiscordMergeData(
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
-  providerEventReceiptId: string,
-  organizationId: string,
   connectionId: string | null | undefined,
-  attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<DiscordMergeData> {
-  const triggerAttachments = await registerAttachments(
-    event.attachments,
-    providerEventReceiptId,
-    organizationId,
-    connectionId,
-    attachments,
-  );
-  const contextMessages = await Promise.all(
-    event.threadContextMessages.map(async (message) => ({
-      ...buildDiscordMergeMessage(message),
-      attachments: await registerAttachments(
-        message.attachments,
-        providerEventReceiptId,
-        organizationId,
-        connectionId,
-        attachments,
-      ),
-    })),
-  );
+): DiscordMergeData {
   return {
     discord: {
       event_type: event.type,
+      connection_id: connectionId ?? null,
       guild: { id: event.guildId },
       trigger_message: {
         ...buildDiscordMergeMessage(event),
-        attachments: triggerAttachments,
+        attachments: event.attachments.map(toAttachmentLocator),
         body: readDiscordPromptBody(event, botClientId),
         url: buildDiscordMessageUrl(event),
         thread:
@@ -229,20 +246,20 @@ async function buildDiscordMergeData(
                 context_url: buildDiscordContextUrl(event),
               },
       },
-      trigger_thread_context: {
-        messages: contextMessages,
-      },
+      trigger_thread_context: { status: event.threadId === null ? "not_applicable" : "deferred" },
     },
   };
 }
 
 function buildDiscordMergeMessage(
-  message: Pick<
-    NormalizedDiscordMessageEvent,
-    "id" | "content" | "author" | "createdAt" | "attachments" | "referencedMessage"
-  > & {
-    channelId: string;
-  },
+  message:
+    | (Pick<
+        NormalizedDiscordMessageEvent,
+        "id" | "content" | "author" | "createdAt" | "referencedMessage"
+      > & {
+        channelId: string;
+      })
+    | NormalizedDiscordContextMessage,
 ): Omit<DiscordMergeMessage, "attachments"> {
   return {
     id: message.id,
@@ -266,18 +283,19 @@ function buildDiscordMergeMessage(
 }
 
 async function registerAttachments(
-  source: NormalizedDiscordMessageEvent["attachments"],
+  source: NormalizedDiscordContextMessage["attachments"],
   providerEventReceiptId: string,
   organizationId: string,
-  connectionId: string | null | undefined,
+  connectionId: string | null,
+  executionId: string,
   attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<AttachmentReference[]> {
+): Promise<AttachmentDescriptor[]> {
   if (source.length === 0) return [];
   if (attachments === undefined) throw new Error("attachment capability unavailable");
-  if (connectionId === null || connectionId === undefined) {
+  if (connectionId === null) {
     throw new Error("attachment ownership unavailable");
   }
-  return Promise.all(
+  const references = await Promise.all(
     source.map((file) =>
       attachments.register({
         providerEventReceiptId,
@@ -292,32 +310,38 @@ async function registerAttachments(
       }),
     ),
   );
+  return references.map((reference) => attachments.materialize(reference, executionId));
 }
 
-async function materializeDiscordMergeData(
-  event: DiscordMergeData,
+async function materializeDiscordMessage(
+  message: NormalizedDiscordContextMessage,
+  providerEventReceiptId: string,
+  organizationId: string,
+  connectionId: string | null,
   executionId: string,
   attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<DiscordMergeData> {
-  const materialize = (attachment: AttachmentReference | AttachmentDescriptor) => {
-    if ("url" in attachment) return attachment;
-    if (attachments === undefined) throw new Error("attachment capability unavailable");
-    return attachments.materialize(attachment, executionId);
-  };
+): Promise<DiscordMaterializedMessage> {
+  const materializedAttachments = await registerAttachments(
+    message.attachments,
+    providerEventReceiptId,
+    organizationId,
+    connectionId,
+    executionId,
+    attachments,
+  );
+  return Object.assign(buildDiscordMergeMessage(message), {
+    attachments: materializedAttachments,
+  });
+}
+
+function toAttachmentLocator(
+  attachment: NormalizedDiscordMessageEvent["attachments"][number],
+): DiscordAttachmentLocator {
   return {
-    discord: {
-      ...event.discord,
-      trigger_message: {
-        ...event.discord.trigger_message,
-        attachments: event.discord.trigger_message.attachments.map(materialize),
-      },
-      trigger_thread_context: {
-        messages: event.discord.trigger_thread_context.messages.map((message) => ({
-          ...message,
-          attachments: message.attachments.map(materialize),
-        })),
-      },
-    },
+    id: attachment.id,
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    size: attachment.size,
   };
 }
 

@@ -181,23 +181,6 @@ describe("workflow compiler", () => {
     );
   });
 
-  it("defaults tool inventory injection and accepts a step opt-out", () => {
-    const base = configuration();
-    const defaulted = compileHubConfig(base);
-    assert.equal(defaulted.triggers[0]?.steps[0]?.injectToolInventory, true);
-
-    const optedOut = compileHubConfig({
-      ...base,
-      triggers: [
-        {
-          ...base.triggers[0],
-          steps: [{ ...base.triggers[0]!.steps[0], inject_tool_inventory: false }],
-        },
-      ],
-    });
-    assert.equal(optedOut.triggers[0]?.steps[0]?.injectToolInventory, false);
-  });
-
   it("rejects duplicate IDs, unknown references, forward references, and value cycles", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
@@ -360,6 +343,23 @@ describe("workflow compiler", () => {
           ],
         }),
       /paseo\.context outside a step prompt/iu,
+    );
+  });
+
+  it("rejects the removed prompt inventory compatibility key", () => {
+    const trigger = configuration().triggers[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...trigger.steps[0]!, inject_tool_inventory: false }],
+            },
+          ],
+        }),
+      /inject_tool_inventory|unrecognized key/iu,
     );
   });
 

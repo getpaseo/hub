@@ -8,6 +8,8 @@ import {
 import { Routes } from "discord-api-types/v10";
 import { logger } from "../../logger.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
+import { NormalizedDiscordContextMessageSchema } from "./events.js";
+import type { NormalizedDiscordContextMessage } from "./events.js";
 
 export interface DiscordReactionInput {
   channelId: string;
@@ -29,6 +31,10 @@ export interface DiscordBotClient {
   createReaction(input: DiscordReactionInput): Promise<void>;
   deleteOwnReaction(input: DiscordReactionInput): Promise<void>;
   sendChannelMessage(input: DiscordPostInput): Promise<void>;
+  readThreadMessages(input: {
+    channelId: string;
+    beforeMessageId: string;
+  }): Promise<NormalizedDiscordContextMessage[]>;
   onMessageCreate(handler: DiscordRawMessageHandler): () => void;
   onGuildDelete(handler: DiscordGuildDeleteHandler): () => void;
 }
@@ -139,6 +145,19 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       }
       await channel.send({ content: input.content, allowedMentions: { parse: [] } });
     },
+    async readThreadMessages(input) {
+      const channelId = DiscordSnowflakeSchema.parse(input.channelId);
+      const beforeMessageId = DiscordSnowflakeSchema.parse(input.beforeMessageId);
+      const channel = await client.channels.fetch(channelId);
+      if (channel === null || !isThreadChannel(channel)) {
+        throw new Error(`discord channel is not a readable thread: ${input.channelId}`);
+      }
+      const page = await channel.messages.fetch({ before: beforeMessageId, limit: 50 });
+      return Array.from(page.values())
+        .filter((message) => message.id !== beforeMessageId)
+        .map(normalizeThreadMessage)
+        .sort(compareThreadMessages);
+    },
     onMessageCreate(handler) {
       handlers.add(handler);
       return () => {
@@ -168,6 +187,12 @@ function isTextChannel(channel: GuildBasedChannel | TextBasedChannel): channel i
   return "messages" in channel;
 }
 
+function isThreadChannel(
+  channel: GuildBasedChannel | TextBasedChannel,
+): channel is TextBasedChannel & { isThread(): boolean } {
+  return isTextChannel(channel) && typeof channel.isThread === "function" && channel.isThread();
+}
+
 function isSendableChannel(
   channel: GuildBasedChannel | TextBasedChannel,
 ): channel is TextBasedChannel & { send: (...args: unknown[]) => Promise<unknown> } {
@@ -183,4 +208,43 @@ function createThreadName(content: string): string {
     .trim();
 
   return name.length === 0 ? "paseo response" : name;
+}
+
+function normalizeThreadMessage(message: Message): NormalizedDiscordContextMessage {
+  return NormalizedDiscordContextMessageSchema.parse({
+    id: message.id,
+    channelId: message.channelId,
+    content: message.content,
+    author: {
+      id: message.author.id,
+      username: message.author.username,
+      bot: message.author.bot,
+    },
+    createdAt: message.createdAt.toISOString(),
+    attachments: Array.from(message.attachments.values(), (attachment) => ({
+      id: attachment.id,
+      filename: attachment.name,
+      url: attachment.url,
+      contentType: attachment.contentType,
+      size: attachment.size,
+    })),
+    referencedMessage:
+      message.reference === null || message.reference.messageId === undefined
+        ? null
+        : {
+            id: message.reference.messageId,
+            channelId: message.reference.channelId,
+            guildId: message.reference.guildId ?? null,
+          },
+  });
+}
+
+function compareThreadMessages(
+  left: NormalizedDiscordContextMessage,
+  right: NormalizedDiscordContextMessage,
+): number {
+  const createdAtDifference = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  return createdAtDifference === 0
+    ? left.id.localeCompare(right.id, undefined, { numeric: true })
+    : createdAtDifference;
 }

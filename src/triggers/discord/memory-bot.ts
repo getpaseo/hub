@@ -7,15 +7,19 @@ import type {
   DiscordReactionInput,
 } from "./bot.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
+import type { NormalizedDiscordContextMessage } from "./events.js";
 
 export interface MemoryDiscordBotOptions {
   selfUserId: string;
+  threadMessages?: NormalizedDiscordContextMessage[];
+  threadContextFetchError?: Error;
 }
 
 export class MemoryDiscordBotClient implements DiscordBotClient {
   readonly reactions: DiscordReactionInput[] = [];
   readonly deletedOwnReactions: DiscordReactionInput[] = [];
   readonly messages: DiscordPostInput[] = [];
+  readonly threadReads: Array<{ channelId: string; beforeMessageId: string }> = [];
   private readonly handlers = new Set<DiscordRawMessageHandler>();
   private readonly guildDeleteHandlers = new Set<DiscordGuildDeleteHandler>();
   private readonly normalizedHandlers = new Set<(event: NormalizedDiscordMessageEvent) => void>();
@@ -49,6 +53,17 @@ export class MemoryDiscordBotClient implements DiscordBotClient {
 
   async sendChannelMessage(input: DiscordPostInput): Promise<void> {
     this.messages.push(input);
+  }
+
+  async readThreadMessages(input: {
+    channelId: string;
+    beforeMessageId: string;
+  }): Promise<NormalizedDiscordContextMessage[]> {
+    this.threadReads.push(input);
+    if (this.options.threadContextFetchError !== undefined) {
+      throw this.options.threadContextFetchError;
+    }
+    return this.options.threadMessages ?? [];
   }
 
   onMessageCreate(handler: DiscordRawMessageHandler): () => void {

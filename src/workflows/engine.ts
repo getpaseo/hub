@@ -478,6 +478,7 @@ export class DurableWorkflowEngine {
           executionId,
           organizationId: run.organizationId,
           projectId: run.projectId,
+          providerEventReceiptId: run.providerEventReceiptId,
           triggerContext: run.triggerContext,
         }),
       );
@@ -828,7 +829,6 @@ function buildStepIntent(
       autoArchive: step.autoArchive,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
-      injectToolInventory: step.injectToolInventory,
       configurationRevisionId: run.configurationRevisionId,
       hubConfig: configuration,
     }),

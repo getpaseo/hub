@@ -50,7 +50,7 @@ import { createUnlimitedEntitlementsService } from "../../entitlements/test-util
 import type { TriggerProvider } from "../../triggers/index.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
-import type { SlackBotClient, SlackThreadMessage } from "../../triggers/slack/client.js";
+import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
@@ -1108,7 +1108,6 @@ export class HubHarness {
           author: { id: "U1" },
           createdAt: "2023-11-14T22:13:20.100Z",
           attachments: [],
-          threadContextMessages: [],
         },
       }),
     });
@@ -1644,30 +1643,33 @@ class HarnessSlackClient implements SlackBotClient {
     return Promise.resolve();
   }
 
-  readThreadMessages(): Promise<SlackThreadMessage[]> {
-    return Promise.resolve([
-      {
-        ts: "1700000000.000050",
-        createdAt: "2023-11-14T22:13:20.050Z",
-        content: "Please inspect the latest diagram",
-        author: { id: "U2" },
-        attachments: [
-          {
-            id: "F1",
-            filename: "diagram.png",
-            contentType: "image/png",
-            size: 19,
-          },
-        ],
-      },
-      {
-        ts: "1700000000.000075",
-        createdAt: "2023-11-14T22:13:20.075Z",
-        content: "I agree, this is the bot follow-up",
-        author: { id: "B2" },
-        attachments: [],
-      },
-    ]);
+  readThreadMessages(): Promise<SlackThreadReadResult> {
+    return Promise.resolve({
+      complete: true,
+      messages: [
+        {
+          ts: "1700000000.000050",
+          createdAt: "2023-11-14T22:13:20.050Z",
+          content: "Please inspect the latest diagram",
+          author: { id: "U2" },
+          attachments: [
+            {
+              id: "F1",
+              filename: "diagram.png",
+              contentType: "image/png",
+              size: 19,
+            },
+          ],
+        },
+        {
+          ts: "1700000000.000075",
+          createdAt: "2023-11-14T22:13:20.075Z",
+          content: "I agree, this is the bot follow-up",
+          author: { id: "B2" },
+          attachments: [],
+        },
+      ],
+    });
   }
 
   downloadAttachment(input: { fileId: string }): Promise<Response> {

@@ -22,20 +22,13 @@ Configuration YAML may include an optional non-empty top-level string `project` 
 
 Configuration validation and installation accept the same YAML, `projectSlug`, and optional `partials` bundle. Both use the same parser, compiler, daemon/provider resolution, and business validation. Validation returns success or structured issues without creating a revision or changing the active configuration; installation records and activates only after those boundaries pass.
 
-## Workflow MCP tool inventory
+## Workflow MCP tools
 
-Each workflow step's agent prompt begins with a `<system-tools>` block identifying the MCP tools provided by Paseo Hub for that execution. The block lists the callable tool names and descriptions and tells the agent to invoke the MCP tool directly rather than printing an equivalent text or JSON representation. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
+Hub sends each daemon the authored rendered prompt unchanged. Execution tools are exposed through the provider-native Hub MCP server and its exact tool policy; Hub does not prepend a tool inventory or otherwise rewrite the prompt. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
 
-Authors may opt out for an individual step with `inject_tool_inventory: false`:
+## Trigger prompt and optional context
 
-```yaml
-steps:
-  - id: classify
-    inject_tool_inventory: false
-    # ...the remaining step fields
-```
-
-The setting affects prompt discoverability only; server-side capability permissions and completion rules remain enforced.
+`${{ paseo.prompt }}` is exactly the triggering prompt or body for Slack, Discord, and GitHub. `${{ paseo.context }}` is a separate opt-in merge value containing safe ambient provider data. Each workflow step opts in independently: a step that does not author `${{ paseo.context }}` receives no ambient context, no automatic attachment list, and no prompt mutation. Context history and attachment descriptors are fetched and materialized only when an opting step launches; attachment descriptors are Hub URLs scoped to that execution. Provider credentials, raw tokens, private provider download URLs, and unrelated webhook fields are not exposed. There is no alias or fallback for the removed automatic prompt behavior.
 
 `deliveryKey` is caller-supplied request identity for the existing durable manual-event path. Hub namespaces it by the authenticated organization and resolved project before persistence, so the same caller key can be used independently in different tenants or projects. Existing receipt/run de-duplication applies, but this API does not promise exactly-once execution or guaranteed response replay; retries can still fail or conflict during restart and timing races. A successful representation contains `deliveryKey`, `providerEventReceiptId`, `triggerRunId`, `configuredTriggerName`, and the durable `workflowStatus`.
 

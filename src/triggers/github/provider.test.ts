@@ -83,6 +83,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "github-issue-context",
       organizationId: "org_1",
       projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111111",
       triggerContext: issueMatch.triggerContext,
     });
     assert.deepEqual(issueContext, {
@@ -112,6 +113,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "github-pr-context",
       organizationId: "org_1",
       projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111112",
       triggerContext: prMatch.triggerContext,
     });
     assert.equal(

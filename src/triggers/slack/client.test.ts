@@ -111,15 +111,15 @@ describe("Slack Web API client", () => {
 
   it("hydrates the latest 50 preceding replies across Slack pagination, oldest first", async () => {
     const requests: Array<{ method: string; url: string; body: BodyInit | null | undefined }> = [];
-    const messages = Array.from({ length: 55 }, (_, index) => {
+    const messages = Array.from({ length: 455 }, (_, index) => {
       const sequence = index + 1;
       return {
         ts: `1700000000.${String(sequence).padStart(6, "0")}`,
         text: `reply-${sequence}`,
-        ...(sequence === 55 ? { bot_id: "B55" } : { user: `U${sequence}` }),
+        ...(sequence === 455 ? { bot_id: "B455" } : { user: `U${sequence}` }),
       };
     });
-    let page = 0;
+    const pageSize = 100;
     const client = createSlackBotClient({
       tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
       fetch: async (input, init) => {
@@ -128,11 +128,16 @@ describe("Slack Web API client", () => {
           url: requestUrl(input),
           body: init?.body,
         });
-        const current = page++ === 0 ? messages.slice(25) : messages.slice(0, 25);
+        const cursor = new URL(requestUrl(input)).searchParams.get("cursor");
+        const page = cursor === null ? 0 : Number(cursor.replace("page-", ""));
+        const current = messages.slice(page * pageSize, (page + 1) * pageSize);
         return Response.json({
           ok: true,
           messages: current,
-          response_metadata: page === 1 ? { next_cursor: "older-page" } : { next_cursor: "" },
+          response_metadata:
+            (page + 1) * pageSize < messages.length
+              ? { next_cursor: `page-${page + 1}` }
+              : { next_cursor: "" },
         });
       },
     });
@@ -142,25 +147,29 @@ describe("Slack Web API client", () => {
       teamId: "T1",
       channelId: "C1",
       threadTs: "1700000000.000000",
-      beforeTs: "1700000000.000056",
+      beforeTs: "1700000000.000456",
     });
 
-    assert.equal(hydrated?.length, 50);
-    assert.equal(hydrated?.[0]?.content, "reply-6");
-    assert.equal(hydrated?.at(-1)?.content, "reply-55");
-    assert.deepEqual(hydrated?.at(-1)?.author, { id: "B55" });
-    assert.deepEqual(requests, [
-      {
-        method: "GET",
-        url: "https://slack.com/api/conversations.replies?channel=C1&ts=1700000000.000000&latest=1700000000.000056&inclusive=false&limit=100",
-        body: undefined,
-      },
-      {
-        method: "GET",
-        url: "https://slack.com/api/conversations.replies?channel=C1&ts=1700000000.000000&latest=1700000000.000056&inclusive=false&limit=100&cursor=older-page",
-        body: undefined,
-      },
-    ]);
+    assert.equal(hydrated?.messages.length, 50);
+    assert.equal(hydrated?.messages[0]?.content, "reply-406");
+    assert.equal(hydrated?.messages.at(-1)?.content, "reply-455");
+    assert.deepEqual(hydrated?.messages.at(-1)?.author, { id: "B455" });
+    assert.equal(hydrated?.complete, true);
+    assert.equal(requests.length, 5);
+    assert.deepEqual(
+      requests.map(({ method, body }) => ({ method, body })),
+      Array.from({ length: 5 }, () => ({ method: "GET", body: undefined })),
+    );
+    const firstRequest = new URL(requests[0]!.url);
+    assert.equal(firstRequest.searchParams.get("channel"), "C1");
+    assert.equal(firstRequest.searchParams.get("ts"), "1700000000.000000");
+    assert.equal(firstRequest.searchParams.get("latest"), "1700000000.000456");
+    assert.equal(firstRequest.searchParams.get("inclusive"), "false");
+    assert.equal(firstRequest.searchParams.get("limit"), "100");
+    assert.deepEqual(
+      requests.map(({ url }) => new URL(url).searchParams.get("cursor")),
+      [null, "page-1", "page-2", "page-3", "page-4"],
+    );
   });
 
   it("keeps earlier Slack replies when a later page is rate-limited", async () => {
@@ -191,9 +200,10 @@ describe("Slack Web API client", () => {
     });
 
     assert.deepEqual(
-      hydrated?.map((message) => message.content),
+      hydrated?.messages.map((message) => message.content),
       ["reply-1", "reply-2"],
     );
+    assert.equal(hydrated?.complete, false);
     assert.equal(requests, 2);
   });
 

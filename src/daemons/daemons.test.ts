@@ -111,20 +111,7 @@ describe("daemon enrollment and execution", () => {
     const agent = hub.createdAgentLaunch();
     assert.deepEqual({ worktree: agent.worktree }, { worktree: undefined });
     assert.equal(agent.cwd, "/workspace");
-    assert.equal(
-      agent.prompt,
-      [
-        "<system-tools>",
-        "The following MCP tools are provided by Paseo Hub for this execution:",
-        "",
-        "- finish_execution: Completes this execution and records its optional structured output.",
-        "",
-        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-        "</system-tools>",
-        "",
-        "Reply pong.",
-      ].join("\n"),
-    );
+    assert.equal(agent.prompt, "Reply pong.");
     assert.equal(agent.thinkingOptionId, "xhigh");
     assert.deepEqual(agent.toolPolicy, {
       preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
@@ -146,27 +133,13 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
-  it("identifies available Hub MCP tools in the agent prompt", async () => {
+  it("identifies available Hub MCP tools through daemon-native channels", async () => {
     await hub.connectDaemon();
 
     await hub.dispatch({
       outputContext: { provider: "discord", channelId: "channel-1" },
     });
-    assert.equal(
-      hub.createdAgentLaunch().prompt,
-      [
-        "<system-tools>",
-        "The following MCP tools are provided by Paseo Hub for this execution:",
-        "",
-        "- finish_execution: Completes this execution and records its optional structured output.",
-        "- reply: Sends a reply to the conversation that triggered this execution. (up to 1 times).",
-        "",
-        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-        "</system-tools>",
-        "",
-        "Reply pong.",
-      ].join("\n"),
-    );
+    assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
     assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
       preapproved: [
         { kind: "mcp", server: "hub", tool: "finish_execution" },
@@ -177,20 +150,7 @@ describe("daemon enrollment and execution", () => {
     await hub.dispatch({
       outputContext: { provider: "manual", channelId: "channel-1" },
     });
-    assert.equal(
-      hub.createdAgentLaunch().prompt,
-      [
-        "<system-tools>",
-        "The following MCP tools are provided by Paseo Hub for this execution:",
-        "",
-        "- finish_execution: Completes this execution and records its optional structured output.",
-        "",
-        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-        "</system-tools>",
-        "",
-        "Reply pong.",
-      ].join("\n"),
-    );
+    assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
     assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
       preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
     });
@@ -266,14 +226,30 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
-  it("allows an execution to opt out of the Hub capability inventory", async () => {
+  it("keeps the authored prompt exact while exposing the capability inventory through MCP", async () => {
     await hub.connectDaemon();
-    await hub.dispatch({
-      injectToolInventory: false,
+    const result = await hub.dispatch({
       outputContext: { provider: "discord", channelId: "channel-1" },
     });
 
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
+    assert.deepEqual(
+      (await hub.listExecutionTools(result.execution.id)).map(({ name, description }) => ({
+        name,
+        description,
+      })),
+      [
+        {
+          name: "finish_execution",
+          description: "Completes this execution and records its optional structured output.",
+        },
+        {
+          name: "reply",
+          description:
+            "Sends a reply to the conversation that triggered this execution. (up to 1 times).",
+        },
+      ],
+    );
   });
 
   it("renders the structured classifier MCP contract sent to the daemon", async () => {
@@ -301,20 +277,7 @@ describe("daemon enrollment and execution", () => {
         },
       ],
     );
-    assert.equal(
-      launch.prompt,
-      [
-        "<system-tools>",
-        "The following MCP tools are provided by Paseo Hub for this execution:",
-        "",
-        "- finish_execution: Completes this execution and records the configured structured output.",
-        "",
-        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-        "</system-tools>",
-        "",
-        "Classify the request.",
-      ].join("\n"),
-    );
+    assert.equal(launch.prompt, "Classify the request.");
     assert.deepEqual(exposedTools[0]?.inputSchema, {
       type: "object",
       additionalProperties: false,
@@ -418,7 +381,7 @@ describe("daemon enrollment and execution", () => {
 
       hub.releaseLaunchMaterialization();
       await hub.waitForRecoveredExecution(handedOff.execution.id);
-      assert.match(String(hub.createdAgentLaunch().prompt), /token=<secret>$/u);
+      assert.equal(hub.createdAgentLaunch().prompt, "token=<secret>");
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
@@ -469,7 +432,7 @@ describe("daemon enrollment and execution", () => {
     assert(execution !== undefined);
     await hub.waitForRecoveredExecution(execution.id);
 
-    assert.match(String(hub.createdAgentLaunch().prompt), /token=<secret>$/u);
+    assert.equal(hub.createdAgentLaunch().prompt, "token=<secret>");
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",

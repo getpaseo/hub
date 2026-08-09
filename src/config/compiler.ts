@@ -150,7 +150,6 @@ const StepSchema = z
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
-    inject_tool_inventory: z.boolean().optional(),
   })
   .strict();
 
@@ -216,7 +215,6 @@ export interface CompiledStep {
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max: number; required: boolean }[];
   autoArchive: boolean;
-  injectToolInventory: boolean;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -338,7 +336,6 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
-    injectToolInventory: z.boolean().default(true),
   })
   .strict();
 
@@ -503,7 +500,6 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
-    injectToolInventory: step.inject_tool_inventory ?? true,
   };
 }
 

@@ -133,11 +133,6 @@ describe("Discord Phase 1 trigger provider", () => {
       authoritySecret: "hub-secret",
       resolvers: {},
     });
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-      attachments,
-    });
     const attachment = {
       id: "701",
       filename: "design.png",
@@ -145,6 +140,25 @@ describe("Discord Phase 1 trigger provider", () => {
       contentType: "image/png",
       size: 42,
     };
+    const bot = new MemoryDiscordBotClient({
+      selfUserId: "900",
+      threadMessages: [
+        {
+          id: "299",
+          channelId: "207",
+          content: "see image",
+          author: { id: "401", username: "maintainer", bot: false },
+          createdAt: "2026-05-18T23:59:00.000Z",
+          attachments: [attachment],
+          referencedMessage: null,
+        },
+      ],
+    });
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot,
+      attachments,
+    });
     const match = (
       await provider.match({
         ...external(
@@ -156,17 +170,6 @@ describe("Discord Phase 1 trigger provider", () => {
             parentChannelId: "200",
             attachments: [attachment],
             referencedMessage: { id: "298", channelId: "200", guildId: "100" },
-            threadContextMessages: [
-              {
-                id: "299",
-                channelId: "207",
-                content: "see image",
-                author: { id: "401", username: "maintainer", bot: false },
-                createdAt: "2026-05-18T23:59:00.000Z",
-                attachments: [attachment],
-                referencedMessage: null,
-              },
-            ],
           }),
         ),
         connectionId: "22222222-2222-4222-8222-222222222222",
@@ -174,6 +177,15 @@ describe("Discord Phase 1 trigger provider", () => {
     )[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(bot.threadReads, []);
+    assert.equal(
+      await database.findAttachmentBySource(
+        "11111111-1111-4111-8111-111111111118",
+        "discord",
+        "701",
+      ),
+      undefined,
+    );
     const triggerAttachment = match.triggerContext.event.discord.trigger_message.attachments[0];
     assert.ok(triggerAttachment);
     assert.equal("url" in triggerAttachment, false);
@@ -182,19 +194,22 @@ describe("Discord Phase 1 trigger provider", () => {
       channel_id: "200",
       guild_id: "100",
     });
-    assert.equal(
-      match.triggerContext.event.discord.trigger_thread_context.messages[0]?.content,
-      "see image",
-    );
-    const materialized = await provider.materializeContext?.({
+    assert.deepEqual(match.triggerContext.event.discord.trigger_thread_context, {
+      status: "deferred",
+    });
+    const materialized = await provider.materializeContext!({
       executionId: "execution-discord-materialize",
       organizationId: "org_1",
       projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
       triggerContext: match.triggerContext,
     });
-    const contextAttachment = match.triggerContext.event.discord.trigger_thread_context.messages
-      .at(0)
-      ?.attachments.at(0);
+    assert.deepEqual(bot.threadReads, [{ channelId: "207", beforeMessageId: "300" }]);
+    const contextAttachment = await database.findAttachmentBySource(
+      "11111111-1111-4111-8111-111111111118",
+      "discord",
+      "701",
+    );
     assert.ok(contextAttachment);
     assert.deepEqual(materialized, {
       discord: {
@@ -231,6 +246,76 @@ describe("Discord Phase 1 trigger provider", () => {
       threadId: "207",
       messageId: "300",
     });
+    assert.equal(JSON.stringify(match.triggerContext).includes("agent-executions"), false);
+    const secondMaterialized = await provider.materializeContext!({
+      executionId: "execution-discord-materialize-2",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
+      triggerContext: match.triggerContext,
+    });
+    const firstUrl = materialized?.discord.thread?.messages[0]?.attachments[0]?.url;
+    const secondUrl = secondMaterialized?.discord.thread?.messages[0]?.attachments[0]?.url;
+    assert.ok(firstUrl);
+    assert.ok(secondUrl);
+    assert.notEqual(firstUrl, secondUrl);
+    assert.match(secondUrl, /execution-discord-materialize-2/u);
+  });
+
+  it("does not require attachment capability during Discord ingestion", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+    const match = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          event({
+            attachments: [
+              {
+                id: "701",
+                filename: "design.png",
+                url: "https://cdn.discordapp.com/attachments/200/701/design.png",
+                contentType: "image/png",
+                size: 42,
+              },
+            ],
+          }),
+        ),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.triggerContext.event.discord.trigger_message.attachments, [
+      { id: "701", filename: "design.png", contentType: "image/png", size: 42 },
+    ]);
+  });
+
+  it("fails explicit Discord context materialization when thread history cannot be read", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({
+        selfUserId: "900",
+        threadContextFetchError: new Error("missing history permission"),
+      }),
+    });
+    const match = (
+      await provider.match(external(project.id, revision.id, event({ threadId: "207" })))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    await assert.rejects(
+      provider.materializeContext!({
+        executionId: "execution-discord-unavailable",
+        organizationId: "org-1",
+        projectId: project.id,
+        providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
+        triggerContext: match.triggerContext,
+      }),
+      /missing history permission/u,
+    );
   });
 
   it("targets lifecycle reactions and termination notices at the original Discord message", async () => {
@@ -482,7 +567,6 @@ function event(
     messageId?: string;
     attachments?: NormalizedDiscordMessageEvent["attachments"];
     referencedMessage?: NormalizedDiscordMessageEvent["referencedMessage"];
-    threadContextMessages?: NormalizedDiscordMessageEvent["threadContextMessages"];
   } = {},
 ): NormalizedDiscordMessageEvent {
   return {
@@ -499,6 +583,5 @@ function event(
     createdAt: "2026-05-19T00:00:00.000Z",
     attachments: overrides.attachments ?? [],
     referencedMessage: overrides.referencedMessage ?? null,
-    threadContextMessages: overrides.threadContextMessages ?? [],
   };
 }

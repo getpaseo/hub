@@ -30,7 +30,6 @@ export interface LaunchMachineIntent {
   triggerContext: unknown;
   outputContext: unknown;
   outputSchema?: JsonValue;
-  injectToolInventory?: boolean;
   configurationRevisionId: string;
   deadlineAt?: Date;
   hubConfig: unknown;
@@ -52,7 +51,6 @@ export function buildLaunchMachineIntent(input: {
   autoArchive: boolean;
   triggerContext: unknown;
   outputContext: unknown;
-  injectToolInventory?: boolean;
   hubConfig: unknown;
 }): LaunchMachineIntent {
   return {
@@ -71,7 +69,6 @@ export function buildLaunchMachineIntent(input: {
     autoArchive: input.autoArchive,
     triggerContext: input.triggerContext,
     outputContext: input.outputContext,
-    ...(input.injectToolInventory === false ? { injectToolInventory: false } : {}),
     configurationRevisionId: input.configurationRevisionId,
     hubConfig: input.hubConfig,
   };

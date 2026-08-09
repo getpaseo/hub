@@ -34,6 +34,7 @@ describe("durable multi-step workflow engine", () => {
       ...baseProvider,
       async materializeContext(launch) {
         materializedExecutionIds.push(launch.executionId);
+        assert.equal(launch.providerEventReceiptId, fixture.providerEventReceiptId);
         return { manual: { item: { title: "ambient" } } };
       },
     } satisfies import("../triggers/index.js").TriggerProvider;
@@ -42,6 +43,9 @@ describe("durable multi-step workflow engine", () => {
       entitlements: fixture.entitlements,
       providers: [provider],
       dispatchLaunchMachineIntent: async (intent) => {
+        if (intent.prompt === "Trigger: the triggering body") {
+          assert.deepEqual(materializedExecutionIds, []);
+        }
         prompts.push(intent.prompt);
         const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
           intent.workflowStepRunId!,

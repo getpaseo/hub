@@ -147,7 +147,6 @@ function createEvent(
     mentionedBotRoleIds: overrides.mentionedBotRoleIds ?? [],
     attachments: [],
     referencedMessage: null,
-    threadContextMessages: [],
     createdAt: "2026-05-19T00:00:00.000Z",
   };
 }

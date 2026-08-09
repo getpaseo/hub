@@ -116,7 +116,6 @@ describe("summarizeTrigger", () => {
       createdAt: new Date().toISOString(),
       attachments: [],
       referencedMessage: null,
-      threadContextMessages: [],
     });
 
     assert.deepEqual(summary, {
