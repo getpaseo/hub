@@ -3,11 +3,10 @@ import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
-  AttachmentReference,
 } from "../../attachments/capabilities.js";
 import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
-import type { SlackBotClient } from "./client.js";
+import type { SlackBotClient, SlackThreadMessage } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
 import {
   matchSlackTriggers,
@@ -16,12 +15,27 @@ import {
 } from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 
+export interface SlackAttachmentLocator {
+  id: string;
+  filename: string;
+  content_type: string | null;
+  size: number | null;
+}
+
+interface SlackThreadContextLocator {
+  status: "deferred";
+  channel: { id: string };
+  thread: { ts: string };
+  before: { ts: string };
+}
+
 export interface SlackMergeData {
   slack: {
     event_type: "app_mention";
     event_id: string;
     event_ts: string;
     event_time: number;
+    connection_id: string | null;
     team: { id: string };
     app: { id: string };
     trigger_message: {
@@ -32,9 +46,13 @@ export interface SlackMergeData {
       channel: { id: string };
       thread: { ts: string } | null;
       created_at: string;
-      attachments: AttachmentReference[] | AttachmentDescriptor[];
+      attachments: SlackAttachmentLocator[];
     };
-    trigger_thread_context: { messages: SlackMergeMessage[] };
+    trigger_thread_context:
+      | SlackThreadContextLocator
+      | {
+          status: "not_applicable";
+        };
   };
 }
 
@@ -44,7 +62,18 @@ interface SlackMergeMessage {
   author: { id: string };
   channel: { id: string };
   created_at: string;
-  attachments: AttachmentReference[] | AttachmentDescriptor[];
+  attachments: AttachmentDescriptor[];
+}
+
+interface SlackContextPayload {
+  status: "available" | "incomplete" | "unavailable" | "not_applicable";
+  messages: SlackMergeMessage[];
+}
+
+export interface SlackMaterializedContext {
+  slack: {
+    thread: SlackContextPayload;
+  };
 }
 
 export interface SlackTriggerContext {
@@ -68,7 +97,7 @@ export function createSlackTriggerProvider(options: {
   botUserIdForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
   client: SlackBotClient;
   attachments?: AttachmentCapabilityRegistry;
-}): TriggerProvider<"slack", SlackTriggerContext, SlackOutputContext> {
+}): TriggerProvider<"slack", SlackTriggerContext, SlackOutputContext, SlackMaterializedContext> {
   return {
     name: "slack",
     eventNames: ["slack.mention"],
@@ -92,7 +121,6 @@ export function createSlackTriggerProvider(options: {
         trigger.connectionId,
       );
       if (matchedTriggers.length === 0) return "trigger_filters_rejected";
-      const event = await hydrateSlackEvent(rawEvent, trigger.organizationId, options.client);
       const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
 
       for (const match of matchedTriggers) {
@@ -104,29 +132,21 @@ export function createSlackTriggerProvider(options: {
         const outputContext: SlackOutputContext = {
           provider: "slack",
           organizationId: trigger.organizationId,
-          teamId: event.teamId,
-          channelId: event.channelId,
-          threadTs: event.threadTs ?? event.messageTs,
-          messageTs: event.messageTs,
+          teamId: rawEvent.teamId,
+          channelId: rawEvent.channelId,
+          threadTs: rawEvent.threadTs ?? rawEvent.messageTs,
+          messageTs: rawEvent.messageTs,
         };
         const triggerContext: SlackTriggerContext = {
           provider: "slack",
           target: outputContext,
-          event: await buildSlackMergeData(
-            event,
-            botUserId,
-            trigger.providerEventReceiptId,
-            trigger.organizationId,
-            event.teamId,
-            trigger.connectionId,
-            options.attachments,
-          ),
+          event: buildSlackMergeData(rawEvent, botUserId, trigger.connectionId),
         };
         const invocation = parseInvocation(
-          event.content,
+          rawEvent.content,
           compiledTrigger.inputs,
           undefined,
-          readSlackInvocationParserMessage(event, botUserId, compiledTrigger.filters),
+          readSlackInvocationParserMessage(rawEvent, botUserId, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
@@ -153,18 +173,59 @@ export function createSlackTriggerProvider(options: {
       }
       return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
-    async materializeLaunch(launch) {
-      const event = await materializeSlackMergeData(
-        launch.triggerContext.event,
-        launch.executionId,
-        options.attachments,
+    async materializeContext(launch): Promise<SlackMaterializedContext> {
+      const locator = launch.triggerContext.event.slack.trigger_thread_context;
+      if (locator.status === "not_applicable") {
+        return { slack: { thread: { status: "not_applicable", messages: [] } } };
+      }
+      if (options.client.readThreadMessages === undefined) {
+        return { slack: { thread: { status: "unavailable", messages: [] } } };
+      }
+      let history;
+      try {
+        history = await options.client.readThreadMessages({
+          organizationId: launch.organizationId,
+          teamId: launch.triggerContext.event.slack.team.id,
+          channelId: locator.channel.id,
+          threadTs: locator.thread.ts,
+          beforeTs: locator.before.ts,
+        });
+      } catch (error) {
+        logger.warn(
+          {
+            err: error,
+            teamId: launch.triggerContext.event.slack.team.id,
+            channelId: locator.channel.id,
+          },
+          "Slack thread context hydration failed",
+        );
+        return { slack: { thread: { status: "unavailable", messages: [] } } };
+      }
+      const messages = await Promise.all(
+        history.messages.map(async (message) => ({
+          ts: message.ts,
+          content: message.content,
+          author: message.author,
+          channel: { id: locator.channel.id },
+          created_at: message.createdAt,
+          attachments: await registerAttachments(
+            message.attachments,
+            launch.providerEventReceiptId,
+            launch.organizationId,
+            launch.triggerContext.event.slack.team.id,
+            launch.triggerContext.event.slack.connection_id,
+            launch.executionId,
+            options.attachments,
+          ),
+        })),
       );
       return {
-        prompt: appendSlackAttachmentContext(launch.prompt, event),
-        ...(launch.environmentEnv === undefined ? {} : { environmentEnv: launch.environmentEnv }),
-        ...(launch.environmentWorktree === undefined
-          ? {}
-          : { environmentWorktree: launch.environmentWorktree }),
+        slack: {
+          thread: {
+            status: history.complete ? "available" : "incomplete",
+            messages,
+          },
+        },
       };
     },
     async onAgentExecutionStarted(context) {
@@ -184,80 +245,18 @@ export function createSlackTriggerProvider(options: {
     },
   };
 }
-
-async function hydrateSlackEvent(
-  event: NormalizedSlackMentionEvent,
-  organizationId: string,
-  client: SlackBotClient,
-): Promise<NormalizedSlackMentionEvent> {
-  if (event.threadTs === null || client.readThreadMessages === undefined) return event;
-  try {
-    const messages = await client.readThreadMessages({
-      organizationId,
-      teamId: event.teamId,
-      channelId: event.channelId,
-      threadTs: event.threadTs,
-      beforeTs: event.messageTs,
-    });
-    return {
-      ...event,
-      threadContextMessages: messages.map((message) => ({
-        ts: message.ts,
-        createdAt: message.createdAt,
-        content: message.content,
-        author: message.author,
-        attachments: message.attachments,
-      })),
-    };
-  } catch (error) {
-    logger.warn(
-      { err: error, teamId: event.teamId, channelId: event.channelId },
-      "Slack thread context hydration failed",
-    );
-    return { ...event, threadContextMessages: [] };
-  }
-}
-
-async function buildSlackMergeData(
+function buildSlackMergeData(
   event: NormalizedSlackMentionEvent,
   botUserId: string,
-  providerEventReceiptId: string,
-  organizationId: string,
-  teamId: string,
   connectionId: string | null | undefined,
-  attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<SlackMergeData> {
-  const triggerAttachments = await registerAttachments(
-    event.attachments,
-    providerEventReceiptId,
-    organizationId,
-    teamId,
-    connectionId,
-    attachments,
-  );
-  const contextMessages = await Promise.all(
-    event.threadContextMessages.map(async (message) => ({
-      ts: message.ts,
-      content: message.content,
-      author: message.author,
-      channel: { id: event.channelId },
-      created_at: message.createdAt,
-      attachments: await registerAttachments(
-        message.attachments,
-        providerEventReceiptId,
-        organizationId,
-        teamId,
-        connectionId,
-        attachments,
-      ),
-    })),
-  );
+): SlackMergeData {
   return {
     slack: {
       event_type: "app_mention",
       event_id: event.id,
       event_ts: event.eventTs,
       event_time: event.eventTime,
+      connection_id: connectionId ?? null,
       team: { id: event.teamId },
       app: { id: event.appId },
       trigger_message: {
@@ -268,27 +267,41 @@ async function buildSlackMergeData(
         channel: { id: event.channelId },
         thread: event.threadTs === null ? null : { ts: event.threadTs },
         created_at: event.createdAt,
-        attachments: triggerAttachments,
+        attachments: event.attachments.map((attachment) => ({
+          id: attachment.id,
+          filename: attachment.filename,
+          content_type: attachment.contentType,
+          size: attachment.size,
+        })),
       },
-      trigger_thread_context: { messages: contextMessages },
+      trigger_thread_context:
+        event.threadTs === null
+          ? { status: "not_applicable" }
+          : {
+              status: "deferred",
+              channel: { id: event.channelId },
+              thread: { ts: event.threadTs },
+              before: { ts: event.messageTs },
+            },
     },
   };
 }
 
 async function registerAttachments(
-  source: NormalizedSlackMentionEvent["attachments"],
+  source: SlackThreadMessage["attachments"],
   providerEventReceiptId: string,
   organizationId: string,
   teamId: string,
-  connectionId: string | null | undefined,
+  connectionId: string | null,
+  executionId: string,
   attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<AttachmentReference[]> {
+): Promise<AttachmentDescriptor[]> {
   if (source.length === 0) return [];
   if (attachments === undefined) throw new Error("attachment capability unavailable");
-  if (connectionId === null || connectionId === undefined) {
+  if (connectionId === null) {
     throw new Error("attachment ownership unavailable");
   }
-  return Promise.all(
+  const references = await Promise.all(
     source.map((file) =>
       attachments.register({
         providerEventReceiptId,
@@ -303,47 +316,7 @@ async function registerAttachments(
       }),
     ),
   );
-}
-
-function appendSlackAttachmentContext(prompt: string, event: SlackMergeData): string {
-  const attachments = [
-    ...event.slack.trigger_message.attachments,
-    ...event.slack.trigger_thread_context.messages.flatMap((message) => message.attachments),
-  ];
-  if (attachments.length === 0) return prompt;
-  return `${prompt}\n\nSlack attachments:\n${attachments
-    .map(
-      (attachment) =>
-        `- ${attachment.filename} (${attachment.content_type ?? "unknown type"}, ${attachment.size ?? "unknown size"} bytes): ${"url" in attachment && typeof attachment.url === "string" ? attachment.url : "unavailable"}`,
-    )
-    .join("\n")}`;
-}
-
-async function materializeSlackMergeData(
-  event: SlackMergeData,
-  executionId: string,
-  attachments: AttachmentCapabilityRegistry | undefined,
-): Promise<SlackMergeData> {
-  const materialize = (attachment: AttachmentReference | AttachmentDescriptor) => {
-    if ("url" in attachment) return attachment;
-    if (attachments === undefined) throw new Error("attachment capability unavailable");
-    return attachments.materialize(attachment, executionId);
-  };
-  return {
-    slack: {
-      ...event.slack,
-      trigger_message: {
-        ...event.slack.trigger_message,
-        attachments: event.slack.trigger_message.attachments.map(materialize),
-      },
-      trigger_thread_context: {
-        messages: event.slack.trigger_thread_context.messages.map((message) => ({
-          ...message,
-          attachments: message.attachments.map(materialize),
-        })),
-      },
-    },
-  };
+  return references.map((reference) => attachments.materialize(reference, executionId));
 }
 
 async function replaceReaction(

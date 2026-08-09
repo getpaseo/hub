@@ -150,7 +150,6 @@ const StepSchema = z
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
-    inject_tool_inventory: z.boolean().optional(),
   })
   .strict();
 
@@ -216,7 +215,6 @@ export interface CompiledStep {
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max: number; required: boolean }[];
   autoArchive: boolean;
-  injectToolInventory: boolean;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -338,7 +336,6 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
-    injectToolInventory: z.boolean().default(true),
   })
   .strict();
 
@@ -503,7 +500,6 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
-    injectToolInventory: step.inject_tool_inventory ?? true,
   };
 }
 
@@ -703,6 +699,7 @@ function validateExpressionContract(
         ordinal,
         `step ${step.id} prompt[${index}]`,
         false,
+        true,
       );
     }
   }
@@ -721,9 +718,10 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed = false,
   ): void {
     for (const reference of expressionPaths(expression)) {
-      validateReference(reference, ordinal, path, authorityBearing);
+      validateReference(reference, ordinal, path, authorityBearing, contextAllowed);
       if (reference.namespace === "values") validateValue(reference.name, ordinal);
     }
     if (authorityBearing && !isFiniteAuthorityExpression(expression)) {
@@ -738,6 +736,7 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed = false,
   ): void {
     if (value === undefined) return;
     let cursor = 0;
@@ -747,7 +746,7 @@ function validateExpressionContract(
       const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
       if (end < 0) throw new Error(`${path} uses an unterminated expression`);
       const expression = parseExpression(value.slice(start + EXPRESSION_START.length, end));
-      validateExpression(expression, ordinal, path, authorityBearing);
+      validateExpression(expression, ordinal, path, authorityBearing, contextAllowed);
       cursor = end + EXPRESSION_END.length;
     }
   }
@@ -757,11 +756,16 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed: boolean,
   ): void {
     if (reference.namespace === "paseo") {
       if (reference.path === "prompt") {
         if (authorityBearing)
           throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
+        return;
+      }
+      if (reference.path === "context") {
+        if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
         return;
       }
       const inputName = reference.path[1];

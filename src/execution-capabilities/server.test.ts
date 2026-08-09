@@ -19,7 +19,6 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { createFetchServer } from "../http/node-server.js";
 import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
 import { OutputExecutorRegistry, replyOutputTool, type OutputCapability } from "./outputs.js";
-import { composeExecutionPrompt } from "./prompt.js";
 import { createExecutionCapabilityServer } from "./server.js";
 
 const RpcResponseSchema = z
@@ -185,15 +184,6 @@ describe("execution capability MCP boundary", () => {
       // @ts-expect-error upstream SDK exactOptionalPropertyTypes mismatch
       await client.connect(transport);
       const exposedTools = await client.listTools();
-      const launchedPrompt = composeExecutionPrompt({
-        prompt: "Classify the request.",
-        allowOutputs: fixture.intent.allowOutputs,
-        outputContext: fixture.intent.outputContext,
-        ...(fixture.intent.outputSchema === undefined
-          ? {}
-          : { outputSchema: fixture.intent.outputSchema }),
-        capabilities: fixture.outputs,
-      });
       assert.deepEqual(
         exposedTools.tools.map(({ name, description }) => ({ name, description })),
         [
@@ -207,21 +197,6 @@ describe("execution capability MCP boundary", () => {
               "Sends a reply to the conversation that triggered this execution. (up to 1 times).",
           },
         ],
-      );
-      assert.equal(
-        launchedPrompt,
-        [
-          "<system-tools>",
-          "The following MCP tools are provided by Paseo Hub for this execution:",
-          "",
-          "- finish_execution: Completes this execution and records the configured structured output.",
-          "- reply: Sends a reply to the conversation that triggered this execution. (up to 1 times).",
-          "",
-          "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-          "</system-tools>",
-          "",
-          "Classify the request.",
-        ].join("\n"),
       );
       assert.equal(
         exposedTools.tools.find((tool) => tool.name === "finish_execution")?.description,

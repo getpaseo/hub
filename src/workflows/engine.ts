@@ -29,11 +29,12 @@ import type {
   TriggerProviderMatch,
   AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
-import { isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import {
   ExpressionEvaluationError,
   evaluateExpression,
+  expressionPathsInTemplate,
   renderExpressionTemplate,
   type ExpressionContext,
 } from "./expression.js";
@@ -255,7 +256,7 @@ export class DurableWorkflowEngine {
         startedAt.getTime() + step.idleTimeoutMs,
       ),
     );
-    const intent = await this.buildStepIntentOrFail(
+    const preparedIntent = await this.buildMaterializedStepIntentOrFail(
       configuration,
       trigger,
       step,
@@ -264,9 +265,9 @@ export class DurableWorkflowEngine {
       next.id,
       deadlineAt,
     );
-    if (intent === undefined) return;
+    if (preparedIntent === undefined) return;
+    const { executionId, intent } = preparedIntent;
     if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
-    const executionId = durableExecutionId(intent);
     const reservation = await this.reserveExecution(run.organizationId);
     const created = await database.createWorkflowStepExecution({
       triggerRunId: run.id,
@@ -460,6 +461,83 @@ export class DurableWorkflowEngine {
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return undefined;
     }
+  }
+
+  private async materializeStepContextOrFail(
+    run: AcceptedWorkflowRun,
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    executionId: string,
+  ): Promise<JsonValue | undefined> {
+    if (!stepUsesTriggerContext(step)) return null;
+    const provider = providerForTriggerContext(this.options.providers ?? [], run.triggerContext);
+    if (provider?.materializeContext === undefined) {
+      const failed = await this.options.database!.failWorkflowRun(
+        run.id,
+        "failed",
+        "trigger_context_materializer_unavailable",
+        step.id,
+      );
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+      return undefined;
+    }
+    try {
+      return asTriggerContextValue(
+        await provider.materializeContext({
+          executionId,
+          organizationId: run.organizationId,
+          projectId: run.projectId,
+          providerEventReceiptId: run.providerEventReceiptId,
+          triggerContext: run.triggerContext,
+        }),
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "trigger_context_unavailable";
+      const failed = await this.options.database!.failWorkflowRun(
+        run.id,
+        "failed",
+        reason,
+        step.id,
+      );
+      if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
+      return undefined;
+    }
+  }
+
+  private async buildMaterializedStepIntentOrFail(
+    configuration: CompiledProjectConfiguration,
+    trigger: CompiledProjectConfiguration["triggers"][number],
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    run: AcceptedWorkflowRun,
+    context: ExpressionContext,
+    stepRunId: string,
+    deadlineAt: Date,
+  ): Promise<{ executionId: string; intent: LaunchMachineIntent } | undefined> {
+    const existing = await this.options.database?.findAgentExecutionByWorkflowStepRunId(stepRunId);
+    if (existing?.launchIntent !== null && existing?.launchIntent !== undefined) {
+      return { executionId: existing.id, intent: existing.launchIntent };
+    }
+    const executionId = durableExecutionId({
+      triggerRunId: run.id,
+      configurationRevisionId: run.configurationRevisionId,
+      triggerName: run.configuredTriggerName,
+      workflowStepRunId: stepRunId,
+    });
+    const materializedContext = await this.materializeStepContextOrFail(run, step, executionId);
+    if (materializedContext === undefined) return undefined;
+    const intent = await this.buildStepIntentOrFail(
+      configuration,
+      trigger,
+      step,
+      run,
+      { ...context, context: materializedContext },
+      stepRunId,
+      deadlineAt,
+    );
+    if (intent === undefined) return undefined;
+    if (durableExecutionId(intent) !== executionId) {
+      throw new Error("workflow execution identity changed during context materialization");
+    }
+    return { executionId, intent };
   }
 
   private async failInvalidLaunchIntent(
@@ -759,7 +837,6 @@ function buildStepIntent(
       autoArchive: step.autoArchive,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
-      injectToolInventory: step.injectToolInventory,
       configurationRevisionId: run.configurationRevisionId,
       hubConfig: configuration,
     }),
@@ -776,12 +853,34 @@ function workflowContext(
 ): ExpressionContext {
   return {
     prompt: run.prompt,
+    context: null,
     inputs: inputContext(run.inputs),
     steps: Object.fromEntries(
       steps.map((step) => [step.stepId, { status: step.status, output: step.output }]),
     ),
     values,
   };
+}
+
+function stepUsesTriggerContext(
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+): boolean {
+  return step.prompt.some((block) =>
+    expressionPathsInTemplate(block.kind === "text" ? block.value : block.content).some(
+      (path) => path.namespace === "paseo" && path.path === "context",
+    ),
+  );
+}
+
+function providerForTriggerContext(
+  providers: readonly TriggerProvider[],
+  triggerContext: unknown,
+): TriggerProvider | undefined {
+  if (typeof triggerContext !== "object" || triggerContext === null) return undefined;
+  if (!("provider" in triggerContext) || typeof triggerContext.provider !== "string") {
+    return undefined;
+  }
+  return providers.find((provider) => provider.name === triggerContext.provider);
 }
 
 function composeValues(

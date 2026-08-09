@@ -1,7 +1,7 @@
 import type { JsonPrimitive, JsonValue } from "../config/compiler.js";
 
 export type ExpressionPath =
-  | { namespace: "paseo"; path: "prompt" | ["inputs", string] }
+  | { namespace: "paseo"; path: "prompt" | "context" | ["inputs", string] }
   | { namespace: "steps"; stepId: string; path: readonly string[] }
   | { namespace: "values"; name: string };
 
@@ -18,6 +18,7 @@ export type Expression =
 
 export interface ExpressionContext {
   prompt: string;
+  context: JsonValue;
   inputs: Readonly<Record<string, JsonPrimitive>>;
   steps: Readonly<Record<string, { status: string; output: unknown }>>;
   values: Readonly<Record<string, Expression>>;
@@ -111,6 +112,9 @@ export function parseExpression(source: string): Expression {
     }
     if (parts[0] === "paseo" && parts[1] === "prompt" && parts.length === 2) {
       return { kind: "path", value: { namespace: "paseo", path: "prompt" } };
+    }
+    if (parts[0] === "paseo" && parts[1] === "context" && parts.length === 2) {
+      return { kind: "path", value: { namespace: "paseo", path: "context" } };
     }
     if (parts[0] === "paseo" && parts[1] === "inputs" && parts.length === 3) {
       return { kind: "path", value: { namespace: "paseo", path: ["inputs", parts[2]!] } };
@@ -231,6 +235,20 @@ export function renderExpressionTemplate(template: string, context: ExpressionCo
   return result;
 }
 
+export function expressionPathsInTemplate(template: string): ExpressionPath[] {
+  const paths: ExpressionPath[] = [];
+  let cursor = 0;
+  while (cursor < template.length) {
+    const start = template.indexOf("${{", cursor);
+    if (start < 0) break;
+    const end = template.indexOf("}}", start + 3);
+    if (end < 0) throw new ExpressionSyntaxError("unterminated interpolation");
+    paths.push(...expressionPaths(parseExpression(template.slice(start + 3, end))));
+    cursor = end + 2;
+  }
+  return paths;
+}
+
 function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
   TOKEN.lastIndex = 0;
@@ -324,6 +342,7 @@ function operatorPrecedence(operator: BinaryOperator): number {
 function readPath(path: ExpressionPath, context: ExpressionContext): JsonValue {
   if (path.namespace === "paseo") {
     if (path.path === "prompt") return context.prompt;
+    if (path.path === "context") return context.context;
     return context.inputs[path.path[1]] ?? null;
   }
   if (path.namespace === "values") {

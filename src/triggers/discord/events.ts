@@ -46,7 +46,6 @@ export const NormalizedDiscordMessageEventSchema = z.object({
   createdAt: z.string(),
   attachments: z.array(DiscordMessageAttachmentSchema),
   referencedMessage: DiscordReferencedMessageSchema.nullable(),
-  threadContextMessages: z.array(NormalizedDiscordContextMessageSchema),
 });
 
 export type DiscordMessageAuthor = z.infer<typeof DiscordMessageAuthorSchema>;

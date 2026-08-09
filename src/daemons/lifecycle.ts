@@ -21,7 +21,6 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import { logger as defaultLogger } from "../logger.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ProviderIntegrationRegistration } from "../providers/registration.js";
-import { composeExecutionPrompt } from "../execution-capabilities/prompt.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
 import {
@@ -513,43 +512,26 @@ export class DaemonDispatchLifecycle {
     provider: TriggerProvider | undefined,
     executionId: string,
   ): Promise<LaunchMachineIntent> {
-    const composed = {
-      ...intent,
-      prompt: composeExecutionPrompt({
-        prompt: intent.prompt,
-        ...(intent.injectToolInventory === undefined
-          ? {}
-          : { injectToolInventory: intent.injectToolInventory }),
-        allowOutputs: intent.allowOutputs,
-        outputContext: intent.outputContext,
-        ...(intent.outputSchema === undefined ? {} : { outputSchema: intent.outputSchema }),
-        capabilities: this.executionCapabilities,
-      }),
-    };
     const persistedWorktree = intent.environment.worktree;
     if (provider?.materializeLaunch === undefined) {
-      return composed;
+      return intent;
     }
     const materialized = await provider.materializeLaunch({
       executionId,
-      organizationId: composed.organizationId,
-      projectId: composed.projectId,
-      prompt: composed.prompt,
-      ...(composed.environment.env === undefined
-        ? {}
-        : { environmentEnv: composed.environment.env }),
+      organizationId: intent.organizationId,
+      projectId: intent.projectId,
+      ...(intent.environment.env === undefined ? {} : { environmentEnv: intent.environment.env }),
       ...(persistedWorktree === undefined ? {} : { environmentWorktree: persistedWorktree }),
-      triggerContext: composed.triggerContext,
+      triggerContext: intent.triggerContext,
     });
     const {
       env: _persistedEnvironmentEnv,
       worktree: _persistedWorktree,
       ...environment
-    } = composed.environment;
+    } = intent.environment;
     const environmentWorktree = materialized.environmentWorktree ?? persistedWorktree;
     return {
-      ...composed,
-      prompt: materialized.prompt,
+      ...intent,
       environment: {
         ...environment,
         ...(materialized.environmentEnv === undefined ? {} : { env: materialized.environmentEnv }),

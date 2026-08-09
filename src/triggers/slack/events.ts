@@ -8,14 +8,6 @@ const SlackAttachmentMetadataSchema = z.object({
   contentType: z.string().max(255).nullable(),
   size: z.number().int().nonnegative().nullable(),
 });
-const SlackContextMessageSchema = z.object({
-  ts: SlackTimestampSchema,
-  createdAt: z.string(),
-  content: z.string(),
-  author: z.object({ id: SlackIdSchema }),
-  attachments: z.array(SlackAttachmentMetadataSchema),
-});
-
 export const SlackUrlVerificationSchema = z
   .object({
     type: z.literal("url_verification"),
@@ -76,7 +68,6 @@ export const NormalizedSlackMentionEventSchema = z.object({
   author: z.object({ id: SlackIdSchema }),
   createdAt: z.string(),
   attachments: z.array(SlackAttachmentMetadataSchema).default([]),
-  threadContextMessages: z.array(SlackContextMessageSchema).default([]),
 });
 
 export type NormalizedSlackMentionEvent = z.infer<typeof NormalizedSlackMentionEventSchema>;
@@ -107,6 +98,5 @@ export function normalizeSlackEvent(
       contentType: file.mimetype ?? null,
       size: file.size ?? null,
     })),
-    threadContextMessages: [],
   });
 }

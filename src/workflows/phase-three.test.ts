@@ -7,6 +7,7 @@ describe("Phase 3 structured routing contract", () => {
   it("evaluates the dedicated grammar with short-circuit semantics", () => {
     const context = {
       prompt: "request",
+      context: null,
       inputs: {},
       steps: { classify: { status: "skipped", output: null } },
       values: {},
