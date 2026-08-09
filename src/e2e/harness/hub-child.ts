@@ -161,29 +161,32 @@ async function main(): Promise<void> {
             activeConfiguration === undefined ||
             compiledConfiguration === undefined
           )
-            return [];
-          return [
-            {
-              triggerName: "e2e-discord",
-              triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
-              outputContext: {
-                provider: "discord",
-                guildId: "guild-original",
-                channelId: "channel-original",
-                threadId: "thread-original",
-                messageId: "message-original",
+            return { matches: [], routingDecisions: [] };
+          return {
+            matches: [
+              {
+                triggerName: "e2e-discord",
+                triggerContext: { provider: "discord", deliveryId: trigger.deliveryId },
+                outputContext: {
+                  provider: "discord",
+                  guildId: "guild-original",
+                  channelId: "channel-original",
+                  threadId: "thread-original",
+                  messageId: "message-original",
+                },
+                configurationRevisionId: activeConfiguration.id,
+                projectId: E2E_PROJECT_ID,
+                hubConfig: compiledConfiguration,
+                invocation: {
+                  status: "accepted",
+                  rawMessage: "Deploy mcp-capability for phase-five-operator",
+                  prompt: "Deploy mcp-capability for phase-five-operator",
+                  inputs: {},
+                },
               },
-              configurationRevisionId: activeConfiguration.id,
-              projectId: E2E_PROJECT_ID,
-              hubConfig: compiledConfiguration,
-              invocation: {
-                status: "accepted",
-                rawMessage: "Deploy mcp-capability for phase-five-operator",
-                prompt: "Deploy mcp-capability for phase-five-operator",
-                inputs: {},
-              },
-            },
-          ];
+            ],
+            routingDecisions: [],
+          };
         },
       },
     ],

@@ -14,6 +14,7 @@ import type {
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
+  ProviderEventRoutingDecisionRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -81,6 +82,7 @@ import type {
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
   ReconcileOrganizationSubscriptionInput,
+  RecordProviderEventRoutingDecisionsInput,
 } from "./types.js";
 import {
   clearOverrideKey,
@@ -88,6 +90,12 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
+import {
+  MAX_ROUTING_EVIDENCE_PER_RECEIPT,
+  normalizeRoutingDecisions,
+  normalizeRoutingDecision,
+  routingDecisionSummary,
+} from "../triggers/routing-evidence.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -102,6 +110,9 @@ export interface MemoryDatabaseOptions {
     membershipId: string;
     role: "owner" | "admin" | "member";
   }[];
+  githubConnections?: readonly GitHubConnectionRecord[];
+  discordConnections?: readonly DiscordConnectionRecord[];
+  slackConnections?: readonly SlackConnectionRecord[];
   now?: () => Date;
 }
 
@@ -134,6 +145,10 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 
 class MemoryDatabase implements Database {
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
+  private readonly providerEventRoutingDecisions = new Map<
+    string,
+    ProviderEventRoutingDecisionRecord[]
+  >();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
   private readonly machines = new Map<string, MachineRecord>();
@@ -179,6 +194,15 @@ class MemoryDatabase implements Database {
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
+    for (const connection of options.githubConnections ?? []) {
+      this.githubConnections.set(connection.installationId, connection);
+    }
+    for (const connection of options.discordConnections ?? []) {
+      this.discordConnections.set(connection.guildId, connection);
+    }
+    for (const connection of options.slackConnections ?? []) {
+      this.slackConnections.set(connection.teamId, connection);
+    }
   }
 
   private now(): Date {
@@ -963,6 +987,51 @@ class MemoryDatabase implements Database {
       ...receipt,
       droppedReason: receipt.droppedReason ?? reason,
     });
+  }
+
+  async recordProviderEventRoutingDecisions(
+    input: RecordProviderEventRoutingDecisionsInput,
+  ): Promise<void> {
+    const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
+    if (receipt === undefined || receipt.organizationId !== input.organizationId) {
+      throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+    }
+    const project = this.projects.get(input.projectId);
+    const revision = this.configurationRevisions.get(input.configurationRevisionId);
+    if (
+      project?.organizationId !== input.organizationId ||
+      revision?.projectId !== input.projectId ||
+      revision.organizationId !== input.organizationId
+    ) {
+      throw new Error("routing decision project unavailable");
+    }
+    const stored = this.providerEventRoutingDecisions.get(input.providerEventReceiptId) ?? [];
+    const existingKeys = new Set(
+      stored.map(
+        (decision) =>
+          `${decision.projectId}:${decision.configurationRevisionId}:${decision.triggerName}:${decision.code}`,
+      ),
+    );
+    for (const candidate of normalizeRoutingDecisions(input.decisions)) {
+      if (stored.length >= MAX_ROUTING_EVIDENCE_PER_RECEIPT) break;
+      const decision = normalizeRoutingDecision(candidate);
+      if (decision === undefined) continue;
+      const key = `${input.projectId}:${input.configurationRevisionId}:${decision.triggerName}:${decision.code}`;
+      if (existingKeys.has(key)) continue;
+      stored.push({
+        id: randomUUID(),
+        organizationId: input.organizationId,
+        providerEventReceiptId: input.providerEventReceiptId,
+        projectId: input.projectId,
+        configurationRevisionId: input.configurationRevisionId,
+        triggerName: decision.triggerName,
+        code: decision.code,
+        summary: routingDecisionSummary(decision.code),
+        createdAt: this.now(),
+      });
+      existingKeys.add(key);
+    }
+    this.providerEventRoutingDecisions.set(input.providerEventReceiptId, stored);
   }
 
   async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
@@ -2536,7 +2605,12 @@ class MemoryDatabase implements Database {
           right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
       )
       .slice(0, 50)
-      .map(toProviderEventReceiptRecordSummary);
+      .map((receipt) =>
+        toProviderEventReceiptRecordSummary(
+          receipt,
+          this.providerEventRoutingDecisions.get(receipt.id) ?? [],
+        ),
+      );
   }
 
   async isOrganizationMember(): Promise<boolean> {
@@ -2694,6 +2768,19 @@ class MemoryDatabase implements Database {
         ...receipt,
         droppedReason: "provider_unrouted",
       });
+      this.providerEventRoutingDecisions.set(receipt.id, [
+        {
+          id: randomUUID(),
+          organizationId,
+          providerEventReceiptId: receipt.id,
+          projectId: null,
+          configurationRevisionId: null,
+          triggerName: null,
+          code: "no_project_route",
+          summary: routingDecisionSummary("no_project_route"),
+          createdAt: this.now(),
+        },
+      ]);
       return { status: "dropped", receiptId: receipt.id, reason: "provider_unrouted" };
     }
     const projectRoutes = new Map<string, (typeof routes)[number]>();

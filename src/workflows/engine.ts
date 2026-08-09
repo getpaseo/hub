@@ -30,6 +30,7 @@ import type {
   AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
 import { isAcceptedTriggerProviderMatch } from "../triggers/index.js";
+import type { TriggerRoutingDecision } from "../triggers/routing-evidence.js";
 import {
   ExpressionEvaluationError,
   evaluateExpression,
@@ -111,7 +112,22 @@ export class DurableWorkflowEngine {
 
   async enqueue(trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome> {
     if (this.options.database === null) throw new DatabaseUnavailableError();
-    const matches = await collectProviderMatches(this.options.providers ?? [], trigger);
+    const collected = await collectProviderMatches(this.options.providers ?? [], trigger);
+    const receipt = await this.options.database.findProviderEventReceiptById(
+      trigger.providerEventReceiptId,
+    );
+    if (receipt !== undefined && receipt.organizationId === trigger.organizationId) {
+      for (const routing of collected.routingDecisions) {
+        await this.options.database.recordProviderEventRoutingDecisions({
+          organizationId: trigger.organizationId,
+          providerEventReceiptId: trigger.providerEventReceiptId,
+          projectId: trigger.projectId,
+          configurationRevisionId: trigger.configurationRevisionId,
+          decisions: routing,
+        });
+      }
+    }
+    const matches = collected.matches;
     if (matches.length === 0) {
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
@@ -859,15 +875,21 @@ function truthy(value: unknown): boolean {
 async function collectProviderMatches(
   providers: readonly TriggerProvider[],
   trigger: DurableProviderEvent,
-): Promise<readonly TriggerProviderMatch[]> {
-  if (!isTriggerEventName(trigger.source)) return [];
+): Promise<{
+  matches: readonly TriggerProviderMatch[];
+  routingDecisions: readonly (readonly TriggerRoutingDecision[])[];
+}> {
+  if (!isTriggerEventName(trigger.source)) return { matches: [], routingDecisions: [] };
   const matchingProviders = providers.filter((provider) =>
     provider.eventNames.some((name) => name === trigger.source),
   );
   const nestedMatches = await Promise.all(
     matchingProviders.map((provider) => provider.match(trigger)),
   );
-  return nestedMatches.flat();
+  return {
+    matches: nestedMatches.flatMap((result) => result.matches),
+    routingDecisions: nestedMatches.map((result) => result.routingDecisions),
+  };
 }
 
 function readDispatchExecution(

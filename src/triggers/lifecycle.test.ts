@@ -66,7 +66,7 @@ function createStubProvider(calls: unknown[]): TriggerProvider {
     name: "stub",
     eventNames: ["stub.event"],
     async match(_trigger: ExternalTrigger) {
-      return [];
+      return { matches: [], routingDecisions: [] };
     },
     async onAgentExecutionStarted(triggerContext, outputContext) {
       calls.push(["started", triggerContext, outputContext]);

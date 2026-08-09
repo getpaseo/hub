@@ -133,7 +133,7 @@ function noMatchingProvider(): TriggerProvider {
     name: "manual",
     eventNames: ["manual.run"],
     async match() {
-      return [];
+      return { matches: [], routingDecisions: [] };
     },
   };
 }
@@ -143,21 +143,24 @@ function matchingProvider(configuration: CompiledHubConfig, revisionId: string):
     name: "manual",
     eventNames: ["manual.run"],
     async match(trigger) {
-      return [
-        {
-          triggerName: "deploy",
-          triggerContext: trigger.payload,
-          outputContext: { provider: "manual" },
-          configurationRevisionId: revisionId,
-          hubConfig: configuration,
-          invocation: {
-            status: "accepted",
-            rawMessage: "run",
-            prompt: "run",
-            inputs: {},
+      return {
+        matches: [
+          {
+            triggerName: "deploy",
+            triggerContext: trigger.payload,
+            outputContext: { provider: "manual" },
+            configurationRevisionId: revisionId,
+            hubConfig: configuration,
+            invocation: {
+              status: "accepted",
+              rawMessage: "run",
+              prompt: "run",
+              inputs: {},
+            },
           },
-        },
-      ];
+        ],
+        routingDecisions: [],
+      };
     },
   };
 }

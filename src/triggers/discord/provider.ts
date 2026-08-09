@@ -9,7 +9,7 @@ import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
 import {
-  matchDiscordTriggers,
+  evaluateDiscordTriggers,
   readDiscordInvocationParserMessage,
   readDiscordPromptBody,
 } from "./match.js";
@@ -68,16 +68,18 @@ export function createDiscordTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return [];
+      if (stored === undefined) return { matches: [], routingDecisions: [] };
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
-
-      for (const match of matchDiscordTriggers(
+      const evaluation = evaluateDiscordTriggers(
         stored.configuration,
         event,
         botClientId,
         externalTrigger.connectionId,
-      )) {
+      );
+      const routingDecisions = [...evaluation.routingDecisions];
+
+      for (const match of evaluation.matches) {
         const compiledTrigger = stored.configuration.triggers.find(
           (candidate) => candidate.name === match.trigger.name,
         );
@@ -109,9 +111,19 @@ export function createDiscordTriggerProvider(options: {
           readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
+            routingDecisions.push({
+              triggerName: match.trigger.name,
+              code: "input_filter_mismatch",
+            });
+            continue;
+          }
         }
         if (invocation.status === "rejected") {
+          routingDecisions.push({
+            triggerName: match.trigger.name,
+            code: "invocation_rejected",
+          });
           matches.push({
             triggerName: match.trigger.name,
             triggerContext,
@@ -132,7 +144,7 @@ export function createDiscordTriggerProvider(options: {
         });
       }
 
-      return matches;
+      return { matches, routingDecisions };
     },
     async materializeLaunch(launch) {
       const event = await materializeDiscordMergeData(

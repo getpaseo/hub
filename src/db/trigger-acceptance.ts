@@ -15,6 +15,7 @@ import type {
   ProviderEventEvidence,
   ProviderEventRouteSnapshot,
 } from "./types.js";
+import { routingDecisionSummary } from "../triggers/routing-evidence.js";
 
 type HubDatabase = NodePgDatabase<typeof schema>;
 type HubTransaction = Parameters<Parameters<HubDatabase["transaction"]>[0]>[0];
@@ -117,6 +118,12 @@ export class ProviderEventAcceptanceRepository {
           .update(schema.providerEventReceipts)
           .set({ droppedReason: reason })
           .where(eq(schema.providerEventReceipts.id, receipt.id));
+        await transaction.insert(schema.providerEventRoutingDecisions).values({
+          organizationId: connection.organizationId,
+          providerEventReceiptId: receipt.id,
+          code: "no_project_route",
+          summary: routingDecisionSummary("no_project_route"),
+        });
         return { status: "dropped", receiptId: receipt.id, reason };
       }
 

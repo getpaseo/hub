@@ -4,7 +4,7 @@ import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { GitHubAuth, GitHubExecutionTokenAuth } from "../../auth/github.js";
 import { logger } from "../../logger.js";
 import {
-  matchTriggers,
+  evaluateGitHubTriggers,
   readGitHubInvocationMessage,
   readGitHubInvocationParserMessage,
   readGitHubMention,
@@ -126,6 +126,7 @@ export function createGitHubTriggerProvider(options: {
     eventNames: [
       "github.issue_comment",
       "github.issues",
+      "github.pull_request",
       "github.pull_request_review",
       "github.pull_request_review_comment",
       "github.push",
@@ -135,14 +136,16 @@ export function createGitHubTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) return [];
+      if (stored === undefined) return { matches: [], routingDecisions: [] };
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
-
-      for (const match of matchTriggers(
+      const evaluation = evaluateGitHubTriggers(
         stored.configuration,
         event,
         externalTrigger.connectionId,
-      )) {
+      );
+      const routingDecisions = [...evaluation.routingDecisions];
+
+      for (const match of evaluation.matches) {
         const compiledTrigger = stored.configuration.triggers.find(
           (candidate) => candidate.name === match.trigger.name,
         );
@@ -161,9 +164,19 @@ export function createGitHubTriggerProvider(options: {
           readGitHubInvocationParserMessage(event, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
+            routingDecisions.push({
+              triggerName: match.trigger.name,
+              code: "input_filter_mismatch",
+            });
+            continue;
+          }
         }
         if (invocation.status === "rejected") {
+          routingDecisions.push({
+            triggerName: match.trigger.name,
+            code: "invocation_rejected",
+          });
           matches.push({
             triggerName: match.trigger.name,
             triggerContext,
@@ -184,7 +197,7 @@ export function createGitHubTriggerProvider(options: {
         });
       }
 
-      return matches;
+      return { matches, routingDecisions };
     },
     async materializeLaunch(launch) {
       const state = executionTokenStates.get(launch.executionId) ?? {

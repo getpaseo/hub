@@ -3,6 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
+import type { TriggerRoutingDecision } from "../routing-evidence.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
@@ -11,67 +12,92 @@ export interface MatchedDiscordTrigger {
   trigger: MatchedTriggerDefinition;
 }
 
+export interface DiscordTriggerEvaluation {
+  matches: MatchedDiscordTrigger[];
+  routingDecisions: TriggerRoutingDecision[];
+}
+
 export function matchDiscordTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
   connectionId?: string | null,
 ): MatchedDiscordTrigger[] {
+  return evaluateDiscordTriggers(config, event, botClientId, connectionId).matches;
+}
+
+export function evaluateDiscordTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedDiscordMessageEvent,
+  botClientId: string,
+  connectionId?: string | null,
+): DiscordTriggerEvaluation {
   const expectedEventName = `discord.${event.type}`;
   const matches: MatchedDiscordTrigger[] = [];
+  const routingDecisions: TriggerRoutingDecision[] = [];
 
   for (const trigger of config.triggers) {
-    if (
-      trigger.on !== expectedEventName ||
-      !matchesFilter(event, trigger.filters, botClientId, connectionId)
-    ) {
+    if (trigger.on !== expectedEventName) {
+      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
       continue;
     }
-
+    const mismatch = discordFilterMismatch(event, trigger.filters, botClientId, connectionId);
+    if (mismatch !== undefined) {
+      routingDecisions.push({ triggerName: trigger.name, code: mismatch });
+      continue;
+    }
     matches.push({ event, trigger });
   }
 
-  return matches;
+  return { matches, routingDecisions };
 }
 
-function matchesFilter(
+function discordFilterMismatch(
   event: NormalizedDiscordMessageEvent,
   filter: TriggerFilter | undefined,
   botClientId: string,
   connectionId?: string | null,
-): boolean {
+):
+  | "connection_mismatch"
+  | "guild_mismatch"
+  | "channel_mismatch"
+  | "sender_not_allowed"
+  | "contains_mismatch"
+  | "pattern_mismatch"
+  | undefined {
   const pattern = filter === undefined ? undefined : readPatternFilter(filter);
-  if (!matchesBotMentionPattern(event, botClientId, pattern)) {
-    return false;
+  if (filter === undefined || !hasBotMention(event, botClientId)) {
+    return "contains_mismatch";
   }
-
-  if (filter === undefined) {
-    return false;
+  if (pattern !== undefined && !matchesBotMentionPattern(event, botClientId, pattern)) {
+    return readStringFilter(filter, "pattern") === undefined
+      ? "contains_mismatch"
+      : "pattern_mismatch";
   }
 
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) {
-    return false;
+    return "connection_mismatch";
   }
 
   if (filter.from_users === undefined || filter.from_users.length === 0) {
-    return false;
+    return "sender_not_allowed";
   }
 
   const guild = readStringFilter(filter, "guild");
   if (guild !== undefined && guild !== event.guildId) {
-    return false;
+    return "guild_mismatch";
   }
 
   const channels = readStringArrayFilter(filter, "channels");
   if (channels !== undefined && !matchesChannel(event, channels)) {
-    return false;
+    return "channel_mismatch";
   }
 
   if (!filter.from_users.includes(event.author.id)) {
-    return false;
+    return "sender_not_allowed";
   }
 
-  return true;
+  return undefined;
 }
 
 export function readDiscordPromptBody(
@@ -134,6 +160,12 @@ function matchesBotMentionPattern(
 
   const nextCharacter = afterMention.at(pattern.length);
   return nextCharacter === undefined || /\s/u.test(nextCharacter);
+}
+
+function hasBotMention(event: NormalizedDiscordMessageEvent, botClientId: string): boolean {
+  return (
+    event.mentionedUserIds.includes(botClientId) || (event.mentionedBotRoleIds?.length ?? 0) > 0
+  );
 }
 
 function findBotMention(

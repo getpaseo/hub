@@ -439,6 +439,59 @@ export class PaseoHub {
     );
   }
 
+  async seedUnroutedRoutingDecision(alias: string): Promise<void> {
+    const email = this.requireUser(alias).accountEmail;
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      `with target as (
+         select project.id project_id, project.organization_id, project.active_configuration_revision_id revision_id
+         from session
+         join "user" on "user".id = session.user_id
+         join projects project on project.organization_id = session.active_organization_id
+         where lower("user".email) = $1 and project.slug = 'default'
+         order by session.expires_at desc limit 1
+       )
+       insert into provider_event_receipts
+         (organization_id, provider, delivery_id, source, payload, received_at, accepted_routes)
+       select organization_id, 'slack', 'browser-safe-routing', 'slack.mention',
+              '{"content":"PRIVATE-EVENT-BODY","author":{"id":"U2"},"channelId":"C1","attachments":["PRIVATE-TOKEN"]}'::jsonb,
+              '2026-08-09T12:00:00Z'::timestamptz,
+              jsonb_build_array(jsonb_build_object(
+                'projectId', project_id,
+                'configurationRevisionId', revision_id,
+                'connectionId', null,
+                'resourceId', null
+              ))
+       from target`,
+      [email],
+    );
+    await this.queryDatabase(
+      this.primary.databaseUrl,
+      `with target as (
+         select project.id project_id, project.organization_id, project.active_configuration_revision_id revision_id
+         from session
+         join "user" on "user".id = session.user_id
+         join projects project on project.organization_id = session.active_organization_id
+         where lower("user".email) = $1 and project.slug = 'default'
+         order by session.expires_at desc limit 1
+       )
+       insert into provider_event_routing_decisions
+         (organization_id, provider_event_receipt_id, project_id, configuration_revision_id,
+          trigger_name, code, summary, created_at)
+       select target.organization_id, receipt.id, target.project_id, target.revision_id,
+              decisions.trigger_name, decisions.code, decisions.summary, decisions.created_at
+       from target
+       join provider_event_receipts receipt
+         on receipt.organization_id = target.organization_id
+        and receipt.delivery_id = 'browser-safe-routing'
+       cross join (values
+         ('slack-run', 'sender_not_allowed', 'The sender is not allowed for this trigger.', '2026-08-09T12:00:00Z'::timestamptz),
+         ('slack-filter', 'pattern_mismatch', 'The event does not match the configured trigger pattern.', '2026-08-09T12:00:01Z'::timestamptz)
+       ) decisions(trigger_name, code, summary, created_at)`,
+      [email],
+    );
+  }
+
   async setDaemonSlug(daemonId: string, slug: string): Promise<void> {
     await this.queryDatabase(
       this.primary.databaseUrl,

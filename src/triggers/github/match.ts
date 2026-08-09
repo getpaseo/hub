@@ -9,12 +9,18 @@ import {
   PullRequestReviewPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import type { TriggerRoutingDecision } from "../routing-evidence.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedTriggerEvent {
   event: NormalizedGitHubEvent;
   trigger: MatchedTriggerDefinition;
+}
+
+export interface GitHubTriggerEvaluation {
+  matches: MatchedTriggerEvent[];
+  routingDecisions: TriggerRoutingDecision[];
 }
 
 export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): string {
@@ -47,63 +53,84 @@ export function matchTriggers(
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
 ): MatchedTriggerEvent[] {
+  return evaluateGitHubTriggers(config, event, connectionId).matches;
+}
+
+export function evaluateGitHubTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  connectionId?: string | null,
+): GitHubTriggerEvaluation {
   const on = `github.${event.type}`;
   const matches: MatchedTriggerEvent[] = [];
+  const routingDecisions: TriggerRoutingDecision[] = [];
 
   for (const trigger of config.triggers) {
-    if (trigger.on !== on || !matchesFilter(event, trigger.filters, connectionId)) {
+    if (trigger.on !== on) {
+      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
       continue;
     }
-
+    const mismatch = githubFilterMismatch(event, trigger.filters, connectionId);
+    if (mismatch !== undefined) {
+      routingDecisions.push({ triggerName: trigger.name, code: mismatch });
+      continue;
+    }
     matches.push({ event, trigger });
   }
 
-  return matches;
+  return { matches, routingDecisions };
 }
 
-function matchesFilter(
+function githubFilterMismatch(
   event: NormalizedGitHubEvent,
   filter: TriggerFilter | undefined,
   connectionId?: string | null,
-): boolean {
+):
+  | "connection_mismatch"
+  | "repository_mismatch"
+  | "resource_mismatch"
+  | "pattern_mismatch"
+  | "contains_mismatch"
+  | "sender_not_allowed"
+  | undefined {
   if (filter === undefined) {
-    return false;
+    return "sender_not_allowed";
   }
 
   if (filter.from_users === undefined || filter.from_users.length === 0) {
-    return false;
+    return "sender_not_allowed";
   }
 
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) {
-    return false;
+    return "connection_mismatch";
   }
 
   const repo = filter["repo"];
   if (typeof repo === "string" && repo !== event.repo) {
-    return false;
+    return "repository_mismatch";
   }
 
   const resourceId = filter["resourceId"];
   if (typeof resourceId === "string" && resourceId !== String(event.repositoryId)) {
-    return false;
+    return "resource_mismatch";
   }
 
   const pattern = readStringFilter(filter, "pattern");
   if (pattern !== undefined && !getFilterText(event).startsWith(pattern)) {
-    return false;
+    return "pattern_mismatch";
   }
 
   const contains = readStringFilter(filter, "contains");
   if (contains !== undefined && !getFilterText(event).includes(contains)) {
-    return false;
+    return "contains_mismatch";
   }
 
   const actor = getEventActor(event);
   if (!filter.from_users.includes(actor)) {
-    return false;
+    return "sender_not_allowed";
   }
 
-  return true;
+  return undefined;
 }
 
 function readStringFilter(filter: TriggerFilter, key: "pattern" | "contains"): string | undefined {

@@ -167,7 +167,7 @@ describe("agent execution PostgreSQL repository", () => {
             name: "test",
             eventNames: ["test.event"],
             async match() {
-              return [providerMatch];
+              return { matches: [providerMatch], routingDecisions: [] };
             },
           },
         ],
@@ -478,7 +478,7 @@ describe("agent execution PostgreSQL repository", () => {
               name: "test",
               eventNames: ["test.event"],
               async match() {
-                return [match];
+                return { matches: [match], routingDecisions: [] };
               },
             },
           ],
@@ -557,7 +557,10 @@ describe("agent execution PostgreSQL repository", () => {
             name: "test",
             eventNames: ["test.event"],
             async match() {
-              return [phaseOneMatch(fixture.execution.configurationRevisionId)];
+              return {
+                matches: [phaseOneMatch(fixture.execution.configurationRevisionId)],
+                routingDecisions: [],
+              };
             },
           },
         ],
@@ -759,7 +762,7 @@ describe("agent execution PostgreSQL repository", () => {
               name: "test",
               eventNames: ["test.event"],
               async match() {
-                return [match];
+                return { matches: [match], routingDecisions: [] };
               },
             },
           ],
@@ -843,7 +846,7 @@ describe("agent execution PostgreSQL repository", () => {
             name: "test",
             eventNames: ["test.event"],
             async match() {
-              return matches;
+              return { matches, routingDecisions: [] };
             },
           },
         ],
@@ -999,7 +1002,10 @@ describe("agent execution PostgreSQL repository", () => {
             name: "test",
             eventNames: ["test.event"],
             async match() {
-              return [accepted, rejected, secondRejected];
+              return {
+                matches: [accepted, rejected, secondRejected],
+                routingDecisions: [],
+              };
             },
           },
         ],
@@ -1337,21 +1343,24 @@ function postgresDeadlineEngine(
         eventNames: ["test.event"],
         async match() {
           const trigger = configuration.triggers[0]!;
-          return [
-            {
-              triggerName: trigger.name,
-              triggerContext: { provider: "phase-five" },
-              outputContext: { provider: "phase-five" },
-              configurationRevisionId,
-              hubConfig: configuration,
-              invocation: {
-                status: "accepted",
-                rawMessage: "run",
-                prompt: "run",
-                inputs: {},
+          return {
+            matches: [
+              {
+                triggerName: trigger.name,
+                triggerContext: { provider: "phase-five" },
+                outputContext: { provider: "phase-five" },
+                configurationRevisionId,
+                hubConfig: configuration,
+                invocation: {
+                  status: "accepted",
+                  rawMessage: "run",
+                  prompt: "run",
+                  inputs: {},
+                },
               },
-            },
-          ];
+            ],
+            routingDecisions: [],
+          };
         },
       },
     ],

@@ -577,6 +577,11 @@ function displayFailureReason(reason: string | null): string | null {
 }
 
 function unroutedEventView(receipt: ProviderEventReceiptSummary) {
+  const routingDecisions = receipt.routingDecisions.map((decision) => ({
+    triggerName: decision.triggerName,
+    code: decision.code,
+    summary: decision.summary,
+  }));
   return {
     id: receipt.id,
     providerEventReceiptId: receipt.id,
@@ -596,6 +601,8 @@ function unroutedEventView(receipt: ProviderEventReceiptSummary) {
     completedAt: null,
     outcome: "dropped" as const,
     status: "dropped" as const,
+    reason: routingDecisions[0]?.summary ?? receipt.droppedReason ?? "No routing reason recorded.",
+    routingDecisions,
     deadlineAt: null,
     deadlineKind: null,
     failureReason: receipt.droppedReason,

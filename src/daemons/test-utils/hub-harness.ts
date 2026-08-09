@@ -1587,7 +1587,7 @@ export class HubHarness {
       name: "manual-discord",
       eventNames: ["discord.mention"],
       async match() {
-        return [];
+        return { matches: [], routingDecisions: [] };
       },
       materializeLaunch: async (launch) => {
         this.materializations += 1;

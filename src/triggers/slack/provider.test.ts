@@ -24,7 +24,7 @@ describe("Slack Phase 1 trigger provider", () => {
       await provider.match(
         external(project.id, revision.id, { content: "<@UBOT> repo=hub agent=opus investigate" }),
       )
-    )[0];
+    ).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
@@ -52,7 +52,7 @@ describe("Slack Phase 1 trigger provider", () => {
       await provider.match(
         external(project.id, revision.id, { content: "<@UBOT> run repo=hub investigate" }),
       )
-    )[0];
+    ).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.invocation.prompt, "investigate");
@@ -72,9 +72,11 @@ describe("Slack Phase 1 trigger provider", () => {
       client: new RecordingSlackClient(),
     });
 
-    const matches = await provider.match(
-      external(project.id, revision.id, { content: "<@UBOT> repo=hub investigate" }),
-    );
+    const matches = (
+      await provider.match(
+        external(project.id, revision.id, { content: "<@UBOT> repo=hub investigate" }),
+      )
+    ).matches;
 
     assert.deepEqual(
       matches.map((match) => match.triggerName),
@@ -95,7 +97,7 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id, revision.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id))).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
@@ -118,7 +120,7 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id, revision.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id))).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
@@ -146,7 +148,8 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client: new RecordingSlackClient(),
     });
-    const match = (await provider.match(external(project.id, revision.id, { threadTs: null })))[0];
+    const match = (await provider.match(external(project.id, revision.id, { threadTs: null })))
+      .matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
@@ -172,7 +175,7 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client,
     });
-    const match = (await provider.match(external(project.id, revision.id)))[0];
+    const match = (await provider.match(external(project.id, revision.id))).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
@@ -200,7 +203,7 @@ describe("Slack Phase 1 trigger provider", () => {
       botUserIdForWorkspace: () => Promise.resolve("UBOT"),
       client: reactionFailure,
     });
-    const match = (await reactionProvider.match(external(project.id, revision.id)))[0];
+    const match = (await reactionProvider.match(external(project.id, revision.id))).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await assert.rejects(async () => {
@@ -257,7 +260,7 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
 
-    const threadMatch = (await provider.match(external(project.id, revision.id)))[0];
+    const threadMatch = (await provider.match(external(project.id, revision.id))).matches[0];
     if (!isAcceptedTriggerProviderMatch(threadMatch)) throw new Error("expected accepted match");
     assert.equal(threadMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 50);
     assert.equal(
@@ -269,9 +272,8 @@ describe("Slack Phase 1 trigger provider", () => {
       "B1",
     );
 
-    const rootMatch = (
-      await provider.match(external(project.id, revision.id, { threadTs: null }))
-    )[0];
+    const rootMatch = (await provider.match(external(project.id, revision.id, { threadTs: null })))
+      .matches[0];
     if (!isAcceptedTriggerProviderMatch(rootMatch)) throw new Error("expected accepted match");
     assert.equal(rootMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
@@ -293,8 +295,28 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
     const matches = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
-    assert.deepEqual(matches, []);
+    assert.deepEqual(matches.matches, []);
     assert.deepEqual(client.threadReads, []);
+  });
+
+  it("records a safe sender rejection for an unrouted Slack event", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+
+    const result = await provider.match(external(project.id, revision.id, { authorId: "U2" }));
+
+    assert.deepEqual(result.routingDecisions, [
+      { triggerName: "slack-run", code: "sender_not_allowed" },
+    ]);
   });
 });
 

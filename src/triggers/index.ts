@@ -2,6 +2,7 @@ import type { DurableProviderEvent } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { InvocationParseResult } from "./invocation.js";
+import type { TriggerRoutingDecision } from "./routing-evidence.js";
 
 export interface ExternalTrigger {
   providerEventReceiptId: string;
@@ -75,6 +76,14 @@ export type TriggerProviderMatch<TriggerContext = unknown, OutputContext = Trigg
   | AcceptedTriggerProviderMatch<TriggerContext, OutputContext>
   | RejectedTriggerProviderMatch<TriggerContext, OutputContext>;
 
+export interface TriggerProviderMatchResult<
+  TriggerContext = unknown,
+  OutputContext = TriggerContext,
+> {
+  matches: readonly TriggerProviderMatch<TriggerContext, OutputContext>[];
+  routingDecisions: readonly TriggerRoutingDecision[];
+}
+
 export function isAcceptedTriggerProviderMatch<TriggerContext, OutputContext>(
   match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
 ): match is AcceptedTriggerProviderMatch<TriggerContext, OutputContext> {
@@ -117,7 +126,7 @@ export interface TriggerProvider<
   eventNames: readonly TriggerEventName[];
   match(
     trigger: ExternalTrigger,
-  ): Promise<readonly TriggerProviderMatch<TriggerContext, OutputContext>[]>;
+  ): Promise<TriggerProviderMatchResult<TriggerContext, OutputContext>>;
   materializeLaunch?(
     launch: TriggerLaunchMaterialization<TriggerContext>,
   ): Promise<MaterializedTriggerLaunch>;

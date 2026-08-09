@@ -10,7 +10,7 @@ import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { SlackBotClient } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
 import {
-  matchSlackTriggers,
+  evaluateSlackTriggers,
   readSlackInvocationParserMessage,
   readSlackPromptBody,
 } from "./match.js";
@@ -78,22 +78,25 @@ export function createSlackTriggerProvider(options: {
         trigger.organizationId,
         rawEvent.teamId,
       );
-      if (botUserId === undefined) return [];
+      if (botUserId === undefined) return { matches: [], routingDecisions: [] };
       const stored = await options
         .configurationStoreForProject(trigger.projectId)
         .getRevision(trigger.configurationRevisionId);
-      if (stored === undefined) return [];
-      const matchedTriggers = matchSlackTriggers(
+      if (stored === undefined) return { matches: [], routingDecisions: [] };
+      const evaluation = evaluateSlackTriggers(
         stored.configuration,
         rawEvent,
         botUserId,
         trigger.connectionId,
       );
-      if (matchedTriggers.length === 0) return [];
+      if (evaluation.matches.length === 0) {
+        return { matches: [], routingDecisions: evaluation.routingDecisions };
+      }
       const event = await hydrateSlackEvent(rawEvent, trigger.organizationId, options.client);
       const matches: TriggerProviderMatch<SlackTriggerContext, SlackOutputContext>[] = [];
+      const routingDecisions = [...evaluation.routingDecisions];
 
-      for (const match of matchedTriggers) {
+      for (const match of evaluation.matches) {
         const compiledTrigger = stored.configuration.triggers.find(
           (candidate) => candidate.name === match.trigger.name,
         );
@@ -127,9 +130,19 @@ export function createSlackTriggerProvider(options: {
           readSlackInvocationParserMessage(event, botUserId, compiledTrigger.filters),
         );
         if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
+            routingDecisions.push({
+              triggerName: match.trigger.name,
+              code: "input_filter_mismatch",
+            });
+            continue;
+          }
         }
         if (invocation.status === "rejected") {
+          routingDecisions.push({
+            triggerName: match.trigger.name,
+            code: "invocation_rejected",
+          });
           matches.push({
             triggerName: match.trigger.name,
             triggerContext,
@@ -149,7 +162,7 @@ export function createSlackTriggerProvider(options: {
           invocation,
         });
       }
-      return matches;
+      return { matches, routingDecisions };
     },
     async materializeLaunch(launch) {
       const event = await materializeSlackMergeData(

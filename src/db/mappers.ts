@@ -16,7 +16,10 @@ import type {
   ProjectRecord,
   ProviderEventReceiptSummary,
   ProviderEventReceiptRecord,
+  ProviderEventRoutingDecisionRecord,
 } from "./types.js";
+import type { ProviderEventRoutingDecisionRow } from "./pg.js";
+import { isRoutingDecisionCode, routingDecisionSummary } from "../triggers/routing-evidence.js";
 
 type ProviderEventReceiptSummaryRow = Pick<
   ProviderEventReceiptRow,
@@ -35,6 +38,7 @@ type ProviderEventReceiptSummaryRow = Pick<
 
 export function toProviderEventReceiptSummary(
   row: ProviderEventReceiptSummaryRow,
+  routingDecisions: readonly ProviderEventRoutingDecisionRecord[] = [],
 ): ProviderEventReceiptSummary {
   return {
     id: row.id,
@@ -48,11 +52,13 @@ export function toProviderEventReceiptSummary(
     repo: row.repo,
     receivedAt: row.received_at,
     droppedReason: row.dropped_reason,
+    routingDecisions,
   };
 }
 
 export function toProviderEventReceiptRecordSummary(
   receipt: ProviderEventReceiptRecord,
+  routingDecisions: readonly ProviderEventRoutingDecisionRecord[] = [],
 ): ProviderEventReceiptSummary {
   return {
     id: receipt.id,
@@ -66,6 +72,29 @@ export function toProviderEventReceiptRecordSummary(
     repo: receipt.repo,
     receivedAt: receipt.receivedAt,
     droppedReason: receipt.droppedReason,
+    routingDecisions,
+  };
+}
+
+export function toProviderEventRoutingDecisionRecord(
+  row: ProviderEventRoutingDecisionRow,
+): ProviderEventRoutingDecisionRecord {
+  if (!isRoutingDecisionCode(row.code)) {
+    throw new Error(`invalid provider event routing decision code: ${row.code}`);
+  }
+  if (row.summary !== routingDecisionSummary(row.code)) {
+    throw new Error(`invalid provider event routing decision summary: ${row.code}`);
+  }
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    providerEventReceiptId: row.provider_event_receipt_id,
+    projectId: row.project_id,
+    configurationRevisionId: row.configuration_revision_id,
+    triggerName: row.trigger_name,
+    code: row.code,
+    summary: row.summary,
+    createdAt: row.created_at,
   };
 }
 

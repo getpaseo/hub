@@ -252,8 +252,8 @@ describe("GitHub registration", () => {
 
     const first = await provider.match(githubExecution("delivery-1", revision.id));
     const second = await provider.match(githubExecution("delivery-2", revision.id));
-    const firstLaunch = await materialize(provider, first[0], "execution-1");
-    const secondLaunch = await materialize(provider, second[0], "execution-2");
+    const firstLaunch = await materialize(provider, first.matches[0], "execution-1");
+    const secondLaunch = await materialize(provider, second.matches[0], "execution-2");
 
     assert.deepEqual(
       [firstLaunch.environmentEnv?.["GH_TOKEN"], secondLaunch.environmentEnv?.["GH_TOKEN"]],
@@ -264,9 +264,10 @@ describe("GitHub registration", () => {
 
   it("revokes explicitly resolved GitHub tokens with the execution token", async () => {
     const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
-    const [execution] = await provider.match(
+    const { matches } = await provider.match(
       githubExecution("delivery-explicit-token", revision.id),
     );
+    const [execution] = matches;
     assert.ok(execution);
     await materialize(provider, execution, "execution-explicit-token");
 

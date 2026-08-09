@@ -16,6 +16,12 @@ import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
+import {
+  MAX_ROUTING_EVIDENCE_PER_RECEIPT,
+  normalizeRoutingDecisions,
+  normalizeRoutingDecision,
+  routingDecisionSummary,
+} from "../triggers/routing-evidence.js";
 import * as schema from "./schema.js";
 import {
   toAgentExecutionRecord,
@@ -25,6 +31,7 @@ import {
   toProjectRecord,
   toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
+  toProviderEventRoutingDecisionRecord,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type {
@@ -45,6 +52,7 @@ import type {
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
   ProviderEventReceiptSummary,
+  ProviderEventRoutingDecisionRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -105,6 +113,7 @@ import type {
   SyncBillingPlanInput,
   OrganizationSubscriptionRecord,
   ReconcileOrganizationSubscriptionInput,
+  RecordProviderEventRoutingDecisionsInput,
 } from "./types.js";
 
 const QUERY_DEADLINE_MS = 3_000;
@@ -184,6 +193,67 @@ class PgDatabase implements Database {
     );
     if (rows.rowCount === 0)
       throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+  }
+
+  async recordProviderEventRoutingDecisions(
+    input: RecordProviderEventRoutingDecisionsInput,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const receipt = await client.query(
+        `select id from provider_event_receipts
+         where id = $1 and organization_id = $2
+         for update`,
+        [input.providerEventReceiptId, input.organizationId],
+      );
+      if (receipt.rowCount !== 1) {
+        throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+      }
+      const project = await client.query(
+        `select 1
+         from project_configuration_revisions
+         where id = $1 and project_id = $2 and organization_id = $3
+         limit 1`,
+        [input.configurationRevisionId, input.projectId, input.organizationId],
+      );
+      if (project.rowCount !== 1) throw new Error("routing decision project unavailable");
+      const countResult = await client.query<{ count: string }>(
+        `select count(*)::text as count
+         from provider_event_routing_decisions
+         where provider_event_receipt_id = $1`,
+        [input.providerEventReceiptId],
+      );
+      let storedCount = Number(countResult.rows[0]?.count ?? 0);
+      for (const candidate of normalizeRoutingDecisions(input.decisions)) {
+        if (storedCount >= MAX_ROUTING_EVIDENCE_PER_RECEIPT) break;
+        const decision = normalizeRoutingDecision(candidate);
+        if (decision === undefined) continue;
+        const inserted = await client.query(
+          `insert into provider_event_routing_decisions
+             (organization_id, provider_event_receipt_id, project_id,
+              configuration_revision_id, trigger_name, code, summary)
+           values ($1, $2, $3, $4, $5, $6, $7)
+           on conflict do nothing`,
+          [
+            input.organizationId,
+            input.providerEventReceiptId,
+            input.projectId,
+            input.configurationRevisionId,
+            decision.triggerName,
+            decision.code,
+            routingDecisionSummary(decision.code),
+          ],
+        );
+        if (inserted.rowCount === 1) storedCount += 1;
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw toDatabaseError(error);
+    } finally {
+      client.release();
+    }
   }
 
   async findProviderEventReceiptByDeliveryId(
@@ -3686,7 +3756,23 @@ class PgDatabase implements Database {
        limit 50`,
       [organizationId],
     );
-    return rows.rows.map(toProviderEventReceiptSummary);
+    if (rows.rows.length === 0) return [];
+    const decisions = await query<ProviderEventRoutingDecisionRow>(
+      this.pool,
+      `select id, organization_id, provider_event_receipt_id, project_id,
+              configuration_revision_id, trigger_name, code, summary, created_at
+       from provider_event_routing_decisions
+       where organization_id = $1 and provider_event_receipt_id = any($2::uuid[])
+       order by created_at asc, id asc`,
+      [organizationId, rows.rows.map((row) => row.id)],
+    );
+    const byReceipt = new Map<string, ProviderEventRoutingDecisionRecord[]>();
+    for (const row of decisions.rows) {
+      const existing = byReceipt.get(row.provider_event_receipt_id) ?? [];
+      existing.push(toProviderEventRoutingDecisionRecord(row));
+      byReceipt.set(row.provider_event_receipt_id, existing);
+    }
+    return rows.rows.map((row) => toProviderEventReceiptSummary(row, byReceipt.get(row.id) ?? []));
   }
 
   async isOrganizationMember(userId: string, organizationId: string): Promise<boolean> {
@@ -4033,6 +4119,18 @@ export interface ProviderEventReceiptRow extends QueryResultRow {
   received_at: Date;
   dropped_reason: string | null;
   accepted_routes: unknown;
+}
+
+export interface ProviderEventRoutingDecisionRow extends QueryResultRow {
+  id: string;
+  organization_id: string;
+  provider_event_receipt_id: string;
+  project_id: string | null;
+  configuration_revision_id: string | null;
+  trigger_name: string | null;
+  code: string;
+  summary: string;
+  created_at: Date;
 }
 
 interface TriggerRunRow extends QueryResultRow {

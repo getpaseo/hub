@@ -24,7 +24,7 @@ describe("Discord Phase 1 trigger provider", () => {
           event({ content: "<@900> repo=hub agent=opus investigate" }),
         ),
       )
-    )[0];
+    ).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
@@ -46,7 +46,7 @@ describe("Discord Phase 1 trigger provider", () => {
       await provider.match(
         external(project.id, revision.id, event({ content: "<@900> run repo=hub investigate" })),
       )
-    )[0];
+    ).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.invocation.prompt, "investigate");
@@ -60,12 +60,12 @@ describe("Discord Phase 1 trigger provider", () => {
       configurationStoreForProject: () => store,
       bot,
     });
-    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event()))).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.configurationRevisionId, revision.id);
     assert.deepEqual(
-      await provider.match(external(project.id, revision.id, event({ authorId: "401" }))),
+      (await provider.match(external(project.id, revision.id, event({ authorId: "401" })))).matches,
       [],
     );
   });
@@ -77,7 +77,7 @@ describe("Discord Phase 1 trigger provider", () => {
       configurationStoreForProject: () => store,
       bot,
     });
-    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event()))).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
@@ -111,10 +111,12 @@ describe("Discord Phase 1 trigger provider", () => {
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
 
-    const matches = await provider.match({
-      ...external(project.id, revision.id, event()),
-      connectionId: "22222222-2222-4222-8222-222222222222",
-    });
+    const matches = (
+      await provider.match({
+        ...external(project.id, revision.id, event()),
+        connectionId: "22222222-2222-4222-8222-222222222222",
+      })
+    ).matches;
     assert.deepEqual(
       matches.map((match) => match.triggerName),
       ["secondary-connection"],
@@ -171,7 +173,7 @@ describe("Discord Phase 1 trigger provider", () => {
         ),
         connectionId: "22222222-2222-4222-8222-222222222222",
       })
-    )[0];
+    ).matches[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const triggerAttachment = match.triggerContext.event.discord.trigger_message.attachments[0];
@@ -214,7 +216,7 @@ describe("Discord Phase 1 trigger provider", () => {
       configurationStoreForProject: () => store,
       bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
     });
-    const match = (await provider.match(external(project.id, revision.id, event())))[0];
+    const match = (await provider.match(external(project.id, revision.id, event()))).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     const worktree = {
       mode: "branch-off",
@@ -241,7 +243,7 @@ describe("Discord Phase 1 trigger provider", () => {
     });
     const match = (
       await provider.match(external(project.id, revision.id, event({ threadId: "207" })))
-    )[0];
+    ).matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
@@ -289,7 +291,8 @@ describe("Discord Phase 1 trigger provider", () => {
       configurationStoreForProject: () => store,
       bot: reactionBot,
     });
-    const match = (await reactionProvider.match(external(project.id, revision.id, event())))[0];
+    const match = (await reactionProvider.match(external(project.id, revision.id, event())))
+      .matches[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     await assert.rejects(async () => {

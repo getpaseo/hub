@@ -256,6 +256,70 @@ export const projectTriggerRoutes = pgTable(
   ],
 );
 
+export const providerEventRoutingDecisions = pgTable(
+  "provider_event_routing_decisions",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
+    projectId: uuid("project_id"),
+    configurationRevisionId: uuid("configuration_revision_id"),
+    triggerName: text("trigger_name"),
+    code: text().notNull(),
+    summary: text().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("provider_event_routing_decisions_receipt_idx").on(
+      table.providerEventReceiptId,
+      table.createdAt,
+    ),
+    uniqueIndex("provider_event_routing_decisions_candidate_unique").on(
+      table.providerEventReceiptId,
+      table.projectId,
+      table.configurationRevisionId,
+      table.triggerName,
+      table.code,
+    ),
+    check(
+      "provider_event_routing_decisions_code_check",
+      sql`${table.code} in ('no_trigger_for_source', 'connection_mismatch', 'resource_mismatch', 'repository_mismatch', 'guild_mismatch', 'workspace_mismatch', 'channel_mismatch', 'sender_not_allowed', 'contains_mismatch', 'pattern_mismatch', 'input_filter_mismatch', 'invocation_rejected', 'no_project_route')`,
+    ),
+    check(
+      "provider_event_routing_decisions_trigger_name_length_check",
+      sql`${table.triggerName} is null or length(${table.triggerName}) <= 128`,
+    ),
+    check(
+      "provider_event_routing_decisions_summary_length_check",
+      sql`length(${table.summary}) <= 160`,
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organizations.id],
+      name: "provider_event_routing_decisions_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.providerEventReceiptId, table.organizationId],
+      foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
+      name: "provider_event_routing_decisions_receipt_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "provider_event_routing_decisions_project_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "provider_event_routing_decisions_revision_project_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
 export const triggerRuns = pgTable(
   "trigger_runs",
   {

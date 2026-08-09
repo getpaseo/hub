@@ -7,6 +7,7 @@ import type {
   EntitlementTemplate,
   OverrideKey,
 } from "../entitlements/catalog.js";
+import type { RoutingDecisionCode, TriggerRoutingDecision } from "../triggers/routing-evidence.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -26,6 +27,18 @@ export interface ProviderEventReceiptRecord {
   acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
 }
 
+export interface ProviderEventRoutingDecisionRecord {
+  id: string;
+  organizationId: string;
+  providerEventReceiptId: string;
+  projectId: string | null;
+  configurationRevisionId: string | null;
+  triggerName: string | null;
+  code: RoutingDecisionCode;
+  summary: string;
+  createdAt: Date;
+}
+
 export interface ProviderEventReceiptSummary {
   id: string;
   organizationId: string;
@@ -38,6 +51,15 @@ export interface ProviderEventReceiptSummary {
   repo: string | null;
   receivedAt: Date;
   droppedReason: string | null;
+  routingDecisions: readonly ProviderEventRoutingDecisionRecord[];
+}
+
+export interface RecordProviderEventRoutingDecisionsInput {
+  organizationId: string;
+  providerEventReceiptId: string;
+  projectId: string;
+  configurationRevisionId: string;
+  decisions: readonly TriggerRoutingDecision[];
 }
 
 export interface ProviderEventRouteSnapshot {
@@ -1051,6 +1073,9 @@ export interface Database {
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   markProviderEventDropped(providerEventReceiptId: string, reason: string): Promise<void>;
+  recordProviderEventRoutingDecisions(
+    input: RecordProviderEventRoutingDecisionsInput,
+  ): Promise<void>;
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;

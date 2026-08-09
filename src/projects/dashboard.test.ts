@@ -93,6 +93,7 @@ describe("project dashboard activity read models", () => {
     assert.equal(unroutedEvent.status, "dropped");
     assert.equal(unroutedEvent.providerEventReceiptId, unroutedEvent.id);
     assert.equal("rawPayload" in unroutedEvent, false);
+    assert.equal("reason" in unroutedEvent, true);
   });
 });
 

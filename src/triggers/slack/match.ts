@@ -3,6 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type { NormalizedSlackMentionEvent } from "./events.js";
+import type { TriggerRoutingDecision } from "../routing-evidence.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
@@ -11,41 +12,83 @@ export interface MatchedSlackTrigger {
   trigger: MatchedTriggerDefinition;
 }
 
+export interface SlackTriggerEvaluation {
+  matches: MatchedSlackTrigger[];
+  routingDecisions: TriggerRoutingDecision[];
+}
+
+export function evaluateSlackTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedSlackMentionEvent,
+  botUserId: string,
+  connectionId?: string | null,
+): SlackTriggerEvaluation {
+  const matches: MatchedSlackTrigger[] = [];
+  const routingDecisions: TriggerRoutingDecision[] = [];
+
+  for (const trigger of config.triggers) {
+    if (trigger.on !== "slack.mention") {
+      routingDecisions.push({ triggerName: trigger.name, code: "no_trigger_for_source" });
+      continue;
+    }
+    const mismatch = slackFilterMismatch(event, trigger.filters, botUserId, connectionId);
+    if (mismatch !== undefined) {
+      routingDecisions.push({ triggerName: trigger.name, code: mismatch });
+      continue;
+    }
+    matches.push({ event, trigger });
+  }
+
+  return { matches, routingDecisions };
+}
+
 export function matchSlackTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedSlackMentionEvent,
   botUserId: string,
   connectionId?: string | null,
 ): MatchedSlackTrigger[] {
-  if (event.author.id === botUserId) return [];
-  return config.triggers.flatMap((trigger) => {
-    return trigger.on === "slack.mention" &&
-      matchesFilters(event, trigger.filters, botUserId, connectionId)
-      ? [{ event, trigger }]
-      : [];
-  });
+  return evaluateSlackTriggers(config, event, botUserId, connectionId).matches;
 }
 
-function matchesFilters(
+function slackFilterMismatch(
   event: NormalizedSlackMentionEvent,
   filters: TriggerFilter | undefined,
   botUserId: string,
   connectionId?: string | null,
-): boolean {
-  if (filters === undefined || !event.content.includes(`<@${botUserId}>`)) return false;
-  if (filters.from_users === undefined || !filters.from_users.includes(event.author.id))
-    return false;
-  if (filters.connectionId !== undefined && filters.connectionId !== connectionId) return false;
+):
+  | "connection_mismatch"
+  | "workspace_mismatch"
+  | "channel_mismatch"
+  | "sender_not_allowed"
+  | "contains_mismatch"
+  | "pattern_mismatch"
+  | undefined {
+  if (event.author.id === botUserId) return "sender_not_allowed";
+  if (filters === undefined || !event.content.includes(`<@${botUserId}>`)) {
+    return "contains_mismatch";
+  }
+  if (filters.from_users === undefined || !filters.from_users.includes(event.author.id)) {
+    return "sender_not_allowed";
+  }
+  if (filters.connectionId !== undefined && filters.connectionId !== connectionId) {
+    return "connection_mismatch";
+  }
   const workspace = readString(filters, "workspace");
-  if (workspace !== undefined && workspace !== event.teamId) return false;
+  if (workspace !== undefined && workspace !== event.teamId) return "workspace_mismatch";
   const channels = readStrings(filters, "channels");
-  if (channels !== undefined && !channels.includes(event.channelId)) return false;
-  const pattern = readString(filters, "pattern") ?? readString(filters, "contains");
-  if (pattern === undefined || pattern.length === 0) return true;
+  if (channels !== undefined && !channels.includes(event.channelId)) return "channel_mismatch";
+  const pattern = readString(filters, "pattern");
+  const contains = readString(filters, "contains");
+  const marker = pattern ?? contains;
+  if (marker === undefined || marker.length === 0) return undefined;
   const body = readSlackPromptBody(event, botUserId);
-  if (!body.startsWith(pattern)) return false;
-  const nextCharacter = body.at(pattern.length);
-  return nextCharacter === undefined || /\s/u.test(nextCharacter);
+  if (!body.startsWith(marker)) {
+    return pattern === undefined ? "contains_mismatch" : "pattern_mismatch";
+  }
+  const nextCharacter = body.at(marker.length);
+  if (nextCharacter === undefined || /\s/u.test(nextCharacter)) return undefined;
+  return pattern === undefined ? "contains_mismatch" : "pattern_mismatch";
 }
 
 export function readSlackPromptBody(event: NormalizedSlackMentionEvent, botUserId: string): string {

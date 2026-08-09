@@ -350,9 +350,9 @@ export function OrganizationConnectionsPanel() {
       </Section>
       <Section
         title="Known unrouted events"
-        description="Events whose credential belongs to this organization but no project route was available."
+        description="Events received by this organization that did not start a configured trigger."
       >
-        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" />
+        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
       </Section>
     </>
   );
@@ -672,6 +672,7 @@ function ActivityTable({
   activity,
   label,
   detailBasePath,
+  showReason = false,
 }: {
   activity: ReadonlyArray<
     | ProjectSnapshot["activity"][number]
@@ -679,6 +680,7 @@ function ActivityTable({
   >;
   label: string;
   detailBasePath?: string;
+  showReason?: boolean;
 }) {
   return (
     <DataTable
@@ -689,6 +691,7 @@ function ActivityTable({
         { header: "Source" },
         { header: "Status" },
         { header: "Received" },
+        ...(showReason ? [{ header: "Reason" }] : []),
       ]}
       isEmpty={activity.length === 0}
       empty={{ title: "No activity" }}
@@ -716,6 +719,34 @@ function ActivityTable({
           <DataCell>{event.source}</DataCell>
           <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
           <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
+          {showReason ? (
+            <DataCell>
+              {"reason" in event ? (
+                <div className="grid gap-1">
+                  <span>{event.reason}</span>
+                  {event.routingDecisions.length > 1 ? (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        View trigger decisions
+                      </summary>
+                      <ul className="mt-1 grid gap-1 text-muted-foreground">
+                        {event.routingDecisions.map((decision, index) => (
+                          <li
+                            key={`${decision.triggerName ?? "project"}-${decision.code}-${String(index)}`}
+                          >
+                            {decision.triggerName === null ? "Project route" : decision.triggerName}
+                            : {decision.summary} ({decision.code})
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </div>
+              ) : (
+                "—"
+              )}
+            </DataCell>
+          ) : null}
         </DataRow>
       ))}
     </DataTable>
