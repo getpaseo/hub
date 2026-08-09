@@ -27,7 +27,22 @@ export interface ProviderIntegrationRegistration {
     value: string,
     context?: ConnectionResolutionContext,
   ): Promise<string>;
-  onExecutionTerminal?(executionId: string): Promise<void>;
+  githubAuthority?: GitHubAuthorityRegistration;
+}
+
+export interface GitHubAuthorityRegistration {
+  mint(input: {
+    projectId: string;
+    connectionSlug: string;
+    repositories: readonly string[];
+    permissions: Readonly<Record<string, "read" | "write" | "admin">>;
+  }): Promise<{
+    token: string;
+    expiresAt: number;
+    botUserId: number;
+    botLogin: string;
+  }>;
+  revoke(token: string): Promise<void>;
 }
 
 export interface ProviderConnectionRegistration {

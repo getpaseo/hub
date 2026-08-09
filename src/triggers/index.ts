@@ -1,6 +1,6 @@
 import type { DurableProviderEvent } from "../db/types.js";
-import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
+import type { WorktreeTarget } from "../config/index.js";
 import type { InvocationParseResult } from "./invocation.js";
 import type { ProviderEventDropReasonCode } from "./drop-reason.js";
 

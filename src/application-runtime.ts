@@ -3,7 +3,7 @@ import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
 import { logger } from "./logger.js";
-import type { ConnectionResolutionContext, ConnectionResolver } from "./config/connections.js";
+import type { ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import { capabilitiesFor } from "./auth/organization-policy.js";
@@ -17,6 +17,8 @@ import type {
   ProviderIntegrationRegistration,
   ProviderRegistration,
 } from "./providers/registration.js";
+import { createExecutionAuthority } from "./execution-authority/index.js";
+import type { ExecutionAuthority } from "./execution-authority/index.js";
 import {
   BillingForbiddenError,
   type ApplicationRuntime,
@@ -57,30 +59,12 @@ export async function createApplicationRuntime(
       integrations.set(registration.connection.name, registration.integration);
     }
   }
-  const connectionsForProject =
-    (projectId: string): ConnectionResolver =>
-    async (connectionSlug, value, context?: ConnectionResolutionContext) => {
-      if (options.database === null) throw new Error("connection inventory unavailable");
-      const project = await options.database.findProjectById(projectId);
-      if (project === undefined) throw new Error("execution project unavailable");
-      const usage = await options.database.organizationConnectionUsage(project.organizationId);
-      const candidates = [
-        ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
-        ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
-        ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
-      ].filter(({ connection }) => connection.slug === connectionSlug);
-      if (candidates.length === 0) {
-        throw new Error(`connection slug is unavailable: ${connectionSlug}`);
-      }
-      if (candidates.length !== 1) {
-        throw new Error(`connection slug is ambiguous: ${connectionSlug}`);
-      }
-      const integration = integrations.get(candidates[0]!.provider);
-      if (integration === undefined) {
-        throw new Error(`connection capability is unavailable: ${connectionSlug}`);
-      }
-      return integration.resolve(projectId, connectionSlug, value, context);
-    };
+  const connectionsForProject = createConnectionsForProject(options.database, integrations);
+  const executionAuthority = createRuntimeExecutionAuthority(
+    options.database,
+    connectionsForProject,
+    integrations,
+  );
   const outputRegistry = new OutputExecutorRegistry();
   for (const output of registrations.flatMap((registration) => registration.outputs)) {
     outputRegistry.register(output);
@@ -90,7 +74,7 @@ export async function createApplicationRuntime(
     database: options.database,
     entitlements: options.entitlements,
     providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
-    integrations: [...integrations.values()],
+    ...(executionAuthority === undefined ? {} : { executionAuthority }),
     attachmentResolvers: Object.fromEntries(
       registrations.flatMap((registration) =>
         registration.attachment === undefined
@@ -314,6 +298,56 @@ export async function createApplicationRuntime(
       await options.close();
     },
   };
+}
+
+function createConnectionsForProject(
+  database: Database | null,
+  integrations: ReadonlyMap<string, ProviderIntegrationRegistration>,
+): (projectId: string) => ConnectionResolver {
+  return (projectId) => async (connectionSlug, value, context) => {
+    if (database === null) throw new Error("connection inventory unavailable");
+    const project = await database.findProjectById(projectId);
+    if (project === undefined) throw new Error("execution project unavailable");
+    const usage = await database.organizationConnectionUsage(project.organizationId);
+    const candidates = [
+      ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
+      ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
+      ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
+    ].filter(
+      ({ connection }) =>
+        connection.organizationId === project.organizationId && connection.slug === connectionSlug,
+    );
+    if (candidates.length === 0) {
+      throw new Error(`connection slug is unavailable: ${connectionSlug}`);
+    }
+    if (candidates.length !== 1) {
+      throw new Error(`connection slug is ambiguous: ${connectionSlug}`);
+    }
+    const integration = integrations.get(candidates[0]!.provider);
+    if (integration === undefined) {
+      throw new Error(`connection capability is unavailable: ${connectionSlug}`);
+    }
+    return integration.resolve(projectId, connectionSlug, value, context);
+  };
+}
+
+function createRuntimeExecutionAuthority(
+  database: Database | null,
+  connectionsForProject: (projectId: string) => ConnectionResolver,
+  integrations: ReadonlyMap<string, ProviderIntegrationRegistration>,
+): ExecutionAuthority | undefined {
+  if (database === null) return undefined;
+  const githubAuthority = [...integrations.values()].find(
+    (integration) => integration.githubAuthority !== undefined,
+  )?.githubAuthority;
+  return createExecutionAuthority({
+    connectionsForProject,
+    ...(githubAuthority === undefined ? {} : { githubAuthority }),
+    isExecutionActive: async (executionId) => {
+      const execution = await database.findAgentExecutionById(executionId);
+      return execution?.status === "spawning" || execution?.status === "running";
+    },
+  });
 }
 
 /**

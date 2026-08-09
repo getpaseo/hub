@@ -100,10 +100,9 @@ export function createDiscordRegistration(
   return {
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject, attachments }) =>
+      ({ configurationStoreForProject, attachments }) =>
         createDiscordTriggerProvider({
           configurationStoreForProject,
-          connectionsForProject,
           ...(attachments === undefined ? {} : { attachments }),
           bot,
         }),

@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "./auth/server.js";
 import type { OrganizationAccessValue } from "./auth/organization-access.js";
-import {
-  deriveAgentExecutionCompletionToken,
-  hashAgentExecutionCompletionToken,
-} from "./agent-executions/completion-token.js";
 import { createMemoryDatabase } from "./db/memory.js";
 import type { Database } from "./db/types.js";
 import { EntitlementsService } from "./entitlements/service.js";
@@ -227,57 +222,6 @@ describe("application runtime provider composition", () => {
       /connection slug is unavailable/u,
     );
     await runtime.stop();
-  });
-
-  it("routes terminal execution cleanup through the composed integration", async () => {
-    const database = await runtimeDatabase("owner");
-    const [project] = await database.listProjectsForOrganization("org");
-    assert(project !== undefined);
-    const executionId = randomUUID();
-    const completionToken = deriveAgentExecutionCompletionToken(
-      "runtime-completion-secret",
-      executionId,
-    );
-    const terminalExecutionIds: string[] = [];
-    const runtime = await createApplicationRuntime({
-      database,
-      auth: new RuntimeAuth(),
-      entitlements: entitlementsForTest(database),
-      billing: null,
-      registrations: [
-        {
-          ...fakeRegistration("github"),
-          integration: {
-            resolve: () => Promise.resolve("token"),
-            onExecutionTerminal: async (id) => {
-              terminalExecutionIds.push(id);
-            },
-          },
-        },
-      ],
-      close: () => Promise.resolve(),
-    });
-
-    try {
-      await database.insertAgentExecution({
-        id: executionId,
-        organizationId: project.organizationId,
-        projectId: project.id,
-        machineId: null,
-        triggerContext: { provider: "discord" },
-        outputContext: {},
-        configurationRevisionId: "configuration-runtime-terminal",
-        completionTokenHash: hashAgentExecutionCompletionToken(completionToken),
-      });
-      await runtime.hub.daemonModule!.lifecycle.completeAgentExecutionFromCallback({
-        executionId,
-        token: completionToken,
-      });
-
-      assert.deepEqual(terminalExecutionIds, [executionId]);
-    } finally {
-      await runtime.stop();
-    }
   });
 });
 

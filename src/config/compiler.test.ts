@@ -181,6 +181,180 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("keeps explicit step environment templates and applies safe GitHub authority defaults", () => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    Reflect.set(step, "env", {
+      SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
+    });
+    Reflect.set(step, "github", {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+    });
+
+    const compiled = compileHubConfig(raw);
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.env, {
+      SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
+    });
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github, {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+      permissions: { contents: "read" },
+      durationMs: 60 * 60 * 1000,
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
+  it("uses only the GitHub event repository when a GitHub step omits repositories", () => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    const compiled = compileHubConfig({
+      ...raw,
+      triggers: [
+        {
+          ...raw.triggers[0],
+          on: "github.push",
+          filters: { from_users: ["github-user"] },
+          steps: [{ ...step, github: { connection: "getpaseo-github" } }],
+        },
+      ],
+    });
+
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github, {
+      connection: "getpaseo-github",
+      permissions: { contents: "read" },
+      durationMs: 60 * 60 * 1000,
+    });
+  });
+
+  it("requires explicit repositories for non-GitHub authority", () => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...raw.triggers[0],
+              steps: [{ ...step, github: { connection: "getpaseo-github" } }],
+            },
+          ],
+        }),
+      /trigger run step work github\.repositories is required for non-GitHub triggers/iu,
+    );
+  });
+
+  it("rejects GitHub authority values that could expand beyond authored scope", () => {
+    const base = configuration();
+    const step = base.triggers[0]!.steps[0]!;
+    const cases = [
+      {
+        github: {
+          connection: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          permissions: { contents: "admin" },
+        },
+        expected: /github\.permissions\.contents.*admin.*not supported/iu,
+      },
+      {
+        github: {
+          connection: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          permissions: { invented: "read" },
+        },
+        expected: /github\.permissions\.invented.*unknown GitHub permission/iu,
+      },
+      {
+        github: {
+          connection: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          duration: "2h",
+        },
+        expected: /github\.duration.*must not exceed 1h/iu,
+      },
+    ] as const;
+
+    for (const candidate of cases) {
+      assert.throws(
+        () =>
+          compileHubConfig({
+            ...base,
+            triggers: [{ ...base.triggers[0], steps: [{ ...step, github: candidate.github }] }],
+          }),
+        candidate.expected,
+      );
+    }
+  });
+
+  it.each([
+    ["attestations", "write"],
+    ["artifact_metadata", "read"],
+    ["code_quality", "write"],
+    ["merge_queues", "write"],
+    ["organization_copilot_agent_settings", "read"],
+    ["enterprise_custom_properties_for_organizations", "admin"],
+  ] as const)("accepts the current GitHub App permission %s at level %s", (name, level) => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    Reflect.set(step, "github", {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+      permissions: { [name]: level },
+    });
+
+    const compiled = compileHubConfig(raw);
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github?.permissions, { [name]: level });
+  });
+
+  it.each(["actions_variables", "repository_advisories"])(
+    "rejects %s because it is not in the versioned installation-token request vocabulary",
+    (name) => {
+      const raw = configuration();
+      const step = raw.triggers[0]!.steps[0]!;
+      Reflect.set(step, "github", {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { [name]: "write" },
+      });
+
+      assert.throws(() => compileHubConfig(raw), /unknown GitHub permission/iu);
+    },
+  );
+
+  it("rejects GitHub authority env collisions at the authored step boundary", () => {
+    const raw = configuration();
+    const step = raw.triggers[0]!.steps[0]!;
+    Reflect.set(step, "env", {
+      GH_TOKEN: "user-authored",
+      GIT_CONFIG_COUNT: "1",
+    });
+    Reflect.set(step, "github", {
+      connection: "getpaseo-github",
+      repositories: ["getpaseo/paseo"],
+    });
+
+    assert.throws(
+      () => compileHubConfig(raw),
+      /trigger run step work env\.(GH_TOKEN|GIT_CONFIG_COUNT).*reserved/iu,
+    );
+  });
+
+  it.each(["GITHUB_TOKEN", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_12", "GIT_TERMINAL_PROMPT"])(
+    "rejects reserved GitHub environment key %s",
+    (key) => {
+      const raw = configuration();
+      const step = raw.triggers[0]!.steps[0]!;
+      Reflect.set(step, "env", { [key]: "user-authored" });
+      Reflect.set(step, "github", {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+      });
+
+      assert.throws(() => compileHubConfig(raw), /reserved by the step-level github authority/iu);
+    },
+  );
+
   it("rejects duplicate IDs, unknown references, forward references, and value cycles", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(

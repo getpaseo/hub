@@ -20,30 +20,39 @@ describe("GitHub App authentication", () => {
     assert.deepEqual(tokenRequests, [142, 142]);
   });
 
-  it("mints execution tokens without reading or replacing the internal token cache", async () => {
+  it("mints scoped tokens without reading or replacing the internal token cache", async () => {
     const now = Date.parse("2026-07-28T00:00:00.000Z");
     const { auth, tokenRequests } = createGitHubAuthHarness(() => now);
 
     const internal = await auth.getInstallationToken(142);
-    const firstExecution = await auth.mintExecutionToken({
+    const firstExecution = await auth.mintInstallationAccessToken({
       installationId: 142,
-      repository: "acme/app",
+      accountLogin: "acme",
+      repositories: ["acme/app"],
+      permissions: { contents: "write" },
     });
     const stillCached = await auth.getInstallationToken(142);
-    const secondExecution = await auth.mintExecutionToken({
+    const secondExecution = await auth.mintInstallationAccessToken({
       installationId: 142,
-      repository: "acme/app",
+      accountLogin: "acme",
+      repositories: ["acme/app"],
+      permissions: { contents: "write" },
     });
 
     assert.deepEqual(
-      [internal, firstExecution, stillCached, secondExecution],
+      [internal, firstExecution.token, stillCached, secondExecution.token],
       ["ghs_installation_1", "ghs_installation_2", "ghs_installation_1", "ghs_installation_3"],
     );
     assert.deepEqual(tokenRequests, [142, 142, 142]);
   });
 
-  it("mints with one repository and exact write permissions, then revokes the token", async () => {
-    const requests: Array<{ method: string; pathname: string; body: unknown }> = [];
+  it("sends exact authored repositories and native permissions, then revokes the token", async () => {
+    const requests: Array<{
+      method: string;
+      pathname: string;
+      apiVersion: string | null;
+      body: unknown;
+    }> = [];
     const auth = createGitHubAuth({
       appId: "12345",
       privateKey: testPrivateKey(),
@@ -54,6 +63,7 @@ describe("GitHub App authentication", () => {
         requests.push({
           method: request.method,
           pathname: new URL(request.url).pathname,
+          apiVersion: request.headers.get("x-github-api-version"),
           body: request.method === "POST" ? await request.json() : undefined,
         });
         if (request.method === "DELETE") return new Response(null, { status: 204 });
@@ -64,23 +74,52 @@ describe("GitHub App authentication", () => {
       },
     });
 
-    const token = await auth.mintExecutionToken({
+    const token = await auth.mintInstallationAccessToken({
       installationId: 142,
-      repository: "acme/app",
+      accountLogin: "acme",
+      repositories: ["acme/app", "acme/docs"],
+      permissions: { contents: "write", pull_requests: "write", issues: "read" },
     });
-    await auth.revokeInstallationToken(token);
+    await auth.revokeInstallationToken(token.token);
 
     assert.deepEqual(requests, [
       {
         method: "POST",
         pathname: "/app/installations/142/access_tokens",
+        apiVersion: "2026-03-10",
         body: {
-          repositories: ["app"],
-          permissions: { contents: "write", pull_requests: "write", issues: "write" },
+          repositories: ["app", "docs"],
+          permissions: { contents: "write", pull_requests: "write", issues: "read" },
         },
       },
-      { method: "DELETE", pathname: "/installation/token", body: undefined },
+      {
+        method: "DELETE",
+        pathname: "/installation/token",
+        apiVersion: "2026-03-10",
+        body: undefined,
+      },
     ]);
+  });
+
+  it("resolves and caches the GitHub App bot identity by app slug", async () => {
+    const requests: string[] = [];
+    const auth = createGitHubAuth({
+      appId: "12345",
+      privateKey: testPrivateKey(),
+      fetch: async (input, init) => {
+        const request =
+          input instanceof Request && init === undefined ? input : new Request(input, init);
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        return Response.json({ id: 9876, login: "paseo[bot]" });
+      },
+    });
+
+    const first = await auth.getAppBotIdentity("paseo");
+    const cached = await auth.getAppBotIdentity("paseo");
+
+    assert.deepEqual(first, { id: 9876, login: "paseo[bot]" });
+    assert.deepEqual(cached, first);
+    assert.deepEqual(requests, ["GET /users/paseo%5Bbot%5D"]);
   });
 });
 

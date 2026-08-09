@@ -8,7 +8,6 @@ import { createActiveProjectConfiguration } from "../../test-utils/project-confi
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
-import { isAcceptedTriggerProviderMatch, type TriggerProviderMatch } from "../../triggers/index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 
 describe("GitHub registration", () => {
@@ -138,7 +137,9 @@ describe("GitHub registration", () => {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
         mintInstallationToken: () => Promise.resolve("token"),
-        mintExecutionToken: () => Promise.resolve("execution-token"),
+        mintInstallationAccessToken: () =>
+          Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
+        getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
@@ -192,22 +193,19 @@ describe("GitHub registration", () => {
     const database = createMemoryDatabase();
     database.findProjectById = async (projectId) =>
       testProject(projectId, projectId === "project-1" ? "org_1" : "org_2");
-    database.organizationConnectionUsage = async (organizationId) => ({
-      github:
-        organizationId === "org_1"
-          ? [
-              {
-                id: "github-connection",
-                organizationId: "org_1",
-                slug: "getpaseo-github",
-                installationId: 142,
-                accountId: "501",
-                accountLogin: "getpaseo",
-                accountType: "Organization",
-                status: "active",
-              },
-            ]
-          : [],
+    database.organizationConnectionUsage = async (_organizationId) => ({
+      github: [
+        {
+          id: "github-connection",
+          organizationId: "org_1",
+          slug: "getpaseo-github",
+          installationId: 142,
+          accountId: "501",
+          accountLogin: "getpaseo",
+          accountType: "Organization",
+          status: "active",
+        },
+      ],
       discord: [],
       slack: [],
     });
@@ -225,7 +223,9 @@ describe("GitHub registration", () => {
           installations.push(installationId);
           return Promise.resolve("test-installation-token");
         },
-        mintExecutionToken: () => Promise.resolve("execution-token"),
+        mintInstallationAccessToken: () =>
+          Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
+        getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
@@ -247,66 +247,53 @@ describe("GitHub registration", () => {
     );
   });
 
-  it("mints a distinct GitHub installation token for each execution", async () => {
-    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
-
-    const first = await provider.match(githubExecution("delivery-1", revision.id));
-    const second = await provider.match(githubExecution("delivery-2", revision.id));
-    if (typeof first === "string" || typeof second === "string")
-      throw new Error("expected GitHub matches");
-    const firstLaunch = await materialize(provider, first[0], "execution-1");
-    const secondLaunch = await materialize(provider, second[0], "execution-2");
-
-    assert.deepEqual(
-      [firstLaunch.environmentEnv?.["GH_TOKEN"], secondLaunch.environmentEnv?.["GH_TOKEN"]],
-      ["test-execution-token-1", "test-execution-token-2"],
-    );
-    assert.deepEqual(appAuth.installationTokenMints, [142, 142]);
-  });
-
-  it("revokes explicitly resolved GitHub tokens with the execution token", async () => {
-    const { provider, appAuth, revision } = await createExecutionProvider(githubTokenConfig());
-    const result = await provider.match(githubExecution("delivery-explicit-token", revision.id));
-    if (typeof result === "string") throw new Error("expected GitHub match");
-    const [execution] = result;
-    assert.ok(execution);
-    await materialize(provider, execution, "execution-explicit-token");
-
-    await provider.onAgentExecutionTerminal?.("execution-explicit-token", execution.triggerContext);
-
-    assert.deepEqual(appAuth.revocations, ["test-execution-token-1"]);
-  });
-
-  it("revokes a GitHub token resolved by a cross-provider execution", async () => {
+  it("mints and revokes explicit scoped authority only for the project's active organization connection", async () => {
     const database = createMemoryDatabase();
-    const { project } = await createActiveProjectConfiguration(database, {
-      environments: [{ name: "runner", kind: "docker", image: "paseo/runner" }],
-      triggers: [],
-    });
-    database.organizationConnectionUsage = async () => ({
+    database.findProjectById = async (projectId) =>
+      testProject(projectId, projectId === "project-1" ? "org_1" : "org_2");
+    database.organizationConnectionUsage = async (_organizationId) => ({
       github: [
         {
-          id: "github-selected",
-          organizationId: project.organizationId,
-          slug: "selected-github",
+          id: "github-connection",
+          organizationId: "org_1",
+          slug: "getpaseo-github",
           installationId: 142,
           accountId: "501",
           accountLogin: "getpaseo",
-          accountType: "Organization" as const,
-          status: "active" as const,
+          accountType: "Organization",
+          status: "active",
         },
       ],
       discord: [],
       slack: [],
     });
-    const appAuth = new ExecutionGitHubAuth();
+    const requests: unknown[] = [];
+    const revoked: string[] = [];
+    let identityLookups = 0;
     const registration = createGitHubRegistration({
       database,
       auth: null,
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
-      appAuth,
+      appAuth: {
+        getInstallation: () => Promise.resolve(undefined),
+        getInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationAccessToken: (input) => {
+          requests.push(input);
+          return Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 });
+        },
+        getAppBotIdentity: () => {
+          identityLookups += 1;
+          return Promise.resolve({ id: 123, login: "paseo[bot]" });
+        },
+        revokeInstallationToken: (token) => {
+          revoked.push(token);
+          return Promise.resolve();
+        },
+        createInstallationOctokit: () => Promise.reject(new Error("unused")),
+      },
       connectionClient: new GitHubClientFake(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
@@ -314,13 +301,69 @@ describe("GitHub registration", () => {
       },
     });
 
-    const token = await registration.integration!.resolve(project.id, "selected-github", "token", {
-      executionId: "execution-discord-1",
+    const authority = registration.integration?.githubAuthority;
+    assert.ok(authority);
+    const minted = await authority.mint({
+      projectId: "project-1",
+      connectionSlug: "getpaseo-github",
+      repositories: ["getpaseo/paseo", "getpaseo/hub"],
+      permissions: { contents: "write", pull_requests: "read" },
     });
-    await registration.integration!.onExecutionTerminal?.("execution-discord-1");
+    assert.deepEqual(requests, [
+      {
+        installationId: 142,
+        accountLogin: "getpaseo",
+        repositories: ["getpaseo/paseo", "getpaseo/hub"],
+        permissions: { contents: "write", pull_requests: "read" },
+      },
+    ]);
+    assert.deepEqual(minted, {
+      token: "scoped-token",
+      expiresAt: minted.expiresAt,
+      botUserId: 123,
+      botLogin: "paseo[bot]",
+    });
+    assert.equal(identityLookups, 1);
 
-    assert.equal(token, "test-execution-token-1");
-    assert.deepEqual(appAuth.revocations, ["test-execution-token-1"]);
+    await assert.rejects(
+      () =>
+        authority.mint({
+          projectId: "project-1",
+          connectionSlug: "getpaseo-github",
+          repositories: ["other-owner/paseo"],
+          permissions: { contents: "read" },
+        }),
+      /repository owner.*other-owner.*getpaseo/iu,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(identityLookups, 1);
+
+    const caseInsensitive = await authority.mint({
+      projectId: "project-1",
+      connectionSlug: "getpaseo-github",
+      repositories: ["GETPASEO/private"],
+      permissions: { contents: "read" },
+    });
+    assert.deepEqual(requests[1], {
+      installationId: 142,
+      accountLogin: "getpaseo",
+      repositories: ["GETPASEO/private"],
+      permissions: { contents: "read" },
+    });
+
+    await authority.revoke(minted.token);
+    await authority.revoke(caseInsensitive.token);
+    assert.deepEqual(revoked, ["scoped-token", "scoped-token"]);
+    await assert.rejects(
+      () =>
+        authority.mint({
+          projectId: "project-2",
+          connectionSlug: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          permissions: { contents: "read" },
+        }),
+      /connection is unavailable/u,
+    );
   });
 
   it("keeps provider runtime active without browser authentication", async () => {
@@ -405,7 +448,9 @@ describe("GitHub registration", () => {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
         mintInstallationToken: () => Promise.resolve("token"),
-        mintExecutionToken: () => Promise.resolve("execution-token"),
+        mintInstallationAccessToken: () =>
+          Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
+        getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
@@ -529,38 +574,6 @@ class RegistrationAuth implements AuthServer {
   }
 }
 
-class ExecutionGitHubAuth {
-  readonly installationTokenMints: number[] = [];
-  readonly revocations: string[] = [];
-
-  getInstallation() {
-    return Promise.resolve(undefined);
-  }
-
-  getInstallationToken() {
-    return Promise.resolve("test-shared-token");
-  }
-
-  mintInstallationToken(installationId: number) {
-    this.installationTokenMints.push(installationId);
-    return Promise.resolve(`test-execution-token-${this.installationTokenMints.length}`);
-  }
-
-  mintExecutionToken(input: { installationId: number; repository: string }) {
-    this.installationTokenMints.push(input.installationId);
-    return Promise.resolve(`test-execution-token-${this.installationTokenMints.length}`);
-  }
-
-  revokeInstallationToken(token: string) {
-    this.revocations.push(token);
-    return Promise.resolve();
-  }
-
-  createInstallationOctokit() {
-    return Promise.reject(new Error("unused"));
-  }
-}
-
 function githubConfiguration() {
   return {
     appSlug: "paseo",
@@ -568,80 +581,6 @@ function githubConfiguration() {
     clientSecret: "secret",
     webhookSecret: "webhook-secret",
   };
-}
-
-function githubTokenConfig(_env: Record<string, string> = {}) {
-  return {
-    environments: [
-      {
-        name: "daemon",
-        kind: "daemon",
-        daemon: "test-daemon",
-        cwd: "/workspace",
-      },
-    ],
-    triggers: [
-      {
-        name: "github-token",
-        on: "github.issue_comment",
-        max_runtime: "2h",
-        filters: { repo: "acme/app", contains: "@paseo", from_users: ["octocat"] },
-        steps: [
-          {
-            id: "github-step",
-            environment: "daemon",
-            max_runtime: "1h",
-            idle_timeout: "5m",
-            agent: { provider: "claude/opus", mode: "bypassPermissions" },
-            prompt: [{ text: "run" }],
-          },
-        ],
-      },
-    ],
-  };
-}
-
-async function createExecutionProvider(rawConfig: unknown) {
-  const database = createMemoryDatabase();
-  database.findProjectById = async (projectId) => testProject(projectId, "org_1");
-  database.organizationConnectionUsage = async () => ({
-    github: [
-      {
-        id: "github-connection",
-        organizationId: "org_1",
-        slug: "getpaseo-github",
-        installationId: 142,
-        accountId: "501",
-        accountLogin: "getpaseo",
-        accountType: "Organization",
-        status: "active",
-      },
-    ],
-    discord: [],
-    slack: [],
-  });
-  const { store, revision } = await createActiveProjectConfiguration(database, rawConfig);
-  const appAuth = new ExecutionGitHubAuth();
-  const registration = createGitHubRegistration({
-    database,
-    auth: null,
-    applicationBaseUrl: "https://hub.test",
-    publicBaseUrl: "https://hub.test",
-    configuration: githubConfiguration(),
-    appAuth,
-    connectionClient: new GitHubClientFake(),
-    reactionClient: {
-      createReaction: () => Promise.resolve({ id: 1 }),
-      deleteReaction: () => Promise.resolve(),
-    },
-  });
-  const provider = registration.triggerProviders[0]?.({
-    configurationStoreForProject: () => store,
-    connectionsForProject: (projectId) => (slug, value, context) =>
-      registration.integration!.resolve(projectId, slug, value, context),
-  });
-  assert.ok(provider);
-  return { provider, appAuth, revision };
 }
 
 function testProject(id: string, organizationId: string): ProjectRecord {
@@ -660,57 +599,14 @@ function testProject(id: string, organizationId: string): ProjectRecord {
   };
 }
 
-async function materialize(
-  provider: Awaited<ReturnType<typeof createExecutionProvider>>["provider"],
-  match: TriggerProviderMatch | undefined,
-  executionId: string,
-) {
-  if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-  if (provider.materializeLaunch === undefined) throw new Error("materializer is unavailable");
-  return provider.materializeLaunch({
-    executionId,
-    organizationId: "org_1",
-    projectId: "project-1",
-    triggerContext: match.triggerContext,
-  });
-}
-
-function githubExecution(deliveryId: string, configurationRevisionId: string) {
-  return {
-    providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
-    organizationId: "org_1",
-    projectId: "project-1",
-    configurationRevisionId,
-    source: "github.issue_comment",
-    deliveryId,
-    receivedAt: new Date("2026-07-28T00:00:00.000Z"),
-    payload: {
-      id: deliveryId,
-      type: "issue_comment",
-      repo: "acme/app",
-      repositoryId: 7,
-      installationId: 142,
-      payload: {
-        issue: { number: 1, title: "Test", body: "Test" },
-        comment: {
-          id: 10,
-          body: "@paseo run",
-          html_url: "https://github.test/acme/app/issues/1#issuecomment-10",
-          user: { login: "octocat" },
-        },
-        sender: { login: "octocat" },
-      },
-      createdAt: "2026-07-28T00:00:00.000Z",
-    },
-  };
-}
-
 function githubAuth() {
   return {
     getInstallation: () => Promise.resolve(undefined),
     getInstallationToken: () => Promise.resolve("token"),
     mintInstallationToken: () => Promise.resolve("token"),
-    mintExecutionToken: () => Promise.resolve("execution-token"),
+    mintInstallationAccessToken: () =>
+      Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
+    getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
     revokeInstallationToken: () => Promise.resolve(),
     createInstallationOctokit: () => Promise.reject(new Error("unused")),
   };

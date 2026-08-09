@@ -23,11 +23,7 @@ import type {
   DaemonDispatchLifecycleOptions,
   ExecutionDeadlineClock,
 } from "./daemons/lifecycle.js";
-import type {
-  ProviderIntegrationRegistration,
-  TriggerProviderFactory,
-  TriggerProviderResources,
-} from "./providers/registration.js";
+import type { TriggerProviderFactory, TriggerProviderResources } from "./providers/registration.js";
 import type { TriggerProvider, TriggerSource } from "./triggers/index.js";
 import {
   createManualTriggerSource,
@@ -42,6 +38,7 @@ import { createPublicApi, type PublicApi, type PublicApiComposition } from "./pu
 import { createPublicOperations } from "./public-operations/index.js";
 import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
 import type { EntitlementsService } from "./entitlements/service.js";
+import type { ExecutionAuthority } from "./execution-authority/index.js";
 
 export interface HubRuntimeOptions {
   database: Database | null;
@@ -49,7 +46,7 @@ export interface HubRuntimeOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   providerFactories?: readonly TriggerProviderFactory[];
-  integrations?: readonly ProviderIntegrationRegistration[];
+  executionAuthority?: ExecutionAuthority;
   attachmentResolvers?: Partial<Record<AttachmentProvider, AttachmentResolver>>;
   connectionsForProject?: TriggerProviderResources["connectionsForProject"];
   configurationRevisionId?: string;
@@ -225,9 +222,13 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       await Promise.all(activeSources.map(async (source) => source.start(workflowDispatcher)));
     },
     async stop() {
-      await Promise.all(activeSources.map(async (source) => source.stop()));
-      activeSources = [];
-      await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      try {
+        await Promise.all(activeSources.map(async (source) => source.stop()));
+        activeSources = [];
+        await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+      } finally {
+        await options.executionAuthority?.stop();
+      }
     },
   };
   const publicOperations = createAppPublicOperations(options, manualSource, storeForProject);
@@ -358,7 +359,9 @@ function createAppDaemonModule(
       ? {}
       : { completionTokenSecret: options.completionTokenSecret }),
     providers,
-    integrations: options.integrations ?? [],
+    ...(options.executionAuthority === undefined
+      ? {}
+      : { executionAuthority: options.executionAuthority }),
     ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
     ...(usesTestTiming
       ? {

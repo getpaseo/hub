@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AuthServer } from "../../auth/server.js";
-import {
-  createGitHubAuth,
-  type GitHubAuth,
-  type GitHubExecutionTokenAuth,
-} from "../../auth/github.js";
+import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { Database, GitHubConnectionRecord } from "../../db/types.js";
 import { logger } from "../../logger.js";
@@ -38,7 +34,6 @@ import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
 import type { ConnectionResolutionContext } from "../../config/connections.js";
-import { createGitHubExecutionTokenRegistry } from "./execution-token-registry.js";
 
 export interface GitHubRegistrationConfiguration {
   appSlug: string;
@@ -54,7 +49,7 @@ export interface CreateGitHubRegistrationOptions {
   publicBaseUrl?: string;
   environment?: NodeJS.ProcessEnv;
   configuration?: GitHubRegistrationConfiguration | null;
-  appAuth?: GitHubAuth & GitHubExecutionTokenAuth;
+  appAuth?: GitHubAuth;
   connectionClient?: GitHubConnectionClient;
   reactionClient?: GitHubReactionClient;
   fetch?: typeof fetch;
@@ -83,7 +78,6 @@ export function createGitHubRegistration(
   const database = options.database;
 
   const appAuth = options.appAuth ?? createGitHubAuth();
-  const executionTokenRegistry = createGitHubExecutionTokenRegistry(appAuth);
   const client =
     options.connectionClient ??
     createGitHubConnectionClient({
@@ -141,7 +135,6 @@ export function createGitHubRegistration(
   return {
     connection,
     integration: {
-      onExecutionTerminal: (executionId) => executionTokenRegistry.onExecutionTerminal(executionId),
       async resolve(projectId, connectionSlug, value, context?: ConnectionResolutionContext) {
         if (value !== "token") {
           throw new Error(`unsupported github integration value: ${value}`);
@@ -151,28 +144,54 @@ export function createGitHubRegistration(
           project === undefined
             ? undefined
             : (await database.organizationConnectionUsage(project.organizationId)).github.find(
-                (candidate) => candidate.slug === connectionSlug,
+                (candidate) =>
+                  candidate.organizationId === project.organizationId &&
+                  candidate.slug === connectionSlug,
               );
         if (selectedConnection === undefined || selectedConnection.status !== "active") {
           throw new Error(`github connection is unavailable: ${connectionSlug}`);
         }
-        const token =
-          context?.executionId !== undefined && context.registerToken === undefined
-            ? await executionTokenRegistry.mint(context.executionId, () =>
-                appAuth.mintInstallationToken(selectedConnection.installationId),
-              )
-            : await appAuth.mintInstallationToken(selectedConnection.installationId);
-        await context?.registerToken?.(token);
+        const token = await appAuth.mintInstallationToken(selectedConnection.installationId);
+        await context?.registerToken?.(token, () => appAuth.revokeInstallationToken(token));
         return token;
+      },
+      githubAuthority: {
+        async mint(input) {
+          const project = await database.findProjectById(input.projectId);
+          const selectedConnection =
+            project === undefined
+              ? undefined
+              : (await database.organizationConnectionUsage(project.organizationId)).github.find(
+                  (candidate) =>
+                    candidate.organizationId === project.organizationId &&
+                    candidate.slug === input.connectionSlug,
+                );
+          if (selectedConnection === undefined || selectedConnection.status !== "active") {
+            throw new Error(`github connection is unavailable: ${input.connectionSlug}`);
+          }
+          repositoryNamesForAccount(input.repositories, selectedConnection.accountLogin);
+          const bot = await appAuth.getAppBotIdentity(configuration.appSlug);
+          const token = await appAuth.mintInstallationAccessToken({
+            installationId: selectedConnection.installationId,
+            accountLogin: selectedConnection.accountLogin,
+            repositories: input.repositories,
+            permissions: input.permissions,
+          });
+          return {
+            token: token.token,
+            expiresAt: token.expiresAt,
+            botUserId: bot.id,
+            botLogin: bot.login,
+          };
+        },
+        revoke: (token) => appAuth.revokeInstallationToken(token),
       },
     },
     triggerProviders: [
-      ({ configurationStoreForProject, connectionsForProject }) =>
+      ({ configurationStoreForProject }) =>
         createGitHubTriggerProvider({
           configurationStoreForProject,
-          connectionsForProject,
           reactions,
-          executionTokens: appAuth,
         }),
     ],
     sources: [webhook],
