@@ -3,7 +3,12 @@ import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
-import type { SlackBotClient, SlackThreadMessage, SlackThreadReadResult } from "./client.js";
+import {
+  createSlackBotClient,
+  type SlackBotClient,
+  type SlackThreadMessage,
+  type SlackThreadReadResult,
+} from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
@@ -488,6 +493,66 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     assert.equal(context.slack.thread.status, "incomplete");
     assert.equal(context.slack.thread.messages.length, 1);
+  });
+
+  it("caps Slack history traversal and retains the newest 50 messages oldest first", async () => {
+    const maximumPageCount = 10;
+    const messagesPerPage = 100;
+    let requests = 0;
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: () => {
+        requests += 1;
+        if (requests > maximumPageCount) {
+          throw new Error("Slack history traversal exceeded its request ceiling");
+        }
+        const firstSequence = (requests - 1) * messagesPerPage + 1;
+        return Promise.resolve(
+          Response.json({
+            ok: true,
+            messages: Array.from({ length: messagesPerPage }, (_, index) => {
+              const sequence = firstSequence + index;
+              return {
+                ts: `1700000000.${String(sequence).padStart(6, "0")}`,
+                text: `reply-${sequence}`,
+                user: `U${sequence}`,
+              };
+            }),
+            response_metadata: { next_cursor: `page-${requests + 1}` },
+          }),
+        );
+      },
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.999999" }))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-page-cap",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+
+    assert.equal(requests, maximumPageCount);
+    assert.equal(context.slack.thread.status, "incomplete");
+    assert.deepEqual(
+      context.slack.thread.messages.map((message) => message.content),
+      Array.from({ length: 50 }, (_, index) => `reply-${951 + index}`),
+    );
   });
 
   it("does not require attachment capability during Slack ingestion", async () => {

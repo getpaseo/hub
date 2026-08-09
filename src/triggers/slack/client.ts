@@ -34,6 +34,7 @@ const SlackFileInfoSchema = SlackApiResponseSchema.extend({
     .optional(),
 });
 const SLACK_API_TIMEOUT_MS = 10_000;
+const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -171,6 +172,7 @@ export function createSlackBotClient(options: {
     let selected: SlackThreadMessage[] = [];
     const seenCursors = new Set<string>();
     let complete = true;
+    let pagesRead = 0;
     while (true) {
       let result: z.infer<typeof SlackThreadRepliesSchema>;
       try {
@@ -194,6 +196,7 @@ export function createSlackBotClient(options: {
         .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0)
         .sort((left, right) => compareSlackTs(right.ts, left.ts))
         .slice(0, 50);
+      pagesRead += 1;
       const next = result.response_metadata?.next_cursor;
       cursor = next === undefined || next.length === 0 ? undefined : next;
       if (cursor === undefined) break;
@@ -202,6 +205,10 @@ export function createSlackBotClient(options: {
         break;
       }
       seenCursors.add(cursor);
+      if (pagesRead === SLACK_THREAD_REPLIES_MAX_PAGES) {
+        complete = false;
+        break;
+      }
     }
 
     return {
