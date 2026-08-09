@@ -30,7 +30,7 @@ import type {
   AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
 import { isAcceptedTriggerProviderMatch } from "../triggers/index.js";
-import type { TriggerRoutingDecision } from "../triggers/routing-evidence.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import {
   ExpressionEvaluationError,
   evaluateExpression,
@@ -112,27 +112,15 @@ export class DurableWorkflowEngine {
 
   async enqueue(trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome> {
     if (this.options.database === null) throw new DatabaseUnavailableError();
-    const collected = await collectProviderMatches(this.options.providers ?? [], trigger);
-    const receipt = await this.options.database.findProviderEventReceiptById(
-      trigger.providerEventReceiptId,
+    const { matches, dropReason } = await collectProviderMatches(
+      this.options.providers ?? [],
+      trigger,
     );
-    const matches = collected.matches;
-    const routingDecisions = collected.routingDecisions.flat();
-    if (receipt !== undefined && receipt.organizationId === trigger.organizationId) {
-      await this.options.database.commitProviderEventRoutingResult({
-        organizationId: trigger.organizationId,
-        providerEventReceiptId: trigger.providerEventReceiptId,
-        projectId: trigger.projectId,
-        configurationRevisionId: trigger.configurationRevisionId,
-        outcome: matches.length === 0 ? "dropped" : "routed",
-        decisions:
-          matches.length === 0 && routingDecisions.length === 0
-            ? [{ triggerName: null, code: "configuration_unavailable" }]
-            : routingDecisions,
-        ...(matches.length === 0 ? {} : { payload: trigger.payload }),
-      });
-    }
     if (matches.length === 0) {
+      await this.options.database.markProviderEventDropped(
+        trigger.providerEventReceiptId,
+        dropReason,
+      );
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
     const createdAt = this.now();
@@ -881,24 +869,24 @@ async function collectProviderMatches(
   trigger: DurableProviderEvent,
 ): Promise<{
   matches: readonly TriggerProviderMatch[];
-  routingDecisions: readonly (readonly TriggerRoutingDecision[])[];
+  dropReason: ProviderEventDropReasonCode;
 }> {
-  if (!isTriggerEventName(trigger.source)) return { matches: [], routingDecisions: [] };
+  if (!isTriggerEventName(trigger.source))
+    return { matches: [], dropReason: "no_trigger_for_source" };
   const matchingProviders = providers.filter((provider) =>
     provider.eventNames.some((name) => name === trigger.source),
   );
-  if (matchingProviders.length === 0) {
-    return {
-      matches: [],
-      routingDecisions: [[{ triggerName: null, code: "no_trigger_for_source" }]],
-    };
-  }
-  const nestedMatches = await Promise.all(
-    matchingProviders.map((provider) => provider.match(trigger)),
+  const results = await Promise.all(matchingProviders.map((provider) => provider.match(trigger)));
+  const matches = results.flatMap((result) => (typeof result === "string" ? [] : result));
+  const reasons = results.filter(
+    (result): result is ProviderEventDropReasonCode => typeof result === "string",
   );
   return {
-    matches: nestedMatches.flatMap((result) => result.matches),
-    routingDecisions: nestedMatches.map((result) => result.routingDecisions),
+    matches,
+    dropReason:
+      reasons.find((reason) => reason === "configuration_unavailable") ??
+      reasons.find((reason) => reason === "trigger_filters_rejected") ??
+      "no_trigger_for_source",
   };
 }
 

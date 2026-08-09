@@ -2,12 +2,12 @@ import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schem
 import type { PromptPartialBundleFile } from "../config/prompt-partials.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
   OverrideKey,
 } from "../entitlements/catalog.js";
-import type { RoutingDecisionCode, TriggerRoutingDecision } from "../triggers/routing-evidence.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -27,18 +27,6 @@ export interface ProviderEventReceiptRecord {
   acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
 }
 
-export interface ProviderEventRoutingDecisionRecord {
-  id: string;
-  organizationId: string;
-  providerEventReceiptId: string;
-  projectId: string | null;
-  configurationRevisionId: string | null;
-  triggerName: string | null;
-  code: RoutingDecisionCode;
-  summary: string;
-  createdAt: Date;
-}
-
 export interface ProviderEventReceiptSummary {
   id: string;
   organizationId: string;
@@ -51,29 +39,6 @@ export interface ProviderEventReceiptSummary {
   repo: string | null;
   receivedAt: Date;
   droppedReason: string | null;
-  routingDecisions: readonly ProviderEventRoutingDecisionRecord[];
-}
-
-export interface ProviderEventRoutingOutcomeRecord {
-  id: string;
-  organizationId: string;
-  providerEventReceiptId: string;
-  status: "pending" | "routed" | "dropped";
-  expectedProjectCount: number;
-  completedProjectCount: number;
-  routedProjectCount: number;
-  createdAt: Date;
-  finalizedAt: Date | null;
-}
-
-export interface CommitProviderEventRoutingResultInput {
-  organizationId: string;
-  providerEventReceiptId: string;
-  projectId: string;
-  configurationRevisionId: string;
-  outcome: "routed" | "dropped";
-  decisions: readonly TriggerRoutingDecision[];
-  payload?: unknown;
 }
 
 export interface ProviderEventRouteSnapshot {
@@ -1086,7 +1051,10 @@ export interface Database {
   ): Promise<void>;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
-  commitProviderEventRoutingResult(input: CommitProviderEventRoutingResultInput): Promise<void>;
+  markProviderEventDropped(
+    providerEventReceiptId: string,
+    reason: ProviderEventDropReasonCode,
+  ): Promise<void>;
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
@@ -1104,9 +1072,6 @@ export interface Database {
     organizationId?: string,
   ): Promise<ProviderEventReceiptRecord | undefined>;
   findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined>;
-  findProviderEventRoutingOutcomeByReceiptId(
-    providerEventReceiptId: string,
-  ): Promise<ProviderEventRoutingOutcomeRecord | undefined>;
   insertAttachment(input: InsertAttachmentInput): Promise<AttachmentRecord>;
   findAttachmentBySource(
     providerEventReceiptId: string,

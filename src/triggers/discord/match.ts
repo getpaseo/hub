@@ -3,7 +3,6 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
-import type { TriggerRoutingDecision } from "../routing-evidence.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
@@ -12,95 +11,67 @@ export interface MatchedDiscordTrigger {
   trigger: MatchedTriggerDefinition;
 }
 
-export interface DiscordTriggerEvaluation {
-  matches: MatchedDiscordTrigger[];
-  routingDecisions: TriggerRoutingDecision[];
-}
-
 export function matchDiscordTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedDiscordMessageEvent,
   botClientId: string,
   connectionId?: string | null,
 ): MatchedDiscordTrigger[] {
-  return evaluateDiscordTriggers(config, event, botClientId, connectionId).matches;
-}
-
-export function evaluateDiscordTriggers(
-  config: { triggers: readonly MatchedTriggerDefinition[] },
-  event: NormalizedDiscordMessageEvent,
-  botClientId: string,
-  connectionId?: string | null,
-): DiscordTriggerEvaluation {
   const expectedEventName = `discord.${event.type}`;
   const matches: MatchedDiscordTrigger[] = [];
-  const routingDecisions: TriggerRoutingDecision[] = [];
-  const sourceTriggers = config.triggers.filter((trigger) => trigger.on === expectedEventName);
-  if (sourceTriggers.length === 0) {
-    return {
-      matches,
-      routingDecisions: [{ triggerName: null, code: "no_trigger_for_source" }],
-    };
-  }
 
-  for (const trigger of sourceTriggers) {
-    const mismatch = discordFilterMismatch(event, trigger.filters, botClientId, connectionId);
-    if (mismatch !== undefined) {
-      routingDecisions.push({ triggerName: trigger.name, code: mismatch });
+  for (const trigger of config.triggers) {
+    if (
+      trigger.on !== expectedEventName ||
+      !matchesFilter(event, trigger.filters, botClientId, connectionId)
+    ) {
       continue;
     }
+
     matches.push({ event, trigger });
   }
 
-  return { matches, routingDecisions };
+  return matches;
 }
 
-function discordFilterMismatch(
+function matchesFilter(
   event: NormalizedDiscordMessageEvent,
   filter: TriggerFilter | undefined,
   botClientId: string,
   connectionId?: string | null,
-):
-  | "connection_mismatch"
-  | "guild_mismatch"
-  | "channel_mismatch"
-  | "sender_not_allowed"
-  | "contains_mismatch"
-  | "pattern_mismatch"
-  | undefined {
+): boolean {
   const pattern = filter === undefined ? undefined : readPatternFilter(filter);
-  if (filter === undefined || !hasBotMention(event, botClientId)) {
-    return "contains_mismatch";
+  if (!matchesBotMentionPattern(event, botClientId, pattern)) {
+    return false;
   }
-  if (pattern !== undefined && !matchesBotMentionPattern(event, botClientId, pattern)) {
-    return readStringFilter(filter, "pattern") === undefined
-      ? "contains_mismatch"
-      : "pattern_mismatch";
+
+  if (filter === undefined) {
+    return false;
   }
 
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) {
-    return "connection_mismatch";
+    return false;
   }
 
   if (filter.from_users === undefined || filter.from_users.length === 0) {
-    return "sender_not_allowed";
+    return false;
   }
 
   const guild = readStringFilter(filter, "guild");
   if (guild !== undefined && guild !== event.guildId) {
-    return "guild_mismatch";
+    return false;
   }
 
   const channels = readStringArrayFilter(filter, "channels");
   if (channels !== undefined && !matchesChannel(event, channels)) {
-    return "channel_mismatch";
+    return false;
   }
 
   if (!filter.from_users.includes(event.author.id)) {
-    return "sender_not_allowed";
+    return false;
   }
 
-  return undefined;
+  return true;
 }
 
 export function readDiscordPromptBody(
@@ -163,12 +134,6 @@ function matchesBotMentionPattern(
 
   const nextCharacter = afterMention.at(pattern.length);
   return nextCharacter === undefined || /\s/u.test(nextCharacter);
-}
-
-function hasBotMention(event: NormalizedDiscordMessageEvent, botClientId: string): boolean {
-  return (
-    event.mentionedUserIds.includes(botClientId) || (event.mentionedBotRoleIds?.length ?? 0) > 0
-  );
 }
 
 function findBotMention(

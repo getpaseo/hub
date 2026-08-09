@@ -26,6 +26,7 @@ import type {
   ProviderEventReceiptSummary,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
+import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
 import {
   decodeEntitlementDenialFailureReason,
   entitlementDenialSummary,
@@ -577,11 +578,6 @@ function displayFailureReason(reason: string | null): string | null {
 }
 
 function unroutedEventView(receipt: ProviderEventReceiptSummary) {
-  const routingDecisions = receipt.routingDecisions.map((decision) => ({
-    triggerName: decision.triggerName,
-    code: decision.code,
-    summary: decision.summary,
-  }));
   return {
     id: receipt.id,
     providerEventReceiptId: receipt.id,
@@ -601,11 +597,10 @@ function unroutedEventView(receipt: ProviderEventReceiptSummary) {
     completedAt: null,
     outcome: "dropped" as const,
     status: "dropped" as const,
-    reason: routingDecisions[0]?.summary ?? receipt.droppedReason ?? "No routing reason recorded.",
-    routingDecisions,
     deadlineAt: null,
     deadlineKind: null,
-    failureReason: receipt.droppedReason,
+    failureReason:
+      receipt.droppedReason === null ? null : providerEventDropReasonSummary(receipt.droppedReason),
     rejectionReason: null,
     steps: [],
   };

@@ -2,6 +2,7 @@ import type { Message } from "discord.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
+import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import type { DiscordBotClient } from "./bot.js";
 import {
   NormalizedDiscordContextMessageSchema,
@@ -17,7 +18,7 @@ export interface CreateDiscordGatewaySourceOptions {
     source: string;
     payload: unknown;
     receivedAt: Date;
-    dropReason?: string;
+    dropReason?: ProviderEventDropReasonCode;
   }): Promise<ProviderEventAcceptance>;
   applyGuildDelete(guildId: string, unavailable: boolean): Promise<void>;
 }
@@ -126,7 +127,7 @@ async function dispatchMessage(
     deliveryId: `discord-${normalizedEvent.messageId}`,
     receivedAt: new Date(normalizedEvent.createdAt),
     payload: normalizedEvent,
-    ...(handlers.size === 0 ? { dropReason: "discord_no_handler" } : {}),
+    ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
   if (acceptance.status !== "accepted") return;
 

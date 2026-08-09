@@ -2,7 +2,7 @@ import type { DurableProviderEvent } from "../db/types.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { InvocationParseResult } from "./invocation.js";
-import type { TriggerRoutingDecision } from "./routing-evidence.js";
+import type { ProviderEventDropReasonCode } from "./drop-reason.js";
 
 export interface ExternalTrigger {
   providerEventReceiptId: string;
@@ -76,24 +76,20 @@ export type TriggerProviderMatch<TriggerContext = unknown, OutputContext = Trigg
   | AcceptedTriggerProviderMatch<TriggerContext, OutputContext>
   | RejectedTriggerProviderMatch<TriggerContext, OutputContext>;
 
-export interface TriggerProviderMatchResult<
-  TriggerContext = unknown,
-  OutputContext = TriggerContext,
-> {
-  matches: readonly TriggerProviderMatch<TriggerContext, OutputContext>[];
-  routingDecisions: readonly TriggerRoutingDecision[];
-}
+export type TriggerProviderResult<TriggerContext = unknown, OutputContext = TriggerContext> =
+  | readonly TriggerProviderMatch<TriggerContext, OutputContext>[]
+  | ProviderEventDropReasonCode;
 
 export function isAcceptedTriggerProviderMatch<TriggerContext, OutputContext>(
-  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | string | undefined,
 ): match is AcceptedTriggerProviderMatch<TriggerContext, OutputContext> {
-  return match !== undefined && match.invocation.status === "accepted";
+  return typeof match === "object" && match.invocation.status === "accepted";
 }
 
 export function isRejectedTriggerProviderMatch<TriggerContext, OutputContext>(
-  match: TriggerProviderMatch<TriggerContext, OutputContext> | undefined,
+  match: TriggerProviderMatch<TriggerContext, OutputContext> | string | undefined,
 ): match is RejectedTriggerProviderMatch<TriggerContext, OutputContext> {
-  return match !== undefined && match.invocation.status === "rejected";
+  return typeof match === "object" && match.invocation.status === "rejected";
 }
 
 export interface TriggerProviderLifecycleResult {
@@ -124,9 +120,7 @@ export interface TriggerProvider<
 > {
   name: Name;
   eventNames: readonly TriggerEventName[];
-  match(
-    trigger: ExternalTrigger,
-  ): Promise<TriggerProviderMatchResult<TriggerContext, OutputContext>>;
+  match(trigger: ExternalTrigger): Promise<TriggerProviderResult<TriggerContext, OutputContext>>;
   materializeLaunch?(
     launch: TriggerLaunchMaterialization<TriggerContext>,
   ): Promise<MaterializedTriggerLaunch>;

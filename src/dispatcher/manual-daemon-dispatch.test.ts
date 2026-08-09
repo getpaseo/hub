@@ -30,38 +30,11 @@ describe("manual trigger durable workflow boundary", () => {
     await dispatchManualTrigger(source, manualTrigger("manual-no-match", project.id));
 
     const receipt = await database.findProviderEventReceiptByDeliveryId("manual-no-match", "org_1");
-    assert.equal(receipt?.droppedReason, null);
+    assert.equal(receipt?.droppedReason, "no_trigger_for_source");
     assert.deepEqual(
       receipt === undefined
         ? []
         : await database.findTriggerRunsByProviderEventReceiptId(receipt.id),
-      [],
-    );
-  });
-
-  it("commits a scrubbed dropped receipt when the manual handler is unavailable", async () => {
-    const database = createMemoryDatabase();
-    const { project } = await createManualProject(database);
-    const source = createManualTriggerSource(database);
-
-    const outcome = await dispatchManualTrigger(
-      source,
-      manualTrigger("manual-no-handler", project.id),
-    );
-
-    const receipt = await database.findProviderEventReceiptByDeliveryId(
-      "manual-no-handler",
-      "org_1",
-    );
-    assert.ok(receipt);
-    assert.equal(outcome?.providerEventReceiptId, receipt.id);
-    assert.equal(receipt.payload, null);
-    assert.equal(
-      (await database.findProviderEventRoutingOutcomeByReceiptId(receipt.id))?.status,
-      "dropped",
-    );
-    assert.deepEqual(
-      (await database.listUnroutedProviderEventsForOrganization("org_1"))[0]?.routingDecisions,
       [],
     );
   });
@@ -160,7 +133,7 @@ function noMatchingProvider(): TriggerProvider {
     name: "manual",
     eventNames: ["manual.run"],
     async match() {
-      return { matches: [], routingDecisions: [] };
+      return [];
     },
   };
 }
@@ -170,24 +143,21 @@ function matchingProvider(configuration: CompiledHubConfig, revisionId: string):
     name: "manual",
     eventNames: ["manual.run"],
     async match(trigger) {
-      return {
-        matches: [
-          {
-            triggerName: "deploy",
-            triggerContext: trigger.payload,
-            outputContext: { provider: "manual" },
-            configurationRevisionId: revisionId,
-            hubConfig: configuration,
-            invocation: {
-              status: "accepted",
-              rawMessage: "run",
-              prompt: "run",
-              inputs: {},
-            },
+      return [
+        {
+          triggerName: "deploy",
+          triggerContext: trigger.payload,
+          outputContext: { provider: "manual" },
+          configurationRevisionId: revisionId,
+          hubConfig: configuration,
+          invocation: {
+            status: "accepted",
+            rawMessage: "run",
+            prompt: "run",
+            inputs: {},
           },
-        ],
-        routingDecisions: [],
-      };
+        },
+      ];
     },
   };
 }

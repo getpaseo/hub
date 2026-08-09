@@ -14,8 +14,6 @@ import type {
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
-  ProviderEventRoutingDecisionRecord,
-  ProviderEventRoutingOutcomeRecord,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -44,10 +42,8 @@ import type {
   AttachmentProvider,
   AttachmentRecord,
   GitHubLifecycleResult,
-  ManualEventPersistence,
   PersistManualEventInput,
   ProviderEventAcceptance,
-  CommitProviderEventRoutingResultInput,
   CreateProjectInput,
   InsertProjectConfigurationRevisionInput,
   InsertAttachmentInput,
@@ -93,11 +89,9 @@ import {
 } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 import {
-  MAX_ROUTING_EVIDENCE_PER_RECEIPT,
-  normalizeRoutingDecisions,
-  normalizeRoutingDecision,
-  routingDecisionSummary,
-} from "../triggers/routing-evidence.js";
+  isProviderEventDropReasonCode,
+  type ProviderEventDropReasonCode,
+} from "../triggers/drop-reason.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -112,9 +106,6 @@ export interface MemoryDatabaseOptions {
     membershipId: string;
     role: "owner" | "admin" | "member";
   }[];
-  githubConnections?: readonly GitHubConnectionRecord[];
-  discordConnections?: readonly DiscordConnectionRecord[];
-  slackConnections?: readonly SlackConnectionRecord[];
   now?: () => Date;
 }
 
@@ -147,18 +138,6 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 
 class MemoryDatabase implements Database {
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
-  private readonly providerEventRoutingDecisions = new Map<
-    string,
-    ProviderEventRoutingDecisionRecord[]
-  >();
-  private readonly providerEventRoutingOutcomes = new Map<
-    string,
-    ProviderEventRoutingOutcomeRecord
-  >();
-  private readonly providerEventRoutingProjectResults = new Map<
-    string,
-    Map<string, "routed" | "dropped">
-  >();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
   private readonly machines = new Map<string, MachineRecord>();
@@ -204,15 +183,6 @@ class MemoryDatabase implements Database {
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
-    for (const connection of options.githubConnections ?? []) {
-      this.githubConnections.set(connection.installationId, connection);
-    }
-    for (const connection of options.discordConnections ?? []) {
-      this.discordConnections.set(connection.guildId, connection);
-    }
-    for (const connection of options.slackConnections ?? []) {
-      this.slackConnections.set(connection.teamId, connection);
-    }
   }
 
   private now(): Date {
@@ -989,147 +959,17 @@ class MemoryDatabase implements Database {
     });
   }
 
-  async commitProviderEventRoutingResult(
-    input: CommitProviderEventRoutingResultInput,
-  ): Promise<void> {
-    const { receipt, outcome, expectedProjectCount } = this.requireRoutingCommitState(input);
-
-    const projectResults =
-      this.providerEventRoutingProjectResults.get(input.providerEventReceiptId) ??
-      new Map<string, "routed" | "dropped">();
-    if (!projectResults.has(input.projectId)) {
-      projectResults.set(input.projectId, input.outcome);
-      this.providerEventRoutingProjectResults.set(input.providerEventReceiptId, projectResults);
-      this.recordRoutingEvidence(input);
-      if (input.outcome === "routed" && input.payload !== undefined) {
-        this.providerEventReceipts.set(input.providerEventReceiptId, {
-          ...receipt,
-          payload: freezeEvidence(input.payload),
-        });
-      }
-    }
-
-    const completedProjectCount = projectResults.size;
-    const routedProjectCount = [...projectResults.values()].filter(
-      (status) => status === "routed",
-    ).length;
-    const finalized = completedProjectCount >= expectedProjectCount;
-    let status: ProviderEventRoutingOutcomeRecord["status"] = "pending";
-    if (finalized && routedProjectCount > 0) status = "routed";
-    if (finalized && routedProjectCount === 0) status = "dropped";
-    this.providerEventRoutingOutcomes.set(input.providerEventReceiptId, {
-      ...outcome,
-      expectedProjectCount,
-      status,
-      completedProjectCount,
-      routedProjectCount,
-      finalizedAt: finalized ? (outcome.finalizedAt ?? this.now()) : null,
-    });
-    if (status === "dropped") {
-      const current = this.providerEventReceipts.get(input.providerEventReceiptId)!;
-      this.providerEventReceipts.set(input.providerEventReceiptId, {
-        ...current,
-        payload: null,
-        signatureHash: null,
-      });
-      this.deleteAttachmentsForReceipt(input.providerEventReceiptId);
-    }
-  }
-
-  private requireRoutingCommitState(input: CommitProviderEventRoutingResultInput): {
-    receipt: ProviderEventReceiptRecord;
-    outcome: ProviderEventRoutingOutcomeRecord;
-    expectedProjectCount: number;
-  } {
-    const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
-    const outcome = this.providerEventRoutingOutcomes.get(input.providerEventReceiptId);
-    if (
-      receipt === undefined ||
-      receipt.organizationId !== input.organizationId ||
-      outcome === undefined
-    ) {
-      throw new Error(`provider event routing outcome not found: ${input.providerEventReceiptId}`);
-    }
-    const project = this.projects.get(input.projectId);
-    const revision = this.configurationRevisions.get(input.configurationRevisionId);
-    if (
-      project?.organizationId !== input.organizationId ||
-      revision?.projectId !== input.projectId ||
-      revision.organizationId !== input.organizationId
-    ) {
-      throw new Error("routing decision project unavailable");
-    }
-    const acceptedRoutes = receipt.acceptedRoutes ?? [];
-    const projectAccepted = acceptedRoutes.some(
-      (route) =>
-        route.projectId === input.projectId &&
-        route.configurationRevisionId === input.configurationRevisionId,
-    );
-    if (!projectAccepted) throw new Error("provider event project route unavailable");
-    return { receipt, outcome, expectedProjectCount: acceptedRoutes.length };
-  }
-
-  async findProviderEventRoutingOutcomeByReceiptId(
+  async markProviderEventDropped(
     providerEventReceiptId: string,
-  ): Promise<ProviderEventRoutingOutcomeRecord | undefined> {
-    return this.providerEventRoutingOutcomes.get(providerEventReceiptId);
-  }
-
-  private recordRoutingEvidence(input: CommitProviderEventRoutingResultInput): void {
-    const stored = this.providerEventRoutingDecisions.get(input.providerEventReceiptId) ?? [];
-    const existingKeys = new Set(
-      stored.map(
-        (decision) =>
-          `${decision.projectId}:${decision.configurationRevisionId}:${decision.triggerName}:${decision.code}`,
-      ),
-    );
-    for (const candidate of normalizeRoutingDecisions(input.decisions)) {
-      const decision = normalizeRoutingDecision(candidate);
-      if (decision === undefined) continue;
-      const key = `${input.projectId}:${input.configurationRevisionId}:${decision.triggerName}:${decision.code}`;
-      if (existingKeys.has(key)) continue;
-      if (stored.length >= MAX_ROUTING_EVIDENCE_PER_RECEIPT) {
-        const marker = stored.find((entry) => entry.code === "routing_evidence_truncated");
-        if (marker === undefined && stored.length > 0) {
-          stored[stored.length - 1] = {
-            ...stored[stored.length - 1]!,
-            projectId: null,
-            configurationRevisionId: null,
-            triggerName: null,
-            code: "routing_evidence_truncated",
-            summary: routingDecisionSummary("routing_evidence_truncated"),
-          };
-        }
-        break;
-      }
-      stored.push({
-        id: randomUUID(),
-        organizationId: input.organizationId,
-        providerEventReceiptId: input.providerEventReceiptId,
-        projectId: input.projectId,
-        configurationRevisionId: input.configurationRevisionId,
-        triggerName: decision.triggerName,
-        code: decision.code,
-        summary: routingDecisionSummary(decision.code),
-        createdAt: this.now(),
-      });
-      existingKeys.add(key);
-    }
-    this.providerEventRoutingDecisions.set(input.providerEventReceiptId, stored);
-  }
-
-  private deleteAttachmentsForReceipt(providerEventReceiptId: string): void {
-    for (const attachment of this.attachments.values()) {
-      if (attachment.providerEventReceiptId !== providerEventReceiptId) continue;
-      this.attachments.delete(attachment.id);
-      this.attachmentIdsBySource.delete(
-        attachmentSourceKey(
-          attachment.providerEventReceiptId,
-          attachment.provider,
-          attachment.sourceId,
-        ),
-      );
-    }
+    reason: ProviderEventDropReasonCode,
+  ): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+    this.providerEventReceipts.set(providerEventReceiptId, {
+      ...receipt,
+      droppedReason: receipt.droppedReason ?? reason,
+    });
   }
 
   async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
@@ -1175,7 +1015,26 @@ class MemoryDatabase implements Database {
       input.signatureHash,
     );
     if (existing !== undefined) {
-      return this.replayManualEvent(existing, input);
+      const receipt = this.providerEventReceipts.get(existing);
+      const route = receipt?.acceptedRoutes?.[0];
+      if (receipt === undefined || route === undefined) {
+        return { status: "duplicate" as const, providerEventReceiptId: existing };
+      }
+      return {
+        status: "accepted" as const,
+        event: {
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        },
+      };
     }
     const project = this.projects.get(input.projectId);
     if (
@@ -1198,17 +1057,6 @@ class MemoryDatabase implements Database {
       resourceId: input.resourceId ?? null,
     };
     this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes: [route] });
-    this.providerEventRoutingOutcomes.set(receipt.id, {
-      id: randomUUID(),
-      organizationId: input.organizationId,
-      providerEventReceiptId: receipt.id,
-      status: "pending",
-      expectedProjectCount: 1,
-      completedProjectCount: 0,
-      routedProjectCount: 0,
-      createdAt: this.now(),
-      finalizedAt: null,
-    });
     return {
       status: "accepted" as const,
       event: {
@@ -1222,35 +1070,6 @@ class MemoryDatabase implements Database {
         receivedAt: input.receivedAt,
         connectionId: input.connectionId ?? null,
         resourceId: input.resourceId ?? null,
-      },
-    };
-  }
-
-  private replayManualEvent(
-    providerEventReceiptId: string,
-    input: PersistManualEventInput,
-  ): ManualEventPersistence {
-    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
-    const route = receipt?.acceptedRoutes?.[0];
-    const outcome = this.providerEventRoutingOutcomes.get(providerEventReceiptId);
-    if (receipt === undefined || route === undefined || outcome?.status === "dropped") {
-      return { status: "duplicate", providerEventReceiptId };
-    }
-    const payload = receipt.payload ?? (outcome?.status === "pending" ? input.payload : undefined);
-    if (payload === undefined) return { status: "duplicate", providerEventReceiptId };
-    return {
-      status: "accepted",
-      event: {
-        providerEventReceiptId: receipt.id,
-        organizationId: receipt.organizationId,
-        projectId: route.projectId,
-        configurationRevisionId: route.configurationRevisionId,
-        deliveryId: receipt.deliveryId,
-        source: receipt.source,
-        payload,
-        receivedAt: receipt.receivedAt,
-        connectionId: route.connectionId,
-        resourceId: route.resourceId,
       },
     };
   }
@@ -1321,9 +1140,6 @@ class MemoryDatabase implements Database {
     const receipt = this.providerEventReceipts.get(providerEventReceiptId);
     if (receipt?.droppedReason !== "github_lifecycle") return Promise.resolve();
     this.providerEventReceipts.delete(providerEventReceiptId);
-    this.providerEventRoutingOutcomes.delete(providerEventReceiptId);
-    this.providerEventRoutingProjectResults.delete(providerEventReceiptId);
-    this.providerEventRoutingDecisions.delete(providerEventReceiptId);
     this.providerEventReceiptIdsByDelivery.delete(
       triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
     );
@@ -2715,23 +2531,23 @@ class MemoryDatabase implements Database {
   }
 
   async listUnroutedProviderEventsForOrganization(organizationId: string) {
+    const routedReceiptIds = new Set(
+      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
+    );
     return [...this.providerEventReceipts.values()]
       .filter(
         (receipt) =>
           receipt.organizationId === organizationId &&
-          this.providerEventRoutingOutcomes.get(receipt.id)?.status === "dropped",
+          receipt.droppedReason !== null &&
+          isProviderEventDropReasonCode(receipt.droppedReason) &&
+          !routedReceiptIds.has(receipt.id),
       )
       .sort(
         (left, right) =>
           right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
       )
       .slice(0, 50)
-      .map((receipt) =>
-        toProviderEventReceiptRecordSummary(
-          receipt,
-          this.providerEventRoutingDecisions.get(receipt.id) ?? [],
-        ),
-      );
+      .map(toProviderEventReceiptRecordSummary);
   }
 
   async isOrganizationMember(): Promise<boolean> {
@@ -2828,15 +2644,7 @@ class MemoryDatabase implements Database {
       if (receipt.droppedReason !== null) {
         return { status: "dropped", receiptId, reason: receipt.droppedReason };
       }
-      const outcome = this.providerEventRoutingOutcomes.get(receiptId);
-      if (outcome?.status === "dropped") {
-        return { status: "duplicate", receiptId };
-      }
-      const payload =
-        receipt.payload ?? (outcome?.status === "pending" ? input.payload : undefined);
-      if (receipt.acceptedRoutes === null || payload === undefined) {
-        return { status: "duplicate", receiptId };
-      }
+      if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId };
       return {
         status: "accepted",
         receiptId,
@@ -2847,7 +2655,7 @@ class MemoryDatabase implements Database {
           configurationRevisionId: route.configurationRevisionId,
           deliveryId: receipt.deliveryId,
           source: receipt.source,
-          payload,
+          payload: receipt.payload,
           receivedAt: receipt.receivedAt,
           connectionId: route.connectionId,
           resourceId: route.resourceId,
@@ -2861,31 +2669,6 @@ class MemoryDatabase implements Database {
         reason: reason ?? "provider_unbound",
       };
     }
-    if (reason !== undefined) {
-      const receipt = this.insertProviderEventReceipt({
-        organizationId,
-        provider: providerForInput(input),
-        connectionId,
-        resourceId,
-        input: { ...input, dropReason: reason },
-      });
-      this.providerEventRoutingOutcomes.set(receipt.id, {
-        id: randomUUID(),
-        organizationId,
-        providerEventReceiptId: receipt.id,
-        status: "dropped",
-        expectedProjectCount: 0,
-        completedProjectCount: 0,
-        routedProjectCount: 0,
-        createdAt: this.now(),
-        finalizedAt: this.now(),
-      });
-      return {
-        status: "dropped",
-        receiptId: receipt.id,
-        reason,
-      };
-    }
     const receipt = this.insertProviderEventReceipt({
       organizationId,
       provider: providerForInput(input),
@@ -2893,6 +2676,14 @@ class MemoryDatabase implements Database {
       resourceId,
       input,
     });
+    if (reason !== undefined) {
+      this.providerEventReceipts.set(receipt.id, { ...receipt, droppedReason: reason });
+      return {
+        status: "dropped",
+        receiptId: receipt.id,
+        reason,
+      };
+    }
     const provider = providerForInput(input);
     const routes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
       ([projectId, candidates]) => {
@@ -2912,35 +2703,9 @@ class MemoryDatabase implements Database {
     if (routes.length === 0) {
       this.providerEventReceipts.set(receipt.id, {
         ...receipt,
-        signatureHash: null,
-        payload: null,
-        droppedReason: "provider_unrouted",
+        droppedReason: "no_project_route",
       });
-      this.providerEventRoutingDecisions.set(receipt.id, [
-        {
-          id: randomUUID(),
-          organizationId,
-          providerEventReceiptId: receipt.id,
-          projectId: null,
-          configurationRevisionId: null,
-          triggerName: null,
-          code: "no_project_route",
-          summary: routingDecisionSummary("no_project_route"),
-          createdAt: this.now(),
-        },
-      ]);
-      this.providerEventRoutingOutcomes.set(receipt.id, {
-        id: randomUUID(),
-        organizationId,
-        providerEventReceiptId: receipt.id,
-        status: "dropped",
-        expectedProjectCount: 0,
-        completedProjectCount: 0,
-        routedProjectCount: 0,
-        createdAt: this.now(),
-        finalizedAt: this.now(),
-      });
-      return { status: "dropped", receiptId: receipt.id, reason: "provider_unrouted" };
+      return { status: "dropped", receiptId: receipt.id, reason: "no_project_route" };
     }
     const projectRoutes = new Map<string, (typeof routes)[number]>();
     for (const route of routes) {
@@ -2966,17 +2731,6 @@ class MemoryDatabase implements Database {
       resourceId: event.resourceId,
     }));
     this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes });
-    this.providerEventRoutingOutcomes.set(receipt.id, {
-      id: randomUUID(),
-      organizationId,
-      providerEventReceiptId: receipt.id,
-      status: "pending",
-      expectedProjectCount: acceptedRoutes.length,
-      completedProjectCount: 0,
-      routedProjectCount: 0,
-      createdAt: this.now(),
-      finalizedAt: null,
-    });
     return { status: "accepted", events, receiptId: receipt.id };
   }
 
@@ -3016,11 +2770,10 @@ class MemoryDatabase implements Database {
       connectionId: input.connectionId,
       resourceId: input.resourceId,
       deliveryId: input.input.deliveryId,
-      signatureHash:
-        input.input.dropReason === undefined ? (input.input.signatureHash ?? null) : null,
+      signatureHash: input.input.signatureHash ?? null,
       source: input.input.source,
       repo: input.input.repo ?? null,
-      payload: null,
+      payload: input.input.payload,
       receivedAt: input.input.receivedAt,
       droppedReason: input.input.dropReason ?? null,
       acceptedRoutes: null,
@@ -3079,7 +2832,7 @@ function githubDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "github_unbound";
-  if (binding.status === "suspended") return "github_suspended";
+  if (binding.status === "suspended") return "configuration_unavailable";
   return undefined;
 }
 

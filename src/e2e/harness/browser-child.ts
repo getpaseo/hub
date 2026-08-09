@@ -171,7 +171,7 @@ async function main(): Promise<void> {
                   appId: "browser-slack-app",
                   clientId: "browser-slack-client",
                   clientSecret: "browser-slack-client-secret",
-                  signingSecret: requiredEnvironment("SLACK_WEBHOOK_SECRET"),
+                  signingSecret: requiredEnvironment("SLACK_SIGNING_SECRET"),
                 }
               : null,
             ...(slackConfigured ? { botClient: slackBot } : {}),

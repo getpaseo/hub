@@ -91,27 +91,20 @@ export function createManualRunProvider(
         trigger.inputs,
       );
       if (invocation.status === "rejected") {
-        return {
-          matches: [
-            {
-              triggerName: trigger.name,
-              triggerContext,
-              outputContext,
-              configurationRevisionId: stored.revision.id,
-              hubConfig: stored.configuration,
-              invocation,
-            },
-          ],
-          routingDecisions: [{ triggerName: trigger.name, code: "invocation_rejected" }],
-        };
+        return [
+          {
+            triggerName: trigger.name,
+            triggerContext,
+            outputContext,
+            configurationRevisionId: stored.revision.id,
+            hubConfig: stored.configuration,
+            invocation,
+          },
+        ];
       }
       if (invocation.status === "accepted") {
-        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs)) {
-          return {
-            matches: [],
-            routingDecisions: [{ triggerName: trigger.name, code: "input_filter_mismatch" }],
-          };
-        }
+        if (!matchesInputFilters(invocation.inputs, trigger.filters?.inputs))
+          return "trigger_filters_rejected";
       }
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
         triggerName: trigger.name,
@@ -121,7 +114,7 @@ export function createManualRunProvider(
         hubConfig: stored.configuration,
         invocation,
       };
-      return { matches: [match], routingDecisions: [] };
+      return [match];
     },
   };
 }

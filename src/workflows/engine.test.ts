@@ -17,6 +17,7 @@ import type {
   ProviderEventReceiptRecord,
   TriggerRunRecord,
 } from "../db/types.js";
+import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
@@ -324,8 +325,7 @@ describe("durable multi-step workflow engine", () => {
           name: "manual",
           eventNames: ["manual.run"] as const,
           async match(external) {
-            if (external.projectId === fixture.projectId)
-              return { matches: [], routingDecisions: [] };
+            if (external.projectId === fixture.projectId) return "no_trigger_for_source";
             throw new Error("enqueue unavailable");
           },
         },
@@ -355,7 +355,7 @@ describe("durable multi-step workflow engine", () => {
     const replayReceipt = await fixture.database.findProviderEventReceiptById(
       fixture.providerEventReceiptId,
     );
-    assert.equal(replayReceipt?.droppedReason, null);
+    assert.equal(replayReceipt?.droppedReason, "no_trigger_for_source");
   });
 
   it("launches the exact committed partial content with inline-equivalent interpolation", async () => {
@@ -1372,7 +1372,7 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
   return {
     name: "manual",
     eventNames: ["manual.run"] as const,
-    async match(external) {
+    async match(external): Promise<readonly AcceptedTriggerProviderMatch[]> {
       const trigger = configuration.triggers[0]!;
       const input =
         isRecord(external.payload) && typeof external.payload["input"] === "string"
@@ -1381,19 +1381,16 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
       const invocation = parseInvocation(input, trigger.inputs);
       if (invocation.status !== "accepted")
         throw new Error("test invocation unexpectedly rejected");
-      return {
-        matches: [
-          {
-            triggerName: trigger.name,
-            triggerContext: { provider: "manual" },
-            outputContext: { provider: "manual" },
-            configurationRevisionId: revisionId,
-            hubConfig: configuration,
-            invocation,
-          },
-        ],
-        routingDecisions: [],
-      };
+      return [
+        {
+          triggerName: trigger.name,
+          triggerContext: { provider: "manual" },
+          outputContext: { provider: "manual" },
+          configurationRevisionId: revisionId,
+          hubConfig: configuration,
+          invocation,
+        },
+      ];
     },
   } satisfies import("../triggers/index.js").TriggerProvider;
 }

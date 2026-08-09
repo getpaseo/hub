@@ -103,7 +103,7 @@ describe("GitHub webhook", () => {
       await github.deliver("unsupported", { action: "ping", installation: { id: 42 } }),
       200,
     );
-    assert.deepEqual(dropped, ["github_unsupported"]);
+    assert.deepEqual(dropped, ["no_trigger_for_source"]);
   });
 
   it("records a durable outcome when a bound delivery has no handler", async () => {
@@ -121,7 +121,7 @@ describe("GitHub webhook", () => {
     });
 
     assert.equal(await new GitHubWebhook(endpoint).deliver("no-handler"), 200);
-    assert.deepEqual(dropped, ["github_no_handler"]);
+    assert.deepEqual(dropped, ["configuration_unavailable"]);
   });
 
   it("syncs a configuration-source push even when runtime trigger routing drops it", async () => {
@@ -135,7 +135,7 @@ describe("GitHub webhook", () => {
       accept: async () => ({
         status: "dropped" as const,
         receiptId: "receipt-config-only",
-        reason: "github_unrouted",
+        reason: "no_project_route",
       }),
       synchronizePush: async (input) => {
         synchronized.push({

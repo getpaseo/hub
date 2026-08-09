@@ -28,11 +28,7 @@ describe("application runtime provider composition", () => {
       triggerProviders: [
         () => {
           events.push("provider");
-          return {
-            name: "fake",
-            eventNames: ["fake.event"],
-            match: () => Promise.resolve({ matches: [], routingDecisions: [] }),
-          };
+          return { name: "fake", eventNames: ["fake.event"], match: () => Promise.resolve([]) };
         },
       ],
       sources: [

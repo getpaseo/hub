@@ -47,7 +47,6 @@ export async function dispatchManualTrigger(
 ): Promise<TriggerDispatchOutcome | void> {
   const state = manualTriggerStates.get(source);
   if (state === undefined) throw new Error("manual_runtime_unavailable");
-  const handler = state.handler;
   const persisted = await state.database.persistManualEvent({
     ...trigger,
     connectionId: trigger.connectionId ?? null,
@@ -56,18 +55,14 @@ export async function dispatchManualTrigger(
   if (persisted.status === "duplicate") {
     return { providerEventReceiptId: persisted.providerEventReceiptId };
   }
-  if (handler === undefined) {
-    await state.database.commitProviderEventRoutingResult({
-      organizationId: persisted.event.organizationId,
-      providerEventReceiptId: persisted.event.providerEventReceiptId,
-      projectId: persisted.event.projectId,
-      configurationRevisionId: persisted.event.configurationRevisionId,
-      outcome: "dropped",
-      decisions: [],
-    });
+  if (state.handler === undefined) {
+    await state.database.markProviderEventDropped(
+      persisted.event.providerEventReceiptId,
+      "configuration_unavailable",
+    );
     return { providerEventReceiptId: persisted.event.providerEventReceiptId };
   }
-  return handler(persisted.event);
+  return state.handler(persisted.event);
 }
 
 async function handleManualRequest(request: Request, source: TriggerSource): Promise<Response> {

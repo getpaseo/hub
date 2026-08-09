@@ -48,9 +48,9 @@ describe("manual invocation provider", () => {
           input: "repo=hub agent=opus investigate",
         },
       })
-    ).matches[0];
+    )[0];
 
-    assert.ok(match);
+    assert.ok(match && typeof match !== "string");
     assert.deepEqual(match.invocation, {
       status: "accepted",
       rawMessage: "repo=hub agent=opus investigate",
@@ -84,23 +84,22 @@ describe("manual invocation provider", () => {
       ],
     });
     const provider = createManualRunProvider(() => store);
-    const matches = (
-      await provider.match({
-        providerEventReceiptId: "11111111-1111-4111-8111-111111111123",
-        organizationId: "org-1",
-        projectId: project.id,
-        configurationRevisionId: revision.id,
-        source: "manual.run",
-        deliveryId: "manual-invalid-environment",
-        receivedAt: new Date(),
-        payload: {
-          trigger: "manual-request",
-          actor: "operator",
-          input: "repo=unknown investigate",
-        },
-      })
-    ).matches;
+    const matches = await provider.match({
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111123",
+      organizationId: "org-1",
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      source: "manual.run",
+      deliveryId: "manual-invalid-environment",
+      receivedAt: new Date(),
+      payload: {
+        trigger: "manual-request",
+        actor: "operator",
+        input: "repo=unknown investigate",
+      },
+    });
 
+    if (typeof matches === "string") throw new Error("expected rejected match");
     assert.equal(matches.length, 1);
     assert.equal(matches[0]!.invocation.status, "rejected");
   });

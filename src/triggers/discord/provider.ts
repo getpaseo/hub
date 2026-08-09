@@ -9,7 +9,7 @@ import { logger } from "../../logger.js";
 import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
 import {
-  evaluateDiscordTriggers,
+  matchDiscordTriggers,
   readDiscordInvocationParserMessage,
   readDiscordPromptBody,
 } from "./match.js";
@@ -68,43 +68,25 @@ export function createDiscordTriggerProvider(options: {
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
-      if (stored === undefined) {
-        return {
-          matches: [],
-          routingDecisions: [{ triggerName: null, code: "configuration_unavailable" }],
-        };
-      }
+      if (stored === undefined) return "configuration_unavailable";
+      if (
+        !stored.configuration.triggers.some((candidate) => candidate.on === externalTrigger.source)
+      )
+        return "no_trigger_for_source";
       const botClientId = options.bot.getSelfUserId();
       const matches: TriggerProviderMatch<DiscordTriggerContext, DiscordOutputContext>[] = [];
-      const evaluation = evaluateDiscordTriggers(
+
+      for (const match of matchDiscordTriggers(
         stored.configuration,
         event,
         botClientId,
         externalTrigger.connectionId,
-      );
-      const routingDecisions = [...evaluation.routingDecisions];
-
-      for (const match of evaluation.matches) {
+      )) {
         const compiledTrigger = stored.configuration.triggers.find(
           (candidate) => candidate.name === match.trigger.name,
         );
         if (compiledTrigger === undefined)
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
-        const invocation = parseInvocation(
-          event.content,
-          compiledTrigger.inputs,
-          undefined,
-          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
-        );
-        if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) {
-            routingDecisions.push({
-              triggerName: match.trigger.name,
-              code: "input_filter_mismatch",
-            });
-            continue;
-          }
-        }
         const outputContext: DiscordOutputContext = {
           provider: "discord",
           guildId: event.guildId,
@@ -124,11 +106,16 @@ export function createDiscordTriggerProvider(options: {
             options.attachments,
           ),
         };
+        const invocation = parseInvocation(
+          event.content,
+          compiledTrigger.inputs,
+          undefined,
+          readDiscordInvocationParserMessage(event, botClientId, compiledTrigger.filters),
+        );
+        if (invocation.status === "accepted") {
+          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+        }
         if (invocation.status === "rejected") {
-          routingDecisions.push({
-            triggerName: match.trigger.name,
-            code: "invocation_rejected",
-          });
           matches.push({
             triggerName: match.trigger.name,
             triggerContext,
@@ -149,7 +136,7 @@ export function createDiscordTriggerProvider(options: {
         });
       }
 
-      return { matches, routingDecisions };
+      return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
     async materializeLaunch(launch) {
       const event = await materializeDiscordMergeData(

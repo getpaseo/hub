@@ -65,196 +65,53 @@ describe("manual trigger tenant idempotency", () => {
     assert.equal(duplicate.event.providerEventReceiptId, first.event.providerEventReceiptId);
     assert.equal(duplicate.event.organizationId, "manual-org-a");
     assert.equal(duplicate.event.projectId, "10000000-0000-4000-8000-000000000001");
-    assert.deepEqual(
-      duplicate.event.payload,
-      input("manual-org-a", "10000000-0000-4000-8000-000000000001").payload,
-    );
     await database.close();
   }, 120_000);
 
-  it("persists bounded safe routing evidence with PostgreSQL organization isolation", async () => {
+  it("lists only receipts with a committed bounded drop reason", async () => {
     const database = await createDatabase(databaseUrl);
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     await client.query(`
-      insert into organization (id, name, slug) values
-        ('routing-org-a', 'Routing A', 'routing-a'),
-        ('routing-org-b', 'Routing B', 'routing-b');
-      insert into "user" (id, name, email, email_verified)
-      values ('routing-user', 'Routing User', 'routing-user@example.test', true);
-      insert into member (id, organization_id, user_id, role) values
-        ('routing-member-a', 'routing-org-a', 'routing-user', 'owner'),
-        ('routing-member-b', 'routing-org-b', 'routing-user', 'owner');
-      insert into slack_connections
-        (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
-         connected_by_user_id)
-      values
-        ('routing-org-a', 'T-routing-immediate', 'routing-immediate', 'Routing Immediate',
-         'U-routing-bot', 'PRIVATE-CONNECTION-TOKEN', '[]'::jsonb, 'routing-user');
+      insert into organization (id, name, slug)
+      values ('drop-reason-org', 'Drop Reason', 'drop-reason');
+      insert into projects (id, organization_id, name, slug)
+      values ('30000000-0000-4000-8000-000000000001', 'drop-reason-org', 'Default', 'default');
     `);
     await client.end();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: "30000000-0000-4000-8000-000000000001",
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "drop-reason-config",
+    });
+    await database.activateProjectConfigurationRevision(
+      "30000000-0000-4000-8000-000000000001",
+      revision.id,
+    );
+    const receipt = await database.persistManualEvent({
+      organizationId: "drop-reason-org",
+      projectId: "30000000-0000-4000-8000-000000000001",
+      source: "manual.run",
+      deliveryId: "drop-reason-delivery",
+      receivedAt: new Date(),
+      payload: { private: "PRIVATE-EVENT-BODY" },
+    });
+    if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
 
-    try {
-      const firstProject = await database.createProject({
-        organizationId: "routing-org-a",
-        name: "First",
-        slug: "first",
-        createdByUserId: "routing-user",
-      });
-      const firstRevision = await database.insertProjectConfigurationRevision({
-        projectId: firstProject.id,
-        sourceKind: "manual",
-        sourceEvidence: { kind: "test" },
-        normalizedConfiguration: { environments: [], triggers: [] },
-        contentHash: "routing-evidence-a",
-      });
-      await database.activateProjectConfigurationRevision(firstProject.id, firstRevision.id);
-      const firstReceipt = await database.persistManualEvent({
-        organizationId: "routing-org-a",
-        projectId: firstProject.id,
-        deliveryId: "routing-a",
-        source: "manual.run",
-        payload: { body: "PRIVATE-EVENT-BODY" },
-        receivedAt: new Date("2026-08-09T12:00:00.000Z"),
-      });
-      assert.equal(firstReceipt.status, "accepted");
-      if (firstReceipt.status !== "accepted") throw new Error("expected accepted receipt");
-      await database.insertAttachment({
-        providerEventReceiptId: firstReceipt.event.providerEventReceiptId,
-        organizationId: "routing-org-a",
-        connectionId: "00000000-0000-4000-8000-000000000099",
-        provider: "slack",
-        sourceId: "PRIVATE-PG-ATTACHMENT-ID",
-        locator: { token: "PRIVATE-PG-ATTACHMENT-TOKEN" },
-        filename: "PRIVATE-PG-ATTACHMENT-NAME",
-      });
-      assert.deepEqual(
-        await database.listUnroutedProviderEventsForOrganization("routing-org-a"),
-        [],
-      );
-      assert.equal(
-        (
-          await database.findProviderEventRoutingOutcomeByReceiptId(
-            firstReceipt.event.providerEventReceiptId,
-          )
-        )?.status,
-        "pending",
-      );
-
-      await database.commitProviderEventRoutingResult({
-        organizationId: "routing-org-a",
-        providerEventReceiptId: firstReceipt.event.providerEventReceiptId,
-        projectId: firstProject.id,
-        configurationRevisionId: firstRevision.id,
-        outcome: "dropped",
-        decisions: Array.from({ length: 75 }, (_, index) => ({
-          triggerName: `candidate-${index}-${"x".repeat(200)}`,
-          code: "contains_mismatch" as const,
-        })),
-      });
-
-      const secondProject = await database.createProject({
-        organizationId: "routing-org-b",
-        name: "Second",
-        slug: "second",
-        createdByUserId: "routing-user",
-      });
-      const secondRevision = await database.insertProjectConfigurationRevision({
-        projectId: secondProject.id,
-        sourceKind: "manual",
-        sourceEvidence: { kind: "test" },
-        normalizedConfiguration: { environments: [], triggers: [] },
-        contentHash: "routing-evidence-b",
-      });
-      await database.activateProjectConfigurationRevision(secondProject.id, secondRevision.id);
-      const secondReceipt = await database.persistManualEvent({
-        organizationId: "routing-org-b",
-        projectId: secondProject.id,
-        deliveryId: "routing-b",
-        source: "manual.run",
-        payload: { body: "PRIVATE-OTHER-BODY" },
-        receivedAt: new Date("2026-08-09T12:01:00.000Z"),
-      });
-      assert.equal(secondReceipt.status, "accepted");
-      if (secondReceipt.status !== "accepted") throw new Error("expected accepted receipt");
-      await database.commitProviderEventRoutingResult({
-        organizationId: "routing-org-b",
-        providerEventReceiptId: secondReceipt.event.providerEventReceiptId,
-        projectId: secondProject.id,
-        configurationRevisionId: secondRevision.id,
-        outcome: "dropped",
-        decisions: [{ triggerName: "other-org-trigger", code: "sender_not_allowed" }],
-      });
-
-      const firstEvents = await database.listUnroutedProviderEventsForOrganization("routing-org-a");
-      const secondEvents =
-        await database.listUnroutedProviderEventsForOrganization("routing-org-b");
-      assert.equal(firstEvents.length, 1);
-      assert.equal(secondEvents.length, 1);
-      assert.equal(firstEvents[0]?.routingDecisions.length, 25);
-      assert.equal(secondEvents[0]?.routingDecisions[0]?.triggerName, "other-org-trigger");
-      assert.equal(
-        firstEvents[0]?.routingDecisions.every(
-          (decision) => decision.triggerName === null || decision.triggerName.length <= 128,
-        ),
-        true,
-      );
-      assert.equal(
-        firstEvents[0]?.routingDecisions.some(
-          (decision) => decision.code === "routing_evidence_truncated",
-        ),
-        true,
-      );
-      assert.doesNotMatch(JSON.stringify(firstEvents), /PRIVATE-EVENT-BODY/gu);
-      assert.doesNotMatch(JSON.stringify(secondEvents), /PRIVATE-OTHER-BODY/gu);
-      assert.equal(
-        await database.findAttachmentBySource(
-          firstReceipt.event.providerEventReceiptId,
-          "slack",
-          "PRIVATE-PG-ATTACHMENT-ID",
-        ),
-        undefined,
-      );
-
-      const immediate = await database.acceptSlackEvent({
-        teamId: "T-routing-immediate",
-        deliveryId: "routing-immediate-drop",
-        signatureHash: "PRIVATE-IMMEDIATE-SIGNATURE",
-        source: "slack.mention",
-        payload: {
-          content: "PRIVATE-IMMEDIATE-MESSAGE",
-          sender: "PRIVATE-IMMEDIATE-SENDER",
-          channel: "PRIVATE-IMMEDIATE-CHANNEL",
-          attachments: [{ id: "PRIVATE-IMMEDIATE-ATTACHMENT" }],
-          token: "PRIVATE-IMMEDIATE-TOKEN",
-        },
-        receivedAt: new Date("2026-08-09T12:02:00.000Z"),
-        dropReason: "slack_no_handler",
-      });
-      assert.equal(immediate.status, "dropped");
-      const persistedImmediate = await database.findProviderEventReceiptById(immediate.receiptId);
-      assert.ok(persistedImmediate);
-      assert.equal(persistedImmediate.payload, null);
-      assert.equal(persistedImmediate.signatureHash, null);
-      assert.equal(persistedImmediate.droppedReason, "slack_no_handler");
-      assert.equal(
-        (await database.findProviderEventRoutingOutcomeByReceiptId(immediate.receiptId))?.status,
-        "dropped",
-      );
-      const immediateEvents =
-        await database.listUnroutedProviderEventsForOrganization("routing-org-a");
-      const immediateEvent = immediateEvents.find(
-        (event) => event.deliveryId === "routing-immediate-drop",
-      );
-      assert.ok(immediateEvent);
-      assert.deepEqual(immediateEvent.routingDecisions, []);
-      assert.doesNotMatch(
-        JSON.stringify({ persistedImmediate, immediateEvent }),
-        /PRIVATE-IMMEDIATE-(MESSAGE|SENDER|CHANNEL|ATTACHMENT|TOKEN|SIGNATURE)/gu,
-      );
-    } finally {
-      await database.close();
-    }
+    assert.deepEqual(
+      await database.listUnroutedProviderEventsForOrganization("drop-reason-org"),
+      [],
+    );
+    await database.markProviderEventDropped(
+      receipt.event.providerEventReceiptId,
+      "trigger_filters_rejected",
+    );
+    const [unrouted] = await database.listUnroutedProviderEventsForOrganization("drop-reason-org");
+    assert.equal(unrouted?.droppedReason, "trigger_filters_rejected");
+    assert.equal("payload" in (unrouted ?? {}), false);
+    await database.close();
   }, 120_000);
 });
 

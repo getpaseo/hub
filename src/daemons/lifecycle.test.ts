@@ -24,7 +24,7 @@ describe("durable Hub action acknowledgement state", () => {
     const provider: TriggerProvider = {
       name: "test",
       eventNames: ["manual.test"],
-      match: () => Promise.resolve({ matches: [], routingDecisions: [] }),
+      match: () => Promise.resolve([]),
       onAgentExecutionFailed: async () => {
         failureHooks += 1;
       },

@@ -4,6 +4,7 @@ import type { ProviderEventAcceptance } from "../../db/types.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
+import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import {
   normalizeSlackEvent,
   SlackEventCallbackSchema,
@@ -25,7 +26,7 @@ export interface SlackWebhookSourceOptions {
     source: string;
     payload: unknown;
     receivedAt: Date;
-    dropReason?: string;
+    dropReason?: ProviderEventDropReasonCode;
   }): Promise<ProviderEventAcceptance>;
 }
 
@@ -115,7 +116,7 @@ async function handleVerifiedSlackRequest(
       source: "slack.mention",
       payload: normalizedEvent,
       receivedAt: new Date(normalizedEvent.eventTime * 1_000),
-      ...(handlers.size === 0 ? { dropReason: "slack_no_handler" } : {}),
+      ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
     });
     const events = acceptance.status === "accepted" ? acceptance.events : [];
     await Promise.all(

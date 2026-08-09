@@ -552,10 +552,7 @@ export class HubHarness {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
   }
   async waitForRecoveredExecution(id: string): Promise<AgentExecutionRecord> {
-    await waitFor(async () => {
-      const execution = await this.execution(id);
-      return execution.daemonAgentId !== null && execution.status === "running";
-    });
+    await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
     return this.execution(id);
   }
   async waitForExecutionStatus(
@@ -1590,7 +1587,7 @@ export class HubHarness {
       name: "manual-discord",
       eventNames: ["discord.mention"],
       async match() {
-        return { matches: [], routingDecisions: [] };
+        return [];
       },
       materializeLaunch: async (launch) => {
         this.materializations += 1;

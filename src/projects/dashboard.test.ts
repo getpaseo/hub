@@ -44,15 +44,6 @@ describe("project dashboard activity read models", () => {
       receivedAt: new Date("2026-08-06T12:00:00.000Z"),
     });
     if (receipt.status !== "accepted") throw new Error("dashboard receipt was not accepted");
-    await database.commitProviderEventRoutingResult({
-      organizationId: "org-1",
-      providerEventReceiptId: receipt.event.providerEventReceiptId,
-      projectId: project.id,
-      configurationRevisionId: revision.id,
-      outcome: "routed",
-      decisions: [],
-      payload: rawPayload,
-    });
     const run = await database.createAcceptedTriggerRun({
       organizationId: "org-1",
       projectId: project.id,
@@ -77,14 +68,10 @@ describe("project dashboard activity read models", () => {
       receivedAt: new Date("2026-08-06T12:01:00.000Z"),
     });
     if (unroutedReceipt.status !== "accepted") throw new Error("unrouted receipt was not accepted");
-    await database.commitProviderEventRoutingResult({
-      organizationId: "org-1",
-      providerEventReceiptId: unroutedReceipt.event.providerEventReceiptId,
-      projectId: project.id,
-      configurationRevisionId: revision.id,
-      outcome: "dropped",
-      decisions: [{ triggerName: null, code: "configuration_unavailable" }],
-    });
+    await database.markProviderEventDropped(
+      unroutedReceipt.event.providerEventReceiptId,
+      "trigger_filters_rejected",
+    );
     const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const list = await dashboard.projectSnapshot(request, {
@@ -110,8 +97,12 @@ describe("project dashboard activity read models", () => {
     assert.equal(unroutedEvent.deliveryId, "dashboard-unrouted-large-payload");
     assert.equal(unroutedEvent.status, "dropped");
     assert.equal(unroutedEvent.providerEventReceiptId, unroutedEvent.id);
+    assert.equal(
+      unroutedEvent.failureReason,
+      "The event did not pass the configured trigger filters.",
+    );
+    assert.equal(JSON.stringify(unroutedEvent).includes("unrouted-unrouted"), false);
     assert.equal("rawPayload" in unroutedEvent, false);
-    assert.equal("reason" in unroutedEvent, true);
   });
 });
 

@@ -9,18 +9,12 @@ import {
   PullRequestReviewPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import type { TriggerRoutingDecision } from "../routing-evidence.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedTriggerEvent {
   event: NormalizedGitHubEvent;
   trigger: MatchedTriggerDefinition;
-}
-
-export interface GitHubTriggerEvaluation {
-  matches: MatchedTriggerEvent[];
-  routingDecisions: TriggerRoutingDecision[];
 }
 
 export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): string {
@@ -53,87 +47,63 @@ export function matchTriggers(
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
 ): MatchedTriggerEvent[] {
-  return evaluateGitHubTriggers(config, event, connectionId).matches;
-}
-
-export function evaluateGitHubTriggers(
-  config: { triggers: readonly MatchedTriggerDefinition[] },
-  event: NormalizedGitHubEvent,
-  connectionId?: string | null,
-): GitHubTriggerEvaluation {
   const on = `github.${event.type}`;
   const matches: MatchedTriggerEvent[] = [];
-  const routingDecisions: TriggerRoutingDecision[] = [];
-  const sourceTriggers = config.triggers.filter((trigger) => trigger.on === on);
-  if (sourceTriggers.length === 0) {
-    return {
-      matches,
-      routingDecisions: [{ triggerName: null, code: "no_trigger_for_source" }],
-    };
-  }
 
-  for (const trigger of sourceTriggers) {
-    const mismatch = githubFilterMismatch(event, trigger.filters, connectionId);
-    if (mismatch !== undefined) {
-      routingDecisions.push({ triggerName: trigger.name, code: mismatch });
+  for (const trigger of config.triggers) {
+    if (trigger.on !== on || !matchesFilter(event, trigger.filters, connectionId)) {
       continue;
     }
+
     matches.push({ event, trigger });
   }
 
-  return { matches, routingDecisions };
+  return matches;
 }
 
-function githubFilterMismatch(
+function matchesFilter(
   event: NormalizedGitHubEvent,
   filter: TriggerFilter | undefined,
   connectionId?: string | null,
-):
-  | "connection_mismatch"
-  | "repository_mismatch"
-  | "resource_mismatch"
-  | "pattern_mismatch"
-  | "contains_mismatch"
-  | "sender_not_allowed"
-  | undefined {
+): boolean {
   if (filter === undefined) {
-    return "sender_not_allowed";
+    return false;
   }
 
   if (filter.from_users === undefined || filter.from_users.length === 0) {
-    return "sender_not_allowed";
+    return false;
   }
 
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) {
-    return "connection_mismatch";
+    return false;
   }
 
   const repo = filter["repo"];
   if (typeof repo === "string" && repo !== event.repo) {
-    return "repository_mismatch";
+    return false;
   }
 
   const resourceId = filter["resourceId"];
   if (typeof resourceId === "string" && resourceId !== String(event.repositoryId)) {
-    return "resource_mismatch";
+    return false;
   }
 
   const pattern = readStringFilter(filter, "pattern");
   if (pattern !== undefined && !getFilterText(event).startsWith(pattern)) {
-    return "pattern_mismatch";
+    return false;
   }
 
   const contains = readStringFilter(filter, "contains");
   if (contains !== undefined && !getFilterText(event).includes(contains)) {
-    return "contains_mismatch";
+    return false;
   }
 
   const actor = getEventActor(event);
   if (!filter.from_users.includes(actor)) {
-    return "sender_not_allowed";
+    return false;
   }
 
-  return undefined;
+  return true;
 }
 
 function readStringFilter(filter: TriggerFilter, key: "pattern" | "contains"): string | undefined {
