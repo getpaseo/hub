@@ -399,7 +399,7 @@ describe("daemon enrollment and execution", () => {
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
-        branch: "branch-<secret>",
+        branch: "branch-resolved-secret",
       });
       assert.equal(hub.launchMaterializationCount(), 1);
     } finally {

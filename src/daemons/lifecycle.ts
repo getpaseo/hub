@@ -20,7 +20,6 @@ import type {
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
 import type { TriggerProvider } from "../triggers/index.js";
-import type { ProviderIntegrationRegistration } from "../providers/registration.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
