@@ -28,20 +28,7 @@ describe("production Hub runtime", () => {
     assert.equal(run.status, 200);
     const execution = await hub.waitForPendingExecution();
     await hub.waitForRecoveredExecution(execution.id);
-    assert.equal(
-      hub.createdAgentLaunch().prompt,
-      [
-        "<system-tools>",
-        "The following MCP tools are provided by Paseo Hub for this execution:",
-        "",
-        "- finish_execution: Completes this execution and records its optional structured output.",
-        "",
-        "When instructed to use one of these tools, call the MCP tool directly. Do not print, describe, or return a tool call as ordinary text. Returning equivalent text or JSON does not invoke the tool.",
-        "</system-tools>",
-        "",
-        "Deploy the requested service",
-      ].join("\n"),
-    );
+    assert.equal(hub.createdAgentLaunch().prompt, "Deploy the requested service");
   });
 });
 

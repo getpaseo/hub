@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
-import type { SlackBotClient, SlackThreadMessage } from "./client.js";
+import {
+  createSlackBotClient,
+  type SlackBotClient,
+  type SlackThreadMessage,
+  type SlackThreadReadResult,
+} from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
@@ -233,7 +239,7 @@ describe("Slack Phase 1 trigger provider", () => {
     ]);
   });
 
-  it("hydrates only routed thread replies and leaves top-level mentions alone", async () => {
+  it("defers routed thread hydration until context materialization", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
@@ -243,13 +249,13 @@ describe("Slack Phase 1 trigger provider", () => {
       },
     );
     const client = new RecordingSlackClient({
-      threadMessages: Array.from({ length: 50 }, (_, index) => ({
+      threadMessages: Array.from({ length: 55 }, (_, index) => ({
         ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
         createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
         content: `reply-${index + 1}`,
-        author: { id: index === 49 ? "B1" : `U${index + 1}` },
+        author: { id: index === 54 ? "B1" : `U${index + 1}` },
         attachments: [],
-      })),
+      })).slice(5),
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
@@ -257,24 +263,331 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
 
-    const threadMatch = (await provider.match(external(project.id, revision.id)))[0];
+    const threadMatch = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.000056" }))
+    )[0];
     if (!isAcceptedTriggerProviderMatch(threadMatch)) throw new Error("expected accepted match");
-    assert.equal(threadMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 50);
-    assert.equal(
-      threadMatch.triggerContext.event.slack.trigger_thread_context.messages[0]?.content,
-      "reply-1",
-    );
-    assert.equal(
-      threadMatch.triggerContext.event.slack.trigger_thread_context.messages.at(-1)?.author.id,
-      "B1",
-    );
+    assert.deepEqual(client.threadReads, []);
+    assert.deepEqual(threadMatch.triggerContext.event.slack.trigger_thread_context, {
+      status: "deferred",
+      channel: { id: "C1" },
+      thread: { ts: "1700000000.000001" },
+      before: { ts: "1700000000.000056" },
+    });
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-history",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: threadMatch.triggerContext,
+    });
+    assert.equal(client.threadReads.length, 1);
+    assert.equal(context?.slack.thread.status, "available");
+    assert.equal(context?.slack.thread.messages.length, 50);
+    assert.equal(context?.slack.thread.messages[0]?.content, "reply-6");
+    assert.equal(context?.slack.thread.messages.at(-1)?.author.id, "B1");
 
     const rootMatch = (
       await provider.match(external(project.id, revision.id, { threadTs: null }))
     )[0];
     if (!isAcceptedTriggerProviderMatch(rootMatch)) throw new Error("expected accepted match");
-    assert.equal(rootMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
+    const rootContext = await provider.materializeContext!({
+      executionId: "execution-slack-root",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: rootMatch.triggerContext,
+    });
+    assert.deepEqual(rootContext, {
+      slack: { thread: { status: "not_applicable", messages: [] } },
+    });
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
+  });
+
+  it("exposes thread messages and execution-scoped attachments only through context", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const attachments = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {},
+    });
+    const client = new RecordingSlackClient({
+      threadMessages: [
+        {
+          ts: "1700000000.000000",
+          createdAt: "2023-11-14T22:13:19.000Z",
+          content: "earlier screenshot",
+          author: { id: "U2" },
+          attachments: [
+            {
+              id: "F1",
+              filename: "screen.png",
+              contentType: "image/png",
+              size: 42,
+            },
+          ],
+        },
+      ],
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+      attachments,
+    });
+    const match = (
+      await provider.match({
+        ...external(project.id, revision.id),
+        connectionId: "22222222-2222-4222-8222-222222222222",
+      })
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(
+      await database.findAttachmentBySource("11111111-1111-4111-8111-111111111119", "slack", "F1"),
+      undefined,
+    );
+    assert.deepEqual(match.triggerContext.event.slack.trigger_message.attachments, []);
+    assert.equal(JSON.stringify(match.triggerContext).includes("agent-executions"), false);
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-context",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+    const attachment = await database.findAttachmentBySource(
+      "11111111-1111-4111-8111-111111111119",
+      "slack",
+      "F1",
+    );
+    assert.ok(attachment);
+
+    assert.deepEqual(context, {
+      slack: {
+        thread: {
+          status: "available",
+          messages: [
+            {
+              ts: "1700000000.000000",
+              content: "earlier screenshot",
+              author: { id: "U2" },
+              channel: { id: "C1" },
+              created_at: "2023-11-14T22:13:19.000Z",
+              attachments: [
+                {
+                  id: attachment.id,
+                  filename: "screen.png",
+                  content_type: "image/png",
+                  size: 42,
+                  url: attachments.urlFor(attachment.id, "execution-slack-context"),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const secondContext = await provider.materializeContext!({
+      executionId: "execution-slack-context-2",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+    const firstUrl = context?.slack.thread.messages[0]?.attachments[0]?.url;
+    const secondUrl = secondContext?.slack.thread.messages[0]?.attachments[0]?.url;
+    assert.ok(firstUrl);
+    assert.ok(secondUrl);
+    assert.notEqual(firstUrl, secondUrl);
+    assert.match(secondUrl, /execution-slack-context-2/u);
+  });
+
+  it("distinguishes an unavailable Slack thread from an empty hydrated thread", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient({ failThreadRead: true }),
+    });
+    const emptyProvider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const emptyMatch = (await emptyProvider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(emptyMatch)) throw new Error("expected accepted match");
+    const emptyContext = await emptyProvider.materializeContext!({
+      executionId: "execution-slack-empty",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: emptyMatch.triggerContext,
+    });
+    assert.deepEqual(emptyContext, {
+      slack: { thread: { status: "available", messages: [] } },
+    });
+
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.triggerContext.event.slack.trigger_thread_context, {
+      status: "deferred",
+      channel: { id: "C1" },
+      thread: { ts: "1700000000.000001" },
+      before: { ts: "1700000000.000001" },
+    });
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-unavailable",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+    assert.deepEqual(context, {
+      slack: { thread: { status: "unavailable", messages: [] } },
+    });
+  });
+
+  it("marks partially traversed Slack history incomplete", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient({
+      threadMessages: [
+        {
+          ts: "1700000000.000000",
+          createdAt: "2023-11-14T22:13:19.000Z",
+          content: "partial history",
+          author: { id: "U2" },
+          attachments: [],
+        },
+      ],
+      threadComplete: false,
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-partial",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+    assert.equal(context.slack.thread.status, "incomplete");
+    assert.equal(context.slack.thread.messages.length, 1);
+  });
+
+  it("caps Slack history traversal and retains the newest 50 messages oldest first", async () => {
+    const maximumPageCount = 10;
+    const messagesPerPage = 100;
+    let requests = 0;
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: () => {
+        requests += 1;
+        if (requests > maximumPageCount) {
+          throw new Error("Slack history traversal exceeded its request ceiling");
+        }
+        const firstSequence = (requests - 1) * messagesPerPage + 1;
+        return Promise.resolve(
+          Response.json({
+            ok: true,
+            messages: Array.from({ length: messagesPerPage }, (_, index) => {
+              const sequence = firstSequence + index;
+              return {
+                ts: `1700000000.${String(sequence).padStart(6, "0")}`,
+                text: `reply-${sequence}`,
+                user: `U${sequence}`,
+              };
+            }),
+            response_metadata: { next_cursor: `page-${requests + 1}` },
+          }),
+        );
+      },
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+    const match = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.999999" }))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    const context = await provider.materializeContext!({
+      executionId: "execution-slack-page-cap",
+      organizationId: "org-1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+      triggerContext: match.triggerContext,
+    });
+
+    assert.equal(requests, maximumPageCount);
+    assert.equal(context.slack.thread.status, "incomplete");
+    assert.deepEqual(
+      context.slack.thread.messages.map((message) => message.content),
+      Array.from({ length: 50 }, (_, index) => `reply-${951 + index}`),
+    );
+  });
+
+  it("does not require attachment capability during Slack ingestion", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const match = (
+      await provider.match({
+        ...external(project.id, revision.id),
+        connectionId: null,
+        payload: {
+          ...external(project.id, revision.id).payload,
+          attachments: [
+            {
+              id: "F1",
+              filename: "screen.png",
+              contentType: "image/png",
+              size: 42,
+            },
+          ],
+        },
+      })
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.triggerContext.event.slack.trigger_message.attachments, [
+      { id: "F1", filename: "screen.png", content_type: "image/png", size: 42 },
+    ]);
   });
 
   it("does not hydrate an unrouted Slack thread", async () => {
@@ -377,7 +690,12 @@ function inputMarkerConfiguration() {
 function external(
   projectId: string,
   configurationRevisionId: string,
-  overrides: { threadTs?: string | null; content?: string; authorId?: string } = {},
+  overrides: {
+    threadTs?: string | null;
+    messageTs?: string;
+    content?: string;
+    authorId?: string;
+  } = {},
 ) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
@@ -393,7 +711,7 @@ function external(
       teamId: "T1",
       appId: "A1",
       channelId: "C1",
-      messageTs: "1700000000.000001",
+      messageTs: overrides.messageTs ?? "1700000000.000001",
       threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
       eventTs: "1700000000.000001",
       eventTime: 1_700_000_001,
@@ -401,7 +719,6 @@ function external(
       author: { id: overrides.authorId ?? "U1" },
       createdAt: new Date(1_700_000_000_000).toISOString(),
       attachments: [],
-      threadContextMessages: [],
     },
   };
 }
@@ -423,6 +740,8 @@ class RecordingSlackClient implements SlackBotClient {
       threadMessages?: SlackThreadMessage[];
       failAddReaction?: string;
       failMessages?: boolean;
+      failThreadRead?: boolean;
+      threadComplete?: boolean;
     } = {},
   ) {
     this.threadMessages = options.threadMessages ?? [];
@@ -452,8 +771,14 @@ class RecordingSlackClient implements SlackBotClient {
     channelId: string;
     threadTs: string;
     beforeTs: string;
-  }): Promise<SlackThreadMessage[]> {
+  }): Promise<SlackThreadReadResult> {
     this.threadReads.push(input.threadTs);
-    return Promise.resolve(this.threadMessages);
+    if (this.options.failThreadRead === true) {
+      return Promise.reject(new Error("thread history unavailable"));
+    }
+    return Promise.resolve({
+      complete: this.options.threadComplete ?? true,
+      messages: this.threadMessages,
+    });
   }
 }

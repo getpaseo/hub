@@ -96,22 +96,34 @@ export interface TriggerLaunchMaterialization<TriggerContext = unknown> {
   executionId: string;
   organizationId: string;
   projectId: string;
-  prompt: string;
   environmentEnv?: Record<string, string>;
   environmentWorktree?: WorktreeTarget;
   triggerContext: TriggerContext;
 }
 
 export interface MaterializedTriggerLaunch {
-  prompt: string;
   environmentEnv?: Record<string, string>;
   environmentWorktree?: WorktreeTarget;
+}
+
+export interface TriggerContextMaterialization<TriggerContext = unknown> {
+  executionId: string;
+  organizationId: string;
+  projectId: string;
+  providerEventReceiptId: string;
+  triggerContext: TriggerContext;
+}
+
+export function asTriggerContextValue(value: unknown): JsonValue {
+  if (!isJsonValue(value)) throw new Error("trigger context must be valid JSON");
+  return value;
 }
 
 export interface TriggerProvider<
   Name extends string = string,
   TriggerContext = unknown,
   OutputContext = TriggerContext,
+  MaterializedContext = unknown,
 > {
   name: Name;
   eventNames: readonly TriggerEventName[];
@@ -121,6 +133,9 @@ export interface TriggerProvider<
   materializeLaunch?(
     launch: TriggerLaunchMaterialization<TriggerContext>,
   ): Promise<MaterializedTriggerLaunch>;
+  materializeContext?(
+    launch: TriggerContextMaterialization<TriggerContext>,
+  ): Promise<MaterializedContext>;
   onDispatchAccepted?(triggerContext: TriggerContext, outputContext: OutputContext): Promise<void>;
   onAgentExecutionStarted?(
     triggerContext: TriggerContext,
@@ -138,4 +153,16 @@ export interface TriggerProvider<
   ): Promise<void>;
   onAgentExecutionTerminal?(executionId: string, triggerContext: TriggerContext): Promise<void>;
   onMachineTerminated?(triggerContext: TriggerContext, reason: string): Promise<void>;
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Reflect.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every(isJsonValue)
+  );
 }

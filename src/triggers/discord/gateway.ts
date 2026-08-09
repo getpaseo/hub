@@ -1,13 +1,9 @@
 import type { Message } from "discord.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
-import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
-import {
-  NormalizedDiscordContextMessageSchema,
-  NormalizedDiscordMessageEventSchema,
-} from "./events.js";
-import type { NormalizedDiscordContextMessage, NormalizedDiscordMessageEvent } from "./events.js";
+import { NormalizedDiscordMessageEventSchema } from "./events.js";
+import type { NormalizedDiscordMessageEvent } from "./events.js";
 
 export interface CreateDiscordGatewaySourceOptions {
   bot: DiscordBotClient;
@@ -96,7 +92,6 @@ export function normalizeMessage(
     createdAt: message.createdAt.toISOString(),
     attachments: normalizeAttachments(message),
     referencedMessage: normalizeReferencedMessage(message),
-    threadContextMessages: [],
   });
 }
 
@@ -115,10 +110,7 @@ async function dispatchMessage(
     return;
   }
 
-  const normalizedEvent = NormalizedDiscordMessageEventSchema.parse({
-    ...normalized,
-    threadContextMessages: await readThreadContextMessages(message, normalized),
-  });
+  const normalizedEvent = NormalizedDiscordMessageEventSchema.parse(normalized);
 
   const acceptance = await options.accept({
     guildId: normalizedEvent.guildId,
@@ -142,52 +134,6 @@ function isTriggerCandidate(event: NormalizedDiscordMessageEvent, botUserId: str
   );
 }
 
-async function readThreadContextMessages(
-  triggerMessage: Message,
-  event: NormalizedDiscordMessageEvent,
-): Promise<NormalizedDiscordContextMessage[]> {
-  if (event.threadId === null || !triggerMessage.channel.isThread()) return [];
-
-  try {
-    const page = await triggerMessage.channel.messages.fetch({
-      before: triggerMessage.id,
-      limit: 50,
-    });
-    return Array.from(page.values())
-      .slice(0, 50)
-      .filter((message) => message.id !== triggerMessage.id)
-      .map(normalizeContextMessage)
-      .sort(compareContextMessages);
-  } catch (error) {
-    logger.warn(
-      {
-        err: error,
-        guildId: event.guildId,
-        channelId: event.channelId,
-        messageId: event.messageId,
-      },
-      "Discord thread context hydration failed",
-    );
-    return [];
-  }
-}
-
-function normalizeContextMessage(message: Message): NormalizedDiscordContextMessage {
-  return NormalizedDiscordContextMessageSchema.parse({
-    id: message.id,
-    channelId: message.channelId,
-    content: message.content,
-    author: {
-      id: message.author.id,
-      username: message.author.username,
-      bot: message.author.bot,
-    },
-    createdAt: message.createdAt.toISOString(),
-    attachments: normalizeAttachments(message),
-    referencedMessage: normalizeReferencedMessage(message),
-  });
-}
-
 function normalizeAttachments(message: Message) {
   return Array.from(message.attachments.values(), (attachment) => ({
     id: attachment.id,
@@ -206,14 +152,4 @@ function normalizeReferencedMessage(message: Message) {
     channelId: reference.channelId,
     guildId: reference.guildId ?? null,
   };
-}
-
-function compareContextMessages(
-  left: NormalizedDiscordContextMessage,
-  right: NormalizedDiscordContextMessage,
-): number {
-  const createdAtDifference = Date.parse(left.createdAt) - Date.parse(right.createdAt);
-  return createdAtDifference === 0
-    ? left.id.localeCompare(right.id, undefined, { numeric: true })
-    : createdAtDifference;
 }

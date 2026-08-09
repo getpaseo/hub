@@ -21,7 +21,6 @@ describe("Discord gateway source", () => {
       createdAt: new Date("2026-05-19T00:00:00.000Z").toISOString(),
       attachments: [],
       referencedMessage: null,
-      threadContextMessages: [],
     });
 
     assert.equal(parsed.success, false);
@@ -56,7 +55,6 @@ describe("Discord gateway source", () => {
       createdAt: new Date("2026-05-19T00:00:00.000Z").toISOString(),
       attachments: [],
       referencedMessage: null,
-      threadContextMessages: [],
     });
   });
 
@@ -185,7 +183,7 @@ describe("Discord gateway source", () => {
     await source.stop();
   });
 
-  it("captures thread context oldest-first and excludes the trigger message", async () => {
+  it("defers thread history and attachment work until provider materialization", async () => {
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const source = createDiscordGatewaySource(gatewayOptions(bot));
     const dispatched: ExternalTrigger[] = [];
@@ -226,16 +224,8 @@ describe("Discord gateway source", () => {
     );
 
     const event = NormalizedDiscordMessageEventSchema.parse(dispatched[0]?.payload);
-    assert.deepEqual(
-      event.threadContextMessages.map(({ id, content }) => ({ id, content })),
-      [
-        { id: "301", content: "first" },
-        { id: "302", content: "second" },
-      ],
-    );
-    assert.equal(event.threadContextMessages[1]?.attachments[0]?.filename, "context.txt");
-    assert.equal(event.threadContextMessages[1]?.referencedMessage?.id, "301");
-    assert.equal(contextFetches, 1);
+    assert.equal(event.threadId, "207");
+    assert.equal(contextFetches, 0);
     await source.stop();
   });
 
@@ -285,7 +275,7 @@ describe("Discord gateway source", () => {
     await source.stop();
   });
 
-  it("dispatches a valid thread mention with empty context when hydration fails", async () => {
+  it("accepts a valid thread mention without hydrating history", async () => {
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const source = createDiscordGatewaySource(gatewayOptions(bot));
     const dispatched: ExternalTrigger[] = [];
@@ -310,14 +300,14 @@ describe("Discord gateway source", () => {
       }),
     );
 
-    assert.equal(contextFetches, 1);
+    assert.equal(contextFetches, 0);
     assert.equal(dispatched.length, 1);
     const event = NormalizedDiscordMessageEventSchema.parse(dispatched[0]?.payload);
-    assert.deepEqual(event.threadContextMessages, []);
+    assert.equal(event.threadId, "207");
     await source.stop();
   });
 
-  it("hydrates at most one page of recent thread context oldest-first", async () => {
+  it("does not fetch recent thread context during ingestion", async () => {
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const source = createDiscordGatewaySource(gatewayOptions(bot));
     const dispatched: ExternalTrigger[] = [];
@@ -350,11 +340,9 @@ describe("Discord gateway source", () => {
       }),
     );
 
-    assert.equal(contextFetches, 1);
+    assert.equal(contextFetches, 0);
     const event = NormalizedDiscordMessageEventSchema.parse(dispatched[0]?.payload);
-    assert.equal(event.threadContextMessages.length, 50);
-    assert.equal(event.threadContextMessages[0]?.id, "551");
-    assert.equal(event.threadContextMessages.at(-1)?.id, "600");
+    assert.equal(event.threadId, "207");
     await source.stop();
   });
 

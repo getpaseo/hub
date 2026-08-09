@@ -25,6 +25,79 @@ import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 
 describe("durable multi-step workflow engine", () => {
+  it("materializes ambient context only for the step that authors paseo.context", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: contextOptInConfiguration() });
+    const prompts: string[] = [];
+    const materializedExecutionIds: string[] = [];
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      async materializeContext(launch) {
+        materializedExecutionIds.push(launch.executionId);
+        assert.equal(launch.providerEventReceiptId, fixture.providerEventReceiptId);
+        return { manual: { item: { title: "ambient" } } };
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        if (intent.prompt === "Trigger: the triggering body") {
+          assert.deepEqual(materializedExecutionIds, []);
+        }
+        prompts.push(intent.prompt);
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        assert.ok(execution);
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("the triggering body"));
+    await engine.processAvailable();
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const firstStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const firstExecution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      firstStep.id,
+    );
+    assert.ok(firstExecution);
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: firstExecution.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: { status: "succeeded" },
+      stepOutput: null,
+      completedByAgent: true,
+    });
+    await engine.processAvailable();
+
+    assert.deepEqual(prompts, [
+      "Trigger: the triggering body",
+      'Context: {"manual":{"item":{"title":"ambient"}}}\nTrigger: the triggering body',
+    ]);
+    assert.equal(materializedExecutionIds.length, 1);
+  });
+
+  it("fails an explicit context opt-in when its provider cannot materialize context", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: contextOnlyConfiguration() });
+    const { handler, engine } = engineFor(fixture, []);
+
+    await handler(fixture.trigger("the triggering body"));
+    await engine.processAvailable();
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "failed");
+    assert.equal(steps[0]?.status, "failed");
+    assert.equal(steps[0]?.failureReason, "trigger_context_materializer_unavailable");
+  });
+
   it("carries provider options unchanged into persisted and dispatched launch intent", async () => {
     const rawConfiguration = deadlineConfiguration();
     const options = {
@@ -1078,6 +1151,50 @@ describe("durable multi-step workflow engine", () => {
     // Recovery re-dispatches the already-created execution; it does not reserve a second unit.
     assert.equal((await fixture.entitlements.usage("org-1", "executions.monthly")).used, 1);
   });
+
+  it("does not rematerialize context when recovering a persisted pre-handoff execution", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: contextOnlyConfiguration() });
+    let materializations = 0;
+    let crashNextDispatch = true;
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      async materializeContext() {
+        materializations += 1;
+        return { ambient: "once" };
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async (intent) => {
+        if (crashNextDispatch) {
+          crashNextDispatch = false;
+          throw new Error("dispatch crashed after reservation");
+        }
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    now = new Date("2026-08-06T12:00:02.000Z");
+    await engine.processAvailable();
+
+    assert.equal(materializations, 1);
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.equal(execution?.launchIntent?.prompt, 'Context: {"ambient":"once"}\nTrigger: run');
+  });
 });
 
 interface Fixture {
@@ -1266,6 +1383,51 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
         ],
       },
     ],
+  };
+}
+
+function contextOptInConfiguration(): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "context-opt-in",
+        on: "manual.run",
+        max_runtime: "1h",
+        steps: [
+          {
+            id: "without-context",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Trigger: ${{ paseo.prompt }}" }],
+          },
+          {
+            id: "with-context",
+            environment: "runner",
+            max_runtime: "10m",
+            idle_timeout: "1m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Context: ${{ paseo.context }}\nTrigger: ${{ paseo.prompt }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function contextOnlyConfiguration(): Record<string, unknown> {
+  const configuration = contextOptInConfiguration();
+  const triggers = readUnknownArray(configuration["triggers"]);
+  const trigger = triggers?.[0];
+  const steps = isRecord(trigger) ? readUnknownArray(trigger["steps"]) : undefined;
+  if (trigger === undefined || steps?.[1] === undefined) {
+    throw new Error("context opt-in fixture is incomplete");
+  }
+  return {
+    ...configuration,
+    triggers: [{ ...trigger, steps: [steps[1]] }],
   };
 }
 

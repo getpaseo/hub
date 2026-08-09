@@ -112,6 +112,8 @@ export const IssueCommentPayloadSchema = z
         number: OptionalNumberSchema,
         title: OptionalStringSchema,
         body: OptionalStringSchema,
+        html_url: OptionalStringSchema,
+        user: UserSchema,
         pull_request: z.object({}).passthrough().optional().catch(undefined),
       })
       .optional()
@@ -135,6 +137,8 @@ export const IssuesPayloadSchema = z
         number: OptionalNumberSchema,
         title: OptionalStringSchema,
         body: OptionalStringSchema,
+        html_url: OptionalStringSchema,
+        user: UserSchema,
       })
       .optional()
       .catch(undefined),
@@ -146,6 +150,11 @@ export const PullRequestPayloadSchema = z
   .object({
     pull_request: z
       .object({
+        number: OptionalNumberSchema,
+        title: OptionalStringSchema,
+        body: OptionalStringSchema,
+        html_url: OptionalStringSchema,
+        user: UserSchema,
         head: z
           .object({
             ref: OptionalStringSchema,

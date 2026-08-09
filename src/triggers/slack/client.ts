@@ -34,7 +34,7 @@ const SlackFileInfoSchema = SlackApiResponseSchema.extend({
     .optional(),
 });
 const SLACK_API_TIMEOUT_MS = 10_000;
-const MAX_THREAD_PAGES = 4;
+const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -49,6 +49,11 @@ export interface SlackThreadMessage {
   content: string;
   author: { id: string };
   attachments: SlackAttachmentMetadata[];
+}
+
+export interface SlackThreadReadResult {
+  messages: SlackThreadMessage[];
+  complete: boolean;
 }
 
 export interface SlackBotClient {
@@ -79,7 +84,7 @@ export interface SlackBotClient {
     channelId: string;
     threadTs: string;
     beforeTs: string;
-  }): Promise<SlackThreadMessage[]>;
+  }): Promise<SlackThreadReadResult>;
   downloadAttachment?(input: {
     organizationId: string;
     teamId: string;
@@ -137,21 +142,42 @@ export function createSlackBotClient(options: {
     return response.json();
   }
 
+  async function queryJson(
+    organizationId: string,
+    teamId: string,
+    method: string,
+    query: Record<string, string>,
+  ): Promise<unknown> {
+    const token = await options.tokenForWorkspace(organizationId, teamId);
+    if (token === undefined) throw new Error("Slack workspace is not connected");
+    const url = new URL(`https://slack.com/api/${method}`);
+    for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
+    const response = await request(url, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
+    return response.json();
+  }
+
   async function readThreadMessages(input: {
     organizationId: string;
     teamId: string;
     channelId: string;
     threadTs: string;
     beforeTs: string;
-  }): Promise<SlackThreadMessage[]> {
+  }): Promise<SlackThreadReadResult> {
     let cursor: string | undefined;
     let selected: SlackThreadMessage[] = [];
-    let pageCount = 0;
-    do {
+    const seenCursors = new Set<string>();
+    let complete = true;
+    let pagesRead = 0;
+    while (true) {
       let result: z.infer<typeof SlackThreadRepliesSchema>;
       try {
         result = SlackThreadRepliesSchema.parse(
-          await callJson(input.organizationId, input.teamId, "conversations.replies", {
+          await queryJson(input.organizationId, input.teamId, "conversations.replies", {
             channel: input.channelId,
             ts: input.threadTs,
             latest: input.beforeTs,
@@ -163,18 +189,32 @@ export function createSlackBotClient(options: {
         if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
       } catch (error) {
         if (selected.length === 0) throw error;
+        complete = false;
         break;
       }
       selected = [...selected, ...(result.messages ?? []).map(normalizeThreadMessage)]
         .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0)
         .sort((left, right) => compareSlackTs(right.ts, left.ts))
         .slice(0, 50);
-      pageCount += 1;
+      pagesRead += 1;
       const next = result.response_metadata?.next_cursor;
       cursor = next === undefined || next.length === 0 ? undefined : next;
-    } while (cursor !== undefined && pageCount < MAX_THREAD_PAGES);
+      if (cursor === undefined) break;
+      if (seenCursors.has(cursor)) {
+        complete = false;
+        break;
+      }
+      seenCursors.add(cursor);
+      if (pagesRead === SLACK_THREAD_REPLIES_MAX_PAGES) {
+        complete = false;
+        break;
+      }
+    }
 
-    return selected.sort((left, right) => compareSlackTs(left.ts, right.ts));
+    return {
+      messages: selected.sort((left, right) => compareSlackTs(left.ts, right.ts)),
+      complete,
+    };
   }
 
   async function downloadAttachment(input: {

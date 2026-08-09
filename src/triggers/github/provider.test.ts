@@ -74,6 +74,54 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.deepEqual(wrongActor, []);
   });
 
+  it("exposes safe issue and pull-request item context without the raw webhook", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const issueMatch = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    if (!isAcceptedTriggerProviderMatch(issueMatch)) throw new Error("expected issue match");
+    const issueContext = await provider.materializeContext?.({
+      executionId: "github-issue-context",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111111",
+      triggerContext: issueMatch.triggerContext,
+    });
+    assert.deepEqual(issueContext, {
+      github: {
+        delivery_id: "github-delivery-1",
+        event_name: "issue_comment",
+        repository: { full_name: "boudra/faro" },
+        received_at: "2026-05-19T00:00:00.000Z",
+        item: {
+          type: "issue",
+          number: 211,
+          title: "smoke",
+          body: "issue body",
+          url: "https://github.com/boudra/faro/issues/211",
+          author: { login: "issue-author" },
+        },
+      },
+    });
+    assert.equal(JSON.stringify(issueContext).includes("installation"), false);
+    assert.equal(JSON.stringify(issueContext).includes("comment-credential"), false);
+
+    const prMatch = (
+      await provider.match(external(project.id, revision.id, createEvent({ pullRequest: true })))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(prMatch)) throw new Error("expected pull request match");
+    const prContext = await provider.materializeContext?.({
+      executionId: "github-pr-context",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111112",
+      triggerContext: prMatch.triggerContext,
+    });
+    assert.equal(
+      Reflect.get(Reflect.get(Reflect.get(prContext!, "github"), "item"), "type"),
+      "pull_request",
+    );
+  });
+
   it("injects and revokes the execution-scoped GitHub token at launch cleanup", async () => {
     const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();
@@ -86,10 +134,8 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "00000000-0000-4000-8000-000000000001",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     });
-    assert.equal(materialized?.prompt, "Handle the GitHub issue comment.");
     assert.deepEqual(materialized?.environmentEnv, { GH_TOKEN: "execution-token-1" });
     await provider.onAgentExecutionTerminal?.(
       "00000000-0000-4000-8000-000000000001",
@@ -155,7 +201,6 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "00000000-0000-4000-8000-000000000002",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: "Handle the GitHub issue comment.",
       environmentWorktree: worktree,
       triggerContext: match.triggerContext,
     });
@@ -172,7 +217,6 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId: "00000000-0000-4000-8000-000000000003",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     };
 
@@ -193,7 +237,6 @@ describe("GitHub Phase 1 trigger provider", () => {
       executionId,
       organizationId: "org_1",
       projectId: project.id,
-      prompt: "Handle the GitHub issue comment.",
       triggerContext: match.triggerContext,
     });
     assert.ok(materialization);
@@ -216,7 +259,6 @@ describe("GitHub Phase 1 trigger provider", () => {
         executionId,
         organizationId: "org_1",
         projectId: project.id,
-        prompt: "Handle the GitHub issue comment.",
         triggerContext: match.triggerContext,
       });
       const cleanup = provider.onAgentExecutionTerminal?.(executionId, match.triggerContext);
@@ -410,7 +452,9 @@ function external(
   };
 }
 
-function createEvent(overrides: { actor?: string; body?: string } = {}): NormalizedGitHubEvent {
+function createEvent(
+  overrides: { actor?: string; body?: string; pullRequest?: boolean } = {},
+): NormalizedGitHubEvent {
   const actor = overrides.actor ?? "boudra";
   return {
     id: "github-delivery-1",
@@ -419,12 +463,20 @@ function createEvent(overrides: { actor?: string; body?: string } = {}): Normali
     repositoryId: 7,
     installationId: 42,
     payload: {
-      issue: { number: 211, title: "smoke", body: "smoke" },
+      issue: {
+        number: 211,
+        title: "smoke",
+        body: "issue body",
+        html_url: "https://github.com/boudra/faro/issues/211",
+        user: { login: "issue-author" },
+        ...(overrides.pullRequest === true ? { pull_request: {} } : {}),
+      },
       comment: {
         id: 123,
         body: overrides.body ?? "hello @paseo",
         html_url: "https://github.com/boudra/faro/issues/211#issuecomment-123",
         user: { login: actor },
+        credential: "comment-credential",
       },
       sender: { login: actor },
     },
