@@ -186,19 +186,44 @@ describe("Discord Phase 1 trigger provider", () => {
       match.triggerContext.event.discord.trigger_thread_context.messages[0]?.content,
       "see image",
     );
-    const materialized = await provider.materializeLaunch?.({
+    const materialized = await provider.materializeContext?.({
       executionId: "execution-discord-materialize",
       organizationId: "org_1",
       projectId: project.id,
-      prompt: "Inspect the Discord request.",
       triggerContext: match.triggerContext,
     });
-    assert.equal(
-      (materialized?.prompt ?? "").includes(
-        attachments.urlFor(triggerAttachment.id, "execution-discord-materialize"),
-      ),
-      true,
-    );
+    const contextAttachment = match.triggerContext.event.discord.trigger_thread_context.messages
+      .at(0)
+      ?.attachments.at(0);
+    assert.ok(contextAttachment);
+    assert.deepEqual(materialized, {
+      discord: {
+        thread: {
+          id: "207",
+          parent_channel_id: "200",
+          context_url: "https://discord.com/channels/100/207",
+          messages: [
+            {
+              id: "299",
+              content: "see image",
+              author: { id: "401", username: "maintainer", bot: false },
+              channel: { id: "207" },
+              created_at: "2026-05-18T23:59:00.000Z",
+              attachments: [
+                {
+                  id: contextAttachment.id,
+                  filename: "design.png",
+                  content_type: "image/png",
+                  size: 42,
+                  url: attachments.urlFor(contextAttachment.id, "execution-discord-materialize"),
+                },
+              ],
+              referenced_message: null,
+            },
+          ],
+        },
+      },
+    });
     assert.deepEqual(match.outputContext, {
       provider: "discord",
       guildId: "100",
@@ -206,30 +231,6 @@ describe("Discord Phase 1 trigger provider", () => {
       threadId: "207",
       messageId: "300",
     });
-  });
-
-  it("persists a static Discord worktree target across launch recovery", async () => {
-    const { project, revision, store } = await activeConfiguration(discordWorktreeConfiguration());
-    const provider = createDiscordTriggerProvider({
-      configurationStoreForProject: () => store,
-      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
-    });
-    const match = (await provider.match(external(project.id, revision.id, event())))[0];
-    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    const worktree = {
-      mode: "branch-off",
-      newBranch: "discord-recovery",
-      base: "main",
-    } as const;
-    const materialized = await provider.materializeLaunch?.({
-      executionId: "discord-worktree-recovery",
-      organizationId: "org_1",
-      projectId: project.id,
-      prompt: "Respond to the Discord mention.",
-      environmentWorktree: worktree,
-      triggerContext: match.triggerContext,
-    });
-    assert.deepEqual(materialized?.environmentWorktree, worktree);
   });
 
   it("targets lifecycle reactions and termination notices at the original Discord message", async () => {
@@ -431,19 +432,6 @@ function inputMarkerConfiguration() {
           ...trigger.filters,
           contains: "run",
         },
-      },
-    ],
-  };
-}
-
-function discordWorktreeConfiguration() {
-  const configuration = discordConfiguration();
-  return {
-    ...configuration,
-    environments: [
-      {
-        ...configuration.environments[0]!,
-        worktree: { mode: "branch-off" as const, newBranch: "discord-recovery", base: "main" },
       },
     ],
   };

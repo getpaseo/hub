@@ -703,6 +703,7 @@ function validateExpressionContract(
         ordinal,
         `step ${step.id} prompt[${index}]`,
         false,
+        true,
       );
     }
   }
@@ -721,9 +722,10 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed = false,
   ): void {
     for (const reference of expressionPaths(expression)) {
-      validateReference(reference, ordinal, path, authorityBearing);
+      validateReference(reference, ordinal, path, authorityBearing, contextAllowed);
       if (reference.namespace === "values") validateValue(reference.name, ordinal);
     }
     if (authorityBearing && !isFiniteAuthorityExpression(expression)) {
@@ -738,6 +740,7 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed = false,
   ): void {
     if (value === undefined) return;
     let cursor = 0;
@@ -747,7 +750,7 @@ function validateExpressionContract(
       const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
       if (end < 0) throw new Error(`${path} uses an unterminated expression`);
       const expression = parseExpression(value.slice(start + EXPRESSION_START.length, end));
-      validateExpression(expression, ordinal, path, authorityBearing);
+      validateExpression(expression, ordinal, path, authorityBearing, contextAllowed);
       cursor = end + EXPRESSION_END.length;
     }
   }
@@ -757,11 +760,16 @@ function validateExpressionContract(
     ordinal: number,
     path: string,
     authorityBearing: boolean,
+    contextAllowed: boolean,
   ): void {
     if (reference.namespace === "paseo") {
       if (reference.path === "prompt") {
         if (authorityBearing)
           throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
+        return;
+      }
+      if (reference.path === "context") {
+        if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
         return;
       }
       const inputName = reference.path[1];

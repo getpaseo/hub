@@ -317,6 +317,52 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("allows ambient context only in authored step prompts", () => {
+    const trigger = configuration().triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            steps: [{ ...trigger.steps[0]!, prompt: [{ text: "${{ paseo.context }}" }] }],
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...trigger.steps[0]!, if: "${{ paseo.context }}" }],
+            },
+          ],
+        }),
+      /paseo\.context outside a step prompt/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...trigger.steps[0]!,
+                  agent: { provider: "${{ paseo.context }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /paseo\.context outside a step prompt/iu,
+    );
+  });
+
   it("resolves finite referenced output authority and rejects unprovable composition authority", () => {
     const trigger = configuration().triggers[0]!;
     const outputSchema = {

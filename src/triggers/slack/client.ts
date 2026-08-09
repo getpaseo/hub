@@ -137,6 +137,25 @@ export function createSlackBotClient(options: {
     return response.json();
   }
 
+  async function queryJson(
+    organizationId: string,
+    teamId: string,
+    method: string,
+    query: Record<string, string>,
+  ): Promise<unknown> {
+    const token = await options.tokenForWorkspace(organizationId, teamId);
+    if (token === undefined) throw new Error("Slack workspace is not connected");
+    const url = new URL(`https://slack.com/api/${method}`);
+    for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
+    const response = await request(url, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
+    return response.json();
+  }
+
   async function readThreadMessages(input: {
     organizationId: string;
     teamId: string;
@@ -151,7 +170,7 @@ export function createSlackBotClient(options: {
       let result: z.infer<typeof SlackThreadRepliesSchema>;
       try {
         result = SlackThreadRepliesSchema.parse(
-          await callJson(input.organizationId, input.teamId, "conversations.replies", {
+          await queryJson(input.organizationId, input.teamId, "conversations.replies", {
             channel: input.channelId,
             ts: input.threadTs,
             latest: input.beforeTs,

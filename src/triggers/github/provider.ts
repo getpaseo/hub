@@ -12,13 +12,17 @@ import {
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import {
   IssueCommentPayloadSchema,
+  IssuesPayloadSchema,
   NormalizedGitHubEventSchema,
+  PullRequestPayloadSchema,
+  PullRequestReviewPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
-  readGitHubTriggerUrl,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import { z } from "zod";
 
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
+const SafeRecordSchema = z.record(z.string(), z.unknown());
 
 interface ExecutionTokenState {
   pendingMints: number;
@@ -56,14 +60,22 @@ export type GitHubReactionContent =
   | "eyes";
 
 export interface GitHubMergeData {
-  github: Record<string, unknown> & {
+  github: {
     delivery_id: string;
     event_name: string;
-    repository_full_name: string;
-    installation_id: number;
+    repository: { full_name: string };
     received_at: string;
-    trigger_url?: string;
+    item: GitHubContextItem | null;
   };
+}
+
+interface GitHubContextItem {
+  type: "issue" | "pull_request";
+  number: number | null;
+  title: string | null;
+  body: string | null;
+  url: string | null;
+  author: { login: string } | null;
 }
 
 export function createGitHubReactionClient(auth: GitHubAuth): GitHubReactionClient {
@@ -221,7 +233,6 @@ export function createGitHubTriggerProvider(options: {
           throw new Error(`cannot materialize terminal execution ${launch.executionId}`);
         }
         return {
-          prompt: launch.prompt,
           environmentEnv: { ...launch.environmentEnv, GH_TOKEN: token },
           ...(launch.environmentWorktree === undefined
             ? {}
@@ -231,6 +242,9 @@ export function createGitHubTriggerProvider(options: {
         state.pendingMints -= 1;
         deleteEmptyExecutionTokenState(executionTokenStates, launch.executionId, state);
       }
+    },
+    async materializeContext(launch) {
+      return launch.triggerContext.event;
     },
     async onDispatchAccepted(triggerContext) {
       if (triggerContext.reactionSubject === null) return;
@@ -309,18 +323,57 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {
-  const url = readGitHubTriggerUrl(event.payload);
   return {
     github: {
-      ...event.payload,
       delivery_id: event.id,
       event_name: event.type,
-      repository_full_name: event.repo,
-      installation_id: event.installationId,
+      repository: { full_name: event.repo },
       received_at: event.createdAt,
-      ...(url === undefined ? {} : { trigger_url: url }),
+      item: readGitHubContextItem(event),
     },
   };
+}
+
+function readGitHubContextItem(event: NormalizedGitHubEvent): GitHubContextItem | null {
+  if (event.type === "issue_comment") {
+    const issue = IssueCommentPayloadSchema.parse(event.payload).issue;
+    return issue === undefined
+      ? null
+      : githubItem(issue.pull_request === undefined ? "issue" : "pull_request", issue);
+  }
+  if (event.type === "issues") {
+    const issue = IssuesPayloadSchema.parse(event.payload).issue;
+    return issue === undefined ? null : githubItem("issue", issue);
+  }
+  if (event.type === "pull_request_review") {
+    const pullRequest = PullRequestReviewPayloadSchema.parse(event.payload).pull_request;
+    return pullRequest === undefined ? null : githubItem("pull_request", pullRequest);
+  }
+  if (event.type === "pull_request_review_comment") {
+    const pullRequest = PullRequestReviewCommentPayloadSchema.parse(event.payload).pull_request;
+    return pullRequest === undefined ? null : githubItem("pull_request", pullRequest);
+  }
+  const pullRequest = PullRequestPayloadSchema.safeParse(event.payload);
+  if (!pullRequest.success || pullRequest.data.pull_request === undefined) return null;
+  return githubItem("pull_request", pullRequest.data.pull_request);
+}
+
+function githubItem(type: GitHubContextItem["type"], item: unknown): GitHubContextItem {
+  const record = asRecord(item);
+  const user = asRecord(record["user"]);
+  return {
+    type,
+    number: typeof record["number"] === "number" ? record["number"] : null,
+    title: typeof record["title"] === "string" ? record["title"] : null,
+    body: typeof record["body"] === "string" ? record["body"] : null,
+    url: typeof record["html_url"] === "string" ? record["html_url"] : null,
+    author: typeof user["login"] === "string" ? { login: user["login"] } : null,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  const parsed = SafeRecordSchema.safeParse(value);
+  return parsed.success ? parsed.data : {};
 }
 
 async function reactToLifecycle(

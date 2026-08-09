@@ -110,7 +110,7 @@ describe("Slack Web API client", () => {
   });
 
   it("hydrates the latest 50 preceding replies across Slack pagination, oldest first", async () => {
-    const requests: Array<{ method: string; body: Record<string, string> }> = [];
+    const requests: Array<{ method: string; url: string; body: BodyInit | null | undefined }> = [];
     const messages = Array.from({ length: 55 }, (_, index) => {
       const sequence = index + 1;
       return {
@@ -125,7 +125,8 @@ describe("Slack Web API client", () => {
       fetch: async (input, init) => {
         requests.push({
           method: init?.method ?? "GET",
-          body: parseRequestBody(init?.body),
+          url: requestUrl(input),
+          body: init?.body,
         });
         const current = page++ === 0 ? messages.slice(25) : messages.slice(0, 25);
         return Response.json({
@@ -148,32 +149,18 @@ describe("Slack Web API client", () => {
     assert.equal(hydrated?.[0]?.content, "reply-6");
     assert.equal(hydrated?.at(-1)?.content, "reply-55");
     assert.deepEqual(hydrated?.at(-1)?.author, { id: "B55" });
-    assert.deepEqual(
-      requests.map(({ method, body }) => ({ method, body })),
-      [
-        {
-          method: "POST",
-          body: {
-            channel: "C1",
-            ts: "1700000000.000000",
-            latest: "1700000000.000056",
-            inclusive: "false",
-            limit: "100",
-          },
-        },
-        {
-          method: "POST",
-          body: {
-            channel: "C1",
-            ts: "1700000000.000000",
-            latest: "1700000000.000056",
-            inclusive: "false",
-            limit: "100",
-            cursor: "older-page",
-          },
-        },
-      ],
-    );
+    assert.deepEqual(requests, [
+      {
+        method: "GET",
+        url: "https://slack.com/api/conversations.replies?channel=C1&ts=1700000000.000000&latest=1700000000.000056&inclusive=false&limit=100",
+        body: undefined,
+      },
+      {
+        method: "GET",
+        url: "https://slack.com/api/conversations.replies?channel=C1&ts=1700000000.000000&latest=1700000000.000056&inclusive=false&limit=100&cursor=older-page",
+        body: undefined,
+      },
+    ]);
   });
 
   it("keeps earlier Slack replies when a later page is rate-limited", async () => {
@@ -254,18 +241,4 @@ describe("Slack Web API client", () => {
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
   return input instanceof URL ? input.toString() : input.url;
-}
-
-function parseRequestBody(value: BodyInit | null | undefined): Record<string, string> {
-  if (typeof value !== "string") throw new Error("expected a JSON request body");
-  const parsed: unknown = JSON.parse(value);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("expected a JSON object request body");
-  }
-  const body: Record<string, string> = {};
-  for (const [key, item] of Object.entries(parsed)) {
-    if (typeof item !== "string") throw new Error("expected string request body values");
-    body[key] = item;
-  }
-  return body;
 }

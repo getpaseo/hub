@@ -534,7 +534,6 @@ export class DaemonDispatchLifecycle {
       executionId,
       organizationId: composed.organizationId,
       projectId: composed.projectId,
-      prompt: composed.prompt,
       ...(composed.environment.env === undefined
         ? {}
         : { environmentEnv: composed.environment.env }),
@@ -549,7 +548,6 @@ export class DaemonDispatchLifecycle {
     const environmentWorktree = materialized.environmentWorktree ?? persistedWorktree;
     return {
       ...composed,
-      prompt: materialized.prompt,
       environment: {
         ...environment,
         ...(materialized.environmentEnv === undefined ? {} : { env: materialized.environmentEnv }),

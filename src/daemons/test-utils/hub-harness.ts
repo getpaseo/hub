@@ -1078,7 +1078,7 @@ export class HubHarness {
       "        agent:",
       "          provider: opencode",
       "          mode: full-access",
-      '        prompt: [{ text: "Review ${{ paseo.prompt }}" }]',
+      '        prompt: [{ text: "Review ${{ paseo.prompt }}\\nContext: ${{ paseo.context }}" }]',
     ].join("\n");
   }
 
@@ -1107,14 +1107,7 @@ export class HubHarness {
           content: "<@UBOT> inspect this image",
           author: { id: "U1" },
           createdAt: "2023-11-14T22:13:20.100Z",
-          attachments: [
-            {
-              id: "F1",
-              filename: "diagram.png",
-              contentType: "image/png",
-              size: 19,
-            },
-          ],
+          attachments: [],
           threadContextMessages: [],
         },
       }),
@@ -1593,7 +1586,6 @@ export class HubHarness {
         this.materializations += 1;
         await this.materializationGate?.promise;
         return {
-          prompt: launch.prompt.replace("<secret>", "resolved-secret"),
           ...(launch.environmentEnv === undefined
             ? {}
             : {
@@ -1659,7 +1651,14 @@ class HarnessSlackClient implements SlackBotClient {
         createdAt: "2023-11-14T22:13:20.050Z",
         content: "Please inspect the latest diagram",
         author: { id: "U2" },
-        attachments: [],
+        attachments: [
+          {
+            id: "F1",
+            filename: "diagram.png",
+            contentType: "image/png",
+            size: 19,
+          },
+        ],
       },
       {
         ts: "1700000000.000075",

@@ -134,18 +134,22 @@ export function createDiscordTriggerProvider(options: {
 
       return matches;
     },
-    async materializeLaunch(launch) {
+    async materializeContext(launch) {
       const event = await materializeDiscordMergeData(
         launch.triggerContext.event,
         launch.executionId,
         options.attachments,
       );
       return {
-        prompt: appendDiscordAttachmentContext(launch.prompt, event),
-        ...(launch.environmentEnv === undefined ? {} : { environmentEnv: launch.environmentEnv }),
-        ...(launch.environmentWorktree === undefined
-          ? {}
-          : { environmentWorktree: launch.environmentWorktree }),
+        discord: {
+          thread:
+            event.discord.trigger_message.thread === null
+              ? null
+              : {
+                  ...event.discord.trigger_message.thread,
+                  messages: event.discord.trigger_thread_context.messages,
+                },
+        },
       };
     },
     async onDispatchAccepted(triggerContext) {
@@ -288,20 +292,6 @@ async function registerAttachments(
       }),
     ),
   );
-}
-
-function appendDiscordAttachmentContext(prompt: string, event: DiscordMergeData): string {
-  const attachments = [
-    ...event.discord.trigger_message.attachments,
-    ...event.discord.trigger_thread_context.messages.flatMap((message) => message.attachments),
-  ];
-  if (attachments.length === 0) return prompt;
-  return `${prompt}\n\nDiscord attachments:\n${attachments
-    .map(
-      (attachment) =>
-        `- ${attachment.filename} (${attachment.content_type ?? "unknown type"}, ${attachment.size ?? "unknown size"} bytes): ${"url" in attachment && typeof attachment.url === "string" ? attachment.url : "unavailable"}`,
-    )
-    .join("\n")}`;
 }
 
 async function materializeDiscordMergeData(

@@ -387,7 +387,7 @@ describe("daemon enrollment and execution", () => {
     }
   });
 
-  it("hands off before provider-owned launch materialization and persists no resolved value", async () => {
+  it("materializes provider-owned environment values without rewriting the authored prompt", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
     hub.holdLaunchMaterialization();
@@ -418,7 +418,7 @@ describe("daemon enrollment and execution", () => {
 
       hub.releaseLaunchMaterialization();
       await hub.waitForRecoveredExecution(handedOff.execution.id);
-      assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
+      assert.match(String(hub.createdAgentLaunch().prompt), /token=<secret>$/u);
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
         mode: "checkout-branch",
@@ -469,7 +469,7 @@ describe("daemon enrollment and execution", () => {
     assert(execution !== undefined);
     await hub.waitForRecoveredExecution(execution.id);
 
-    assert.match(String(hub.createdAgentLaunch().prompt), /token=resolved-secret$/u);
+    assert.match(String(hub.createdAgentLaunch().prompt), /token=<secret>$/u);
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
       mode: "checkout-branch",
@@ -824,7 +824,8 @@ describe("daemon enrollment and execution", () => {
     assert.equal(pending.daemonAgentId, null);
     await hub.replaceDaemon({ acceptSpawns: true });
 
-    const recovered = await hub.waitForRecoveredExecution(pending.id);
+    await hub.waitForRecoveredExecution(pending.id);
+    const recovered = await hub.waitForExecutionStatus(pending.id, "running");
     assert.equal(recovered.status, "running");
     assert.equal(hub.createdAgentRequestCount(), 2);
     assert.equal(hub.createdAgentCount(), 1);

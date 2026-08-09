@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import type { SlackBotClient, SlackThreadMessage } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
@@ -243,11 +244,11 @@ describe("Slack Phase 1 trigger provider", () => {
       },
     );
     const client = new RecordingSlackClient({
-      threadMessages: Array.from({ length: 50 }, (_, index) => ({
+      threadMessages: Array.from({ length: 55 }, (_, index) => ({
         ts: `1700000000.${String(index + 1).padStart(6, "0")}`,
         createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
         content: `reply-${index + 1}`,
-        author: { id: index === 49 ? "B1" : `U${index + 1}` },
+        author: { id: index === 54 ? "B1" : `U${index + 1}` },
         attachments: [],
       })),
     });
@@ -257,12 +258,14 @@ describe("Slack Phase 1 trigger provider", () => {
       client,
     });
 
-    const threadMatch = (await provider.match(external(project.id, revision.id)))[0];
+    const threadMatch = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.000056" }))
+    )[0];
     if (!isAcceptedTriggerProviderMatch(threadMatch)) throw new Error("expected accepted match");
     assert.equal(threadMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 50);
     assert.equal(
       threadMatch.triggerContext.event.slack.trigger_thread_context.messages[0]?.content,
-      "reply-1",
+      "reply-6",
     );
     assert.equal(
       threadMatch.triggerContext.event.slack.trigger_thread_context.messages.at(-1)?.author.id,
@@ -275,6 +278,105 @@ describe("Slack Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(rootMatch)) throw new Error("expected accepted match");
     assert.equal(rootMatch.triggerContext.event.slack.trigger_thread_context.messages.length, 0);
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
+  });
+
+  it("exposes thread messages and execution-scoped attachments only through context", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const attachments = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {},
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient({
+        threadMessages: [
+          {
+            ts: "1700000000.000000",
+            createdAt: "2023-11-14T22:13:19.000Z",
+            content: "earlier screenshot",
+            author: { id: "U2" },
+            attachments: [
+              {
+                id: "F1",
+                filename: "screen.png",
+                contentType: "image/png",
+                size: 42,
+              },
+            ],
+          },
+        ],
+      }),
+      attachments,
+    });
+    const match = (
+      await provider.match({
+        ...external(project.id, revision.id),
+        connectionId: "22222222-2222-4222-8222-222222222222",
+      })
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const reference =
+      match.triggerContext.event.slack.trigger_thread_context.messages[0]!.attachments[0]!;
+    const context = await provider.materializeContext?.({
+      executionId: "execution-slack-context",
+      organizationId: "org-1",
+      projectId: project.id,
+      triggerContext: match.triggerContext,
+    });
+
+    assert.deepEqual(context, {
+      slack: {
+        thread: {
+          status: "available",
+          messages: [
+            {
+              ts: "1700000000.000000",
+              content: "earlier screenshot",
+              author: { id: "U2" },
+              channel: { id: "C1" },
+              created_at: "2023-11-14T22:13:19.000Z",
+              attachments: [
+                {
+                  id: reference.id,
+                  filename: "screen.png",
+                  content_type: "image/png",
+                  size: 42,
+                  url: attachments.urlFor(reference.id, "execution-slack-context"),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("distinguishes an unavailable Slack thread from an empty hydrated thread", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient({ failThreadRead: true }),
+    });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.deepEqual(match.triggerContext.event.slack.trigger_thread_context, {
+      status: "unavailable",
+      messages: [],
+    });
   });
 
   it("does not hydrate an unrouted Slack thread", async () => {
@@ -377,7 +479,12 @@ function inputMarkerConfiguration() {
 function external(
   projectId: string,
   configurationRevisionId: string,
-  overrides: { threadTs?: string | null; content?: string; authorId?: string } = {},
+  overrides: {
+    threadTs?: string | null;
+    messageTs?: string;
+    content?: string;
+    authorId?: string;
+  } = {},
 ) {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
@@ -393,7 +500,7 @@ function external(
       teamId: "T1",
       appId: "A1",
       channelId: "C1",
-      messageTs: "1700000000.000001",
+      messageTs: overrides.messageTs ?? "1700000000.000001",
       threadTs: overrides.threadTs === undefined ? "1700000000.000001" : overrides.threadTs,
       eventTs: "1700000000.000001",
       eventTime: 1_700_000_001,
@@ -423,6 +530,7 @@ class RecordingSlackClient implements SlackBotClient {
       threadMessages?: SlackThreadMessage[];
       failAddReaction?: string;
       failMessages?: boolean;
+      failThreadRead?: boolean;
     } = {},
   ) {
     this.threadMessages = options.threadMessages ?? [];
@@ -454,6 +562,9 @@ class RecordingSlackClient implements SlackBotClient {
     beforeTs: string;
   }): Promise<SlackThreadMessage[]> {
     this.threadReads.push(input.threadTs);
+    if (this.options.failThreadRead === true) {
+      return Promise.reject(new Error("thread history unavailable"));
+    }
     return Promise.resolve(this.threadMessages);
   }
 }

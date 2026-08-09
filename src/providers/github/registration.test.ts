@@ -669,7 +669,6 @@ async function materialize(
     executionId,
     organizationId: "org_1",
     projectId: "project-1",
-    prompt: "Handle the GitHub issue comment.",
     triggerContext: match.triggerContext,
   });
 }
