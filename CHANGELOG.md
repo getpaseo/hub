@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 - 2026-08-09
+
+### Added
+
+- Browser-based project configuration editing, including prompt partials and GitHub-backed configuration.
+- Durable Hub login support for the Paseo CLI.
+- Provider-specific passthrough options with provider-owned validation.
+- Scoped preapproval for the exact Hub MCP tools authorized by each workflow step.
+
+### Changed
+
+- Project selection and configuration flows are clearer in the dashboard.
+
+### Fixed
+
+- Prompt partials remain available when configuration authority changes.
+- Long configuration files and GitHub source controls remain usable in the configuration editor.
+- Hosted deployments wait for a green `main` build before deploying to Fly.
+
 ## 0.1.0 - 2026-08-07
 
 ### Added
