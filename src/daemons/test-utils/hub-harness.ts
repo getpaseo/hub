@@ -165,6 +165,8 @@ export class HubHarness {
   }> = [];
   private readonly authorityRevocations: string[] = [];
   private authorityTokenCount = 0;
+  private issueAuthorityConnectionLease = false;
+  private authorityMintPermanentlyUnresolved = false;
   private executionAuthority!: ExecutionAuthority;
 
   static async start(): Promise<HubHarness> {
@@ -775,6 +777,21 @@ export class HubHarness {
   }
   authorityRevokedTokens(): readonly string[] {
     return this.authorityRevocations;
+  }
+  issueConnectionLeaseOnAuthorityMaterialization(): void {
+    this.issueAuthorityConnectionLease = true;
+  }
+  hangAuthorityMintPermanently(): void {
+    this.authorityMintPermanentlyUnresolved = true;
+  }
+  async waitForAuthorityMint(): Promise<void> {
+    await waitFor(async () => this.authorityMints.length > 0);
+  }
+  async waitForAuthorityRevocation(): Promise<void> {
+    await waitFor(async () => this.authorityRevocations.length > 0);
+  }
+  authorityStopResult(): ReturnType<ExecutionAuthority["stop"]> {
+    return this.executionAuthority.stop();
   }
   hookContexts() {
     return { started: this.startedHooks, completed: this.completedHooks };
@@ -1462,15 +1479,23 @@ export class HubHarness {
 
   private createExecutionAuthority(): ExecutionAuthority {
     return createExecutionAuthority({
-      connectionsForProject: () => async (connectionSlug, value) => {
+      connectionsForProject: () => async (connectionSlug, value, context) => {
         if (connectionSlug !== "some-connection" || value !== "token") {
           throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
+        }
+        if (this.issueAuthorityConnectionLease) {
+          await context?.registerToken?.("durable-connection-token", async () => {
+            this.authorityRevocations.push("durable-connection-token");
+          });
         }
         return "resolved-secret";
       },
       githubAuthority: {
         mint: async (input) => {
           this.authorityMints.push(input);
+          if (this.authorityMintPermanentlyUnresolved) {
+            await new Promise<never>(() => undefined);
+          }
           this.authorityTokenCount += 1;
           return {
             token: `durable-scoped-token-${this.authorityTokenCount}`,

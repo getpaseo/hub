@@ -90,11 +90,17 @@ interface ExecutionState {
   leaseWaiters: Set<() => void>;
 }
 
+interface TerminalCleanup {
+  cancel(): void;
+  promise: Promise<void>;
+}
+
 export function createExecutionAuthority(
   options: CreateExecutionAuthorityOptions,
 ): ExecutionAuthority {
   const clock = options.clock ?? systemClock;
   const states = new Map<string, ExecutionState>();
+  const terminalCleanups = new Map<string, TerminalCleanup>();
   let stopped = false;
   let stopPromise: Promise<ExecutionAuthorityStopResult> | undefined;
 
@@ -258,9 +264,41 @@ export function createExecutionAuthority(
     const state = getOrCreateState(executionId);
     state.terminal = true;
     await revokeLeases(executionId, state, "terminal");
-    await waitForPendingMaterializations(state);
-    await revokeLeases(executionId, state, "terminal");
-    deleteEmptyState(states, executionId, state);
+    startTerminalCleanup(executionId, state);
+  }
+
+  function startTerminalCleanup(executionId: string, state: ExecutionState): void {
+    if (state.pendingMaterializations === 0) {
+      deleteEmptyState(states, executionId, state);
+      return;
+    }
+    if (terminalCleanups.has(executionId)) return;
+    const pending = waitForPendingMaterializationsUntilCanceled(state);
+    const cleanup: TerminalCleanup = {
+      cancel: () => pending.cancel(),
+      promise: Promise.resolve(),
+    };
+    cleanup.promise = (async () => {
+      if ((await pending.outcome) === "canceled") return;
+      await revokeLeases(executionId, state, "terminal");
+      deleteEmptyState(states, executionId, state);
+    })()
+      .catch((error: unknown) => {
+        logger.warn(
+          {
+            executionId,
+            phase: "terminal-cleanup",
+            errorType: error instanceof Error ? error.name : "unknown",
+          },
+          "execution authority detached terminal cleanup failed",
+        );
+      })
+      .finally(() => {
+        if (terminalCleanups.get(executionId) === cleanup) {
+          terminalCleanups.delete(executionId);
+        }
+      });
+    terminalCleanups.set(executionId, cleanup);
   }
 
   function getOrCreateState(executionId: string): ExecutionState {
@@ -290,6 +328,7 @@ export function createExecutionAuthority(
   async function stop(): Promise<ExecutionAuthorityStopResult> {
     if (stopPromise !== undefined) return stopPromise;
     stopped = true;
+    for (const cleanup of terminalCleanups.values()) cleanup.cancel();
     stopPromise = (async () => {
       const activeStates = [...states.entries()];
       for (const [, state] of activeStates) state.terminal = true;
@@ -430,6 +469,29 @@ export function createExecutionAuthority(
   async function waitForPendingMaterializations(state: ExecutionState): Promise<void> {
     if (state.pendingMaterializations === 0) return;
     await new Promise<void>((resolve) => state.pendingWaiters.add(resolve));
+  }
+
+  function waitForPendingMaterializationsUntilCanceled(state: ExecutionState): {
+    outcome: Promise<"settled" | "canceled">;
+    cancel(): void;
+  } {
+    if (state.pendingMaterializations === 0) {
+      return { outcome: Promise.resolve("settled"), cancel: () => undefined };
+    }
+    let resolveOutcome!: (outcome: "settled" | "canceled") => void;
+    let finished = false;
+    const outcome = new Promise<"settled" | "canceled">((resolve) => {
+      resolveOutcome = resolve;
+    });
+    const settle = (result: "settled" | "canceled"): void => {
+      if (finished) return;
+      finished = true;
+      state.pendingWaiters.delete(onSettled);
+      resolveOutcome(result);
+    };
+    const onSettled = (): void => settle("settled");
+    state.pendingWaiters.add(onSettled);
+    return { outcome, cancel: () => settle("canceled") };
   }
 
   async function waitForLeasesClosed(state: ExecutionState): Promise<void> {

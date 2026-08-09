@@ -476,6 +476,51 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.createdAgentRequestCount(), 2);
   });
 
+  it("bounds Hub shutdown when terminal cleanup follows a permanently unresolved authority mint", async () => {
+    await hub.connectDaemon();
+    hub.issueConnectionLeaseOnAuthorityMaterialization();
+    hub.hangAuthorityMintPermanently();
+    const dispatch = hub.beginDispatch({
+      env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "read" },
+        durationMs: 60 * 60 * 1000,
+      },
+    });
+    const dispatchOutcome = dispatch.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const execution = await hub.waitForPendingExecution();
+    await hub.waitForAuthorityMint();
+
+    await hub.advanceDispatchTime(30_000);
+    await hub.waitForAuthorityRevocation();
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-connection-token"]);
+
+    const shutdownStartedAt = Date.now();
+    await hub.stopRuntimeResources();
+    const shutdownElapsedMs = Date.now() - shutdownStartedAt;
+    const stopResult = await hub.authorityStopResult();
+
+    assert.ok(shutdownElapsedMs < 15_000, `Hub shutdown took ${shutdownElapsedMs}ms`);
+    assert.ok((await dispatchOutcome) instanceof DaemonDispatchFailure);
+    assert.equal(hub.createdAgentRequestCount(), 0);
+    assert.deepEqual(stopResult, {
+      residualExposures: [
+        {
+          executionId: execution.id,
+          leaseCount: 0,
+          pendingMaterializations: 1,
+        },
+      ],
+    });
+    assert.equal(JSON.stringify(stopResult).includes("durable-connection-token"), false);
+    assert.equal(JSON.stringify(stopResult).includes("durable-scoped-token"), false);
+  }, 30_000);
+
   it("preserves literal worktree evidence during restart recovery", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
