@@ -1483,6 +1483,10 @@ export class HubHarness {
           this.authorityRevocations.push(token);
         },
       } satisfies GitHubAuthorityRegistration,
+      isExecutionActive: async (executionId) => {
+        const execution = await this.requireDatabase().findAgentExecutionById(executionId);
+        return execution?.status === "spawning" || execution?.status === "running";
+      },
     });
   }
 

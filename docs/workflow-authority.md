@@ -76,9 +76,13 @@ activation fails instead of making precedence order observable. Authority is
 materialized independently for each running step. Classifier and skipped steps do
 not receive it, and no Git-specific RPC field is sent to Paseo.
 
-Graceful Hub shutdown stops the authority owner and waits for active leases to revoke
-or reach their upstream expiry boundary. A hard process crash cannot run revocation;
-in that case GitHub's upstream one-hour token expiry is the unavoidable exposure
+Graceful Hub shutdown stops the authority owner and retries active lease revocation
+within a bounded shutdown grace period. If upstream revocation remains unavailable,
+shutdown reports token-free residual-exposure diagnostics and returns; unreferenced
+retries may continue while the process remains alive. A hard process crash cannot run
+revocation, so GitHub's upstream one-hour token expiry remains the unavoidable exposure
 boundary until a future persisted lease policy can provide stronger crash recovery.
-This file documents Hub runtime behavior only. The public Paseo documentation is
-maintained in the Paseo repository and follows in a separate change.
+
+This file documents Hub runtime behavior only. Matching public Paseo documentation is
+not included in this PR and remains a blocking follow-up in the Paseo repository. This
+change is not documentation-complete until that public docs PR exists and is linked.

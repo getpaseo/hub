@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
-import type { ExecutionAuthorityClock } from "./index.js";
-import { createExecutionAuthority } from "./index.js";
+import type { CreateExecutionAuthorityOptions, ExecutionAuthorityClock } from "./index.js";
+import { createExecutionAuthority as createProductionExecutionAuthority } from "./index.js";
+
+function createExecutionAuthority(
+  options: Omit<CreateExecutionAuthorityOptions, "isExecutionActive"> &
+    Partial<Pick<CreateExecutionAuthorityOptions, "isExecutionActive">>,
+) {
+  return createProductionExecutionAuthority({
+    ...options,
+    isExecutionActive: options.isExecutionActive ?? (async () => true),
+  });
+}
 
 describe("Hub execution authority", () => {
   it.each(["discord", "slack", "github", "manual"] as const)(
@@ -207,8 +217,9 @@ describe("Hub execution authority", () => {
     assert.deepEqual(mint.revoked, ["scoped-token-1"]);
   });
 
-  it("retains a terminal tombstone and rejects stale post-terminal materialization", async () => {
+  it("uses durable terminal state to reject stale post-terminal materialization", async () => {
     let mints = 0;
+    let active = true;
     const authority = createExecutionAuthority({
       connectionsForProject: () => async () => "unused",
       githubAuthority: {
@@ -223,8 +234,10 @@ describe("Hub execution authority", () => {
           };
         },
       },
+      isExecutionActive: async () => active,
     });
 
+    active = false;
     await authority.onExecutionTerminal("terminal-tombstone");
 
     await assert.rejects(
@@ -268,6 +281,85 @@ describe("Hub execution authority", () => {
       /terminal execution/iu,
     );
     assert.deepEqual(revocations, ["durable-token"]);
+  });
+
+  it("rejects and revokes when terminal begins during the final durable activity query", async () => {
+    let activityQueries = 0;
+    let finalQueryStarted!: () => void;
+    const finalQueryObserved = new Promise<void>((resolve) => {
+      finalQueryStarted = resolve;
+    });
+    let resolveFinalQuery!: (active: boolean) => void;
+    const finalQuery = new Promise<boolean>((resolve) => {
+      resolveFinalQuery = resolve;
+    });
+    const revocations: string[] = [];
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async (_slug, _value, context) => {
+        await context?.registerToken?.("final-query-token", () => {
+          revocations.push("final-query-token");
+        });
+        return "resolved-secret";
+      },
+      isExecutionActive: async () => {
+        activityQueries += 1;
+        if (activityQueries === 1) return true;
+        finalQueryStarted();
+        return finalQuery;
+      },
+    });
+
+    const materialization = authority.materialize({
+      executionId: "terminal-during-final-query",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
+    });
+    await finalQueryObserved;
+    const terminal = authority.onExecutionTerminal("terminal-during-final-query");
+    resolveFinalQuery(true);
+
+    await assert.rejects(materialization, /terminal execution/iu);
+    await terminal;
+    assert.deepEqual(revocations, ["final-query-token"]);
+  });
+
+  it("registers materialization before the initial durable activity query", async () => {
+    let activityQueryStarted!: () => void;
+    const activityQueryObserved = new Promise<void>((resolve) => {
+      activityQueryStarted = resolve;
+    });
+    let resolveActivityQuery!: (active: boolean) => void;
+    const activityQuery = new Promise<boolean>((resolve) => {
+      resolveActivityQuery = resolve;
+    });
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async () => "unused",
+      isExecutionActive: async () => {
+        activityQueryStarted();
+        return activityQuery;
+      },
+    });
+
+    const materialization = authority.materialize({
+      executionId: "stop-during-initial-query",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      env: { VALUE: "literal" },
+    });
+    await activityQueryObserved;
+    const stopping = authority.stop();
+    let stopReturned = false;
+    void stopping.then(() => {
+      stopReturned = true;
+      return undefined;
+    });
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    assert.equal(stopReturned, false);
+
+    resolveActivityQuery(true);
+    await assert.rejects(materialization, /stopped/iu);
+    await stopping;
   });
 
   it("does not return an explicit GitHub token after durable execution becomes terminal", async () => {
@@ -366,6 +458,64 @@ describe("Hub execution authority", () => {
     assert.deepEqual(revoked, ["race-token"]);
   });
 
+  it("revokes held connection credentials before waiting for an unrelated hung GitHub mint", async () => {
+    const revoked: string[] = [];
+    let releaseMint!: () => void;
+    const mintBlocked = new Promise<void>((resolve) => {
+      releaseMint = resolve;
+    });
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async (_slug, _value, context) => {
+        await context?.registerToken?.("held-connection-token", () => {
+          revoked.push("held-connection-token");
+        });
+        return "resolved-secret";
+      },
+      githubAuthority: {
+        mint: async () => {
+          await mintBlocked;
+          return {
+            token: "late-github-token",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            botUserId: 1,
+            botLogin: "paseo[bot]",
+          };
+        },
+        revoke: async (token) => {
+          revoked.push(token);
+        },
+      },
+      isExecutionActive: async () => true,
+    });
+    await authority.materialize({
+      executionId: "terminal-ordering",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
+    });
+    const hungMaterialization = authority.materialize({
+      executionId: "terminal-ordering",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "read" },
+        durationMs: 60 * 60 * 1000,
+      },
+    });
+    await Promise.resolve();
+
+    const terminal = authority.onExecutionTerminal("terminal-ordering");
+    await Promise.resolve();
+    assert.deepEqual(revoked, ["held-connection-token"]);
+
+    releaseMint();
+    await assert.rejects(hungMaterialization, /terminal execution/iu);
+    await terminal;
+    assert.deepEqual(revoked, ["held-connection-token", "late-github-token"]);
+  });
+
   it("revokes active leases when the authority owner stops", async () => {
     const mint = githubAuthorityFake();
     const authority = createExecutionAuthority({
@@ -438,7 +588,7 @@ describe("Hub execution authority", () => {
 
     const stopping = authority.stop();
     await firstAttemptObserved;
-    await clock.waitForScheduledTimer();
+    await clock.waitForScheduledDelay(1_000);
     assert.equal(attempts, 1);
     let stopped = false;
     void stopping.then(() => {
@@ -451,6 +601,63 @@ describe("Hub execution authority", () => {
     await clock.advance(1_000);
     await stopping;
     assert.equal(attempts, 2);
+  });
+
+  it("returns bounded token-free residual exposure when shutdown revocation keeps failing", async () => {
+    const clock = new TestClock();
+    let attempts = 0;
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async () => "unused",
+      githubAuthority: {
+        mint: async () => ({
+          token: "must-not-appear-in-stop-evidence",
+          expiresAt: clock.now() + 60 * 60 * 1000,
+          botUserId: 1,
+          botLogin: "paseo[bot]",
+        }),
+        revoke: async () => {
+          attempts += 1;
+          throw new Error("permanent upstream failure");
+        },
+      },
+      clock,
+      isExecutionActive: async () => true,
+    });
+    await authority.materialize({
+      executionId: "bounded-shutdown",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "read" },
+        durationMs: 60 * 60 * 1000,
+      },
+    });
+
+    let stopResult: Awaited<ReturnType<typeof authority.stop>> | undefined;
+    void authority.stop().then((result) => {
+      stopResult = result;
+      return undefined;
+    });
+    await clock.waitForScheduledDelay(10_000);
+    await clock.advance(10_000);
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+    assert.notEqual(stopResult, undefined);
+    assert.deepEqual(stopResult, {
+      residualExposures: [
+        {
+          executionId: "bounded-shutdown",
+          leaseCount: 1,
+          pendingMaterializations: 0,
+          earliestUpstreamExpiresAt: Date.parse("2026-08-01T01:00:00.000Z"),
+        },
+      ],
+    });
+    assert.equal(JSON.stringify(stopResult).includes("must-not-appear-in-stop-evidence"), false);
+    assert.equal(clock.referencedTimerCount(), 0);
+    assert.ok(attempts >= 1);
   });
 
   it("retains a failed deadline revocation and retries it through the clock seam", async () => {
@@ -575,6 +782,35 @@ describe("Hub execution authority", () => {
     await clock.advance(10_000);
     assert.equal(attempts, 3);
   });
+
+  it("does not retain empty terminal execution states", async () => {
+    const inactive = new Set<string>();
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async () => "unused",
+      isExecutionActive: async (executionId) => !inactive.has(executionId),
+    });
+
+    for (let index = 0; index < 250; index += 1) {
+      const executionId = `completed-${index}`;
+      inactive.add(executionId);
+      await authority.onExecutionTerminal(executionId);
+    }
+
+    assert.deepEqual(authority.resourceCounts(), {
+      executionStates: 0,
+      leases: 0,
+      pendingMaterializations: 0,
+    });
+    await assert.rejects(
+      authority.materialize({
+        executionId: "completed-249",
+        projectId: "project-1",
+        triggerContext: { provider: "manual" },
+        env: { VALUE: "literal" },
+      }),
+      /terminal execution/iu,
+    );
+  });
 });
 
 function githubAuthorityFake(now: () => number = Date.now) {
@@ -608,24 +844,34 @@ function githubAuthorityFake(now: () => number = Date.now) {
 class TestClock implements ExecutionAuthorityClock {
   private current = Date.parse("2026-08-01T00:00:00.000Z");
   private nextId = 0;
-  private timers = new Map<number, { at: number; callback: () => Promise<void> }>();
+  private timers = new Map<number, { at: number; callback: () => Promise<void>; ref: boolean }>();
   private scheduleWaiters = new Set<() => void>();
 
   now(): number {
     return this.current;
   }
 
-  schedule(callback: () => Promise<void>, delayMs: number): () => void {
+  schedule(
+    callback: () => Promise<void>,
+    delayMs: number,
+    options?: { ref?: boolean },
+  ): () => void {
     const id = this.nextId++;
-    this.timers.set(id, { at: this.current + delayMs, callback });
+    this.timers.set(id, { at: this.current + delayMs, callback, ref: options?.ref === true });
     for (const resolve of this.scheduleWaiters) resolve();
     this.scheduleWaiters.clear();
     return () => this.timers.delete(id);
   }
 
-  async waitForScheduledTimer(): Promise<void> {
-    if (this.timers.size > 0) return;
-    await new Promise<void>((resolve) => this.scheduleWaiters.add(resolve));
+  referencedTimerCount(): number {
+    return [...this.timers.values()].filter((timer) => timer.ref).length;
+  }
+
+  async waitForScheduledDelay(delayMs: number): Promise<void> {
+    const scheduledAt = this.current + delayMs;
+    while (![...this.timers.values()].some((timer) => timer.at === scheduledAt)) {
+      await new Promise<void>((resolve) => this.scheduleWaiters.add(resolve));
+    }
   }
 
   async advance(delayMs: number): Promise<void> {

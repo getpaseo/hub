@@ -10,6 +10,7 @@ import { logger } from "../logger.js";
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
 const REVOCATION_RETRY_WINDOW_MS = 60 * 60 * 1_000;
+const SHUTDOWN_GRACE_MS = 10_000;
 
 export interface ExecutionAuthorityClock {
   now(): number;
@@ -40,14 +41,32 @@ export interface MaterializedExecutionAuthority {
 export interface ExecutionAuthority {
   materialize(input: ExecutionAuthorityMaterialization): Promise<MaterializedExecutionAuthority>;
   onExecutionTerminal(executionId: string): Promise<void>;
-  stop(): Promise<void>;
+  resourceCounts(): ExecutionAuthorityResourceCounts;
+  stop(): Promise<ExecutionAuthorityStopResult>;
+}
+
+export interface ExecutionAuthorityResourceCounts {
+  executionStates: number;
+  leases: number;
+  pendingMaterializations: number;
+}
+
+export interface ExecutionAuthorityResidualExposure {
+  executionId: string;
+  leaseCount: number;
+  pendingMaterializations: number;
+  earliestUpstreamExpiresAt?: number;
+}
+
+export interface ExecutionAuthorityStopResult {
+  residualExposures: ExecutionAuthorityResidualExposure[];
 }
 
 export interface CreateExecutionAuthorityOptions {
   connectionsForProject: (projectId: string) => ConnectionResolver;
   githubAuthority?: GitHubAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
-  isExecutionActive?: ((executionId: string) => Promise<boolean>) | undefined;
+  isExecutionActive: (executionId: string) => Promise<boolean>;
 }
 
 interface TokenLease {
@@ -60,10 +79,11 @@ interface TokenLease {
   retryUntil?: number;
   revocationAttempts: number;
   revocationPromise?: Promise<void>;
+  retryScheduled: boolean;
 }
 
 interface ExecutionState {
-  pendingMints: number;
+  pendingMaterializations: number;
   terminal: boolean;
   leases: Map<string, TokenLease>;
   pendingWaiters: Set<() => void>;
@@ -75,19 +95,18 @@ export function createExecutionAuthority(
 ): ExecutionAuthority {
   const clock = options.clock ?? systemClock;
   const states = new Map<string, ExecutionState>();
-  const isExecutionActive = options.isExecutionActive ?? (() => Promise.resolve(true));
   let stopped = false;
-  let stopPromise: Promise<void> | undefined;
+  let stopPromise: Promise<ExecutionAuthorityStopResult> | undefined;
 
   async function materialize(
     input: ExecutionAuthorityMaterialization,
   ): Promise<MaterializedExecutionAuthority> {
     if (stopped) throw authorityStoppedError();
     const state = getOrCreateState(input.executionId);
-    await assertExecutionActive(state, input.executionId);
-    state.pendingMints += 1;
+    state.pendingMaterializations += 1;
     const ownedTokens = new Set<string>();
     try {
+      await assertExecutionActive(state, input.executionId);
       const tokenRevocations = new Map<string, Promise<string> | undefined>();
       const context = {
         executionId: input.executionId,
@@ -134,8 +153,8 @@ export function createExecutionAuthority(
       );
       throw error;
     } finally {
-      state.pendingMints -= 1;
-      if (state.pendingMints === 0) {
+      state.pendingMaterializations -= 1;
+      if (state.pendingMaterializations === 0) {
         for (const resolve of state.pendingWaiters) resolve();
         state.pendingWaiters.clear();
       }
@@ -215,6 +234,7 @@ export function createExecutionAuthority(
       cancelRetry: () => undefined,
       ...(upstreamExpiresAt === undefined ? {} : { upstreamExpiresAt }),
       revocationAttempts: 0,
+      retryScheduled: false,
     };
     state.leases.set(token, lease);
     if (state.terminal || stopped) {
@@ -237,15 +257,17 @@ export function createExecutionAuthority(
   async function onExecutionTerminal(executionId: string): Promise<void> {
     const state = getOrCreateState(executionId);
     state.terminal = true;
-    await waitForPendingMints(state);
     await revokeLeases(executionId, state, "terminal");
+    await waitForPendingMaterializations(state);
+    await revokeLeases(executionId, state, "terminal");
+    deleteEmptyState(states, executionId, state);
   }
 
   function getOrCreateState(executionId: string): ExecutionState {
     const existing = states.get(executionId);
     if (existing !== undefined) return existing;
     const state: ExecutionState = {
-      pendingMints: 0,
+      pendingMaterializations: 0,
       terminal: false,
       leases: new Map(),
       pendingWaiters: new Set(),
@@ -255,24 +277,74 @@ export function createExecutionAuthority(
     return state;
   }
 
-  async function stop(): Promise<void> {
+  function resourceCounts(): ExecutionAuthorityResourceCounts {
+    let leases = 0;
+    let pendingMaterializations = 0;
+    for (const state of states.values()) {
+      leases += state.leases.size;
+      pendingMaterializations += state.pendingMaterializations;
+    }
+    return { executionStates: states.size, leases, pendingMaterializations };
+  }
+
+  async function stop(): Promise<ExecutionAuthorityStopResult> {
     if (stopPromise !== undefined) return stopPromise;
     stopped = true;
     stopPromise = (async () => {
       const activeStates = [...states.entries()];
       for (const [, state] of activeStates) state.terminal = true;
-      await Promise.all(activeStates.map(([, state]) => waitForPendingMints(state)));
-      await Promise.all(
+      let graceElapsed!: () => void;
+      const grace = new Promise<"grace-elapsed">((resolve) => {
+        graceElapsed = () => resolve("grace-elapsed");
+      });
+      const cancelGrace = clock.schedule(async () => graceElapsed(), SHUTDOWN_GRACE_MS, {
+        ref: true,
+      });
+      const cleanup = Promise.all(
         activeStates.map(async ([executionId, state]) => {
           await revokeLeases(executionId, state, "stop");
+          await waitForPendingMaterializations(state);
+          await revokeLeases(executionId, state, "stop");
           await waitForLeasesClosed(state);
+          deleteEmptyState(states, executionId, state);
         }),
-      );
+      ).then(() => "clean" as const);
+      const outcome = await Promise.race([cleanup, grace]);
+      cancelGrace();
+      const residualExposures = outcome === "clean" ? [] : collectResidualExposures(activeStates);
+      if (residualExposures.length > 0) {
+        logger.warn(
+          { shutdownGraceMs: SHUTDOWN_GRACE_MS, residualExposures },
+          "execution authority shutdown grace elapsed with residual credential exposure",
+        );
+      }
+      return { residualExposures };
     })();
     return stopPromise;
   }
 
-  return { materialize, onExecutionTerminal, stop };
+  return { materialize, onExecutionTerminal, resourceCounts, stop };
+
+  function collectResidualExposures(
+    activeStates: Array<[string, ExecutionState]>,
+  ): ExecutionAuthorityResidualExposure[] {
+    return activeStates.flatMap(([executionId, state]) => {
+      if (state.leases.size === 0 && state.pendingMaterializations === 0) return [];
+      const upstreamExpiries = [...state.leases.values()].flatMap((lease) =>
+        lease.upstreamExpiresAt === undefined ? [] : [lease.upstreamExpiresAt],
+      );
+      return [
+        {
+          executionId,
+          leaseCount: state.leases.size,
+          pendingMaterializations: state.pendingMaterializations,
+          ...(upstreamExpiries.length === 0
+            ? {}
+            : { earliestUpstreamExpiresAt: Math.min(...upstreamExpiries) }),
+        },
+      ];
+    });
+  }
 
   async function requestLeaseRevocation(
     executionId: string,
@@ -285,7 +357,9 @@ export function createExecutionAuthority(
     lease.cancelLeaseDeadline();
     lease.cancelUpstreamExpiry();
     if (lease.revocationPromise !== undefined) return lease.revocationPromise;
+    if (lease.retryScheduled) return;
 
+    let retryDelayMs: number | undefined;
     const attempt = async (): Promise<void> => {
       lease.revocationAttempts += 1;
       const succeeded = await revokeWithTimeout(lease.revoke, executionId, {
@@ -318,15 +392,12 @@ export function createExecutionAuthority(
         return;
       }
 
-      const backoff = Math.min(
-        REVOCATION_RETRY_BASE_DELAY_MS * 2 ** Math.min(lease.revocationAttempts - 1, 10),
-        retryUntil - now,
-      );
-      lease.cancelRetry();
-      lease.cancelRetry = clock.schedule(
-        () => requestLeaseRevocation(executionId, token, reason),
-        Math.max(0, backoff),
-        stopped ? { ref: true } : undefined,
+      retryDelayMs = Math.max(
+        0,
+        Math.min(
+          REVOCATION_RETRY_BASE_DELAY_MS * 2 ** Math.min(lease.revocationAttempts - 1, 10),
+          retryUntil - now,
+        ),
       );
     };
 
@@ -334,6 +405,13 @@ export function createExecutionAuthority(
     let revocationPromise!: Promise<void>;
     revocationPromise = pending.finally(() => {
       if (lease.revocationPromise === revocationPromise) delete lease.revocationPromise;
+      if (retryDelayMs === undefined || state.leases.get(token) !== lease) return;
+      lease.cancelRetry();
+      lease.retryScheduled = true;
+      lease.cancelRetry = clock.schedule(() => {
+        lease.retryScheduled = false;
+        return requestLeaseRevocation(executionId, token, reason);
+      }, retryDelayMs);
     });
     lease.revocationPromise = revocationPromise;
     return revocationPromise;
@@ -349,8 +427,8 @@ export function createExecutionAuthority(
     );
   }
 
-  async function waitForPendingMints(state: ExecutionState): Promise<void> {
-    if (state.pendingMints === 0) return;
+  async function waitForPendingMaterializations(state: ExecutionState): Promise<void> {
+    if (state.pendingMaterializations === 0) return;
     await new Promise<void>((resolve) => state.pendingWaiters.add(resolve));
   }
 
@@ -362,7 +440,10 @@ export function createExecutionAuthority(
   async function assertExecutionActive(state: ExecutionState, executionId: string): Promise<void> {
     if (stopped) throw authorityStoppedError();
     if (state.terminal) throw terminalExecutionError(executionId);
-    if (await isExecutionActive(executionId)) return;
+    const active = await options.isExecutionActive(executionId);
+    if (stopped) throw authorityStoppedError();
+    if (state.terminal) throw terminalExecutionError(executionId);
+    if (active) return;
     state.terminal = true;
     await revokeLeases(executionId, state, "terminal");
     throw terminalExecutionError(executionId);
@@ -482,8 +563,7 @@ function deleteEmptyState(
 ): void {
   if (
     states.get(executionId) === state &&
-    !state.terminal &&
-    state.pendingMints === 0 &&
+    state.pendingMaterializations === 0 &&
     state.leases.size === 0
   ) {
     states.delete(executionId);
