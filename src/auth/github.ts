@@ -130,7 +130,7 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
     const cached = appBotIdentityCache.get(appSlug);
     if (cached !== undefined) return cached;
     const pending = (async () => {
-      const octokit = await getAppOctokit();
+      const octokit = new Octokit({ request: githubRequestOptions(options.fetch) });
       const response = await octokit.request("GET /users/{username}", {
         username: `${appSlug}[bot]`,
       });
