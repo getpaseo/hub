@@ -7,7 +7,12 @@ import {
   type AttachmentResolver,
 } from "./attachments/capabilities.js";
 import { ProjectConfigurationStore } from "./configuration/store.js";
-import type { Database, TriggerRunRecord, WorkflowDeadlineRecovery } from "./db/types.js";
+import type {
+  AcceptedTriggerRunRecord,
+  Database,
+  TriggerRunRecord,
+  WorkflowDeadlineRecovery,
+} from "./db/types.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
 import {
   ActiveDaemonRegistry,
@@ -191,6 +196,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
           onWorkflowDeadlineExceeded: async (recovery: WorkflowDeadlineRecovery) => {
             await daemonModule.lifecycle.recoverWorkflowDeadlineExecutions(recovery.executionIds);
           },
+          onWorkflowRunAccepted: (run: AcceptedTriggerRunRecord) =>
+            daemonModule.lifecycle.notifyWorkflowRunAccepted(run),
+          onWorkflowRunStarted: (run: AcceptedTriggerRunRecord) =>
+            daemonModule.lifecycle.notifyWorkflowRunStarted(run),
           onWorkflowRunTerminal: (run: TriggerRunRecord) =>
             daemonModule.lifecycle.notifyWorkflowRunTerminal(run),
         }),

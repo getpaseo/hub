@@ -13,6 +13,7 @@ import type {
   HubAction,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
+  AcceptedTriggerRunRecord,
   TriggerRunRecord,
   WorkflowDeadlineKind,
   WorkflowAgentCompletionInput,
@@ -28,8 +29,10 @@ import {
   notifyAgentExecutionFailed,
   notifyAgentExecutionStarted,
   notifyAgentExecutionTerminal,
+  notifyDispatchAccepted,
   notifyMachineTerminated,
 } from "../triggers/lifecycle.js";
+import type { TriggerProviderReactionState } from "../triggers/index.js";
 import {
   DaemonCreateRejectedError,
   DaemonCreateResponseLostError,
@@ -205,34 +208,61 @@ export class DaemonDispatchLifecycle {
       }
       const resumable = await this.prepareClaimedDurableDispatch(execution);
       if (resumable !== undefined) {
-        this.startDurableDispatch(resumable, this.notifyDispatchAccepted(intent));
+        this.startDurableDispatch(resumable, this.notifyDispatchAccepted(intent, true));
       }
       return { execution };
     }
-    this.startDurableDispatch(prepared, this.notifyDispatchAccepted(intent));
+    this.startDurableDispatch(prepared, this.notifyDispatchAccepted(intent, true));
     return { execution: prepared.execution };
   }
 
-  async notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<void> {
-    if (run.outcome !== "accepted" || run.status === "running") return;
+  async notifyWorkflowRunAccepted(
+    run: AcceptedTriggerRunRecord,
+  ): Promise<TriggerProviderReactionState> {
     const provider = this.findProviderForTriggerContext(run.triggerContext);
-    if (provider === undefined) return;
+    if (provider === undefined) return run.reactionState;
+    return notifyDispatchAccepted({
+      provider,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      reactionState: run.reactionState,
+    });
+  }
+
+  async notifyWorkflowRunStarted(
+    run: AcceptedTriggerRunRecord,
+  ): Promise<TriggerProviderReactionState> {
+    const provider = this.findProviderForTriggerContext(run.triggerContext);
+    if (provider === undefined) return run.reactionState;
+    return notifyAgentExecutionStarted({
+      provider,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      reactionState: run.reactionState,
+    });
+  }
+
+  async notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<TriggerProviderReactionState> {
+    if (run.outcome !== "accepted" || run.status === "running") return null;
+    const provider = this.findProviderForTriggerContext(run.triggerContext);
+    if (provider === undefined) return run.reactionState;
     if (run.status === "succeeded") {
-      await notifyAgentExecutionCompleted({
+      return notifyAgentExecutionCompleted({
         provider,
         triggerContext: run.triggerContext,
         outputContext: run.outputContext,
         result: { status: "succeeded" },
+        reactionState: run.reactionState,
       });
-      return;
     }
-    await notifyAgentExecutionFailed({
+    return notifyAgentExecutionFailed({
       provider,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       reason:
         run.failureReason ??
         (run.status === "timed_out" ? "workflow_timed_out" : "workflow_failed"),
+      reactionState: run.reactionState,
     });
   }
 
@@ -470,9 +500,8 @@ export class DaemonDispatchLifecycle {
   ): Promise<DaemonDispatchResult> {
     const { intent, daemon, execution, completionToken, deadlineAt, publicBaseUrl } = prepared;
     try {
-      const provider = this.findProviderForTriggerContext(intent.triggerContext);
       if (notifyAccepted) {
-        await provider?.onDispatchAccepted?.(intent.triggerContext, intent.outputContext);
+        await this.notifyDispatchAccepted(intent, false, execution.id);
       }
 
       const agentId = await this.acquireAndSpawnAgent(
@@ -1310,27 +1339,46 @@ export class DaemonDispatchLifecycle {
     await this.options.database.completeHubAction(execution.id, action);
   }
 
-  private async notifyMachineTerminated(triggerContext: unknown, reason: string): Promise<void> {
+  private async notifyMachineTerminated(
+    triggerContext: unknown,
+    reason: string,
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionState> {
     const provider = this.findProviderForTriggerContext(triggerContext);
     if (provider === undefined) {
-      return;
+      return reactionState ?? null;
     }
 
-    await notifyMachineTerminated({
+    return notifyMachineTerminated({
       provider,
       triggerContext,
       reason,
+      ...(reactionState === undefined ? {} : { reactionState }),
     });
   }
 
-  private notifyDispatchAccepted(intent: LaunchMachineIntent): Promise<void> {
+  private async notifyDispatchAccepted(
+    intent: LaunchMachineIntent,
+    swallowErrors = false,
+    executionId = durableExecutionId(intent),
+  ): Promise<void> {
+    if (intent.workflowStepRunId !== undefined && intent.workflowStepRunId !== null) return;
     const provider = this.findProviderForTriggerContext(intent.triggerContext);
-    if (provider?.onDispatchAccepted === undefined) return Promise.resolve();
-    return Promise.resolve()
-      .then(() => provider.onDispatchAccepted!(intent.triggerContext, intent.outputContext))
-      .catch((error: unknown) => {
-        this.logger.error({ err: error }, "provider acceptance hook failed");
+    if (provider === undefined) return;
+    const execution = await this.options.database.findAgentExecutionById(executionId);
+    if (execution === undefined) return;
+    try {
+      const reactionState = await notifyDispatchAccepted({
+        provider,
+        triggerContext: intent.triggerContext,
+        outputContext: intent.outputContext,
+        reactionState: execution.reactionState,
       });
+      await this.options.database.setAgentExecutionReactionState(execution.id, reactionState);
+    } catch (error: unknown) {
+      this.logger.error({ err: error }, "provider acceptance hook failed");
+      if (!swallowErrors) throw error;
+    }
   }
 
   private async notifyExecutionLifecycle(
@@ -1340,16 +1388,10 @@ export class DaemonDispatchLifecycle {
     const provider = this.findProviderForTriggerContext(execution.triggerContext);
     if (provider === undefined) return;
     if (execution.workflowStepRunId !== null) {
-      if (execution.status === "running") {
-        await notifyAgentExecutionStarted({
-          provider,
-          triggerContext: execution.triggerContext,
-          outputContext: execution.outputContext,
-        });
-      }
       return;
     }
-    await notifyIndividualExecution(provider, execution, failureReason);
+    const reactionState = await notifyIndividualExecution(provider, execution, failureReason);
+    await this.options.database.setAgentExecutionReactionState(execution.id, reactionState);
   }
 
   private async notifyExecutionTerminal(execution: AgentExecutionRecord): Promise<void> {
@@ -1387,10 +1429,14 @@ export class DaemonDispatchLifecycle {
     reason: string,
   ): Promise<void> {
     if (execution.workflowStepRunId !== null && execution.workflowStepRunId !== undefined) {
-      await this.notifyExecutionLifecycle(execution, reason);
       return;
     }
-    await this.notifyMachineTerminated(execution.triggerContext, reason);
+    const reactionState = await this.notifyMachineTerminated(
+      execution.triggerContext,
+      reason,
+      execution.reactionState,
+    );
+    await this.options.database.setAgentExecutionReactionState(execution.id, reactionState);
   }
 
   private findProviderForTriggerContext(triggerContext: unknown): TriggerProvider | undefined {
@@ -1807,26 +1853,29 @@ async function notifyIndividualExecution(
   provider: TriggerProvider,
   execution: AgentExecutionRecord,
   failureReason?: string,
-): Promise<void> {
+): Promise<TriggerProviderReactionState> {
   if (execution.status === "failed") {
-    await notifyAgentExecutionFailed({
+    return notifyAgentExecutionFailed({
       provider,
       triggerContext: execution.triggerContext,
       outputContext: execution.outputContext,
       reason: failureReason ?? executionFailureReason(execution) ?? "agent_execution_failed",
+      reactionState: execution.reactionState,
     });
   } else if (execution.status === "succeeded") {
-    await notifyAgentExecutionCompleted({
+    return notifyAgentExecutionCompleted({
       provider,
       triggerContext: execution.triggerContext,
       outputContext: execution.outputContext,
       result: { status: "succeeded" },
+      reactionState: execution.reactionState,
     });
   } else {
-    await notifyAgentExecutionStarted({
+    return notifyAgentExecutionStarted({
       provider,
       triggerContext: execution.triggerContext,
       outputContext: execution.outputContext,
+      reactionState: execution.reactionState,
     });
   }
 }

@@ -276,6 +276,7 @@ export const triggerRuns = pgTable(
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     deadlineKind: text("deadline_kind").$type<"step_hard" | "step_idle" | "whole_run">(),
     failureReason: text("failure_reason"),
+    reactionState: jsonb("reaction_state"),
     terminalNotificationPendingAt: timestamp("terminal_notification_pending_at", {
       withTimezone: true,
     }),
@@ -550,6 +551,7 @@ export const agentExecutions = pgTable(
     result: jsonb(),
     triggerContext: jsonb("trigger_context"),
     outputContext: jsonb("output_context"),
+    reactionState: jsonb("reaction_state"),
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
     completionTokenHash: text("completion_token_hash"),
     replyClaimedAt: timestamp("reply_claimed_at", { withTimezone: true }),

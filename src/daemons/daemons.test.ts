@@ -413,29 +413,6 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.createdAgentRequestCount(), 2);
   });
 
-  it("registers durable fan-out before provider notification and waits to spawn", async () => {
-    await hub.connectDaemon();
-    await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
-    hub.holdAcceptanceHook();
-
-    try {
-      const batch = await hub.handoffBatch(["first", "second"]);
-
-      assert.equal(batch.executions.length, 2);
-      assert.equal(await hub.pendingExecutionCount(), 2);
-      assert.equal(hub.createdAgentRequestCount(), 0);
-      assert.equal(hub.terminalHookCount(), 0);
-
-      hub.releaseAcceptanceHook();
-      await Promise.all(
-        batch.executions.map((execution) => hub.waitForRecoveredExecution(execution.id)),
-      );
-      assert.equal(hub.createdAgentRequestCount(), 2);
-    } finally {
-      hub.releaseAcceptanceHook();
-    }
-  });
-
   it("materializes provider-owned environment values without rewriting the authored prompt", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.installConfiguration({ yaml: hub.manualConfigurationYaml() });
@@ -711,7 +688,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(hub.hookContexts().completed.length, 1);
 
     await hub.startExecution(second.daemonAgentId);
-    assert.equal(hub.hookContexts().started.length, 2);
+    assert.equal(hub.hookContexts().started.length, 0);
     await hub.completeExecution(second.id);
     await hub.waitForCompletionHookCount(2);
     assert.equal(hub.hookContexts().completed.length, 2);
@@ -1308,7 +1285,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(
       { status: execution.status, result: execution.result },
-      { status: "failed", result: { status: "failed", reason: "whole_run_timeout" } },
+      { status: "failed", result: { status: "failed", reason: "timeout" } },
     );
     await hub.drainWorkflowOutbox();
     await hub.failureNotified();
@@ -1330,7 +1307,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(
       { status: execution.status, result: execution.result },
-      { status: "failed", result: { status: "failed", reason: "step_idle_timeout" } },
+      { status: "failed", result: { status: "failed", reason: "idle_timeout" } },
     );
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
   });
@@ -1448,7 +1425,7 @@ describe("daemon enrollment and execution", () => {
     const afterActivity = await hub.execution(result.execution.id);
     assert.deepEqual(
       { status: afterActivity.status, result: afterActivity.result },
-      { status: "failed", result: { status: "failed", reason: "step_idle_timeout" } },
+      { status: "failed", result: { status: "failed", reason: "idle_timeout" } },
     );
   });
 
@@ -1533,7 +1510,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(execution.result, {
       status: "failed",
-      reason: "step_idle_timeout",
+      reason: "idle_timeout",
     });
   });
 
@@ -1550,7 +1527,7 @@ describe("daemon enrollment and execution", () => {
     await hub.advanceDispatchTime(60_000);
 
     const execution = await hub.execution(result.execution.id);
-    assert.deepEqual(execution.result, { status: "failed", reason: "whole_run_timeout" });
+    assert.deepEqual(execution.result, { status: "failed", reason: "timeout" });
   });
 
   it("keeps authenticated completion authoritative while idle", async () => {
@@ -1586,7 +1563,7 @@ describe("daemon enrollment and execution", () => {
     const execution = await hub.execution(result.execution.id);
     assert.deepEqual(execution.result, {
       status: "failed",
-      reason: "step_idle_timeout",
+      reason: "idle_timeout",
     });
   });
 

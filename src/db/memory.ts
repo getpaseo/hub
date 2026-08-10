@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
+import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type {
   AgentExecutionRecord,
@@ -234,6 +235,7 @@ class MemoryDatabase implements Database {
       deadlineAt: input.deadlineAt,
       deadlineKind: null,
       failureReason: null,
+      reactionState: null,
       terminalNotificationPendingAt: null,
       terminalNotificationDeliveredAt: null,
       terminalNotificationLeaseExpiresAt: null,
@@ -942,7 +944,11 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
-  async markWorkflowRunTerminalNotificationDelivered(triggerRunId: string, deliveredAt: Date) {
+  async markWorkflowRunTerminalNotificationDelivered(
+    triggerRunId: string,
+    deliveredAt: Date,
+    reactionState: JsonValue | null,
+  ) {
     const run = this.triggerRuns.get(triggerRunId);
     if (
       run === undefined ||
@@ -954,9 +960,18 @@ class MemoryDatabase implements Database {
     }
     this.triggerRuns.set(run.id, {
       ...run,
+      reactionState,
       terminalNotificationDeliveredAt: deliveredAt,
       terminalNotificationLeaseExpiresAt: null,
     });
+  }
+
+  async setWorkflowRunReactionState(triggerRunId: string, reactionState: JsonValue | null) {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (run === undefined || run.outcome !== "accepted") return undefined;
+    const updated = { ...run, reactionState };
+    this.triggerRuns.set(run.id, updated);
+    return updated;
   }
 
   async markProviderEventDropped(
@@ -1290,6 +1305,7 @@ class MemoryDatabase implements Database {
       result: input.result ?? null,
       triggerContext: input.triggerContext,
       outputContext: input.outputContext,
+      reactionState: input.reactionState ?? null,
       configurationRevisionId: input.configurationRevisionId,
       completionTokenHash: input.completionTokenHash ?? null,
       replyClaimedAt: null,
@@ -1602,6 +1618,16 @@ class MemoryDatabase implements Database {
 
   async findAgentExecutionById(id: string): Promise<AgentExecutionRecord | undefined> {
     return this.agentExecutions.get(id);
+  }
+
+  async setAgentExecutionReactionState(
+    executionId: string,
+    reactionState: JsonValue | null,
+  ): Promise<AgentExecutionRecord> {
+    const execution = this.readAgentExecution(executionId);
+    const updated = { ...execution, reactionState };
+    this.agentExecutions.set(executionId, updated);
+    return updated;
   }
   async findAgentExecutionForOrganization(
     organizationId: string,

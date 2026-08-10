@@ -1,5 +1,10 @@
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
-import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import type { JsonValue } from "../../config/compiler.js";
+import {
+  type TriggerProvider,
+  type TriggerProviderMatch,
+  type TriggerProviderReactionState,
+} from "../index.js";
 import type { GitHubAuth } from "../../auth/github.js";
 import { logger } from "../../logger.js";
 import {
@@ -114,7 +119,11 @@ export interface GitHubTriggerContext {
   target: { installationId: number; repository: string };
   event: GitHubMergeData;
   reactionSubject: GitHubReactionSubject | null;
-  inProgressReactionId?: number;
+}
+
+interface GitHubReactionState {
+  readonly [key: string]: JsonValue;
+  readonly reactionId: number;
 }
 
 export function createGitHubTriggerProvider(options: {
@@ -193,27 +202,28 @@ export function createGitHubTriggerProvider(options: {
     async materializeContext(launch) {
       return launch.triggerContext.event;
     },
-    async onDispatchAccepted(triggerContext) {
-      if (triggerContext.reactionSubject === null) return;
+    async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
+      if (triggerContext.reactionSubject === null) return null;
+      if (githubReactionId(reactionState) !== undefined) return reactionState;
       const reaction = await options.reactions.createReaction({
         installationId: triggerContext.target.installationId,
         repo: triggerContext.target.repository,
         subject: triggerContext.reactionSubject,
         content: "eyes",
       });
-      triggerContext.inProgressReactionId = reaction.id;
+      return { reactionId: reaction.id } satisfies GitHubReactionState;
     },
-    async onAgentExecutionStarted(triggerContext) {
-      await reactToLifecycle(options.reactions, triggerContext, "rocket");
+    async onAgentExecutionStarted(triggerContext, _outputContext, reactionState) {
+      return reactToLifecycle(options.reactions, triggerContext, "rocket", reactionState);
     },
-    async onAgentExecutionCompleted(triggerContext) {
-      await createLifecycleReaction(options.reactions, triggerContext, "+1");
+    async onAgentExecutionCompleted(triggerContext, _outputContext, _result, reactionState) {
+      return reactToLifecycle(options.reactions, triggerContext, "+1", reactionState);
     },
-    async onAgentExecutionFailed(triggerContext) {
-      await reactToLifecycle(options.reactions, triggerContext, "-1");
+    async onAgentExecutionFailed(triggerContext, _outputContext, _reason, reactionState) {
+      return reactToLifecycle(options.reactions, triggerContext, "-1", reactionState);
     },
-    async onMachineTerminated(triggerContext) {
-      await reactToLifecycle(options.reactions, triggerContext, "-1");
+    async onMachineTerminated(triggerContext, _reason, reactionState) {
+      return reactToLifecycle(options.reactions, triggerContext, "-1", reactionState);
     },
   };
 }
@@ -276,46 +286,29 @@ async function reactToLifecycle(
   reactions: GitHubReactionClient,
   triggerContext: GitHubTriggerContext,
   content: GitHubReactionContent,
-): Promise<void> {
+  reactionState?: TriggerProviderReactionState,
+): Promise<GitHubReactionState | null> {
   if (triggerContext.reactionSubject === null) {
-    return;
+    return null;
   }
 
-  await deleteInProgressReactionSafely(reactions, triggerContext);
+  await deleteReactionSafely(reactions, triggerContext, githubReactionId(reactionState));
 
-  await reactions.createReaction({
+  const reaction = await reactions.createReaction({
     installationId: triggerContext.target.installationId,
     repo: triggerContext.target.repository,
     subject: triggerContext.reactionSubject,
     content,
   });
+  return { reactionId: reaction.id } satisfies GitHubReactionState;
 }
 
-async function createLifecycleReaction(
+async function deleteReactionSafely(
   reactions: GitHubReactionClient,
   triggerContext: GitHubTriggerContext,
-  content: GitHubReactionContent,
+  reactionId: number | undefined,
 ): Promise<void> {
-  if (triggerContext.reactionSubject === null) {
-    return;
-  }
-
-  await reactions.createReaction({
-    installationId: triggerContext.target.installationId,
-    repo: triggerContext.target.repository,
-    subject: triggerContext.reactionSubject,
-    content,
-  });
-}
-
-async function deleteInProgressReactionSafely(
-  reactions: GitHubReactionClient,
-  triggerContext: GitHubTriggerContext,
-): Promise<void> {
-  if (
-    triggerContext.reactionSubject === null ||
-    triggerContext.inProgressReactionId === undefined
-  ) {
+  if (triggerContext.reactionSubject === null || reactionId === undefined) {
     return;
   }
 
@@ -324,7 +317,7 @@ async function deleteInProgressReactionSafely(
       installationId: triggerContext.target.installationId,
       repo: triggerContext.target.repository,
       subject: triggerContext.reactionSubject,
-      reactionId: triggerContext.inProgressReactionId,
+      reactionId,
     });
   } catch (error) {
     logger.warn(
@@ -332,11 +325,19 @@ async function deleteInProgressReactionSafely(
         err: error,
         repo: triggerContext.target.repository,
         subject: triggerContext.reactionSubject,
-        reactionId: triggerContext.inProgressReactionId,
+        reactionId,
       },
       "github reaction cleanup failed",
     );
   }
+}
+
+function githubReactionId(state: TriggerProviderReactionState | undefined): number | undefined {
+  if (typeof state !== "object" || state === null || Array.isArray(state)) return undefined;
+  const reactionId = state["reactionId"];
+  return typeof reactionId === "number" && Number.isSafeInteger(reactionId)
+    ? reactionId
+    : undefined;
 }
 
 function reactionSubjectForEvent(event: NormalizedGitHubEvent): GitHubReactionSubject | null {

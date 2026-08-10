@@ -144,6 +144,7 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     result: row.result,
     triggerContext: row.trigger_context,
     outputContext: row.output_context,
+    reactionState: row.reaction_state,
     configurationRevisionId: row.configuration_revision_id,
     completionTokenHash: row.completion_token_hash,
     replyClaimedAt: row.reply_claimed_at,
