@@ -1322,20 +1322,6 @@ export class HubE2E {
         : {
             agents: {
               providers: {
-                claude: {
-                  command: [
-                    process.execPath,
-                    join(HUB_ROOT, "src/e2e/harness/provider-catalog-shim.mjs"),
-                    "claude",
-                  ],
-                },
-                codex: {
-                  command: [
-                    process.execPath,
-                    join(HUB_ROOT, "src/e2e/harness/provider-catalog-shim.mjs"),
-                    "codex",
-                  ],
-                },
                 "hub-e2e": {
                   extends: "acp",
                   label: "Hub E2E",

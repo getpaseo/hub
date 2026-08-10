@@ -211,6 +211,9 @@ jobs:
       - name: Install Hub dependencies
         run: npm ci
 
+      - name: Install provider CLIs for bundle validation
+        run: npm install -g @anthropic-ai/claude-code@2.1.226 @openai/codex@0.144.0
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
