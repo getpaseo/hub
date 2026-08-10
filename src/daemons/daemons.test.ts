@@ -1413,6 +1413,7 @@ describe("daemon enrollment and execution", () => {
     hub.holdActivityRefresh(result.execution.id);
     const activity = hub.emitReplacementTurn(result.agentId);
     await hub.activityRefreshBegins();
+    await activity;
 
     const lateProcessing = hub.advanceDispatchTime(2 * 60_000);
     hub.releaseActivityRefresh();

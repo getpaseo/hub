@@ -8,12 +8,7 @@ import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
 import { z } from "zod";
-import {
-  PaseoHub,
-  setBuiltApplicationMachineKey,
-  type BuiltApplication,
-  type BuiltApplicationOptions,
-} from "./helpers/hub.js";
+import { PaseoHub, type BuiltApplication, type BuiltApplicationOptions } from "./helpers/hub.js";
 import { createDatabase } from "../src/db/pg.js";
 import { SourcePaseo } from "./helpers/source-paseo.js";
 import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.js";
@@ -22,8 +17,6 @@ import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.j
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
 const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
-
-let primaryApplication: BuiltApplication | undefined;
 
 export const test = base.extend<{
   hub: PaseoHub;
@@ -57,7 +50,6 @@ export const test = base.extend<{
         billing,
         providerScenario,
       });
-      primaryApplication = primary;
       await provide(
         new PaseoHub(
           primary,
@@ -75,13 +67,11 @@ export const test = base.extend<{
         });
       }
     } finally {
-      primaryApplication = undefined;
       await applications.stop();
     }
   },
-  projectExternal: async ({ hub: _hub, request }, provide) => {
-    if (primaryApplication === undefined) throw new Error("primary application is unavailable");
-    await provide(new ProjectExternalFacts(primaryApplication, request));
+  projectExternal: async ({ hub, request }, provide) => {
+    await provide(new ProjectExternalFacts(hub.primaryApplication(), request));
   },
 });
 
@@ -110,9 +100,10 @@ class BuiltApplications {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
     const output: string[] = [];
-    const application = {
+    const application: RunningApplication = {
       origin,
       databaseUrl,
+      machineKey: "",
       postgres,
       server,
       logs: () => output.join(""),
@@ -136,7 +127,7 @@ class BuiltApplications {
     };
     this.running.push(application);
     await serverReady(server, origin, output);
-    setBuiltApplicationMachineKey((await readFile(machineKeyFile, "utf8")).trim());
+    application.machineKey = (await readFile(machineKeyFile, "utf8")).trim();
     return application;
   }
 
