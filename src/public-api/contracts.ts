@@ -101,7 +101,7 @@ export const InstallConfigurationRequestSchema = z
   .strict()
   .openapi("InstallConfigurationRequest", {
     description:
-      "Install the complete canonical bundle: .paseo/hub.yml, direct-child .paseo/workflows/*.yml files, and any .paseo/workflows/partials/* files.",
+      "Install the complete canonical bundle: .paseo/hub.yml, direct-child .paseo/workflows/*.yml files, and referenced .paseo/workflows/partials/*.md files.",
     example: {
       projectSlug: "payments",
       files: [
