@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { HubE2E } from "./harness/index.js";
+import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 const describeHubE2E = process.env["RUN_HUB_E2E"] === "1" ? describe : describe.skip;
 
@@ -28,6 +29,59 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     );
     await hub.disconnect();
   }, 120_000);
+
+  it("validates and installs the exact authored bundle through the source-built CLI", async () => {
+    const evidence = await hub.deployCurrentProjectBundleWithSourceCli();
+    const expectedFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
+      left.path.localeCompare(right.path),
+    );
+    const configuration = evidence.effectiveConfiguration;
+
+    assert.deepEqual(evidence.dryRun, {
+      projectSlug: "default",
+      valid: true,
+      workflows: 4,
+      origin: evidence.origin,
+    });
+    assert.equal(evidence.revisionsAfterDryRun, evidence.revisionsBeforeDryRun);
+    assert.equal(evidence.revisionsAfterInstall, evidence.revisionsBeforeDryRun + 1);
+    assert.deepEqual(evidence.install, {
+      projectSlug: "default",
+      versionId: evidence.install["versionId"],
+      version: evidence.revisionsAfterInstall,
+      active: true,
+      workflows: 4,
+      origin: evidence.origin,
+    });
+    assert.deepEqual(evidence.authoredFiles, expectedFiles);
+    assert.deepEqual(configuration.environments, [
+      {
+        name: "hub",
+        cwd: "/workspace/hub",
+        daemonId: configuration.environments[0]?.daemonId,
+      },
+      {
+        name: "paseo",
+        cwd: "/workspace/paseo",
+        daemonId: configuration.environments[1]?.daemonId,
+      },
+    ]);
+    assert.equal(configuration.slackWorkerEnvironment, "${{ values.selected_environment }}");
+    assert.equal(configuration.slackAgentSelector, "${{ values.selected_agent }}");
+    assert.deepEqual(configuration.codexOptions, {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+    });
+    assert.deepEqual(configuration.classifierPartial, {
+      kind: "partial",
+      path: ".paseo/workflows/partials/classify.md",
+      content:
+        "Choose one configured repository environment and one complete named agent configuration.\n",
+      contentHash: "dcfb1a4600e287c40ff4da4c38c98ac86a7f5508458b560dde9151aec03f6bf6",
+    });
+  }, 180_000);
 
   it("connects a real daemon and completes an isolated manual run without relay authority", async () => {
     const enrollment = await hub.connect();

@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     organizationId,
     "hub-e2e",
     "hub e2e automation",
-    ["configuration:install", "runs:dispatch", "daemons:enroll"],
+    ["configuration:validate", "configuration:install", "runs:dispatch", "daemons:enroll"],
   );
   if (createdApiKey === undefined) throw new Error("API key service unavailable");
   await writeFile(requiredEnvironment("HUB_E2E_MACHINE_KEY_FILE"), createdApiKey.secret, "utf8");

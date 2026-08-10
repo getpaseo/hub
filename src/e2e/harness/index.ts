@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -12,6 +12,8 @@ import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
+import { TestDaemon } from "../../daemons/test-utils/hub-harness.js";
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -34,6 +36,40 @@ const CanonicalToolCallSchema = z
     status: z.enum(["running", "completed", "failed", "canceled"]),
   })
   .passthrough();
+const EffectiveConfigurationSchema = z.object({
+  environments: z.array(
+    z
+      .object({
+        name: z.string(),
+        cwd: z.string(),
+        daemonId: z.string().uuid(),
+      })
+      .passthrough(),
+  ),
+  triggers: z.array(
+    z
+      .object({
+        name: z.string(),
+        steps: z.array(
+          z
+            .object({
+              environment: z.unknown(),
+              agent: z
+                .object({
+                  selector: z.string().optional(),
+                  choices: z
+                    .record(z.string(), z.object({ options: z.unknown().optional() }).passthrough())
+                    .optional(),
+                })
+                .passthrough(),
+              prompt: z.array(z.unknown()),
+            })
+            .passthrough(),
+        ),
+      })
+      .passthrough(),
+  ),
+});
 
 interface Enrollment {
   daemonId: string;
@@ -74,6 +110,23 @@ interface HubE2EOptions {
   realAgent?: boolean;
 }
 
+export interface SourceCliBundleDeploymentEvidence {
+  origin: string;
+  dryRun: Record<string, unknown>;
+  install: Record<string, unknown>;
+  revisionsBeforeDryRun: number;
+  revisionsAfterDryRun: number;
+  revisionsAfterInstall: number;
+  authoredFiles: readonly { path: string; content: string }[];
+  effectiveConfiguration: {
+    environments: readonly { name: string; cwd: string; daemonId: string }[];
+    slackWorkerEnvironment: unknown;
+    slackAgentSelector: string | undefined;
+    codexOptions: unknown;
+    classifierPartial: unknown;
+  };
+}
+
 type RealAgentProvider = "claude" | "codex" | "opencode";
 type DispatchedManualRun = z.infer<typeof DispatchedManualRunSchema>;
 
@@ -95,6 +148,7 @@ export class HubE2E {
   private pool: Pool | undefined;
   private hub: ManagedChild | undefined;
   private completionRunner: ManagedChild | undefined;
+  private validationDaemon: TestDaemon | undefined;
   private daemonHost = "";
   private acpRecordFile = "";
   private outputFile = "";
@@ -157,6 +211,90 @@ export class HubE2E {
   async status(): Promise<{ state: string }> {
     const status = await this.requireSource().status();
     return { state: requiredString(status, "state") };
+  }
+
+  async deployCurrentProjectBundleWithSourceCli(): Promise<SourceCliBundleDeploymentEvidence> {
+    const sourceFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
+      left.path.localeCompare(right.path),
+    );
+    const projectRoot = join(this.root, "source-cli-project");
+    for (const file of sourceFiles) {
+      const destination = join(projectRoot, ...file.path.split("/"));
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, file.content);
+    }
+
+    const connectedDaemonId = await this.connectValidationDaemon();
+    await this.requirePool().query("update daemons set slug = 'local' where id = $1", [
+      connectedDaemonId,
+    ]);
+    await this.seedCurrentProjectResources();
+
+    const revisionsBeforeDryRun = await this.configurationRevisionCount();
+    const source = this.requireSource();
+    const common = [
+      "hub",
+      "deploy",
+      "-p",
+      PROJECT_SLUG,
+      "--hub",
+      this.requireProxy().origin,
+      "--api-key",
+      MACHINE_KEY,
+      "--json",
+    ];
+    const dryRun = await source.runFrom([...common, "--dry-run"], projectRoot);
+    const revisionsAfterDryRun = await this.configurationRevisionCount();
+    const install = await source.runFrom(common, projectRoot);
+    const revisionsAfterInstall = await this.configurationRevisionCount();
+    const active = await this.requirePool().query<{
+      source_evidence: unknown;
+      normalized_configuration: Record<string, unknown>;
+    }>(
+      `select revision.source_evidence, revision.normalized_configuration
+       from projects project
+       join project_configuration_revisions revision
+         on revision.id = project.active_configuration_revision_id
+       where project.id = $1`,
+      [PROJECT_ID],
+    );
+    const revision = active.rows[0];
+    if (revision === undefined) throw new Error("Source CLI install did not activate a revision");
+    const bundle = z
+      .object({
+        bundle: z.object({
+          files: z.array(z.object({ path: z.string(), content: z.string() })),
+        }),
+      })
+      .parse(revision.source_evidence)
+      .bundle.files.toSorted((left, right) => left.path.localeCompare(right.path));
+    const effective = EffectiveConfigurationSchema.parse(revision.normalized_configuration);
+    const slack = effective.triggers.find(({ name }) => name === "slack-request");
+    const classifier = slack?.steps[0];
+    const worker = slack?.steps[1];
+    if (classifier === undefined || worker === undefined) {
+      throw new Error("Source CLI install did not preserve the Slack classifier-to-worker flow");
+    }
+    return {
+      origin: this.requireProxy().origin,
+      dryRun,
+      install,
+      revisionsBeforeDryRun,
+      revisionsAfterDryRun,
+      revisionsAfterInstall,
+      authoredFiles: bundle,
+      effectiveConfiguration: {
+        environments: effective.environments.map(({ name, cwd, daemonId }) => ({
+          name,
+          cwd,
+          daemonId,
+        })),
+        slackWorkerEnvironment: worker.environment,
+        slackAgentSelector: worker.agent.selector,
+        codexOptions: worker.agent.choices?.["codex"]?.options,
+        classifierPartial: classifier.prompt[0],
+      },
+    };
   }
 
   async createUnrelatedLocalAgent(): Promise<string> {
@@ -989,6 +1127,7 @@ export class HubE2E {
     const failures: unknown[] = [];
     const ownedProcesses = new Set<number>();
     const ownedProcessDescriptions: string[] = [];
+    await this.attempt(() => this.validationDaemon?.disconnect(), failures);
     const hubMs = await this.stopOwnedChild(
       this.hub,
       ownedProcesses,
@@ -1284,6 +1423,65 @@ export class HubE2E {
   private async outputIsPersisted(executionId: string): Promise<boolean> {
     return (await readJsonLines(this.acpRecordFile)).some(
       (record) => record["executionId"] === executionId,
+    );
+  }
+
+  private async configurationRevisionCount(): Promise<number> {
+    const result = await this.requirePool().query<{ count: number }>(
+      "select count(*)::integer as count from project_configuration_revisions where project_id = $1",
+      [PROJECT_ID],
+    );
+    return result.rows[0]?.count ?? 0;
+  }
+
+  private async connectValidationDaemon(): Promise<string> {
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/daemons/enrollment-tokens`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${MACHINE_KEY}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    if (response.status !== 201) {
+      throw new Error(`Validation daemon enrollment returned HTTP ${response.status}`);
+    }
+    const token = z.object({ token: z.string().min(1) }).parse(await response.json()).token;
+    const daemon = TestDaemon.create(this.requireProxy().origin);
+    const enrollment = await daemon.enroll(token);
+    await daemon.connect(enrollment);
+    this.validationDaemon = daemon;
+    return daemon.daemonId;
+  }
+
+  private async seedCurrentProjectResources(): Promise<void> {
+    await this.requirePool().query(
+      `insert into slack_connections
+         (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+       values ('00000000-0000-4000-8000-0000000000c1', 'hub-e2e', 'paseo', 'paseo',
+               'Paseo', 'UBOT', 'xoxb-test', '["app_mentions:read", "chat:write"]'::jsonb)
+       on conflict (team_id) do nothing`,
+    );
+    await this.requirePool().query(
+      `insert into discord_connections
+         (id, organization_id, guild_id, slug, guild_name)
+       values ('00000000-0000-4000-8000-0000000000c2', 'hub-e2e', 'paseo', 'paseo', 'Paseo')
+       on conflict (guild_id) do nothing`,
+    );
+    await this.requirePool().query(
+      `insert into github_connections
+         (id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
+       values ('00000000-0000-4000-8000-0000000000c3', 'hub-e2e', 9001, 'getpaseo',
+               'getpaseo', 'getpaseo', 'Organization', 'active')
+       on conflict (installation_id) do nothing`,
+    );
+    await this.requirePool().query(
+      `insert into github_repositories
+         (organization_id, connection_id, repository_id, full_name, default_branch)
+       values
+         ('hub-e2e', '00000000-0000-4000-8000-0000000000c3', 9101, 'getpaseo/hub', 'main'),
+         ('hub-e2e', '00000000-0000-4000-8000-0000000000c3', 9102, 'getpaseo/paseo', 'main')
+       on conflict (connection_id, repository_id) do nothing`,
     );
   }
 

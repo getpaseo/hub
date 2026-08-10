@@ -1954,7 +1954,7 @@ interface Enrollment {
   webSocketUrl: string;
   scopes: string[];
 }
-class TestDaemon {
+export class TestDaemon {
   private socket: WebSocket | undefined;
   private readonly agents = new Map<string, Record<string, unknown>>();
   private createRequests = 0;

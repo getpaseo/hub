@@ -104,10 +104,14 @@ export class SourcePaseo {
   }
 
   async run(args: string[]): Promise<Record<string, unknown>> {
+    return this.runFrom(args, this.paths.packagesRoot);
+  }
+
+  async runFrom(args: string[], cwd: string): Promise<Record<string, unknown>> {
     const result = await runCommand(
       join(this.paths.packagesRoot, "node_modules/.bin/paseo"),
       args,
-      this.paths.packagesRoot,
+      cwd,
       sourceEnvironment(this.paths.paseoHome),
     );
     return parseCliResult(result.stdout);
