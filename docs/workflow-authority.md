@@ -83,6 +83,4 @@ retries may continue while the process remains alive. A hard process crash canno
 revocation, so GitHub's upstream one-hour token expiry remains the unavoidable exposure
 boundary until a future persisted lease policy can provide stronger crash recovery.
 
-This file documents Hub runtime behavior only. Matching public Paseo documentation is
-not included in this PR and remains a blocking follow-up in the Paseo repository. This
-change is not documentation-complete until that public docs PR exists and is linked.
+Public workflow-authority guidance lives in the Paseo repository under `public-docs/`.

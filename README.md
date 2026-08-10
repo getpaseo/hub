@@ -15,7 +15,7 @@
 > [!WARNING]
 > Paseo Hub is in early development. Expect breaking changes and data loss. [Join the Paseo Discord](https://discord.gg/jz8T2uahpH) to learn more about the project.
 
-Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Connect the services where work arrives, describe agents as code in `.paseo/hub.yml`, and run them on the machines where your development environments already live.
+Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Connect the services where work arrives, describe environments and agents in `.paseo/hub.yml`, define triggers under `.paseo/workflows/`, and run them on the machines where your development environments already live.
 
 - **Your machines:** Hub dispatches to Paseo daemons on your laptop, devbox, or build server.
 - **Your configuration:** Keep triggers, environments, permissions, and prompts in version control.
@@ -48,7 +48,7 @@ PASEO_BOOTSTRAP_OWNER_EMAIL=me@example.com
 PASEO_BOOTSTRAP_OWNER_PASSWORD=replace-with-a-temporary-password
 ```
 
-Billing is optional and hosted-only: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
+Billing is optional: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
 
 Then start Hub and PostgreSQL:
 
@@ -64,7 +64,7 @@ paseo hub connect https://hub.example.com
 
 The image is published as `ghcr.io/getpaseo/hub:latest`.
 
-See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, `.paseo/hub.yml`, Docker, and Fly deployment.
+See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, workflow configuration, Docker, and Fly deployment.
 
 ## Provider options and Hub tools
 

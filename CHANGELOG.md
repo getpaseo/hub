@@ -32,7 +32,6 @@
 
 - Prompt partials remain available when configuration authority changes.
 - Long configuration files and GitHub source controls remain usable in the configuration editor.
-- Hosted deployments wait for a green `main` build before deploying to Fly.
 
 ## 0.1.0 - 2026-08-07
 

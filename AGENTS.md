@@ -1,10 +1,15 @@
 # Paseo Hub
 
-Paseo Hub is the self-hosted open-source automation layer that works obove your existings Paseo (getpaseo/paseo) daemons.
+Paseo Hub is the self-hosted open-source automation layer for existing Paseo (`getpaseo/paseo`) daemons.
 
-This repository contains the self-hosted codebase and the Fly configuration that deploys the hosted multi-tenant Paseo Hub service. Billing (`src/billing/`) is part of that hosted deployment only — it is inert without `STRIPE_SECRET_KEY`, and self-hosted instances run with no billing surface at all. See docs/entitlements.md (core, self-hosted included) and docs/billing.md (hosted only).
+This repository contains the open-source Hub codebase. It must not contain credentials, configuration, service identities, or deployment automation for any privately operated Hub instance.
+
+The optional billing integration in `src/billing/` is inert without `STRIPE_SECRET_KEY`; instances without billing configuration expose no billing surface. See `docs/entitlements.md` and `docs/billing.md`.
 
 The public docs (served at https://paseo.sh/docs/hub) live in the main Paseo repository under `public-docs/`, keep it up to date with any relevant externallly observable changes. Update via PR.
+
+Repository verification, release, cross-repository compatibility, and documentation procedures
+live in `MAINTAINERS.md`.
 
 # Product Vision
 
