@@ -2,8 +2,11 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  fullyParallel: false,
-  workers: 1,
+  fullyParallel: true,
+  // Each test owns a PostgreSQL container and a Hub process. Half of the CI runner's
+  // available CPUs leaves headroom for those services; two workers was the highest
+  // stable full-suite level measured on the local 12-CPU, 8-GB Docker host.
+  workers: process.env["CI"] === "true" ? "50%" : 2,
   retries: 0,
   projects: [
     {

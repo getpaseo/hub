@@ -31,6 +31,7 @@ import { ProjectConfiguration } from "./projects/configuration.js";
 export interface BuiltApplication {
   origin: string;
   databaseUrl: string;
+  machineKey: string;
   logs(): string;
   deliverDiscord(event: BrowserDiscordEvent): Promise<void>;
   setGitHubConfiguration(input: {
@@ -43,12 +44,6 @@ export interface BuiltApplication {
   cancelSubscription(organizationId: string): Promise<void>;
   /** The seat quantity billing last reported to the fixture Stripe for this organization. */
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
-}
-
-let MACHINE_KEY = "";
-
-export function setBuiltApplicationMachineKey(value: string): void {
-  MACHINE_KEY = value;
 }
 
 export interface BuiltApplicationOptions {
@@ -118,6 +113,10 @@ export class PaseoHub {
     private readonly startApplication: StartBuiltApplication,
     private readonly startSourcePaseo: StartSourcePaseo,
   ) {}
+
+  primaryApplication(): BuiltApplication {
+    return this.primary;
+  }
 
   async visitHome(): Promise<void> {
     await this.page.goto(this.primary.origin);
@@ -578,7 +577,7 @@ export class PaseoHub {
     const response = await this.requests.post(`${this.primary.origin}/api/v1/manual-runs`, {
       headers: {
         ...(input.apiKey === undefined
-          ? machineHeaders()
+          ? machineHeaders(this.primary.machineKey)
           : { authorization: `Bearer ${input.apiKey}` }),
         "content-type": "application/json",
       },
@@ -1915,7 +1914,7 @@ export class PaseoHub {
   }
 
   private async verifyManualApplication(application: BuiltApplication): Promise<void> {
-    await this.verifyExactContracts(application, manualFailureContracts());
+    await this.verifyExactContracts(application, manualFailureContracts(application.machineKey));
     await this.verifyLegacyCompletionCallbackAbsent(application);
     await this.verifyDocumentAndAssetContracts(application);
     await this.verifyAuthContracts(application);
@@ -2105,7 +2104,7 @@ export class PaseoHub {
       },
     });
     await this.issueEnrollmentToken(application, {
-      ...machineHeaders(),
+      ...machineHeaders(application.machineKey),
       origin: HOSTILE_ORIGIN,
     });
 
@@ -2141,7 +2140,7 @@ export class PaseoHub {
 
   private async issueEnrollmentToken(
     application: BuiltApplication,
-    headers: Record<string, string> = machineHeaders(),
+    headers: Record<string, string> = machineHeaders(application.machineKey),
   ): Promise<string> {
     const response = await this.requests.post(
       `${application.origin}/api/v1/daemons/enrollment-tokens`,
@@ -2163,7 +2162,7 @@ export class PaseoHub {
     const response = await this.requests.post(
       `${application.origin}/api/v1/configurations/install`,
       {
-        headers: machineHeaders(),
+        headers: machineHeaders(application.machineKey),
         data: {
           projectSlug: "default",
           files: configurationBundleFixture(manualConfiguration(daemonSlug)),
@@ -2189,7 +2188,7 @@ export class PaseoHub {
     versionId: string,
   ): Promise<{ executionId: string }> {
     const response = await this.requests.post(`${application.origin}/api/v1/manual-runs`, {
-      headers: machineHeaders(),
+      headers: machineHeaders(application.machineKey),
       data: {
         projectSlug: "default",
         expectedVersionId: versionId,
@@ -4579,7 +4578,7 @@ const ORGANIZATION_POST_PATHS = [
 const TEXT_TYPE = "text/plain;charset=UTF-8";
 const HTML_TYPE = "text/html; charset=utf-8";
 
-function manualFailureContracts(): readonly HttpContract[] {
+function manualFailureContracts(machineKey: string): readonly HttpContract[] {
   return [
     exact("health", "/health", "GET", 200, '{"ok":true}', JSON_TYPE),
     exact(
@@ -4676,7 +4675,7 @@ function manualFailureContracts(): readonly HttpContract[] {
       ),
       PROBLEM_TYPE,
       {
-        ...machineHeaders(),
+        ...machineHeaders(machineKey),
         "content-type": "application/json",
         "x-request-id": "phase-zero-contract",
       },
@@ -4699,7 +4698,7 @@ function manualFailureContracts(): readonly HttpContract[] {
       ),
       PROBLEM_TYPE,
       {
-        ...machineHeaders(),
+        ...machineHeaders(machineKey),
         "content-type": "application/json",
         "x-request-id": "phase-zero-contract",
       },
@@ -4795,8 +4794,8 @@ function problemBody(
   });
 }
 
-function machineHeaders(): Record<string, string> {
-  return { authorization: `Bearer ${MACHINE_KEY}` };
+function machineHeaders(machineKey: string): Record<string, string> {
+  return { authorization: `Bearer ${machineKey}` };
 }
 
 function daemonEnrollment(daemonId: string, credential: string) {
