@@ -59,12 +59,24 @@ describe("daemon enrollment and execution", () => {
 
     assert.equal(enrollment.replayedDaemonId, enrollment.firstDaemonId);
     assert.deepEqual(
+      { first: enrollment.firstSlug, replay: enrollment.replayedSlug },
+      { first: "replay-host-local", replay: "replay-host-local" },
+    );
+    assert.deepEqual(
       {
         consumedTokenStatus: enrollment.consumedTokenStatus,
         persistedDaemons: enrollment.persistedDaemons,
       },
       { consumedTokenStatus: 401, persistedDaemons: 1 },
     );
+  });
+
+  it("derives unique default daemon slugs from the enrolling hostnames", async () => {
+    const first = await hub.enrollDaemon("Studio Mac.local");
+    const second = await hub.enrollDaemon("Studio Mac.local");
+
+    assert.equal(first.slug, "studio-mac-local");
+    assert.equal(second.slug, `studio-mac-local-${second.daemonId.slice(0, 8)}`);
   });
 
   it("rejects invalid and revoked credentials on reconnect", async () => {

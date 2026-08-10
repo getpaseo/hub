@@ -1672,20 +1672,21 @@ class PgDatabase implements Database {
         `insert into machines (org_id, source, status) values ($1, $2, 'alive') returning *`,
         [consumedToken.organization_id, { kind: "daemon", daemonId: input.daemonId }],
       );
-      const fallbackSlug = `daemon-${input.daemonId.slice(0, 8)}`;
-      const slug = fallbackSlug;
-      requestedSlug = slug;
-      const daemon = await client.query<DaemonRow>(
+      const suggestedSlug = input.suggestedSlug ?? `daemon-${input.daemonId.slice(0, 8)}`;
+      requestedSlug = suggestedSlug;
+      let daemon = await client.query<DaemonRow>(
         `insert into daemons
            (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
             daemon_public_key, credential_verifier, scopes,
             registered_by_api_key_id, registered_by_cli_credential_id, status)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') returning *`,
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active')
+         on conflict (organization_id, slug) do nothing
+         returning *`,
         [
           input.daemonId,
           input.idempotencyKey,
           input.tokenVerifier,
-          slug,
+          suggestedSlug,
           machine.rows[0]!.id,
           consumedToken.organization_id,
           input.serverId,
@@ -1696,6 +1697,31 @@ class PgDatabase implements Database {
           consumedToken.issued_by_cli_credential_id,
         ],
       );
+      if (daemon.rows[0] === undefined) {
+        const uniqueSlug = `${suggestedSlug}-${input.daemonId.slice(0, 8)}`;
+        requestedSlug = uniqueSlug;
+        daemon = await client.query<DaemonRow>(
+          `insert into daemons
+             (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
+              daemon_public_key, credential_verifier, scopes,
+              registered_by_api_key_id, registered_by_cli_credential_id, status)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') returning *`,
+          [
+            input.daemonId,
+            input.idempotencyKey,
+            input.tokenVerifier,
+            uniqueSlug,
+            machine.rows[0]!.id,
+            consumedToken.organization_id,
+            input.serverId,
+            input.daemonPublicKey,
+            input.credentialVerifier,
+            JSON.stringify(input.scopes),
+            consumedToken.issued_by_api_key_id,
+            consumedToken.issued_by_cli_credential_id,
+          ],
+        );
+      }
       await client.query("commit");
       return toDaemon(daemon.rows[0]!);
     } catch (error) {

@@ -96,6 +96,7 @@ const IssuedEnrollmentSchema = z.object({
 });
 const EnrollmentSchema = z.object({
   daemonId: z.string(),
+  slug: z.string(),
   scopes: z.array(z.string()),
   webSocketUrl: z.string(),
 });
@@ -227,6 +228,14 @@ export class HubHarness {
     return daemon.daemonId;
   }
 
+  async enrollDaemon(hostname: string): Promise<Enrollment> {
+    const issued = await this.issueEnrollment();
+    if (issued.status !== 201 || !("token" in issued)) {
+      throw new Error("Enrollment token was not issued");
+    }
+    return TestDaemon.create(this.origin).enroll(issued.token, hostname);
+  }
+
   async renameConnectedDaemon(slug: string): Promise<void> {
     const daemon = this.requireDaemon();
     const renamed = await this.requireDatabase().renameDaemonForOrganization(
@@ -290,7 +299,9 @@ export class HubHarness {
 
   async connectWithEnrollmentReplay(): Promise<{
     firstDaemonId: string;
+    firstSlug: string;
     replayedDaemonId: string;
+    replayedSlug: string;
     consumedTokenStatus: number;
     persistedDaemons: number;
   }> {
@@ -298,8 +309,8 @@ export class HubHarness {
     if (issued.status !== 201 || !("token" in issued))
       throw new Error("Enrollment token was not issued");
     this.connectedDaemon = TestDaemon.create(this.origin);
-    const first = await this.connectedDaemon.enroll(issued.token);
-    const replay = await this.connectedDaemon.enroll(issued.token);
+    const first = await this.connectedDaemon.enroll(issued.token, "Replay Host.local");
+    const replay = await this.connectedDaemon.enroll(issued.token, "Replay Host.local");
     await this.connectedDaemon.connect(replay);
     const contender = TestDaemon.create(this.origin);
     const consumedTokenStatus = await contender.enrollmentStatus(issued.token);
@@ -309,7 +320,9 @@ export class HubHarness {
     ]);
     return {
       firstDaemonId: first.daemonId,
+      firstSlug: first.slug,
       replayedDaemonId: replay.daemonId,
+      replayedSlug: replay.slug,
       consumedTokenStatus,
       persistedDaemons: persisted.filter((daemon) => daemon !== undefined).length,
     };
@@ -1951,6 +1964,7 @@ class HubClock implements DaemonClock, ExecutionDeadlineClock {
 
 interface Enrollment {
   daemonId: string;
+  slug: string;
   webSocketUrl: string;
   scopes: string[];
 }
@@ -1994,7 +2008,7 @@ class TestDaemon {
     const id = randomUUID();
     return new TestDaemon(origin, id, `daemon-${id.slice(0, 8)}`, randomUUID());
   }
-  async enroll(token: string): Promise<Enrollment> {
+  async enroll(token: string, hostname?: string): Promise<Enrollment> {
     const response = await fetch(`${this.origin}/api/daemons/enroll`, {
       method: "POST",
       headers: {
@@ -2007,6 +2021,7 @@ class TestDaemon {
         serverId: randomUUID(),
         daemonPublicKey: "public-key",
         credentialVerifier: createHash("sha256").update(this.credential).digest("base64url"),
+        ...(hostname === undefined ? {} : { hostname }),
       }),
     });
     if (response.status !== 200) throw new Error(`Enrollment failed: ${response.status}`);
