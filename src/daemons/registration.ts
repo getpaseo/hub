@@ -12,6 +12,7 @@ const enrollmentBody = z
   .object({
     daemonId: z.string().uuid(),
     idempotencyKey: z.string(),
+    hostname: z.string().trim().min(1).max(253).optional(),
     serverId: z.string(),
     daemonPublicKey: z.string(),
     credentialVerifier: z.string(),
@@ -120,8 +121,11 @@ export async function enrollDaemon(
   if (token === undefined) return Response.json({ error: "unauthorized" }, { status: 401 });
   const input = enrollmentBody.safeParse(await request.json().catch(() => undefined));
   if (!input.success) return Response.json({ error: "invalid enrollment" }, { status: 400 });
+  const fallbackSlug = `daemon-${input.data.daemonId.slice(0, 8)}`;
   const daemon = await database.enrollDaemon({
     ...input.data,
+    suggestedSlug:
+      input.data.hostname === undefined ? fallbackSlug : slugify(input.data.hostname, fallbackSlug),
     scopes: ["hub.execution.*"],
     tokenVerifier: verifier(token),
     now: clock.nowDate(),

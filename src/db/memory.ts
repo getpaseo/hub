@@ -1439,7 +1439,15 @@ class MemoryDatabase implements Database {
     if (replay) return replay;
     const token = this.enrollmentTokens.get(input.tokenVerifier);
     if (!token || token.consumedAt || token.expiresAt <= input.now) return undefined;
-    const slug = `daemon-${input.daemonId.slice(0, 8)}`;
+    const suggestedSlug = input.suggestedSlug ?? `daemon-${input.daemonId.slice(0, 8)}`;
+    const suggestedSlugTaken = Array.from(this.daemons.values()).some(
+      (daemon) =>
+        daemon.slug === suggestedSlug &&
+        this.machines.get(daemon.machineId)?.orgId === token.organizationId,
+    );
+    const slug = suggestedSlugTaken
+      ? `${suggestedSlug}-${input.daemonId.slice(0, 8)}`
+      : suggestedSlug;
     const slugTaken = Array.from(this.daemons.values()).some(
       (daemon) =>
         daemon.slug === slug && this.machines.get(daemon.machineId)?.orgId === token.organizationId,

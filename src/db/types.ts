@@ -709,6 +709,7 @@ export interface WorkflowAgentCompletionInput {
 export interface EnrollDaemonInput {
   daemonId: string;
   idempotencyKey: string;
+  suggestedSlug?: string;
   tokenVerifier: string;
   serverId: string;
   daemonPublicKey: string;
