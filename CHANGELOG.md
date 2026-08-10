@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 - 2026-08-10
+
+### Added
+
+- Multi-file configuration bundles with named environments, named agents, reusable prompt partials, and independently routed workflows.
+- Explicit `${{ paseo.context }}` access for provider context without rewriting `${{ paseo.prompt }}`.
+- Step-scoped GitHub credentials with repository, permission, and duration controls.
+- Safe routing reasons for known events that no workflow accepted.
+
+### Fixed
+
+- Self-hosted sign-in works over explicitly configured remote HTTP origins.
+- GitHub App identity lookup uses scoped authentication and avoids public API rate limits.
+- Daemon enrollment names are derived consistently from hostnames.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added
