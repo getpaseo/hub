@@ -5,6 +5,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import type { JsonValue } from "../config/compiler.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { logger } from "../logger.js";
@@ -331,7 +332,8 @@ class PgDatabase implements Database {
             launch_intent,
             workflow_step_run_id,
             result,
-            completed_at
+            completed_at,
+            reaction_state
           )
           select coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6::agent_execution_status, coalesce($7, now()), $8, $9, $10, $11,
                  $12,
@@ -341,7 +343,8 @@ class PgDatabase implements Database {
                    else least($12::timestamptz, $13::timestamptz)
                  end,
                  $14, $15, $16,
-                 case when $6 = 'failed'::agent_execution_status then coalesce($7, now()) else null end
+                 case when $6 = 'failed'::agent_execution_status then coalesce($7, now()) else null end,
+                 $17
           from projects
           where projects.id = $3 and projects.organization_id = $2 and projects.status = 'active'
             and exists (
@@ -375,6 +378,7 @@ class PgDatabase implements Database {
           input.launchIntent ?? null,
           input.workflowStepRunId ?? null,
           input.result ?? null,
+          input.reactionState ?? null,
         ],
       );
       const execution = rows.rows[0];
@@ -1223,17 +1227,38 @@ class PgDatabase implements Database {
     }
   }
 
-  async markWorkflowRunTerminalNotificationDelivered(triggerRunId: string, deliveredAt: Date) {
+  async markWorkflowRunTerminalNotificationDelivered(
+    triggerRunId: string,
+    deliveredAt: Date,
+    reactionState: JsonValue | null,
+  ) {
     await query(
       this.pool,
       `update trigger_runs
-       set terminal_notification_delivered_at = coalesce(terminal_notification_delivered_at, $2),
+       set reaction_state = $3,
+           terminal_notification_delivered_at = coalesce(terminal_notification_delivered_at, $2),
            terminal_notification_lease_expires_at = null
        where id = $1
          and terminal_notification_pending_at is not null
          and terminal_notification_delivered_at is null`,
-      [triggerRunId, deliveredAt],
+      [triggerRunId, deliveredAt, reactionState],
     );
+  }
+
+  async setWorkflowRunReactionState(triggerRunId: string, reactionState: JsonValue | null) {
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `update trigger_runs
+       set reaction_state = $2
+       where id = $1 and outcome = 'accepted'
+       returning *`,
+      [triggerRunId, reactionState],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) return undefined;
+    const run = toTriggerRunRecord(row);
+    if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+    return run;
   }
 
   async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
@@ -1960,6 +1985,23 @@ class PgDatabase implements Database {
     } catch (error) {
       throw toDatabaseError(error);
     }
+  }
+
+  async setAgentExecutionReactionState(
+    executionId: string,
+    reactionState: JsonValue | null,
+  ): Promise<AgentExecutionRecord> {
+    const rows = await query<AgentExecutionRow>(
+      this.pool,
+      `update agent_executions
+       set reaction_state = $2
+       where id = $1
+       returning *`,
+      [executionId, reactionState],
+    );
+    const row = rows.rows[0];
+    if (row === undefined) throw new Error(`agent execution not found: ${executionId}`);
+    return toAgentExecutionRecord(row);
   }
 
   async findAgentExecutionForOrganization(
@@ -4089,6 +4131,7 @@ interface TriggerRunRow extends QueryResultRow {
   deadline_at: Date | null;
   deadline_kind: WorkflowDeadlineKind | null;
   failure_reason: string | null;
+  reaction_state: JsonValue | null;
   terminal_notification_pending_at: Date | null;
   terminal_notification_delivered_at: Date | null;
   terminal_notification_lease_expires_at: Date | null;
@@ -4186,6 +4229,7 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     deadlineAt: row.deadline_at,
     deadlineKind: row.deadline_kind,
     failureReason: row.failure_reason,
+    reactionState: row.reaction_state,
     terminalNotificationPendingAt: row.terminal_notification_pending_at,
     terminalNotificationDeliveredAt: row.terminal_notification_delivered_at,
     terminalNotificationLeaseExpiresAt: row.terminal_notification_lease_expires_at,
@@ -4252,6 +4296,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   result: unknown;
   trigger_context: unknown;
   output_context: unknown;
+  reaction_state: JsonValue | null;
   configuration_revision_id: string;
   completion_token_hash: string | null;
   reply_claimed_at: Date | null;

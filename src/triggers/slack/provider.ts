@@ -4,7 +4,11 @@ import type {
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
 import { logger } from "../../logger.js";
-import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import {
+  type TriggerProvider,
+  type TriggerProviderMatch,
+  type TriggerProviderReactionState,
+} from "../index.js";
 import type { SlackBotClient, SlackThreadMessage } from "./client.js";
 import { NormalizedSlackMentionEventSchema, type NormalizedSlackMentionEvent } from "./events.js";
 import {
@@ -89,6 +93,8 @@ export interface SlackOutputContext {
   threadTs: string;
   messageTs: string;
 }
+
+type SlackReactionPhase = "accepted" | "started";
 
 export function createSlackTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -226,23 +232,63 @@ export function createSlackTriggerProvider(options: {
         },
       };
     },
-    async onAgentExecutionStarted(context) {
+    async onDispatchAccepted(_triggerContext, _outputContext, reactionState) {
+      if (slackReactionPhase(reactionState) !== undefined) return reactionState;
+      return { phase: "accepted" };
+    },
+    async onAgentExecutionStarted(context, _outputContext, reactionState) {
+      if (slackReactionPhase(reactionState) === "started") return reactionState;
       await replaceReaction(options.client, context.target, "eyes", "hourglass_flowing_sand");
+      return { phase: "started" };
     },
-    async onAgentExecutionCompleted(context) {
-      await removeReactionSafely(options.client, context.target, "hourglass_flowing_sand");
+    async onAgentExecutionCompleted(context, _outputContext, _result, reactionState) {
+      await removeReactionForPhase(options.client, context.target, reactionState, "started");
       await addReaction(options.client, context.target, "white_check_mark");
+      return null;
     },
-    async onAgentExecutionFailed(context, _output, reason) {
-      await failWithNotice(options.client, context.target, reason);
+    async onAgentExecutionFailed(context, _output, reason, reactionState) {
+      await failWithNotice(options.client, context.target, reason, reactionState);
+      return null;
     },
-    async onMachineTerminated(context, reason) {
+    async onMachineTerminated(context, reason, reactionState) {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
-        await failWithNotice(options.client, context.target, reason);
+        await failWithNotice(options.client, context.target, reason, reactionState);
+        return null;
       }
+      return reactionState;
     },
   };
 }
+
+async function removeReactionForPhase(
+  client: SlackBotClient,
+  target: SlackOutputContext,
+  reactionState: TriggerProviderReactionState | undefined,
+  fallbackPhase?: SlackReactionPhase,
+): Promise<void> {
+  const phase = slackReactionPhase(reactionState) ?? fallbackPhase;
+  if (phase === "accepted") {
+    await removeReactionSafely(client, target, "eyes");
+    return;
+  }
+  if (phase === "started") {
+    await removeReactionSafely(client, target, "hourglass_flowing_sand");
+    return;
+  }
+  await removeReactionSafely(client, target, "eyes");
+  await removeReactionSafely(client, target, "hourglass_flowing_sand");
+}
+
+function slackReactionPhase(
+  reactionState: TriggerProviderReactionState | undefined,
+): SlackReactionPhase | undefined {
+  if (typeof reactionState !== "object" || reactionState === null || Array.isArray(reactionState)) {
+    return undefined;
+  }
+  const phase = reactionState["phase"];
+  return phase === "accepted" || phase === "started" ? phase : undefined;
+}
+
 function buildSlackMergeData(
   event: NormalizedSlackMentionEvent,
   botUserId: string,
@@ -331,9 +377,9 @@ async function failWithNotice(
   client: SlackBotClient,
   event: SlackOutputContext,
   reason: string,
+  reactionState?: TriggerProviderReactionState,
 ): Promise<void> {
-  await removeReactionSafely(client, event, "eyes");
-  await removeReactionSafely(client, event, "hourglass_flowing_sand");
+  await removeReactionForPhase(client, event, reactionState);
   await addReaction(client, event, "x");
   await client.sendMessage({
     organizationId: event.organizationId,

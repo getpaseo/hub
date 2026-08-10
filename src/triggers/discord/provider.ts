@@ -4,7 +4,11 @@ import type {
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
 import { logger } from "../../logger.js";
-import { type TriggerProvider, type TriggerProviderMatch } from "../index.js";
+import {
+  type TriggerProvider,
+  type TriggerProviderMatch,
+  type TriggerProviderReactionState,
+} from "../index.js";
 import type { DiscordBotClient } from "./bot.js";
 import {
   matchDiscordTriggers,
@@ -80,6 +84,8 @@ export interface DiscordOutputContext {
   threadId: string | null;
   messageId: string;
 }
+
+type DiscordReactionPhase = "accepted" | "started";
 
 export function createDiscordTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -192,36 +198,71 @@ export function createDiscordTriggerProvider(options: {
         },
       };
     },
-    async onDispatchAccepted(triggerContext) {
+    async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
+      if (discordReactionPhase(reactionState) !== undefined) return reactionState;
       await reactSafely(options.bot, triggerContext.target, "eyes");
+      return { phase: "accepted" };
     },
-    async onAgentExecutionStarted(triggerContext) {
+    async onAgentExecutionStarted(triggerContext, _outputContext, reactionState) {
+      if (discordReactionPhase(reactionState) === "started") return reactionState;
       await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
       await reactSafely(options.bot, triggerContext.target, "hourglass");
+      return { phase: "started" };
     },
-    async onAgentExecutionCompleted(triggerContext) {
-      await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
+    async onAgentExecutionCompleted(triggerContext, _outputContext, _result, reactionState) {
+      await deleteReactionForPhase(options.bot, triggerContext.target, reactionState, "started");
       await react(options.bot, triggerContext.target, "white_check_mark");
+      return null;
     },
-    async onAgentExecutionFailed(triggerContext, _outputContext, reason) {
-      await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
-      await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
+    async onAgentExecutionFailed(triggerContext, _outputContext, reason, reactionState) {
+      await deleteReactionForPhase(options.bot, triggerContext.target, reactionState);
       await react(options.bot, triggerContext.target, "x");
       await postThreadNotice(options.bot, triggerContext.target, `Paseo agent failed: ${reason}`);
+      return null;
     },
-    async onMachineTerminated(triggerContext, reason) {
+    async onMachineTerminated(triggerContext, reason, reactionState) {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
-        await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
-        await deleteReactionSafely(options.bot, triggerContext.target, "hourglass");
+        await deleteReactionForPhase(options.bot, triggerContext.target, reactionState);
         await react(options.bot, triggerContext.target, "x");
         await postThreadNotice(
           options.bot,
           triggerContext.target,
           `Paseo machine terminated before the agent could complete: ${reason}`,
         );
+        return null;
       }
+      return reactionState;
     },
   };
+}
+
+async function deleteReactionForPhase(
+  bot: DiscordBotClient,
+  target: DiscordOutputContext,
+  reactionState: TriggerProviderReactionState | undefined,
+  fallbackPhase?: DiscordReactionPhase,
+): Promise<void> {
+  const phase = discordReactionPhase(reactionState) ?? fallbackPhase;
+  if (phase === "accepted") {
+    await deleteReactionSafely(bot, target, "eyes");
+    return;
+  }
+  if (phase === "started") {
+    await deleteReactionSafely(bot, target, "hourglass");
+    return;
+  }
+  await deleteReactionSafely(bot, target, "eyes");
+  await deleteReactionSafely(bot, target, "hourglass");
+}
+
+function discordReactionPhase(
+  reactionState: TriggerProviderReactionState | undefined,
+): DiscordReactionPhase | undefined {
+  if (typeof reactionState !== "object" || reactionState === null || Array.isArray(reactionState)) {
+    return undefined;
+  }
+  const phase = reactionState["phase"];
+  return phase === "accepted" || phase === "started" ? phase : undefined;
 }
 
 function buildDiscordMergeData(

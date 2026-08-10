@@ -1,4 +1,5 @@
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
@@ -102,6 +103,7 @@ export interface AgentExecutionRecord {
   result: unknown;
   triggerContext: unknown;
   outputContext: unknown;
+  reactionState: JsonValue | null;
   configurationRevisionId: string;
   completionTokenHash: string | null;
   replyClaimedAt: Date | null;
@@ -549,6 +551,7 @@ export interface InsertAgentExecutionInput {
   launchIntent?: LaunchMachineIntent | null;
   status?: "spawning" | "failed";
   result?: unknown;
+  reactionState?: JsonValue | null;
 }
 
 interface TriggerRunEvidence {
@@ -573,6 +576,7 @@ export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
   deadlineAt: Date;
   deadlineKind: WorkflowDeadlineKind | null;
   failureReason: string | null;
+  reactionState: JsonValue | null;
   terminalNotificationPendingAt: Date | null;
   terminalNotificationDeliveredAt: Date | null;
   terminalNotificationLeaseExpiresAt: Date | null;
@@ -1046,7 +1050,12 @@ export interface Database {
   markWorkflowRunTerminalNotificationDelivered(
     triggerRunId: string,
     deliveredAt: Date,
+    reactionState: JsonValue | null,
   ): Promise<void>;
+  setWorkflowRunReactionState(
+    triggerRunId: string,
+    reactionState: JsonValue | null,
+  ): Promise<AcceptedTriggerRunRecord | undefined>;
   recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]>;
   recoverWorkflowWakeups(now: Date): Promise<void>;
   markProviderEventDropped(
@@ -1170,6 +1179,10 @@ export interface Database {
     toStatus: AgentExecutionStatus,
     fields?: TransitionAgentExecutionFields,
   ): Promise<TransitionAgentExecutionResult>;
+  setAgentExecutionReactionState(
+    executionId: string,
+    reactionState: JsonValue | null,
+  ): Promise<AgentExecutionRecord>;
   findRunningAgentExecutionsForMachine(machineId: string): Promise<AgentExecutionRecord[]>;
   findPendingAgentExecutions(): Promise<AgentExecutionRecord[]>;
   findPendingHubActions(daemonId?: string): Promise<AgentExecutionRecord[]>;

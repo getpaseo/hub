@@ -5,6 +5,7 @@ import type {
   DurableProviderEvent,
   MeterReservation,
   MeterReservationDenied,
+  AcceptedTriggerRunRecord,
   TriggerRunRecord,
   WorkflowWakeupRecord,
   WorkflowDeadlineRecovery,
@@ -70,7 +71,9 @@ export interface DurableWorkflowEngineOptions {
   workerIntervalMs?: number;
   now?: () => Date;
   onWorkflowDeadlineExceeded?: (recovery: WorkflowDeadlineRecovery) => Promise<void>;
-  onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<void>;
+  onWorkflowRunAccepted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
+  onWorkflowRunStarted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
+  onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<JsonValue | null | void>;
 }
 
 export class DurableWorkflowEngine {
@@ -163,7 +166,7 @@ export class DurableWorkflowEngine {
         // Accepting a trigger reserves nothing: a trigger can skip every step, and multi-step
         // workflows create several executions. Metering happens per execution, at creation time
         // (see processWakeup), so the meter is genuinely per-execution and atomic with the work.
-        await this.options.database!.createAcceptedTriggerRun({
+        const created = await this.options.database!.createAcceptedTriggerRun({
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           configurationRevisionId,
@@ -178,6 +181,7 @@ export class DurableWorkflowEngine {
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
         });
+        if (created.created) await this.deliverWorkflowRunAccepted(created.run);
       }),
     );
     return { providerEventReceiptId: trigger.providerEventReceiptId };
@@ -217,7 +221,7 @@ export class DurableWorkflowEngine {
     if (database === null) return;
     const prepared = await this.prepareWorkflowWakeup(wakeup);
     if (prepared === undefined) return;
-    const { run, configuration, trigger, next, step, context, recoverPreHandoffDispatch } =
+    const { run, configuration, trigger, steps, next, step, context, recoverPreHandoffDispatch } =
       prepared;
     let shouldRun = true;
     try {
@@ -296,7 +300,14 @@ export class DurableWorkflowEngine {
       await database.deleteWorkflowWakeup(run.id);
       return;
     }
-    await database.linkWorkflowStepRunExecution(next.id, created.execution.id, intent);
+    await this.linkWorkflowStepAndNotifyStart(
+      database,
+      run.id,
+      steps,
+      next.id,
+      created.execution.id,
+      intent,
+    );
     if (!created.created) {
       await this.handleExistingWorkflowExecution(
         created.execution,
@@ -313,6 +324,20 @@ export class DurableWorkflowEngine {
     }
     await this.finishPersistedExecution(execution);
     await database.deleteWorkflowWakeup(run.id);
+  }
+
+  private async linkWorkflowStepAndNotifyStart(
+    database: Database,
+    triggerRunId: string,
+    steps: readonly WorkflowStepRun[],
+    stepRunId: string,
+    executionId: string,
+    intent: LaunchMachineIntent,
+  ): Promise<void> {
+    await database.linkWorkflowStepRunExecution(stepRunId, executionId, intent);
+    if (steps.some((candidate) => candidate.startedAt !== null)) return;
+    const started = await database.findTriggerRunById(triggerRunId);
+    if (started?.outcome === "accepted") await this.deliverWorkflowRunStarted(started);
   }
 
   /**
@@ -600,6 +625,34 @@ export class DurableWorkflowEngine {
     return Promise.resolve();
   }
 
+  private async deliverWorkflowRunAccepted(run: AcceptedTriggerRunRecord): Promise<void> {
+    const callback = this.options.onWorkflowRunAccepted;
+    if (callback === undefined || this.options.database === null) return;
+    try {
+      const result = await callback(run);
+      await this.options.database.setWorkflowRunReactionState(
+        run.id,
+        result === undefined ? run.reactionState : result,
+      );
+    } catch (error: unknown) {
+      this.logger.error({ err: error, triggerRunId: run.id }, "workflow accepted reaction failed");
+    }
+  }
+
+  private async deliverWorkflowRunStarted(run: AcceptedTriggerRunRecord): Promise<void> {
+    const callback = this.options.onWorkflowRunStarted;
+    if (callback === undefined || this.options.database === null) return;
+    try {
+      const result = await callback(run);
+      await this.options.database.setWorkflowRunReactionState(
+        run.id,
+        result === undefined ? run.reactionState : result,
+      );
+    } catch (error: unknown) {
+      this.logger.error({ err: error, triggerRunId: run.id }, "workflow started reaction failed");
+    }
+  }
+
   private kickTerminalNotificationRecovery(): void {
     if (this.options.database === null || this.stopped) return;
     if (this.terminalNotificationProcessing !== undefined) return;
@@ -622,8 +675,14 @@ export class DurableWorkflowEngine {
       );
       if (run === undefined) return;
       try {
-        await this.options.onWorkflowRunTerminal?.(run);
-        await database.markWorkflowRunTerminalNotificationDelivered(run.id, this.now());
+        const reactionState = await this.options.onWorkflowRunTerminal?.(run);
+        const deliveredReactionState =
+          reactionState === undefined ? terminalReactionState(run) : reactionState;
+        await database.markWorkflowRunTerminalNotificationDelivered(
+          run.id,
+          this.now(),
+          deliveredReactionState,
+        );
       } catch (error) {
         this.logger.error(
           { err: error, triggerRunId: run.id },
@@ -953,6 +1012,11 @@ function asProjectConfiguration(
 
 function truthy(value: unknown): boolean {
   return value !== false && value !== null && value !== undefined && value !== 0 && value !== "";
+}
+
+function terminalReactionState(run: TriggerRunRecord): JsonValue | null {
+  if (run.outcome === "accepted") return run.reactionState;
+  return null;
 }
 
 async function collectProviderMatches(

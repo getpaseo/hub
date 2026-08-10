@@ -134,11 +134,20 @@ describe("GitHub Phase 1 trigger provider", () => {
     const provider = createProvider(store, reactions);
     const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
-    await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
-    await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
-      status: "succeeded",
-    });
+    let reactionState =
+      (await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext)) ?? null;
+    reactionState =
+      (await provider.onAgentExecutionStarted?.(
+        match.triggerContext,
+        match.outputContext,
+        reactionState,
+      )) ?? reactionState;
+    await provider.onAgentExecutionCompleted?.(
+      match.triggerContext,
+      match.outputContext,
+      { status: "succeeded" },
+      reactionState,
+    );
     assert.deepEqual(
       reactions.created.map((call) => call.content),
       ["eyes", "rocket", "+1"],
@@ -152,8 +161,14 @@ describe("GitHub Phase 1 trigger provider", () => {
     const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
-    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
-    await provider.onAgentExecutionFailed?.(match.triggerContext, match.outputContext, "boom");
+    const reactionState =
+      (await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext)) ?? null;
+    await provider.onAgentExecutionFailed?.(
+      match.triggerContext,
+      match.outputContext,
+      "boom",
+      reactionState,
+    );
 
     assert.deepEqual(
       reactions.created.map((call) => call.content),

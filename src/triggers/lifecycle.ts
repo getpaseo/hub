@@ -1,11 +1,35 @@
-import type { TriggerProvider, TriggerProviderLifecycleResult } from "./index.js";
+import type {
+  TriggerProvider,
+  TriggerProviderLifecycleResult,
+  TriggerProviderReactionState,
+} from "./index.js";
+
+export async function notifyDispatchAccepted(input: {
+  provider: TriggerProvider;
+  triggerContext: unknown;
+  outputContext: unknown;
+  reactionState?: TriggerProviderReactionState;
+}): Promise<TriggerProviderReactionState> {
+  const result = await input.provider.onDispatchAccepted?.(
+    input.triggerContext,
+    input.outputContext,
+    input.reactionState,
+  );
+  return retainReactionState(input.reactionState, result);
+}
 
 export async function notifyAgentExecutionStarted(input: {
   provider: TriggerProvider;
   triggerContext: unknown;
   outputContext: unknown;
-}): Promise<void> {
-  await input.provider.onAgentExecutionStarted?.(input.triggerContext, input.outputContext);
+  reactionState?: TriggerProviderReactionState;
+}): Promise<TriggerProviderReactionState> {
+  const result = await input.provider.onAgentExecutionStarted?.(
+    input.triggerContext,
+    input.outputContext,
+    input.reactionState,
+  );
+  return retainReactionState(input.reactionState, result);
 }
 
 export async function notifyAgentExecutionCompleted(input: {
@@ -13,12 +37,15 @@ export async function notifyAgentExecutionCompleted(input: {
   triggerContext: unknown;
   outputContext: unknown;
   result: TriggerProviderLifecycleResult;
-}): Promise<void> {
-  await input.provider.onAgentExecutionCompleted?.(
+  reactionState?: TriggerProviderReactionState;
+}): Promise<TriggerProviderReactionState> {
+  const result = await input.provider.onAgentExecutionCompleted?.(
     input.triggerContext,
     input.outputContext,
     input.result,
+    input.reactionState,
   );
+  return retainReactionState(input.reactionState, result);
 }
 
 export async function notifyAgentExecutionFailed(input: {
@@ -26,12 +53,15 @@ export async function notifyAgentExecutionFailed(input: {
   triggerContext: unknown;
   outputContext: unknown;
   reason: string;
-}): Promise<void> {
-  await input.provider.onAgentExecutionFailed?.(
+  reactionState?: TriggerProviderReactionState;
+}): Promise<TriggerProviderReactionState> {
+  const result = await input.provider.onAgentExecutionFailed?.(
     input.triggerContext,
     input.outputContext,
     input.reason,
+    input.reactionState,
   );
+  return retainReactionState(input.reactionState, result);
 }
 
 export async function notifyAgentExecutionTerminal(input: {
@@ -46,6 +76,19 @@ export async function notifyMachineTerminated(input: {
   provider: TriggerProvider;
   triggerContext: unknown;
   reason: string;
-}): Promise<void> {
-  await input.provider.onMachineTerminated?.(input.triggerContext, input.reason);
+  reactionState?: TriggerProviderReactionState;
+}): Promise<TriggerProviderReactionState> {
+  const result = await input.provider.onMachineTerminated?.(
+    input.triggerContext,
+    input.reason,
+    input.reactionState,
+  );
+  return retainReactionState(input.reactionState, result);
+}
+
+function retainReactionState(
+  previous: TriggerProviderReactionState | undefined,
+  result: TriggerProviderReactionState | void,
+): TriggerProviderReactionState {
+  return result === undefined ? (previous ?? null) : result;
 }

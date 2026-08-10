@@ -97,6 +97,9 @@ export interface TriggerProviderLifecycleResult {
   summary?: string;
 }
 
+export type TriggerProviderReactionState = JsonValue | null;
+export type TriggerProviderReactionResult = void | TriggerProviderReactionState;
+
 export interface TriggerLaunchMaterialization<TriggerContext = unknown> {
   executionId: string;
   organizationId: string;
@@ -139,23 +142,34 @@ export interface TriggerProvider<
   materializeContext?(
     launch: TriggerContextMaterialization<TriggerContext>,
   ): Promise<MaterializedContext>;
-  onDispatchAccepted?(triggerContext: TriggerContext, outputContext: OutputContext): Promise<void>;
+  onDispatchAccepted?(
+    triggerContext: TriggerContext,
+    outputContext: OutputContext,
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionResult>;
   onAgentExecutionStarted?(
     triggerContext: TriggerContext,
     outputContext: OutputContext,
-  ): Promise<void>;
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionResult>;
   onAgentExecutionCompleted?(
     triggerContext: TriggerContext,
     outputContext: OutputContext,
     result: TriggerProviderLifecycleResult,
-  ): Promise<void>;
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionResult>;
   onAgentExecutionFailed?(
     triggerContext: TriggerContext,
     outputContext: OutputContext,
     reason: string,
-  ): Promise<void>;
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionResult>;
   onAgentExecutionTerminal?(executionId: string, triggerContext: TriggerContext): Promise<void>;
-  onMachineTerminated?(triggerContext: TriggerContext, reason: string): Promise<void>;
+  onMachineTerminated?(
+    triggerContext: TriggerContext,
+    reason: string,
+    reactionState?: TriggerProviderReactionState,
+  ): Promise<TriggerProviderReactionResult>;
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

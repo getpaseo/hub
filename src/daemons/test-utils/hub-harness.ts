@@ -419,7 +419,23 @@ export class HubHarness {
     const module = this.requireHub().daemonModule;
     if (!module) throw new Error("Daemon module is unavailable");
     const requested = { ...this.intent(), ...overrides };
-    const intent = await this.attachDispatchRun(requested, await this.insertTestReceipt(requested));
+    const run = await this.requireDatabase().createRejectedTriggerRun({
+      organizationId: requested.organizationId,
+      projectId: requested.projectId,
+      configurationRevisionId: requested.configurationRevisionId,
+      providerEventReceiptId: await this.insertTestReceipt(requested),
+      configuredTriggerName: requested.triggerName,
+      rawPrompt: requested.prompt,
+      prompt: requested.prompt,
+      inputs: {},
+      triggerContext: requested.triggerContext,
+      outputContext: requested.outputContext,
+      rejection: { code: "invalid_type", inputName: "individual", expectedType: "string" },
+    });
+    const { workflowStepRunId: _workflowStepRunId, ...intent } = {
+      ...requested,
+      triggerRunId: run.run.id,
+    };
     return dispatchLaunchMachineIntent(module, intent);
   }
   async handoff(
