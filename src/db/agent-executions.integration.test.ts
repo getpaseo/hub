@@ -717,18 +717,36 @@ describe("agent execution PostgreSQL repository", () => {
           }
         },
       }).engine;
-      await engine.processAvailable();
+      const processUntilDelivered = async (count: number) => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          await engine.processAvailable();
+          if (delivered.length === count) return;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        assert.fail(`terminal notification delivery count did not reach ${count}`);
+      };
+
+      await processUntilDelivered(1);
       assert.deepEqual(delivered, [run.id]);
       const failedDelivery = await fixture.database.findTriggerRunById(run.id);
       assert.equal(failedDelivery?.outcome, "accepted");
       assert.equal(failedDelivery.terminalNotificationDeliveredAt, null);
 
       now = new Date("2026-08-05T12:00:01.001Z");
+      await processUntilDelivered(2);
+
+      let persisted = await fixture.database.findTriggerRunById(run.id);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (persisted?.outcome === "accepted" && persisted.terminalNotificationDeliveredAt !== null)
+          break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        persisted = await fixture.database.findTriggerRunById(run.id);
+      }
+
       await engine.processAvailable();
-      await engine.processAvailable();
+      await engine.stop();
 
       assert.deepEqual(delivered, [run.id, run.id]);
-      const persisted = await fixture.database.findTriggerRunById(run.id);
       assert.equal(
         persisted?.outcome === "accepted"
           ? persisted.terminalNotificationDeliveredAt !== null
