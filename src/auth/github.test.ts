@@ -109,6 +109,7 @@ describe("GitHub App authentication", () => {
       fetch: async (input, init) => {
         const request =
           input instanceof Request && init === undefined ? input : new Request(input, init);
+        assert.equal(request.headers.get("authorization"), null);
         requests.push(`${request.method} ${new URL(request.url).pathname}`);
         return Response.json({ id: 9876, login: "paseo[bot]" });
       },
