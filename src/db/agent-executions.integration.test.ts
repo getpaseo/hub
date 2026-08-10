@@ -624,6 +624,14 @@ describe("agent execution PostgreSQL repository", () => {
   it("delivers a terminal workflow notification after restart when the crash happened before the hook", async () => {
     const fixture = await executionFixture(postgres);
     const delivered: string[] = [];
+    const restarted = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: createUnlimitedEntitlementsService(),
+      providers: [],
+      onWorkflowRunTerminal: async (terminalRun) => {
+        delivered.push(terminalRun.id);
+      },
+    });
     try {
       const trigger = await insertWorkflowTrigger(
         fixture.database,
@@ -649,16 +657,9 @@ describe("agent execution PostgreSQL repository", () => {
       ).run;
       await fixture.database.succeedTriggerRun(run.id);
 
-      const restarted = createDurableWorkflowHandler({
-        database: fixture.database,
-        entitlements: createUnlimitedEntitlementsService(),
-        providers: [],
-        onWorkflowRunTerminal: async (terminalRun) => {
-          delivered.push(terminalRun.id);
-        },
-      });
       await restarted.engine.processAvailable();
       await restarted.engine.processAvailable();
+      await restarted.engine.stop();
 
       assert.deepEqual(delivered, [run.id]);
       const persisted = await fixture.database.findTriggerRunById(run.id);
@@ -669,6 +670,7 @@ describe("agent execution PostgreSQL repository", () => {
         true,
       );
     } finally {
+      await restarted.engine.stop();
       await fixture.database.close();
     }
   });
@@ -678,6 +680,7 @@ describe("agent execution PostgreSQL repository", () => {
     let now = new Date("2026-08-05T12:00:00.000Z");
     const delivered: string[] = [];
     let failFirst = true;
+    const engines: Array<ReturnType<typeof createDurableWorkflowHandler>["engine"]> = [];
     try {
       const trigger = await insertWorkflowTrigger(
         fixture.database,
@@ -703,48 +706,39 @@ describe("agent execution PostgreSQL repository", () => {
       ).run;
       await fixture.database.succeedTriggerRun(run.id);
 
-      const engine = createDurableWorkflowHandler({
-        database: fixture.database,
-        entitlements: createUnlimitedEntitlementsService(),
-        providers: [],
-        now: () => now,
-        leaseMs: 1_000,
-        onWorkflowRunTerminal: async (terminalRun) => {
-          delivered.push(terminalRun.id);
-          if (failFirst) {
-            failFirst = false;
-            throw new Error("provider unavailable");
-          }
-        },
-      }).engine;
-      const processUntilDelivered = async (count: number) => {
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          await engine.processAvailable();
-          if (delivered.length === count) return;
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-        assert.fail(`terminal notification delivery count did not reach ${count}`);
+      const createEngine = () => {
+        const engine = createDurableWorkflowHandler({
+          database: fixture.database,
+          entitlements: createUnlimitedEntitlementsService(),
+          providers: [],
+          now: () => now,
+          leaseMs: 1_000,
+          onWorkflowRunTerminal: async (terminalRun) => {
+            delivered.push(terminalRun.id);
+            if (failFirst) {
+              failFirst = false;
+              throw new Error("provider unavailable");
+            }
+          },
+        }).engine;
+        engines.push(engine);
+        return engine;
       };
 
-      await processUntilDelivered(1);
+      const firstEngine = createEngine();
+      await firstEngine.processAvailable();
+      await firstEngine.stop();
       assert.deepEqual(delivered, [run.id]);
       const failedDelivery = await fixture.database.findTriggerRunById(run.id);
       assert.equal(failedDelivery?.outcome, "accepted");
       assert.equal(failedDelivery.terminalNotificationDeliveredAt, null);
 
       now = new Date("2026-08-05T12:00:01.001Z");
-      await processUntilDelivered(2);
+      const retryEngine = createEngine();
+      await retryEngine.processAvailable();
+      await retryEngine.stop();
 
-      let persisted = await fixture.database.findTriggerRunById(run.id);
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if (persisted?.outcome === "accepted" && persisted.terminalNotificationDeliveredAt !== null)
-          break;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        persisted = await fixture.database.findTriggerRunById(run.id);
-      }
-
-      await engine.processAvailable();
-      await engine.stop();
+      const persisted = await fixture.database.findTriggerRunById(run.id);
 
       assert.deepEqual(delivered, [run.id, run.id]);
       assert.equal(
@@ -754,6 +748,7 @@ describe("agent execution PostgreSQL repository", () => {
         true,
       );
     } finally {
+      for (const engine of engines) await engine.stop();
       await fixture.database.close();
     }
   });
