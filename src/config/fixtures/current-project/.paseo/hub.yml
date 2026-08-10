@@ -18,4 +18,4 @@ agents:
         network_access: false
   claude:
     provider: claude
-    mode: ultracode
+    mode: bypassPermissions

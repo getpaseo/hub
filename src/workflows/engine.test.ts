@@ -621,7 +621,7 @@ describe("durable multi-step workflow engine", () => {
     );
     assert.ok(classifier);
     assert.equal(dispatches[0]?.environmentName, "hub");
-    assert.deepEqual(dispatches[0]?.agent, { provider: "claude", mode: "ultracode" });
+    assert.deepEqual(dispatches[0]?.agent, { provider: "claude", mode: "bypassPermissions" });
 
     await fixture.database.completeWorkflowAgentExecution({
       executionId: classifier.id,

@@ -31,6 +31,9 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   }, 120_000);
 
   it("validates and installs the exact authored bundle through the source-built CLI", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+
     const evidence = await hub.deployCurrentProjectBundleWithSourceCli();
     const expectedFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
       left.path.localeCompare(right.path),

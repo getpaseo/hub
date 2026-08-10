@@ -13,7 +13,6 @@ import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
-import { TestDaemon } from "../../daemons/test-utils/hub-harness.js";
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -148,7 +147,6 @@ export class HubE2E {
   private pool: Pool | undefined;
   private hub: ManagedChild | undefined;
   private completionRunner: ManagedChild | undefined;
-  private validationDaemon: TestDaemon | undefined;
   private daemonHost = "";
   private acpRecordFile = "";
   private outputFile = "";
@@ -224,7 +222,13 @@ export class HubE2E {
       await writeFile(destination, file.content);
     }
 
-    const connectedDaemonId = await this.connectValidationDaemon();
+    const daemon = await this.requirePool().query<{ id: string }>(
+      "select id from daemons where presence = 'connected' order by connected_at desc limit 1",
+    );
+    const connectedDaemonId = daemon.rows[0]?.id;
+    if (!connectedDaemonId) {
+      throw new Error("Connected daemon is unavailable for source CLI deployment");
+    }
     await this.requirePool().query("update daemons set slug = 'local' where id = $1", [
       connectedDaemonId,
     ]);
@@ -243,7 +247,25 @@ export class HubE2E {
       MACHINE_KEY,
       "--json",
     ];
-    const dryRun = await source.runFrom([...common, "--dry-run"], projectRoot);
+    const dryRun = await source
+      .runFrom([...common, "--dry-run"], projectRoot)
+      .catch(async (error) => {
+        const diagnostic = await fetch(
+          `${this.requireProxy().origin}/api/v1/configurations/validate`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${MACHINE_KEY}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ projectSlug: PROJECT_SLUG, files: sourceFiles }),
+          },
+        );
+        throw new Error(
+          `Source CLI dry-run failed; Hub validation returned HTTP ${diagnostic.status}: ${await diagnostic.text()}`,
+          { cause: error },
+        );
+      });
     const revisionsAfterDryRun = await this.configurationRevisionCount();
     const install = await source.runFrom(common, projectRoot);
     const revisionsAfterInstall = await this.configurationRevisionCount();
@@ -1127,7 +1149,6 @@ export class HubE2E {
     const failures: unknown[] = [];
     const ownedProcesses = new Set<number>();
     const ownedProcessDescriptions: string[] = [];
-    await this.attempt(() => this.validationDaemon?.disconnect(), failures);
     const hubMs = await this.stopOwnedChild(
       this.hub,
       ownedProcesses,
@@ -1432,26 +1453,6 @@ export class HubE2E {
       [PROJECT_ID],
     );
     return result.rows[0]?.count ?? 0;
-  }
-
-  private async connectValidationDaemon(): Promise<string> {
-    const response = await fetch(`${this.requireProxy().origin}/api/v1/daemons/enrollment-tokens`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${MACHINE_KEY}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
-    });
-    if (response.status !== 201) {
-      throw new Error(`Validation daemon enrollment returned HTTP ${response.status}`);
-    }
-    const token = z.object({ token: z.string().min(1) }).parse(await response.json()).token;
-    const daemon = TestDaemon.create(this.requireProxy().origin);
-    const enrollment = await daemon.enroll(token);
-    await daemon.connect(enrollment);
-    this.validationDaemon = daemon;
-    return daemon.daemonId;
   }
 
   private async seedCurrentProjectResources(): Promise<void> {

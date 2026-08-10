@@ -323,7 +323,7 @@ describe("daemon enrollment and execution", () => {
     const classifier = await hub.waitForPendingExecution();
     const classifierLaunch = hub.createdAgentLaunch();
     assert.equal(classifierLaunch.provider, "claude");
-    assert.equal(classifierLaunch.modeId, "ultracode");
+    assert.equal(classifierLaunch.modeId, "bypassPermissions");
     assert.equal(classifierLaunch.cwd, "/workspace/hub");
     assert.equal(
       classifierLaunch.prompt,
