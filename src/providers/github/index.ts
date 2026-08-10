@@ -178,19 +178,24 @@ export function createGitHubRegistration(
             throw new Error(`github connection is unavailable: ${input.connectionSlug}`);
           }
           repositoryNamesForAccount(input.repositories, selectedConnection.accountLogin);
-          const bot = await appAuth.getAppBotIdentity(configuration.appSlug);
           const token = await appAuth.mintInstallationAccessToken({
             installationId: selectedConnection.installationId,
             accountLogin: selectedConnection.accountLogin,
             repositories: input.repositories,
             permissions: input.permissions,
           });
-          return {
-            token: token.token,
-            expiresAt: token.expiresAt,
-            botUserId: bot.id,
-            botLogin: bot.login,
-          };
+          try {
+            const bot = await appAuth.getAppBotIdentity(configuration.appSlug, token.token);
+            return {
+              token: token.token,
+              expiresAt: token.expiresAt,
+              botUserId: bot.id,
+              botLogin: bot.login,
+            };
+          } catch (error) {
+            await appAuth.revokeInstallationToken(token.token);
+            throw error;
+          }
         },
         revoke: (token) => appAuth.revokeInstallationToken(token),
       },

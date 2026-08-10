@@ -109,14 +109,14 @@ describe("GitHub App authentication", () => {
       fetch: async (input, init) => {
         const request =
           input instanceof Request && init === undefined ? input : new Request(input, init);
-        assert.equal(request.headers.get("authorization"), null);
+        assert.equal(request.headers.get("authorization"), "token scoped-installation-token");
         requests.push(`${request.method} ${new URL(request.url).pathname}`);
         return Response.json({ id: 9876, login: "paseo[bot]" });
       },
     });
 
-    const first = await auth.getAppBotIdentity("paseo");
-    const cached = await auth.getAppBotIdentity("paseo");
+    const first = await auth.getAppBotIdentity("paseo", "scoped-installation-token");
+    const cached = await auth.getAppBotIdentity("paseo", "another-installation-token");
 
     assert.deepEqual(first, { id: 9876, login: "paseo[bot]" });
     assert.deepEqual(cached, first);

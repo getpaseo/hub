@@ -288,7 +288,9 @@ describe("GitHub registration", () => {
     });
     const requests: unknown[] = [];
     const revoked: string[] = [];
+    const identityTokens: string[] = [];
     let identityLookups = 0;
+    let identityFailure: Error | undefined;
     const registration = createGitHubRegistration({
       database,
       auth: null,
@@ -303,8 +305,10 @@ describe("GitHub registration", () => {
           requests.push(input);
           return Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 });
         },
-        getAppBotIdentity: () => {
+        getAppBotIdentity: (_appSlug, token) => {
           identityLookups += 1;
+          identityTokens.push(token);
+          if (identityFailure !== undefined) return Promise.reject(identityFailure);
           return Promise.resolve({ id: 123, login: "paseo[bot]" });
         },
         revokeInstallationToken: (token) => {
@@ -343,6 +347,7 @@ describe("GitHub registration", () => {
       botLogin: "paseo[bot]",
     });
     assert.equal(identityLookups, 1);
+    assert.deepEqual(identityTokens, ["scoped-token"]);
 
     await assert.rejects(
       () =>
@@ -370,9 +375,22 @@ describe("GitHub registration", () => {
       permissions: { contents: "read" },
     });
 
+    identityFailure = new Error("identity unavailable");
+    await assert.rejects(
+      () =>
+        authority.mint({
+          projectId: "project-1",
+          connectionSlug: "getpaseo-github",
+          repositories: ["getpaseo/hub"],
+          permissions: { contents: "read" },
+        }),
+      /identity unavailable/u,
+    );
+    assert.deepEqual(revoked, ["scoped-token"]);
+
     await authority.revoke(minted.token);
     await authority.revoke(caseInsensitive.token);
-    assert.deepEqual(revoked, ["scoped-token", "scoped-token"]);
+    assert.deepEqual(revoked, ["scoped-token", "scoped-token", "scoped-token"]);
     await assert.rejects(
       () =>
         authority.mint({

@@ -42,7 +42,7 @@ export interface GitHubAuth {
     repositories: readonly string[];
     permissions: Readonly<Record<string, GitHubAppPermissionLevel>>;
   }): Promise<GitHubInstallationAccessToken>;
-  getAppBotIdentity(appSlug: string): Promise<GitHubAppBotIdentity>;
+  getAppBotIdentity(appSlug: string, installationToken: string): Promise<GitHubAppBotIdentity>;
   revokeInstallationToken(token: string): Promise<void>;
   createInstallationOctokit(installationId: number): Promise<Octokit>;
 }
@@ -126,11 +126,17 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
     });
   }
 
-  async function getAppBotIdentity(appSlug: string): Promise<GitHubAppBotIdentity> {
+  async function getAppBotIdentity(
+    appSlug: string,
+    installationToken: string,
+  ): Promise<GitHubAppBotIdentity> {
     const cached = appBotIdentityCache.get(appSlug);
     if (cached !== undefined) return cached;
     const pending = (async () => {
-      const octokit = new Octokit({ request: githubRequestOptions(options.fetch) });
+      const octokit = new Octokit({
+        auth: installationToken,
+        request: githubRequestOptions(options.fetch),
+      });
       const response = await octokit.request("GET /users/{username}", {
         username: `${appSlug}[bot]`,
       });
