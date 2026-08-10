@@ -7,7 +7,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Pool } from "pg";
 import { z } from "zod";
 import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
-import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
+import { DispatchedManualRunSchema, ProblemSchema } from "../../public-api/contracts.js";
 import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
@@ -233,6 +233,7 @@ export class HubE2E {
       connectedDaemonId,
     ]);
     await this.seedCurrentProjectResources();
+    await this.waitForBundleProviders(sourceFiles);
 
     const revisionsBeforeDryRun = await this.configurationRevisionCount();
     const source = this.requireSource();
@@ -1321,6 +1322,20 @@ export class HubE2E {
         : {
             agents: {
               providers: {
+                claude: {
+                  command: [
+                    process.execPath,
+                    join(HUB_ROOT, "src/e2e/harness/provider-catalog-shim.mjs"),
+                    "claude",
+                  ],
+                },
+                codex: {
+                  command: [
+                    process.execPath,
+                    join(HUB_ROOT, "src/e2e/harness/provider-catalog-shim.mjs"),
+                    "codex",
+                  ],
+                },
                 "hub-e2e": {
                   extends: "acp",
                   label: "Hub E2E",
@@ -1484,6 +1499,38 @@ export class HubE2E {
          ('hub-e2e', '00000000-0000-4000-8000-0000000000c3', 9102, 'getpaseo/paseo', 'main')
        on conflict (connection_id, repository_id) do nothing`,
     );
+  }
+
+  private async waitForBundleProviders(
+    files: readonly { path: string; content: string }[],
+  ): Promise<void> {
+    await this.observe(async () => {
+      const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/validate`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${MACHINE_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ projectSlug: PROJECT_SLUG, files }),
+      });
+      if (response.ok) return true;
+      const body = await response.text();
+      const problem = ProblemSchema.safeParse(JSON.parse(body));
+      if (
+        response.status === 422 &&
+        problem.success &&
+        problem.data.issues?.some(
+          ({ path, message }) =>
+            path[0] === ".paseo/hub.yml" &&
+            path[1] === "agents" &&
+            path.at(-1) === "provider" &&
+            /^Provider '.+' is not available$/u.test(message),
+        )
+      ) {
+        return false;
+      }
+      throw new Error(`Bundle provider readiness returned HTTP ${response.status}: ${body}`);
+    }, "source daemon provider snapshot to include every named bundle agent");
   }
 
   private async observe(
