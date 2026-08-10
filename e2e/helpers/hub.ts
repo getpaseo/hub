@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { WebSocket, type RawData } from "ws";
 import { Client } from "pg";
 import { z } from "zod";
+import { dump } from "js-yaml";
 import type { SourcePaseo } from "./source-paseo.js";
 import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
@@ -498,9 +499,8 @@ export class PaseoHub {
       if (daemon === undefined || daemon.status === "slug_conflict")
         throw new Error("Slack event daemon enrollment failed");
       const store = new ProjectConfigurationStore(database, target.project_id);
-      const revision = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration: browserUnroutedSlackConfiguration(daemon.slug),
+      const revision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(browserUnroutedSlackConfiguration(daemon.slug))),
         userId: target.user_id,
         sourceEvidence: { kind: "browser-drop-reason" },
       });
@@ -1127,6 +1127,7 @@ export class PaseoHub {
       const configuration = new ProjectConfiguration(page);
       await user.signUp(account);
       await user.createOrganization("Discord only");
+      await this.seedDaemonForEmail(application.databaseUrl, account.email, "editor-daemon");
       await navigation.openProject("Default");
       await navigation.openProjectSection("Configuration");
       await configuration.saveManualConfiguration(rawYaml);
@@ -1654,19 +1655,31 @@ export class PaseoHub {
   }
 
   private async seedDaemon(alias: string, displayName: string): Promise<string> {
+    return this.seedDaemonForEmail(
+      this.primary.databaseUrl,
+      this.requireUser(alias).accountEmail,
+      displayName,
+    );
+  }
+
+  private async seedDaemonForEmail(
+    databaseUrl: string,
+    accountEmail: string,
+    displayName: string,
+  ): Promise<string> {
     const daemonId = randomUUID();
     const machineId = randomUUID();
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      databaseUrl,
       `insert into machines (id, org_id, source, status)
        select $1, session.active_organization_id,
               jsonb_build_object('kind', 'daemon', 'daemonId', $2::text), 'alive'
        from session join "user" on "user".id = session.user_id
        where lower("user".email) = $3 and session.expires_at > now()`,
-      [machineId, daemonId, this.requireUser(alias).accountEmail],
+      [machineId, daemonId, accountEmail],
     );
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      databaseUrl,
       `insert into daemons
          (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
           daemon_public_key, credential_verifier, scopes, status)
@@ -1834,9 +1847,8 @@ export class PaseoHub {
       }
 
       const store = new ProjectConfigurationStore(database, project.id);
-      const revision = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration: providerDispatchConfiguration(repo, guildId),
+      const revision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, guildId))),
         userId: owner.user_id,
         sourceEvidence: { kind: "browser-fixture", userId: owner.user_id },
       });

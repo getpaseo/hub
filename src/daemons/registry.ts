@@ -7,6 +7,8 @@ import type { Database, DaemonRecord } from "../db/types.js";
 import {
   HubExecutionAgentCreateRequestSchema,
   HubExecutionAgentCreateResponseSchema,
+  HubExecutionAgentValidateRequestSchema,
+  HubExecutionAgentValidateResponseSchema,
   HubExecutionAgentStreamSchema,
   HubExecutionAgentUpdateSchema,
   HubExecutionControlRequestSchema,
@@ -38,7 +40,17 @@ interface PendingControlRequest {
   resolve(): void;
   reject(error: Error): void;
 }
-type PendingRequest = PendingCreateRequest | PendingControlRequest;
+interface PendingAgentValidationRequest {
+  kind: "agent-validation";
+  generation: number;
+  resolve(value: { valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }): void;
+  reject(error: Error): void;
+}
+interface AgentValidationIssue {
+  path: readonly (string | number)[];
+  message: string;
+}
+type PendingRequest = PendingCreateRequest | PendingControlRequest | PendingAgentValidationRequest;
 interface ActiveSocket {
   generation: number;
   socket: WebSocket;
@@ -114,6 +126,33 @@ export class ActiveDaemonRegistry {
         return () => subscribers.delete(handler);
       },
     };
+  }
+
+  validateAgentConfiguration(
+    daemonId: string,
+    agent: import("../config/compiler.js").CompiledAgent,
+  ): Promise<{ valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }> {
+    const active = this.active.get(daemonId);
+    if (!active) return Promise.reject(new Error("daemon_not_connected"));
+    const requestId = randomUUID();
+    const request = HubExecutionAgentValidateRequestSchema.parse({
+      type: "hub.execution.agent.validate.request",
+      requestId,
+      provider: agent.provider,
+      model: agent.model,
+      modeId: agent.mode,
+      thinkingOptionId: agent.thinkingOptionId,
+      providerOptions: agent.options,
+    });
+    return new Promise((resolve, reject) => {
+      this.pendingFor(daemonId).set(requestId, {
+        kind: "agent-validation",
+        generation: active.generation,
+        resolve,
+        reject,
+      });
+      active.socket.send(JSON.stringify({ type: "session", message: request }));
+    });
   }
 
   async revoke(daemon: DaemonRecord): Promise<void> {
@@ -222,6 +261,8 @@ export class ActiveDaemonRegistry {
     if (created.success) return this.receiveCreate(active, created.data);
     const controlled = HubExecutionControlResponseSchema.safeParse(message);
     if (controlled.success) return this.receiveControl(active, controlled.data);
+    const validated = HubExecutionAgentValidateResponseSchema.safeParse(message);
+    if (validated.success) return this.receiveAgentValidation(active, validated.data);
     const update = HubExecutionAgentUpdateSchema.safeParse(message);
     if (update.success) {
       const event = {
@@ -244,6 +285,29 @@ export class ActiveDaemonRegistry {
       timestamp: receivedAt,
     } as const;
     for (const subscriber of this.subscribersFor(active.daemon.id)) void subscriber(event);
+  }
+
+  private receiveAgentValidation(
+    active: ActiveSocket,
+    response: z.infer<typeof HubExecutionAgentValidateResponseSchema>,
+  ): void {
+    const requests = this.pendingFor(active.daemon.id);
+    const pending = requests.get(response.payload.requestId);
+    if (
+      !pending ||
+      pending.kind !== "agent-validation" ||
+      pending.generation !== active.generation
+    ) {
+      return;
+    }
+    requests.delete(response.payload.requestId);
+    if (response.payload.error !== null) {
+      pending.reject(new Error(response.payload.error));
+      return;
+    }
+    pending.resolve(
+      response.payload.valid ? { valid: true } : { valid: false, issues: response.payload.issues },
+    );
   }
 
   private receiveControl(
@@ -276,12 +340,7 @@ export class ActiveDaemonRegistry {
     const requests = this.pendingFor(active.daemon.id);
     const pending = requests.get(response.payload.requestId);
     if (!pending || pending.kind !== "create" || pending.generation !== active.generation) return;
-    const related = Array.from(requests.entries()).filter(
-      ([, request]) =>
-        request.kind === "create" &&
-        request.generation === active.generation &&
-        request.executionId === pending.executionId,
-    );
+    const related = relatedCreateRequests(requests, active.generation, pending.executionId);
     for (const [requestId] of related) requests.delete(requestId);
     if (response.payload.success && response.payload.toolPolicyApplied !== true) {
       for (const [, request] of related) {
@@ -355,6 +414,24 @@ export class ActiveDaemonRegistry {
     this.subscribersByDaemon.set(daemonId, subscribers);
     return subscribers;
   }
+}
+
+function relatedCreateRequests(
+  requests: ReadonlyMap<string, PendingRequest>,
+  generation: number,
+  executionId: string,
+): Array<[string, PendingCreateRequest]> {
+  const related: Array<[string, PendingCreateRequest]> = [];
+  for (const [requestId, request] of requests) {
+    if (
+      request.kind === "create" &&
+      request.generation === generation &&
+      request.executionId === executionId
+    ) {
+      related.push([requestId, request]);
+    }
+  }
+  return related;
 }
 
 export function createDaemonUpgradeHandler(database: Database, registry: ActiveDaemonRegistry) {

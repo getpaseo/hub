@@ -34,6 +34,7 @@ import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
 import type { ConnectionResolutionContext } from "../../config/connections.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 
 export interface GitHubRegistrationConfiguration {
   appSlug: string;
@@ -76,6 +77,7 @@ export function createGitHubRegistration(
     return databaseUnavailableGitHubRegistration(configuration);
   }
   const database = options.database;
+  let configurationForProject: ((projectId: string) => ProjectConfigurationStore) | undefined;
 
   const appAuth = options.appAuth ?? createGitHubAuth();
   const client =
@@ -123,6 +125,12 @@ export function createGitHubRegistration(
               repositoryId: input.repositoryId,
               expectedCommitSha: payload.data.after,
               webhookDeliveryId: input.deliveryId,
+              configurationForProject: (projectId) => {
+                if (configurationForProject === undefined) {
+                  throw new Error("GitHub configuration store is not initialized");
+                }
+                return configurationForProject(projectId);
+              },
             }),
           ),
       );
@@ -188,11 +196,13 @@ export function createGitHubRegistration(
       },
     },
     triggerProviders: [
-      ({ configurationStoreForProject }) =>
-        createGitHubTriggerProvider({
+      ({ configurationStoreForProject }) => {
+        configurationForProject = configurationStoreForProject;
+        return createGitHubTriggerProvider({
           configurationStoreForProject,
           reactions,
-        }),
+        });
+      },
     ],
     sources: [webhook],
     outputs: [],

@@ -14,12 +14,16 @@ const owner = {
   password: "alice-projects-password",
 };
 const validConfiguration =
-  "environments:\n  runner:\n    kind: docker\n    image: paseo/test\nagents: {}";
+  "environments:\n  runner:\n    kind: daemon\n    daemon: editor-daemon\n    cwd: /workspace\nagents: {}";
 const unresolvedConfiguration =
   "environments:\n  runner:\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\nagents: {}";
 /** Taller than the editor at any desktop viewport, so its last line starts out of sight. */
 const longConfiguration = [
   "environments:",
+  "  runner:",
+  "    kind: daemon",
+  "    daemon: editor-daemon",
+  "    cwd: /workspace",
   ...Array.from({ length: 40 }, (_, index) => [
     `  runner-${String(index + 1)}:`,
     "    kind: docker",
@@ -51,6 +55,11 @@ const includeWorkflow = [
 
 const bundle = (hub: string, files: readonly { path: string; content: string }[] = []) => [
   { path: ".paseo/hub.yml", content: hub },
+  {
+    path: ".paseo/workflows/baseline.yml",
+    content:
+      "name: baseline\non: manual.run\nmax_runtime: 1h\nsteps:\n  - id: work\n    environment: runner\n    max_runtime: 10m\n    idle_timeout: 1m\n    agent: { provider: test }\n    prompt: [{ text: baseline }]",
+  },
   ...files,
 ];
 
@@ -87,6 +96,7 @@ test("keeps the active exact-SHA revision when the next GitHub revision is inval
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.navigation.openOrganizationSection("Connections");
   await app.connections.connectGitHub();
   await app.navigation.openOrganizationSection("Projects");
@@ -113,6 +123,7 @@ test("switches a project's configuration source between GitHub and manual", asyn
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.navigation.openOrganizationSection("Connections");
   await app.connections.connectGitHub();
   await app.navigation.openOrganizationSection("Projects");
@@ -130,6 +141,7 @@ test("keeps the GitHub source controls inside the editor rail", async ({ hub, pa
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.navigation.openProject("Default");
   await app.navigation.openProjectSection("Configuration");
   await app.configuration.switchToGitHub();
@@ -165,6 +177,7 @@ test("keeps GitHub-authored partials openable after switching to manual", async 
   await app.configuration.expectActiveRevision(1);
   await app.configuration.expectFiles([
     ".paseo/hub.yml",
+    ".paseo/workflows/baseline.yml",
     ".paseo/workflows/partials/triage/preamble.md",
     ".paseo/workflows/triage.yml",
   ]);
@@ -178,6 +191,7 @@ test("keeps GitHub-authored partials openable after switching to manual", async 
   await app.configuration.expectActiveRevision(2);
   await app.configuration.expectFiles([
     ".paseo/hub.yml",
+    ".paseo/workflows/baseline.yml",
     ".paseo/workflows/partials/triage/preamble.md",
     ".paseo/workflows/triage.yml",
   ]);
@@ -196,6 +210,7 @@ test("explains invalid manual configuration and allows a corrected retry", async
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.navigation.openProject("Default");
   await app.navigation.openProjectSection("Configuration");
 
@@ -215,6 +230,7 @@ test("scopes configuration activation feedback to its project", async ({ hub, pa
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.projects.create("Second", "second");
   await app.navigation.openProject("Second");
   await app.navigation.openProjectSection("Configuration");
@@ -253,6 +269,7 @@ test("edits configuration and prompt partials in the editor", async ({ hub, page
   await app.navigation.openProjectSection("Configuration");
   await app.configuration.expectFiles([
     ".paseo/hub.yml",
+    ".paseo/workflows/baseline.yml",
     ".paseo/workflows/partials/triage/preamble.md",
     ".paseo/workflows/triage.yml",
   ]);
@@ -264,13 +281,14 @@ test("edits configuration and prompt partials in the editor", async ({ hub, page
   await app.configuration.removePartial(".paseo/workflows/partials/triage/preamble.md");
   await app.configuration.save();
   await app.configuration.expectConfigurationActivated(3);
-  await app.configuration.expectFiles([".paseo/hub.yml"]);
+  await app.configuration.expectFiles([".paseo/hub.yml", ".paseo/workflows/baseline.yml"]);
 });
 
 test("scrolls a long configuration down to its last line", async ({ hub, page }) => {
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
   await app.navigation.openProject("Default");
   await app.navigation.openProjectSection("Configuration");
   await app.configuration.saveManualConfiguration(longConfiguration);

@@ -4,7 +4,11 @@ import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import {
+  createActiveProjectConfiguration,
+  enrollTestDaemon,
+  TEST_DAEMON_SLUG,
+} from "../../test-utils/project-configuration.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
@@ -14,8 +18,13 @@ import { configurationBundleFixture } from "../../test-utils/configuration-bundl
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
     const database = createMemoryDatabase();
-    const { project, revision: initial } = await createActiveProjectConfiguration(database, {
-      environments: [{ name: "runner", kind: "docker", image: "paseo/initial" }],
+    await enrollTestDaemon(database);
+    const {
+      project,
+      revision: initial,
+      store,
+    } = await createActiveProjectConfiguration(database, {
+      environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
       triggers: [],
     });
     await database.setProjectGitHubConfigurationSource({
@@ -71,8 +80,7 @@ describe("GitHub registration", () => {
         receiptId: `receipt-${input.deliveryId}`,
       });
     const configuration = new RegistrationConfigurationFake({
-      "valid-sha":
-        "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+      "valid-sha": `environments:\n  - name: runner\n    kind: daemon\n    daemon: ${TEST_DAEMON_SLUG}\n    cwd: /repo\ntriggers:\n  - name: noop\n    on: manual.run\n    max_runtime: 1h\n    steps:\n      - id: work\n        environment: runner\n        max_runtime: 10m\n        idle_timeout: 1m\n        agent: { provider: test }\n        prompt: [{ text: noop }]`,
       "invalid-sha": "environments: []\ntriggers: invalid",
     });
     const registration = createGitHubRegistration({
@@ -89,6 +97,10 @@ describe("GitHub registration", () => {
         deleteReaction: () => Promise.resolve(),
       },
     });
+    registration.triggerProviders[0]?.({
+      configurationStoreForProject: () => store,
+      connectionsForProject: () => async () => "unused",
+    });
 
     await configuration.push(registration, "valid-sha", "push-valid");
     const active = await database.findActiveProjectConfiguration(project.id);
@@ -97,6 +109,12 @@ describe("GitHub registration", () => {
     assert.equal((await database.findActiveProjectConfiguration(project.id))?.id, active?.id);
     assert.deepEqual(configuration.reads, [
       { installationId: 42, repositoryId: 9001, commitSha: "valid-sha", path: ".paseo/hub.yml" },
+      {
+        installationId: 42,
+        repositoryId: 9001,
+        commitSha: "valid-sha",
+        path: ".paseo/workflows/noop.yml",
+      },
       { installationId: 42, repositoryId: 9001, commitSha: "invalid-sha", path: ".paseo/hub.yml" },
     ]);
     assert.equal(

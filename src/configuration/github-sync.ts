@@ -8,7 +8,7 @@ import { compareBundlePaths } from "../config/bundle-contract.js";
 import { rawConfigurationHash } from "../config/compiler.js";
 import type { PromptPartialReadResult } from "../config/prompt-partials.js";
 import type { Database, ProjectConfigurationRevisionRecord } from "../db/types.js";
-import { ProjectConfigurationStore } from "./store.js";
+import { ConfigurationActivationValidationError, ProjectConfigurationStore } from "./store.js";
 
 export interface GitHubConfigurationProvider {
   listInstallationRepositories(input: {
@@ -51,6 +51,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
   repositoryId: number;
   commitSha: string;
   webhookDeliveryId: string | null;
+  configurationForProject?: (projectId: string) => ProjectConfigurationStore;
 }): Promise<GitHubConfigurationSyncResult> {
   let listed: readonly { path: string; kind: PromptPartialReadResult["kind"] }[];
   try {
@@ -109,7 +110,9 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "bundle" });
     return { outcome: "invalid", revision };
   }
-  const store = new ProjectConfigurationStore(input.database, input.projectId);
+  const store =
+    input.configurationForProject?.(input.projectId) ??
+    new ProjectConfigurationStore(input.database, input.projectId);
   const revision = await store.insertGitHubBundleRevision({
     files,
     githubConnectionId: input.githubConnectionId,
@@ -123,7 +126,14 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "validation" });
     return { outcome: "invalid", revision };
   }
-  const activated = await store.activate(revision.id);
+  let activated: Awaited<ReturnType<typeof store.activate>>;
+  try {
+    activated = await store.activate(revision.id);
+  } catch (error) {
+    if (!(error instanceof ConfigurationActivationValidationError)) throw error;
+    await recordAttempt(input, "invalid", { revisionId: revision.id, stage: "validation" });
+    return { outcome: "invalid", revision };
+  }
   await recordAttempt(input, "activated", { revisionId: activated.revision.id });
   return { outcome: "activated", revision: activated.revision };
 }
@@ -135,6 +145,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
   repositoryId?: number;
   expectedCommitSha?: string;
   webhookDeliveryId: string | null;
+  configurationForProject?: (projectId: string) => ProjectConfigurationStore;
 }): Promise<GitHubConfigurationSyncResult | undefined> {
   const target = await input.database.findGitHubConfigurationTarget(
     input.projectId,
@@ -184,6 +195,9 @@ export async function synchronizeGitHubDefaultBranch(input: {
     repositoryId: target.repositoryId,
     commitSha: branchHead,
     webhookDeliveryId: input.webhookDeliveryId,
+    ...(input.configurationForProject === undefined
+      ? {}
+      : { configurationForProject: input.configurationForProject }),
   });
 }
 

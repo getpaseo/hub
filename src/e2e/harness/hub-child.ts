@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { createHubApplication } from "../../app.js";
 import { createDatabase } from "../../db/pg.js";
 import { Client } from "pg";
+import { dump } from "js-yaml";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
@@ -17,6 +18,7 @@ import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
 import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -107,29 +109,32 @@ async function main(): Promise<void> {
     daemon = enrollment?.status === "slug_conflict" ? undefined : enrollment;
   }
   if (daemon === undefined) throw new Error("Hub E2E seed daemon enrollment failed");
-  const config = await configuration.insertManualRevision({
-    rawYaml: null,
-    rawConfiguration: {
-      environments: [{ name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() }],
-      triggers: [
-        {
-          name: "e2e-discord",
-          on: "e2e.discord",
-          max_runtime: "2h",
-          filters: { from_users: ["phase-five-operator"] },
-          steps: [
-            {
-              id: "e2e-step",
-              environment: "hub-e2e",
-              max_runtime: "1h",
-              idle_timeout: "5m",
-              agent: { provider: "hub-e2e" },
-              prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
-            },
-          ],
-        },
-      ],
-    },
+  const config = await configuration.insertManualBundleRevision({
+    files: configurationBundleFixture(
+      dump({
+        environments: [
+          { name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() },
+        ],
+        triggers: [
+          {
+            name: "e2e-discord",
+            on: "e2e.discord",
+            max_runtime: "2h",
+            filters: { from_users: ["phase-five-operator"] },
+            steps: [
+              {
+                id: "e2e-step",
+                environment: "hub-e2e",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "hub-e2e" },
+                prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
     userId: "hub-e2e",
     sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
   });

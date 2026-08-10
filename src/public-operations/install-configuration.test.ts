@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { revisionBundleFiles, ProjectConfigurationStore } from "../configuration/store.js";
+import {
+  revisionBundleFiles,
+  ProjectConfigurationStore,
+  type DaemonAgentConfigurationValidator,
+} from "../configuration/store.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { HubBundleFile } from "../config/bundle.js";
 import { hashPromptPartialContent } from "../config/prompt-partials.js";
@@ -83,6 +87,68 @@ describe("public configuration bundle installation", () => {
     assert.equal(harness.insertions, 0);
   });
 
+  it("rejects every named agent through the selected daemon's current provider contract", async () => {
+    const validations: Array<{ daemonId: string; provider: string }> = [];
+    const validator: DaemonAgentConfigurationValidator = {
+      async validateAgentConfiguration(daemonId, agent) {
+        validations.push({ daemonId, provider: agent.provider });
+        return {
+          valid: false,
+          issues: [
+            { path: ["provider"], message: "provider definitely-not-installed is unavailable" },
+            { path: ["options", "nonsense"], message: "unrecognized provider option" },
+          ],
+        };
+      },
+    };
+    const harness = await installHarness(validator);
+
+    const result = await harness.install(namedAgentFiles());
+
+    assert.equal(result.status, "invalid_configuration");
+    if (result.status !== "invalid_configuration") return;
+    assert.deepEqual(
+      result.issues.map(({ path }) => path),
+      [
+        [".paseo/hub.yml", "agents", "broken", "provider"],
+        [".paseo/hub.yml", "agents", "broken", "options", "nonsense"],
+      ],
+    );
+    assert.deepEqual(validations, [
+      { daemonId: "10000000-0000-4000-8000-000000000001", provider: "definitely-not-installed" },
+    ]);
+    assert.equal((await harness.readModel()).activeRevision, null);
+  });
+
+  it("revalidates named agents at activation against the daemon's current contract", async () => {
+    let validations = 0;
+    const validator: DaemonAgentConfigurationValidator = {
+      async validateAgentConfiguration() {
+        validations += 1;
+        return validations === 1
+          ? { valid: true }
+          : {
+              valid: false,
+              issues: [{ path: ["provider"], message: "provider became unavailable" }],
+            };
+      },
+    };
+    const harness = await installHarness(validator);
+
+    const result = await harness.install(namedAgentFiles());
+
+    assert.equal(result.status, "invalid_configuration");
+    if (result.status !== "invalid_configuration") return;
+    assert.deepEqual(result.issues, [
+      {
+        path: [".paseo/hub.yml", "agents", "broken", "provider"],
+        message: "provider became unavailable",
+      },
+    ]);
+    assert.equal(validations, 2);
+    assert.equal((await harness.readModel()).activeRevision, null);
+  });
+
   it.each([
     {
       name: "missing workflow partial",
@@ -103,6 +169,20 @@ describe("public configuration bundle installation", () => {
         },
       ],
       path: [".paseo/hub.yml", "triggers"],
+    },
+    {
+      name: "malformed workflow expression",
+      bundle: files().map((file) =>
+        file.path === ".paseo/workflows/request.yml"
+          ? Object.assign({}, file, {
+              content: file.content.replace(
+                "agent: { provider: test }",
+                "agent: ${{ paseo.inputs.agent + }}",
+              ),
+            })
+          : file,
+      ),
+      path: [".paseo/workflows/request.yml", "steps", "work", "agent"],
     },
   ])("rejects $name before creating a revision", async ({ bundle, path }) => {
     const harness = await installHarness();
@@ -125,7 +205,7 @@ describe("public configuration bundle installation", () => {
   });
 });
 
-async function installHarness() {
+async function installHarness(validator?: DaemonAgentConfigurationValidator) {
   const database = createMemoryDatabase({ organizationIds: [authorization.organizationId] });
   await enrollTestDaemon(database, authorization.organizationId);
   const project = await database.createProject({
@@ -135,7 +215,7 @@ async function installHarness() {
     createdByUserId: "user-1",
   });
   let insertions = 0;
-  const store = new ProjectConfigurationStore(database, project.id);
+  const store = new ProjectConfigurationStore(database, project.id, validator);
   const operations = createPublicOperations(createDatabasePublicOperationRepository(database), {
     configurationForProject: () => ({
       validateBundle: (bundle) => store.validateBundle(bundle),
@@ -163,4 +243,27 @@ async function installHarness() {
       return insertions;
     },
   };
+}
+
+function namedAgentFiles(): HubBundleFile[] {
+  return files().map((file) => {
+    if (file.path === ".paseo/hub.yml") {
+      return Object.assign({}, file, {
+        content: file.content.replace(
+          "agents: {}",
+          [
+            "agents:",
+            "  broken:",
+            "    provider: definitely-not-installed",
+            "    options: { nonsense: true }",
+          ].join("\n"),
+        ),
+      });
+    }
+    return file.path === ".paseo/workflows/request.yml"
+      ? Object.assign({}, file, {
+          content: file.content.replace("agent: { provider: test }", "agent: broken"),
+        })
+      : file;
+  });
 }

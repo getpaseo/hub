@@ -10,6 +10,7 @@ import { composeEntitlements, type ComposedEntitlements } from "./entitlements.j
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
@@ -162,6 +163,7 @@ describe("organization API-key boundary", () => {
       slug: projectSlug,
       createdByUserId: "user-a",
     });
+    await enrollTestDaemon(database, "organization-a");
     const application = createHubApplication({
       database,
       entitlements: createUnlimitedEntitlementsService(),
@@ -179,8 +181,12 @@ describe("organization API-key boundary", () => {
             files: [
               {
                 path: ".paseo/hub.yml",
+                content: `environments:\n  runner:\n    kind: daemon\n    daemon: ${TEST_DAEMON_SLUG}\n    cwd: /repo\nagents: {}`,
+              },
+              {
+                path: ".paseo/workflows/noop.yml",
                 content:
-                  "environments:\n  runner:\n    kind: docker\n    image: paseo/valid\nagents: {}",
+                  "name: noop\non: manual.run\nmax_runtime: 1h\nsteps:\n  - id: work\n    environment: runner\n    max_runtime: 10m\n    idle_timeout: 1m\n    agent: { provider: test }\n    prompt: [{ text: noop }]",
               },
             ],
           },

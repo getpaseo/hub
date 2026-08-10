@@ -124,6 +124,18 @@ describe("Hub configuration bundle", () => {
     );
   });
 
+  it("rejects a resource document without a direct workflow document", () => {
+    assert.throws(
+      () => compileHubBundle([{ path: ".paseo/hub.yml", content: hub }]),
+      (error) =>
+        hasBundleIssue(
+          error,
+          ".paseo/workflows",
+          /at least one direct \.paseo\/workflows\/<workflow>\.yml/iu,
+        ),
+    );
+  });
+
   it("rejects unknown, non-finite, and object-valued dynamic authority", () => {
     const cases = [
       {
@@ -202,6 +214,22 @@ describe("Hub configuration bundle", () => {
           error,
           ".paseo/hub.yml.environments.paseo.cwd",
           /expected.*string|required/iu,
+        ),
+    );
+  });
+
+  it("attributes malformed expressions to their conceptual authored workflow field", () => {
+    const malformedExpression = workflow.replace(
+      "    agent: ${{ paseo.inputs.agent }}",
+      "    agent: ${{ paseo.inputs.agent + }}",
+    );
+    assert.throws(
+      () => compileHubBundle(filesWithWorkflow(malformedExpression)),
+      (error) =>
+        hasBundleIssue(
+          error,
+          ".paseo/workflows/route.yml.steps.work.agent",
+          /expression|unexpected|expected/iu,
         ),
     );
   });

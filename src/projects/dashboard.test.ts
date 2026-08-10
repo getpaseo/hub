@@ -195,6 +195,25 @@ describe("manual configuration saves", () => {
     assert.equal(rejected.outcome, "invalid");
     assert.equal((await hub.snapshot()).configuration.activeRevision, null);
   });
+
+  it("shows malformed expressions against the authored workflow field", async () => {
+    const hub = await manualConfigurationHub();
+    const malformed = files().map((file) =>
+      file.path === ".paseo/workflows/triage.yml"
+        ? Object.assign({}, file, {
+            content: file.content.replace(
+              "agent: { provider: claude }",
+              "agent: ${{ paseo.inputs.agent + }}",
+            ),
+          })
+        : file,
+    );
+
+    const rejected = await hub.save({ files: malformed });
+
+    assert.equal(rejected.outcome, "invalid");
+    assert.match(String(rejected.errors), /\.paseo\/workflows\/triage\.yml\.steps\.only\.agent/iu);
+  });
 });
 
 async function manualConfigurationHub() {

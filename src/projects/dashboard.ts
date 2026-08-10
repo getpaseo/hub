@@ -1,6 +1,10 @@
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
-import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
+import {
+  ConfigurationActivationValidationError,
+  ProjectConfigurationStore,
+  revisionBundleFiles,
+} from "../configuration/store.js";
 import {
   configurationValidationMessages,
   promptPartialValidationErrors,
@@ -61,6 +65,9 @@ export class ProjectDashboard {
     private readonly database: Database,
     private readonly auth: AuthServer,
     private readonly github: GitHubConfigurationProvider | undefined,
+    private readonly configurationForProject: (projectId: string) => ProjectConfigurationStore = (
+      projectId,
+    ) => new ProjectConfigurationStore(database, projectId),
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -223,9 +230,7 @@ export class ProjectDashboard {
 
   async switchConfigurationToManual(request: Request, scope: ProjectRouteScope) {
     const { account, tenant } = await this.resolveProjectManager(request, scope);
-    return new ProjectConfigurationStore(this.database, tenant.project.id).switchToManual(
-      account.account.id,
-    );
+    return this.configurationForProject(tenant.project.id).switchToManual(account.account.id);
   }
 
   async saveManualConfiguration(
@@ -247,13 +252,22 @@ export class ProjectDashboard {
         }),
       );
     }
-    const store = new ProjectConfigurationStore(this.database, tenant.project.id);
+    const store = this.configurationForProject(tenant.project.id);
     const revision = await store.insertManualBundleRevision({
       files: input.files,
       userId: account.account.id,
     });
     if (revision.validationErrors !== null) return invalidManualConfiguration(revision);
-    await store.activate(revision.id);
+    try {
+      await store.activate(revision.id);
+    } catch (error) {
+      if (!(error instanceof ConfigurationActivationValidationError)) throw error;
+      return {
+        outcome: "invalid",
+        revision: { id: revision.id, version: revision.version },
+        errors: configurationValidationMessages(error.validationErrors),
+      };
+    }
     return {
       outcome: "activated",
       revision: { id: revision.id, version: revision.version },
@@ -291,6 +305,7 @@ export class ProjectDashboard {
       client: this.github,
       projectId: tenant.project.id,
       webhookDeliveryId: null,
+      configurationForProject: this.configurationForProject,
     });
     if (result === undefined) throw new ProjectCommandError("github_sync_unavailable");
     return result;

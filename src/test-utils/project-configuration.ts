@@ -71,15 +71,16 @@ export async function enrollTestDaemon(
   database: Database,
   organizationId = "org_1",
 ): Promise<void> {
+  const tokenVerifier = `token-verifier-${randomUUID()}`;
   await database.issueEnrollmentToken({
-    id: `token-${organizationId}`,
-    verifier: `token-verifier-${organizationId}`,
+    id: randomUUID(),
+    verifier: tokenVerifier,
     organizationId,
     expiresAt: new Date("2026-08-06T12:00:00.000Z"),
     consumedAt: null,
   });
   await database.enrollDaemon({
-    tokenVerifier: `token-verifier-${organizationId}`,
+    tokenVerifier,
     daemonId: TEST_DAEMON_ID,
     idempotencyKey: `runner-idempotency-${organizationId}`,
     serverId: "server-1",

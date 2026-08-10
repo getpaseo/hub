@@ -1594,6 +1594,11 @@ class LegacyUpgrade {
               path: ".paseo/hub.yml",
               content: `environments:\n  production:\n    kind: daemon\n    daemon: daemon-${this.legacyDaemonId.slice(0, 8)}\n    cwd: /repo\nagents: {}`,
             },
+            {
+              path: ".paseo/workflows/noop.yml",
+              content:
+                "name: noop\non: manual.run\nmax_runtime: 1h\nsteps:\n  - id: work\n    environment: production\n    max_runtime: 10m\n    idle_timeout: 1m\n    agent: { provider: test }\n    prompt: [{ text: noop }]",
+            },
           ],
         }),
       }),

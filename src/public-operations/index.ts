@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { configurationValidationIssues } from "../configuration/validation-errors.js";
+import { ConfigurationActivationValidationError } from "../configuration/store.js";
 import { compileHubBundle, HubBundleError } from "../config/bundle.js";
 import type { DaemonClock } from "../daemons/index.js";
 import { DaemonDispatchFailure } from "../daemons/index.js";
@@ -80,7 +81,17 @@ export function createPublicOperations(
             issues: configurationValidationIssues(record.validationErrors),
           };
         }
-        const promoted = await configuration.activate(record.id);
+        let promoted: Awaited<ReturnType<typeof configuration.activate>>;
+        try {
+          promoted = await configuration.activate(record.id);
+        } catch (error) {
+          if (!(error instanceof ConfigurationActivationValidationError)) throw error;
+          return {
+            status: "invalid_configuration",
+            versionId: record.id,
+            issues: configurationValidationIssues(error.validationErrors),
+          };
+        }
         return {
           status: "installed",
           projectSlug: project.slug,

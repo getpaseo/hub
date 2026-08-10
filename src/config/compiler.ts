@@ -277,6 +277,18 @@ export interface CompileHubConfigOptions {
   sourceFiles?: Readonly<Record<string, string>>;
 }
 
+/** A compiler failure located in the conceptual authored configuration tree. */
+export class HubConfigurationCompilationError extends Error {
+  constructor(
+    readonly path: readonly (string | number)[],
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "HubConfigurationCompilationError";
+  }
+}
+
 const CompiledPromptBlockSchema: z.ZodType<CompiledPromptBlock> = z.union([
   z.object({ kind: z.literal("text"), value: z.string() }).strict(),
   z
@@ -476,10 +488,15 @@ function compileTrigger(
   namedAgents: Readonly<Record<string, CompiledAgent>>,
   sourceFile: string | undefined,
 ): CompiledTrigger {
-  if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
-  const inputs = compileInputs(trigger);
-  validateInputFilters(trigger, inputs);
-  validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments);
+  const triggerPath = ["triggers", trigger.name] as const;
+  compileAt([...triggerPath, "on"], () => {
+    if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
+  });
+  const inputs = compileAt([...triggerPath, "inputs"], () => compileInputs(trigger));
+  compileAt([...triggerPath, "filters"], () => validateInputFilters(trigger, inputs));
+  compileAt([...triggerPath, "steps"], () =>
+    validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments),
+  );
   const steps = trigger.steps.map((step) =>
     compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials, namedAgents),
   );
@@ -488,7 +505,9 @@ function compileTrigger(
     name: trigger.name,
     ...(sourceFile === undefined ? {} : { sourceFile }),
     on: trigger.on,
-    maxRuntimeMs: parseDurationMs(trigger.max_runtime, `trigger ${trigger.name} max_runtime`),
+    maxRuntimeMs: compileAt([...triggerPath, "max_runtime"], () =>
+      parseDurationMs(trigger.max_runtime, `trigger ${trigger.name} max_runtime`),
+    ),
     steps,
     inputs,
     values,
@@ -506,27 +525,31 @@ function compileStep(
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
   namedAgents: Readonly<Record<string, CompiledAgent>>,
 ): CompiledStep {
-  if (!environmentNames.has(step.environment) && !step.environment.includes(EXPRESSION_START)) {
-    throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
-  }
-  const staticEnvironment = environments.get(step.environment);
-  if (staticEnvironment !== undefined && staticEnvironment.kind !== "daemon") {
-    throw new Error(
-      `trigger ${trigger.name} step ${step.id} environment ${step.environment} must be a daemon environment`,
-    );
-  }
-  const maxRuntimeMs = parseDurationMs(
-    step.max_runtime,
-    `trigger ${trigger.name} step ${step.id} max_runtime`,
+  const stepPath = ["triggers", trigger.name, "steps", step.id] as const;
+  compileAt([...stepPath, "environment"], () => {
+    if (!environmentNames.has(step.environment) && !step.environment.includes(EXPRESSION_START)) {
+      throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
+    }
+    const staticEnvironment = environments.get(step.environment);
+    if (staticEnvironment !== undefined && staticEnvironment.kind !== "daemon") {
+      throw new Error(
+        `trigger ${trigger.name} step ${step.id} environment ${step.environment} must be a daemon environment`,
+      );
+    }
+  });
+  const maxRuntimeMs = compileAt([...stepPath, "max_runtime"], () =>
+    parseDurationMs(step.max_runtime, `trigger ${trigger.name} step ${step.id} max_runtime`),
   );
-  const idleTimeoutMs = parseDurationMs(
-    step.idle_timeout,
-    `trigger ${trigger.name} step ${step.id} idle_timeout`,
+  const idleTimeoutMs = compileAt([...stepPath, "idle_timeout"], () =>
+    parseDurationMs(step.idle_timeout, `trigger ${trigger.name} step ${step.id} idle_timeout`),
   );
   if (idleTimeoutMs > maxRuntimeMs) {
     throw new Error(`step ${step.id} idle_timeout must not exceed max_runtime`);
   }
-  const condition = step.if === undefined ? undefined : parseExpression(step.if);
+  const condition =
+    step.if === undefined
+      ? undefined
+      : compileAt([...stepPath, "if"], () => parseExpression(step.if!));
   const outputDeclaration =
     step.output === undefined ? undefined : { schema: cloneJsonValue(step.output.schema) };
   if (outputDeclaration !== undefined)
@@ -537,7 +560,9 @@ function compileStep(
       ? undefined
       : compileGitHubAuthority(step.github, `trigger ${trigger.name} step ${step.id} github`);
   validateStepEnvironmentContract(trigger.name, trigger.on, step.id, env, github);
-  const agent = compileAgentSelection(trigger.name, step.id, step.agent, namedAgents);
+  const agent = compileAt([...stepPath, "agent"], () =>
+    compileAgentSelection(trigger.name, step.id, step.agent, namedAgents),
+  );
   return {
     id: step.id,
     environment: step.environment,
@@ -655,7 +680,9 @@ function compileValues(trigger: AuthoredTrigger): Readonly<Record<string, Expres
   const values: Record<string, Expression> = {};
   for (const [name, source] of Object.entries(trigger.values ?? {})) {
     assertIdentifier(name, `value name on trigger ${trigger.name}`);
-    values[name] = parseExpression(source);
+    values[name] = compileAt(["triggers", trigger.name, "values", name], () =>
+      parseExpression(source),
+    );
   }
   return values;
 }
@@ -785,28 +812,37 @@ function validateExpressionContract(
   for (const name of valueNames) validateValue(name);
   for (const [ordinal, step] of trigger.steps.entries()) {
     if (step.condition !== undefined)
-      validateExpression(step.condition, ordinal, `step ${step.id} if`, false);
-    validateTemplate(step.environment, ordinal, `step ${step.id} environment`, true);
-    validateEnvironmentSelection(step.environment, ordinal, step.id);
+      compileAt(["triggers", triggerName, "steps", step.id, "if"], () =>
+        validateExpression(step.condition!, ordinal, `step ${step.id} if`, false),
+      );
+    compileAt(["triggers", triggerName, "steps", step.id, "environment"], () => {
+      validateTemplate(step.environment, ordinal, `step ${step.id} environment`, true);
+      validateEnvironmentSelection(step.environment, ordinal, step.id);
+    });
     if ("selector" in step.agent) {
-      validateTemplate(step.agent.selector, ordinal, `step ${step.id} agent`, true);
-      const selected = finiteTemplateValues(step.agent.selector, ordinal);
-      if (selected === undefined) {
-        throw new Error(`step ${step.id} agent must resolve from finite choices`);
-      }
-      for (const name of selected) {
-        if (!Object.hasOwn(step.agent.choices, name)) {
-          throw new Error(`step ${step.id} agent resolves to unknown named agent ${name}`);
+      const selection = step.agent;
+      compileAt(["triggers", triggerName, "steps", step.id, "agent"], () => {
+        validateTemplate(selection.selector, ordinal, `step ${step.id} agent`, true);
+        const selected = finiteTemplateValues(selection.selector, ordinal);
+        if (selected === undefined) {
+          throw new Error(`step ${step.id} agent must resolve from finite choices`);
         }
-      }
+        for (const name of selected) {
+          if (!Object.hasOwn(selection.choices, name)) {
+            throw new Error(`step ${step.id} agent resolves to unknown named agent ${name}`);
+          }
+        }
+      });
     }
     for (const [index, block] of step.prompt.entries()) {
-      validateTemplate(
-        block.kind === "text" ? block.value : block.content,
-        ordinal,
-        `step ${step.id} prompt[${index}]`,
-        false,
-        true,
+      compileAt(["triggers", triggerName, "steps", step.id, "prompt", index], () =>
+        validateTemplate(
+          block.kind === "text" ? block.value : block.content,
+          ordinal,
+          `step ${step.id} prompt[${index}]`,
+          false,
+          true,
+        ),
       );
     }
   }
@@ -1018,6 +1054,19 @@ function validateExpressionContract(
     environmentNames.size === 0
   ) {
     throw new Error(`trigger ${triggerName} has no configured environments`);
+  }
+}
+
+function compileAt<T>(path: readonly (string | number)[], operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof HubConfigurationCompilationError) throw error;
+    throw new HubConfigurationCompilationError(
+      path,
+      error instanceof Error ? error.message : "invalid Hub configuration",
+      { cause: error },
+    );
   }
 }
 

@@ -5,6 +5,7 @@ import {
   compileHubConfig,
   type CompiledAgent,
   type CompiledHubConfig,
+  HubConfigurationCompilationError,
   type JsonValue,
 } from "./compiler.js";
 import {
@@ -41,8 +42,15 @@ export interface HubBundleIssue {
 
 export interface CompiledHubBundle {
   configuration: CompiledHubConfig;
+  agentValidationTargets: readonly HubBundleAgentValidationTarget[];
   files: readonly HubBundleFile[];
   authoredHash: string;
+}
+
+export interface HubBundleAgentValidationTarget {
+  name: string;
+  agent: CompiledAgent;
+  environmentNames: readonly string[];
 }
 
 export class HubBundleError extends Error {
@@ -81,6 +89,12 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
   const workflowFiles = [...files.values()]
     .filter((file) => isWorkflowPath(file.path))
     .sort(byPath);
+  if (workflowFiles.length === 0) {
+    throw issue(
+      [WORKFLOW_DIRECTORY],
+      "at least one direct .paseo/workflows/<workflow>.yml document is required",
+    );
+  }
   const triggers: unknown[] = [];
   const workflowSourceFiles: string[] = [];
   const sourceFiles: Record<string, string> = {};
@@ -116,9 +130,47 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
   const authoredFiles = [...files.values()].sort(byPath);
   return {
     configuration,
+    agentValidationTargets: collectAgentValidationTargets(triggers, configuration, agents),
     files: authoredFiles,
     authoredHash: hashAuthoredFiles(authoredFiles),
   };
+}
+
+function collectAgentValidationTargets(
+  authoredTriggers: readonly unknown[],
+  configuration: CompiledHubConfig,
+  agentDefinitions: Readonly<Record<string, CompiledAgent>>,
+): readonly HubBundleAgentValidationTarget[] {
+  const allDaemonEnvironments = configuration.environments
+    .filter((environment) => environment.kind === "daemon")
+    .map(({ name }) => name);
+  const targets = new Map<string, HubBundleAgentValidationTarget>();
+  for (const [triggerIndex, authoredTrigger] of authoredTriggers.entries()) {
+    const compiledTrigger = configuration.triggers[triggerIndex];
+    if (!isRecord(authoredTrigger) || compiledTrigger === undefined) continue;
+    const authoredSteps = Array.isArray(authoredTrigger["steps"]) ? authoredTrigger["steps"] : [];
+    for (const [stepIndex, authoredStep] of authoredSteps.entries()) {
+      const compiledStep = compiledTrigger.steps[stepIndex];
+      if (!isRecord(authoredStep) || compiledStep === undefined) continue;
+      const authoredAgent = authoredStep["agent"];
+      if (typeof authoredAgent !== "string") continue;
+      let names: readonly string[] = [];
+      if (authoredAgent.includes("${{")) names = Object.keys(agentDefinitions);
+      else if (Object.hasOwn(agentDefinitions, authoredAgent)) names = [authoredAgent];
+      const authoredEnvironment = authoredStep["environment"];
+      const environmentNames =
+        typeof authoredEnvironment === "string" && !authoredEnvironment.includes("${{")
+          ? [authoredEnvironment]
+          : allDaemonEnvironments;
+      for (const name of names) {
+        const agent = agentDefinitions[name];
+        if (agent === undefined) continue;
+        const key = `${name}\0${environmentNames.join("\0")}`;
+        targets.set(key, { name, agent, environmentNames });
+      }
+    }
+  }
+  return [...targets.values()];
 }
 
 function normalizeBundleFiles(input: readonly HubBundleFile[]): Map<string, HubBundleFile> {
@@ -323,6 +375,9 @@ function sourcePathForError(
   workflowSourceFiles: readonly string[],
   environments: readonly unknown[],
 ): readonly (string | number)[] {
+  if (error instanceof HubConfigurationCompilationError) {
+    return conceptualAuthoredPath(error.path, sourceFiles);
+  }
   const zodIssue = firstZodIssue(error);
   if (zodIssue !== undefined) {
     const authored = zodAuthoredPath(
@@ -334,26 +389,18 @@ function sourcePathForError(
     );
     if (authored !== undefined) return authored;
   }
-  const message = errorMessage(error);
-  for (const [trigger, sourceFile] of Object.entries(sourceFiles)) {
-    if (!message.includes(`trigger ${trigger}`)) continue;
-    return [sourceFile, ...fieldPathFromMessage(message)];
-  }
-  const step = /step ([a-z][a-z0-9_-]*)/u.exec(message)?.[1];
-  if (step !== undefined) {
-    const owners = triggers.filter(
-      (trigger) =>
-        isRecord(trigger) &&
-        Array.isArray(trigger["steps"]) &&
-        trigger["steps"].some((candidate) => isRecord(candidate) && candidate["id"] === step),
-    );
-    const owner = owners.length === 1 && isRecord(owners[0]) ? owners[0] : undefined;
-    const name = owner?.["name"];
-    if (typeof name === "string" && sourceFiles[name] !== undefined) {
-      return [sourceFiles[name], ...fieldPathFromMessage(message)];
-    }
-  }
   return [HUB_RESOURCE_PATH];
+}
+
+function conceptualAuthoredPath(
+  path: readonly (string | number)[],
+  sourceFiles: Readonly<Record<string, string>>,
+): readonly (string | number)[] {
+  if (path[0] === "triggers" && typeof path[1] === "string") {
+    const source = sourceFiles[path[1]];
+    if (source !== undefined) return [source, ...path.slice(2)];
+  }
+  return [HUB_RESOURCE_PATH, ...path];
 }
 
 function zodAuthoredPath(
@@ -413,20 +460,6 @@ function firstZodIssue(
     path: candidate["path"],
     message: typeof candidate["message"] === "string" ? candidate["message"] : "invalid value",
   };
-}
-
-function fieldPathFromMessage(message: string): readonly string[] {
-  const step = /step ([a-z][a-z0-9_-]*)/u.exec(message)?.[1];
-  const field =
-    /\b(agent|environment|prompt|output\.schema|max_runtime|idle_timeout|github|env)\b/u.exec(
-      message,
-    )?.[1];
-  if (step !== undefined && field !== undefined) return ["steps", step, ...field.split(".")];
-  if (step !== undefined) return ["steps", step];
-  const triggerField = /trigger [a-z][a-z0-9_-]* (max_runtime|inputs|filters|values)/u.exec(
-    message,
-  )?.[1];
-  return triggerField === undefined ? [] : triggerField.split(".");
 }
 
 function hashAuthoredFiles(files: readonly HubBundleFile[]): string {

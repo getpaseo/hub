@@ -95,6 +95,7 @@ export interface HubApplication {
   hub: HubRuntime;
   operations: HubOperations;
   publicApi: PublicApi;
+  configurationForProject(projectId: string): ProjectConfigurationStore;
 }
 
 export function createHubRuntime(options: HubRuntimeOptions): HubRuntime {
@@ -108,7 +109,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       : new ActiveDaemonRegistry(options.database, options.daemonClock);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
-    return new ProjectConfigurationStore(options.database, projectId);
+    return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
   };
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
@@ -269,7 +270,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         ? databaseUnavailable()
         : handleManualTriggerRequest(request, manualSource, entrypoint),
   };
-  return { hub, operations, publicApi };
+  return { hub, operations, publicApi, configurationForProject: storeForProject };
 }
 
 function createAppPublicOperations(

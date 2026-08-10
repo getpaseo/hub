@@ -1,4 +1,7 @@
 import { expect, type Page } from "@playwright/test";
+import { load } from "js-yaml";
+
+const BASELINE_WORKFLOW_PATH = ".paseo/workflows/baseline.yml";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -70,6 +73,17 @@ export class ProjectConfiguration {
   async saveManualConfiguration(rawYaml: string) {
     await this.startEditing();
     await this.editor().fill(rawYaml);
+    if (
+      (await this.page
+        .getByRole("list", { name: "Configuration files" })
+        .getByRole("button", { name: BASELINE_WORKFLOW_PATH, exact: true })
+        .count()) === 0
+    ) {
+      await this.page.getByRole("button", { name: "Add workflow" }).click();
+      await this.page.getByLabel("Workflow file name").fill("baseline.yml");
+      await this.page.getByRole("button", { name: "Add", exact: true }).click();
+      await this.editor().fill(baselineWorkflow(rawYaml));
+    }
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }
 
@@ -193,4 +207,26 @@ export class ProjectConfiguration {
       "Invalid revision; active revision preserved",
     );
   }
+}
+
+function baselineWorkflow(rawYaml: string): string {
+  const raw = load(rawYaml);
+  const environments = isRecord(raw) && isRecord(raw["environments"]) ? raw["environments"] : {};
+  const environment = Object.keys(environments)[0] ?? "runner";
+  return [
+    "name: baseline",
+    "on: manual.run",
+    "max_runtime: 1h",
+    "steps:",
+    "  - id: work",
+    `    environment: ${environment}`,
+    "    max_runtime: 10m",
+    "    idle_timeout: 1m",
+    "    agent: { provider: test }",
+    "    prompt: [{ text: baseline }]",
+  ].join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

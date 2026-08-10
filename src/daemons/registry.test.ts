@@ -40,6 +40,24 @@ describe("daemon socket generations", () => {
     });
   });
 
+  it("delegates provider, model, mode, and structured option validation to the daemon", async () => {
+    const pending = await daemon.pendingAgentValidation();
+
+    assert.equal(pending.request["provider"], "definitely-not-installed");
+    assert.equal(pending.request["model"], "imaginary-model");
+    assert.equal(pending.request["modeId"], "imaginary-mode");
+    assert.deepEqual(pending.request["providerOptions"], { nonsense: true });
+    daemon.respondAgentValidation(pending);
+
+    assert.deepEqual(await pending.promise, {
+      valid: false,
+      issues: [
+        { path: ["provider"], message: "provider is unavailable" },
+        { path: ["options", "nonsense"], message: "unrecognized provider option" },
+      ],
+    });
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 

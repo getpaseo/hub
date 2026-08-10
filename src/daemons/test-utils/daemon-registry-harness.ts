@@ -12,7 +12,7 @@ const SessionRequestSchema = z.object({
     .object({
       type: z.string(),
       requestId: z.string(),
-      executionId: z.string(),
+      executionId: z.string().optional(),
       action: z.enum(["interrupt", "archive"]).optional(),
     })
     .passthrough(),
@@ -71,6 +71,37 @@ export class DaemonRegistryHarness {
       promise,
       request: await this.currentSocket().next("hub.execution.control.request"),
     };
+  }
+
+  async pendingAgentValidation() {
+    const promise = this.registry.validateAgentConfiguration(this.daemon.id, {
+      provider: "definitely-not-installed",
+      model: "imaginary-model",
+      mode: "imaginary-mode",
+      options: { nonsense: true },
+    });
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("hub.execution.agent.validate.request"),
+    };
+  }
+
+  respondAgentValidation(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingAgentValidation"]>>,
+  ): void {
+    this.currentSocket().send({
+      type: "hub.execution.agent.validate.response",
+      payload: {
+        requestId: pending.request.requestId,
+        valid: false,
+        issues: [
+          { path: ["provider"], message: "provider is unavailable" },
+          { path: ["options", "nonsense"], message: "unrecognized provider option" },
+        ],
+        error: null,
+      },
+    });
   }
 
   respondControl(
