@@ -67,6 +67,15 @@ function filesWithWorkflow(content: string) {
   return files;
 }
 
+function filesWithHub(content: string) {
+  const files = canonicalFiles();
+  const index = files.findIndex(({ path }) => path === ".paseo/hub.yml");
+  const current = files[index];
+  if (current === undefined) throw new Error("canonical Hub fixture is missing");
+  files[index] = { path: current.path, content };
+  return files;
+}
+
 function hasBundleIssue(error: unknown, path: string, message: RegExp): boolean {
   if (!(error instanceof HubBundleError)) return false;
   const found = error.issues.find((entry) => entry.path.join(".") === path);
@@ -177,6 +186,26 @@ describe("Hub configuration bundle", () => {
     );
   });
 
+  it("locates malformed workflow and named environment fields in their authored files", () => {
+    const malformedWorkflow = workflow.replace("name: route-request\n", "");
+    assert.throws(
+      () => compileHubBundle(filesWithWorkflow(malformedWorkflow)),
+      (error) =>
+        hasBundleIssue(error, ".paseo/workflows/route.yml.name", /expected.*string|required/iu),
+    );
+
+    const malformedEnvironment = hub.replace("    cwd: /workspace/paseo\n", "");
+    assert.throws(
+      () => compileHubBundle(filesWithHub(malformedEnvironment)),
+      (error) =>
+        hasBundleIssue(
+          error,
+          ".paseo/hub.yml.environments.paseo.cwd",
+          /expected.*string|required/iu,
+        ),
+    );
+  });
+
   it("rejects unreferenced partial files by their authored path", () => {
     assert.throws(
       () =>
@@ -195,6 +224,7 @@ describe("Hub configuration bundle", () => {
     [".paseo/hub.toml", "TOML is not accepted"],
     [".paseo/workflows/nested/run.yml", "direct child"],
     [".paseo/workflows/run.yaml", "must use the .yml extension"],
+    [".paseo/workflows/partials/safety.txt", "must use the .md extension"],
     ["../hub.yml", "unsafe bundle path"],
   ])("rejects non-canonical bundle path %s", (path, message) => {
     assert.throws(

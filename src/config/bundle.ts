@@ -82,10 +82,12 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
     .filter((file) => isWorkflowPath(file.path))
     .sort(byPath);
   const triggers: unknown[] = [];
+  const workflowSourceFiles: string[] = [];
   const sourceFiles: Record<string, string> = {};
   for (const file of workflowFiles) {
     const trigger = parseYamlRecord(file);
     rejectWorkflowComposition(trigger, file.path);
+    workflowSourceFiles.push(file.path);
     const name = trigger["name"];
     if (typeof name === "string") {
       const existing = sourceFiles[name];
@@ -106,7 +108,10 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
       resolvedPromptPartials: partials,
     });
   } catch (error) {
-    throw issue(sourcePathForError(error, sourceFiles, triggers), errorMessage(error));
+    throw issue(
+      sourcePathForError(error, sourceFiles, triggers, workflowSourceFiles, environments),
+      errorMessage(error),
+    );
   }
   const authoredFiles = [...files.values()].sort(byPath);
   return {
@@ -144,7 +149,12 @@ function validateBundlePath(path: string): void {
     throw issue([path], "TOML is not accepted; use .paseo/hub.yml and workflow .yml files");
   }
   if (path === HUB_RESOURCE_PATH) return;
-  if (path.startsWith(`${WORKFLOW_PARTIAL_DIRECTORY}/`)) return;
+  if (path.startsWith(`${WORKFLOW_PARTIAL_DIRECTORY}/`)) {
+    if (!path.endsWith(".md")) {
+      throw issue([path], "prompt partials must use the .md extension");
+    }
+    return;
+  }
   if (path.startsWith(`${WORKFLOW_DIRECTORY}/`)) {
     const relative = path.slice(`${WORKFLOW_DIRECTORY}/`.length);
     if (relative.includes("/")) {
@@ -310,9 +320,18 @@ function sourcePathForError(
   error: unknown,
   sourceFiles: Readonly<Record<string, string>>,
   triggers: readonly unknown[],
+  workflowSourceFiles: readonly string[],
+  environments: readonly unknown[],
 ): readonly (string | number)[] {
-  if (error instanceof z.ZodError) {
-    const authored = zodAuthoredPath(error.issues[0]?.path ?? [], sourceFiles, triggers);
+  const zodIssue = firstZodIssue(error);
+  if (zodIssue !== undefined) {
+    const authored = zodAuthoredPath(
+      zodIssue.path,
+      sourceFiles,
+      triggers,
+      workflowSourceFiles,
+      environments,
+    );
     if (authored !== undefined) return authored;
   }
   const message = errorMessage(error);
@@ -341,14 +360,16 @@ function zodAuthoredPath(
   path: readonly PropertyKey[],
   sourceFiles: Readonly<Record<string, string>>,
   triggers: readonly unknown[],
+  workflowSourceFiles: readonly string[],
+  environments: readonly unknown[],
 ): readonly (string | number)[] | undefined {
   const normalized = path.filter(
     (part): part is string | number => typeof part === "string" || typeof part === "number",
   );
   if (normalized[0] === "triggers" && typeof normalized[1] === "number") {
     const trigger = triggers[normalized[1]];
-    if (!isRecord(trigger) || typeof trigger["name"] !== "string") return undefined;
-    const source = sourceFiles[trigger["name"]];
+    const triggerRecord = isRecord(trigger) ? trigger : undefined;
+    const source = workflowSourceFiles[normalized[1]];
     if (source === undefined) return undefined;
     const sourcePath: (string | number)[] = [source];
     const remainder = normalized.slice(2);
@@ -356,7 +377,7 @@ function zodAuthoredPath(
       const part = remainder[index];
       const next = remainder[index + 1];
       if (part === "steps" && typeof next === "number") {
-        const steps = Array.isArray(trigger["steps"]) ? trigger["steps"] : [];
+        const steps = Array.isArray(triggerRecord?.["steps"]) ? triggerRecord["steps"] : [];
         const step: unknown = steps[next];
         sourcePath.push(
           "steps",
@@ -369,7 +390,29 @@ function zodAuthoredPath(
     }
     return sourcePath;
   }
-  return normalized[0] === "environments" ? [HUB_RESOURCE_PATH, ...normalized] : undefined;
+  if (normalized[0] === "environments" && typeof normalized[1] === "number") {
+    const environment = environments[normalized[1]];
+    const name = isRecord(environment) ? environment["name"] : undefined;
+    return [
+      HUB_RESOURCE_PATH,
+      "environments",
+      typeof name === "string" ? name : normalized[1],
+      ...normalized.slice(2),
+    ];
+  }
+  return undefined;
+}
+
+function firstZodIssue(
+  error: unknown,
+): { path: readonly PropertyKey[]; message: string } | undefined {
+  if (!isRecord(error) || !Array.isArray(error["issues"])) return undefined;
+  const candidate: unknown = error["issues"][0];
+  if (!isRecord(candidate) || !Array.isArray(candidate["path"])) return undefined;
+  return {
+    path: candidate["path"],
+    message: typeof candidate["message"] === "string" ? candidate["message"] : "invalid value",
+  };
 }
 
 function fieldPathFromMessage(message: string): readonly string[] {
@@ -419,6 +462,8 @@ function compareText(left: string, right: string): number {
 }
 
 function errorMessage(error: unknown): string {
+  const zodIssue = firstZodIssue(error);
+  if (zodIssue !== undefined) return zodIssue.message;
   return error instanceof Error ? error.message : "invalid Hub configuration bundle";
 }
 

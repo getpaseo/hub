@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
 import { describe, it } from "vitest";
-import { compileHubBundle, type HubBundleFile } from "./bundle.js";
-
-const fixtureRoot = join(process.cwd(), "src/config/fixtures/current-project");
+import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
+import { compileHubBundle } from "./bundle.js";
 
 describe("current project configuration proof", () => {
   it("compiles provider workflows without duplicated routing branches", async () => {
-    const bundle = compileHubBundle(await fixtureFiles());
+    const bundle = compileHubBundle(await currentProjectConfigurationFiles());
     assert.deepEqual(
       bundle.configuration.triggers.map(({ name, sourceFile }) => ({ name, sourceFile })),
       [
@@ -43,22 +40,3 @@ describe("current project configuration proof", () => {
     }
   });
 });
-
-async function fixtureFiles(): Promise<HubBundleFile[]> {
-  const paseo = join(fixtureRoot, ".paseo");
-  const workflow = join(paseo, "workflows");
-  const partials = join(workflow, "partials");
-  const workflowNames = (await readdir(workflow)).filter((name) => name.endsWith(".yml"));
-  const partialNames = await readdir(partials);
-  const paths = [
-    join(paseo, "hub.yml"),
-    ...workflowNames.map((name) => join(workflow, name)),
-    ...partialNames.map((name) => join(partials, name)),
-  ];
-  return Promise.all(
-    paths.map(async (path) => ({
-      path: relative(fixtureRoot, path),
-      content: await readFile(path, "utf8"),
-    })),
-  );
-}

@@ -7,6 +7,7 @@ import {
   type CompiledAgent,
   type CompiledHubConfig,
 } from "../config/compiler.js";
+import { compileHubBundle } from "../config/bundle.js";
 import {
   hashPromptPartialContent,
   type ResolvedPromptPartials,
@@ -24,6 +25,7 @@ import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
+import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 describe("durable multi-step workflow engine", () => {
   it("materializes ambient context only for the step that authors paseo.context", async () => {
@@ -598,6 +600,64 @@ describe("durable multi-step workflow engine", () => {
         },
       },
     });
+  });
+
+  it("activates and executes the migrated current-project classifier-to-worker fixture", async () => {
+    const bundle = compileHubBundle(await currentProjectConfigurationFiles());
+    const fixture = await workflowFixture({ compiledConfiguration: bundle.configuration });
+    const dispatches: LaunchMachineIntent[] = [];
+    const { handler, engine } = engineFor(fixture, [], async (intent) => {
+      dispatches.push(intent);
+    });
+
+    await handler(fixture.trigger("investigate the routing failure"));
+    await engine.processAvailable();
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const classifierStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const classifier = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+      classifierStep.id,
+    );
+    assert.ok(classifier);
+    assert.equal(dispatches[0]?.environmentName, "hub");
+    assert.deepEqual(dispatches[0]?.agent, { provider: "claude", mode: "ultracode" });
+
+    await fixture.database.completeWorkflowAgentExecution({
+      executionId: classifier.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result: {
+        status: "succeeded",
+        output: { environment: "hub", agent: "codex" },
+      },
+      stepOutput: { environment: "hub", agent: "codex" },
+      completedByAgent: true,
+    });
+    await engine.processAvailable();
+
+    assert.deepEqual(
+      (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id)).map(
+        ({ stepId }) => stepId,
+      ),
+      ["classify", "work"],
+    );
+    assert.equal(dispatches[1]?.environmentName, "hub");
+    assert.equal(dispatches[1]?.prompt, "investigate the routing failure");
+    assert.deepEqual(dispatches[1]?.agent, {
+      provider: "codex",
+      model: "gpt-5.5",
+      thinkingOptionId: "xhigh",
+      options: {
+        sandbox_workspace_write: {
+          writable_roots: ["/var/cache/npm"],
+          network_access: false,
+        },
+      },
+    });
+    assert.deepEqual(dispatches[1]?.allowOutputs, [
+      { type: "discord.reply", max: 1, required: true },
+    ]);
   });
 
   it("fails when an unavailable output is evaluated outside a short-circuited branch", async () => {
@@ -1305,6 +1365,7 @@ async function workflowFixture(
     unavailableValue?: boolean;
     terminalRecovery?: boolean;
     rawConfiguration?: Record<string, unknown>;
+    compiledConfiguration?: CompiledHubConfig;
     resolvedPromptPartials?: ResolvedPromptPartials;
     namedAgents?: Record<string, CompiledAgent>;
   } = {},
@@ -1325,12 +1386,14 @@ async function workflowFixture(
   const raw =
     options.rawConfiguration ??
     (options.terminalRecovery ? terminalRecoveryConfiguration() : baseConfiguration(options));
-  const compiled = compileHubConfig(raw, {
-    ...(options.resolvedPromptPartials === undefined
-      ? {}
-      : { resolvedPromptPartials: options.resolvedPromptPartials }),
-    ...(options.namedAgents === undefined ? {} : { namedAgents: options.namedAgents }),
-  });
+  const compiled =
+    options.compiledConfiguration ??
+    compileHubConfig(raw, {
+      ...(options.resolvedPromptPartials === undefined
+        ? {}
+        : { resolvedPromptPartials: options.resolvedPromptPartials }),
+      ...(options.namedAgents === undefined ? {} : { namedAgents: options.namedAgents }),
+    });
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
       if (environment.kind !== "daemon") return environment;
