@@ -9,6 +9,7 @@ import { composeEntitlements } from "../auth/entitlements.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
 import { createDatabase } from "../db/pg.js";
 import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import {
   EnrollmentTokenSchema,
   CliAuthorizationPollSchema,
@@ -186,13 +187,17 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       );
       const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
         projectSlug: "same-project",
-        yaml: `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
+        files: configurationBundleFixture(
+          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
+        ),
       });
       assert.equal(validation.status, 200);
       ValidatedConfigurationSchema.parse(await validation.json());
       const install = await post("/api/v1/configurations/install", secrets[organizationId], {
         projectSlug: "same-project",
-        yaml: `project: file/${organizationId}-project\nenvironments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
+        files: configurationBundleFixture(
+          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
+        ),
       });
       assert.equal(install.status, 201);
       const installed = InstalledConfigurationSchema.parse(await install.json());
@@ -274,7 +279,9 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
 
     const response = await post("/api/v1/configurations/install", secrets["organization-a"], {
       projectSlug: "same-project",
-      yaml: "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+      files: configurationBundleFixture(
+        "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+      ),
     });
     const restore = new Client({ connectionString: databaseUrl });
     await restore.connect();
@@ -290,48 +297,40 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
 
   it("installs exact submitted partial bundles and rejects invalid bundle boundaries", async () => {
     const yaml = partialConfigurationYaml();
+    const baseFiles = configurationBundleFixture(yaml);
+    const partial = (content: unknown) => ({
+      path: ".paseo/workflows/partials/docs/safety.md",
+      content,
+    });
     const cases = [
       {
         name: "missing",
-        body: { projectSlug: "bundle-project", yaml },
-        expectedPath: ["partials", ".paseo/partials/docs/safety.md"],
+        body: { projectSlug: "bundle-project", files: baseFiles },
+        expectedPath: [".paseo/workflows/partials/docs/safety.md"],
       },
       {
         name: "unsafe",
         body: {
           projectSlug: "bundle-project",
-          yaml,
-          partials: [{ path: "../secret.md", content: "secret" }],
+          files: [...baseFiles, { path: "../secret.md", content: "secret" }],
         },
-        expectedPath: ["partials", 0, "path"],
+        expectedPath: ["../secret.md"],
       },
       {
         name: "duplicate",
         body: {
           projectSlug: "bundle-project",
-          yaml,
-          partials: [
-            { path: "docs/safety.md", content: "one" },
-            { path: "docs/safety%2emd", content: "two" },
-          ],
+          files: [...baseFiles, partial("one"), partial("two")],
         },
-        expectedPath: ["partials", 1, "path"],
+        expectedPath: [".paseo/workflows/partials/docs/safety.md"],
       },
       {
-        name: "unexpected",
+        name: "toml",
         body: {
           projectSlug: "bundle-project",
-          yaml: [
-            "environments:",
-            "  - name: runner",
-            "    kind: daemon",
-            `    daemon: ${TEST_DAEMON_SLUG}`,
-            "    cwd: /repo",
-            "triggers: []",
-          ].join("\n"),
-          partials: [{ path: "unused.md", content: "unused" }],
+          files: [...baseFiles, { path: ".paseo/hub.toml", content: "" }],
         },
-        expectedPath: ["partials", 0, "path"],
+        expectedPath: [".paseo/hub.toml"],
       },
     ] as const;
     for (const testCase of cases) {
@@ -348,21 +347,18 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
 
     const malformed = await post("/api/v1/configurations/install", secrets["organization-a"], {
       projectSlug: "bundle-project",
-      yaml,
-      partials: [{ path: "docs/safety.md", content: 42 }],
+      files: [...baseFiles, partial(42)],
     });
     assert.equal(malformed.status, 400);
     assert.equal(ProblemSchema.parse(await malformed.json()).code, "invalid_request");
 
     const first = await post("/api/v1/configurations/install", secrets["organization-a"], {
       projectSlug: "bundle-project",
-      yaml,
-      partials: [{ path: "docs/safety.md", content: "First instructions" }],
+      files: [...baseFiles, partial("First instructions")],
     });
     const second = await post("/api/v1/configurations/install", secrets["organization-a"], {
       projectSlug: "bundle-project",
-      yaml,
-      partials: [{ path: "docs/safety.md", content: "Second instructions" }],
+      files: [...baseFiles, partial("Second instructions")],
     });
     assert.equal(first.status, 201);
     assert.equal(second.status, 201);
@@ -376,7 +372,11 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       raw_yaml: string;
       partial_content: string;
     }>(
-      `select raw_yaml, source_evidence->'partials'->0->>'content' as partial_content
+      `select raw_yaml,
+              jsonb_path_query_first(
+                source_evidence,
+                '$.bundle.files[*] ? (@.path == ".paseo/workflows/partials/docs/safety.md")'
+              )->>'content' as partial_content
        from project_configuration_revisions revision
        join projects project on project.id = revision.project_id
        where project.organization_id = 'organization-a' and project.slug = 'bundle-project'
@@ -387,13 +387,12 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       revisions.rows.map((row) => row.partial_content),
       ["First instructions", "Second instructions"],
     );
-    assert.equal(revisions.rows[0]?.raw_yaml, yaml);
-    assert.equal(revisions.rows[1]?.raw_yaml, yaml);
+    assert.equal(revisions.rows[0]?.raw_yaml, baseFiles[0]?.content);
+    assert.equal(revisions.rows[1]?.raw_yaml, baseFiles[0]?.content);
 
     const otherTenant = await post("/api/v1/configurations/install", secrets["organization-b"], {
       projectSlug: "bundle-project",
-      yaml,
-      partials: [{ path: "docs/safety.md", content: "Organization B" }],
+      files: [...baseFiles, partial("Organization B")],
     });
     assert.equal(otherTenant.status, 201);
   }, 120_000);
@@ -437,7 +436,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       "        idle_timeout: 1m",
       "        agent: { provider: test }",
       "        prompt:",
-      "          - include: docs/safety.md",
+      "          - include: partials/docs/safety.md",
     ].join("\n");
   }
 

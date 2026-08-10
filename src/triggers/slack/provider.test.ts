@@ -653,7 +653,7 @@ function inputConfiguration() {
         steps: [
           {
             ...trigger.steps[0]!,
-            agent: { provider: "${{ paseo.inputs.agent }}", mode: "full-access" },
+            agent: { provider: "codex", mode: "full-access" },
             prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
           },
         ],

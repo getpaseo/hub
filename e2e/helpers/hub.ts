@@ -14,14 +14,16 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { WebSocket, type RawData } from "ws";
 import { Client } from "pg";
 import { z } from "zod";
+import { dump } from "js-yaml";
 import type { SourcePaseo } from "./source-paseo.js";
-import type { PromptPartialBundleFile } from "../../src/config/prompt-partials.js";
+import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
 import { createDatabase } from "../../src/db/pg.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
+import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
 import { ProjectNavigation } from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
@@ -34,8 +36,7 @@ export interface BuiltApplication {
   setGitHubConfiguration(input: {
     repositoryId: number;
     commitSha: string;
-    rawYaml?: string;
-    partials?: readonly PromptPartialBundleFile[];
+    files?: readonly HubBundleFile[];
   }): Promise<void>;
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
@@ -498,9 +499,8 @@ export class PaseoHub {
       if (daemon === undefined || daemon.status === "slug_conflict")
         throw new Error("Slack event daemon enrollment failed");
       const store = new ProjectConfigurationStore(database, target.project_id);
-      const revision = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration: browserUnroutedSlackConfiguration(daemon.slug),
+      const revision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(browserUnroutedSlackConfiguration(daemon.slug))),
         userId: target.user_id,
         sourceEvidence: { kind: "browser-drop-reason" },
       });
@@ -1127,6 +1127,7 @@ export class PaseoHub {
       const configuration = new ProjectConfiguration(page);
       await user.signUp(account);
       await user.createOrganization("Discord only");
+      await this.seedDaemonForEmail(application.databaseUrl, account.email, "editor-daemon");
       await navigation.openProject("Default");
       await navigation.openProjectSection("Configuration");
       await configuration.saveManualConfiguration(rawYaml);
@@ -1654,19 +1655,31 @@ export class PaseoHub {
   }
 
   private async seedDaemon(alias: string, displayName: string): Promise<string> {
+    return this.seedDaemonForEmail(
+      this.primary.databaseUrl,
+      this.requireUser(alias).accountEmail,
+      displayName,
+    );
+  }
+
+  private async seedDaemonForEmail(
+    databaseUrl: string,
+    accountEmail: string,
+    displayName: string,
+  ): Promise<string> {
     const daemonId = randomUUID();
     const machineId = randomUUID();
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      databaseUrl,
       `insert into machines (id, org_id, source, status)
        select $1, session.active_organization_id,
               jsonb_build_object('kind', 'daemon', 'daemonId', $2::text), 'alive'
        from session join "user" on "user".id = session.user_id
        where lower("user".email) = $3 and session.expires_at > now()`,
-      [machineId, daemonId, this.requireUser(alias).accountEmail],
+      [machineId, daemonId, accountEmail],
     );
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      databaseUrl,
       `insert into daemons
          (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
           daemon_public_key, credential_verifier, scopes, status)
@@ -1834,9 +1847,8 @@ export class PaseoHub {
       }
 
       const store = new ProjectConfigurationStore(database, project.id);
-      const revision = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration: providerDispatchConfiguration(repo, guildId),
+      const revision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, guildId))),
         userId: owner.user_id,
         sourceEvidence: { kind: "browser-fixture", userId: owner.user_id },
       });
@@ -2154,7 +2166,7 @@ export class PaseoHub {
         headers: machineHeaders(),
         data: {
           projectSlug: "default",
-          yaml: manualConfiguration(daemonSlug),
+          files: configurationBundleFixture(manualConfiguration(daemonSlug)),
         },
       },
     );
@@ -4657,10 +4669,10 @@ function manualFailureContracts(): readonly HttpContract[] {
       problemBody(
         "phase-zero-contract",
         422,
-        "invalid_yaml",
-        "Invalid YAML",
-        "Correct the YAML syntax and submit the configuration again.",
-        [{ path: ["yaml"], message: "Invalid YAML at line 2, column 1." }],
+        "invalid_configuration_bundle",
+        "Invalid configuration bundle",
+        "Correct the canonical Hub bundle files and submit them again.",
+        [{ path: [".paseo/hub.yml"], message: "invalid YAML: line 2, column 1" }],
       ),
       PROBLEM_TYPE,
       {
@@ -4668,7 +4680,10 @@ function manualFailureContracts(): readonly HttpContract[] {
         "content-type": "application/json",
         "x-request-id": "phase-zero-contract",
       },
-      JSON.stringify({ projectSlug: "default", yaml: "environments: [" }),
+      JSON.stringify({
+        projectSlug: "default",
+        files: [{ path: ".paseo/hub.yml", content: "environments: [" }],
+      }),
     ),
     exact(
       "unknown manual config is visible",

@@ -232,31 +232,13 @@ function validationResponse(requestId: string, result: ValidateConfigurationResu
         "Project not found",
         "No active project with that slug exists in the credential's organization.",
       );
-    case "invalid_yaml":
-      return problem(
-        requestId,
-        422,
-        "invalid_yaml",
-        "Invalid YAML",
-        "Correct the YAML syntax.",
-        result.issues,
-      );
-    case "invalid_document":
-      return problem(
-        requestId,
-        422,
-        "invalid_configuration_document",
-        "Invalid configuration document",
-        "Correct the deployment metadata.",
-        result.issues,
-      );
     case "invalid_bundle":
       return problem(
         requestId,
         422,
         "invalid_configuration_bundle",
         "Invalid configuration bundle",
-        "Supply exactly the prompt partial files referenced by the YAML configuration.",
+        "Correct the canonical Hub bundle files.",
         result.issues,
       );
     case "invalid_configuration":
@@ -321,31 +303,13 @@ function installationResponse(requestId: string, result: InstallConfigurationRes
         "Project not found",
         "No active project with that slug exists in the credential's organization.",
       );
-    case "invalid_yaml":
-      return problem(
-        requestId,
-        422,
-        "invalid_yaml",
-        "Invalid YAML",
-        "Correct the YAML syntax and submit the configuration again.",
-        result.issues,
-      );
-    case "invalid_document":
-      return problem(
-        requestId,
-        422,
-        "invalid_configuration_document",
-        "Invalid configuration document",
-        "Correct the deployment metadata and submit the configuration again.",
-        result.issues,
-      );
     case "invalid_bundle":
       return problem(
         requestId,
         422,
         "invalid_configuration_bundle",
         "Invalid configuration bundle",
-        "Supply exactly the prompt partial files referenced by the YAML configuration.",
+        "Correct the canonical Hub bundle files and submit them again.",
         result.issues,
       );
     case "invalid_configuration":
@@ -519,8 +483,6 @@ function isInstallationResult(result: PublicOperationResult): result is InstallC
   return [
     "installed",
     "project_not_found",
-    "invalid_yaml",
-    "invalid_document",
     "invalid_bundle",
     "invalid_configuration",
     "infrastructure_unavailable",
@@ -535,8 +497,6 @@ function isValidationResult(result: PublicOperationResult): result is ValidateCo
   return [
     "valid",
     "project_not_found",
-    "invalid_yaml",
-    "invalid_document",
     "invalid_bundle",
     "invalid_configuration",
     "infrastructure_unavailable",

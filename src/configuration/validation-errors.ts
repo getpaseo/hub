@@ -3,6 +3,14 @@ import { z } from "zod";
 const storedValidationErrorsSchema = z.object({
   formErrors: z.array(z.string()),
   fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
+  issues: z
+    .array(
+      z.object({
+        path: z.array(z.union([z.string(), z.number()])),
+        message: z.string(),
+      }),
+    )
+    .optional(),
 });
 
 export type ConfigurationValidationErrors = z.infer<typeof storedValidationErrorsSchema>;
@@ -34,16 +42,20 @@ export function configurationValidationMessages(errors: unknown): string[] {
     ...Object.entries(parsed.data.fieldErrors ?? {}).flatMap(([field, failures]) =>
       failures.map((failure) => `${field}: ${failure}`),
     ),
+    ...(parsed.data.issues ?? []).map(({ path, message }) =>
+      path.length === 0 ? message : `${path.join(".")}: ${message}`,
+    ),
   ].map(sentenceCase);
   return messages.length === 0 ? ["Configuration validation failed."] : messages;
 }
 
 export function configurationValidationIssues(
   errors: unknown,
-): readonly { path: readonly string[]; message: string }[] {
+): readonly { path: readonly (string | number)[]; message: string }[] {
   const parsed = storedValidationErrorsSchema.safeParse(errors);
   if (!parsed.success) return [{ path: [], message: "Configuration validation failed." }];
   return [
+    ...(parsed.data.issues ?? []),
     ...parsed.data.formErrors.map((message) => ({ path: [] as readonly string[], message })),
     ...Object.entries(parsed.data.fieldErrors ?? {}).flatMap(([field, failures]) =>
       failures.map((message) => ({ path: [field] as readonly string[], message })),

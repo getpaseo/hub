@@ -82,51 +82,63 @@ export const ProblemSchema = z
     },
   });
 
-export const ConfigurationPartialSchema = z
+export const ConfigurationFileSchema = z
   .object({
     path: z.string().min(1).max(MAX_PROMPT_PARTIAL_PATH_LENGTH),
     content: z.string().max(MAX_PROMPT_PARTIAL_CONTENT_BYTES),
   })
   .strict()
-  .openapi("ConfigurationPartial", {
-    description:
-      "A UTF-8 prompt partial path relative to .paseo/partials/ and its exact text content.",
-    example: { path: "docs/safety.md", content: "Follow the safety checklist." },
+  .openapi("ConfigurationFile", {
+    description: "One UTF-8 file in the canonical .paseo Hub bundle.",
+    example: { path: ".paseo/hub.yml", content: "environments: {}\nagents: {}\n" },
   });
 
 export const InstallConfigurationRequestSchema = z
   .object({
     projectSlug: z.string().trim().min(1).max(100),
-    yaml: z.string().min(1).max(1_000_000),
-    partials: z.array(ConfigurationPartialSchema).max(MAX_PROMPT_PARTIAL_COUNT).optional(),
+    files: z.array(ConfigurationFileSchema).min(1).max(MAX_PROMPT_PARTIAL_COUNT),
   })
   .strict()
   .openapi("InstallConfigurationRequest", {
     description:
-      "Install YAML and, when prompt include references are used, exactly the referenced UTF-8 partial files. Partial paths are relative to .paseo/partials/; at most 100 files and 5,000,000 combined content bytes are accepted.",
+      "Install the complete canonical bundle: .paseo/hub.yml, direct-child .paseo/workflows/*.yml files, and referenced .paseo/workflows/partials/*.md files.",
     example: {
       projectSlug: "payments",
-      yaml: [
-        "project: acme/payments",
-        "environments:",
-        "  - name: runner",
-        "    kind: daemon",
-        "    daemon: build-server",
-        "    cwd: /workspace",
-        "triggers:",
-        "  - name: deploy",
-        "    on: manual.run",
-        "    max_runtime: 1h",
-        "    steps:",
-        "      - id: deploy",
-        "        environment: runner",
-        "        max_runtime: 30m",
-        "        idle_timeout: 5m",
-        "        agent: { provider: test }",
-        "        prompt:",
-        "          - include: docs/safety.md",
-      ].join("\n"),
-      partials: [{ path: "docs/safety.md", content: "Follow the safety checklist." }],
+      files: [
+        {
+          path: ".paseo/hub.yml",
+          content: [
+            "environments:",
+            "  runner:",
+            "    kind: daemon",
+            "    daemon: build-server",
+            "    cwd: /workspace",
+            "agents:",
+            "  default:",
+            "    provider: test",
+          ].join("\n"),
+        },
+        {
+          path: ".paseo/workflows/deploy.yml",
+          content: [
+            "name: deploy",
+            "on: manual.run",
+            "max_runtime: 1h",
+            "steps:",
+            "  - id: deploy",
+            "    environment: runner",
+            "    max_runtime: 30m",
+            "    idle_timeout: 5m",
+            "    agent: default",
+            "    prompt:",
+            "      - include: partials/safety.md",
+          ].join("\n"),
+        },
+        {
+          path: ".paseo/workflows/partials/safety.md",
+          content: "Follow the safety checklist.",
+        },
+      ],
     },
   });
 

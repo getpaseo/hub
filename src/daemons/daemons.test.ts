@@ -4,6 +4,7 @@ import { DaemonDispatchFailure } from "./index.js";
 import { DaemonCreateResponseLostError } from "./protocol.js";
 import { ENROLLMENT_LIFETIME_MS } from "./registration.js";
 import { HubHarness } from "./test-utils/hub-harness.js";
+import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 describe("daemon enrollment and execution", () => {
   let hub: HubHarness;
@@ -306,6 +307,65 @@ describe("daemon enrollment and execution", () => {
         },
       },
     });
+  });
+
+  it("installs and routes the exact current-project bundle from a real Slack event", async () => {
+    await hub.connectDaemon();
+    await hub.renameConnectedDaemon("local");
+    const slackConnectionId = await hub.seedCurrentProjectResources();
+
+    const installed = await hub.installBundle({ files: await currentProjectConfigurationFiles() });
+    assert.equal(installed.status, 201, JSON.stringify(installed));
+    const delivered = await hub.deliverCurrentProjectSlackMention(slackConnectionId);
+    assert.equal(delivered.status, 200);
+
+    await hub.waitForCreatedAgentRequests(1);
+    const classifier = await hub.waitForPendingExecution();
+    const classifierLaunch = hub.createdAgentLaunch();
+    assert.equal(classifierLaunch.provider, "claude");
+    assert.equal(classifierLaunch.modeId, "bypassPermissions");
+    assert.equal(classifierLaunch.cwd, "/workspace/hub");
+    assert.equal(
+      classifierLaunch.prompt,
+      "Choose one configured repository environment and one complete named agent configuration.\n\ninvestigate the routing failure",
+    );
+    assert.deepEqual(
+      (await hub.listExecutionTools(classifier.id)).map(({ name }) => name),
+      ["finish_execution"],
+    );
+
+    const completion = await hub.callExecutionTool(classifier.id, "finish_execution", {
+      output: { environment: "paseo", agent: "codex" },
+    });
+    assert.equal(completion["error"], undefined);
+    assert.equal(toolResultIsError(completion), undefined, JSON.stringify(completion));
+    await hub.drainWorkflowOutbox();
+    await hub.drainWorkflowOutbox();
+    assert.deepEqual(await hub.workflowExecutionState(classifier.id), {
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      stepOutput: { environment: "paseo", agent: "codex" },
+      stepFailure: null,
+      runStatus: "running",
+      runFailure: null,
+    });
+    await hub.waitForCreatedAgentRequests(2);
+    const worker = await hub.waitForPendingExecution();
+    const workerLaunch = hub.createdAgentLaunch();
+    assert.equal(workerLaunch.provider, "codex");
+    assert.equal(workerLaunch.cwd, "/workspace/paseo");
+    assert.equal(workerLaunch.prompt, "investigate the routing failure");
+    assert.equal(workerLaunch.thinkingOptionId, "xhigh");
+    assert.deepEqual(workerLaunch.providerOptions, {
+      sandbox_workspace_write: {
+        writable_roots: ["/var/cache/npm"],
+        network_access: false,
+      },
+    });
+    assert.deepEqual(
+      (await hub.listExecutionTools(worker.id)).map(({ name }) => name),
+      ["finish_execution", "reply"],
+    );
   });
 
   it("deduplicates durable fan-out per configured trigger match", async () => {

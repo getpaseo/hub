@@ -1,5 +1,5 @@
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
-import type { ResolvedPromptPartials } from "../config/prompt-partials.js";
+import type { HubBundleFile } from "../config/bundle.js";
 import type { TriggerRunRecord } from "../db/types.js";
 
 export interface PublicAuthorization {
@@ -11,8 +11,7 @@ export interface PublicAuthorization {
 
 export interface InstallConfigurationInput {
   projectSlug: string;
-  yaml: string;
-  partials?: readonly InstallConfigurationPartial[] | undefined;
+  files: readonly HubBundleFile[];
 }
 
 export type ValidateConfigurationInput = InstallConfigurationInput;
@@ -20,8 +19,6 @@ export type ValidateConfigurationInput = InstallConfigurationInput;
 export type ValidateConfigurationResult =
   | { status: "valid"; projectSlug: string; valid: true }
   | { status: "project_not_found" }
-  | { status: "invalid_yaml"; issues: readonly DomainIssue[] }
-  | { status: "invalid_document"; issues: readonly DomainIssue[] }
   | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
   | { status: "invalid_configuration"; issues: readonly DomainIssue[] }
   | InfrastructureUnavailable;
@@ -36,11 +33,6 @@ export type ListProjectsResult =
   | { status: "listed"; projects: readonly PublicProject[] }
   | InfrastructureUnavailable;
 
-export interface InstallConfigurationPartial {
-  path: string;
-  content: string;
-}
-
 export type InstallConfigurationResult =
   | {
       status: "installed";
@@ -50,8 +42,6 @@ export type InstallConfigurationResult =
       active: true;
     }
   | { status: "project_not_found" }
-  | { status: "invalid_yaml"; issues: readonly DomainIssue[] }
-  | { status: "invalid_document"; issues: readonly DomainIssue[] }
   | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
   | {
       status: "invalid_configuration";
@@ -143,19 +133,16 @@ export interface PublicOperationRepository {
 
 export interface PublicOperationCapabilities {
   configurationForProject(projectId: string): {
-    validateManualConfiguration(
-      rawConfiguration: unknown,
-      resolvedPromptPartials?: ResolvedPromptPartials,
+    validateBundle(
+      files: readonly HubBundleFile[],
     ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }>;
-    insertManualRevision(input: {
-      rawYaml: string;
-      rawConfiguration: unknown;
+    insertManualBundleRevision(input: {
+      files: readonly HubBundleFile[];
       userId: null;
       sourceEvidence: {
         kind: "api-key" | "cli-credential";
         credentialId: string;
       };
-      resolvedPromptPartials?: ResolvedPromptPartials;
     }): Promise<{ id: string; validationErrors: unknown }>;
     activate(id: string): Promise<{ revision: { id: string; version: number } }>;
   };

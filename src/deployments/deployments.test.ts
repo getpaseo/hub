@@ -3,15 +3,35 @@ import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import { createActiveProjectConfiguration } from "../test-utils/project-configuration.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
+import { dump } from "js-yaml";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 
 const validConfig = {
-  environments: [{ name: "production", kind: "docker", image: "paseo/runner" }],
-  triggers: [],
+  environments: [{ name: "production", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
+  triggers: [
+    {
+      name: "run",
+      on: "manual.run",
+      max_runtime: "1h",
+      steps: [
+        {
+          id: "work",
+          environment: "production",
+          max_runtime: "10m",
+          idle_timeout: "1m",
+          agent: { provider: "test" },
+          prompt: [{ text: "Run" }],
+        },
+      ],
+    },
+  ],
 };
 
 describe("project configuration lifecycle", () => {
   it("activates immutable revisions and rolls back within one project", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database, "organization-a");
     const {
       project,
       revision: first,
@@ -19,9 +39,8 @@ describe("project configuration lifecycle", () => {
     } = await createActiveProjectConfiguration(database, validConfig, {
       organizationId: "organization-a",
     });
-    const second = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: validConfig,
+    const second = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(validConfig)),
       userId: "operator",
     });
 
@@ -34,21 +53,16 @@ describe("project configuration lifecycle", () => {
 
   it("rejects invalid and cross-project activation", async () => {
     const database = createMemoryDatabase();
+    await enrollTestDaemon(database, "organization-a");
     const projectA = await createActiveProjectConfiguration(database, validConfig, {
       organizationId: "organization-a",
     });
     const projectB = await createActiveProjectConfiguration(database, validConfig, {
       organizationId: "organization-a",
     });
-    const invalid = await projectA.store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: { environments: [], triggers: "invalid" },
-      userId: "operator",
-    });
-
-    await assert.rejects(
-      projectA.store.activate(invalid.id),
-      /invalid compiled workflow contract/u,
+    assert.throws(
+      () => configurationBundleFixture(dump({ environments: [], triggers: "invalid" })),
+      /environments and triggers/u,
     );
     await assert.rejects(
       new ProjectConfigurationStore(database, projectA.project.id).activate(projectB.revision.id),

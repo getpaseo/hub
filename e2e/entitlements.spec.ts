@@ -110,28 +110,34 @@ test.describe("metered usage", () => {
       await app.configuration.saveManualConfiguration(
         [
           "environments:",
-          "  - name: slice-three-runner",
+          "  slice-three-runner:",
           "    kind: daemon",
           "    daemon: slice-three-runner",
           "    cwd: /workspace",
-          "triggers:",
-          "  - name: deploy",
-          "    on: manual.run",
-          "    max_runtime: 1h",
-          "    filters:",
-          "      from_users: [alice]",
-          "    steps:",
-          "      - id: deploy",
-          "        environment: slice-three-runner",
-          "        max_runtime: 10m",
-          "        idle_timeout: 1m",
-          "        agent:",
-          "          provider: opencode",
-          "        prompt:",
-          "          - text: '${{ paseo.prompt }}'",
+          "agents: {}",
         ].join("\n"),
       );
-      await app.configuration.expectActiveRevision(1);
+      await app.configuration.addWorkflow(
+        "deploy.yml",
+        [
+          "name: deploy",
+          "on: manual.run",
+          "max_runtime: 1h",
+          "filters:",
+          "  from_users: [alice]",
+          "steps:",
+          "  - id: deploy",
+          "    environment: slice-three-runner",
+          "    max_runtime: 10m",
+          "    idle_timeout: 1m",
+          "    agent:",
+          "      provider: opencode",
+          "    prompt:",
+          "      - text: '${{ paseo.prompt }}'",
+        ].join("\n"),
+      );
+      await app.configuration.save();
+      await app.configuration.expectActiveRevision(2);
     });
 
     const runApiKey = await hub.createRunApiKey("owner");

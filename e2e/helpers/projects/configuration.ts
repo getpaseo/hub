@@ -1,4 +1,7 @@
 import { expect, type Page } from "@playwright/test";
+import { load } from "js-yaml";
+
+const BASELINE_WORKFLOW_PATH = ".paseo/workflows/baseline.yml";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -42,15 +45,27 @@ export class ProjectConfiguration {
   }
 
   private partialLabel(path: string) {
-    return `.paseo/partials/${path}`;
+    return path.startsWith(".paseo/workflows/partials/")
+      ? path
+      : `.paseo/workflows/partials/${path}`;
   }
 
   private async startEditing() {
     const editing = this.page.getByText("Editing");
     const edit = this.page.getByRole("button", { name: "Edit", exact: true });
+    const save = this.page.getByRole("button", { name: "Save and activate" });
     // Switching the source to manual refetches the snapshot; neither control is on
-    // the page until it lands.
+    // the page until it lands. A caller may also follow a successful activation
+    // immediately; wait for that pending save to settle before opening another
+    // edit, because activation remounts the workbench on the new revision.
     await expect(edit.or(editing).first()).toBeVisible();
+    await expect
+      .poll(
+        async () =>
+          (await edit.isVisible()) ||
+          ((await editing.isVisible()) && (await save.getAttribute("aria-busy")) !== "true"),
+      )
+      .toBe(true);
     if (await edit.isVisible()) await edit.click();
     await expect(editing).toBeVisible();
   }
@@ -58,6 +73,17 @@ export class ProjectConfiguration {
   async saveManualConfiguration(rawYaml: string) {
     await this.startEditing();
     await this.editor().fill(rawYaml);
+    if (
+      (await this.page
+        .getByRole("list", { name: "Configuration files" })
+        .getByRole("button", { name: BASELINE_WORKFLOW_PATH, exact: true })
+        .count()) === 0
+    ) {
+      await this.page.getByRole("button", { name: "Add workflow" }).click();
+      await this.page.getByLabel("Workflow file name").fill("baseline.yml");
+      await this.page.getByRole("button", { name: "Add", exact: true }).click();
+      await this.editor().fill(baselineWorkflow(rawYaml));
+    }
     await this.page.getByRole("button", { name: "Save and activate" }).click();
   }
 
@@ -86,7 +112,20 @@ export class ProjectConfiguration {
     await this.editor(this.partialLabel(path)).fill(content);
   }
 
+  async addWorkflow(name: string, content: string) {
+    await this.startEditing();
+    await this.page.getByRole("button", { name: "Add workflow" }).click();
+    await this.page.getByLabel("Workflow file name").fill(name);
+    await this.page.getByRole("button", { name: "Add", exact: true }).click();
+    await this.editor().fill(content);
+  }
+
   async removePartial(path: string) {
+    await this.startEditing();
+    await this.page.getByRole("button", { name: `Remove ${path}` }).click();
+  }
+
+  async removeWorkflow(path: string) {
     await this.startEditing();
     await this.page.getByRole("button", { name: `Remove ${path}` }).click();
   }
@@ -168,4 +207,26 @@ export class ProjectConfiguration {
       "Invalid revision; active revision preserved",
     );
   }
+}
+
+function baselineWorkflow(rawYaml: string): string {
+  const raw = load(rawYaml);
+  const environments = isRecord(raw) && isRecord(raw["environments"]) ? raw["environments"] : {};
+  const environment = Object.keys(environments)[0] ?? "runner";
+  return [
+    "name: baseline",
+    "on: manual.run",
+    "max_runtime: 1h",
+    "steps:",
+    "  - id: work",
+    `    environment: ${environment}`,
+    "    max_runtime: 10m",
+    "    idle_timeout: 1m",
+    "    agent: { provider: test }",
+    "    prompt: [{ text: baseline }]",
+  ].join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { dump } from "js-yaml";
 import { createMemoryDatabase } from "../db/memory.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "./store.js";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 
 describe("compiled workflow activation", () => {
   it("activates a valid step-based configuration and stores the compiled contract", async () => {
@@ -14,28 +16,31 @@ describe("compiled workflow activation", () => {
       createdByUserId: "user-1",
     });
     const store = new ProjectConfigurationStore(database, project.id);
-    const revision = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: {
-        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" }],
-        triggers: [
-          {
-            name: "manual-workflow",
-            on: "manual.run",
-            max_runtime: "1h",
-            steps: [
-              {
-                id: "work",
-                environment: "runner",
-                max_runtime: "10m",
-                idle_timeout: "1m",
-                agent: { provider: "codex" },
-                prompt: [{ text: "Run the requested work" }],
-              },
-            ],
-          },
-        ],
-      },
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump({
+          environments: [
+            { name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" },
+          ],
+          triggers: [
+            {
+              name: "manual-workflow",
+              on: "manual.run",
+              max_runtime: "1h",
+              steps: [
+                {
+                  id: "work",
+                  environment: "runner",
+                  max_runtime: "10m",
+                  idle_timeout: "1m",
+                  agent: { provider: "codex" },
+                  prompt: [{ text: "Run the requested work" }],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
       userId: "user-1",
     });
 
@@ -48,25 +53,30 @@ describe("compiled workflow activation", () => {
     assert.equal(active.configuration.triggers[0]?.steps[0]?.maxRuntimeMs, 600_000);
     assert.equal(Object.isFrozen(active.configuration.triggers[0]?.steps[0]), true);
 
-    const invalid = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: {
-        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" }],
-        triggers: [
-          {
-            name: "legacy",
-            on: "manual.run",
-            max_runtime: "1h",
-            environment: "runner",
-            agent: { provider: "codex" },
-            prompt: [{ text: "legacy" }],
-            steps: [],
-          },
-        ],
-      },
-      userId: "user-1",
-    });
-    assert.match(JSON.stringify(invalid.validationErrors), /trigger-level environment.*step/iu);
+    await assert.rejects(
+      store.insertManualBundleRevision({
+        files: configurationBundleFixture(
+          dump({
+            environments: [
+              { name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" },
+            ],
+            triggers: [
+              {
+                name: "legacy",
+                on: "manual.run",
+                max_runtime: "1h",
+                environment: "runner",
+                agent: { provider: "codex" },
+                prompt: [{ text: "legacy" }],
+                steps: [],
+              },
+            ],
+          }),
+        ),
+        userId: "user-1",
+      }),
+      /environment.*step|unknown/iu,
+    );
     assert.equal((await store.getActive())?.revision.id, revision.id);
   });
 
@@ -80,12 +90,15 @@ describe("compiled workflow activation", () => {
       createdByUserId: "user-1",
     });
     const store = new ProjectConfigurationStore(database, project.id);
-    const active = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: {
-        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" }],
-        triggers: [],
-      },
+    const active = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump({
+          environments: [
+            { name: "runner", kind: "daemon", daemon: "daemon-runner-0", cwd: "/repo" },
+          ],
+          triggers: [triggerConfiguration("active", "runner")],
+        }),
+      ),
       userId: "user-1",
     });
     await store.activate(active.id);
@@ -124,12 +137,14 @@ describe("compiled workflow activation", () => {
         /environment choice docker.*daemon/iu,
       ],
     ] as const) {
-      const invalid = await store.insertManualRevision({
-        rawYaml: null,
-        rawConfiguration,
-        userId: "user-1",
-      });
-      assert.match(JSON.stringify(invalid.validationErrors), expected, name);
+      await assert.rejects(
+        store.insertManualBundleRevision({
+          files: configurationBundleFixture(dump(rawConfiguration)),
+          userId: "user-1",
+        }),
+        expected,
+        name,
+      );
       assert.equal((await store.getActive())?.revision.id, active.id, name);
     }
   });

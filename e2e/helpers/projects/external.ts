@@ -11,14 +11,12 @@ export class ProjectExternalFacts {
   setGitHubRevision(
     repositoryId: number,
     commitSha: string,
-    rawYaml?: string,
-    partials?: readonly { path: string; content: string }[],
+    files?: readonly { path: string; content: string }[],
   ) {
     return this.application.setGitHubConfiguration({
       repositoryId,
       commitSha,
-      ...(rawYaml === undefined ? {} : { rawYaml }),
-      ...(partials === undefined ? {} : { partials }),
+      ...(files === undefined ? {} : { files }),
     });
   }
 

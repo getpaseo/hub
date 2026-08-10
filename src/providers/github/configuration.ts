@@ -20,6 +20,20 @@ const contentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("symlink") }).passthrough(),
   z.object({ type: z.literal("submodule") }).passthrough(),
 ]);
+const treeSchema = z
+  .object({
+    truncated: z.boolean(),
+    tree: z.array(
+      z
+        .object({
+          path: z.string(),
+          mode: z.string(),
+          type: z.enum(["blob", "tree", "commit"]),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
 
 export function createGitHubConfigurationProvider(auth: GitHubAuth): GitHubConfigurationProvider {
   async function repository(installationId: number, repositoryId: number) {
@@ -62,6 +76,24 @@ export function createGitHubConfigurationProvider(auth: GitHubAuth): GitHubConfi
       });
       return referenceSchema.parse(response.data).object.sha;
     },
+    async listFilesAtCommit({ installationId, repositoryId, commitSha, prefix }) {
+      const resolved = await repository(installationId, repositoryId);
+      const response = await resolved.octokit.request(
+        "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+        {
+          owner: resolved.owner,
+          repo: resolved.name,
+          tree_sha: commitSha,
+          recursive: "true",
+        },
+      );
+      const tree = treeSchema.parse(response.data);
+      if (tree.truncated) throw new Error("GitHub configuration tree response was truncated");
+      return tree.tree
+        .filter(({ path }) => path === prefix || path.startsWith(`${prefix}/`))
+        .filter(({ type }) => type !== "tree")
+        .map(({ path, type, mode }) => ({ path, kind: gitTreeEntryKind(type, mode) }));
+    },
     async readFileAtCommit({ installationId, repositoryId, commitSha, path }) {
       const resolved = await repository(installationId, repositoryId);
       try {
@@ -82,6 +114,15 @@ export function createGitHubConfigurationProvider(auth: GitHubAuth): GitHubConfi
       }
     },
   };
+}
+
+function gitTreeEntryKind(
+  type: "blob" | "tree" | "commit",
+  mode: string,
+): "file" | "symlink" | "submodule" {
+  if (type === "commit") return "submodule";
+  if (mode === "120000") return "symlink";
+  return "file";
 }
 
 function toFileAtCommit(content: z.infer<typeof contentSchema>): PromptPartialReadResult {

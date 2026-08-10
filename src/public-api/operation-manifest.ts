@@ -116,7 +116,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     resultMapping: "configuration",
     summary: "Install and activate configuration",
     description:
-      "Validates YAML, strips optional project deployment metadata, resolves explicitly supplied prompt partials, records a configuration revision, and atomically activates it.",
+      "Validates and resolves the complete canonical Hub bundle, records a configuration revision, and atomically activates it.",
     tag: "Configurations",
     responses: {
       201: "The new configuration revision is active.",

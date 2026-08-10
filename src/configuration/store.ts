@@ -1,20 +1,21 @@
 import { dump } from "js-yaml";
 import { z } from "zod";
 import {
-  compileHubConfig,
   compiledConfigurationHash,
   parseCompiledHubConfig,
-  rawConfigurationHash,
   type CompiledHubConfig,
   type CompiledTriggerFilter,
   type CompiledTrigger,
 } from "../config/compiler.js";
 import type { EnvironmentConfig } from "../config/schema.js";
 import {
-  resolvedPromptPartialsEvidence,
-  type PromptPartialBundleFile,
-  type ResolvedPromptPartials,
-} from "../config/prompt-partials.js";
+  compileHubBundle,
+  HUB_RESOURCE_PATH,
+  type CompiledHubBundle,
+  type HubBundleAgentValidationTarget,
+  type HubBundleFile,
+} from "../config/bundle.js";
+import { type PromptPartialBundleFile } from "../config/prompt-partials.js";
 import type {
   ConnectionProvider,
   Database,
@@ -31,6 +32,19 @@ export interface StoredProjectConfiguration {
   configuration: CompiledProjectConfiguration;
 }
 
+export interface DaemonAgentConfigurationValidator {
+  validateAgentConfiguration(
+    daemonId: string,
+    agent: import("../config/compiler.js").CompiledAgent,
+  ): Promise<
+    | { valid: true }
+    | {
+        valid: false;
+        issues: readonly { path: readonly (string | number)[]; message: string }[];
+      }
+  >;
+}
+
 export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments" | "triggers"> & {
   environments: readonly (
     | Exclude<EnvironmentConfig, { kind: "daemon" }>
@@ -42,6 +56,30 @@ export type CompiledProjectConfiguration = Omit<CompiledHubConfig, "environments
 const storedPromptPartialsSchema = z.object({
   partials: z.array(z.object({ path: z.string(), content: z.string() })),
 });
+
+const storedBundleSchema = z.object({
+  bundle: z.object({
+    authoredHash: z.string(),
+    files: z.array(z.object({ path: z.string(), content: z.string() })),
+  }),
+});
+
+export function revisionBundleFiles(
+  revision: Pick<ProjectConfigurationRevisionRecord, "sourceEvidence">,
+): readonly HubBundleFile[] {
+  const parsed = storedBundleSchema.safeParse(revision.sourceEvidence);
+  return parsed.success ? parsed.data.bundle.files : [];
+}
+
+function addBundleEvidence(sourceEvidence: unknown, bundle: CompiledHubBundle): unknown {
+  const evidence = {
+    authoredHash: bundle.authoredHash,
+    files: bundle.files.map(({ path, content }) => ({ path, content })),
+  };
+  return typeof sourceEvidence === "object" && sourceEvidence !== null
+    ? { ...sourceEvidence, bundle: evidence }
+    : { sourceEvidence, bundle: evidence };
+}
 
 /**
  * The partial files a revision was built from, read back out of the evidence this
@@ -55,55 +93,55 @@ export function revisionPromptPartials(
   return parsed.success ? parsed.data.partials : [];
 }
 
-function addPromptPartialsEvidence(
-  sourceEvidence: unknown,
-  resolvedPromptPartials: ResolvedPromptPartials | undefined,
-): unknown {
-  if (resolvedPromptPartials === undefined || resolvedPromptPartials.size === 0) {
-    return sourceEvidence;
-  }
-  if (typeof sourceEvidence === "object" && sourceEvidence !== null) {
-    return {
-      ...sourceEvidence,
-      partials: resolvedPromptPartialsEvidence(resolvedPromptPartials),
-    };
-  }
-  return {
-    sourceEvidence,
-    partials: resolvedPromptPartialsEvidence(resolvedPromptPartials),
-  };
-}
-
 export class ProjectConfigurationStore {
   constructor(
     private readonly database: Database,
     private readonly projectId: string,
+    private readonly daemonAgentValidator?: DaemonAgentConfigurationValidator,
   ) {}
 
-  async insertManualRevision(input: {
-    rawYaml: string | null;
-    rawConfiguration: unknown;
-    userId: string | null;
-    sourceEvidence?: unknown;
-    resolvedPromptPartials?: ResolvedPromptPartials;
-  }): Promise<ProjectConfigurationRevisionRecord> {
-    const prepared = await prepareRevision(
+  async validateBundle(
+    files: readonly HubBundleFile[],
+  ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
+    let bundle: CompiledHubBundle;
+    try {
+      bundle = compileHubBundle(files);
+    } catch (error) {
+      return { valid: false, validationErrors: formatConfigurationError(error) };
+    }
+    const prepared = await prepareCompiledRevision(
       this.database,
       this.projectId,
-      input.rawConfiguration,
-      input.resolvedPromptPartials,
+      bundle.configuration,
+      bundle.agentValidationTargets,
+      this.daemonAgentValidator,
+    );
+    return prepared.validationErrors === undefined
+      ? { valid: true }
+      : { valid: false, validationErrors: prepared.validationErrors };
+  }
+
+  async insertManualBundleRevision(input: {
+    files: readonly HubBundleFile[];
+    userId: string | null;
+    sourceEvidence?: unknown;
+  }): Promise<ProjectConfigurationRevisionRecord> {
+    const bundle = compileHubBundle(input.files);
+    const prepared = await prepareCompiledRevision(
+      this.database,
+      this.projectId,
+      bundle.configuration,
+      bundle.agentValidationTargets,
+      this.daemonAgentValidator,
     );
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
       sourceKind: "manual",
-      sourceEvidence: addPromptPartialsEvidence(
-        input.sourceEvidence ?? {
-          kind: "manual",
-          userId: input.userId,
-        },
-        input.resolvedPromptPartials,
+      sourceEvidence: addBundleEvidence(
+        input.sourceEvidence ?? { kind: "manual", userId: input.userId },
+        bundle,
       ),
-      rawYaml: input.rawYaml,
+      rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
       normalizedConfiguration: prepared.normalizedConfiguration,
       ...(prepared.validationErrors === undefined
         ? {}
@@ -113,66 +151,48 @@ export class ProjectConfigurationStore {
     });
   }
 
-  async validateManualConfiguration(
-    rawConfiguration: unknown,
-    resolvedPromptPartials?: ResolvedPromptPartials,
-  ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
-    const prepared = await prepareRevision(
-      this.database,
-      this.projectId,
-      rawConfiguration,
-      resolvedPromptPartials,
-    );
-    return prepared.validationErrors === undefined
-      ? { valid: true }
-      : { valid: false, validationErrors: prepared.validationErrors };
-  }
-
-  async insertGitHubRevision(input: {
-    rawYaml: string;
-    rawConfiguration: unknown;
+  async insertGitHubBundleRevision(input: {
+    files: readonly HubBundleFile[];
     githubConnectionId: string;
     githubRepositoryId: number;
     githubRepositoryFullName: string;
     githubDefaultBranch: string;
     commitSha: string;
-    path: string;
     webhookDeliveryId: string | null;
-    resolvedPromptPartials?: ResolvedPromptPartials;
     validationErrors?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
+    const bundle = compileHubBundle(input.files);
     const prepared =
       input.validationErrors === undefined
-        ? await prepareRevision(
+        ? await prepareCompiledRevision(
             this.database,
             this.projectId,
-            input.rawConfiguration,
-            input.resolvedPromptPartials,
+            bundle.configuration,
+            bundle.agentValidationTargets,
+            this.daemonAgentValidator,
           )
         : {
-            normalizedConfiguration: input.rawConfiguration,
-            contentHash: rawConfigurationHash(input.rawConfiguration),
+            normalizedConfiguration: bundle.configuration,
+            contentHash: bundle.authoredHash,
             validationErrors: input.validationErrors,
           };
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
       sourceKind: "github",
-      sourceEvidence: {
-        kind: "github",
-        githubConnectionId: input.githubConnectionId,
-        githubRepositoryId: input.githubRepositoryId,
-        githubRepositoryFullName: input.githubRepositoryFullName,
-        githubDefaultBranch: input.githubDefaultBranch,
-        commitSha: input.commitSha,
-        path: input.path,
-        webhookDeliveryId: input.webhookDeliveryId,
-        ...(input.resolvedPromptPartials === undefined
-          ? {}
-          : {
-              partials: resolvedPromptPartialsEvidence(input.resolvedPromptPartials),
-            }),
-      },
-      rawYaml: input.rawYaml,
+      sourceEvidence: addBundleEvidence(
+        {
+          kind: "github",
+          githubConnectionId: input.githubConnectionId,
+          githubRepositoryId: input.githubRepositoryId,
+          githubRepositoryFullName: input.githubRepositoryFullName,
+          githubDefaultBranch: input.githubDefaultBranch,
+          commitSha: input.commitSha,
+          path: HUB_RESOURCE_PATH,
+          webhookDeliveryId: input.webhookDeliveryId,
+        },
+        bundle,
+      ),
+      rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
       normalizedConfiguration: prepared.normalizedConfiguration,
       ...(prepared.validationErrors === undefined
         ? {}
@@ -188,6 +208,19 @@ export class ProjectConfigurationStore {
     );
     if (candidate === undefined) throw new Error("configuration revision not found");
     const configuration = parseProjectConfiguration(candidate);
+    const bundleFiles = revisionBundleFiles(candidate);
+    if (bundleFiles.length === 0) {
+      throw new Error("configuration revision has no authored bundle");
+    }
+    const bundle = compileHubBundle(bundleFiles);
+    const validationErrors = await validateNamedAgents(
+      configuration,
+      bundle.agentValidationTargets,
+      this.daemonAgentValidator,
+    );
+    if (validationErrors !== undefined) {
+      throw new ConfigurationActivationValidationError(validationErrors);
+    }
     const routes = await compileTriggerRoutes(this.database, this.projectId, configuration);
     const revision = await this.database.activateProjectConfigurationRevision(
       this.projectId,
@@ -230,9 +263,12 @@ export class ProjectConfigurationStore {
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
     const active = await this.database.findActiveProjectConfiguration(this.projectId);
     if (active === undefined) throw new Error("active configuration not found");
-    const formattingPreserved = active.rawYaml !== null;
+    const files = revisionBundleFiles(active);
+    if (files.length === 0) throw new Error("active configuration has no authored bundle");
+    const bundle = compileHubBundle(files);
     const rawYaml =
-      active.rawYaml ?? dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
+      bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ??
+      dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
     const configuration = parseProjectConfiguration(active);
     const routes = await compileTriggerRoutes(this.database, this.projectId, configuration);
     const revision = await this.database.switchProjectConfigurationToManual({
@@ -241,8 +277,7 @@ export class ProjectConfigurationStore {
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
       contentHash: compiledConfigurationHash(configuration),
-      formattingPreserved,
-      promptPartials: revisionPromptPartials(active),
+      bundle: { authoredHash: bundle.authoredHash, files: bundle.files },
       routes,
     });
     return { revision, configuration: parseProjectConfiguration(revision) };
@@ -266,56 +301,103 @@ function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProje
   return { environments, triggers: configuration.triggers };
 }
 
-async function prepareRevision(
+async function prepareCompiledRevision(
   database: Database,
   projectId: string,
-  rawConfiguration: unknown,
-  resolvedPromptPartials?: ResolvedPromptPartials,
-): Promise<PreparedRevision> {
-  const compiled = await compileConfiguration(
-    database,
-    projectId,
-    rawConfiguration,
-    resolvedPromptPartials,
-  );
+  configuration: CompiledHubConfig,
+  agentValidationTargets: readonly HubBundleAgentValidationTarget[],
+  daemonAgentValidator: DaemonAgentConfigurationValidator | undefined,
+): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
+  const compiled = await resolveCompiledConfiguration(database, projectId, configuration);
   if (!compiled.success) {
-    if (compiled.kind === "compiled") {
-      return {
-        kind: "compiled",
-        normalizedConfiguration: compiled.configuration,
-        contentHash: compiledConfigurationHash(compiled.configuration),
-        validationErrors: compiled.validationErrors ?? {
-          formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
-        },
-      };
-    }
     return {
-      kind: "raw",
-      normalizedConfiguration: rawConfiguration,
-      contentHash: rawConfigurationHash(rawConfiguration),
-      validationErrors: compiled.validationErrors,
+      kind: "compiled",
+      normalizedConfiguration: compiled.configuration,
+      contentHash: compiledConfigurationHash(compiled.configuration),
+      validationErrors: compiled.validationErrors ?? {
+        formErrors: [`unresolved organization resources: ${compiled.missing.join(", ")}`],
+      },
     };
   }
+  const validationErrors = await validateNamedAgents(
+    compiled.configuration,
+    agentValidationTargets,
+    daemonAgentValidator,
+  );
   return {
     kind: "compiled",
     normalizedConfiguration: compiled.configuration,
     contentHash: compiledConfigurationHash(compiled.configuration),
+    ...(validationErrors === undefined ? {} : { validationErrors }),
   };
 }
 
-type PreparedRevision =
-  | {
-      kind: "compiled";
-      normalizedConfiguration: CompiledHubConfig;
-      contentHash: string;
-      validationErrors?: unknown;
-    }
-  | {
-      kind: "raw";
-      normalizedConfiguration: unknown;
-      contentHash: string;
-      validationErrors: unknown;
+export class ConfigurationActivationValidationError extends Error {
+  constructor(readonly validationErrors: ConfigurationValidationErrors) {
+    super("configuration is not valid for the selected daemon");
+    this.name = "ConfigurationActivationValidationError";
+  }
+}
+
+async function validateNamedAgents(
+  configuration: CompiledProjectConfiguration,
+  targets: readonly HubBundleAgentValidationTarget[],
+  validator: DaemonAgentConfigurationValidator | undefined,
+): Promise<ConfigurationValidationErrors | undefined> {
+  if (targets.length === 0) return undefined;
+  const daemonIdByEnvironment = new Map(
+    configuration.environments.flatMap((environment) =>
+      environment.kind === "daemon" ? [[environment.name, environment.daemonId] as const] : [],
+    ),
+  );
+  if (validator === undefined) {
+    return {
+      formErrors: [],
+      issues: [
+        {
+          path: [HUB_RESOURCE_PATH, "agents"],
+          message: "the selected daemon provider-validation capability is unavailable",
+        },
+      ],
     };
+  }
+  const validations: Array<Promise<readonly { path: (string | number)[]; message: string }[]>> = [];
+  for (const { name, agent, environmentNames } of targets) {
+    for (const environmentName of environmentNames) {
+      const daemonId = daemonIdByEnvironment.get(environmentName);
+      if (daemonId === undefined) continue;
+      validations.push(
+        validator.validateAgentConfiguration(daemonId, agent).then(
+          (result) =>
+            result.valid
+              ? []
+              : result.issues.map((entry) => ({
+                  path: [HUB_RESOURCE_PATH, "agents", name, ...entry.path],
+                  message: entry.message,
+                })),
+          (error: unknown) => [
+            {
+              path: [HUB_RESOURCE_PATH, "agents", name],
+              message:
+                error instanceof Error
+                  ? `selected daemon could not validate this agent: ${error.message}`
+                  : "selected daemon could not validate this agent",
+            },
+          ],
+        ),
+      );
+    }
+  }
+  const issues = (await Promise.all(validations)).flat();
+  return issues.length === 0 ? undefined : { formErrors: [], issues };
+}
+
+interface PreparedRevision {
+  kind: "compiled";
+  normalizedConfiguration: CompiledHubConfig;
+  contentHash: string;
+  validationErrors?: unknown;
+}
 
 type CompileConfigurationResult =
   | { success: true; configuration: CompiledProjectConfiguration }
@@ -325,34 +407,13 @@ type CompileConfigurationResult =
       configuration: CompiledHubConfig;
       missing: string[];
       validationErrors?: unknown;
-    }
-  | {
-      success: false;
-      kind: "raw";
-      missing: string[];
-      validationErrors: unknown;
     };
 
-async function compileConfiguration(
+async function resolveCompiledConfiguration(
   database: Database,
   projectId: string,
-  rawConfiguration: unknown,
-  resolvedPromptPartials?: ResolvedPromptPartials,
+  configuration: CompiledHubConfig,
 ): Promise<CompileConfigurationResult> {
-  let configuration: CompiledHubConfig;
-  try {
-    configuration = compileHubConfig(
-      rawConfiguration,
-      resolvedPromptPartials === undefined ? {} : { resolvedPromptPartials },
-    );
-  } catch (error) {
-    return {
-      success: false,
-      kind: "raw",
-      missing: [],
-      validationErrors: formatConfigurationError(error),
-    };
-  }
   const project = await database.findProjectById(projectId);
   if (project === undefined) {
     return { success: false, kind: "compiled", missing: ["project"], configuration };

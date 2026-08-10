@@ -7,6 +7,7 @@ import type { Duplex } from "node:stream";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
 import { Client } from "pg";
+import { dump } from "js-yaml";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { createHubApplication, type HubRuntime } from "../../app.js";
@@ -14,6 +15,7 @@ import { createFetchServer } from "../../http/node-server.js";
 import { startApplication, stopApplication } from "../../server/runtime.js";
 import {
   HubExecutionAgentCreateRequestSchema,
+  HubExecutionAgentValidateRequestSchema,
   HubExecutionControlRequestSchema,
   type HubExecutionControlAction,
   type HubExecutionAgentSnapshot,
@@ -57,6 +59,8 @@ import {
   type ExecutionAuthority,
 } from "../../execution-authority/index.js";
 import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+import type { HubBundleFile } from "../../config/bundle.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -99,6 +103,7 @@ const ExecutionSessionRequestSchema = z.object({
   type: z.literal("session"),
   message: z.discriminatedUnion("type", [
     HubExecutionAgentCreateRequestSchema,
+    HubExecutionAgentValidateRequestSchema,
     HubExecutionControlRequestSchema,
   ]),
 });
@@ -220,6 +225,67 @@ export class HubHarness {
     const daemon = await this.connectedDaemon.enroll(issued.token);
     await this.connectedDaemon.connect(daemon);
     return daemon.daemonId;
+  }
+
+  async renameConnectedDaemon(slug: string): Promise<void> {
+    const daemon = this.requireDaemon();
+    const renamed = await this.requireDatabase().renameDaemonForOrganization(
+      HUB_ORGANIZATION_ID,
+      daemon.daemonId,
+      slug,
+    );
+    if (renamed === undefined || renamed.status === "slug_conflict") {
+      throw new Error(`could not rename daemon to ${slug}`);
+    }
+  }
+
+  async seedSlackWorkspace(teamId: string, slug = "paseo"): Promise<string> {
+    if (this.postgres === undefined) throw new Error("Postgres is unavailable");
+    const id = "00000000-0000-4000-8000-0000000000c1";
+    const client = new Client({ connectionString: this.postgres.getConnectionUri() });
+    await client.connect();
+    await client.query(
+      `insert into slack_connections
+         (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+       values ($1, $2, $3, $4, 'Paseo', 'UBOT', 'xoxb-test', $5)
+       on conflict (team_id) do nothing`,
+      [id, HUB_ORGANIZATION_ID, teamId, slug, JSON.stringify(["app_mentions:read", "chat:write"])],
+    );
+    await client.end();
+    return id;
+  }
+
+  async seedCurrentProjectResources(): Promise<string> {
+    const slackId = await this.seedSlackWorkspace("paseo");
+    if (this.postgres === undefined) throw new Error("Postgres is unavailable");
+    const client = new Client({ connectionString: this.postgres.getConnectionUri() });
+    await client.connect();
+    const githubId = "00000000-0000-4000-8000-0000000000c2";
+    await client.query(
+      `insert into discord_connections
+         (id, organization_id, guild_id, slug, guild_name)
+       values ('00000000-0000-4000-8000-0000000000c3', $1, 'paseo', 'paseo', 'Paseo')
+       on conflict (guild_id) do nothing`,
+      [HUB_ORGANIZATION_ID],
+    );
+    await client.query(
+      `insert into github_connections
+         (id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
+       values ($1, $2, 9001, 'getpaseo', 'getpaseo', 'getpaseo', 'Organization', 'active')
+       on conflict (installation_id) do nothing`,
+      [githubId, HUB_ORGANIZATION_ID],
+    );
+    await client.query(
+      `insert into github_repositories
+         (organization_id, connection_id, repository_id, full_name, default_branch)
+       values
+         ($1, $2, 9101, 'getpaseo/hub', 'main'),
+         ($1, $2, 9102, 'getpaseo/paseo', 'main')
+       on conflict (connection_id, repository_id) do nothing`,
+      [HUB_ORGANIZATION_ID, githubId],
+    );
+    await client.end();
+    return slackId;
   }
 
   async connectWithEnrollmentReplay(): Promise<{
@@ -598,6 +664,7 @@ export class HubHarness {
       mcpServers["hub"]["headers"] = { Authorization: "Bearer <private>" };
     }
     return {
+      provider: agent["provider"],
       modeId: agent["modeId"],
       cwd: agent["cwd"],
       prompt: agent["prompt"],
@@ -826,6 +893,26 @@ export class HubHarness {
     const execution = await this.requireDatabase().findAgentExecutionById(id);
     if (!execution) throw new Error("Execution does not exist");
     return execution;
+  }
+
+  async workflowExecutionState(id: string) {
+    const execution = await this.execution(id);
+    const step =
+      execution.workflowStepRunId === null
+        ? undefined
+        : await this.requireDatabase().findWorkflowStepRunById(execution.workflowStepRunId);
+    const run =
+      step === undefined
+        ? undefined
+        : await this.requireDatabase().findTriggerRunById(step.triggerRunId);
+    return {
+      executionStatus: execution.status,
+      stepStatus: step?.status,
+      stepOutput: step?.output,
+      stepFailure: step?.failureReason,
+      runStatus: run?.status,
+      runFailure: run?.outcome === "accepted" ? run.failureReason : undefined,
+    };
   }
 
   async agentBecomesIdle(executionId: string, agentId: string): Promise<Date> {
@@ -1061,13 +1148,23 @@ export class HubHarness {
     yaml: string;
     auth?: "valid" | "missing" | "wrong";
   }): Promise<{ status: number; versionId?: string; validationErrors?: unknown }> {
+    return this.installBundle({
+      files: configurationBundleFixture(input.yaml),
+      ...(input.auth === undefined ? {} : { auth: input.auth }),
+    });
+  }
+
+  async installBundle(input: {
+    files: readonly HubBundleFile[];
+    auth?: "valid" | "missing" | "wrong";
+  }): Promise<{ status: number; versionId?: string; validationErrors?: unknown }> {
     const headers = machineHeaders(input.auth ?? "valid");
     const response = await fetch(`${this.origin}/api/v1/configurations/install`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({
         projectSlug: HUB_PROJECT_SLUG,
-        yaml: input.yaml,
+        files: input.files,
       }),
     });
     const body = z
@@ -1075,6 +1172,7 @@ export class HubHarness {
         versionId: z.string().optional(),
         error: z.string().optional(),
         code: z.string().optional(),
+        issues: z.unknown().optional(),
       })
       .passthrough()
       .parse(await response.json());
@@ -1092,6 +1190,7 @@ export class HubHarness {
       status: response.status,
       ...(body.versionId === undefined ? {} : { versionId: body.versionId }),
       ...(errorCode === undefined ? {} : { error: errorCode }),
+      ...(body.issues === undefined ? {} : { issues: body.issues }),
       ...(validationErrors === undefined || validationErrors === null ? {} : { validationErrors }),
     };
   }
@@ -1153,6 +1252,37 @@ export class HubHarness {
     });
   }
 
+  async deliverCurrentProjectSlackMention(connectionId: string): Promise<Response> {
+    return fetch(`${this.origin}/test/trigger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        organizationId: HUB_ORGANIZATION_ID,
+        projectId: HUB_PROJECT_ID,
+        connectionId,
+        resourceId: "paseo",
+        source: "slack.mention",
+        deliveryId: "current-project-slack-1",
+        receivedAt: "2026-08-10T10:00:00.000Z",
+        payload: {
+          type: "mention",
+          id: "Ev-current-project-1",
+          teamId: "paseo",
+          appId: "A1",
+          channelId: "C1",
+          messageTs: "1700000000.000100",
+          threadTs: "1700000000.000001",
+          eventTs: "1700000000.000100",
+          eventTime: 1_700_000_001,
+          content: "<@UBOT> investigate the routing failure",
+          author: { id: "maintainer" },
+          createdAt: "2023-11-14T22:13:20.100Z",
+          attachments: [],
+        },
+      }),
+    });
+  }
+
   async activeConfiguration() {
     const current = await this.requireDatabase().findActiveProjectConfiguration(HUB_PROJECT_ID);
     return current === undefined ? null : { id: current.id, version: current.version };
@@ -1173,7 +1303,7 @@ export class HubHarness {
         body: JSON.stringify({
           organizationId,
           projectSlug: HUB_PROJECT_SLUG,
-          yaml: this.manualConfigurationYaml(),
+          files: configurationBundleFixture(this.manualConfigurationYaml()),
         }),
       }),
       fetch(`${this.origin}/api/v1/manual-runs`, {
@@ -1370,29 +1500,30 @@ export class HubHarness {
       scopes: ["hub.execution.*"],
       now: new Date(),
     });
-    const config = await store.insertManualRevision({
-      rawYaml: null,
-      rawConfiguration: {
-        environments: [
-          { name: "test", kind: "daemon", daemon: "daemon-00000000", cwd: "/workspace" },
-        ],
-        triggers: ["discord-ping", "first", "second", "member-0", "member-1"].map((name) => ({
-          name,
-          on: "discord.mention",
-          max_runtime: "2h",
-          filters: { from_users: ["test-user"] },
-          steps: [
-            {
-              id: "discord-step",
-              environment: "test",
-              max_runtime: "1h",
-              idle_timeout: "5m",
-              agent: { provider: "opencode", mode: "full-access" },
-              prompt: [{ text: "Reply pong." }],
-            },
+    const config = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump({
+          environments: [
+            { name: "test", kind: "daemon", daemon: "daemon-00000000", cwd: "/workspace" },
           ],
-        })),
-      },
+          triggers: ["discord-ping", "first", "second", "member-0", "member-1"].map((name) => ({
+            name,
+            on: "discord.mention",
+            max_runtime: "2h",
+            filters: { from_users: ["test-user"] },
+            steps: [
+              {
+                id: "discord-step",
+                environment: "test",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "opencode", mode: "full-access" },
+                prompt: [{ text: "Reply pong." }],
+              },
+            ],
+          })),
+        }),
+      ),
       userId: null,
       sourceEvidence: { kind: "admin-seed", userId: HUB_USER_ID },
     });
@@ -1410,6 +1541,12 @@ export class HubHarness {
       type: "discord.reply",
       tool: replyOutputTool,
       available: outputContextProvider("discord"),
+      execute: async () => undefined,
+    });
+    registry.register({
+      type: "slack.reply",
+      tool: replyOutputTool,
+      available: outputContextProvider("slack"),
       execute: async () => undefined,
     });
     const application = createHubApplication({
@@ -2198,6 +2335,13 @@ class TestDaemon {
     const envelope = ExecutionSessionRequestSchema.safeParse(JSON.parse(readText(data)));
     if (!envelope.success) return;
     const request = envelope.data.message;
+    if (request.type === "hub.execution.agent.validate.request") {
+      this.send({
+        type: "hub.execution.agent.validate.response",
+        payload: { requestId: request.requestId, valid: true, issues: [], error: null },
+      });
+      return;
+    }
     if (request.type === "hub.execution.control.request") {
       this.controls.push(request.action);
       this.controlActionsByExecution.set(request.executionId, request.action);

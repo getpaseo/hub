@@ -126,6 +126,31 @@ export const HubExecutionAgentCreateRequestSchema = z.object({
   worktree: WorktreeTargetSchema.optional(),
 });
 
+export const HubExecutionAgentValidateRequestSchema = z.object({
+  type: z.literal("hub.execution.agent.validate.request"),
+  requestId: z.string(),
+  provider: z.string(),
+  model: z.string().optional(),
+  modeId: z.string().optional(),
+  thinkingOptionId: z.string().optional(),
+  providerOptions: z.record(z.string(), JsonValueSchema).optional(),
+});
+
+export const HubExecutionAgentValidateResponseSchema = z.object({
+  type: z.literal("hub.execution.agent.validate.response"),
+  payload: z.object({
+    requestId: z.string(),
+    valid: z.boolean(),
+    issues: z.array(
+      z.object({
+        path: z.array(z.union([z.string(), z.number()])),
+        message: z.string(),
+      }),
+    ),
+    error: z.string().nullable(),
+  }),
+});
+
 export const HubExecutionAgentCreateResponseSchema = z.object({
   type: z.literal("hub.execution.agent.create.response"),
   payload: z.object({
@@ -217,6 +242,7 @@ export const HubExecutionOutboundSchema = z.object({
     HubExecutionAgentUpdateSchema,
     HubExecutionAgentStreamSchema,
     HubExecutionControlResponseSchema,
+    HubExecutionAgentValidateResponseSchema,
     RpcErrorSchema,
   ]),
 });

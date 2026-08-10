@@ -16,7 +16,7 @@ permissions:
 # companion PR creator commits it. Source-built jobs deliberately fail until it
 # is one exact 40-character SHA; mutable refs and repository variables are forbidden.
 env:
-  PASEO_E2E_COMMIT: f0eb7cea4b97243cd8976e64bf5948c27445fb16
+  PASEO_E2E_COMMIT: 5f127d1b4a2c8d98fa18ef2b9c82309ab0d39750
 
 jobs:
   typecheck:
@@ -210,6 +210,9 @@ jobs:
 
       - name: Install Hub dependencies
         run: npm ci
+
+      - name: Install provider CLIs for bundle validation
+        run: npm install -g @anthropic-ai/claude-code@2.1.226 @openai/codex@0.144.0
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

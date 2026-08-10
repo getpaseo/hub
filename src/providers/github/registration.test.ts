@@ -4,17 +4,27 @@ import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import {
+  createActiveProjectConfiguration,
+  enrollTestDaemon,
+  TEST_DAEMON_SLUG,
+} from "../../test-utils/project-configuration.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
     const database = createMemoryDatabase();
-    const { project, revision: initial } = await createActiveProjectConfiguration(database, {
-      environments: [{ name: "runner", kind: "docker", image: "paseo/initial" }],
+    await enrollTestDaemon(database);
+    const {
+      project,
+      revision: initial,
+      store,
+    } = await createActiveProjectConfiguration(database, {
+      environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
       triggers: [],
     });
     await database.setProjectGitHubConfigurationSource({
@@ -70,8 +80,7 @@ describe("GitHub registration", () => {
         receiptId: `receipt-${input.deliveryId}`,
       });
     const configuration = new RegistrationConfigurationFake({
-      "valid-sha":
-        "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
+      "valid-sha": `environments:\n  - name: runner\n    kind: daemon\n    daemon: ${TEST_DAEMON_SLUG}\n    cwd: /repo\ntriggers:\n  - name: noop\n    on: manual.run\n    max_runtime: 1h\n    steps:\n      - id: work\n        environment: runner\n        max_runtime: 10m\n        idle_timeout: 1m\n        agent: { provider: test }\n        prompt: [{ text: noop }]`,
       "invalid-sha": "environments: []\ntriggers: invalid",
     });
     const registration = createGitHubRegistration({
@@ -88,6 +97,10 @@ describe("GitHub registration", () => {
         deleteReaction: () => Promise.resolve(),
       },
     });
+    registration.triggerProviders[0]?.({
+      configurationStoreForProject: () => store,
+      connectionsForProject: () => async () => "unused",
+    });
 
     await configuration.push(registration, "valid-sha", "push-valid");
     const active = await database.findActiveProjectConfiguration(project.id);
@@ -96,6 +109,12 @@ describe("GitHub registration", () => {
     assert.equal((await database.findActiveProjectConfiguration(project.id))?.id, active?.id);
     assert.deepEqual(configuration.reads, [
       { installationId: 42, repositoryId: 9001, commitSha: "valid-sha", path: ".paseo/hub.yml" },
+      {
+        installationId: 42,
+        repositoryId: 9001,
+        commitSha: "valid-sha",
+        path: ".paseo/workflows/noop.yml",
+      },
       { installationId: 42, repositoryId: 9001, commitSha: "invalid-sha", path: ".paseo/hub.yml" },
     ]);
     assert.equal(
@@ -490,12 +509,31 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   readDefaultBranchHead() {
     return Promise.resolve(this.head);
   }
+  listFilesAtCommit(input: { commitSha: string }) {
+    const yaml = this.files[input.commitSha];
+    if (yaml === undefined) return Promise.resolve([]);
+    try {
+      return Promise.resolve(
+        configurationBundleFixture(yaml).map(({ path }) => ({ path, kind: "file" as const })),
+      );
+    } catch {
+      return Promise.resolve([{ path: ".paseo/hub.yml", kind: "file" as const }]);
+    }
+  }
   readFileAtCommit(input: { repositoryId: number; commitSha: string; path: string }) {
     this.reads.push(input);
     const rawYaml = this.files[input.commitSha];
-    return Promise.resolve(
-      rawYaml === undefined ? undefined : { kind: "file" as const, content: rawYaml },
-    );
+    let content: string | undefined;
+    if (rawYaml !== undefined) {
+      try {
+        content = configurationBundleFixture(rawYaml).find(
+          ({ path }) => path === input.path,
+        )?.content;
+      } catch {
+        content = input.path === ".paseo/hub.yml" ? rawYaml : undefined;
+      }
+    }
+    return Promise.resolve(content === undefined ? undefined : { kind: "file" as const, content });
   }
   async push(
     registration: ReturnType<typeof createGitHubRegistration>,

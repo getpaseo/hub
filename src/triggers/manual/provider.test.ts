@@ -25,7 +25,7 @@ describe("manual invocation provider", () => {
               environment: "runner",
               max_runtime: "10m",
               idle_timeout: "1m",
-              agent: { provider: "${{ paseo.inputs.agent }}" },
+              agent: { provider: "codex" },
               prompt: [{ text: "Request: ${{ paseo.prompt }}" }],
             },
           ],

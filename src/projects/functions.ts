@@ -40,8 +40,7 @@ const configurationRepositorySchema = projectScopeSchema.extend({
   repositoryId: z.number().int().positive(),
 });
 const manualConfigurationSchema = projectScopeSchema.extend({
-  rawYaml: z.string().max(1_048_576),
-  partials: z
+  files: z
     .array(
       z.object({
         path: z.string().min(1).max(MAX_PROMPT_PARTIAL_PATH_LENGTH),
@@ -133,10 +132,7 @@ export const saveManualConfiguration = createServerFn({ method: "POST" })
   .handler(
     async ({ data }): Promise<Result<ManualConfigurationSaveResult>> =>
       commandResult(data, (dashboard) =>
-        dashboard.saveManualConfiguration(getRequest(), data, {
-          rawYaml: data.rawYaml,
-          partials: data.partials,
-        }),
+        dashboard.saveManualConfiguration(getRequest(), data, { files: data.files }),
       ),
   );
 
