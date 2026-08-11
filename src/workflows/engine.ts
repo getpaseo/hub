@@ -84,6 +84,7 @@ export class DurableWorkflowEngine {
   private workerTimer: NodeJS.Timeout | undefined;
   private processing: Promise<void> | undefined;
   private terminalNotificationProcessing: Promise<void> | undefined;
+  private terminalNotificationRecoveryRequested = false;
   private stopped = false;
 
   constructor(private readonly options: DurableWorkflowEngineOptions) {
@@ -655,14 +656,25 @@ export class DurableWorkflowEngine {
 
   private kickTerminalNotificationRecovery(): void {
     if (this.options.database === null || this.stopped) return;
+    this.terminalNotificationRecoveryRequested = true;
     if (this.terminalNotificationProcessing !== undefined) return;
-    this.terminalNotificationProcessing = this.recoverPendingWorkflowRunTerminalNotifications()
+    this.terminalNotificationProcessing = this.recoverRequestedWorkflowRunTerminalNotifications()
       .catch((error: unknown) => {
         this.logger.error({ err: error }, "workflow terminal notification recovery failed");
       })
       .finally(() => {
         this.terminalNotificationProcessing = undefined;
+        if (this.terminalNotificationRecoveryRequested) {
+          this.kickTerminalNotificationRecovery();
+        }
       });
+  }
+
+  private async recoverRequestedWorkflowRunTerminalNotifications(): Promise<void> {
+    do {
+      this.terminalNotificationRecoveryRequested = false;
+      await this.recoverPendingWorkflowRunTerminalNotifications();
+    } while (this.terminalNotificationRecoveryRequested && !this.stopped);
   }
 
   private async recoverPendingWorkflowRunTerminalNotifications(): Promise<void> {

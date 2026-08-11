@@ -292,6 +292,48 @@ describe("durable multi-step workflow engine", () => {
     );
   });
 
+  it("does not lose a terminal notification requested during an empty recovery pass", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: allSkippedConfiguration() });
+    let releaseInitialClaim!: () => void;
+    const initialClaimRelease = new Promise<void>((resolve) => {
+      releaseInitialClaim = resolve;
+    });
+    let markInitialClaimStarted!: () => void;
+    const initialClaimStarted = new Promise<void>((resolve) => {
+      markInitialClaimStarted = resolve;
+    });
+    const controlledDatabase = delayFirstEmptyTerminalClaim(
+      fixture.database,
+      markInitialClaimStarted,
+      initialClaimRelease,
+    );
+    const delivered: string[] = [];
+    const { handler, engine } = engineFor(
+      { ...fixture, database: controlledDatabase },
+      [],
+      undefined,
+      undefined,
+      async (run) => {
+        delivered.push(run.id);
+      },
+    );
+
+    await handler(fixture.trigger("run"));
+    const processing = engine.processAvailable();
+    await initialClaimStarted;
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    await waitUntil(
+      async () => (await fixture.database.findTriggerRunById(run.id))?.status === "succeeded",
+    );
+    releaseInitialClaim();
+    await processing;
+    await waitUntil(() => Promise.resolve(delivered.length === 1));
+
+    assert.deepEqual(delivered, [run.id]);
+  });
+
   it("keeps processing ready wakeups while a terminal provider hook is held", async () => {
     const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
     let releaseTerminalHook: (() => void) | undefined;
@@ -1909,6 +1951,39 @@ async function settlesQuickly<T>(promise: Promise<T>): Promise<boolean> {
     promise.then(() => true),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 25)),
   ]);
+}
+
+async function waitUntil(observation: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await observation()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for workflow state");
+}
+
+function delayFirstEmptyTerminalClaim(
+  database: Database,
+  markStarted: () => void,
+  release: Promise<void>,
+): Database {
+  let firstClaim = true;
+  return new Proxy(database, {
+    get(target, property) {
+      if (property === "claimPendingWorkflowRunTerminalNotification") {
+        return async (now: Date, leaseMs: number) => {
+          if (firstClaim) {
+            firstClaim = false;
+            markStarted();
+            await release;
+            return undefined;
+          }
+          return target.claimPendingWorkflowRunTerminalNotification(now, leaseMs);
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return value;
+    },
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
