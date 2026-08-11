@@ -1,15 +1,15 @@
 import { test } from "./app.js";
 
-test("operator bootstraps, replaces the temporary password, and manages an API key", async ({
-  hub,
-}) => {
+test("operator bootstraps and replaces the temporary password", async ({ hub }) => {
   const owner = {
     name: "Bootstrap Owner",
     email: "bootstrap-owner@example.com",
     password: "temporary-bootstrap-password",
   };
   await hub.proveBootstrapJourney(owner, "Bootstrap Organization", "permanent-owner-password");
+});
 
+test("operator manages an API key", async ({ hub }) => {
   await hub.signUpAs("api-owner", {
     name: "API Owner",
     email: "api-owner@example.com",
