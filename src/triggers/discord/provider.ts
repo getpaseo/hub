@@ -48,6 +48,7 @@ export interface DiscordMaterializedMessage {
 
 export interface DiscordMaterializedContext {
   discord: {
+    referenced_message: DiscordMaterializedMessage | null;
     thread: {
       id: string;
       parent_channel_id: string | null;
@@ -170,13 +171,13 @@ export function createDiscordTriggerProvider(options: {
     },
     async materializeContext(launch) {
       const event = launch.triggerContext.event.discord;
-      if (event.trigger_message.thread === null) {
-        return { discord: { thread: null } };
-      }
-      const messages = await options.bot.readThreadMessages({
-        channelId: event.trigger_message.thread.id,
-        beforeMessageId: event.trigger_message.id,
-      });
+      const messages =
+        event.trigger_message.thread === null
+          ? []
+          : await options.bot.readThreadMessages({
+              channelId: event.trigger_message.thread.id,
+              beforeMessageId: event.trigger_message.id,
+            });
       const contextMessages = await Promise.all(
         messages.map((message) =>
           materializeDiscordMessage(
@@ -189,12 +190,22 @@ export function createDiscordTriggerProvider(options: {
           ),
         ),
       );
+      const referencedMessage = await materializeReferencedMessage(
+        event.trigger_message.referenced_message,
+        messages,
+        contextMessages,
+        launch,
+        options.bot,
+        options.attachments,
+        event.connection_id,
+      );
       return {
         discord: {
-          thread: {
-            ...event.trigger_message.thread,
-            messages: contextMessages,
-          },
+          referenced_message: referencedMessage,
+          thread:
+            event.trigger_message.thread === null
+              ? null
+              : { ...event.trigger_message.thread, messages: contextMessages },
         },
       };
     },
@@ -234,6 +245,39 @@ export function createDiscordTriggerProvider(options: {
       return reactionState;
     },
   };
+}
+
+async function materializeReferencedMessage(
+  reference: DiscordMergeMessage["referenced_message"],
+  sourceMessages: NormalizedDiscordContextMessage[],
+  materializedMessages: DiscordMaterializedMessage[],
+  launch: {
+    executionId: string;
+    organizationId: string;
+    providerEventReceiptId: string;
+  },
+  bot: DiscordBotClient,
+  attachments: AttachmentCapabilityRegistry | undefined,
+  connectionId: string | null,
+): Promise<DiscordMaterializedMessage | null> {
+  if (reference === null) return null;
+  const existingIndex = sourceMessages.findIndex(
+    (message) => message.id === reference.id && message.channelId === reference.channel_id,
+  );
+  if (existingIndex !== -1) return materializedMessages[existingIndex]!;
+
+  const message = await bot.readMessage({
+    channelId: reference.channel_id,
+    messageId: reference.id,
+  });
+  return materializeDiscordMessage(
+    message,
+    launch.providerEventReceiptId,
+    launch.organizationId,
+    connectionId,
+    launch.executionId,
+    attachments,
+  );
 }
 
 async function deleteReactionForPhase(

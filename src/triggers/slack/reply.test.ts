@@ -4,13 +4,26 @@ import type { SlackBotClient } from "./client.js";
 import { createSlackReplyExecutor } from "./reply.js";
 
 describe("Slack reply output", () => {
-  it("posts plain text into the originating thread", async () => {
+  it("posts repeated replies into the same originating thread", async () => {
     const client = new RecordingSlackClient();
     const execute = createSlackReplyExecutor({ client });
     await execute({
       agentExecutionId: "execution-1",
       toolType: "slack.reply",
       args: { content: "Done" },
+      outputContext: {
+        provider: "slack",
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1700000000.000001",
+        messageTs: "1700000000.000001",
+      },
+    });
+    await execute({
+      agentExecutionId: "execution-1",
+      toolType: "slack.reply",
+      args: { content: "Still working" },
       outputContext: {
         provider: "slack",
         organizationId: "org-1",
@@ -27,6 +40,13 @@ describe("Slack reply output", () => {
         channelId: "C1",
         threadTs: "1700000000.000001",
         content: "Done",
+      },
+      {
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1700000000.000001",
+        content: "Still working",
       },
     ]);
   });

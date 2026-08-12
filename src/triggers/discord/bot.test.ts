@@ -26,7 +26,7 @@ describe("Discord bot client", () => {
     ]);
   });
 
-  it("starts a thread on the trigger message when replying from a channel", async () => {
+  it("creates one thread and sends repeated conversation replies into it", async () => {
     const channel = new FakeSendableChannel({
       message: new FakeMessage("<@123456789012345678> summarize the release notes and next steps"),
     });
@@ -36,19 +36,60 @@ describe("Discord bot client", () => {
       client: createFakeClient(channel),
     });
 
-    await bot.sendChannelMessage({
+    await Promise.all([
+      bot.sendConversationReply({
+        channelId: "200",
+        threadId: null,
+        messageId: "300",
+        content: "done",
+      }),
+      bot.sendConversationReply({
+        channelId: "200",
+        threadId: null,
+        messageId: "300",
+        content: "more detail",
+      }),
+    ]);
+    await bot.sendConversationReply({
       channelId: "200",
       threadId: null,
       messageId: "300",
-      content: "done",
+      content: "final detail",
     });
 
     assert.deepEqual(channel.sentPayloads, []);
     assert.deepEqual(channel.message?.startedThreads, [
       { name: "summarize the release notes and next steps" },
     ]);
-    assert.deepEqual(channel.message?.thread.sentPayloads, [
+    const createdThread = channel.message?.thread;
+    assert.ok(createdThread);
+    assert.deepEqual(createdThread.sentPayloads, [
       { content: "done", allowedMentions: { parse: [] } },
+      { content: "more detail", allowedMentions: { parse: [] } },
+      { content: "final detail", allowedMentions: { parse: [] } },
+    ]);
+  });
+
+  it("reuses a thread already attached to the triggering channel message", async () => {
+    const existingThread = new FakeSendableChannel();
+    const message = new FakeMessage("question", existingThread);
+    const channel = new FakeSendableChannel({ message });
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(channel),
+    });
+
+    await bot.sendConversationReply({
+      channelId: "200",
+      threadId: null,
+      messageId: "300",
+      content: "existing thread reply",
+    });
+
+    assert.deepEqual(message.startedThreads, []);
+    assert.deepEqual(existingThread.sentPayloads, [
+      { content: "existing thread reply", allowedMentions: { parse: [] } },
     ]);
   });
 
@@ -61,16 +102,23 @@ describe("Discord bot client", () => {
       client: createFakeClient(channel, thread),
     });
 
-    await bot.sendChannelMessage({
+    await bot.sendConversationReply({
       channelId: "200",
       threadId: "207",
       messageId: "300",
       content: "thread reply",
     });
+    await bot.sendConversationReply({
+      channelId: "200",
+      threadId: "207",
+      messageId: "300",
+      content: "second thread reply",
+    });
 
     assert.deepEqual(channel.sentPayloads, []);
     assert.deepEqual(thread.sentPayloads, [
       { content: "thread reply", allowedMentions: { parse: [] } },
+      { content: "second thread reply", allowedMentions: { parse: [] } },
     ]);
   });
 
@@ -121,12 +169,19 @@ class FakeSendableChannel {
 
 class FakeMessage {
   readonly startedThreads: unknown[] = [];
-  readonly thread = new FakeSendableChannel();
 
-  constructor(readonly content: string) {}
+  constructor(
+    readonly content: string,
+    public thread: FakeSendableChannel | null = null,
+  ) {}
+
+  get hasThread(): boolean {
+    return this.thread !== null;
+  }
 
   async startThread(input: unknown): Promise<FakeSendableChannel> {
     this.startedThreads.push(input);
+    this.thread = new FakeSendableChannel();
     return this.thread;
   }
 }
@@ -141,6 +196,9 @@ function createFakeClient(channel: FakeSendableChannel, thread?: FakeSendableCha
         if (channelId === "207" && thread !== undefined) {
           return thread;
         }
+        const attachedThread = channel.message?.thread;
+        if (channelId === "300" && attachedThread !== undefined && attachedThread !== null)
+          return attachedThread;
         assert.equal(channelId, "200");
         return channel;
       },

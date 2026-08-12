@@ -170,7 +170,7 @@ describe("Discord Phase 1 trigger provider", () => {
             threadId: "207",
             parentChannelId: "200",
             attachments: [attachment],
-            referencedMessage: { id: "298", channelId: "200", guildId: "100" },
+            referencedMessage: { id: "299", channelId: "207", guildId: "100" },
           }),
         ),
         connectionId: "22222222-2222-4222-8222-222222222222",
@@ -179,6 +179,7 @@ describe("Discord Phase 1 trigger provider", () => {
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(bot.threadReads, []);
+    assert.deepEqual(bot.messageReads, []);
     assert.equal(
       await database.findAttachmentBySource(
         "11111111-1111-4111-8111-111111111118",
@@ -191,8 +192,8 @@ describe("Discord Phase 1 trigger provider", () => {
     assert.ok(triggerAttachment);
     assert.equal("url" in triggerAttachment, false);
     assert.deepEqual(match.triggerContext.event.discord.trigger_message.referenced_message, {
-      id: "298",
-      channel_id: "200",
+      id: "299",
+      channel_id: "207",
       guild_id: "100",
     });
     assert.deepEqual(match.triggerContext.event.discord.trigger_thread_context, {
@@ -206,6 +207,7 @@ describe("Discord Phase 1 trigger provider", () => {
       triggerContext: match.triggerContext,
     });
     assert.deepEqual(bot.threadReads, [{ channelId: "207", beforeMessageId: "300" }]);
+    assert.deepEqual(bot.messageReads, []);
     const contextAttachment = await database.findAttachmentBySource(
       "11111111-1111-4111-8111-111111111118",
       "discord",
@@ -214,6 +216,23 @@ describe("Discord Phase 1 trigger provider", () => {
     assert.ok(contextAttachment);
     assert.deepEqual(materialized, {
       discord: {
+        referenced_message: {
+          id: "299",
+          content: "see image",
+          author: { id: "401", username: "maintainer", bot: false },
+          channel: { id: "207" },
+          created_at: "2026-05-18T23:59:00.000Z",
+          attachments: [
+            {
+              id: contextAttachment.id,
+              filename: "design.png",
+              content_type: "image/png",
+              size: 42,
+              url: attachments.urlFor(contextAttachment.id, "execution-discord-materialize"),
+            },
+          ],
+          referenced_message: null,
+        },
         thread: {
           id: "207",
           parent_channel_id: "200",
@@ -261,6 +280,65 @@ describe("Discord Phase 1 trigger provider", () => {
     assert.ok(secondUrl);
     assert.notEqual(firstUrl, secondUrl);
     assert.match(secondUrl, /execution-discord-materialize-2/u);
+  });
+
+  it("hydrates the direct message referenced by a channel trigger only on demand", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const referencedMessage = {
+      id: "298",
+      channelId: "200",
+      content: "the original question",
+      author: { id: "401", username: "maintainer", bot: false },
+      createdAt: "2026-05-18T23:59:00.000Z",
+      attachments: [],
+      referencedMessage: null,
+    };
+    const bot = new MemoryDiscordBotClient({
+      selfUserId: "900",
+      messages: [referencedMessage],
+    });
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot,
+    });
+    const match = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          event({ referencedMessage: { id: "298", channelId: "200", guildId: "100" } }),
+        ),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(bot.threadReads, []);
+    assert.deepEqual(bot.messageReads, []);
+
+    const materialized = await provider.materializeContext!({
+      executionId: "execution-discord-reference",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
+      triggerContext: match.triggerContext,
+    });
+
+    assert.deepEqual(bot.threadReads, []);
+    assert.deepEqual(bot.messageReads, [{ channelId: "200", messageId: "298" }]);
+    assert.deepEqual(materialized, {
+      discord: {
+        referenced_message: {
+          id: "298",
+          content: "the original question",
+          author: { id: "401", username: "maintainer", bot: false },
+          channel: { id: "200" },
+          created_at: "2026-05-18T23:59:00.000Z",
+          attachments: [],
+          referenced_message: null,
+        },
+        thread: null,
+      },
+    });
   });
 
   it("does not require attachment capability during Discord ingestion", async () => {

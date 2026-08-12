@@ -1,6 +1,7 @@
 import type { Message } from "discord.js";
 import type {
   DiscordBotClient,
+  DiscordConversationReplyInput,
   DiscordGuildDeleteHandler,
   DiscordPostInput,
   DiscordRawMessageHandler,
@@ -12,6 +13,7 @@ import type { NormalizedDiscordContextMessage } from "./events.js";
 export interface MemoryDiscordBotOptions {
   selfUserId: string;
   threadMessages?: NormalizedDiscordContextMessage[];
+  messages?: NormalizedDiscordContextMessage[];
   threadContextFetchError?: Error;
 }
 
@@ -20,6 +22,7 @@ export class MemoryDiscordBotClient implements DiscordBotClient {
   readonly deletedOwnReactions: DiscordReactionInput[] = [];
   readonly messages: DiscordPostInput[] = [];
   readonly threadReads: Array<{ channelId: string; beforeMessageId: string }> = [];
+  readonly messageReads: Array<{ channelId: string; messageId: string }> = [];
   private readonly handlers = new Set<DiscordRawMessageHandler>();
   private readonly guildDeleteHandlers = new Set<DiscordGuildDeleteHandler>();
   private readonly normalizedHandlers = new Set<(event: NormalizedDiscordMessageEvent) => void>();
@@ -53,6 +56,22 @@ export class MemoryDiscordBotClient implements DiscordBotClient {
 
   async sendChannelMessage(input: DiscordPostInput): Promise<void> {
     this.messages.push(input);
+  }
+
+  async sendConversationReply(input: DiscordConversationReplyInput): Promise<void> {
+    this.messages.push(input);
+  }
+
+  async readMessage(input: {
+    channelId: string;
+    messageId: string;
+  }): Promise<NormalizedDiscordContextMessage> {
+    this.messageReads.push(input);
+    const message = this.options.messages?.find(
+      (candidate) => candidate.channelId === input.channelId && candidate.id === input.messageId,
+    );
+    if (message === undefined) throw new Error(`discord message unavailable: ${input.messageId}`);
+    return message;
   }
 
   async readThreadMessages(input: {
