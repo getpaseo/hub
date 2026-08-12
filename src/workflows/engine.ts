@@ -36,9 +36,11 @@ import {
   ExpressionEvaluationError,
   evaluateExpression,
   expressionPathsInTemplate,
+  renderExecutionTemplate,
   renderExpressionTemplate,
   type ExpressionContext,
 } from "./expression.js";
+import type { WorktreeTarget } from "../config/index.js";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
@@ -476,11 +478,21 @@ export class DurableWorkflowEngine {
     context: ExpressionContext,
     stepRunId: string,
     deadlineAt: Date,
+    executionId: string,
   ): Promise<LaunchMachineIntent | undefined> {
     const database = this.options.database;
     if (database === null) return undefined;
     try {
-      return buildStepIntent(configuration, trigger, step, run, context, stepRunId, deadlineAt);
+      return buildStepIntent(
+        configuration,
+        trigger,
+        step,
+        run,
+        context,
+        stepRunId,
+        deadlineAt,
+        executionId,
+      );
     } catch (error) {
       if (!(error instanceof ExpressionEvaluationError)) throw error;
       const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
@@ -558,6 +570,7 @@ export class DurableWorkflowEngine {
       { ...context, context: materializedContext },
       stepRunId,
       deadlineAt,
+      executionId,
     );
     if (intent === undefined) return undefined;
     if (durableExecutionId(intent) !== executionId) {
@@ -839,6 +852,7 @@ function buildStepIntent(
   context: ExpressionContext,
   stepRunId: string,
   deadlineAt: Date,
+  executionId: string,
 ): LaunchMachineIntent {
   const environmentName = authorityString(
     renderExpressionTemplate(step.environment, context),
@@ -867,7 +881,9 @@ function buildStepIntent(
         daemonId: environment.daemonId,
         authoredSlug: environment.daemon,
         cwd: environment.cwd,
-        ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
+        ...(environment.worktree === undefined
+          ? {}
+          : { worktree: materializeExecutionWorktree(environment.worktree, executionId) }),
       },
       ...(step.env === undefined ? {} : { env: step.env }),
       ...(step.github === undefined ? {} : { github: step.github }),
@@ -983,6 +999,11 @@ function isRecoverablePreHandoffExecution(execution: AgentExecutionRecord): bool
 function authorityString(value: string, field: string): string {
   if (value.length === 0) throw new Error(`${field} resolved to an empty authority`);
   return value;
+}
+
+function materializeExecutionWorktree(worktree: WorktreeTarget, executionId: string) {
+  if (worktree.mode !== "branch-off") return worktree;
+  return { ...worktree, newBranch: renderExecutionTemplate(worktree.newBranch, executionId) };
 }
 
 function inputContext(value: unknown): Readonly<Record<string, JsonPrimitive>> {

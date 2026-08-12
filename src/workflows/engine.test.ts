@@ -28,6 +28,67 @@ import { createDurableWorkflowHandler } from "./engine.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 describe("durable multi-step workflow engine", () => {
+  it.each(["github", "discord"] as const)(
+    "materializes one reusable environment from each %s execution identity before persistence",
+    async (providerName) => {
+      const rawConfiguration = executionWorktreeConfiguration();
+      const fixture = await workflowFixture({ rawConfiguration });
+      const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+      const provider = {
+        ...baseProvider,
+        name: providerName,
+        async match(event) {
+          const [match] = await baseProvider.match(event);
+          assert.ok(match);
+          return fixture.configuration.triggers.map((trigger) => ({
+            ...match,
+            triggerName: trigger.name,
+            triggerContext: { provider: providerName },
+            outputContext: { provider: providerName },
+          }));
+        },
+      } satisfies import("../triggers/index.js").TriggerProvider;
+      const intents: LaunchMachineIntent[] = [];
+      const { handler, engine } = createDurableWorkflowHandler({
+        database: fixture.database,
+        entitlements: fixture.entitlements,
+        providers: [provider],
+        dispatchLaunchMachineIntent: async (intent) => {
+          intents.push(intent);
+          const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+            intent.workflowStepRunId!,
+          );
+          assert.ok(execution);
+          return { execution };
+        },
+      });
+
+      await handler(fixture.trigger("the triggering body"));
+      await engine.processAvailable();
+
+      assert.equal(intents.length, 2);
+      const branches = intents.map((intent) => {
+        assert.equal(intent.environment.worktree?.mode, "branch-off");
+        if (intent.environment.worktree?.mode !== "branch-off") return "";
+        assert.equal(JSON.stringify(intent.environment.worktree).includes("${{"), false);
+        return intent.environment.worktree.newBranch;
+      });
+      assert.equal(new Set(branches).size, 2);
+      for (const intent of intents) {
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        assert.ok(execution);
+        assert.equal(
+          execution.launchIntent?.environment.worktree?.mode === "branch-off"
+            ? execution.launchIntent.environment.worktree.newBranch
+            : undefined,
+          `trigger-${execution.id}`,
+        );
+      }
+    },
+  );
+
   it("materializes ambient context only for the step that authors paseo.context", async () => {
     const fixture = await workflowFixture({ rawConfiguration: contextOptInConfiguration() });
     const prompts: string[] = [];
@@ -1930,6 +1991,34 @@ function terminalRecoveryConfiguration(): Record<string, unknown> {
         ],
       },
     ],
+  };
+}
+
+function executionWorktreeConfiguration(): Record<string, unknown> {
+  const step = (id: string) => ({
+    id,
+    environment: "runner",
+    max_runtime: "10m",
+    idle_timeout: "1m",
+    agent: { provider: "codex" },
+    prompt: [{ text: "Do the work." }],
+  });
+  return {
+    environments: [
+      {
+        name: "runner",
+        kind: "daemon",
+        daemon: "runner",
+        cwd: "/workspace",
+        worktree: { mode: "branch-off", newBranch: "trigger-${{ paseo.execution.id }}" },
+      },
+    ],
+    triggers: ["first", "second"].map((name) => ({
+      name,
+      on: "manual.run",
+      max_runtime: "1h",
+      steps: [step(`work-${name}`)],
+    })),
   };
 }
 

@@ -56,6 +56,62 @@ function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
 }
 
 describe("workflow compiler", () => {
+  it.each([
+    "paseo.event.github.delivery_id",
+    "paseo.prompt",
+    "paseo.context",
+    "paseo.inputs.repo",
+    "values.branch",
+    "steps.prepare.outputs.branch",
+  ])("rejects unsupported newBranch expression %s with field provenance", (expression) => {
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          environments: [
+            {
+              ...environment,
+              worktree: {
+                mode: "branch-off",
+                newBranch: "trigger-${{ " + expression + " }}",
+              },
+            },
+          ],
+        }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.deepEqual(Reflect.get(error, "path"), [
+          "environments",
+          "runner",
+          "worktree",
+          "newBranch",
+        ]);
+        assert.match(
+          error.message,
+          /unsupported path|execution templates support only paseo\.execution\.id paths/iu,
+        );
+        return true;
+      },
+    );
+  });
+
+  it("accepts only the execution-scoped worktree merge value", () => {
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        environments: [
+          {
+            ...environment,
+            worktree: {
+              mode: "branch-off",
+              newBranch: "trigger-${{ paseo.execution.id }}",
+            },
+          },
+        ],
+      }),
+    );
+  });
+
   it("preserves opaque provider options and leaves an omitted mode omitted", () => {
     const sourceOptions = {
       sandbox_workspace_write: {

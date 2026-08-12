@@ -1,7 +1,10 @@
 import type { JsonPrimitive, JsonValue } from "../config/compiler.js";
 
 export type ExpressionPath =
-  | { namespace: "paseo"; path: "prompt" | "context" | ["inputs", string] }
+  | {
+      namespace: "paseo";
+      path: "prompt" | "context" | ["inputs", string] | ["execution", "id"];
+    }
   | { namespace: "steps"; stepId: string; path: readonly string[] }
   | { namespace: "values"; name: string };
 
@@ -22,6 +25,7 @@ export interface ExpressionContext {
   inputs: Readonly<Record<string, JsonPrimitive>>;
   steps: Readonly<Record<string, { status: string; output: unknown }>>;
   values: Readonly<Record<string, Expression>>;
+  executionId?: string;
 }
 
 export class ExpressionSyntaxError extends Error {
@@ -110,15 +114,7 @@ export function parseExpression(source: string): Expression {
       if (next?.kind !== "identifier") throw new ExpressionSyntaxError("expected path segment");
       parts.push(next.value);
     }
-    if (parts[0] === "paseo" && parts[1] === "prompt" && parts.length === 2) {
-      return { kind: "path", value: { namespace: "paseo", path: "prompt" } };
-    }
-    if (parts[0] === "paseo" && parts[1] === "context" && parts.length === 2) {
-      return { kind: "path", value: { namespace: "paseo", path: "context" } };
-    }
-    if (parts[0] === "paseo" && parts[1] === "inputs" && parts.length === 3) {
-      return { kind: "path", value: { namespace: "paseo", path: ["inputs", parts[2]!] } };
-    }
+    if (parts[0] === "paseo") return parsePaseoPath(parts);
     if (parts[0] === "steps" && parts.length >= 4 && parts[2] === "outputs") {
       return {
         kind: "path",
@@ -177,6 +173,22 @@ export function parseExpression(source: string): Expression {
   }
 }
 
+function parsePaseoPath(parts: readonly string[]): Expression {
+  if (parts[1] === "prompt" && parts.length === 2) {
+    return { kind: "path", value: { namespace: "paseo", path: "prompt" } };
+  }
+  if (parts[1] === "context" && parts.length === 2) {
+    return { kind: "path", value: { namespace: "paseo", path: "context" } };
+  }
+  if (parts[1] === "inputs" && parts.length === 3) {
+    return { kind: "path", value: { namespace: "paseo", path: ["inputs", parts[2]!] } };
+  }
+  if (parts[1] === "execution" && parts[2] === "id" && parts.length === 3) {
+    return { kind: "path", value: { namespace: "paseo", path: ["execution", "id"] } };
+  }
+  throw new ExpressionSyntaxError(`unsupported path ${parts.join(".")}`);
+}
+
 export function expressionPaths(expression: Expression): ExpressionPath[] {
   switch (expression.kind) {
     case "literal":
@@ -233,6 +245,31 @@ export function renderExpressionTemplate(template: string, context: ExpressionCo
     cursor = end + 2;
   }
   return result;
+}
+
+export function renderExecutionTemplate(template: string, executionId: string): string {
+  validateExecutionTemplate(template);
+  return renderExpressionTemplate(template, {
+    prompt: "",
+    context: null,
+    inputs: {},
+    steps: {},
+    values: {},
+    executionId,
+  });
+}
+
+export function validateExecutionTemplate(template: string): void {
+  for (const path of expressionPathsInTemplate(template)) {
+    if (
+      path.namespace !== "paseo" ||
+      !Array.isArray(path.path) ||
+      path.path[0] !== "execution" ||
+      path.path[1] !== "id"
+    ) {
+      throw new ExpressionSyntaxError("execution templates support only paseo.execution.id paths");
+    }
+  }
 }
 
 export function expressionPathsInTemplate(template: string): ExpressionPath[] {
@@ -343,6 +380,12 @@ function readPath(path: ExpressionPath, context: ExpressionContext): JsonValue {
   if (path.namespace === "paseo") {
     if (path.path === "prompt") return context.prompt;
     if (path.path === "context") return context.context;
+    if (path.path[0] === "execution") {
+      if (context.executionId === undefined) {
+        throw new ExpressionEvaluationError("execution ID is unavailable");
+      }
+      return context.executionId;
+    }
     return context.inputs[path.path[1]] ?? null;
   }
   if (path.namespace === "values") {
