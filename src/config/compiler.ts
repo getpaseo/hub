@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   expressionPaths,
   parseExpression,
+  validateExecutionTemplate,
   type Expression,
   type ExpressionPath,
 } from "../workflows/expression.js";
@@ -419,6 +420,7 @@ export function compileHubConfig(
   const environments = new Map(
     authored.environments.map((environment) => [environment.name, environment]),
   );
+  validateEnvironmentTemplates(authored.environments);
   const triggers = authored.triggers.map((trigger) =>
     compileTrigger(
       trigger,
@@ -992,6 +994,9 @@ function validateExpressionContract(
         if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
         return;
       }
+      if (reference.path[0] === "execution") {
+        throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
+      }
       const inputName = reference.path[1];
       const input = trigger.inputs[inputName];
       if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
@@ -1108,6 +1113,7 @@ function matchesInputType(value: JsonPrimitive | undefined, type: AuthoredInput[
 }
 
 function validateCompiledContract(config: CompiledHubConfig): void {
+  validateEnvironmentTemplates(config.environments);
   const environmentIds = new Set<string>();
   const environments = new Map<string, CompiledEnvironment>();
   for (const environment of config.environments) {
@@ -1153,6 +1159,18 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     }
     validateExpressionContract(trigger.name, trigger, environments);
     validateTriggerLaunchSecurity(trigger);
+  }
+}
+
+function validateEnvironmentTemplates(
+  environments: readonly (AuthoredEnvironment | CompiledEnvironment)[],
+): void {
+  for (const environment of environments) {
+    if (environment.kind !== "daemon" || environment.worktree?.mode !== "branch-off") continue;
+    const newBranch = environment.worktree.newBranch;
+    compileAt(["environments", environment.name, "worktree", "newBranch"], () => {
+      validateExecutionTemplate(newBranch);
+    });
   }
 }
 
@@ -1266,8 +1284,8 @@ function isExpressionPath(value: unknown): boolean {
     (value["path"] === "prompt" ||
       (Array.isArray(value["path"]) &&
         value["path"].length === 2 &&
-        value["path"][0] === "inputs" &&
-        typeof value["path"][1] === "string"))
+        ((value["path"][0] === "inputs" && typeof value["path"][1] === "string") ||
+          (value["path"][0] === "execution" && value["path"][1] === "id"))))
   );
 }
 

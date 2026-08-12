@@ -234,6 +234,22 @@ describe("Hub configuration bundle", () => {
     );
   });
 
+  it("attributes unsupported worktree expressions to the exact Hub source field", () => {
+    const unsupported = hub.replace(
+      "    cwd: /workspace/paseo",
+      '    cwd: /workspace/paseo\n    worktree:\n      mode: branch-off\n      newBranch: "trigger-${{ paseo.event.github.delivery_id }}"',
+    );
+    assert.throws(
+      () => compileHubBundle(filesWithHub(unsupported)),
+      (error) =>
+        hasBundleIssue(
+          error,
+          ".paseo/hub.yml.environments.paseo.worktree.newBranch",
+          /unsupported path paseo\.event\.github\.delivery_id/iu,
+        ),
+    );
+  });
+
   it("rejects unreferenced partial files by their authored path", () => {
     assert.throws(
       () =>
