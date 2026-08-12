@@ -31,6 +31,7 @@ import type {
   AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import { logProviderEventRouting } from "../triggers/audit.js";
 import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import {
   ExpressionEvaluationError,
@@ -128,6 +129,16 @@ export class DurableWorkflowEngine {
         trigger.providerEventReceiptId,
         dropReason,
       );
+      logProviderEventRouting({
+        source: trigger.source,
+        deliveryId: trigger.deliveryId,
+        receiptId: trigger.providerEventReceiptId,
+        projectId: trigger.projectId,
+        triggerNames: [],
+        acceptedCount: 0,
+        rejectedCount: 0,
+        dropReason,
+      });
       return { providerEventReceiptId: trigger.providerEventReceiptId };
     }
     const createdAt = this.now();
@@ -187,6 +198,15 @@ export class DurableWorkflowEngine {
         if (created.created) await this.deliverWorkflowRunAccepted(created.run);
       }),
     );
+    logProviderEventRouting({
+      source: trigger.source,
+      deliveryId: trigger.deliveryId,
+      receiptId: trigger.providerEventReceiptId,
+      projectId: trigger.projectId,
+      triggerNames: matches.map((match) => match.triggerName),
+      acceptedCount: matches.filter(isAcceptedTriggerProviderMatch).length,
+      rejectedCount: matches.filter((match) => match.invocation.status === "rejected").length,
+    });
     return { providerEventReceiptId: trigger.providerEventReceiptId };
   }
 
@@ -233,6 +253,10 @@ export class DurableWorkflowEngine {
     } catch (error) {
       const reason =
         error instanceof Error ? error.message : "workflow_condition_evaluation_failed";
+      this.logger.error(
+        { err: error, triggerRunId: run.id, stepId: step.id },
+        "workflow condition evaluation failed",
+      );
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
@@ -244,6 +268,10 @@ export class DurableWorkflowEngine {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
+      this.logger.error(
+        { err: error, triggerRunId: run.id, stepId: step.id },
+        "workflow value evaluation failed",
+      );
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
@@ -495,6 +523,10 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       if (!(error instanceof ExpressionEvaluationError)) throw error;
+      this.logger.error(
+        { err: error, triggerRunId: run.id, stepId: step.id },
+        "workflow launch expression evaluation failed",
+      );
       const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return undefined;
@@ -530,6 +562,10 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "trigger_context_unavailable";
+      this.logger.error(
+        { err: error, triggerRunId: run.id, stepId: step.id, executionId },
+        "trigger context materialization failed",
+      );
       const failed = await this.options.database!.failWorkflowRun(
         run.id,
         "failed",
@@ -591,6 +627,10 @@ export class DurableWorkflowEngine {
     } catch (error) {
       const reason =
         error instanceof Error ? error.message : "required output capability unavailable";
+      this.logger.error(
+        { err: error, triggerRunId: run.id, stepId: step.id },
+        "workflow launch intent validation failed",
+      );
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return true;
@@ -611,6 +651,10 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
+      this.logger.error(
+        { err: error, triggerRunId: run.id },
+        "final workflow value evaluation failed",
+      );
       const failed = await database.failWorkflowRun(run.id, "failed", reason);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;

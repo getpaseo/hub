@@ -7,6 +7,7 @@ import {
   callbackConnectionAccess,
   connectionAccess,
   connectionActionFailure,
+  connectionCallbackFailure,
   connectionResult,
   manageConnectionAccess,
   newConnectionState,
@@ -263,8 +264,14 @@ async function completeAuthorization(
     }
     await bindDiscord(options.database, state, access, guild);
     return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "discord_connected");
-  } catch {
-    return connectionResult(options.applicationBaseUrl, returnRoute, "connection_unavailable");
+  } catch (error) {
+    return connectionCallbackFailure({
+      error,
+      provider: "discord",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute,
+    });
   }
 }
 

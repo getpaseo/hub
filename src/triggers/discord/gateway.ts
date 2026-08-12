@@ -2,6 +2,7 @@ import type { Message } from "discord.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
+import { logProviderEventIntake } from "../audit.js";
 import type { DiscordBotClient } from "./bot.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
@@ -120,6 +121,13 @@ async function dispatchMessage(
     receivedAt: new Date(normalizedEvent.createdAt),
     payload: normalizedEvent,
     ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
+  });
+  logProviderEventIntake({
+    provider: "discord",
+    source: "discord.mention",
+    deliveryId: `discord-${normalizedEvent.messageId}`,
+    resourceId: normalizedEvent.guildId,
+    acceptance,
   });
   if (acceptance.status !== "accepted") return;
 

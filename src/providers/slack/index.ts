@@ -4,6 +4,7 @@ import {
   callbackConnectionAccess,
   connectionAccess,
   connectionActionFailure,
+  connectionCallbackFailure,
   connectionResult,
   manageConnectionAccess,
   newConnectionState,
@@ -263,8 +264,14 @@ async function completeAuthorization(
     const installation = await client.exchangeCode(code);
     await bindSlack(options.database, state, access, installation);
     return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "slack_connected");
-  } catch {
-    return connectionResult(options.applicationBaseUrl, returnRoute, "connection_unavailable");
+  } catch (error) {
+    return connectionCallbackFailure({
+      error,
+      provider: "slack",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute,
+    });
   }
 }
 

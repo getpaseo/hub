@@ -8,6 +8,7 @@ import { logger } from "../../logger.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
+import { logProviderEventIntake } from "../audit.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_HEADER_LENGTH = 128;
@@ -65,15 +66,15 @@ export function createWebhookSource(
     try {
       return await handleVerifiedWebhook(verified, options, handlers);
     } catch (error) {
+      logger.error(
+        {
+          err: error,
+          deliveryId: verified.deliveryId,
+          eventType: verified.eventType,
+        },
+        "GitHub webhook handling failed",
+      );
       if (isDatabaseUnavailableError(error)) {
-        logger.error(
-          {
-            err: error,
-            deliveryId: verified.deliveryId,
-            eventType: verified.eventType,
-          },
-          "rejecting webhook because database is unavailable",
-        );
         return Response.json({ error: "database_unavailable" }, { status: 503 });
       }
       throw error;
@@ -98,7 +99,10 @@ async function handleVerifiedWebhook(
 ): Promise<Response> {
   const { body, deliveryId, eventType, signatureHash } = verified;
   const installationId = body.installation?.id;
-  if (typeof installationId !== "number") return new Response("Bad Request", { status: 400 });
+  if (typeof installationId !== "number") {
+    logger.warn({ deliveryId, eventType }, "rejecting webhook without an installation ID");
+    return new Response("Bad Request", { status: 400 });
+  }
 
   if (eventType === "installation" || eventType === "installation_repositories") {
     return handleLifecycle(options, verified, installationId, eventType);
@@ -107,7 +111,7 @@ async function handleVerifiedWebhook(
   const event = normalizeWebhookEvent({ body, deliveryId, eventType });
   if (event === undefined) {
     logger.info({ deliveryId, eventType }, "skipping webhook event without repo or installation");
-    await options.accept({
+    const acceptance = await options.accept({
       installationId,
       deliveryId,
       signatureHash,
@@ -115,6 +119,12 @@ async function handleVerifiedWebhook(
       payload: body,
       receivedAt: new Date(),
       dropReason: "no_trigger_for_source",
+    });
+    logProviderEventIntake({
+      provider: "github",
+      source: `github.${eventType}`,
+      deliveryId,
+      acceptance,
     });
     return new Response("OK", { status: 200 });
   }
@@ -130,6 +140,14 @@ async function handleVerifiedWebhook(
     receivedAt: new Date(event.createdAt),
     ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
+  logProviderEventIntake({
+    provider: "github",
+    source: `github.${eventType}`,
+    deliveryId,
+    repository: event.repo,
+    resourceId: String(event.repositoryId),
+    acceptance,
+  });
   if (eventType === "push" && options.synchronizePush !== undefined) {
     await options.synchronizePush({
       installationId: event.installationId,
@@ -141,7 +159,7 @@ async function handleVerifiedWebhook(
 
   if (acceptance.status !== "accepted") return new Response("OK", { status: 200 });
 
-  return dispatchWebhook(handlers, acceptance.events, verified);
+  return dispatchWebhook(handlers, acceptance.events);
 }
 
 async function verifyWebhookRequest(
@@ -187,12 +205,17 @@ async function verifyWebhookRequest(
   try {
     rawJson = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured));
   } catch {
+    logger.warn(
+      { eventType, deliveryId },
+      "rejecting webhook request because payload is invalid JSON",
+    );
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
 
   const parsedBody = WebhookPayloadSchema.safeParse(rawJson);
 
   if (!parsedBody.success) {
+    logger.warn({ eventType, deliveryId }, "rejecting webhook request because payload is invalid");
     return Response.json(
       { error: "invalid webhook payload", issues: parsedBody.error.format() },
       { status: 400 },
@@ -217,47 +240,27 @@ async function handleLifecycle(
     payload: webhook.body,
     receivedAt: new Date(),
   });
+  logger.info(
+    {
+      provider: "github",
+      source: `github.${webhook.eventType}`,
+      deliveryId: webhook.deliveryId,
+      installationId,
+    },
+    "provider lifecycle event applied",
+  );
   return new Response("OK", { status: 200 });
 }
 
 async function dispatchWebhook(
   handlers: Set<TriggerHandler>,
   triggers: readonly Parameters<TriggerHandler>[0][],
-  webhook: VerifiedWebhook,
 ): Promise<Response> {
-  const { deliveryId, eventType } = webhook;
-  logger.info(
-    {
-      deliveryId,
-      eventType,
-      repo: readRepo(triggers[0]?.payload),
-    },
-    "received webhook event",
+  await Promise.all(
+    triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
   );
 
-  try {
-    await Promise.all(
-      triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
-    );
-  } catch (error) {
-    if (isDatabaseUnavailableError(error)) {
-      logger.error(
-        { err: error, deliveryId, eventType },
-        "rejecting webhook because database is unavailable",
-      );
-      return Response.json({ error: "database_unavailable" }, { status: 503 });
-    }
-
-    throw error;
-  }
-
   return new Response("OK", { status: 200 });
-}
-
-function readRepo(payload: unknown): string | undefined {
-  return typeof payload === "object" && payload !== null && "repo" in payload
-    ? String(payload.repo)
-    : undefined;
 }
 
 export function verifySignature(
