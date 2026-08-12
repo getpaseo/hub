@@ -4,7 +4,7 @@ import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordReplyExecutor } from "./reply.js";
 
 describe("Discord reply executor", () => {
-  it("creates a thread on channel messages before posting the reply", async () => {
+  it("sends repeated replies through the conversation reply capability", async () => {
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
     const executor = createDiscordReplyExecutor({ bot });
 
@@ -14,6 +14,12 @@ describe("Discord reply executor", () => {
       args: { content: "hello world" },
       outputContext: { channelId: "200", threadId: null, messageId: "300" },
     });
+    await executor({
+      agentExecutionId: "exec-1",
+      toolType: "discord.reply",
+      args: { content: "second reply" },
+      outputContext: { channelId: "200", threadId: null, messageId: "300" },
+    });
 
     assert.deepEqual(bot.messages, [
       {
@@ -21,6 +27,12 @@ describe("Discord reply executor", () => {
         threadId: null,
         messageId: "300",
         content: "hello world",
+      },
+      {
+        channelId: "200",
+        threadId: null,
+        messageId: "300",
+        content: "second reply",
       },
     ]);
   });

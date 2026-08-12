@@ -24,7 +24,7 @@ export function createDiscordReplyExecutor(
     const args = DiscordReplyArgsSchema.parse(input.args);
     const context = DiscordReplyOutputContextSchema.parse(input.outputContext);
 
-    await options.bot.sendChannelMessage({
+    await options.bot.sendConversationReply({
       channelId: context.channelId,
       threadId: context.threadId ?? null,
       messageId: context.messageId,

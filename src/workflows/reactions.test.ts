@@ -488,6 +488,10 @@ class RecordingDiscordBot implements DiscordBotClient {
   }
 
   async sendChannelMessage(): Promise<void> {}
+  async sendConversationReply(): Promise<void> {}
+  async readMessage(): Promise<never> {
+    throw new Error("message unavailable");
+  }
   async readThreadMessages(): Promise<never[]> {
     return [];
   }

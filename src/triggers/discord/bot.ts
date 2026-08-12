@@ -20,8 +20,11 @@ export interface DiscordReactionInput {
 export interface DiscordPostInput {
   channelId: string;
   threadId?: string | null;
-  messageId?: string;
   content: string;
+}
+
+export interface DiscordConversationReplyInput extends DiscordPostInput {
+  messageId: string;
 }
 
 export interface DiscordBotClient {
@@ -31,6 +34,11 @@ export interface DiscordBotClient {
   createReaction(input: DiscordReactionInput): Promise<void>;
   deleteOwnReaction(input: DiscordReactionInput): Promise<void>;
   sendChannelMessage(input: DiscordPostInput): Promise<void>;
+  sendConversationReply(input: DiscordConversationReplyInput): Promise<void>;
+  readMessage(input: {
+    channelId: string;
+    messageId: string;
+  }): Promise<NormalizedDiscordContextMessage>;
   readThreadMessages(input: {
     channelId: string;
     beforeMessageId: string;
@@ -44,6 +52,10 @@ export type DiscordGuildDeleteHandler = (guild: {
   id: string;
   unavailable: boolean;
 }) => Promise<void>;
+
+type DiscordSendableChannel = TextBasedChannel & {
+  send: (...args: unknown[]) => Promise<unknown>;
+};
 
 export interface CreateDiscordBotClientOptions {
   token: string;
@@ -63,6 +75,7 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
     });
   const handlers = new Set<DiscordRawMessageHandler>();
   const guildDeleteHandlers = new Set<DiscordGuildDeleteHandler>();
+  const pendingReplyDestinations = new Map<string, Promise<DiscordSendableChannel>>();
   let started = false;
 
   client.on("messageCreate", (message: Message) => {
@@ -117,33 +130,27 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       await client.rest.delete(Routes.channelMessageOwnReaction(channelId, messageId, input.emoji));
     },
     async sendChannelMessage(input) {
-      if (input.threadId !== undefined && input.threadId !== null) {
-        const threadId = DiscordSnowflakeSchema.parse(input.threadId);
-        const channel = await client.channels.fetch(threadId);
-        if (channel === null || !isSendableChannel(channel)) {
-          throw new Error(`discord channel not sendable: ${input.threadId}`);
-        }
-        await channel.send({ content: input.content, allowedMentions: { parse: [] } });
-        return;
-      }
-
-      if (input.messageId !== undefined) {
-        const message = await fetchMessage(
-          client,
-          DiscordSnowflakeSchema.parse(input.channelId),
-          DiscordSnowflakeSchema.parse(input.messageId),
-        );
-        const thread = await message.startThread({ name: createThreadName(message.content) });
-        await thread.send({ content: input.content, allowedMentions: { parse: [] } });
-        return;
-      }
-
-      const channelId = DiscordSnowflakeSchema.parse(input.channelId);
+      const channelId = DiscordSnowflakeSchema.parse(input.threadId ?? input.channelId);
       const channel = await client.channels.fetch(channelId);
       if (channel === null || !isSendableChannel(channel)) {
-        throw new Error(`discord channel not sendable: ${input.channelId}`);
+        throw new Error(`discord channel not sendable: ${channelId}`);
       }
       await channel.send({ content: input.content, allowedMentions: { parse: [] } });
+    },
+    async sendConversationReply(input) {
+      const channel =
+        input.threadId === undefined || input.threadId === null
+          ? await resolveReplyDestination(client, input, pendingReplyDestinations)
+          : await fetchSendableChannel(client, input.threadId);
+      await channel.send({ content: input.content, allowedMentions: { parse: [] } });
+    },
+    async readMessage(input) {
+      const message = await fetchMessage(
+        client,
+        DiscordSnowflakeSchema.parse(input.channelId),
+        DiscordSnowflakeSchema.parse(input.messageId),
+      );
+      return normalizeContextMessage(message);
     },
     async readThreadMessages(input) {
       const channelId = DiscordSnowflakeSchema.parse(input.channelId);
@@ -155,7 +162,7 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       const page = await channel.messages.fetch({ before: beforeMessageId, limit: 50 });
       return Array.from(page.values())
         .filter((message) => message.id !== beforeMessageId)
-        .map(normalizeThreadMessage)
+        .map(normalizeContextMessage)
         .sort(compareThreadMessages);
     },
     onMessageCreate(handler) {
@@ -169,6 +176,45 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       return () => guildDeleteHandlers.delete(handler);
     },
   };
+}
+
+async function resolveReplyDestination(
+  client: Client,
+  input: DiscordConversationReplyInput,
+  pending: Map<string, Promise<DiscordSendableChannel>>,
+): Promise<DiscordSendableChannel> {
+  const channelId = DiscordSnowflakeSchema.parse(input.channelId);
+  const messageId = DiscordSnowflakeSchema.parse(input.messageId);
+  const key = `${channelId}:${messageId}`;
+  const existing = pending.get(key);
+  if (existing !== undefined) return existing;
+
+  const resolution = (async () => {
+    const message = await fetchMessage(client, channelId, messageId);
+    const thread = message.hasThread
+      ? await fetchSendableChannel(client, messageId)
+      : await message.startThread({ name: createThreadName(message.content) });
+    if (!isSendableChannel(thread)) throw new Error(`discord channel not sendable: ${thread.id}`);
+    return thread;
+  })();
+  pending.set(key, resolution);
+  try {
+    return await resolution;
+  } finally {
+    pending.delete(key);
+  }
+}
+
+async function fetchSendableChannel(
+  client: Client,
+  channelId: string,
+): Promise<DiscordSendableChannel> {
+  const parsedChannelId = DiscordSnowflakeSchema.parse(channelId);
+  const channel = await client.channels.fetch(parsedChannelId);
+  if (channel === null || !isSendableChannel(channel)) {
+    throw new Error(`discord channel not sendable: ${parsedChannelId}`);
+  }
+  return channel;
 }
 
 async function fetchMessage(
@@ -195,7 +241,7 @@ function isThreadChannel(
 
 function isSendableChannel(
   channel: GuildBasedChannel | TextBasedChannel,
-): channel is TextBasedChannel & { send: (...args: unknown[]) => Promise<unknown> } {
+): channel is DiscordSendableChannel {
   return "send" in channel && typeof Reflect.get(channel, "send") === "function";
 }
 
@@ -210,7 +256,7 @@ function createThreadName(content: string): string {
   return name.length === 0 ? "paseo response" : name;
 }
 
-function normalizeThreadMessage(message: Message): NormalizedDiscordContextMessage {
+function normalizeContextMessage(message: Message): NormalizedDiscordContextMessage {
   return NormalizedDiscordContextMessageSchema.parse({
     id: message.id,
     channelId: message.channelId,
