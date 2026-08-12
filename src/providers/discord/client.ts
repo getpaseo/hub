@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logger } from "../../logger.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 
 export interface DiscordGuildIdentity {
@@ -87,7 +88,11 @@ export function createDiscordConnectionClient(input: {
         });
         if (response.ok) return "present";
         return response.status === 404 ? "absent" : "unknown";
-      } catch {
+      } catch (error) {
+        logger.warn(
+          { err: error, provider: "discord", guildId },
+          "Discord guild membership check failed",
+        );
         return "unknown";
       }
     },

@@ -340,6 +340,10 @@ export class BillingRuntime {
       );
       return new Response("reconciliation failed", { status: 503 });
     }
+    logger.info(
+      { provider: "stripe", eventId: event.id, eventType: event.type },
+      "billing webhook processed",
+    );
     return Response.json({ received: true });
   }
 

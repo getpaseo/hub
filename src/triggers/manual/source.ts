@@ -53,6 +53,15 @@ export async function dispatchManualTrigger(
     resourceId: trigger.resourceId ?? null,
   });
   if (persisted.status === "duplicate") {
+    logger.info(
+      {
+        source: trigger.source,
+        deliveryId: trigger.deliveryId,
+        receiptId: persisted.providerEventReceiptId,
+        outcome: "duplicate",
+      },
+      "manual event intake completed",
+    );
     return { providerEventReceiptId: persisted.providerEventReceiptId };
   }
   if (state.handler === undefined) {
@@ -60,8 +69,27 @@ export async function dispatchManualTrigger(
       persisted.event.providerEventReceiptId,
       "configuration_unavailable",
     );
+    logger.info(
+      {
+        source: trigger.source,
+        deliveryId: trigger.deliveryId,
+        receiptId: persisted.event.providerEventReceiptId,
+        outcome: "dropped",
+        reason: "configuration_unavailable",
+      },
+      "manual event intake completed",
+    );
     return { providerEventReceiptId: persisted.event.providerEventReceiptId };
   }
+  logger.info(
+    {
+      source: trigger.source,
+      deliveryId: trigger.deliveryId,
+      receiptId: persisted.event.providerEventReceiptId,
+      outcome: "accepted",
+    },
+    "manual event intake completed",
+  );
   return state.handler(persisted.event);
 }
 
@@ -70,13 +98,18 @@ async function handleManualRequest(request: Request, source: TriggerSource): Pro
 
   try {
     body = await request.json();
-  } catch {
+  } catch (error) {
+    logger.warn(
+      { errorType: error instanceof Error ? error.name : "UnknownError" },
+      "rejecting manual trigger because payload is invalid JSON",
+    );
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
 
   const parsed = parseManualTriggerPayload(body);
 
   if (typeof parsed === "string") {
+    logger.warn({ reason: parsed }, "rejecting manual trigger because payload is invalid");
     return Response.json({ error: parsed }, { status: 400 });
   }
 

@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { logger } from "../logger.js";
 import { handleConnections } from "../server/runtime.js";
 
 const githubStatusSchema = z.discriminatedUnion("status", [
@@ -56,7 +57,8 @@ export const connectionStatus = createServerFn({ method: "GET" })
         return respondError({ message: "We couldn't load this organization's connections." });
       }
       return respondOk(connectionStatusSchema.parse(await response.json()));
-    } catch {
+    } catch (error) {
+      logger.error({ err: error, operation: "status" }, "connection dashboard request failed");
       return respondError({ message: "We couldn't load this organization's connections." });
     }
   });
@@ -78,7 +80,11 @@ export const startConnection = createServerFn({ method: "POST" })
         return respondError({ message: `We couldn't start the ${name} connection. Try again.` });
       }
       return respondOk(startSchema.parse(await response.json()));
-    } catch {
+    } catch (error) {
+      logger.error(
+        { err: error, provider: data.provider, operation: "start" },
+        "connection dashboard request failed",
+      );
       return respondError({ message: `We couldn't start the ${name} connection. Try again.` });
     }
   });
@@ -100,7 +106,11 @@ export const disconnectConnection = createServerFn({ method: "POST" })
         return respondError({ message: `We couldn't disconnect ${name}. Try again.` });
       }
       return respondOk({ result: `${data.provider}_disconnected` as const });
-    } catch {
+    } catch (error) {
+      logger.error(
+        { err: error, provider: data.provider, operation: "disconnect" },
+        "connection dashboard request failed",
+      );
       return respondError({ message: `We couldn't disconnect ${name}. Try again.` });
     }
   });

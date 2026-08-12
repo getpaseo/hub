@@ -5,6 +5,7 @@ import { readBoundedRequestBody } from "../../http/request-body.js";
 import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
+import { logProviderEventIntake } from "../audit.js";
 import {
   normalizeSlackEvent,
   SlackEventCallbackSchema,
@@ -64,12 +65,14 @@ async function verifySlackRequest(
   const signature = request.headers.get("x-slack-signature");
   const timestamp = request.headers.get("x-slack-request-timestamp");
   if (signature === null || timestamp === null) {
+    logger.warn("rejecting Slack event because signature headers are missing");
     return new Response("Unauthorized", { status: 401 });
   }
 
   const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
   if (body instanceof Response) return body;
   if (!verifySlackSignature(options.signingSecret, timestamp, body, signature, options.now?.())) {
+    logger.warn("rejecting Slack event because signature verification failed");
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -77,6 +80,7 @@ async function verifySlackRequest(
   try {
     payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
   } catch {
+    logger.warn("rejecting Slack event because payload is invalid JSON");
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
 
@@ -89,23 +93,34 @@ async function handleVerifiedSlackRequest(
   options: SlackWebhookSourceOptions,
 ): Promise<Response> {
   const envelopeType = SlackEnvelopeTypeSchema.safeParse(verified.payload);
-  if (!envelopeType.success) return new Response("Bad Request", { status: 400 });
+  if (!envelopeType.success) {
+    logger.warn("rejecting Slack event because its envelope is invalid");
+    return new Response("Bad Request", { status: 400 });
+  }
 
   if (envelopeType.data.type === "url_verification") {
     const challenge = SlackUrlVerificationSchema.safeParse(verified.payload);
     if (!challenge.success || !matchesConfiguredApp(challenge.data.api_app_id, options.appId)) {
+      logger.warn("rejecting Slack URL verification because its app or payload is invalid");
       return new Response("Bad Request", { status: 400 });
     }
     return Response.json({ challenge: challenge.data.challenge });
   }
 
-  if (envelopeType.data.type !== "event_callback") return new Response("OK", { status: 200 });
+  if (envelopeType.data.type !== "event_callback") {
+    logger.info({ envelopeType: envelopeType.data.type }, "ignoring unsupported Slack envelope");
+    return new Response("OK", { status: 200 });
+  }
   const callback = SlackEventCallbackSchema.safeParse(verified.payload);
   if (!callback.success || callback.data.api_app_id !== options.appId) {
+    logger.warn("rejecting Slack event because its app or callback payload is invalid");
     return new Response("Bad Request", { status: 400 });
   }
   const normalizedEvent = normalizeSlackEvent(callback.data);
-  if (normalizedEvent === undefined) return new Response("OK", { status: 200 });
+  if (normalizedEvent === undefined) {
+    logger.info({ eventId: callback.data.event_id }, "ignoring unsupported Slack event");
+    return new Response("OK", { status: 200 });
+  }
 
   const deliveryId = `slack-${normalizedEvent.id}`;
   try {
@@ -117,6 +132,13 @@ async function handleVerifiedSlackRequest(
       payload: normalizedEvent,
       receivedAt: new Date(normalizedEvent.eventTime * 1_000),
       ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
+    });
+    logProviderEventIntake({
+      provider: "slack",
+      source: "slack.mention",
+      deliveryId,
+      resourceId: normalizedEvent.teamId,
+      acceptance,
     });
     const events = acceptance.status === "accepted" ? acceptance.events : [];
     await Promise.all(

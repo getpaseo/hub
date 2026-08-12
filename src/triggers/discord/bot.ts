@@ -81,7 +81,15 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
   client.on("messageCreate", (message: Message) => {
     void Promise.all(Array.from(handlers, (handler) => handler(message))).catch(
       (error: unknown) => {
-        logger.error({ err: error }, "discord messageCreate handler failed");
+        logger.error(
+          {
+            err: error,
+            deliveryId: `discord-${message.id}`,
+            guildId: message.guildId,
+            channelId: message.channelId,
+          },
+          "Discord event handoff failed",
+        );
       },
     );
   });

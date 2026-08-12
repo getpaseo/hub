@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { Logger } from "pino";
 import { ProductRequestError } from "../auth/organization-access.js";
 import type { AuthServer } from "../auth/server.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../db/errors.js";
@@ -8,7 +9,7 @@ import type {
   Database,
   TenantRouteAccess,
 } from "../db/types.js";
-import { logger } from "../logger.js";
+import { logger, redact } from "../logger.js";
 import { resolveRouteTenant } from "../projects/access.js";
 
 export const CONNECTION_ATTEMPT_LIFETIME_MINUTES = 10;
@@ -69,6 +70,27 @@ export function connectionResult(
   const url = new URL(returnRoute, publicBaseUrl);
   url.searchParams.set("result", result);
   return Response.redirect(url, 303);
+}
+
+export function connectionCallbackFailure(input: {
+  error: unknown;
+  provider: "github" | "discord" | "slack";
+  phase: string;
+  applicationBaseUrl: string;
+  returnRoute: string;
+  log?: Pick<Logger, "error">;
+}): Response {
+  const log = input.log ?? logger;
+  log.error(
+    {
+      provider: input.provider,
+      phase: input.phase,
+      errorType: input.error instanceof Error ? input.error.name : "UnknownError",
+      ...(input.error instanceof Error ? { errorMessage: redact(input.error.message) } : {}),
+    },
+    "connection callback unavailable",
+  );
+  return connectionResult(input.applicationBaseUrl, input.returnRoute, "connection_unavailable");
 }
 
 export function connectionActionFailure(

@@ -10,6 +10,7 @@ import {
   callbackConnectionAccess,
   connectionAccess,
   connectionActionFailure,
+  connectionCallbackFailure,
   connectionResult,
   manageConnectionAccess,
   newConnectionState,
@@ -370,8 +371,14 @@ async function completeSetup(
       }),
       303,
     );
-  } catch {
-    return connectionResult(options.applicationBaseUrl, returnRoute, "connection_unavailable");
+  } catch (error) {
+    return connectionCallbackFailure({
+      error,
+      provider: "github",
+      phase: "setup",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute,
+    });
   }
 }
 
@@ -417,8 +424,14 @@ async function completeAuthorization(
     }
     await bindGitHub(options.database, state, access, identity);
     return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "github_connected");
-  } catch {
-    return connectionResult(options.applicationBaseUrl, returnRoute, "connection_unavailable");
+  } catch (error) {
+    return connectionCallbackFailure({
+      error,
+      provider: "github",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute,
+    });
   }
 }
 
