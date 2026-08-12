@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 - 2026-08-12
+
+### Added
+
+- Execution-scoped worktree branch templates with `${{ paseo.execution.id }}` for unique branches that remain stable through retries and recovery.
+- Structured server logs for connection callbacks, provider event intake and routing, and workflow failures without recording event payloads or credentials.
+- A ready-to-adapt single-repository team bot example.
+
+### Changed
+
+- Provider reactions now follow the workflow run instead of each step, preventing duplicate reactions in multi-step workflows.
+
+### Fixed
+
+- Discord replies create or reuse one conversation thread, and explicitly requested context includes the directly referenced message.
+- Terminal workflow notifications are not lost when recovery and completion overlap.
+
 ## 0.3.0 - 2026-08-10
 
 ### Added
