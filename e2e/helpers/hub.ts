@@ -468,7 +468,7 @@ export class PaseoHub {
          (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes, connected_by_user_id)
        values ($1, 'T-drop-reason', 'drop-reason-slack', 'Drop Reason Slack', 'UBOT',
                'PRIVATE-SLACK-TOKEN',
-               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write"]'::jsonb, $2)`,
+               '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write","users:read"]'::jsonb, $2)`,
       [target.organization_id, target.user_id],
     );
     const database = await createDatabase(this.primary.databaseUrl);
