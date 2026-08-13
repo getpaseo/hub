@@ -20,6 +20,7 @@ import {
   MAX_PROMPT_PARTIAL_COUNT,
   MAX_PROMPT_PARTIAL_PATH_LENGTH,
 } from "./prompt-partial-limits.js";
+import { projectSlugSchema } from "../project-slug.js";
 import {
   compareBundlePaths,
   HUB_RESOURCE_PATH,
@@ -41,6 +42,7 @@ export interface HubBundleIssue {
 }
 
 export interface CompiledHubBundle {
+  name?: string;
   configuration: CompiledHubConfig;
   agentValidationTargets: readonly HubBundleAgentValidationTarget[];
   files: readonly HubBundleFile[];
@@ -84,6 +86,7 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
     );
   }
   rejectResourceKeys(resource);
+  const bundleName = projectName(resource["name"]);
   const environments = namedResources(resource["environments"], "environment", HUB_RESOURCE_PATH);
   const agents = namedAgents(resource["agents"]);
   const workflowFiles = [...files.values()]
@@ -129,6 +132,7 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
   }
   const authoredFiles = [...files.values()].sort(byPath);
   return {
+    ...(bundleName === undefined ? {} : { name: bundleName }),
     configuration,
     agentValidationTargets: collectAgentValidationTargets(triggers, configuration, agents),
     files: authoredFiles,
@@ -233,10 +237,19 @@ function parseYamlRecord(file: HubBundleFile): Record<string, unknown> {
 
 function rejectResourceKeys(resource: Record<string, unknown>): void {
   for (const key of Object.keys(resource)) {
-    if (key !== "environments" && key !== "agents") {
+    if (key !== "name" && key !== "environments" && key !== "agents") {
       throw issue([HUB_RESOURCE_PATH, key], `unknown project resource ${key}`);
     }
   }
+}
+
+function projectName(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const parsed = projectSlugSchema.safeParse(value);
+  if (!parsed.success) {
+    throw issue([HUB_RESOURCE_PATH, "name"], parsed.error.issues[0]?.message ?? "invalid slug");
+  }
+  return parsed.data;
 }
 
 function namedResources(value: unknown, kind: string, sourceFile: string): unknown[] {

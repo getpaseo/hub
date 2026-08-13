@@ -726,7 +726,7 @@ export interface CreateProjectInput {
   organizationId: string;
   name: string;
   slug: string;
-  createdByUserId: string;
+  createdByUserId: string | null;
 }
 
 export type EntitlementChangeSource = "provisioning" | "plan_stamp" | "override";
@@ -1196,6 +1196,7 @@ export interface Database {
   ): Promise<AgentExecutionRecord | undefined>;
   completeHubAction(executionId: string, action: HubAction): Promise<boolean>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
+  restoreProject(organizationId: string, projectId: string): Promise<ProjectRecord>;
   getOrganizationEntitlements(
     organizationId: string,
   ): Promise<OrganizationEntitlementsRecord | undefined>;

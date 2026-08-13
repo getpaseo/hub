@@ -9,6 +9,7 @@ import {
 import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
 import { logger } from "../logger.js";
+import { projectSlugSchema } from "../project-slug.js";
 import { isTenantRouteNotFoundError } from "./access.js";
 import { ProjectCommandError, projectCommandErrorCode } from "./command-error.js";
 import { type ManualConfigurationSaveResult, type ProjectDashboard } from "./dashboard.js";
@@ -22,18 +23,10 @@ const projectScopeSchema = organizationScopeSchema
 const activityRunScopeSchema = projectScopeSchema.extend({ runId: z.string().uuid() }).strict();
 const createProjectSchema = organizationScopeSchema.extend({
   name: z.string().trim().min(1).max(100),
-  slug: z
-    .string()
-    .trim()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-    .max(100),
+  slug: projectSlugSchema,
 });
-const projectSlugSchema = projectScopeSchema.extend({
-  slug: z
-    .string()
-    .trim()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-    .max(100),
+const projectUpdateSchema = projectScopeSchema.extend({
+  slug: projectSlugSchema,
 });
 const configurationRepositorySchema = projectScopeSchema.extend({
   connectionId: z.string().uuid(),
@@ -99,7 +92,7 @@ export const archiveProject = createServerFn({ method: "POST" })
   );
 
 export const updateProjectSlug = createServerFn({ method: "POST" })
-  .validator(projectSlugSchema)
+  .validator(projectUpdateSchema)
   .handler(async ({ data }) =>
     command(data, (dashboard) => dashboard.updateProjectSlug(getRequest(), data, data.slug)),
   );

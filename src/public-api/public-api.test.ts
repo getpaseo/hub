@@ -79,6 +79,17 @@ describe("public API interface", () => {
     assert.match(response.headers.get("x-request-id") ?? "", /^[0-9a-f-]{36}$/u);
   });
 
+  it("keeps existing-project validation responses compatible with strict clients", async () => {
+    const api = createPublicApi(
+      { status: "enabled", authenticator: authenticator() },
+      successfulOperations(),
+    );
+
+    const response = await api.handle(installRequest("/api/v1/configurations/validate"));
+
+    assert.deepEqual(await response.json(), { projectSlug: "project", valid: true });
+  });
+
   it("returns RFC 9457 request-correlated 404 and 405 responses at the canonical router", async () => {
     const api = createPublicApi(
       { status: "enabled", authenticator: authenticator() },
@@ -365,7 +376,11 @@ function successfulOperations(): PublicOperations {
         ],
       }),
     validateConfiguration: () =>
-      Promise.resolve({ status: "valid", projectSlug: "project", valid: true }),
+      Promise.resolve({
+        status: "valid",
+        projectSlug: "project",
+        valid: true,
+      }),
     installConfiguration: () =>
       Promise.resolve({
         status: "installed",

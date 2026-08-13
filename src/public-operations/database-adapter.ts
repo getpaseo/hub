@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../db/types.js";
+import { DeploymentProjects } from "../project-deployments/index.js";
 import type { PublicOperationRepository } from "./types.js";
 
 export function createDatabasePublicOperationRepository(
   database: Database,
 ): PublicOperationRepository {
+  const deploymentProjects = new DeploymentProjects(database);
   return {
     async listActiveProjects(organizationId) {
       return (await database.listProjectsForOrganization(organizationId))
@@ -17,6 +19,7 @@ export function createDatabasePublicOperationRepository(
         ? undefined
         : { id: project.id, slug: project.slug };
     },
+    resolveDeploymentProject: (input) => deploymentProjects.resolve(input),
     async findManualRun(providerEventReceiptId, trigger) {
       return (await database.findTriggerRunsByProviderEventReceiptId(providerEventReceiptId)).find(
         (candidate) => candidate.configuredTriggerName === trigger,

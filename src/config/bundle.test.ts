@@ -83,6 +83,28 @@ function hasBundleIssue(error: unknown, path: string, message: RegExp): boolean 
 }
 
 describe("Hub configuration bundle", () => {
+  it("accepts an optional project name as slug-validated deployment metadata", () => {
+    const bundle = compileHubBundle(filesWithHub(`name: agent-tools\n${hub}`));
+
+    assert.equal(bundle.name, "agent-tools");
+    assert.equal(Object.hasOwn(bundle.configuration, "name"), false);
+  });
+
+  it.each(["Agent Tools", "agent_tools", "-agent-tools", "agent--tools", "a".repeat(101)])(
+    "rejects invalid project name %s with a structured field issue",
+    (name) => {
+      assert.throws(
+        () => compileHubBundle(filesWithHub(`name: ${name}\n${hub}`)),
+        (error) =>
+          hasBundleIssue(
+            error,
+            ".paseo/hub.yml.name",
+            /lowercase letters, numbers, and single hyphens|too big/iu,
+          ),
+      );
+    },
+  );
+
   it("compiles canonical files with provenance and complete finite named resources", () => {
     const bundle = compileHubBundle(canonicalFiles());
     const trigger = bundle.configuration.triggers[0]!;

@@ -36,18 +36,32 @@ export function createPublicOperations(
     },
     async validateConfiguration(authorization, input) {
       try {
-        const project = await repository.findActiveProject(
+        const resolved = await resolveConfigurationDeployment(
+          repository,
           authorization.organizationId,
-          input.projectSlug,
+          input,
+          true,
         );
-        if (project === undefined) return { status: "project_not_found" };
-        const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
-        const result = await capabilities
-          .configurationForProject(project.id)
-          .validateBundle(resolved.files);
+        const { target } = resolved;
+        const result =
+          target.status === "would_create"
+            ? await capabilities.validateBundleForOrganization(
+                authorization.organizationId,
+                resolved.files,
+              )
+            : await capabilities
+                .configurationForProject(target.project.id)
+                .validateBundle(resolved.files);
+        const projectSlug =
+          target.status === "would_create" ? target.projectSlug : target.project.slug;
         return result.valid
-          ? { status: "valid", projectSlug: project.slug, valid: true }
+          ? {
+              status: "valid",
+              projectSlug,
+              valid: true,
+              ...(target.status === "would_create" ? { wouldCreateProject: true as const } : {}),
+            }
           : {
               status: "invalid_configuration",
               issues: configurationValidationIssues(result.validationErrors),
@@ -58,13 +72,16 @@ export function createPublicOperations(
     },
     async installConfiguration(authorization, input) {
       try {
-        const project = await repository.findActiveProject(
+        const resolved = await resolveConfigurationDeployment(
+          repository,
           authorization.organizationId,
-          input.projectSlug,
+          input,
+          false,
         );
-        if (project === undefined) return { status: "project_not_found" };
-        const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
+        const { target } = resolved;
+        if (target.status === "would_create") throw new Error("install project was not resolved");
+        const project = target.project;
         const configuration = capabilities.configurationForProject(project.id);
         const record = await configuration.insertManualBundleRevision({
           files: resolved.files,
@@ -202,21 +219,52 @@ async function dispatchManualRun(
   };
 }
 
-function resolveConfigurationInput(input: { files: readonly { path: string; content: string }[] }):
+async function resolveConfigurationDeployment(
+  repository: PublicOperationRepository,
+  organizationId: string,
+  input: {
+    projectSlug?: string | undefined;
+    files: readonly { path: string; content: string }[];
+  },
+  dryRun: boolean,
+): Promise<
   | {
       success: true;
       files: readonly { path: string; content: string }[];
+      target:
+        | {
+            status: "resolved";
+            project: { id: string; slug: string };
+            created: boolean;
+          }
+        | { status: "would_create"; projectSlug: string };
     }
   | {
       success: false;
-      result: {
-        status: "invalid_bundle";
-        issues: readonly { path: readonly (string | number)[]; message: string }[];
-      };
-    } {
+      result:
+        | { status: "project_not_found" }
+        | {
+            status: "invalid_bundle";
+            issues: readonly { path: readonly (string | number)[]; message: string }[];
+          };
+    }
+> {
+  const explicitTarget =
+    input.projectSlug === undefined
+      ? undefined
+      : await repository.resolveDeploymentProject({
+          organizationId,
+          explicitProjectSlug: input.projectSlug,
+          dryRun,
+        });
+  if (explicitTarget?.status === "project_not_found") {
+    return { success: false, result: explicitTarget };
+  }
+
+  let bundleName: string | undefined;
   try {
-    compileHubBundle(input.files);
-    return { success: true, files: input.files };
+    const bundle = compileHubBundle(input.files);
+    bundleName = bundle.name;
   } catch (error) {
     if (error instanceof HubBundleError) {
       return {
@@ -226,6 +274,17 @@ function resolveConfigurationInput(input: { files: readonly { path: string; cont
     }
     throw error;
   }
+
+  const target =
+    explicitTarget ??
+    (await repository.resolveDeploymentProject({
+      organizationId,
+      ...(bundleName === undefined ? {} : { bundleName }),
+      dryRun,
+    }));
+  return target.status === "project_not_found"
+    ? { success: false, result: target }
+    : { success: true, files: input.files, target };
 }
 
 function internalDeliveryId(

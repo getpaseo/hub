@@ -1,6 +1,7 @@
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { HubBundleFile } from "../config/bundle.js";
 import type { TriggerRunRecord } from "../db/types.js";
+import type { DeploymentProjectResolution } from "../project-deployments/index.js";
 
 export interface PublicAuthorization {
   kind: "apiKey" | "cliCredential";
@@ -10,14 +11,14 @@ export interface PublicAuthorization {
 }
 
 export interface InstallConfigurationInput {
-  projectSlug: string;
+  projectSlug?: string | undefined;
   files: readonly HubBundleFile[];
 }
 
 export type ValidateConfigurationInput = InstallConfigurationInput;
 
 export type ValidateConfigurationResult =
-  | { status: "valid"; projectSlug: string; valid: true }
+  | { status: "valid"; projectSlug: string; valid: true; wouldCreateProject?: true }
   | { status: "project_not_found" }
   | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
   | { status: "invalid_configuration"; issues: readonly DomainIssue[] }
@@ -121,6 +122,12 @@ export interface PublicOperationRepository {
     organizationId: string,
     projectSlug: string,
   ): Promise<{ id: string; slug: string } | undefined>;
+  resolveDeploymentProject(input: {
+    organizationId: string;
+    explicitProjectSlug?: string | undefined;
+    bundleName?: string | undefined;
+    dryRun: boolean;
+  }): Promise<DeploymentProjectResolution>;
   findManualRun(
     providerEventReceiptId: string,
     trigger: string,
@@ -146,6 +153,10 @@ export interface PublicOperationCapabilities {
     }): Promise<{ id: string; validationErrors: unknown }>;
     activate(id: string): Promise<{ revision: { id: string; version: number } }>;
   };
+  validateBundleForOrganization(
+    organizationId: string,
+    files: readonly HubBundleFile[],
+  ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }>;
   dispatchManualEvent(input: {
     organizationId: string;
     projectId: string;

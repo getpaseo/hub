@@ -6,7 +6,10 @@ import {
   type AttachmentProvider,
   type AttachmentResolver,
 } from "./attachments/capabilities.js";
-import { ProjectConfigurationStore } from "./configuration/store.js";
+import {
+  ProjectConfigurationStore,
+  validateHubBundleForOrganization,
+} from "./configuration/store.js";
 import type {
   AcceptedTriggerRunRecord,
   Database,
@@ -241,7 +244,12 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       }
     },
   };
-  const publicOperations = createAppPublicOperations(options, manualSource, storeForProject);
+  const publicOperations = createAppPublicOperations(
+    options,
+    manualSource,
+    storeForProject,
+    daemons,
+  );
   const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
     handleDaemonEnrollment: (request) =>
@@ -286,12 +294,21 @@ function createAppPublicOperations(
   options: HubRuntimeOptions,
   manualSource: ReturnType<typeof createManualTriggerSource> | undefined,
   configurationForProject: (projectId: string) => ProjectConfigurationStore,
+  daemonAgentValidator: ActiveDaemonRegistry | null,
 ) {
   if (options.database === null || manualSource === undefined) return null;
+  const database = options.database;
   return createPublicOperations(
-    createDatabasePublicOperationRepository(options.database),
+    createDatabasePublicOperationRepository(database),
     {
       configurationForProject,
+      validateBundleForOrganization: (organizationId, files) =>
+        validateHubBundleForOrganization(
+          database,
+          organizationId,
+          files,
+          daemonAgentValidator ?? undefined,
+        ),
       dispatchManualEvent: (input) => dispatchManualTrigger(manualSource, input),
     },
     options.daemonClock,
