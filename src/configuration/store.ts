@@ -561,6 +561,16 @@ async function compileTriggers(
       continue;
     }
     const filter = trigger.filters;
+    if (filter?.connectionId !== undefined && filter.resourceId !== undefined) {
+      compiled.push(trigger);
+      routes.push({
+        provider,
+        connectionId: filter.connectionId,
+        resourceId: filter.resourceId,
+        triggerName: trigger.name,
+      });
+      continue;
+    }
     const authored = readAuthoredResource(provider, filter);
     const candidates = connectionCandidates(provider, usage, filter);
     const authoredConnection = filter?.connection;
@@ -591,8 +601,12 @@ async function compileTriggers(
         });
         continue;
       }
+      const resolvedFilter =
+        provider === "github"
+          ? filter
+          : { ...filter, [resourceField(provider)]: resolved.resourceId };
       const nextFilter: CompiledTriggerFilter = {
-        ...filter,
+        ...resolvedFilter,
         connectionId: resolved.connectionId,
         resourceId: resolved.resourceId,
       };

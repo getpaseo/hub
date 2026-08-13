@@ -118,7 +118,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const active = await store.activate(revision.id);
 
     assert.equal(revision.validationErrors, null);
-    assert.equal(active.configuration.triggers[0]?.filters?.guild, "discord-primary");
+    assert.equal(active.configuration.triggers[0]?.filters?.guild, "100");
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, primary.id);
     assert.deepEqual(active.configuration.triggers[0]?.filters?.resourceId, "100");
     assert.equal(Object.isFrozen(active.configuration.triggers[0]?.filters), true);
