@@ -2389,7 +2389,7 @@ class PgDatabase implements Database {
       this.pool,
       `insert into projects (organization_id, name, slug, created_by_user_id)
        select $1, $2, $3, $4
-       where exists (
+       where $4::text is null or exists (
          select 1 from member where organization_id = $1 and user_id = $4
        )
        returning *`,
@@ -2404,6 +2404,20 @@ class PgDatabase implements Database {
        values ($1, $2, 'manual', false, $3)`,
       [project.id, input.organizationId, input.createdByUserId],
     );
+    return toProjectRecord(project);
+  }
+
+  async restoreProject(organizationId: string, projectId: string): Promise<ProjectRecord> {
+    const rows = await query<ProjectRow>(
+      this.pool,
+      `update projects
+       set status = 'active', archived_at = null, updated_at = clock_timestamp()
+       where organization_id = $1 and id = $2
+       returning *`,
+      [organizationId, projectId],
+    );
+    const project = rows.rows[0];
+    if (project === undefined) throw new Error("project not found");
     return toProjectRecord(project);
   }
 

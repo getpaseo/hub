@@ -95,7 +95,7 @@ export const ConfigurationFileSchema = z
 
 export const InstallConfigurationRequestSchema = z
   .object({
-    projectSlug: z.string().trim().min(1).max(100),
+    projectSlug: z.string().trim().min(1).max(100).optional(),
     files: z.array(ConfigurationFileSchema).min(1).max(MAX_PROMPT_PARTIAL_COUNT),
   })
   .strict()
@@ -108,6 +108,7 @@ export const InstallConfigurationRequestSchema = z
         {
           path: ".paseo/hub.yml",
           content: [
+            "name: payments",
             "environments:",
             "  runner:",
             "    kind: daemon",
@@ -163,10 +164,11 @@ export const ValidatedConfigurationSchema = z
   .object({
     projectSlug: z.string(),
     valid: z.literal(true),
+    wouldCreateProject: z.boolean(),
   })
   .strict()
   .openapi("ValidatedConfiguration", {
-    example: { projectSlug: "payments", valid: true },
+    example: { projectSlug: "payments", valid: true, wouldCreateProject: false },
   });
 
 export const ProjectSchema = z

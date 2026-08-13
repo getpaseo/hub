@@ -36,18 +36,33 @@ export function createPublicOperations(
     },
     async validateConfiguration(authorization, input) {
       try {
-        const project = await repository.findActiveProject(
-          authorization.organizationId,
-          input.projectSlug,
-        );
-        if (project === undefined) return { status: "project_not_found" };
         const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
-        const result = await capabilities
-          .configurationForProject(project.id)
-          .validateBundle(resolved.files);
+        const target = await repository.resolveDeploymentProject({
+          organizationId: authorization.organizationId,
+          ...(input.projectSlug === undefined ? {} : { explicitProjectSlug: input.projectSlug }),
+          ...(resolved.bundleName === undefined ? {} : { bundleName: resolved.bundleName }),
+          dryRun: true,
+        });
+        if (target.status === "project_not_found") return target;
+        const result =
+          target.status === "would_create"
+            ? await capabilities.validateBundleForOrganization(
+                authorization.organizationId,
+                resolved.files,
+              )
+            : await capabilities
+                .configurationForProject(target.project.id)
+                .validateBundle(resolved.files);
+        const projectSlug =
+          target.status === "would_create" ? target.projectSlug : target.project.slug;
         return result.valid
-          ? { status: "valid", projectSlug: project.slug, valid: true }
+          ? {
+              status: "valid",
+              projectSlug,
+              valid: true,
+              wouldCreateProject: target.status === "would_create",
+            }
           : {
               status: "invalid_configuration",
               issues: configurationValidationIssues(result.validationErrors),
@@ -58,13 +73,17 @@ export function createPublicOperations(
     },
     async installConfiguration(authorization, input) {
       try {
-        const project = await repository.findActiveProject(
-          authorization.organizationId,
-          input.projectSlug,
-        );
-        if (project === undefined) return { status: "project_not_found" };
         const resolved = resolveConfigurationInput(input);
         if (!resolved.success) return resolved.result;
+        const target = await repository.resolveDeploymentProject({
+          organizationId: authorization.organizationId,
+          ...(input.projectSlug === undefined ? {} : { explicitProjectSlug: input.projectSlug }),
+          ...(resolved.bundleName === undefined ? {} : { bundleName: resolved.bundleName }),
+          dryRun: false,
+        });
+        if (target.status === "project_not_found") return target;
+        if (target.status === "would_create") throw new Error("install project was not resolved");
+        const project = target.project;
         const configuration = capabilities.configurationForProject(project.id);
         const record = await configuration.insertManualBundleRevision({
           files: resolved.files,
@@ -206,6 +225,7 @@ function resolveConfigurationInput(input: { files: readonly { path: string; cont
   | {
       success: true;
       files: readonly { path: string; content: string }[];
+      bundleName?: string | undefined;
     }
   | {
       success: false;
@@ -215,8 +235,12 @@ function resolveConfigurationInput(input: { files: readonly { path: string; cont
       };
     } {
   try {
-    compileHubBundle(input.files);
-    return { success: true, files: input.files };
+    const bundle = compileHubBundle(input.files);
+    return {
+      success: true,
+      files: input.files,
+      ...(bundle.name === undefined ? {} : { bundleName: bundle.name }),
+    };
   } catch (error) {
     if (error instanceof HubBundleError) {
       return {

@@ -1950,6 +1950,21 @@ class MemoryDatabase implements Database {
     return project;
   }
 
+  async restoreProject(organizationId: string, projectId: string): Promise<ProjectRecord> {
+    const project = this.projects.get(projectId);
+    if (project === undefined || project.organizationId !== organizationId) {
+      throw new Error("project not found");
+    }
+    const restored: ProjectRecord = {
+      ...project,
+      status: "active",
+      archivedAt: null,
+      updatedAt: new Date(),
+    };
+    this.projects.set(projectId, restored);
+    return restored;
+  }
+
   async getOrganizationEntitlements(
     organizationId: string,
   ): Promise<OrganizationEntitlementsRecord | undefined> {

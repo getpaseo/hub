@@ -18,9 +18,9 @@ The canonical, executable operation and schema reference is served by each Hub i
 
 Every canonical `/api/v1` response, including unknown paths and wrong methods, uses RFC 9457 `application/problem+json` on failure and includes `X-Request-ID`; callers may supply that header to correlate a request. Wrong methods return `405` with `Allow`, while unknown paths return `404`. Every `401` response also includes `WWW-Authenticate: Bearer`.
 
-Configuration YAML may include an optional non-empty top-level string `project` as deployment metadata. The authenticated request's `projectSlug` is always authoritative, so an explicit CLI `--project` can override the file. Hub validates and removes the metadata before strict workflow compilation without resolving or comparing it, while preserving the original YAML as revision evidence.
+Configuration YAML may include an optional top-level `name` slug as deployment metadata. An explicit request `projectSlug` (including the CLI's `--project`/`-p` option) is authoritative. Otherwise Hub resolves or creates the named project in the authenticated organization; without either field, it resolves or restores that organization's `default` project. Changing `name` targets a different project and leaves the old project's history intact.
 
-Configuration validation and installation accept the same YAML, `projectSlug`, and optional `partials` bundle. Both use the same parser, compiler, daemon/provider resolution, and business validation. Validation returns success or structured issues without creating a revision or changing the active configuration; installation records and activates only after those boundaries pass.
+Configuration validation and installation accept the same YAML, optional `projectSlug`, and prompt-partial bundle. Both use the same parser, compiler, project selection, daemon/provider resolution, and business validation. Validation returns the resolved `projectSlug` and `wouldCreateProject` without creating a project, recording a revision, or changing active configuration. Installation silently creates a missing bundle-named or default project, then records and activates the revision.
 
 ## Workflow MCP tools
 

@@ -103,22 +103,19 @@ export class ProjectConfigurationStore {
   async validateBundle(
     files: readonly HubBundleFile[],
   ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
-    let bundle: CompiledHubBundle;
-    try {
-      bundle = compileHubBundle(files);
-    } catch (error) {
-      return { valid: false, validationErrors: formatConfigurationError(error) };
+    const project = await this.database.findProjectById(this.projectId);
+    if (project === undefined) {
+      return {
+        valid: false,
+        validationErrors: { formErrors: ["unresolved organization resources: project"] },
+      };
     }
-    const prepared = await prepareCompiledRevision(
+    return validateHubBundleForOrganization(
       this.database,
-      this.projectId,
-      bundle.configuration,
-      bundle.agentValidationTargets,
+      project.organizationId,
+      files,
       this.daemonAgentValidator,
     );
-    return prepared.validationErrors === undefined
-      ? { valid: true }
-      : { valid: false, validationErrors: prepared.validationErrors };
   }
 
   async insertManualBundleRevision(input: {
@@ -284,6 +281,30 @@ export class ProjectConfigurationStore {
   }
 }
 
+export async function validateHubBundleForOrganization(
+  database: Database,
+  organizationId: string,
+  files: readonly HubBundleFile[],
+  daemonAgentValidator?: DaemonAgentConfigurationValidator,
+): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
+  let bundle: CompiledHubBundle;
+  try {
+    bundle = compileHubBundle(files);
+  } catch (error) {
+    return { valid: false, validationErrors: formatConfigurationError(error) };
+  }
+  const prepared = await prepareCompiledRevisionForOrganization(
+    database,
+    organizationId,
+    bundle.configuration,
+    bundle.agentValidationTargets,
+    daemonAgentValidator,
+  );
+  return prepared.validationErrors === undefined
+    ? { valid: true }
+    : { valid: false, validationErrors: prepared.validationErrors };
+}
+
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
@@ -308,7 +329,32 @@ async function prepareCompiledRevision(
   agentValidationTargets: readonly HubBundleAgentValidationTarget[],
   daemonAgentValidator: DaemonAgentConfigurationValidator | undefined,
 ): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
-  const compiled = await resolveCompiledConfiguration(database, projectId, configuration);
+  const project = await database.findProjectById(projectId);
+  if (project === undefined) {
+    return {
+      kind: "compiled",
+      normalizedConfiguration: configuration,
+      contentHash: compiledConfigurationHash(configuration),
+      validationErrors: { formErrors: ["unresolved organization resources: project"] },
+    };
+  }
+  return prepareCompiledRevisionForOrganization(
+    database,
+    project.organizationId,
+    configuration,
+    agentValidationTargets,
+    daemonAgentValidator,
+  );
+}
+
+async function prepareCompiledRevisionForOrganization(
+  database: Database,
+  organizationId: string,
+  configuration: CompiledHubConfig,
+  agentValidationTargets: readonly HubBundleAgentValidationTarget[],
+  daemonAgentValidator: DaemonAgentConfigurationValidator | undefined,
+): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
+  const compiled = await resolveCompiledConfiguration(database, organizationId, configuration);
   if (!compiled.success) {
     return {
       kind: "compiled",
@@ -411,20 +457,16 @@ type CompileConfigurationResult =
 
 async function resolveCompiledConfiguration(
   database: Database,
-  projectId: string,
+  organizationId: string,
   configuration: CompiledHubConfig,
 ): Promise<CompileConfigurationResult> {
-  const project = await database.findProjectById(projectId);
-  if (project === undefined) {
-    return { success: false, kind: "compiled", missing: ["project"], configuration };
-  }
   const resolutions = await Promise.all(
     configuration.environments.map(async (environment) =>
       environment.kind === "daemon"
         ? {
             environment,
             daemon: await database.findDaemonBySlugForOrganization(
-              project.organizationId,
+              organizationId,
               environment.daemon,
             ),
           }
@@ -436,7 +478,7 @@ async function resolveCompiledConfiguration(
   );
   const triggerCompilation = await compileTriggers(
     database,
-    project.organizationId,
+    organizationId,
     configuration.triggers,
   );
   const unresolved = [...missing, ...triggerCompilation.missing];

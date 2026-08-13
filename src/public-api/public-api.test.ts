@@ -365,7 +365,12 @@ function successfulOperations(): PublicOperations {
         ],
       }),
     validateConfiguration: () =>
-      Promise.resolve({ status: "valid", projectSlug: "project", valid: true }),
+      Promise.resolve({
+        status: "valid",
+        projectSlug: "project",
+        valid: true,
+        wouldCreateProject: false,
+      }),
     installConfiguration: () =>
       Promise.resolve({
         status: "installed",

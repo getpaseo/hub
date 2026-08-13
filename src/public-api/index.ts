@@ -223,6 +223,7 @@ function validationResponse(requestId: string, result: ValidateConfigurationResu
       return success(requestId, 200, ValidatedConfigurationSchema, {
         projectSlug: result.projectSlug,
         valid: true,
+        wouldCreateProject: result.wouldCreateProject,
       });
     case "project_not_found":
       return problem(

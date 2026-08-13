@@ -87,7 +87,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     resultMapping: "validation",
     summary: "Validate configuration",
     description:
-      "Validates and resolves the same YAML, prompt-partial bundle, project, daemon, and provider resources as installation without recording or activating a revision.",
+      "Resolves the deployment project and validates the same YAML, prompt-partial bundle, daemon, and provider resources as installation without creating a project, recording a revision, or changing active configuration.",
     tag: "Configurations",
     responses: {
       200: "The configuration is valid for the project.",
@@ -116,7 +116,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     resultMapping: "configuration",
     summary: "Install and activate configuration",
     description:
-      "Validates and resolves the complete canonical Hub bundle, records a configuration revision, and atomically activates it.",
+      "Resolves or creates the deployment project, validates the complete canonical Hub bundle, records a configuration revision, and atomically activates it.",
     tag: "Configurations",
     responses: {
       201: "The new configuration revision is active.",
