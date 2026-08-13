@@ -3,6 +3,7 @@ import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
+  ListConfigurationResourcesResult,
   ListProjectsResult,
   PublicOperations,
   ValidateConfigurationResult,
@@ -14,11 +15,13 @@ import {
   InstallConfigurationRequestSchema,
   InstalledConfigurationSchema,
   ProjectListSchema,
+  ConfigurationResourcesSchema,
   ValidatedConfigurationSchema,
 } from "./contracts.js";
 
 export type PublicOperationId =
   | "listProjects"
+  | "listConfigurationResources"
   | "validateConfiguration"
   | "installConfiguration"
   | "dispatchManualRun"
@@ -34,10 +37,17 @@ export interface PublicOperationDefinition {
     | typeof InstalledConfigurationSchema
     | typeof ValidatedConfigurationSchema
     | typeof ProjectListSchema
+    | typeof ConfigurationResourcesSchema
     | typeof DispatchedManualRunSchema
     | typeof EnrollmentTokenSchema;
   successStatus: 200 | 201;
-  resultMapping: "projects" | "validation" | "configuration" | "manual-run" | "enrollment-token";
+  resultMapping:
+    | "projects"
+    | "configuration-resources"
+    | "validation"
+    | "configuration"
+    | "manual-run"
+    | "enrollment-token";
   summary: string;
   description: string;
   tag: "Projects" | "Configurations" | "Runs" | "Daemons";
@@ -48,6 +58,7 @@ export interface PublicOperationDefinition {
     input: unknown,
   ): Promise<
     | ListProjectsResult
+    | ListConfigurationResourcesResult
     | ValidateConfigurationResult
     | InstallConfigurationResult
     | DispatchManualRunResult
@@ -75,6 +86,27 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
       503: "Hub authentication or storage is unavailable.",
     },
     invoke: (operations, authorization) => operations.listProjects(authorization),
+  },
+  {
+    id: "listConfigurationResources",
+    method: "get",
+    path: "/api/v1/configuration-resources",
+    scope: "configuration:validate",
+    successSchema: ConfigurationResourcesSchema,
+    successStatus: 200,
+    resultMapping: "configuration-resources",
+    summary: "List configuration resources",
+    description:
+      "Lists organization daemon and provider slugs that configuration validation resolves.",
+    tag: "Configurations",
+    responses: {
+      200: "The organization's configuration resources.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:validate.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization) => operations.listConfigurationResources(authorization),
   },
   {
     id: "validateConfiguration",

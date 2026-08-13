@@ -7,6 +7,7 @@ import type {
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
   ListProjectsResult,
+  ListConfigurationResourcesResult,
   PublicAuthorization,
   PublicOperations,
   ValidateConfigurationResult,
@@ -16,6 +17,7 @@ import {
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
   ProjectListSchema,
+  ConfigurationResourcesSchema,
   ProblemSchema,
   ValidatedConfigurationSchema,
   type Problem,
@@ -31,6 +33,7 @@ export type { PublicOperationId } from "./operation-manifest.js";
 
 type PublicOperationResult =
   | ListProjectsResult
+  | ListConfigurationResourcesResult
   | ValidateConfigurationResult
   | InstallConfigurationResult
   | DispatchManualRunResult
@@ -195,6 +198,10 @@ async function execute(
     case "projects":
       if (!isProjectsResult(result)) throw new Error("invalid projects operation result");
       return projectsResponse(requestId, result);
+    case "configuration-resources":
+      if (!isConfigurationResourcesResult(result))
+        throw new Error("invalid configuration resources operation result");
+      return configurationResourcesResponse(requestId, result);
     case "validation":
       if (!isValidationResult(result)) throw new Error("invalid validation operation result");
       return validationResponse(requestId, result);
@@ -214,6 +221,20 @@ async function execute(
 function projectsResponse(requestId: string, result: ListProjectsResult): Response {
   return result.status === "listed"
     ? success(requestId, 200, ProjectListSchema, { projects: result.projects })
+    : infrastructureProblem(requestId);
+}
+
+function configurationResourcesResponse(
+  requestId: string,
+  result: ListConfigurationResourcesResult,
+): Response {
+  return result.status === "listed"
+    ? success(requestId, 200, ConfigurationResourcesSchema, {
+        daemons: result.daemons,
+        github: result.github,
+        discord: result.discord,
+        slack: result.slack,
+      })
     : infrastructureProblem(requestId);
 }
 
@@ -248,7 +269,7 @@ function validationResponse(requestId: string, result: ValidateConfigurationResu
         422,
         "invalid_configuration",
         "Invalid configuration",
-        "The configuration does not resolve against the project's Hub resources.",
+        "See issues for configuration errors.",
         result.issues,
       );
     case "infrastructure_unavailable":
@@ -492,6 +513,15 @@ function isInstallationResult(result: PublicOperationResult): result is InstallC
 
 function isProjectsResult(result: PublicOperationResult): result is ListProjectsResult {
   return ["listed", "infrastructure_unavailable"].includes(result.status);
+}
+
+function isConfigurationResourcesResult(
+  result: PublicOperationResult,
+): result is ListConfigurationResourcesResult {
+  return (
+    result.status === "infrastructure_unavailable" ||
+    (result.status === "listed" && "daemons" in result)
+  );
 }
 
 function isValidationResult(result: PublicOperationResult): result is ValidateConfigurationResult {

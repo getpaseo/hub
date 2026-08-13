@@ -18,6 +18,7 @@ import {
   EnrollmentTokenSchema,
   CliAuthorizationPollSchema,
   CliAuthorizationSchema,
+  ConfigurationResourcesSchema,
   InstalledConfigurationSchema,
   ProblemSchema,
   ProjectListSchema,
@@ -190,6 +191,9 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         ProjectListSchema.parse(await projects.json()).projects.map(({ slug }) => slug),
         ["bundle-project", "same-project"],
       );
+      const resources = await get("/api/v1/configuration-resources", secrets[organizationId]);
+      assert.equal(resources.status, 200);
+      assert.equal(ConfigurationResourcesSchema.parse(await resources.json()).daemons.length, 1);
       const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
         projectSlug: "same-project",
         files: configurationBundleFixture(
