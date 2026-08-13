@@ -1,5 +1,5 @@
 import { and, eq, isNull, or } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
 import type {
@@ -16,7 +16,7 @@ import type {
   ProviderEventRouteSnapshot,
 } from "./types.js";
 
-type HubDatabase = NodePgDatabase<typeof schema>;
+type HubDatabase = DrizzleHandle;
 type HubTransaction = Parameters<Parameters<HubDatabase["transaction"]>[0]>[0];
 
 const GITHUB_LIFECYCLE = "github_lifecycle";

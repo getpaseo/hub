@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "better-auth/crypto";
-import type { Pool, PoolClient, QueryResultRow } from "pg";
+import type { DatabaseRuntime, QueryHandle, QueryRow } from "../db/runtime/index.js";
 import {
   provisionOrganization,
   UNLIMITED_PROVISIONING,
@@ -11,13 +11,13 @@ import type { BootstrapSettings, InstanceAuthPolicy } from "./instance-policy.js
 
 const BOOTSTRAP_ROW_ID = "default";
 
-interface BootstrapRow extends QueryResultRow {
+interface BootstrapRow extends QueryRow {
   organization_id: string | null;
   owner_user_id: string | null;
   completed_at: Date | null;
 }
 
-interface ExistingOrganization extends QueryResultRow {
+interface ExistingOrganization extends QueryRow {
   id: string;
   name: string;
   slug: string;
@@ -38,7 +38,7 @@ export class InstanceBootstrapError extends Error {
  * a later startup might mistake for a completed bootstrap.
  */
 export async function bootstrapInstance(
-  pool: Pool,
+  pool: DatabaseRuntime,
   policy: InstanceAuthPolicy,
   provisioningEntitlements: ProvisioningEntitlementResolver = () =>
     Promise.resolve(UNLIMITED_PROVISIONING),
@@ -49,54 +49,47 @@ export async function bootstrapInstance(
   // Resolve outside the transaction — the same value the create-organization path uses, so the
   // bootstrap owner's organization is stamped by the instance's provisioning policy too.
   const entitlement = await provisioningEntitlements();
-  const client = await pool.connect();
   try {
-    await client.query("begin");
-    await client.query(
-      `insert into instance_bootstrap (id) values ($1)
+    await pool.transaction(async (client) => {
+      await client.query(
+        `insert into instance_bootstrap (id) values ($1)
        on conflict (id) do nothing`,
-      [BOOTSTRAP_ROW_ID],
-    );
-    const existing = await client.query<BootstrapRow>(
-      `select organization_id, owner_user_id, completed_at
+        [BOOTSTRAP_ROW_ID],
+      );
+      const existing = await client.query<BootstrapRow>(
+        `select organization_id, owner_user_id, completed_at
        from instance_bootstrap
        where id = $1
        for update`,
-      [BOOTSTRAP_ROW_ID],
-    );
-    const row = existing.rows[0];
-    if (row === undefined) throw new InstanceBootstrapError("bootstrap state disappeared");
-    if (row.completed_at !== null) {
-      await client.query("commit");
-      return;
-    }
-    if (row.owner_user_id !== null) {
-      throw new InstanceBootstrapError(
-        "bootstrap state has an owner without completion; repair the instance_bootstrap row before restarting",
+        [BOOTSTRAP_ROW_ID],
       );
-    }
+      const row = existing.rows[0];
+      if (row === undefined) throw new InstanceBootstrapError("bootstrap state disappeared");
+      if (row.completed_at !== null) return;
+      if (row.owner_user_id !== null) {
+        throw new InstanceBootstrapError(
+          "bootstrap state has an owner without completion; repair the instance_bootstrap row before restarting",
+        );
+      }
 
-    const created = await createBootstrapData(client, settings, row.organization_id, entitlement);
-    await client.query(
-      `update instance_bootstrap
+      const created = await createBootstrapData(client, settings, row.organization_id, entitlement);
+      await client.query(
+        `update instance_bootstrap
        set organization_id = $2, owner_user_id = $3, completed_at = now()
        where id = $1`,
-      [BOOTSTRAP_ROW_ID, created.organizationId, created.ownerUserId],
-    );
-    await client.query("commit");
+        [BOOTSTRAP_ROW_ID, created.organizationId, created.ownerUserId],
+      );
+    });
   } catch (error) {
-    await client.query("rollback").catch(() => undefined);
     if (error instanceof InstanceBootstrapError) throw error;
     throw new InstanceBootstrapError(
       `bootstrap failed: ${error instanceof Error ? error.message : "unknown database error"}`,
     );
-  } finally {
-    client.release();
   }
 }
 
 async function createBootstrapData(
-  client: PoolClient,
+  client: QueryHandle,
   settings: BootstrapSettings,
   existingOrganizationId: string | null,
   entitlement: ProvisioningEntitlement,
@@ -229,7 +222,7 @@ async function createBootstrapData(
   };
 }
 
-async function latestOrganizationId(client: PoolClient, ownerUserId: string): Promise<string> {
+async function latestOrganizationId(client: QueryHandle, ownerUserId: string): Promise<string> {
   const result = await client.query<{ id: string }>(
     `select organization_id as id from member where user_id = $1 and role = 'owner'`,
     [ownerUserId],

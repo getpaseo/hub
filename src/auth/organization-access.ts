@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient, QueryResultRow } from "pg";
+import type {
+  DatabaseRuntime,
+  QueryHandle,
+  QueryRow,
+  TransactionHandle,
+} from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
 import { logger } from "../logger.js";
 import { OrganizationApiKeys } from "./api-keys.js";
@@ -78,7 +84,8 @@ export interface AccountSessionReader {
 }
 
 interface OrganizationAccessOptions {
-  pool: Pool;
+  pool: DatabaseRuntime;
+  locks: Locks;
   sessions: AccountSessionReader;
   baseURL: string;
   policy: InstanceAuthPolicy;
@@ -94,7 +101,7 @@ interface OrganizationAccessOptions {
   onMembershipChanged?: (organizationId: string) => Promise<void>;
 }
 
-interface MembershipRow extends QueryResultRow {
+interface MembershipRow extends QueryRow {
   member_id: string;
   organization_id: string;
   organization_name: string;
@@ -102,7 +109,7 @@ interface MembershipRow extends QueryResultRow {
   role: string;
 }
 
-interface MemberRow extends QueryResultRow {
+interface MemberRow extends QueryRow {
   id: string;
   user_id: string;
   name: string;
@@ -110,7 +117,7 @@ interface MemberRow extends QueryResultRow {
   role: string;
 }
 
-interface InvitationRow extends QueryResultRow {
+interface InvitationRow extends QueryRow {
   id: string;
   organization_id: string;
   organization_name: string;
@@ -120,7 +127,7 @@ interface InvitationRow extends QueryResultRow {
   expires_at: Date;
 }
 
-interface TargetMemberRow extends QueryResultRow {
+interface TargetMemberRow extends QueryRow {
   id: string;
   user_id: string;
   role: string;
@@ -282,7 +289,7 @@ export class OrganizationAccess {
     // Resolve the provisioning entitlement before opening the transaction — on a hosted instance
     // this reads the Free plan from the catalog mirror, which must not run inside the org insert.
     const entitlement = await this.options.provisioningEntitlements();
-    const organization = await transaction(this.options.pool, async (client) => {
+    const organization = await this.options.pool.transaction(async (client) => {
       const created = await provisionOrganization(
         client,
         {
@@ -304,7 +311,7 @@ export class OrganizationAccess {
   private async selectOrganization(request: Request): Promise<Response> {
     const session = await this.requireSession(request);
     const input = await parseBody(request, organizationIdBody);
-    await transaction(this.options.pool, async (client) => {
+    await this.options.pool.transaction(async (client) => {
       const membership = await client.query(
         `select 1 from member
          where user_id = $1 and organization_id = $2 and role in ('owner', 'admin', 'member')`,
@@ -357,8 +364,12 @@ export class OrganizationAccess {
     if (scopes.length !== input.scopes.length) {
       throw new ProductRequestError(400, "invalid_api_key_scopes");
     }
-    const created = await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    const created = await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       const actorRole = await currentActorRole(client, access);
       if (!capabilitiesFor(actorRole).manageResources) {
         throw new ProductRequestError(403, "forbidden");
@@ -392,8 +403,12 @@ export class OrganizationAccess {
     const session = await this.requireSession(request);
     const input = await parseBody(request, apiKeyIdBody);
     const access = await this.requireActiveAccess(session);
-    await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       const actorRole = await currentActorRole(client, access);
       if (!capabilitiesFor(actorRole).manageResources) {
         throw new ProductRequestError(403, "forbidden");
@@ -409,8 +424,12 @@ export class OrganizationAccess {
     const session = await this.requireSession(request);
     const input = await parseBody(request, apiKeyIdBody);
     const access = await this.requireActiveAccess(session);
-    await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       const role = await currentActorRole(client, access);
       if (!capabilitiesFor(role).manageResources) {
         throw new ProductRequestError(403, "forbidden");
@@ -427,8 +446,12 @@ export class OrganizationAccess {
     const input = await parseBody(request, createInvitationBody);
     const access = await this.requireActiveAccess(session);
     const email = normalizeEmail(input.email);
-    const invitation = await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    const invitation = await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       await lockOrganizationMembers(client, access.organization.id);
       const actorRole = await currentActorRole(client, access);
       if (!capabilitiesFor(actorRole).manageMembers) {
@@ -505,11 +528,13 @@ export class OrganizationAccess {
     const session = await this.requireSession(request);
     const input = await parseBody(request, invitationIdBody);
     const access = await this.requireActiveAccess(session);
-    await transaction(this.options.pool, async (client) => {
-      await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        invitationLockName(input.invitationId),
-      ]);
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    await this.options.pool.transaction(async (client) => {
+      await this.options.locks.withTxLock(client, invitationLockName(input.invitationId));
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       await lockOrganizationMembers(client, access.organization.id);
       const actorRole = await currentActorRole(client, access);
       if (!capabilitiesFor(actorRole).manageMembers) {
@@ -530,7 +555,7 @@ export class OrganizationAccess {
   private async acceptInvitation(request: Request): Promise<Response> {
     const session = await this.requireSession(request);
     const input = await parseBody(request, invitationIdBody);
-    const organizationId = await transaction(this.options.pool, async (client) => {
+    const organizationId = await this.options.pool.transaction(async (client) => {
       const target = await client.query<{ organization_id: string }>(
         `select organization_id from invitation where id = $1`,
         [input.invitationId],
@@ -539,10 +564,8 @@ export class OrganizationAccess {
       if (targetOrganizationId === undefined) {
         throw new ProductRequestError(404, "invitation_unavailable");
       }
-      await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        invitationLockName(input.invitationId),
-      ]);
-      await lockOrganizationMembershipTransitions(client, targetOrganizationId);
+      await this.options.locks.withTxLock(client, invitationLockName(input.invitationId));
+      await lockOrganizationMembershipTransitions(this.options.locks, client, targetOrganizationId);
       const invitationResult = await client.query<InvitationRow>(
         `select invitation.id, invitation.organization_id, organization.name as organization_name,
                 "user".name as inviter_name, invitation.email, invitation.role,
@@ -584,8 +607,12 @@ export class OrganizationAccess {
     const session = await this.requireSession(request);
     const input = await parseBody(request, changeRoleBody);
     const access = await this.requireActiveAccess(session);
-    await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       await lockOrganizationMembers(client, access.organization.id);
       const actorRole = await currentActorRole(client, access);
       const target = await targetMember(client, access.organization.id, input.memberId);
@@ -606,8 +633,12 @@ export class OrganizationAccess {
     const session = await this.requireSession(request);
     const input = await parseBody(request, removeMemberBody);
     const access = await this.requireActiveAccess(session);
-    await transaction(this.options.pool, async (client) => {
-      await lockOrganizationMembershipTransitions(client, access.organization.id);
+    await this.options.pool.transaction(async (client) => {
+      await lockOrganizationMembershipTransitions(
+        this.options.locks,
+        client,
+        access.organization.id,
+      );
       await lockOrganizationMembers(client, access.organization.id);
       const actorRole = await currentActorRole(client, access);
       const target = await targetMember(client, access.organization.id, input.memberId);
@@ -662,7 +693,7 @@ export class OrganizationAccess {
   }
 
   private async activeAccess(
-    client: Pool | PoolClient,
+    client: QueryHandle,
     session: AccountSession,
   ): Promise<OrganizationAccessValue | undefined> {
     if (session.activeOrganizationId === null) return undefined;
@@ -675,7 +706,7 @@ export class OrganizationAccess {
   }
 
   private async memberships(
-    client: Pool | PoolClient,
+    client: QueryHandle,
     userId: string,
     organizationId?: string,
   ): Promise<MembershipRow[]> {
@@ -760,7 +791,7 @@ export class OrganizationAccess {
   }
 
   private async availableInvitation(
-    client: Pool | PoolClient,
+    client: QueryHandle,
     invitationId: string,
     accountEmail: string,
   ): Promise<InvitationRow | undefined> {
@@ -779,7 +810,7 @@ export class OrganizationAccess {
   }
 
   private async signedOutInvitation(
-    client: Pool | PoolClient,
+    client: QueryHandle,
     invitationId: string,
   ): Promise<InvitationRow | undefined> {
     const result = await client.query<InvitationRow>(
@@ -881,7 +912,7 @@ async function parseBody<TSchema extends z.ZodType>(
 }
 
 async function activateSession(
-  client: PoolClient,
+  client: QueryHandle,
   session: AccountSession,
   organizationId: string,
 ): Promise<void> {
@@ -894,7 +925,7 @@ async function activateSession(
 }
 
 async function targetMember(
-  client: PoolClient,
+  client: QueryHandle,
   organizationId: string,
   memberId: string,
 ): Promise<TargetMemberRow | undefined> {
@@ -906,7 +937,7 @@ async function targetMember(
 }
 
 async function currentActorRole(
-  client: PoolClient,
+  client: QueryHandle,
   access: OrganizationAccessValue,
 ): Promise<OrganizationRole> {
   const result = await client.query<{ role: string }>(
@@ -925,7 +956,7 @@ async function currentActorRole(
  * This is the seats counter wired into `EntitlementsService` at composition.
  */
 export async function countOrganizationSeatUsage(
-  pool: Pool,
+  pool: QueryHandle,
   organizationId: string,
 ): Promise<number> {
   const result = await pool.query<{ count: string }>(
@@ -938,23 +969,22 @@ export async function countOrganizationSeatUsage(
   return Number(result.rows[0]?.count ?? 0);
 }
 
-async function lockOrganizationMembers(client: PoolClient, organizationId: string): Promise<void> {
+async function lockOrganizationMembers(client: QueryHandle, organizationId: string): Promise<void> {
   await client.query(`select id from member where organization_id = $1 for update`, [
     organizationId,
   ]);
 }
 
 async function lockOrganizationMembershipTransitions(
-  client: PoolClient,
+  locks: Locks,
+  client: TransactionHandle,
   organizationId: string,
 ): Promise<void> {
-  await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-    `paseo-organization-membership:${organizationId}`,
-  ]);
+  await locks.withTxLock(client, `paseo-organization-membership:${organizationId}`);
 }
 
 async function protectLastOwner(
-  client: PoolClient,
+  client: QueryHandle,
   organizationId: string,
   current: OrganizationRole,
   next: OrganizationRole | undefined,
@@ -966,24 +996,6 @@ async function protectLastOwner(
     [organizationId],
   );
   if (owners.rows[0]?.count === 1) throw new ProductRequestError(409, "last_owner_required");
-}
-
-async function transaction<T>(
-  pool: Pool,
-  operation: (client: PoolClient) => Promise<T>,
-): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const value = await operation(client);
-    await client.query("commit");
-    return value;
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
-  }
 }
 
 function normalizeEmail(email: string): string {

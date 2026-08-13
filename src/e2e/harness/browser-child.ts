@@ -6,7 +6,8 @@ import { createAuthServer } from "../../auth/server.js";
 import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
-import { createDatabase, createPostgresPool } from "../../db/pg.js";
+import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
+import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
@@ -71,8 +72,12 @@ async function main(): Promise<void> {
   const databaseUrl = requiredEnvironment("DATABASE_URL");
   const publicBaseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
   const scenario = readScenario();
-  const database = await createDatabase(databaseUrl);
-  const entitlements = composeEntitlements(database, databaseUrl);
+  const {
+    database,
+    runtime: databaseRuntime,
+    locks,
+  } = await createPostgresTestRuntime(databaseUrl);
+  const entitlements = composeEntitlements(database, databaseRuntime);
   // Compose (and sync) billing before auth: a billing-configured harness provisions new
   // organizations onto the Free plan, so the resolver must exist before createAuthServer, and the
   // catalog must be synced before auth.initialize runs any bootstrap.
@@ -84,7 +89,8 @@ async function main(): Promise<void> {
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const auth = browserAuthEnabled()
     ? createAuthServer({
-        databaseUrl,
+        database: databaseRuntime,
+        locks,
         entitlements: entitlements.service,
         baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
         secret: authSecret,
@@ -96,7 +102,7 @@ async function main(): Promise<void> {
   const machineAuth = machineAuthEnabled();
   const databaseProfile = requiredEnvironment("PASEO_E2E_DATABASE_PROFILE");
   if (auth !== null && machineAuth && databaseProfile === "fresh") {
-    await seedMachineAuthTarget(databaseUrl);
+    await seedMachineAuthTarget(databaseRuntime);
   }
   const machineKey =
     auth === null || !machineAuth
@@ -217,10 +223,8 @@ function billingAuthOptions(billing: BillingRuntime | null) {
   };
 }
 
-async function seedMachineAuthTarget(databaseUrl: string): Promise<void> {
-  const pool = createPostgresPool(databaseUrl);
-  try {
-    await pool.query(`
+async function seedMachineAuthTarget(database: DatabaseRuntime): Promise<void> {
+  await database.query(`
       insert into organization (id, name, slug)
       values ('phase-zero', 'E2E machine organization', 'phase-zero')
       on conflict (id) do nothing;
@@ -236,10 +240,7 @@ async function seedMachineAuthTarget(databaseUrl: string): Promise<void> {
       insert into member (id, organization_id, user_id, role)
       values ('phase-zero-owner', 'phase-zero', 'phase-zero-user', 'owner')
       on conflict (id) do nothing;
-    `);
-  } finally {
-    await pool.end();
-  }
+  `);
 }
 
 async function acceptCommand(

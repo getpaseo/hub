@@ -1,24 +1,17 @@
-import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { Pool } from "pg";
-import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { JsonValue } from "../config/compiler.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
-import { logger } from "../logger.js";
 import {
   clearOverrideKey,
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { DatabaseUnavailableError, toDatabaseError } from "./errors.js";
+import { toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
-import * as schema from "./schema.js";
 import {
   toAgentExecutionRecord,
   toAttachmentRecord,
@@ -29,6 +22,8 @@ import {
   toProviderEventReceiptRecord,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
+import type { Locks } from "./runtime/locks/index.js";
 import type {
   AgentExecutionOutputAttempt,
   AgentExecutionRecord,
@@ -109,9 +104,6 @@ import type {
   ReconcileOrganizationSubscriptionInput,
 } from "./types.js";
 
-const QUERY_DEADLINE_MS = 3_000;
-const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
-const DEFAULT_POSTGRES_DATABASE = "postgres";
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 function transitionWithTerminalRun(
@@ -123,25 +115,20 @@ function transitionWithTerminalRun(
     : { ...transition, terminalRun: run };
 }
 
-export async function createDatabase(url: string): Promise<Database> {
-  await ensureDatabaseExists(url);
-  const pool = createPostgresPool(url);
-  try {
-    await runMigrations(pool);
-    return new PgDatabase(pool);
-  } catch (error) {
-    await pool.end();
-    throw toDatabaseError(error);
-  }
+export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database {
+  return new PgDatabase(runtime, locks);
 }
 
 class PgDatabase implements Database {
   private readonly connections;
   private readonly triggerAcceptance;
 
-  constructor(private readonly pool: Pool) {
-    const database = drizzle(pool, { schema });
-    this.connections = new ConnectionRepository(database);
+  constructor(
+    private readonly pool: DatabaseRuntime,
+    private readonly locks: Locks,
+  ) {
+    const database = this.pool.drizzle();
+    this.connections = new ConnectionRepository(this.pool, locks);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
   }
 
@@ -474,82 +461,77 @@ class PgDatabase implements Database {
   async createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const inserted = await client.query<TriggerRunRow>(
-        `insert into trigger_runs
+      return await this.pool.transaction(async (client) => {
+        const inserted = await client.query<TriggerRunRow>(
+          `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
             raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, '{}'::jsonb, $10, $11, $12, null, null, $13)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
-        [
-          input.id ?? null,
-          input.organizationId,
-          input.projectId,
-          input.configurationRevisionId,
-          input.providerEventReceiptId,
-          input.configuredTriggerName,
-          input.rawPrompt,
-          input.prompt,
-          input.inputs,
-          input.triggerContext,
-          input.outputContext,
-          input.deadlineAt,
-          input.createdAt ?? new Date(),
-        ],
-      );
-      let run = inserted.rows[0];
-      const created = run !== undefined;
-      if (run === undefined) {
-        const existing = await client.query<TriggerRunRow>(
-          `select * from trigger_runs
+          [
+            input.id ?? null,
+            input.organizationId,
+            input.projectId,
+            input.configurationRevisionId,
+            input.providerEventReceiptId,
+            input.configuredTriggerName,
+            input.rawPrompt,
+            input.prompt,
+            input.inputs,
+            input.triggerContext,
+            input.outputContext,
+            input.deadlineAt,
+            input.createdAt ?? new Date(),
+          ],
+        );
+        let run = inserted.rows[0];
+        const created = run !== undefined;
+        if (run === undefined) {
+          const existing = await client.query<TriggerRunRow>(
+            `select * from trigger_runs
            where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-          [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-        );
-        run = existing.rows[0];
-      }
-      if (run === undefined) throw new Error("trigger run insert returned no row");
-      if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-      for (const [ordinal, stepId] of input.stepIds.entries()) {
-        await client.query(
-          `insert into workflow_step_runs
+            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
+          );
+          run = existing.rows[0];
+        }
+        if (run === undefined) throw new Error("trigger run insert returned no row");
+        if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+        for (const [ordinal, stepId] of input.stepIds.entries()) {
+          await client.query(
+            `insert into workflow_step_runs
              (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
            values ($1, $2, $3, 'pending', null, null, null)
            on conflict (trigger_run_id, ordinal) do nothing`,
-          [run.id, stepId, ordinal],
-        );
-      }
-      await client.query(
-        `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+            [run.id, stepId, ordinal],
+          );
+        }
+        await client.query(
+          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
          values ($1, $2, null)
          on conflict (trigger_run_id) do nothing`,
-        [run.id, input.createdAt ?? new Date()],
-      );
-      await client.query("commit");
-      const record = toTriggerRunRecord(run);
-      if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-      return { run: record, created };
+          [run.id, input.createdAt ?? new Date()],
+        );
+        const record = toTriggerRunRecord(run);
+        if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+        return { run: record, created };
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const createdAt = input.createdAt ?? new Date();
-      const inserted = await client.query<TriggerRunRow>(
-        `insert into trigger_runs
+      return await this.pool.transaction(async (client) => {
+        const createdAt = input.createdAt ?? new Date();
+        const inserted = await client.query<TriggerRunRow>(
+          `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
             raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
@@ -557,44 +539,41 @@ class PgDatabase implements Database {
                  $7, $8, $9, '{}'::jsonb, $10, $11, null, $13, $12, $12)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
-        [
-          input.id ?? null,
-          input.organizationId,
-          input.projectId,
-          input.configurationRevisionId,
-          input.providerEventReceiptId,
-          input.configuredTriggerName,
-          input.rawPrompt,
-          input.prompt,
-          input.inputs,
-          input.triggerContext,
-          input.outputContext,
-          createdAt,
-          input.rejection,
-        ],
-      );
-      let run = inserted.rows[0];
-      const created = run !== undefined;
-      if (run === undefined) {
-        const existing = await client.query<TriggerRunRow>(
-          `select * from trigger_runs
+          [
+            input.id ?? null,
+            input.organizationId,
+            input.projectId,
+            input.configurationRevisionId,
+            input.providerEventReceiptId,
+            input.configuredTriggerName,
+            input.rawPrompt,
+            input.prompt,
+            input.inputs,
+            input.triggerContext,
+            input.outputContext,
+            createdAt,
+            input.rejection,
+          ],
+        );
+        let run = inserted.rows[0];
+        const created = run !== undefined;
+        if (run === undefined) {
+          const existing = await client.query<TriggerRunRow>(
+            `select * from trigger_runs
            where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-          [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-        );
-        run = existing.rows[0];
-      }
-      if (run === undefined) throw new Error("trigger run insert returned no row");
-      if (run.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
-      await client.query("commit");
-      const record = toTriggerRunRecord(run);
-      if (record.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
-      return { run: record, created };
+            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
+          );
+          run = existing.rows[0];
+        }
+        if (run === undefined) throw new Error("trigger run insert returned no row");
+        if (run.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+        const record = toTriggerRunRecord(run);
+        if (record.outcome !== "rejected") throw new Error("trigger branch outcome conflict");
+        return { run: record, created };
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -665,33 +644,28 @@ class PgDatabase implements Database {
   }
 
   async claimWorkflowWakeup(now: Date, leaseMs: number) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<WorkflowWakeupRow>(
-        `select * from workflow_wakeups
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<WorkflowWakeupRow>(
+          `select * from workflow_wakeups
          where available_at <= $1
            and (lease_expires_at is null or lease_expires_at <= $1)
          order by available_at, trigger_run_id
          for update skip locked limit 1`,
-        [now],
-      );
-      const wakeup = selected.rows[0];
-      if (wakeup === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      const updated = await client.query<WorkflowWakeupRow>(
-        `update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 returning *`,
-        [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs)],
-      );
-      await client.query("commit");
-      return toWorkflowWakeupRecord(updated.rows[0]!, wakeup.lease_expires_at !== null);
+          [now],
+        );
+        const wakeup = selected.rows[0];
+        if (wakeup === undefined) {
+          return undefined;
+        }
+        const updated = await client.query<WorkflowWakeupRow>(
+          `update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 returning *`,
+          [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs)],
+        );
+        return toWorkflowWakeupRecord(updated.rows[0]!, wakeup.lease_expires_at !== null);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -714,137 +688,129 @@ class PgDatabase implements Database {
   }
 
   async createWorkflowStepExecution(input: WorkflowStepExecutionInput) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const startedAt = input.execution.startedAt;
-      const runRows = await client.query<TriggerRunRow>(
-        `select * from trigger_runs where id = $1 for update`,
-        [input.triggerRunId],
-      );
-      const run = runRows.rows[0];
-      if (run === undefined) throw new Error("workflow trigger run not found");
-      if (run.outcome !== "accepted" || run.status !== "running") {
-        await client.query("commit");
-        const stepRows = await client.query<WorkflowStepRunRow>(
-          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
-          [input.triggerRunId, input.stepId, input.ordinal],
+      return await this.pool.transaction(async (client) => {
+        const startedAt = input.execution.startedAt;
+        const runRows = await client.query<TriggerRunRow>(
+          `select * from trigger_runs where id = $1 for update`,
+          [input.triggerRunId],
         );
-        const step = stepRows.rows[0];
-        if (step === undefined) throw new Error("workflow step run not found");
-        return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
-      }
-      if (run.deadline_at === null || run.deadline_at.getTime() <= startedAt.getTime()) {
-        await timeoutWorkflowRunOnClient(client, run, startedAt);
-        const stepRows = await client.query<WorkflowStepRunRow>(
-          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
-          [input.triggerRunId, input.stepId, input.ordinal],
-        );
-        const step = stepRows.rows[0];
-        await client.query("commit");
-        if (step === undefined) throw new Error("workflow step run not found");
-        return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
-      }
-      const deadlineAt = new Date(
-        Math.min(input.execution.deadlineAt.getTime(), run.deadline_at.getTime()),
-      );
-      const idleDeadlineAt = new Date(
-        Math.min(
-          input.execution.idleDeadlineAt.getTime(),
-          deadlineAt.getTime(),
-          run.deadline_at.getTime(),
-        ),
-      );
-      const selected = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3 for update`,
-        [input.triggerRunId, input.stepId, input.ordinal],
-      );
-      let step = selected.rows[0];
-      if (step === undefined) throw new Error("workflow step run not found");
-      if (step.agent_execution_id !== null) {
-        const existing = await client.query<AgentExecutionRow>(
-          `select * from agent_executions where id = $1`,
-          [step.agent_execution_id],
-        );
-        await client.query("commit");
-        return {
-          stepRun: toWorkflowStepRunRecord(step),
-          execution:
-            existing.rows[0] === undefined ? undefined : toAgentExecutionRecord(existing.rows[0]),
-          created: false,
-        };
-      }
-      const execution = await insertAgentExecutionOnClient(client, {
-        ...input.execution,
-        id: input.executionId,
-        deadlineAt,
-        idleDeadlineAt,
-        workflowStepRunId: step.id,
-      });
-      // Reserve one meter unit in the same transaction that creates the execution. If the
-      // reservation is denied the whole transaction rolls back, so no execution is created and
-      // nothing is dispatched — metering is atomic with the work it permits.
-      if (input.reservation !== undefined) {
-        const reserved = await reserveOrganizationUsageOnClient(client, {
-          organizationId: input.execution.organizationId,
-          meter: input.reservation.meter,
-          periodStart: input.reservation.periodStart,
-          amount: 1,
-          limit: input.reservation.limit,
-        });
-        if (reserved === undefined) {
-          if (input.reservation.limit === null) {
-            throw new Error("unreachable: an unlimited meter reservation cannot be denied");
-          }
-          const usage = await client.query<OrganizationUsageRow>(
-            `select used from organization_usage
-             where organization_id = $1 and meter = $2 and period_start = $3`,
-            [
-              input.execution.organizationId,
-              input.reservation.meter,
-              input.reservation.periodStart,
-            ],
+        const run = runRows.rows[0];
+        if (run === undefined) throw new Error("workflow trigger run not found");
+        if (run.outcome !== "accepted" || run.status !== "running") {
+          const stepRows = await client.query<WorkflowStepRunRow>(
+            `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
+            [input.triggerRunId, input.stepId, input.ordinal],
           );
-          await client.query("rollback");
+          const step = stepRows.rows[0];
+          if (step === undefined) throw new Error("workflow step run not found");
+          return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
+        }
+        if (run.deadline_at === null || run.deadline_at.getTime() <= startedAt.getTime()) {
+          await timeoutWorkflowRunOnClient(client, run, startedAt);
+          const stepRows = await client.query<WorkflowStepRunRow>(
+            `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3`,
+            [input.triggerRunId, input.stepId, input.ordinal],
+          );
+          const step = stepRows.rows[0];
+          if (step === undefined) throw new Error("workflow step run not found");
+          return { stepRun: toWorkflowStepRunRecord(step), execution: undefined, created: false };
+        }
+        const deadlineAt = new Date(
+          Math.min(input.execution.deadlineAt.getTime(), run.deadline_at.getTime()),
+        );
+        const idleDeadlineAt = new Date(
+          Math.min(
+            input.execution.idleDeadlineAt.getTime(),
+            deadlineAt.getTime(),
+            run.deadline_at.getTime(),
+          ),
+        );
+        const selected = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 and ordinal = $3 for update`,
+          [input.triggerRunId, input.stepId, input.ordinal],
+        );
+        let step = selected.rows[0];
+        if (step === undefined) throw new Error("workflow step run not found");
+        if (step.agent_execution_id !== null) {
+          const existing = await client.query<AgentExecutionRow>(
+            `select * from agent_executions where id = $1`,
+            [step.agent_execution_id],
+          );
           return {
             stepRun: toWorkflowStepRunRecord(step),
-            execution: undefined,
+            execution:
+              existing.rows[0] === undefined ? undefined : toAgentExecutionRecord(existing.rows[0]),
             created: false,
-            reservationDenied: {
-              meter: input.reservation.meter,
-              limit: input.reservation.limit,
-              current: Number(usage.rows[0]?.used ?? 0),
-            },
           };
         }
-      }
-      const updated = await client.query<WorkflowStepRunRow>(
-        `update workflow_step_runs
+        const execution = await insertAgentExecutionOnClient(client, {
+          ...input.execution,
+          id: input.executionId,
+          deadlineAt,
+          idleDeadlineAt,
+          workflowStepRunId: step.id,
+        });
+        // Reserve one meter unit in the same transaction that creates the execution. If the
+        // reservation is denied the whole transaction rolls back, so no execution is created and
+        // nothing is dispatched — metering is atomic with the work it permits.
+        if (input.reservation !== undefined) {
+          const reserved = await reserveOrganizationUsageOnClient(client, {
+            organizationId: input.execution.organizationId,
+            meter: input.reservation.meter,
+            periodStart: input.reservation.periodStart,
+            amount: 1,
+            limit: input.reservation.limit,
+          });
+          if (reserved === undefined) {
+            if (input.reservation.limit === null) {
+              throw new Error("unreachable: an unlimited meter reservation cannot be denied");
+            }
+            const usage = await client.query<OrganizationUsageRow>(
+              `select used from organization_usage
+             where organization_id = $1 and meter = $2 and period_start = $3`,
+              [
+                input.execution.organizationId,
+                input.reservation.meter,
+                input.reservation.periodStart,
+              ],
+            );
+            return client.rollback({
+              stepRun: toWorkflowStepRunRecord(step),
+              execution: undefined,
+              created: false,
+              reservationDenied: {
+                meter: input.reservation.meter,
+                limit: input.reservation.limit,
+                current: Number(usage.rows[0]?.used ?? 0),
+              },
+            });
+          }
+        }
+        const updated = await client.query<WorkflowStepRunRow>(
+          `update workflow_step_runs
          set status = 'running', agent_execution_id = $2, started_at = coalesce(started_at, $3),
              deadline_at = $4, idle_deadline_at = $5, dispatch_intent = coalesce($6, dispatch_intent)
          where id = $1 and agent_execution_id is null
          returning *`,
-        [
-          step.id,
-          execution.id,
-          execution.started_at,
-          execution.deadline_at,
-          execution.idle_deadline_at,
-          input.execution.launchIntent ?? null,
-        ],
-      );
-      step = updated.rows[0] ?? step;
-      await client.query("commit");
-      return {
-        stepRun: toWorkflowStepRunRecord(step),
-        execution: toAgentExecutionRecord(execution),
-        created: true,
-      };
+          [
+            step.id,
+            execution.id,
+            execution.started_at,
+            execution.deadline_at,
+            execution.idle_deadline_at,
+            input.execution.launchIntent ?? null,
+          ],
+        );
+        step = updated.rows[0] ?? step;
+        return {
+          stepRun: toWorkflowStepRunRecord(step),
+          execution: toAgentExecutionRecord(execution),
+          created: true,
+        };
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -853,44 +819,40 @@ class PgDatabase implements Database {
     executionId: string,
     dispatchIntent?: LaunchMachineIntent,
   ) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where id = $1 for update`,
-        [stepRunId],
-      );
-      const step = selected.rows[0];
-      if (step === undefined) throw new Error(`workflow step run not found: ${stepRunId}`);
-      if (step.agent_execution_id !== null && step.agent_execution_id !== executionId) {
-        throw new Error(`workflow step run already linked: ${stepRunId}`);
-      }
-      if (step.agent_execution_id === executionId) {
-        await client.query("commit");
-        return toWorkflowStepRunRecord(step);
-      }
-      const execution = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1`,
-        [executionId],
-      );
-      const executionRow = execution.rows[0];
-      if (executionRow === undefined) throw new Error(`agent execution not found: ${executionId}`);
-      const updated = await client.query<WorkflowStepRunRow>(
-        `update workflow_step_runs
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where id = $1 for update`,
+          [stepRunId],
+        );
+        const step = selected.rows[0];
+        if (step === undefined) throw new Error(`workflow step run not found: ${stepRunId}`);
+        if (step.agent_execution_id !== null && step.agent_execution_id !== executionId) {
+          throw new Error(`workflow step run already linked: ${stepRunId}`);
+        }
+        if (step.agent_execution_id === executionId) {
+          return toWorkflowStepRunRecord(step);
+        }
+        const execution = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1`,
+          [executionId],
+        );
+        const executionRow = execution.rows[0];
+        if (executionRow === undefined)
+          throw new Error(`agent execution not found: ${executionId}`);
+        const updated = await client.query<WorkflowStepRunRow>(
+          `update workflow_step_runs
          set status = case when status = 'pending' then 'running' else status end,
              agent_execution_id = $2, started_at = coalesce(started_at, $3),
              dispatch_intent = coalesce($4, dispatch_intent)
          where id = $1 and agent_execution_id is null
          returning *`,
-        [stepRunId, executionId, executionRow.started_at, dispatchIntent ?? null],
-      );
-      await client.query("commit");
-      return toWorkflowStepRunRecord(updated.rows[0] ?? step);
+          [stepRunId, executionId, executionRow.started_at, dispatchIntent ?? null],
+        );
+        return toWorkflowStepRunRecord(updated.rows[0] ?? step);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -920,166 +882,153 @@ class PgDatabase implements Database {
   }
 
   async completeWorkflowAgentExecution(input: WorkflowAgentCompletionInput) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const initialExecution = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1`,
-        [input.executionId],
-      );
-      const initial = initialExecution.rows[0];
-      if (initial === undefined) throw new Error(`agent execution not found: ${input.executionId}`);
-      if (initial.workflow_step_run_id === null) {
-        await client.query("commit");
-        return this.transitionAgentExecution(input.executionId, input.executionStatus, {
-          result: input.result,
-          ...(input.completedByAgent === undefined
-            ? {}
-            : { completedByAgent: input.completedByAgent }),
-          ...(input.deadlineCondition === undefined
-            ? {}
-            : { deadlineCondition: input.deadlineCondition }),
-          ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
-        });
-      }
-
-      const stepLookup = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where id = $1`,
-        [initial.workflow_step_run_id],
-      );
-      const stepCandidate = stepLookup.rows[0];
-      if (stepCandidate === undefined) throw new Error("workflow step run not found");
-      const runRows = await client.query<TriggerRunRow>(
-        `select * from trigger_runs where id = $1 for update`,
-        [stepCandidate.trigger_run_id],
-      );
-      const run = runRows.rows[0];
-      if (run === undefined) throw new Error("workflow trigger run not found");
-      const stepRows = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where id = $1 for update`,
-        [initial.workflow_step_run_id],
-      );
-      const step = stepRows.rows[0];
-      if (step === undefined) throw new Error("workflow step run not found");
-
-      const executionRows = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1 for update`,
-        [input.executionId],
-      );
-      const execution = executionRows.rows[0];
-      if (execution === undefined)
-        throw new Error(`agent execution not found: ${input.executionId}`);
-      const observedAt = input.observedAt ?? new Date();
-      if (execution.status === "spawning" || execution.status === "running") {
-        const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
-        if (deadlineKind === "whole_run") {
-          const recovery = await timeoutWorkflowRunOnClient(client, run, observedAt);
-          const terminalRun = await findTriggerRunOnClient(client, run.id);
-          const updatedExecution = await findAgentExecutionOnClient(client, input.executionId);
-          await client.query("commit");
-          return transitionWithTerminalRun(
-            {
-              execution: updatedExecution ?? toAgentExecutionRecord(execution),
-              transitioned: recovery.executionIds.includes(input.executionId),
-              deadlineKind,
-            },
-            terminalRun,
-          );
+      return await this.pool.transaction(async (client) => {
+        const initialExecution = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1`,
+          [input.executionId],
+        );
+        const initial = initialExecution.rows[0];
+        if (initial === undefined)
+          throw new Error(`agent execution not found: ${input.executionId}`);
+        if (initial.workflow_step_run_id === null) {
+          return this.transitionAgentExecution(input.executionId, input.executionStatus, {
+            result: input.result,
+            ...(input.completedByAgent === undefined
+              ? {}
+              : { completedByAgent: input.completedByAgent }),
+            ...(input.deadlineCondition === undefined
+              ? {}
+              : { deadlineCondition: input.deadlineCondition }),
+            ...(input.hubAction === undefined ? {} : { hubAction: input.hubAction }),
+          });
         }
-        if (deadlineKind !== undefined) {
-          const updated = await timeoutWorkflowStepOnClient(
-            client,
-            execution,
-            step,
-            run,
-            deadlineKind,
-            observedAt,
-          );
-          const terminalRun = await findTriggerRunOnClient(client, run.id);
-          await client.query("commit");
-          return transitionWithTerminalRun(
-            {
-              execution: toAgentExecutionRecord(updated),
-              transitioned: true,
+
+        const stepLookup = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where id = $1`,
+          [initial.workflow_step_run_id],
+        );
+        const stepCandidate = stepLookup.rows[0];
+        if (stepCandidate === undefined) throw new Error("workflow step run not found");
+        const runRows = await client.query<TriggerRunRow>(
+          `select * from trigger_runs where id = $1 for update`,
+          [stepCandidate.trigger_run_id],
+        );
+        const run = runRows.rows[0];
+        if (run === undefined) throw new Error("workflow trigger run not found");
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where id = $1 for update`,
+          [initial.workflow_step_run_id],
+        );
+        const step = stepRows.rows[0];
+        if (step === undefined) throw new Error("workflow step run not found");
+
+        const executionRows = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1 for update`,
+          [input.executionId],
+        );
+        const execution = executionRows.rows[0];
+        if (execution === undefined)
+          throw new Error(`agent execution not found: ${input.executionId}`);
+        const observedAt = input.observedAt ?? new Date();
+        if (execution.status === "spawning" || execution.status === "running") {
+          const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+          if (deadlineKind === "whole_run") {
+            const recovery = await timeoutWorkflowRunOnClient(client, run, observedAt);
+            const terminalRun = await findTriggerRunOnClient(client, run.id);
+            const updatedExecution = await findAgentExecutionOnClient(client, input.executionId);
+            return transitionWithTerminalRun(
+              {
+                execution: updatedExecution ?? toAgentExecutionRecord(execution),
+                transitioned: recovery.executionIds.includes(input.executionId),
+                deadlineKind,
+              },
+              terminalRun,
+            );
+          }
+          if (deadlineKind !== undefined) {
+            const updated = await timeoutWorkflowStepOnClient(
+              client,
+              execution,
+              step,
+              run,
               deadlineKind,
-            },
-            terminalRun,
-          );
+              observedAt,
+            );
+            const terminalRun = await findTriggerRunOnClient(client, run.id);
+            return transitionWithTerminalRun(
+              {
+                execution: toAgentExecutionRecord(updated),
+                transitioned: true,
+                deadlineKind,
+              },
+              terminalRun,
+            );
+          }
         }
-      }
 
-      const liveTransition = await transitionWorkflowAgentExecution(client, execution, input);
-      if (liveTransition === undefined) {
-        await client.query("commit");
-        return { execution: toAgentExecutionRecord(execution), transitioned: false };
-      }
+        const liveTransition = await transitionWorkflowAgentExecution(client, execution, input);
+        if (liveTransition === undefined) {
+          return { execution: toAgentExecutionRecord(execution), transitioned: false };
+        }
 
-      await finishWorkflowStepAndRun(client, step, run, input);
-      const terminalRun = await findTriggerRunOnClient(client, run.id);
+        await finishWorkflowStepAndRun(client, step, run, input);
+        const terminalRun = await findTriggerRunOnClient(client, run.id);
 
-      await client.query("commit");
-      return transitionWithTerminalRun(
-        {
-          execution: toAgentExecutionRecord(liveTransition.execution),
-          transitioned: liveTransition.transitioned,
-          ...(input.deadlineKind === undefined ? {} : { deadlineKind: input.deadlineKind }),
-        },
-        terminalRun,
-      );
+        return transitionWithTerminalRun(
+          {
+            execution: toAgentExecutionRecord(liveTransition.execution),
+            transitioned: liveTransition.transitioned,
+            ...(input.deadlineKind === undefined ? {} : { deadlineKind: input.deadlineKind }),
+          },
+          terminalRun,
+        );
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async markWorkflowStepSkipped(triggerRunId: string, stepId: string, reason: string) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const stepRows = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 for update`,
-        [triggerRunId, stepId],
-      );
-      const step = stepRows.rows[0];
-      const runRows = await client.query<TriggerRunRow>(
-        `select * from trigger_runs where id = $1 for update`,
-        [triggerRunId],
-      );
-      const run = runRows.rows[0];
-      if (step === undefined || run === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      if (step.status !== "pending") {
-        await client.query("commit");
-        return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
-      }
-      const completedAt = new Date();
-      const updatedRows = await client.query<WorkflowStepRunRow>(
-        `update workflow_step_runs
+      return await this.pool.transaction(async (client) => {
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs where trigger_run_id = $1 and step_id = $2 for update`,
+          [triggerRunId, stepId],
+        );
+        const step = stepRows.rows[0];
+        const runRows = await client.query<TriggerRunRow>(
+          `select * from trigger_runs where id = $1 for update`,
+          [triggerRunId],
+        );
+        const run = runRows.rows[0];
+        if (step === undefined || run === undefined) {
+          return undefined;
+        }
+        if (step.status !== "pending") {
+          return { stepRun: toWorkflowStepRunRecord(step), run: toTriggerRunRecord(run) };
+        }
+        const completedAt = new Date();
+        const updatedRows = await client.query<WorkflowStepRunRow>(
+          `update workflow_step_runs
          set status = 'skipped', failure_reason = $2, completed_at = $3
          where id = $1 and status = 'pending' returning *`,
-        [step.id, reason, completedAt],
-      );
-      await client.query(
-        `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+          [step.id, reason, completedAt],
+        );
+        await client.query(
+          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
          values ($1, $2, null)
          on conflict (trigger_run_id) do update
          set available_at = least(workflow_wakeups.available_at, excluded.available_at), lease_expires_at = null`,
-        [triggerRunId, completedAt],
-      );
-      await client.query("commit");
-      return {
-        stepRun: toWorkflowStepRunRecord(updatedRows.rows[0] ?? step),
-        run: toTriggerRunRecord(run),
-      };
+          [triggerRunId, completedAt],
+        );
+        return {
+          stepRun: toWorkflowStepRunRecord(updatedRows.rows[0] ?? step),
+          run: toTriggerRunRecord(run),
+        };
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1107,62 +1056,58 @@ class PgDatabase implements Database {
     failureReason: string,
     stepId?: string,
   ) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const runRows = await client.query<TriggerRunRow>(
-        `select * from trigger_runs where id = $1 for update`,
-        [triggerRunId],
-      );
-      const run = runRows.rows[0];
-      const stepRows = await client.query<WorkflowStepRunRow>(
-        `select * from workflow_step_runs
+      return await this.pool.transaction(async (client) => {
+        const runRows = await client.query<TriggerRunRow>(
+          `select * from trigger_runs where id = $1 for update`,
+          [triggerRunId],
+        );
+        const run = runRows.rows[0];
+        const stepRows = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs
          where trigger_run_id = $1 and ($2::text is null or step_id = $2)
          order by ordinal limit 1 for update`,
-        [triggerRunId, stepId ?? null],
-      );
-      const step = stepRows.rows[0];
-      if (run === undefined || step === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      if (run.status !== "running") {
-        await client.query("commit");
-        return {
-          stepRun: toWorkflowStepRunRecord(step),
-          run: toTriggerRunRecord(run),
-          transitioned: false,
-        };
-      }
-      const completedAt = new Date();
-      const updatedStep = await client.query<WorkflowStepRunRow>(
-        `update workflow_step_runs
+          [triggerRunId, stepId ?? null],
+        );
+        const step = stepRows.rows[0];
+        if (run === undefined || step === undefined) {
+          return undefined;
+        }
+        if (run.status !== "running") {
+          return {
+            stepRun: toWorkflowStepRunRecord(step),
+            run: toTriggerRunRecord(run),
+            transitioned: false,
+          };
+        }
+        const completedAt = new Date();
+        const updatedStep = await client.query<WorkflowStepRunRow>(
+          `update workflow_step_runs
          set status = case when status in ('pending', 'running') then $2 else status end,
              failure_reason = case when status in ('pending', 'running') then $3 else failure_reason end,
              completed_at = case when status in ('pending', 'running') then $4 else completed_at end
          where id = $1 returning *`,
-        [step.id, status, failureReason, completedAt],
-      );
-      const updatedRun = await client.query<TriggerRunRow>(
-        `update trigger_runs
+          [step.id, status, failureReason, completedAt],
+        );
+        const updatedRun = await client.query<TriggerRunRow>(
+          `update trigger_runs
          set status = $2, failure_reason = $3, completed_at = $4,
              terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $4),
              terminal_notification_lease_expires_at = null
          where id = $1 returning *`,
-        [triggerRunId, status, failureReason, completedAt],
-      );
-      await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [triggerRunId]);
-      await client.query("commit");
-      return {
-        stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
-        run: toTriggerRunRecord(updatedRun.rows[0]!),
-        transitioned: true,
-      };
+          [triggerRunId, status, failureReason, completedAt],
+        );
+        await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
+          triggerRunId,
+        ]);
+        return {
+          stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
+          run: toTriggerRunRecord(updatedRun.rows[0]!),
+          transitioned: true,
+        };
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1188,11 +1133,10 @@ class PgDatabase implements Database {
   }
 
   async claimPendingWorkflowRunTerminalNotification(now: Date, leaseMs: number) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<TriggerRunRow>(
-        `select * from trigger_runs
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<TriggerRunRow>(
+          `select * from trigger_runs
          where outcome = 'accepted'
            and status <> 'running'
            and terminal_notification_pending_at is not null
@@ -1203,27 +1147,23 @@ class PgDatabase implements Database {
            )
          order by terminal_notification_pending_at, id
          for update skip locked limit 1`,
-        [now],
-      );
-      const run = selected.rows[0];
-      if (run === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      const updated = await client.query<TriggerRunRow>(
-        `update trigger_runs
+          [now],
+        );
+        const run = selected.rows[0];
+        if (run === undefined) {
+          return undefined;
+        }
+        const updated = await client.query<TriggerRunRow>(
+          `update trigger_runs
          set terminal_notification_lease_expires_at = $2
          where id = $1
          returning *`,
-        [run.id, new Date(now.getTime() + leaseMs)],
-      );
-      await client.query("commit");
-      return toTriggerRunRecord(updated.rows[0]!);
+          [run.id, new Date(now.getTime() + leaseMs)],
+        );
+        return toTriggerRunRecord(updated.rows[0]!);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1262,109 +1202,101 @@ class PgDatabase implements Database {
   }
 
   async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const recoveries: WorkflowDeadlineRecovery[] = [];
-      const overdueRuns = await client.query<TriggerRunRow>(
-        `select * from trigger_runs
+      return await this.pool.transaction(async (client) => {
+        const recoveries: WorkflowDeadlineRecovery[] = [];
+        const overdueRuns = await client.query<TriggerRunRow>(
+          `select * from trigger_runs
          where outcome = 'accepted' and status = 'running' and deadline_at <= $1
          order by deadline_at, id
          for update skip locked`,
-        [now],
-      );
-      for (const run of overdueRuns.rows) {
-        recoveries.push(await timeoutWorkflowRunOnClient(client, run, now));
-      }
+          [now],
+        );
+        for (const run of overdueRuns.rows) {
+          recoveries.push(await timeoutWorkflowRunOnClient(client, run, now));
+        }
 
-      const activeRuns = await client.query<TriggerRunRow>(
-        `select * from trigger_runs
+        const activeRuns = await client.query<TriggerRunRow>(
+          `select * from trigger_runs
          where outcome = 'accepted' and status = 'running' and deadline_at > $1
          order by deadline_at, id
          for update skip locked`,
-        [now],
-      );
-      for (const run of activeRuns.rows) {
-        const steps = await client.query<WorkflowStepRunRow>(
-          `select * from workflow_step_runs
+          [now],
+        );
+        for (const run of activeRuns.rows) {
+          const steps = await client.query<WorkflowStepRunRow>(
+            `select * from workflow_step_runs
            where trigger_run_id = $1 and status = 'running'
            order by ordinal
            for update`,
-          [run.id],
-        );
-        for (const step of steps.rows) {
-          const executionRows =
-            step.agent_execution_id === null
-              ? { rows: [] as AgentExecutionRow[] }
-              : await client.query<AgentExecutionRow>(
-                  `select * from agent_executions where id = $1 for update`,
-                  [step.agent_execution_id],
-                );
-          const execution = executionRows.rows[0];
-          if (
-            execution !== undefined &&
-            (execution.status === "succeeded" || execution.status === "failed")
-          ) {
-            continue;
-          }
-          const deadlineKind = workflowDeadlineKind(execution, step, run, now);
-          if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
-          if (execution === undefined) {
-            const reason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
-            await client.query(
-              `update workflow_step_runs
+            [run.id],
+          );
+          for (const step of steps.rows) {
+            const executionRows =
+              step.agent_execution_id === null
+                ? { rows: [] as AgentExecutionRow[] }
+                : await client.query<AgentExecutionRow>(
+                    `select * from agent_executions where id = $1 for update`,
+                    [step.agent_execution_id],
+                  );
+            const execution = executionRows.rows[0];
+            if (
+              execution !== undefined &&
+              (execution.status === "succeeded" || execution.status === "failed")
+            ) {
+              continue;
+            }
+            const deadlineKind = workflowDeadlineKind(execution, step, run, now);
+            if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
+            if (execution === undefined) {
+              const reason =
+                deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+              await client.query(
+                `update workflow_step_runs
                set status = 'timed_out', failure_reason = $2, deadline_kind = $3, completed_at = $4
                where id = $1 and status = 'running'`,
-              [step.id, reason, deadlineKind, now],
-            );
-            await client.query(
-              `update trigger_runs
+                [step.id, reason, deadlineKind, now],
+              );
+              await client.query(
+                `update trigger_runs
                set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4
                where id = $1 and status = 'running'`,
-              [run.id, deadlineKind, reason, now],
-            );
-            await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
-            recoveries.push({ triggerRunId: run.id, executionIds: [] });
-          } else {
-            const updated = await timeoutWorkflowStepOnClient(
-              client,
-              execution,
-              step,
-              run,
-              deadlineKind,
-              now,
-            );
-            recoveries.push({ triggerRunId: run.id, executionIds: [updated.id] });
+                [run.id, deadlineKind, reason, now],
+              );
+              await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
+                run.id,
+              ]);
+              recoveries.push({ triggerRunId: run.id, executionIds: [] });
+            } else {
+              const updated = await timeoutWorkflowStepOnClient(
+                client,
+                execution,
+                step,
+                run,
+                deadlineKind,
+                now,
+              );
+              recoveries.push({ triggerRunId: run.id, executionIds: [updated.id] });
+            }
           }
         }
-      }
-      await client.query("commit");
-      return recoveries;
+        return recoveries;
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async issueEnrollmentToken(input: EnrollmentTokenRecord): Promise<boolean> {
     if (input.issuedByCliCredentialId !== undefined && input.issuedByCliCredentialId !== null) {
-      const client = await this.pool.connect();
-      try {
-        await client.query("begin");
-        await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [
-          input.issuedByCliCredentialId,
-        ]);
+      return this.pool.transaction(async (client) => {
+        await this.locks.withTxLock(client, input.issuedByCliCredentialId!);
         const credential = await client.query(
           `select id from organization_cli_credentials
            where id = $1 and organization_id = $2 and revoked_at is null for update`,
           [input.issuedByCliCredentialId, input.organizationId],
         );
-        if (credential.rowCount !== 1) {
-          await client.query("rollback");
-          return false;
-        }
+        if (credential.rowCount !== 1) return false;
         await client.query(
           `insert into daemon_enrollment_tokens
              (id, verifier, organization_id, issued_by_cli_credential_id,
@@ -1378,14 +1310,8 @@ class PgDatabase implements Database {
             input.expiresAt,
           ],
         );
-        await client.query("commit");
         return true;
-      } catch (error) {
-        await client.query("rollback").catch(() => undefined);
-        throw error;
-      } finally {
-        client.release();
-      }
+      });
     }
     if (input.issuedByApiKeyId === undefined || input.issuedByApiKeyId === null) {
       await query(
@@ -1399,10 +1325,8 @@ class PgDatabase implements Database {
     }
 
     return withApiKeySerialization(input.issuedByApiKeyId, async () => {
-      const client = await this.pool.connect();
-      try {
-        await client.query("begin");
-        await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [input.issuedByApiKeyId]);
+      return this.pool.transaction(async (client) => {
+        await this.locks.withTxLock(client, input.issuedByApiKeyId!);
         const key = await client.query(
           `select id
            from organization_api_keys
@@ -1410,78 +1334,62 @@ class PgDatabase implements Database {
            for update`,
           [input.issuedByApiKeyId, input.organizationId],
         );
-        if (key.rowCount !== 1) {
-          await client.query("rollback");
-          return false;
-        }
+        if (key.rowCount !== 1) return false;
         await client.query(
           `insert into daemon_enrollment_tokens
              (id, verifier, organization_id, issued_by_api_key_id, expires_at)
            values ($1, $2, $3, $4, $5)`,
           [input.id, input.verifier, input.organizationId, input.issuedByApiKeyId, input.expiresAt],
         );
-        await client.query("commit");
         return true;
-      } catch (error) {
-        await client.query("rollback").catch(() => undefined);
-        throw error;
-      } finally {
-        client.release();
-      }
+      });
     });
   }
 
   async startCliAuthorization(
     input: StartCliAuthorizationInput,
   ): Promise<CliAuthorizationRecord | undefined> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      await client.query(
-        `select pg_advisory_xact_lock(hashtext('paseo-cli-authorization-issuance'))`,
-      );
-      const capacity = await client.query<{
-        fingerprint_count: number;
-        global_count: number;
-      }>(
-        `select
+      return await this.pool.transaction(async (client) => {
+        await this.locks.withTxLock(client, "paseo-cli-authorization-issuance");
+        const capacity = await client.query<{
+          fingerprint_count: number;
+          global_count: number;
+        }>(
+          `select
            count(*) filter (where fingerprint_verifier = $1)::integer as fingerprint_count,
            count(*)::integer as global_count
          from cli_authorizations
          where status in ('pending', 'approved') and expires_at > now()`,
-        [input.fingerprintVerifier],
-      );
-      const counts = capacity.rows[0]!;
-      if (
-        counts.fingerprint_count >= input.perFingerprintLimit ||
-        counts.global_count >= input.globalLimit
-      ) {
-        await client.query("rollback");
-        return undefined;
-      }
-      const inserted = await client.query<CliAuthorizationRow>(
-        `insert into cli_authorizations
+          [input.fingerprintVerifier],
+        );
+        const counts = capacity.rows[0]!;
+        if (
+          counts.fingerprint_count >= input.perFingerprintLimit ||
+          counts.global_count >= input.globalLimit
+        ) {
+          return client.rollback(undefined);
+        }
+        const inserted = await client.query<CliAuthorizationRow>(
+          `insert into cli_authorizations
            (id, device_verifier, user_code_verifier, fingerprint_verifier,
             status, poll_interval_seconds, next_poll_at, expires_at)
          values ($1, $2, $3, $4, 'pending', $5, now(),
                  now() + ($6 * interval '1 second'))
          returning *`,
-        [
-          input.id,
-          input.deviceVerifier,
-          input.userCodeVerifier,
-          input.fingerprintVerifier,
-          input.pollIntervalSeconds,
-          input.lifetimeSeconds,
-        ],
-      );
-      await client.query("commit");
-      return toCliAuthorization(inserted.rows[0]!);
+          [
+            input.id,
+            input.deviceVerifier,
+            input.userCodeVerifier,
+            input.fingerprintVerifier,
+            input.pollIntervalSeconds,
+            input.lifetimeSeconds,
+          ],
+        );
+        return toCliAuthorization(inserted.rows[0]!);
+      });
     } catch (error) {
-      await client.query("rollback");
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1507,27 +1415,25 @@ class PgDatabase implements Database {
   async decideCliAuthorization(
     input: CliAuthorizationDecisionInput,
   ): Promise<"approved" | "denied" | "unavailable" | "forbidden"> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      await client.query(
-        `update cli_authorizations set status = 'expired'
+      return await this.pool.transaction(async (client) => {
+        await client.query(
+          `update cli_authorizations set status = 'expired'
          where user_code_verifier = $1 and status in ('pending', 'approved')
            and expires_at <= now()`,
-        [input.userCodeVerifier],
-      );
-      const authorization = await client.query<CliAuthorizationRow>(
-        `select * from cli_authorizations
+          [input.userCodeVerifier],
+        );
+        const authorization = await client.query<CliAuthorizationRow>(
+          `select * from cli_authorizations
          where user_code_verifier = $1 and status = 'pending' and expires_at > now()
          for update`,
-        [input.userCodeVerifier],
-      );
-      if (authorization.rows[0] === undefined) {
-        await client.query("rollback");
-        return "unavailable";
-      }
-      const authority = await client.query(
-        `select 1
+          [input.userCodeVerifier],
+        );
+        if (authorization.rows[0] === undefined) {
+          return client.rollback("unavailable" as const);
+        }
+        const authority = await client.query(
+          `select 1
          from session
          join member on member.id = $3 and member.user_id = session.user_id
            and member.organization_id = session.active_organization_id
@@ -1535,33 +1441,29 @@ class PgDatabase implements Database {
            and session.active_organization_id = $4 and session.expires_at > now()
            and member.role in ('owner', 'admin')
          for update of session, member`,
-        [
-          input.access.sessionId,
-          input.access.userId,
-          input.access.membershipId,
-          input.access.organizationId,
-        ],
-      );
-      if (authority.rowCount !== 1) {
-        await client.query("rollback");
-        return "forbidden";
-      }
-      const status = input.decision === "approve" ? "approved" : "denied";
-      await client.query(
-        `update cli_authorizations
+          [
+            input.access.sessionId,
+            input.access.userId,
+            input.access.membershipId,
+            input.access.organizationId,
+          ],
+        );
+        if (authority.rowCount !== 1) {
+          return client.rollback("forbidden" as const);
+        }
+        const status = input.decision === "approve" ? "approved" : "denied";
+        await client.query(
+          `update cli_authorizations
          set status = $2, approved_organization_id = case when $2 = 'approved' then $3 end,
              approved_by_user_id = case when $2 = 'approved' then $4 end,
              decided_at = now()
          where id = $1`,
-        [authorization.rows[0].id, status, input.access.organizationId, input.access.userId],
-      );
-      await client.query("commit");
-      return status;
+          [authorization.rows[0].id, status, input.access.organizationId, input.access.userId],
+        );
+        return status;
+      });
     } catch (error) {
-      await client.query("rollback");
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1569,173 +1471,136 @@ class PgDatabase implements Database {
     deviceVerifier: string;
     credential: { id: string; prefix: string; verifier: string };
   }): Promise<CliAuthorizationPollResult> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<CliAuthorizationRow>(
-        `select *, now() as database_now
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<CliAuthorizationRow>(
+          `select *, now() as database_now
          from cli_authorizations where device_verifier = $1 for update`,
-        [input.deviceVerifier],
-      );
-      const authorization = selected.rows[0];
-      if (authorization !== undefined && authorization.expires_at <= authorization.database_now) {
-        await client.query(`update cli_authorizations set status = 'expired' where id = $1`, [
-          authorization.id,
-        ]);
-        await client.query("commit");
-        return {
-          status: "expired",
-          intervalSeconds: authorization.poll_interval_seconds,
-        };
-      }
-      if (authorization === undefined) {
-        await client.query("rollback");
-        return { status: "expired", intervalSeconds: 5 };
-      }
-      if (
-        authorization.status === "denied" ||
-        authorization.status === "expired" ||
-        authorization.status === "disclosed"
-      ) {
-        await client.query("commit");
+          [input.deviceVerifier],
+        );
+        const authorization = selected.rows[0];
+        if (authorization !== undefined && authorization.expires_at <= authorization.database_now) {
+          await client.query(`update cli_authorizations set status = 'expired' where id = $1`, [
+            authorization.id,
+          ]);
+          return {
+            status: "expired",
+            intervalSeconds: authorization.poll_interval_seconds,
+          };
+        }
+        if (authorization === undefined) {
+          return client.rollback({ status: "expired" as const, intervalSeconds: 5 });
+        }
+        if (
+          authorization.status === "denied" ||
+          authorization.status === "expired" ||
+          authorization.status === "disclosed"
+        ) {
+          return {
+            status: authorization.status,
+            intervalSeconds: authorization.poll_interval_seconds,
+          };
+        }
+        if (authorization.next_poll_at > authorization.database_now) {
+          const intervalSeconds = authorization.poll_interval_seconds + 5;
+          await client.query(
+            `update cli_authorizations
+           set poll_interval_seconds = $2::integer,
+               next_poll_at = now() + ($2::integer * interval '1 second')
+           where id = $1`,
+            [authorization.id, intervalSeconds],
+          );
+          return { status: "slow_down", intervalSeconds };
+        }
+        await client.query(
+          `update cli_authorizations
+         set next_poll_at = now() + (poll_interval_seconds * interval '1 second')
+         where id = $1`,
+          [authorization.id],
+        );
+        if (authorization.status === "approved") {
+          await client.query(
+            `insert into organization_cli_credentials
+             (id, organization_id, prefix, verifier, created_by_user_id)
+           values ($1, $2, $3, $4, $5)`,
+            [
+              input.credential.id,
+              authorization.approved_organization_id,
+              input.credential.prefix,
+              input.credential.verifier,
+              authorization.approved_by_user_id,
+            ],
+          );
+          await client.query(
+            `update cli_authorizations set status = 'disclosed', credential_id = $2 where id = $1`,
+            [authorization.id, input.credential.id],
+          );
+          return {
+            status: "authorized",
+            intervalSeconds: authorization.poll_interval_seconds,
+            organizationId: authorization.approved_organization_id!,
+          };
+        }
         return {
           status: authorization.status,
           intervalSeconds: authorization.poll_interval_seconds,
         };
-      }
-      if (authorization.next_poll_at > authorization.database_now) {
-        const intervalSeconds = authorization.poll_interval_seconds + 5;
-        await client.query(
-          `update cli_authorizations
-           set poll_interval_seconds = $2::integer,
-               next_poll_at = now() + ($2::integer * interval '1 second')
-           where id = $1`,
-          [authorization.id, intervalSeconds],
-        );
-        await client.query("commit");
-        return { status: "slow_down", intervalSeconds };
-      }
-      await client.query(
-        `update cli_authorizations
-         set next_poll_at = now() + (poll_interval_seconds * interval '1 second')
-         where id = $1`,
-        [authorization.id],
-      );
-      if (authorization.status === "approved") {
-        await client.query(
-          `insert into organization_cli_credentials
-             (id, organization_id, prefix, verifier, created_by_user_id)
-           values ($1, $2, $3, $4, $5)`,
-          [
-            input.credential.id,
-            authorization.approved_organization_id,
-            input.credential.prefix,
-            input.credential.verifier,
-            authorization.approved_by_user_id,
-          ],
-        );
-        await client.query(
-          `update cli_authorizations set status = 'disclosed', credential_id = $2 where id = $1`,
-          [authorization.id, input.credential.id],
-        );
-        await client.query("commit");
-        return {
-          status: "authorized",
-          intervalSeconds: authorization.poll_interval_seconds,
-          organizationId: authorization.approved_organization_id!,
-        };
-      }
-      await client.query("commit");
-      return {
-        status: authorization.status,
-        intervalSeconds: authorization.poll_interval_seconds,
-      };
+      });
     } catch (error) {
-      await client.query("rollback");
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async enrollDaemon(input: EnrollDaemonInput) {
-    const client = await this.pool.connect();
     let requestedSlug: string | undefined;
     try {
-      await client.query("begin");
-      const existing = await client.query<DaemonRow>(
-        `select * from daemons where idempotency_key = $1`,
-        [input.idempotencyKey],
-      );
-      if (
-        existing.rows[0] &&
-        existing.rows[0].id === input.daemonId &&
-        existing.rows[0].enrollment_verifier === input.tokenVerifier
-      ) {
-        await client.query("commit");
-        return toDaemon(existing.rows[0]);
-      }
-      const token = await client.query<{
-        id: string;
-        organization_id: string | null;
-        issued_by_api_key_id: string | null;
-        issued_by_cli_credential_id: string | null;
-      }>(
-        `update daemon_enrollment_tokens
+      return await this.pool.transaction(async (client) => {
+        const existing = await client.query<DaemonRow>(
+          `select * from daemons where idempotency_key = $1`,
+          [input.idempotencyKey],
+        );
+        if (
+          existing.rows[0] &&
+          existing.rows[0].id === input.daemonId &&
+          existing.rows[0].enrollment_verifier === input.tokenVerifier
+        ) {
+          return toDaemon(existing.rows[0]);
+        }
+        const token = await client.query<{
+          id: string;
+          organization_id: string | null;
+          issued_by_api_key_id: string | null;
+          issued_by_cli_credential_id: string | null;
+        }>(
+          `update daemon_enrollment_tokens
          set consumed_at = $2
          where verifier = $1 and organization_id is not null and consumed_at is null
            and expires_at > $2
          returning id, organization_id, issued_by_api_key_id, issued_by_cli_credential_id`,
-        [input.tokenVerifier, input.now],
-      );
-      const consumedToken = token.rows[0];
-      if (consumedToken?.organization_id === null || consumedToken === undefined) {
-        await client.query("rollback");
-        return undefined;
-      }
-      const machine = await client.query<MachineRow>(
-        `insert into machines (org_id, source, status) values ($1, $2, 'alive') returning *`,
-        [consumedToken.organization_id, { kind: "daemon", daemonId: input.daemonId }],
-      );
-      const suggestedSlug = input.suggestedSlug ?? `daemon-${input.daemonId.slice(0, 8)}`;
-      requestedSlug = suggestedSlug;
-      let daemon = await client.query<DaemonRow>(
-        `insert into daemons
+          [input.tokenVerifier, input.now],
+        );
+        const consumedToken = token.rows[0];
+        if (consumedToken?.organization_id === null || consumedToken === undefined)
+          return client.rollback(undefined);
+        const machine = await client.query<MachineRow>(
+          `insert into machines (org_id, source, status) values ($1, $2, 'alive') returning *`,
+          [consumedToken.organization_id, { kind: "daemon", daemonId: input.daemonId }],
+        );
+        const suggestedSlug = input.suggestedSlug ?? `daemon-${input.daemonId.slice(0, 8)}`;
+        requestedSlug = suggestedSlug;
+        let daemon = await client.query<DaemonRow>(
+          `insert into daemons
            (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
             daemon_public_key, credential_verifier, scopes,
             registered_by_api_key_id, registered_by_cli_credential_id, status)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active')
          on conflict (organization_id, slug) do nothing
          returning *`,
-        [
-          input.daemonId,
-          input.idempotencyKey,
-          input.tokenVerifier,
-          suggestedSlug,
-          machine.rows[0]!.id,
-          consumedToken.organization_id,
-          input.serverId,
-          input.daemonPublicKey,
-          input.credentialVerifier,
-          JSON.stringify(input.scopes),
-          consumedToken.issued_by_api_key_id,
-          consumedToken.issued_by_cli_credential_id,
-        ],
-      );
-      if (daemon.rows[0] === undefined) {
-        const uniqueSlug = `${suggestedSlug}-${input.daemonId.slice(0, 8)}`;
-        requestedSlug = uniqueSlug;
-        daemon = await client.query<DaemonRow>(
-          `insert into daemons
-             (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
-              daemon_public_key, credential_verifier, scopes,
-              registered_by_api_key_id, registered_by_cli_credential_id, status)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') returning *`,
           [
             input.daemonId,
             input.idempotencyKey,
             input.tokenVerifier,
-            uniqueSlug,
+            suggestedSlug,
             machine.rows[0]!.id,
             consumedToken.organization_id,
             input.serverId,
@@ -1746,17 +1611,38 @@ class PgDatabase implements Database {
             consumedToken.issued_by_cli_credential_id,
           ],
         );
-      }
-      await client.query("commit");
-      return toDaemon(daemon.rows[0]!);
+        if (daemon.rows[0] === undefined) {
+          const uniqueSlug = `${suggestedSlug}-${input.daemonId.slice(0, 8)}`;
+          requestedSlug = uniqueSlug;
+          daemon = await client.query<DaemonRow>(
+            `insert into daemons
+             (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
+              daemon_public_key, credential_verifier, scopes,
+              registered_by_api_key_id, registered_by_cli_credential_id, status)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') returning *`,
+            [
+              input.daemonId,
+              input.idempotencyKey,
+              input.tokenVerifier,
+              uniqueSlug,
+              machine.rows[0]!.id,
+              consumedToken.organization_id,
+              input.serverId,
+              input.daemonPublicKey,
+              input.credentialVerifier,
+              JSON.stringify(input.scopes),
+              consumedToken.issued_by_api_key_id,
+              consumedToken.issued_by_cli_credential_id,
+            ],
+          );
+        }
+        return toDaemon(daemon.rows[0]!);
+      });
     } catch (error) {
-      await client.query("rollback");
       if (requestedSlug !== undefined && isDaemonSlugConflict(error)) {
         return { status: "slug_conflict" as const, slug: requestedSlug };
       }
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1869,49 +1755,48 @@ class PgDatabase implements Database {
     observedAt: Date,
     processedAt: Date,
   ): Promise<AgentExecutionRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const existingRows = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1`,
-        [executionId],
-      );
-      const existing = existingRows.rows[0];
-      if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
-
-      let workflowRefreshAllowed = true;
-      if (existing.workflow_step_run_id !== null) {
-        const stepRows = await client.query<WorkflowStepRunRow>(
-          `select * from workflow_step_runs where id = $1`,
-          [existing.workflow_step_run_id],
+      return await this.pool.transaction(async (client) => {
+        const existingRows = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1`,
+          [executionId],
         );
-        const stepCandidate = stepRows.rows[0];
-        if (stepCandidate !== undefined) {
-          const runRows = await client.query<TriggerRunRow>(
-            `select * from trigger_runs where id = $1 for update`,
-            [stepCandidate.trigger_run_id],
-          );
-          const lockedStepRows = await client.query<WorkflowStepRunRow>(
-            `select * from workflow_step_runs where id = $1 for update`,
-            [stepCandidate.id],
-          );
-          const step = lockedStepRows.rows[0];
-          const run = runRows.rows[0];
-          workflowRefreshAllowed =
-            step !== undefined &&
-            step.status === "running" &&
-            run !== undefined &&
-            run.status === "running" &&
-            (run.deadline_at === null || run.deadline_at > processedAt);
-        } else {
-          workflowRefreshAllowed = false;
-        }
-      }
+        const existing = existingRows.rows[0];
+        if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
 
-      let row: AgentExecutionRow | undefined;
-      if (workflowRefreshAllowed) {
-        const rows = await client.query<AgentExecutionRow>(
-          `update agent_executions
+        let workflowRefreshAllowed = true;
+        if (existing.workflow_step_run_id !== null) {
+          const stepRows = await client.query<WorkflowStepRunRow>(
+            `select * from workflow_step_runs where id = $1`,
+            [existing.workflow_step_run_id],
+          );
+          const stepCandidate = stepRows.rows[0];
+          if (stepCandidate !== undefined) {
+            const runRows = await client.query<TriggerRunRow>(
+              `select * from trigger_runs where id = $1 for update`,
+              [stepCandidate.trigger_run_id],
+            );
+            const lockedStepRows = await client.query<WorkflowStepRunRow>(
+              `select * from workflow_step_runs where id = $1 for update`,
+              [stepCandidate.id],
+            );
+            const step = lockedStepRows.rows[0];
+            const run = runRows.rows[0];
+            workflowRefreshAllowed =
+              step !== undefined &&
+              step.status === "running" &&
+              run !== undefined &&
+              run.status === "running" &&
+              (run.deadline_at === null || run.deadline_at > processedAt);
+          } else {
+            workflowRefreshAllowed = false;
+          }
+        }
+
+        let row: AgentExecutionRow | undefined;
+        if (workflowRefreshAllowed) {
+          const rows = await client.query<AgentExecutionRow>(
+            `update agent_executions
            set idle_deadline_at = case
              when $2::timestamptz is null then null
              when deadline_at is null then $2::timestamptz
@@ -1921,34 +1806,31 @@ class PgDatabase implements Database {
              and ($3::timestamptz is null or deadline_at is null or deadline_at > $3)
              and (idle_deadline_at is null or idle_deadline_at > $4)
            returning *`,
-          [executionId, idleDeadlineAt, processedAt, observedAt],
-        );
-        row = rows.rows[0];
-      }
-      if (row !== undefined && row.workflow_step_run_id !== null) {
-        await client.query(
-          `update workflow_step_runs
+            [executionId, idleDeadlineAt, processedAt, observedAt],
+          );
+          row = rows.rows[0];
+        }
+        if (row !== undefined && row.workflow_step_run_id !== null) {
+          await client.query(
+            `update workflow_step_runs
            set idle_deadline_at = $2
            where id = $1 and status = 'running'`,
-          [row.workflow_step_run_id, row.idle_deadline_at],
-        );
-      }
-      const current =
-        row === undefined
-          ? ((
-              await client.query<AgentExecutionRow>(
-                `select * from agent_executions where id = $1`,
-                [executionId],
-              )
-            ).rows[0] ?? existing)
-          : row;
-      await client.query("commit");
-      return toAgentExecutionRecord(current);
+            [row.workflow_step_run_id, row.idle_deadline_at],
+          );
+        }
+        const current =
+          row === undefined
+            ? ((
+                await client.query<AgentExecutionRow>(
+                  `select * from agent_executions where id = $1`,
+                  [executionId],
+                )
+              ).rows[0] ?? existing)
+            : row;
+        return toAgentExecutionRecord(current);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2110,60 +1992,54 @@ class PgDatabase implements Database {
     maxOutputs: number,
     startedAt: Date,
   ): Promise<AgentExecutionOutputAttempt | undefined> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1 for update`,
-        [executionId],
-      );
-      const row = selected.rows[0];
-      if (row === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      const execution = toAgentExecutionRecord(row);
-      const activeAttempts = Object.values(execution.outputDeliveryAttempts).filter(
-        (attempt) =>
-          attempt.outputType === outputType &&
-          attempt.status === "pending" &&
-          attempt.leaseExpiresAt > startedAt,
-      ).length;
-      if (
-        maxOutputs < 1 ||
-        (execution.status !== "spawning" && execution.status !== "running") ||
-        (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs
-      ) {
-        await client.query("commit");
-        return undefined;
-      }
-      const attempt: AgentExecutionOutputAttempt = {
-        id: randomUUID(),
-        outputType,
-        status: "pending",
-        startedAt,
-        leaseExpiresAt: new Date(startedAt.getTime() + OUTPUT_ATTEMPT_LEASE_MS),
-        completedAt: null,
-      };
-      await client.query(
-        `update agent_executions
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1 for update`,
+          [executionId],
+        );
+        const row = selected.rows[0];
+        if (row === undefined) {
+          return undefined;
+        }
+        const execution = toAgentExecutionRecord(row);
+        const activeAttempts = Object.values(execution.outputDeliveryAttempts).filter(
+          (attempt) =>
+            attempt.outputType === outputType &&
+            attempt.status === "pending" &&
+            attempt.leaseExpiresAt > startedAt,
+        ).length;
+        if (
+          maxOutputs < 1 ||
+          (execution.status !== "spawning" && execution.status !== "running") ||
+          (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs
+        ) {
+          return undefined;
+        }
+        const attempt: AgentExecutionOutputAttempt = {
+          id: randomUUID(),
+          outputType,
+          status: "pending",
+          startedAt,
+          leaseExpiresAt: new Date(startedAt.getTime() + OUTPUT_ATTEMPT_LEASE_MS),
+          completedAt: null,
+        };
+        await client.query(
+          `update agent_executions
          set output_delivery_attempts = $2::jsonb
          where id = $1`,
-        [
-          executionId,
-          JSON.stringify({
-            ...execution.outputDeliveryAttempts,
-            [attempt.id]: attempt,
-          }),
-        ],
-      );
-      await client.query("commit");
-      return attempt;
+          [
+            executionId,
+            JSON.stringify({
+              ...execution.outputDeliveryAttempts,
+              [attempt.id]: attempt,
+            }),
+          ],
+        );
+        return attempt;
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2172,74 +2048,65 @@ class PgDatabase implements Database {
     attemptId: string,
     completedAt: Date,
   ): Promise<AgentExecutionRecord | undefined> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1 for update`,
-        [executionId],
-      );
-      const row = selected.rows[0];
-      if (row === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      const execution = toAgentExecutionRecord(row);
-      const attempt = execution.outputDeliveryAttempts[attemptId];
-      if (attempt === undefined) {
-        await client.query("commit");
-        return undefined;
-      }
-      if (attempt.status === "succeeded") {
-        await client.query("commit");
-        return execution;
-      }
-      if (attempt.status !== "pending") {
-        await client.query("commit");
-        return undefined;
-      }
-      if (attempt.leaseExpiresAt <= completedAt) {
-        await client.query(
-          `update agent_executions
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1 for update`,
+          [executionId],
+        );
+        const row = selected.rows[0];
+        if (row === undefined) {
+          return undefined;
+        }
+        const execution = toAgentExecutionRecord(row);
+        const attempt = execution.outputDeliveryAttempts[attemptId];
+        if (attempt === undefined) {
+          return undefined;
+        }
+        if (attempt.status === "succeeded") {
+          return execution;
+        }
+        if (attempt.status !== "pending") {
+          return undefined;
+        }
+        if (attempt.leaseExpiresAt <= completedAt) {
+          await client.query(
+            `update agent_executions
            set output_delivery_attempts = $2::jsonb
            where id = $1`,
-          [
-            executionId,
-            JSON.stringify({
-              ...execution.outputDeliveryAttempts,
-              [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
-            }),
-          ],
-        );
-        await client.query("commit");
-        return undefined;
-      }
-      const outputEmissions = {
-        ...execution.outputEmissions,
-        [attempt.outputType]: (execution.outputEmissions[attempt.outputType] ?? 0) + 1,
-      };
-      const updated = await client.query<AgentExecutionRow>(
-        `update agent_executions
+            [
+              executionId,
+              JSON.stringify({
+                ...execution.outputDeliveryAttempts,
+                [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
+              }),
+            ],
+          );
+          return undefined;
+        }
+        const outputEmissions = {
+          ...execution.outputEmissions,
+          [attempt.outputType]: (execution.outputEmissions[attempt.outputType] ?? 0) + 1,
+        };
+        const updated = await client.query<AgentExecutionRow>(
+          `update agent_executions
          set output_emissions = $2::jsonb,
              output_delivery_attempts = $3::jsonb
          where id = $1
          returning *`,
-        [
-          executionId,
-          JSON.stringify(outputEmissions),
-          JSON.stringify({
-            ...execution.outputDeliveryAttempts,
-            [attemptId]: { ...attempt, status: "succeeded" as const, completedAt },
-          }),
-        ],
-      );
-      await client.query("commit");
-      return updated.rows[0] === undefined ? undefined : toAgentExecutionRecord(updated.rows[0]);
+          [
+            executionId,
+            JSON.stringify(outputEmissions),
+            JSON.stringify({
+              ...execution.outputDeliveryAttempts,
+              [attemptId]: { ...attempt, status: "succeeded" as const, completedAt },
+            }),
+          ],
+        );
+        return updated.rows[0] === undefined ? undefined : toAgentExecutionRecord(updated.rows[0]);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2248,43 +2115,37 @@ class PgDatabase implements Database {
     attemptId: string,
     _failedAt: Date,
   ): Promise<boolean> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const selected = await client.query<AgentExecutionRow>(
-        `select * from agent_executions where id = $1 for update`,
-        [executionId],
-      );
-      const row = selected.rows[0];
-      if (row === undefined) {
-        await client.query("commit");
-        return false;
-      }
-      const execution = toAgentExecutionRecord(row);
-      const attempt = execution.outputDeliveryAttempts[attemptId];
-      if (attempt === undefined || attempt.status !== "pending") {
-        await client.query("commit");
-        return false;
-      }
-      await client.query(
-        `update agent_executions
+      return await this.pool.transaction(async (client) => {
+        const selected = await client.query<AgentExecutionRow>(
+          `select * from agent_executions where id = $1 for update`,
+          [executionId],
+        );
+        const row = selected.rows[0];
+        if (row === undefined) {
+          return false;
+        }
+        const execution = toAgentExecutionRecord(row);
+        const attempt = execution.outputDeliveryAttempts[attemptId];
+        if (attempt === undefined || attempt.status !== "pending") {
+          return false;
+        }
+        await client.query(
+          `update agent_executions
          set output_delivery_attempts = $2::jsonb
          where id = $1`,
-        [
-          executionId,
-          JSON.stringify({
-            ...execution.outputDeliveryAttempts,
-            [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
-          }),
-        ],
-      );
-      await client.query("commit");
-      return true;
+          [
+            executionId,
+            JSON.stringify({
+              ...execution.outputDeliveryAttempts,
+              [attemptId]: { ...attempt, status: "failed" as const, completedAt: null },
+            }),
+          ],
+        );
+        return true;
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2560,117 +2421,105 @@ class PgDatabase implements Database {
   async stampOrganizationEntitlements(
     input: StampOrganizationEntitlementsInput,
   ): Promise<OrganizationEntitlementsRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const record = await stampEntitlementsWithinTransaction(client, input);
-      await client.query("commit");
-      return record;
+      return await this.pool.transaction(async (client) => {
+        const record = await stampEntitlementsWithinTransaction(client, input);
+        return record;
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async overrideOrganizationEntitlements(
     input: OverrideOrganizationEntitlementsInput,
   ): Promise<OrganizationEntitlementsRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const existing = await client.query<OrganizationEntitlementsRow>(
-        `select * from organization_entitlements where organization_id = $1 for update`,
-        [input.organizationId],
-      );
-      const before = existing.rows[0];
-      if (before === undefined) {
-        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
-      }
-      // Merge the patch against the row we hold locked, so a concurrent override serializes
-      // behind this one instead of reading a stale base and clobbering its keys.
-      const overrides = mergeOverrides(
-        entitlementOverridesSchema.parse(before.overrides),
-        input.patch,
-      );
-      const updated = await client.query<OrganizationEntitlementsRow>(
-        `update organization_entitlements
+      return await this.pool.transaction(async (client) => {
+        const existing = await client.query<OrganizationEntitlementsRow>(
+          `select * from organization_entitlements where organization_id = $1 for update`,
+          [input.organizationId],
+        );
+        const before = existing.rows[0];
+        if (before === undefined) {
+          throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+        }
+        // Merge the patch against the row we hold locked, so a concurrent override serializes
+        // behind this one instead of reading a stale base and clobbering its keys.
+        const overrides = mergeOverrides(
+          entitlementOverridesSchema.parse(before.overrides),
+          input.patch,
+        );
+        const updated = await client.query<OrganizationEntitlementsRow>(
+          `update organization_entitlements
            set overrides = $2::jsonb, updated_at = now()
          where organization_id = $1
          returning *`,
-        [input.organizationId, JSON.stringify(overrides)],
-      );
-      const after = updated.rows[0];
-      if (after === undefined) throw new Error("entitlements override returned no row");
-      await client.query(
-        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+          [input.organizationId, JSON.stringify(overrides)],
+        );
+        const after = updated.rows[0];
+        if (after === undefined) throw new Error("entitlements override returned no row");
+        await client.query(
+          `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
          values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
-        [
-          input.organizationId,
-          input.actor,
-          JSON.stringify(entitlementSnapshot(before)),
-          JSON.stringify(entitlementSnapshot(after)),
-          input.reason,
-        ],
-      );
-      await client.query("commit");
-      return toOrganizationEntitlementsRecord(after);
+          [
+            input.organizationId,
+            input.actor,
+            JSON.stringify(entitlementSnapshot(before)),
+            JSON.stringify(entitlementSnapshot(after)),
+            input.reason,
+          ],
+        );
+        return toOrganizationEntitlementsRecord(after);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async clearOrganizationEntitlementsOverride(
     input: ClearOrganizationEntitlementsOverrideInput,
   ): Promise<OrganizationEntitlementsRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const existing = await client.query<OrganizationEntitlementsRow>(
-        `select * from organization_entitlements where organization_id = $1 for update`,
-        [input.organizationId],
-      );
-      const before = existing.rows[0];
-      if (before === undefined) {
-        throw new Error(`organization has no entitlements record: ${input.organizationId}`);
-      }
-      // Remove the key from the row we hold locked, the same lock the merge takes, so a clear and
-      // a concurrent override serialize instead of racing on a stale base.
-      const overrides = clearOverrideKey(
-        entitlementOverridesSchema.parse(before.overrides),
-        input.key,
-      );
-      const updated = await client.query<OrganizationEntitlementsRow>(
-        `update organization_entitlements
+      return await this.pool.transaction(async (client) => {
+        const existing = await client.query<OrganizationEntitlementsRow>(
+          `select * from organization_entitlements where organization_id = $1 for update`,
+          [input.organizationId],
+        );
+        const before = existing.rows[0];
+        if (before === undefined) {
+          throw new Error(`organization has no entitlements record: ${input.organizationId}`);
+        }
+        // Remove the key from the row we hold locked, the same lock the merge takes, so a clear and
+        // a concurrent override serialize instead of racing on a stale base.
+        const overrides = clearOverrideKey(
+          entitlementOverridesSchema.parse(before.overrides),
+          input.key,
+        );
+        const updated = await client.query<OrganizationEntitlementsRow>(
+          `update organization_entitlements
            set overrides = $2::jsonb, updated_at = now()
          where organization_id = $1
          returning *`,
-        [input.organizationId, JSON.stringify(overrides)],
-      );
-      const after = updated.rows[0];
-      if (after === undefined) throw new Error("entitlements override clear returned no row");
-      await client.query(
-        `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
+          [input.organizationId, JSON.stringify(overrides)],
+        );
+        const after = updated.rows[0];
+        if (after === undefined) throw new Error("entitlements override clear returned no row");
+        await client.query(
+          `insert into entitlement_changes (organization_id, actor, source, before, after, reason)
          values ($1, $2, 'override', $3::jsonb, $4::jsonb, $5)`,
-        [
-          input.organizationId,
-          input.actor,
-          JSON.stringify(entitlementSnapshot(before)),
-          JSON.stringify(entitlementSnapshot(after)),
-          input.reason,
-        ],
-      );
-      await client.query("commit");
-      return toOrganizationEntitlementsRecord(after);
+          [
+            input.organizationId,
+            input.actor,
+            JSON.stringify(entitlementSnapshot(before)),
+            JSON.stringify(entitlementSnapshot(after)),
+            input.reason,
+          ],
+        );
+        return toOrganizationEntitlementsRecord(after);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2731,11 +2580,10 @@ class PgDatabase implements Database {
   }
 
   async syncBillingPlan(input: SyncBillingPlanInput): Promise<BillingPlanRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const planRow = await client.query<BillingPlanRow>(
-        `insert into billing_plans (id, slug, name, template, template_hash, marketing, active, synced_at)
+      return await this.pool.transaction(async (client) => {
+        const planRow = await client.query<BillingPlanRow>(
+          `insert into billing_plans (id, slug, name, template, template_hash, marketing, active, synced_at)
          values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, now())
          on conflict (id) do update
            set slug = excluded.slug,
@@ -2746,49 +2594,46 @@ class PgDatabase implements Database {
                active = excluded.active,
                synced_at = now()
          returning *`,
-        [
-          input.id,
-          input.slug,
-          input.name,
-          JSON.stringify(input.template),
-          input.templateHash,
-          JSON.stringify(input.marketing),
-          input.active,
-        ],
-      );
-      const plan = planRow.rows[0];
-      if (plan === undefined) throw new Error("billing plan sync returned no row");
-      // Prices are replaced wholesale rather than diffed: the catalog is small and this runs
-      // only on boot or a product/price webhook, so a delete-and-reinsert is simple and correct.
-      await client.query(`delete from billing_plan_prices where plan_id = $1`, [input.id]);
-      const prices: BillingPlanPriceRow[] = [];
-      for (const price of input.prices) {
-        const priceRow = await client.query<BillingPlanPriceRow>(
-          `insert into billing_plan_prices (id, plan_id, lookup_key, interval, unit_amount, currency, active)
-           values ($1, $2, $3, $4, $5, $6, $7)
-           returning *`,
           [
-            price.id,
             input.id,
-            price.lookupKey,
-            price.interval,
-            price.unitAmount,
-            price.currency,
-            price.active,
+            input.slug,
+            input.name,
+            JSON.stringify(input.template),
+            input.templateHash,
+            JSON.stringify(input.marketing),
+            input.active,
           ],
         );
-        const insertedPrice = priceRow.rows[0];
-        if (insertedPrice === undefined)
-          throw new Error("billing plan price insert returned no row");
-        prices.push(insertedPrice);
-      }
-      await client.query("commit");
-      return toBillingPlanRecord(plan, prices);
+        const plan = planRow.rows[0];
+        if (plan === undefined) throw new Error("billing plan sync returned no row");
+        // Prices are replaced wholesale rather than diffed: the catalog is small and this runs
+        // only on boot or a product/price webhook, so a delete-and-reinsert is simple and correct.
+        await client.query(`delete from billing_plan_prices where plan_id = $1`, [input.id]);
+        const prices: BillingPlanPriceRow[] = [];
+        for (const price of input.prices) {
+          const priceRow = await client.query<BillingPlanPriceRow>(
+            `insert into billing_plan_prices (id, plan_id, lookup_key, interval, unit_amount, currency, active)
+           values ($1, $2, $3, $4, $5, $6, $7)
+           returning *`,
+            [
+              price.id,
+              input.id,
+              price.lookupKey,
+              price.interval,
+              price.unitAmount,
+              price.currency,
+              price.active,
+            ],
+          );
+          const insertedPrice = priceRow.rows[0];
+          if (insertedPrice === undefined)
+            throw new Error("billing plan price insert returned no row");
+          prices.push(insertedPrice);
+        }
+        return toBillingPlanRecord(plan, prices);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -2824,11 +2669,10 @@ class PgDatabase implements Database {
   async reconcileOrganizationSubscription(
     input: ReconcileOrganizationSubscriptionInput,
   ): Promise<OrganizationSubscriptionRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const rows = await client.query<OrganizationSubscriptionRow>(
-        `insert into organization_subscriptions
+      return await this.pool.transaction(async (client) => {
+        const rows = await client.query<OrganizationSubscriptionRow>(
+          `insert into organization_subscriptions
            (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
             current_period_end, cancel_at_period_end, updated_at)
          values ($1, $2, $3, $4, $5, $6, $7, now())
@@ -2841,51 +2685,35 @@ class PgDatabase implements Database {
                cancel_at_period_end = excluded.cancel_at_period_end,
                updated_at = now()
          returning *`,
-        [
-          input.organizationId,
-          input.stripeCustomerId,
-          input.stripeSubscriptionId,
-          input.planId,
-          input.status,
-          input.currentPeriodEnd,
-          input.cancelAtPeriodEnd,
-        ],
-      );
-      const row = rows.rows[0];
-      if (row === undefined) throw new Error("organization subscription upsert returned no row");
-      // Same transaction as the mirror upsert: the plan the org is billed on and the entitlements
-      // it enforces can never diverge across a crash between the two writes.
-      if (input.stamp !== undefined) {
-        await stampEntitlementsWithinTransaction(client, {
-          organizationId: input.organizationId,
-          ...input.stamp,
-        });
-      }
-      await client.query("commit");
-      return toOrganizationSubscriptionRecord(row);
+          [
+            input.organizationId,
+            input.stripeCustomerId,
+            input.stripeSubscriptionId,
+            input.planId,
+            input.status,
+            input.currentPeriodEnd,
+            input.cancelAtPeriodEnd,
+          ],
+        );
+        const row = rows.rows[0];
+        if (row === undefined) throw new Error("organization subscription upsert returned no row");
+        // Same transaction as the mirror upsert: the plan the org is billed on and the entitlements
+        // it enforces can never diverge across a crash between the two writes.
+        if (input.stamp !== undefined) {
+          await stampEntitlementsWithinTransaction(client, {
+            organizationId: input.organizationId,
+            ...input.stamp,
+          });
+        }
+        return toOrganizationSubscriptionRecord(row);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    // A session-level advisory lock on a dedicated connection: it serializes the critical section
-    // across processes, and it is held for the whole of `fn` (including any external re-read),
-    // not just a single statement. `hashtextextended` maps the string key to the bigint the
-    // advisory-lock functions take.
-    const client = await this.pool.connect();
-    try {
-      await client.query(`select pg_advisory_lock(hashtextextended($1, 0))`, [key]);
-      return await fn();
-    } finally {
-      await client
-        .query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [key])
-        .catch(() => undefined);
-      client.release();
-    }
+    return this.locks.withLock(key, fn);
   }
 
   async getOrganizationSubscription(
@@ -2989,50 +2817,46 @@ class PgDatabase implements Database {
   }
 
   async archiveProject(organizationId: string, projectId: string, userId: string) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const access = await client.query<ProjectRow>(
-        `select projects.*
+      return await this.pool.transaction(async (client) => {
+        const access = await client.query<ProjectRow>(
+          `select projects.*
          from projects
          join member on member.organization_id = projects.organization_id
          where projects.id = $1 and projects.organization_id = $2
            and member.user_id = $3 and member.role in ('owner', 'admin')
          for update of projects`,
-        [projectId, organizationId, userId],
-      );
-      if (access.rows[0] === undefined) throw new Error("project access denied");
-      await client.query(
-        `update project_configuration_sources
+          [projectId, organizationId, userId],
+        );
+        if (access.rows[0] === undefined) throw new Error("project access denied");
+        await client.query(
+          `update project_configuration_sources
          set kind = 'manual', github_connection_id = null, github_repository_id = null,
              github_repository_full_name = null, github_default_branch = null,
              automatic_deployment_enabled = false, updated_at = clock_timestamp()
          where project_id = $1`,
-        [projectId],
-      );
-      await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
-      const archived = await client.query<ProjectRow>(
-        `update projects
+          [projectId],
+        );
+        await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
+        const archived = await client.query<ProjectRow>(
+          `update projects
          set status = 'archived', active_configuration_revision_id = null,
              archived_at = clock_timestamp(), updated_at = clock_timestamp()
          where id = $1 returning *`,
-        [projectId],
-      );
-      await client.query(
-        `insert into audit_events
+          [projectId],
+        );
+        await client.query(
+          `insert into audit_events
            (organization_id, project_id, actor_kind, actor_identity, action,
             subject_type, subject_id, evidence)
          values ($1, $2, 'user', $3, 'project.archived', 'project', $4,
                  '{"releasedRoutes":true}')`,
-        [organizationId, projectId, userId, projectId],
-      );
-      await client.query("commit");
-      return toProjectRecord(archived.rows[0]!);
+          [organizationId, projectId, userId, projectId],
+        );
+        return toProjectRecord(archived.rows[0]!);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -3092,69 +2916,65 @@ class PgDatabase implements Database {
     revisionId: string,
     routes?: readonly ProjectTriggerRoute[],
   ) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const revision = await lockValidProjectRevision(client, projectId, revisionId);
-      const compiledRoutes =
-        routes ??
-        (
-          await client.query<{
-            provider: ConnectionProvider;
-            connection_id: string;
-            resource_id: string | null;
-            trigger_name: string;
-          }>(
-            `select provider, connection_id, resource_id, trigger_name
+      return await this.pool.transaction(async (client) => {
+        const revision = await lockValidProjectRevision(client, projectId, revisionId);
+        const compiledRoutes =
+          routes ??
+          (
+            await client.query<{
+              provider: ConnectionProvider;
+              connection_id: string;
+              resource_id: string | null;
+              trigger_name: string;
+            }>(
+              `select provider, connection_id, resource_id, trigger_name
              from project_trigger_routes where configuration_revision_id = $1`,
-            [revisionId],
-          )
-        ).rows.map((row) => ({
-          provider: row.provider,
-          connectionId: row.connection_id,
-          resourceId: row.resource_id,
-          triggerName: row.trigger_name,
-        }));
-      await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
-      for (const route of compiledRoutes) {
-        await client.query(
-          `insert into project_trigger_routes
+              [revisionId],
+            )
+          ).rows.map((row) => ({
+            provider: row.provider,
+            connectionId: row.connection_id,
+            resourceId: row.resource_id,
+            triggerName: row.trigger_name,
+          }));
+        await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
+        for (const route of compiledRoutes) {
+          await client.query(
+            `insert into project_trigger_routes
              (organization_id, project_id, configuration_revision_id, provider,
               connection_id, resource_id, trigger_name)
            values ($1, $2, $3, $4, $5, $6, $7)`,
-          [
-            revision.organization_id,
-            projectId,
-            revisionId,
-            route.provider,
-            route.connectionId,
-            route.resourceId,
-            route.triggerName,
-          ],
-        );
-      }
-      await client.query(
-        `update projects
+            [
+              revision.organization_id,
+              projectId,
+              revisionId,
+              route.provider,
+              route.connectionId,
+              route.resourceId,
+              route.triggerName,
+            ],
+          );
+        }
+        await client.query(
+          `update projects
          set active_configuration_revision_id = $2, updated_at = clock_timestamp()
          where id = $1`,
-        [projectId, revisionId],
-      );
-      await client.query(
-        `insert into audit_events
+          [projectId, revisionId],
+        );
+        await client.query(
+          `insert into audit_events
            (organization_id, project_id, actor_kind, actor_identity, action,
             subject_type, subject_id, evidence)
          select organization_id, id, 'system', 'configuration', 'configuration.activated',
                 'configuration_revision', $2::text, jsonb_build_object('version', $3::integer)
          from projects where id = $1`,
-        [projectId, revisionId, revision.version],
-      );
-      await client.query("commit");
-      return toProjectConfigurationRevisionRecord(revision);
+          [projectId, revisionId, revision.version],
+        );
+        return toProjectConfigurationRevisionRecord(revision);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -3184,11 +3004,10 @@ class PgDatabase implements Database {
     targetRevisionId: string,
     routes: readonly ProjectTriggerRoute[],
   ) {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const candidates = await client.query<ProjectConfigurationRevisionRow>(
-        `select prior.*
+      return await this.pool.transaction(async (client) => {
+        const candidates = await client.query<ProjectConfigurationRevisionRow>(
+          `select prior.*
          from projects
          join project_configuration_revisions current
            on current.id = projects.active_configuration_revision_id
@@ -3200,40 +3019,37 @@ class PgDatabase implements Database {
          ) prior on true
          where projects.id = $1
          for update of projects`,
-        [projectId, targetRevisionId],
-      );
-      const target = candidates.rows[0];
-      if (target === undefined) throw new Error("configuration rollback target changed");
-      await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
-      for (const route of routes) {
-        await client.query(
-          `insert into project_trigger_routes
+          [projectId, targetRevisionId],
+        );
+        const target = candidates.rows[0];
+        if (target === undefined) throw new Error("configuration rollback target changed");
+        await client.query(`delete from project_trigger_routes where project_id = $1`, [projectId]);
+        for (const route of routes) {
+          await client.query(
+            `insert into project_trigger_routes
              (organization_id, project_id, configuration_revision_id, provider,
               connection_id, resource_id, trigger_name)
            values ($1, $2, $3, $4, $5, $6, $7)`,
-          [
-            target.organization_id,
-            projectId,
-            target.id,
-            route.provider,
-            route.connectionId,
-            route.resourceId,
-            route.triggerName,
-          ],
-        );
-      }
-      await client.query(
-        `update projects set active_configuration_revision_id = $2, updated_at = clock_timestamp()
+            [
+              target.organization_id,
+              projectId,
+              target.id,
+              route.provider,
+              route.connectionId,
+              route.resourceId,
+              route.triggerName,
+            ],
+          );
+        }
+        await client.query(
+          `update projects set active_configuration_revision_id = $2, updated_at = clock_timestamp()
          where id = $1`,
-        [projectId, target.id],
-      );
-      await client.query("commit");
-      return toProjectConfigurationRevisionRecord(target);
+          [projectId, target.id],
+        );
+        return toProjectConfigurationRevisionRecord(target);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -3266,23 +3082,22 @@ class PgDatabase implements Database {
   async switchProjectConfigurationToManual(
     input: SwitchProjectConfigurationToManualInput,
   ): Promise<ProjectConfigurationRevisionRecord> {
-    const client = await this.pool.connect();
     try {
-      await client.query("begin");
-      const project = await client.query<ProjectRow>(
-        `select project.*
+      return await this.pool.transaction(async (client) => {
+        const project = await client.query<ProjectRow>(
+          `select project.*
          from projects project
          join member on member.organization_id = project.organization_id
          where project.id = $1 and project.status = 'active'
            and member.user_id = $2 and member.role in ('owner', 'admin')
            and project.active_configuration_revision_id is not null
          for update of project`,
-        [input.projectId, input.userId],
-      );
-      const projectRow = project.rows[0];
-      if (projectRow === undefined) throw new Error("project access denied");
-      const inserted = await client.query<ProjectConfigurationRevisionRow>(
-        `insert into project_configuration_revisions (
+          [input.projectId, input.userId],
+        );
+        const projectRow = project.rows[0];
+        if (projectRow === undefined) throw new Error("project access denied");
+        const inserted = await client.query<ProjectConfigurationRevisionRow>(
+          `insert into project_configuration_revisions (
            project_id, organization_id, version, source_kind, source_evidence, raw_yaml,
            normalized_configuration, content_hash, created_by_user_id, received_at, validated_at
          ) values (
@@ -3290,63 +3105,60 @@ class PgDatabase implements Database {
            coalesce((select max(version) + 1 from project_configuration_revisions where project_id = $1), 1),
            'manual', $3, $4, $5, $6, $7, clock_timestamp(), clock_timestamp()
          ) returning *`,
-        [
-          input.projectId,
-          projectRow.organization_id,
-          {
-            kind: "authority-switch",
-            fromRevisionId: projectRow.active_configuration_revision_id,
-            formattingPreserved: true,
-            bundle: input.bundle,
-          },
-          input.rawYaml,
-          input.normalizedConfiguration,
-          input.contentHash,
-          input.userId,
-        ],
-      );
-      const revision = inserted.rows[0]!;
-      await client.query(
-        `update project_configuration_sources
+          [
+            input.projectId,
+            projectRow.organization_id,
+            {
+              kind: "authority-switch",
+              fromRevisionId: projectRow.active_configuration_revision_id,
+              formattingPreserved: true,
+              bundle: input.bundle,
+            },
+            input.rawYaml,
+            input.normalizedConfiguration,
+            input.contentHash,
+            input.userId,
+          ],
+        );
+        const revision = inserted.rows[0]!;
+        await client.query(
+          `update project_configuration_sources
          set kind = 'manual', github_connection_id = null, github_repository_id = null,
              github_repository_full_name = null, github_default_branch = null,
              automatic_deployment_enabled = false, selected_by_user_id = $2,
              updated_at = clock_timestamp()
          where project_id = $1`,
-        [input.projectId, input.userId],
-      );
-      await client.query(`delete from project_trigger_routes where project_id = $1`, [
-        input.projectId,
-      ]);
-      for (const route of input.routes) {
-        await client.query(
-          `insert into project_trigger_routes
+          [input.projectId, input.userId],
+        );
+        await client.query(`delete from project_trigger_routes where project_id = $1`, [
+          input.projectId,
+        ]);
+        for (const route of input.routes) {
+          await client.query(
+            `insert into project_trigger_routes
              (organization_id, project_id, configuration_revision_id, provider,
               connection_id, resource_id, trigger_name)
            values ($1, $2, $3, $4, $5, $6, $7)`,
-          [
-            revision.organization_id,
-            input.projectId,
-            revision.id,
-            route.provider,
-            route.connectionId,
-            route.resourceId,
-            route.triggerName,
-          ],
-        );
-      }
-      await client.query(
-        `update projects set active_configuration_revision_id = $2,
+            [
+              revision.organization_id,
+              input.projectId,
+              revision.id,
+              route.provider,
+              route.connectionId,
+              route.resourceId,
+              route.triggerName,
+            ],
+          );
+        }
+        await client.query(
+          `update projects set active_configuration_revision_id = $2,
              updated_at = clock_timestamp() where id = $1`,
-        [input.projectId, revision.id],
-      );
-      await client.query("commit");
-      return toProjectConfigurationRevisionRecord(revision);
+          [input.projectId, revision.id],
+        );
+        return toProjectConfigurationRevisionRecord(revision);
+      });
     } catch (error) {
-      await client.query("rollback").catch(() => undefined);
       throw toDatabaseError(error);
-    } finally {
-      client.release();
     }
   }
 
@@ -3837,7 +3649,7 @@ class PgDatabase implements Database {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    await this.pool.close();
   }
 
   async findProviderEventReceiptById(id: string): Promise<ProviderEventReceiptRecord | undefined> {
@@ -3931,7 +3743,7 @@ class PgDatabase implements Database {
 }
 
 async function lockValidProjectRevision(
-  client: PoolClient,
+  client: QueryHandle,
   projectId: string,
   revisionId: string,
 ): Promise<ProjectConfigurationRevisionRow> {
@@ -3949,55 +3761,12 @@ async function lockValidProjectRevision(
   return revision;
 }
 
-async function runMigrations(pool: Pool): Promise<void> {
-  await migrate(drizzle(pool), { migrationsFolder: MIGRATIONS_FOLDER });
-}
-
-async function ensureDatabaseExists(url: string): Promise<void> {
-  const targetUrl = new URL(url);
-  const databaseName = basename(targetUrl.pathname);
-  const postgresUrl = new URL(url);
-
-  postgresUrl.pathname = `/${DEFAULT_POSTGRES_DATABASE}`;
-
-  const pool = createPostgresPool(postgresUrl.toString());
-
-  try {
-    const existsResult = await query(pool, "select 1 from pg_database where datname = $1", [
-      databaseName,
-    ]);
-
-    if (existsResult.rowCount === 0) {
-      await query(pool, `create database ${quoteIdentifier(databaseName)}`);
-    }
-  } catch (error) {
-    throw toDatabaseError(error);
-  } finally {
-    await pool.end();
-  }
-}
-
-export function createPostgresPool(connectionString: string): Pool {
-  const config: PoolConfig = {
-    connectionString,
-    connectionTimeoutMillis: QUERY_DEADLINE_MS,
-    query_timeout: QUERY_DEADLINE_MS,
-    statement_timeout: QUERY_DEADLINE_MS,
-  };
-
-  const pool = new Pool(config);
-  pool.on("error", (error) => {
-    logger.error({ err: error }, "PostgreSQL pool client error");
-  });
-  return pool;
-}
-
-async function query<T extends QueryResultRow = QueryResultRow>(
-  pool: Pool,
+async function query<T extends QueryRow = QueryRow>(
+  pool: QueryHandle,
   text: string,
   values: unknown[] = [],
 ) {
-  return withDatabaseDeadline(pool.query<T>(text, values));
+  return pool.query<T>(text, values);
 }
 
 function stringArray(value: unknown): string[] {
@@ -4013,35 +3782,8 @@ function isDaemonSlugConflict(error: unknown): boolean {
   );
 }
 
-async function withDatabaseDeadline<T>(promise: Promise<T>): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          reject(new DatabaseUnavailableError("database query timed out"));
-        }, QUERY_DEADLINE_MS);
-      }),
-    ]);
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-function quoteIdentifier(value: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-    throw new Error(`invalid database name: ${value}`);
-  }
-
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 async function insertAgentExecutionOnClient(
-  client: PoolClient,
+  client: QueryHandle,
   input: InsertAgentExecutionInput,
 ): Promise<AgentExecutionRow> {
   const rows = await client.query<AgentExecutionRow>(
@@ -4097,7 +3839,7 @@ async function insertAgentExecutionOnClient(
 
 const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
 
-export interface ProviderEventReceiptRow extends QueryResultRow {
+export interface ProviderEventReceiptRow extends QueryRow {
   id: string;
   organization_id: string;
   provider: ProviderEventReceiptRecord["provider"];
@@ -4113,7 +3855,7 @@ export interface ProviderEventReceiptRow extends QueryResultRow {
   accepted_routes: unknown;
 }
 
-interface TriggerRunRow extends QueryResultRow {
+interface TriggerRunRow extends QueryRow {
   id: string;
   organization_id: string;
   project_id: string;
@@ -4166,7 +3908,7 @@ interface ProjectActivityRunListRow extends TriggerRunRow {
   dropped_reason: string | null;
 }
 
-interface WorkflowStepRunRow extends QueryResultRow {
+interface WorkflowStepRunRow extends QueryRow {
   id: string;
   trigger_run_id: string;
   step_id: string;
@@ -4183,7 +3925,7 @@ interface WorkflowStepRunRow extends QueryResultRow {
   dispatch_intent: LaunchMachineIntent | null;
 }
 
-interface WorkflowWakeupRow extends QueryResultRow {
+interface WorkflowWakeupRow extends QueryRow {
   trigger_run_id: string;
   available_at: Date;
   lease_expires_at: Date | null;
@@ -4269,7 +4011,7 @@ function toWorkflowWakeupRecord(
   };
 }
 
-export interface MachineRow extends QueryResultRow {
+export interface MachineRow extends QueryRow {
   id: string;
   org_id: string;
   source: MachineSource;
@@ -4282,7 +4024,7 @@ export interface MachineRow extends QueryResultRow {
   specs: unknown;
 }
 
-export interface AgentExecutionRow extends QueryResultRow {
+export interface AgentExecutionRow extends QueryRow {
   id: string;
   organization_id: string;
   project_id: string;
@@ -4313,7 +4055,7 @@ export interface AgentExecutionRow extends QueryResultRow {
   hub_action_acknowledgements: unknown;
 }
 
-export interface AttachmentRow extends QueryResultRow {
+export interface AttachmentRow extends QueryRow {
   id: string;
   provider_event_receipt_id: string;
   organization_id: string;
@@ -4327,7 +4069,7 @@ export interface AttachmentRow extends QueryResultRow {
   created_at: Date;
 }
 
-interface DaemonRow extends QueryResultRow {
+interface DaemonRow extends QueryRow {
   id: string;
   enrollment_verifier: string;
   slug: string;
@@ -4346,7 +4088,7 @@ interface DaemonRow extends QueryResultRow {
   created_at: Date;
 }
 
-interface CliAuthorizationRow extends QueryResultRow {
+interface CliAuthorizationRow extends QueryRow {
   id: string;
   device_verifier: string;
   user_code_verifier: string;
@@ -4393,7 +4135,7 @@ function toCliAuthorization(row: CliAuthorizationRow): CliAuthorizationRecord {
   };
 }
 
-export interface OrganizationEntitlementsRow extends QueryResultRow {
+export interface OrganizationEntitlementsRow extends QueryRow {
   organization_id: string;
   granted: unknown;
   overrides: unknown;
@@ -4416,7 +4158,7 @@ export interface OrganizationEntitlementsRow extends QueryResultRow {
  * together.
  */
 async function stampEntitlementsWithinTransaction(
-  client: PoolClient,
+  client: QueryHandle,
   input: StampOrganizationEntitlementsInput,
 ): Promise<OrganizationEntitlementsRecord> {
   const existing = await client.query<OrganizationEntitlementsRow & { changed: boolean }>(
@@ -4489,7 +4231,7 @@ function toOrganizationEntitlementsRecord(
   };
 }
 
-interface OperatorOrganizationRow extends QueryResultRow {
+interface OperatorOrganizationRow extends QueryRow {
   id: string;
   name: string;
   slug: string;
@@ -4499,7 +4241,7 @@ function toOperatorOrganizationRecord(row: OperatorOrganizationRow): OperatorOrg
   return { id: row.id, name: row.name, slug: row.slug };
 }
 
-export interface EntitlementChangeRow extends QueryResultRow {
+export interface EntitlementChangeRow extends QueryRow {
   id: string;
   organization_id: string;
   actor: string | null;
@@ -4525,7 +4267,7 @@ function toEntitlementChangeRecord(row: EntitlementChangeRow): EntitlementChange
   };
 }
 
-export interface OrganizationUsageRow extends QueryResultRow {
+export interface OrganizationUsageRow extends QueryRow {
   organization_id: string;
   meter: string;
   period_start: Date;
@@ -4541,7 +4283,7 @@ function toOrganizationUsageRecord(row: OrganizationUsageRow): OrganizationUsage
   };
 }
 
-export interface BillingPlanRow extends QueryResultRow {
+export interface BillingPlanRow extends QueryRow {
   id: string;
   slug: string;
   name: string;
@@ -4552,7 +4294,7 @@ export interface BillingPlanRow extends QueryResultRow {
   synced_at: Date;
 }
 
-export interface BillingPlanPriceRow extends QueryResultRow {
+export interface BillingPlanPriceRow extends QueryRow {
   id: string;
   plan_id: string;
   lookup_key: string;
@@ -4587,7 +4329,7 @@ function toBillingPlanRecord(
   };
 }
 
-export interface OrganizationSubscriptionRow extends QueryResultRow {
+export interface OrganizationSubscriptionRow extends QueryRow {
   organization_id: string;
   stripe_customer_id: string;
   stripe_subscription_id: string;
@@ -4622,25 +4364,23 @@ function toOrganizationSubscriptionRecord(
  * when a non-null limit would be exceeded.
  */
 async function reserveOrganizationUsageOnClient(
-  client: Pool | PoolClient,
+  client: QueryHandle,
   input: ConsumeOrganizationUsageInput,
 ): Promise<OrganizationUsageRecord | undefined> {
-  const rows = await withDatabaseDeadline(
-    client.query<OrganizationUsageRow>(
-      `insert into organization_usage (organization_id, meter, period_start, used)
+  const rows = await client.query<OrganizationUsageRow>(
+    `insert into organization_usage (organization_id, meter, period_start, used)
        select $1, $2, $3, $4::bigint
        where $5::bigint is null or $4::bigint <= $5::bigint
        on conflict (organization_id, meter, period_start) do update
          set used = organization_usage.used + excluded.used
        where $5::bigint is null or organization_usage.used + excluded.used <= $5::bigint
        returning *`,
-      [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
-    ),
+    [input.organizationId, input.meter, input.periodStart, input.amount, input.limit],
   );
   return rows.rows[0] === undefined ? undefined : toOrganizationUsageRecord(rows.rows[0]);
 }
 
-export interface ProjectRow extends QueryResultRow {
+export interface ProjectRow extends QueryRow {
   id: string;
   organization_id: string;
   name: string;
@@ -4653,7 +4393,7 @@ export interface ProjectRow extends QueryResultRow {
   active_configuration_revision_id: string | null;
 }
 
-export interface ProjectConfigurationRevisionRow extends QueryResultRow {
+export interface ProjectConfigurationRevisionRow extends QueryRow {
   id: string;
   project_id: string;
   organization_id: string;
@@ -4670,7 +4410,7 @@ export interface ProjectConfigurationRevisionRow extends QueryResultRow {
   validated_at: Date | null;
 }
 
-interface GitHubRepositoryRow extends QueryResultRow {
+interface GitHubRepositoryRow extends QueryRow {
   id: string;
   organization_id: string;
   connection_id: string;
@@ -4715,7 +4455,7 @@ function workflowDeadlineKind(
 }
 
 async function timeoutWorkflowStepOnClient(
-  client: PoolClient,
+  client: QueryHandle,
   execution: AgentExecutionRow,
   step: WorkflowStepRunRow,
   run: TriggerRunRow,
@@ -4760,7 +4500,7 @@ async function timeoutWorkflowStepOnClient(
 }
 
 async function timeoutWorkflowRunOnClient(
-  client: PoolClient,
+  client: QueryHandle,
   run: TriggerRunRow,
   observedAt: Date,
 ): Promise<WorkflowDeadlineRecovery> {
@@ -4806,7 +4546,7 @@ async function timeoutWorkflowRunOnClient(
 }
 
 async function transitionWorkflowAgentExecution(
-  client: PoolClient,
+  client: QueryHandle,
   execution: AgentExecutionRow,
   input: WorkflowAgentCompletionInput,
 ): Promise<{ execution: AgentExecutionRow; transitioned: boolean } | undefined> {
@@ -4851,7 +4591,7 @@ async function transitionWorkflowAgentExecution(
 }
 
 async function finishWorkflowStepAndRun(
-  client: PoolClient,
+  client: QueryHandle,
   step: WorkflowStepRunRow,
   run: TriggerRunRow,
   input: WorkflowAgentCompletionInput,
@@ -4904,7 +4644,7 @@ async function finishWorkflowStepAndRun(
 }
 
 async function findTriggerRunOnClient(
-  client: PoolClient,
+  client: QueryHandle,
   triggerRunId: string,
 ): Promise<TriggerRunRecord | undefined> {
   const rows = await client.query<TriggerRunRow>(`select * from trigger_runs where id = $1`, [
@@ -4914,7 +4654,7 @@ async function findTriggerRunOnClient(
 }
 
 async function findAgentExecutionOnClient(
-  client: PoolClient,
+  client: QueryHandle,
   executionId: string,
 ): Promise<AgentExecutionRecord | undefined> {
   const rows = await client.query<AgentExecutionRow>(
@@ -4925,7 +4665,7 @@ async function findAgentExecutionOnClient(
 }
 
 async function wakeWorkflowRun(
-  client: PoolClient,
+  client: QueryHandle,
   triggerRunId: string,
   availableAt: Date,
 ): Promise<void> {
@@ -4959,7 +4699,7 @@ function toGitHubRepositoryRecord(row: GitHubRepositoryRow): GitHubRepositoryRec
   };
 }
 
-interface TenantRouteAccessRow extends QueryResultRow {
+interface TenantRouteAccessRow extends QueryRow {
   organization_id: string;
   organization_name: string;
   organization_slug: string;

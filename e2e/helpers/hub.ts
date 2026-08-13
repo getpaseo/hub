@@ -21,7 +21,7 @@ import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-provider
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
-import { createDatabase } from "../../src/db/pg.js";
+import { createDatabase } from "../../src/db/test-utils/runtime.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";

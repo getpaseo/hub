@@ -1,10 +1,10 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { createPostgresPool } from "../db/pg.js";
 import { z } from "zod";
 import * as schema from "../db/schema.js";
+import type { DatabaseRuntime } from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { PublicCredentialAuthenticator } from "./public-credentials.js";
@@ -61,7 +61,8 @@ export interface AuthServer {
 }
 
 interface AuthServerOptions {
-  databaseUrl: string;
+  database: DatabaseRuntime;
+  locks: Locks;
   /** Owned by the composition root, injected here — auth consumes entitlements, never owns them. */
   entitlements: EntitlementsService;
   secret: string;
@@ -104,15 +105,14 @@ const RAW_PRODUCT_PATHS = new Set([
 ]);
 
 export function createAuthServer(options: AuthServerOptions): AuthServer {
-  const pool = createPostgresPool(options.databaseUrl);
-  const database = drizzle(pool, { schema });
+  const database = options.database.drizzle();
   const policy = options.policy ?? defaultInstanceAuthPolicy();
   const provisioningEntitlements =
     options.provisioningEntitlements ?? (() => Promise.resolve(UNLIMITED_PROVISIONING));
-  const apiKeys = new OrganizationApiKeys(pool);
-  const cliCredentials = new OrganizationCliCredentials(pool);
+  const apiKeys = new OrganizationApiKeys(options.database, options.locks);
+  const cliCredentials = new OrganizationCliCredentials(options.database);
   const publicCredentials = new PublicCredentialAuthenticator(apiKeys, cliCredentials);
-  const registration = new RegistrationAdmission(pool, policy);
+  const registration = new RegistrationAdmission(options.database, options.locks, policy);
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -174,7 +174,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     },
   };
   const access = new OrganizationAccess({
-    pool,
+    pool: options.database,
+    locks: options.locks,
     sessions,
     baseURL: options.baseURL,
     policy,
@@ -246,7 +247,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         body: { ...data, revokeOtherSessions: true },
         headers,
       });
-      await pool.query(
+      await options.database.query(
         `update "user" set must_change_password = false, updated_at = now() where id = $1`,
         [session.userId],
       );
@@ -257,11 +258,11 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     resolveOrganizationAccess: (request) => access.resolve(request),
     resolveAccount: (request) => access.account(request),
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
-    initialize: () => bootstrapInstance(pool, policy, provisioningEntitlements),
+    initialize: () => bootstrapInstance(options.database, policy, provisioningEntitlements),
     apiKeys,
     cliCredentials,
     publicCredentials,
-    close: () => pool.end(),
+    close: () => Promise.resolve(),
   };
 
   async function changePassword(request: Request): Promise<Response> {
@@ -282,7 +283,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           )
         : await auth.handler(request);
     if (response.ok && session !== undefined) {
-      await pool.query(`update "user" set must_change_password = false where id = $1`, [
+      await options.database.query(`update "user" set must_change_password = false where id = $1`, [
         session.userId,
       ]);
     }

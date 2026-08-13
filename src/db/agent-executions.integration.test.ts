@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { createDatabase } from "./pg.js";
+import { createDatabase } from "./test-utils/runtime.js";
 import {
   compileHubConfig,
   compiledConfigurationHash,
@@ -602,8 +602,8 @@ describe("agent execution PostgreSQL repository", () => {
       );
       assert.equal(recoveredExecution?.id, execution.id);
       assert.equal(successfulHandoffs, 1);
-      const client = new Client({ connectionString: fixture.databaseUrl });
-      await client.connect();
+      const client = await createPostgresQueryRuntime(fixture.databaseUrl);
+
       try {
         const count = await client.query<{ count: string }>(
           `select count(*)::text as count
@@ -614,7 +614,7 @@ describe("agent execution PostgreSQL repository", () => {
         );
         assert.equal(count.rows[0]?.count, "1");
       } finally {
-        await client.end();
+        await client.close();
       }
     } finally {
       await fixture.database.close();
@@ -1079,10 +1079,9 @@ describe("agent execution PostgreSQL repository", () => {
 
   it("replays accepted and rejected runs by receipt, project, and trigger identity", async () => {
     const fixture = await executionFixture(postgres);
-    const client = new Client({ connectionString: fixture.databaseUrl });
+    const client = await createPostgresQueryRuntime(fixture.databaseUrl);
     const projectTwoId = "00000000-0000-0000-0000-000000000002";
     try {
-      await client.connect();
       await client.query(
         `insert into projects (id, organization_id, name, slug)
          values ($1, 'org-1', 'Second', 'second')`,
@@ -1199,7 +1198,7 @@ describe("agent execution PostgreSQL repository", () => {
       assert.equal(rejectedFirstReplay.created, false);
       assert.equal(rejectedSecondReplay.created, false);
     } finally {
-      await client.end();
+      await client.close();
       await fixture.database.close();
     }
   });
@@ -1566,8 +1565,8 @@ async function executionFixture(
   const url = new URL(postgres.getConnectionUri());
   url.pathname = `/execution_finality_${randomUUID().replaceAll("-", "")}`;
   const database = await createDatabase(url.toString());
-  const client = new Client({ connectionString: url.toString() });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url.toString());
+
   await client.query(
     "insert into organization (id, name, slug) values ('org-1', 'Finality', 'finality')",
   );
@@ -1575,7 +1574,7 @@ async function executionFixture(
     `insert into projects (id, organization_id, name, slug)
      values ('00000000-0000-4000-8000-000000000001', 'org-1', 'Default', 'default')`,
   );
-  await client.end();
+  await client.close();
 
   const revisionConfiguration = allWorkflowConfigurations();
   const config = await database.insertProjectConfigurationRevision({

@@ -2,8 +2,7 @@ import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createHubApplication } from "../../app.js";
-import { createDatabase } from "../../db/pg.js";
-import { Client } from "pg";
+import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
 import { dump } from "js-yaml";
 import {
   OutputExecutorRegistry,
@@ -26,38 +25,35 @@ async function main(): Promise<void> {
   const databaseUrl = requiredEnvironment("DATABASE_URL");
   const port = Number(requiredEnvironment("PORT"));
   const outputFile = requiredEnvironment("HUB_E2E_OUTPUT_FILE");
-  const database = await createDatabase(databaseUrl);
+  const { database, runtime, locks } = await createPostgresTestRuntime(databaseUrl);
   const organizationId = "hub-e2e";
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  await client.query(
+  await runtime.query(
     `insert into organization (id, name, slug) values ($1, $2, $3) on conflict (id) do nothing`,
     [organizationId, "Hub E2E", organizationId],
   );
-  await client.query(
+  await runtime.query(
     `insert into organization_entitlements
        (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
      values ($1, $2::jsonb, '{}'::jsonb, null, $3, now(), now())
      on conflict (organization_id) do nothing`,
     [organizationId, JSON.stringify(UNLIMITED_TEMPLATE), hashTemplate(UNLIMITED_TEMPLATE)],
   );
-  await client.query(
+  await runtime.query(
     `insert into "user" (id, name, email, email_verified)
      values ('hub-e2e', 'Hub E2E', 'hub-e2e@paseo.test', true)
      on conflict (id) do nothing`,
   );
-  await client.query(
+  await runtime.query(
     `insert into member (id, organization_id, user_id, role)
      values ('hub-e2e-owner', $1, 'hub-e2e', 'owner')
      on conflict (id) do nothing`,
     [organizationId],
   );
-  await client.query(
+  await runtime.query(
     `insert into projects (id, organization_id, name, slug, created_by_user_id)
      values ($1, $2, $3, $4, 'hub-e2e') on conflict (id) do nothing`,
     [E2E_PROJECT_ID, organizationId, "Default", "default"],
   );
-  await client.end();
   const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
   const outputs = new OutputExecutorRegistry();
   outputs.register({
@@ -68,9 +64,10 @@ async function main(): Promise<void> {
       await appendFile(outputFile, `${JSON.stringify(output)}\n`);
     },
   });
-  const entitlements = composeEntitlements(database, databaseUrl);
+  const entitlements = composeEntitlements(database, runtime);
   const auth = createAuthServer({
-    databaseUrl,
+    database: runtime,
+    locks,
     entitlements: entitlements.service,
     baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
     secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),

@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
 import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
-import { createDatabase } from "../db/pg.js";
+import {
+  createDatabase,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { OperatorConsole, OperatorForbiddenError } from "./console.js";
 
@@ -130,9 +134,10 @@ class OperatorHarness {
   static async start(postgres: StartedPostgreSqlContainer): Promise<OperatorHarness> {
     const url = isolatedDatabaseUrl(postgres);
     const database = await createDatabase(url);
-    const entitlements = composeEntitlements(database, url);
+    const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     const auth = createAuthServer({
-      databaseUrl: url,
+      database: testDatabaseRuntime(database),
+      locks: testDatabaseLocks(database),
       entitlements: entitlements.service,
       secret: "operator-auth-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
@@ -174,12 +179,12 @@ class OperatorHarness {
     text: string,
     values: unknown[] = [],
   ): Promise<TRow[]> {
-    const client = new Client({ connectionString: this.url });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(this.url);
+
     try {
       return (await client.query<TRow>(text, values)).rows;
     } finally {
-      await client.end();
+      await client.close();
     }
   }
 }

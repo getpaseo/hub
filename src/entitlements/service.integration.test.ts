@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
-import { createDatabase } from "../db/pg.js";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import { createDatabase } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { EntitlementDenied, UNLIMITED_TEMPLATE } from "./catalog.js";
 import { EntitlementsService } from "./service.js";
@@ -24,8 +24,8 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
 
   async function seedOrganization(): Promise<string> {
     const organizationId = `org-${randomUUID()}`;
-    const client = new Client({ connectionString: postgres.getConnectionUri() });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(postgres.getConnectionUri());
+
     try {
       await client.query(`insert into organization (id, name, slug) values ($1, $2, $3)`, [
         organizationId,
@@ -33,7 +33,7 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
         organizationId,
       ]);
     } finally {
-      await client.end();
+      await client.close();
     }
     return organizationId;
   }
@@ -47,8 +47,8 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
 
   async function seedPreMetersOrganization(): Promise<string> {
     const organizationId = await seedOrganization();
-    const client = new Client({ connectionString: postgres.getConnectionUri() });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(postgres.getConnectionUri());
+
     try {
       await client.query(
         `insert into organization_entitlements
@@ -63,7 +63,7 @@ describe("EntitlementsService.consume against PostgreSQL", () => {
         [organizationId, PRE_METERS_SNAPSHOT, "Backfilled unlimited entitlements."],
       );
     } finally {
-      await client.end();
+      await client.close();
     }
     return organizationId;
   }

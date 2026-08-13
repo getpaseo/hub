@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
-import { createDatabase } from "../db/pg.js";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import {
+  createDatabase,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
@@ -25,8 +29,8 @@ describe("organization API-key boundary", () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     databaseUrl = postgres.getConnectionUri();
     authDatabase = await createDatabase(databaseUrl);
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     await client.query(`
       insert into organization (id, name, slug) values
         ('organization-a', 'Organization A', 'organization-a'),
@@ -38,10 +42,11 @@ describe("organization API-key boundary", () => {
         ('member-a', 'organization-a', 'user-a', 'owner'),
         ('member-b', 'organization-b', 'user-b', 'owner');
     `);
-    await client.end();
-    authEntitlements = composeEntitlements(authDatabase, databaseUrl);
+    await client.close();
+    authEntitlements = composeEntitlements(authDatabase, testDatabaseRuntime(authDatabase));
     auth = createAuthServer({
-      databaseUrl,
+      database: testDatabaseRuntime(authDatabase),
+      locks: testDatabaseLocks(authDatabase),
       entitlements: authEntitlements.service,
       secret: "test".repeat(8),
       baseURL: "http://localhost:3000",
@@ -266,8 +271,8 @@ describe("organization API-key boundary", () => {
 
   it("serializes enrollment issuance with API-key revocation", async () => {
     const database = await createDatabase(databaseUrl);
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     try {
       const revokedFirst = await auth.apiKeys!.create(
         "organization-a",
@@ -275,21 +280,22 @@ describe("organization API-key boundary", () => {
         `revoked-first-${randomUUID()}`,
         ["daemons:enroll"],
       );
-      await client.query("begin");
-      await client.query(`select id from organization_api_keys where id = $1 for update`, [
-        revokedFirst.summary.id,
-      ]);
-      const revokeFirst = auth.apiKeys!.revoke("organization-a", revokedFirst.summary.id);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const rejectedIssue = database.issueEnrollmentToken({
-        id: randomUUID(),
-        verifier: `race-rejected-${randomUUID()}`,
-        organizationId: "organization-a",
-        issuedByApiKeyId: revokedFirst.summary.id,
-        expiresAt: new Date(Date.now() + 60_000),
-        consumedAt: null,
+      const { revokeFirst, rejectedIssue } = await client.transaction(async (transaction) => {
+        await transaction.query(`select id from organization_api_keys where id = $1 for update`, [
+          revokedFirst.summary.id,
+        ]);
+        const revokeOperation = auth.apiKeys!.revoke("organization-a", revokedFirst.summary.id);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const issueOperation = database.issueEnrollmentToken({
+          id: randomUUID(),
+          verifier: `race-rejected-${randomUUID()}`,
+          organizationId: "organization-a",
+          issuedByApiKeyId: revokedFirst.summary.id,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        });
+        return { revokeFirst: revokeOperation, rejectedIssue: issueOperation };
       });
-      await client.query("commit");
       assert.equal(await revokeFirst, true);
       assert.equal(await rejectedIssue, false);
 
@@ -300,21 +306,22 @@ describe("organization API-key boundary", () => {
         ["daemons:enroll"],
       );
       const issuedTokenId = randomUUID();
-      await client.query("begin");
-      await client.query(`select id from organization_api_keys where id = $1 for update`, [
-        issuedFirst.summary.id,
-      ]);
-      const acceptedIssue = database.issueEnrollmentToken({
-        id: issuedTokenId,
-        verifier: `race-accepted-${randomUUID()}`,
-        organizationId: "organization-a",
-        issuedByApiKeyId: issuedFirst.summary.id,
-        expiresAt: new Date(Date.now() + 60_000),
-        consumedAt: null,
+      const { acceptedIssue, revokeAfterIssue } = await client.transaction(async (transaction) => {
+        await transaction.query(`select id from organization_api_keys where id = $1 for update`, [
+          issuedFirst.summary.id,
+        ]);
+        const issueOperation = database.issueEnrollmentToken({
+          id: issuedTokenId,
+          verifier: `race-accepted-${randomUUID()}`,
+          organizationId: "organization-a",
+          issuedByApiKeyId: issuedFirst.summary.id,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const revokeOperation = auth.apiKeys!.revoke("organization-a", issuedFirst.summary.id);
+        return { acceptedIssue: issueOperation, revokeAfterIssue: revokeOperation };
       });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const revokeAfterIssue = auth.apiKeys!.revoke("organization-a", issuedFirst.summary.id);
-      await client.query("commit");
       assert.equal(await acceptedIssue, true);
       assert.equal(await revokeAfterIssue, true);
       const token = await client.query<{ expires_at: Date }>(
@@ -324,7 +331,7 @@ describe("organization API-key boundary", () => {
       assert.equal(token.rowCount, 1);
       assert.ok(token.rows[0]!.expires_at <= new Date());
     } finally {
-      await client.end();
+      await client.close();
       await database.close();
     }
   });
@@ -344,8 +351,8 @@ describe("organization API-key boundary", () => {
       ?.match(/^(?:[^;]+);/u)?.[0]
       ?.slice(0, -1);
     assert.ok(cookie);
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     const user = await client.query<{ id: string }>(`select id from "user" where email = $1`, [
       email,
     ]);
@@ -353,7 +360,7 @@ describe("organization API-key boundary", () => {
       `insert into member (id, organization_id, user_id, role) values ($1, 'organization-a', $2, 'member')`,
       [randomUUID(), user.rows[0]!.id],
     );
-    await client.end();
+    await client.close();
     const select = await auth.handle(
       new Request("http://localhost:3000/api/auth/paseo/select-organization", {
         method: "POST",
@@ -390,8 +397,8 @@ describe("organization API-key boundary", () => {
       ?.match(/^(?:[^;]+);/u)?.[0]
       ?.slice(0, -1);
     assert.ok(cookie);
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     const user = await client.query<{ id: string }>(`select id from "user" where email = $1`, [
       email,
     ]);
@@ -400,7 +407,7 @@ describe("organization API-key boundary", () => {
        values ($1, 'organization-a', $2, 'owner')`,
       [randomUUID(), user.rows[0]!.id],
     );
-    await client.end();
+    await client.close();
     const select = await auth.handle(
       new Request("http://localhost:3000/api/auth/paseo/select-organization", {
         method: "POST",

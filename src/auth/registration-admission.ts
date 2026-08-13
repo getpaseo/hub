@@ -1,4 +1,5 @@
-import type { Pool, PoolClient } from "pg";
+import type { DatabaseRuntime, TransactionHandle } from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import { normalizeEmail } from "./instance-policy.js";
@@ -12,7 +13,8 @@ export function invitationLockName(invitationId: string): string {
 
 export class RegistrationAdmission {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: DatabaseRuntime,
+    private readonly locks: Locks,
     private readonly policy: InstanceAuthPolicy,
   ) {}
 
@@ -55,40 +57,27 @@ export class RegistrationAdmission {
   ): Promise<T> {
     if (this.policy.registrationMode === "open") return action();
     if (invitationId === undefined) throw new RegistrationAdmissionError();
-    const client = await this.pool.connect();
     const lockKey = invitationLockName(invitationId);
-    try {
-      await client.query(`select pg_advisory_lock(hashtextextended($1, 0))`, [lockKey]);
-      if (!(await this.isAdmittedWithClient(client, email, invitationId))) {
+    return this.locks.withLock(lockKey, async () => {
+      if (!(await this.isAdmitted(email, invitationId))) {
         throw new RegistrationAdmissionError();
       }
-      const existingUser = await client.query(
+      const existingUser = await this.pool.query(
         `select 1 from "user" where lower(email) = $1 limit 1`,
         [normalizeEmail(email)],
       );
       if (existingUser.rowCount !== 0) throw new RegistrationAdmissionError();
       return await action();
-    } finally {
-      await client
-        .query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [lockKey])
-        .catch(() => undefined);
-      client.release();
-    }
+    });
   }
 
-  async lockInvitation(client: PoolClient, invitationId: string): Promise<void> {
-    await client.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-      invitationLockName(invitationId),
-    ]);
+  async lockInvitation(client: TransactionHandle, invitationId: string): Promise<void> {
+    await this.locks.withTxLock(client, invitationLockName(invitationId));
   }
 
-  private async isAdmittedWithClient(
-    client: PoolClient,
-    email: string,
-    invitationId: string,
-  ): Promise<boolean> {
+  private async isAdmitted(email: string, invitationId: string): Promise<boolean> {
     if (this.policy.registrationMode === "disabled") return false;
-    const result = await client.query(
+    const result = await this.pool.query(
       `select 1 from invitation
        where id = $1 and status = 'pending' and expires_at > now()
          and lower(email) = $2`,
