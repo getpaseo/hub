@@ -248,6 +248,18 @@ describe("public configuration bundle installation", () => {
     );
   });
 
+  it("preserves explicit missing-project precedence over bundle validation", async () => {
+    const harness = await deploymentHarness();
+
+    const result = await harness.install(files().slice(0, 1), "missing");
+
+    assert.deepEqual(result, { status: "project_not_found" });
+    assert.deepEqual(
+      await harness.database.listProjectsForOrganization(authorization.organizationId),
+      [],
+    );
+  });
+
   it("targets an existing default and upserts it when missing", async () => {
     const existing = await deploymentHarness();
     const defaultProject = await existing.createProject("default");
