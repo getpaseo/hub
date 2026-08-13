@@ -11,6 +11,7 @@ import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { DatabaseUnavailableError } from "../db/errors.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import {
+  ConfigurationResourcesSchema,
   createPublicApi,
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
@@ -146,6 +147,15 @@ describe("public API interface", () => {
         )
       ).json(),
     );
+    ConfigurationResourcesSchema.parse(
+      await (
+        await successApi.handle(
+          new Request("https://hub.test/api/v1/configuration-resources", {
+            headers: { authorization: "Bearer valid" },
+          }),
+        )
+      ).json(),
+    );
     ValidatedConfigurationSchema.parse(
       await (await successApi.handle(installRequest("/api/v1/configurations/validate"))).json(),
     );
@@ -249,6 +259,7 @@ describe("generated public OpenAPI", () => {
     assert.deepEqual(Object.keys(publicOpenApiDocument.paths ?? {}).sort(), [
       "/api/v1/cli-authorizations",
       "/api/v1/cli-authorizations/poll",
+      "/api/v1/configuration-resources",
       "/api/v1/configurations/install",
       "/api/v1/configurations/validate",
       "/api/v1/daemons/enrollment-tokens",
@@ -264,6 +275,10 @@ describe("generated public OpenAPI", () => {
         "configuration:validate",
         ["200", "400", "401", "403", "404", "422", "500", "503"],
       ],
+      "/api/v1/configuration-resources": [
+        "configuration:validate",
+        ["200", "401", "403", "500", "503"],
+      ],
       "/api/v1/projects": ["projects:read", ["200", "401", "403", "500", "503"]],
       "/api/v1/manual-runs": [
         "runs:dispatch",
@@ -273,7 +288,7 @@ describe("generated public OpenAPI", () => {
     } as const;
     for (const [path, [scope, statuses]] of Object.entries(expectations)) {
       const operation =
-        path === "/api/v1/projects"
+        path === "/api/v1/projects" || path === "/api/v1/configuration-resources"
           ? publicOpenApiDocument.paths?.[path]?.get
           : publicOpenApiDocument.paths?.[path]?.post;
       assert.ok(operation?.operationId);
@@ -374,6 +389,14 @@ function successfulOperations(): PublicOperations {
             slug: "project",
           },
         ],
+      }),
+    listConfigurationResources: () =>
+      Promise.resolve({
+        status: "listed",
+        daemons: [],
+        github: [],
+        discord: [],
+        slack: [],
       }),
     validateConfiguration: () =>
       Promise.resolve({

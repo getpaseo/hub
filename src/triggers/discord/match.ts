@@ -67,7 +67,10 @@ function matchesFilter(
     return false;
   }
 
-  if (!filter.from_users.includes(event.author.id)) {
+  if (
+    !filter.from_users.includes(event.author.username) &&
+    !filter.from_users.includes(event.author.id)
+  ) {
     return false;
   }
 

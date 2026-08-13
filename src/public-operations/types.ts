@@ -34,6 +34,22 @@ export type ListProjectsResult =
   | { status: "listed"; projects: readonly PublicProject[] }
   | InfrastructureUnavailable;
 
+export interface ConfigurationResources {
+  daemons: readonly { id: string; slug: string }[];
+  github: readonly {
+    slug: string;
+    accountLogin: string;
+    accountType: string;
+    repositories: readonly string[];
+  }[];
+  discord: readonly { slug: string; guildName: string }[];
+  slack: readonly { slug: string; teamName: string }[];
+}
+
+export type ListConfigurationResourcesResult =
+  | ({ status: "listed" } & ConfigurationResources)
+  | InfrastructureUnavailable;
+
 export type InstallConfigurationResult =
   | {
       status: "installed";
@@ -101,6 +117,9 @@ export interface InfrastructureUnavailable {
 
 export interface PublicOperations {
   listProjects(authorization: PublicAuthorization): Promise<ListProjectsResult>;
+  listConfigurationResources(
+    authorization: PublicAuthorization,
+  ): Promise<ListConfigurationResourcesResult>;
   validateConfiguration(
     authorization: PublicAuthorization,
     input: ValidateConfigurationInput,
@@ -118,6 +137,7 @@ export interface PublicOperations {
 
 export interface PublicOperationRepository {
   listActiveProjects(organizationId: string): Promise<readonly PublicProject[]>;
+  listConfigurationResources(organizationId: string): Promise<ConfigurationResources>;
   findActiveProject(
     organizationId: string,
     projectSlug: string,

@@ -6,6 +6,7 @@ Hub exposes organization-scoped operator operations under `/api/v1`:
 | ------------------------------------------- | ------------------------ | ---------------------------------------- |
 | List active projects                        | `projects:read`          | `GET /api/v1/projects`                   |
 | Validate configuration without writing      | `configuration:validate` | `POST /api/v1/configurations/validate`   |
+| List resolvable configuration resources     | `configuration:validate` | `GET /api/v1/configuration-resources`    |
 | Install and activate configuration          | `configuration:install`  | `POST /api/v1/configurations/install`    |
 | Dispatch a durable manual run               | `runs:dispatch`          | `POST /api/v1/manual-runs`               |
 | Issue a short-lived daemon enrollment token | `daemons:enroll`         | `POST /api/v1/daemons/enrollment-tokens` |

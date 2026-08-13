@@ -92,8 +92,6 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const connections = [primary, secondary];
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: connections });
-    database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
-      connections.find((connection) => connection.guildId === guildId);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Guild project",
@@ -106,7 +104,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       files: configurationBundleFixture(
         dump(
           discordConfiguration({
-            guild: "100",
+            guild: "discord-primary",
             connection: "discord-primary",
           }),
         ),
@@ -166,13 +164,11 @@ describe("ProjectConfigurationStore resource compilation", () => {
     );
   });
 
-  it("resolves a unique guild without requiring a connection slug", async () => {
+  it("resolves a Discord connection slug without an additional connection filter", async () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary, secondary] });
-    database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
-      guildId === primary.guildId ? primary : undefined;
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unique guild project",
@@ -182,7 +178,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const store = new ProjectConfigurationStore(database, project.id);
 
     const revision = await store.insertManualBundleRevision({
-      files: configurationBundleFixture(dump(discordConfiguration({ guild: "100" }))),
+      files: configurationBundleFixture(dump(discordConfiguration({ guild: "discord-primary" }))),
       userId: "user-1",
     });
     const active = await store.activate(revision.id);
@@ -204,13 +200,51 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const store = new ProjectConfigurationStore(database, project.id);
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
-        dump(discordConfiguration({ guild: "100", connection: "missing-discord" })),
+        dump(discordConfiguration({ guild: "discord-primary", connection: "missing-discord" })),
       ),
       userId: "user-1",
     });
 
     assert.deepEqual(revision.validationErrors, {
-      formErrors: ["unresolved organization resources: discord:connection:missing-discord"],
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/discord-mention.yml", "filters", "connection"],
+          message:
+            '"missing-discord" does not match any Discord connection (connected: discord-primary "Primary guild")',
+        },
+      ],
+    });
+  });
+
+  it("reports an unknown Discord slug with the connected guild candidates", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({ github: [], slack: [], discord: [primary] });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Unknown guild project",
+      slug: "unknown-guild-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump(discordConfiguration({ guild: "1481169421832814616" })),
+      ),
+      userId: "user-1",
+    });
+
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/discord-mention.yml", "filters", "guild"],
+          message:
+            '"1481169421832814616" does not match any Discord connection (connected: discord-primary "Primary guild")',
+        },
+      ],
     });
   });
 
@@ -249,7 +283,13 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
 
     assert.deepEqual(revision.validationErrors, {
-      formErrors: ["unresolved organization resources: missing-daemon"],
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/hub.yml", "environments", "runner", "daemon"],
+          message: '"missing-daemon" does not match any daemon (connected: none)',
+        },
+      ],
     });
     assert.equal(
       revision.contentHash,
@@ -272,7 +312,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       createdByUserId: "user-1",
     });
     const store = new ProjectConfigurationStore(database, project.id);
-    const configuration = discordConfiguration({ guild: "100" });
+    const configuration = discordConfiguration({ guild: "discord-primary" });
     configuration.triggers.push({
       ...configuration.triggers[0]!,
       name: "discord-mention-secondary",
@@ -312,11 +352,11 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     const store = new ProjectConfigurationStore(database, project.id);
     const first = await store.insertManualBundleRevision({
-      files: configurationBundleFixture(dump(discordConfiguration({ guild: "100" }))),
+      files: configurationBundleFixture(dump(discordConfiguration({ guild: "discord-primary" }))),
       userId: "user-1",
     });
     await store.activate(first.id);
-    const secondConfiguration = discordConfiguration({ guild: "100" });
+    const secondConfiguration = discordConfiguration({ guild: "discord-primary" });
     secondConfiguration.triggers[0]!.name = "second-discord-mention";
     const second = await store.insertManualBundleRevision({
       files: configurationBundleFixture(dump(secondConfiguration)),

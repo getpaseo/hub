@@ -29,6 +29,14 @@ describe("Discord trigger matching", () => {
     );
   });
 
+  it("matches a configured Discord username", () => {
+    const config = configFor({ from_users: ["maintainer"] });
+    assert.equal(
+      matchDiscordTriggers(config, createEvent({ authorUsername: "maintainer" }), BOT_ID).length,
+      1,
+    );
+  });
+
   it("rejects raw bot-looking content without Discord mention evidence", () => {
     const config = configFor({ guild: "100", from_users: ["400"] });
     assert.deepEqual(
@@ -123,6 +131,7 @@ function createEvent(
     threadId?: string | null;
     parentChannelId?: string | null;
     authorId?: string;
+    authorUsername?: string;
     authorBot?: boolean;
     content?: string;
     mentionedUserIds?: string[];
@@ -140,7 +149,7 @@ function createEvent(
     content: overrides.content ?? `<@${BOT_ID}> ping`,
     author: {
       id: overrides.authorId ?? "400",
-      username: "author",
+      username: overrides.authorUsername ?? "author",
       bot: overrides.authorBot ?? false,
     },
     mentionedUserIds: overrides.mentionedUserIds ?? [BOT_ID],

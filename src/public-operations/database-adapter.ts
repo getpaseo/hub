@@ -13,6 +13,28 @@ export function createDatabasePublicOperationRepository(
         .filter((project) => project.status === "active")
         .map(({ id, name, slug }) => ({ id, name, slug }));
     },
+    async listConfigurationResources(organizationId) {
+      const [connections, repositories, daemons] = await Promise.all([
+        database.organizationConnectionUsage(organizationId),
+        database.listGitHubRepositories(organizationId),
+        database.listDaemonsForOrganization(organizationId),
+      ]);
+      return {
+        daemons: daemons
+          .filter(({ status }) => status === "active")
+          .map(({ id, slug }) => ({ id, slug })),
+        github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
+          slug,
+          accountLogin,
+          accountType,
+          repositories: repositories
+            .filter(({ connectionId }) => connectionId === id)
+            .map(({ fullName }) => fullName),
+        })),
+        discord: connections.discord.map(({ slug, guildName }) => ({ slug, guildName })),
+        slack: connections.slack.map(({ slug, teamName }) => ({ slug, teamName })),
+      };
+    },
     async findActiveProject(organizationId, projectSlug) {
       const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
       return project === undefined || project.status !== "active"
