@@ -1847,7 +1847,7 @@ export class PaseoHub {
 
       const store = new ProjectConfigurationStore(database, project.id);
       const revision = await store.insertManualBundleRevision({
-        files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, guildId))),
+        files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, discord.slug))),
         userId: owner.user_id,
         sourceEvidence: { kind: "browser-fixture", userId: owner.user_id },
       });
@@ -4824,7 +4824,7 @@ function browserUnroutedSlackConfiguration(daemonSlug: string) {
         on: "slack.mention",
         max_runtime: "1h",
         filters: {
-          workspace: "T-drop-reason",
+          workspace: "drop-reason-slack",
           channels: ["SAFE-CONFIG-CHANNEL"],
           from_users: ["SAFE-CONFIG-SENDER"],
         },

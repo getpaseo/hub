@@ -218,7 +218,7 @@ test("explains invalid manual configuration and allows a corrected retry", async
   await app.configuration.expectActiveRevision(1);
   await app.configuration.saveManualConfiguration(unresolvedConfiguration);
   await app.configuration.expectValidationError(
-    "Unresolved organization resources: missing-runner",
+    '"missing-runner" does not match any daemon (connected: editor-daemon)',
   );
   await app.configuration.expectActiveRevision(1);
   await app.configuration.saveManualConfiguration(validConfiguration);
@@ -241,7 +241,7 @@ test("scopes configuration activation feedback to its project", async ({ hub, pa
   await app.configuration.expectActiveRevision(1);
   await app.configuration.saveManualConfiguration(unresolvedConfiguration);
   await app.configuration.expectValidationError(
-    "Unresolved organization resources: missing-runner",
+    '"missing-runner" does not match any daemon (connected: editor-daemon)',
   );
   await app.navigation.switchProject("Second");
   await app.configuration.expectNoPriorProjectFeedback(1, "missing-runner");
