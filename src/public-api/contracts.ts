@@ -164,11 +164,11 @@ export const ValidatedConfigurationSchema = z
   .object({
     projectSlug: z.string(),
     valid: z.literal(true),
-    wouldCreateProject: z.boolean(),
+    wouldCreateProject: z.literal(true).optional(),
   })
   .strict()
   .openapi("ValidatedConfiguration", {
-    example: { projectSlug: "payments", valid: true, wouldCreateProject: false },
+    example: { projectSlug: "payments", valid: true, wouldCreateProject: true },
   });
 
 export const ProjectSchema = z

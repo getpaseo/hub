@@ -84,7 +84,6 @@ describe("public configuration bundle installation", () => {
       status: "valid",
       projectSlug: "payments",
       valid: true,
-      wouldCreateProject: false,
     });
     assert.equal(harness.insertions, 0);
   });

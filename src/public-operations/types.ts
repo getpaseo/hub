@@ -18,7 +18,7 @@ export interface InstallConfigurationInput {
 export type ValidateConfigurationInput = InstallConfigurationInput;
 
 export type ValidateConfigurationResult =
-  | { status: "valid"; projectSlug: string; valid: true; wouldCreateProject: boolean }
+  | { status: "valid"; projectSlug: string; valid: true; wouldCreateProject?: true }
   | { status: "project_not_found" }
   | { status: "invalid_bundle"; issues: readonly DomainIssue[] }
   | { status: "invalid_configuration"; issues: readonly DomainIssue[] }

@@ -61,7 +61,7 @@ export function createPublicOperations(
               status: "valid",
               projectSlug,
               valid: true,
-              wouldCreateProject: target.status === "would_create",
+              ...(target.status === "would_create" ? { wouldCreateProject: true as const } : {}),
             }
           : {
               status: "invalid_configuration",
