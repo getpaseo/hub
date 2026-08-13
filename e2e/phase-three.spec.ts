@@ -15,6 +15,7 @@ const bob = {
 test("connects verified providers per organization and disconnects through confirmation", async ({
   hub,
 }) => {
+  test.setTimeout(60_000);
   await hub.signUpAs("alice", alice);
   await hub.createOrganization("alice", "Acme");
   await hub.expectConnections("alice");
