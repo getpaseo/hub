@@ -34,6 +34,9 @@ const SlackFileInfoSchema = SlackApiResponseSchema.extend({
     })
     .optional(),
 });
+const SlackUserInfoSchema = SlackApiResponseSchema.extend({
+  user: z.object({ name: z.string().min(1).max(255) }).optional(),
+});
 const SLACK_API_TIMEOUT_MS = 10_000;
 const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
 
@@ -86,6 +89,11 @@ export interface SlackBotClient {
     threadTs: string;
     beforeTs: string;
   }): Promise<SlackThreadReadResult>;
+  lookupUserName?(input: {
+    organizationId: string;
+    teamId: string;
+    userId: string;
+  }): Promise<string | undefined>;
   downloadAttachment?(input: {
     organizationId: string;
     teamId: string;
@@ -255,6 +263,18 @@ export function createSlackBotClient(options: {
     });
   }
 
+  async function lookupUserName(input: {
+    organizationId: string;
+    teamId: string;
+    userId: string;
+  }): Promise<string | undefined> {
+    const result = SlackUserInfoSchema.parse(
+      await callJson(input.organizationId, input.teamId, "users.info", { user: input.userId }),
+    );
+    if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+    return result.user?.name;
+  }
+
   return {
     sendMessage: (input) =>
       call(input.organizationId, input.teamId, "chat.postMessage", {
@@ -275,6 +295,7 @@ export function createSlackBotClient(options: {
         name: input.name,
       }),
     readThreadMessages,
+    lookupUserName,
     downloadAttachment,
   };
 }

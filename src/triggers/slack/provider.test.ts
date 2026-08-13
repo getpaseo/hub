@@ -13,6 +13,32 @@ import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Slack Phase 1 trigger provider", () => {
+  it("resolves the authored Slack username once before matching", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      usernameConfiguration(),
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient({ username: "operator" });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+
+    const matched = await provider.match(external(project.id, revision.id));
+    assert.notEqual(typeof matched, "string");
+    assert.deepEqual(client.userLookups, ["U1"]);
+
+    const rejected = await createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient({ username: "someone-else" }),
+    }).match(external(project.id, revision.id));
+    assert.equal(rejected, "trigger_filters_rejected");
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -637,6 +663,19 @@ function configuration() {
   };
 }
 
+function usernameConfiguration() {
+  const base = configuration();
+  return {
+    ...base,
+    triggers: [
+      {
+        ...base.triggers[0]!,
+        filters: { ...base.triggers[0]!.filters, from_users: ["operator"] },
+      },
+    ],
+  };
+}
+
 function inputConfiguration() {
   const base = configuration();
   const trigger = base.triggers[0]!;
@@ -734,6 +773,7 @@ class RecordingSlackClient implements SlackBotClient {
     content: string;
   }> = [];
   threadReads: string[] = [];
+  userLookups: string[] = [];
   private readonly threadMessages: SlackThreadMessage[];
 
   constructor(
@@ -743,6 +783,7 @@ class RecordingSlackClient implements SlackBotClient {
       failMessages?: boolean;
       failThreadRead?: boolean;
       threadComplete?: boolean;
+      username?: string;
     } = {},
   ) {
     this.threadMessages = options.threadMessages ?? [];
@@ -765,6 +806,10 @@ class RecordingSlackClient implements SlackBotClient {
   removeReaction(input: { organizationId: string; teamId: string; name: string }): Promise<void> {
     this.reactions.push(`${input.organizationId}:${input.teamId}:remove:${input.name}`);
     return Promise.resolve();
+  }
+  lookupUserName(input: { userId: string }): Promise<string | undefined> {
+    this.userLookups.push(input.userId);
+    return Promise.resolve(this.options.username);
   }
   readThreadMessages(input: {
     organizationId: string;

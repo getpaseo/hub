@@ -15,6 +15,7 @@ oauth_config:
       - files:read
       - groups:history
       - reactions:write
+      - users:read
 settings:
   event_subscriptions:
     request_url: https://hub.example.com/api/integrations/slack/events

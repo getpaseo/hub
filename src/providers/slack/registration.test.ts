@@ -124,6 +124,7 @@ describe("Slack registration", () => {
           "files:read",
           "groups:history",
           "reactions:write",
+          "users:read",
         ],
       });
     const requests: string[] = [];
