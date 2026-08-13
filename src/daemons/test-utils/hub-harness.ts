@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import type { Duplex } from "node:stream";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { dump } from "js-yaml";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
@@ -24,7 +24,7 @@ import {
   deriveAgentExecutionCompletionToken,
   hashAgentExecutionCompletionToken,
 } from "../../agent-executions/completion-token.js";
-import { createDatabase } from "../../db/pg.js";
+import { createDatabase } from "../../db/test-utils/runtime.js";
 import type { ApiKeyScope } from "../../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../../auth/operation-auth.js";
 import type {
@@ -251,8 +251,8 @@ export class HubHarness {
   async seedSlackWorkspace(teamId: string, slug = "paseo"): Promise<string> {
     if (this.postgres === undefined) throw new Error("Postgres is unavailable");
     const id = "00000000-0000-4000-8000-0000000000c1";
-    const client = new Client({ connectionString: this.postgres.getConnectionUri() });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
+
     await client.query(
       `insert into slack_connections
          (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
@@ -260,15 +260,15 @@ export class HubHarness {
        on conflict (team_id) do nothing`,
       [id, HUB_ORGANIZATION_ID, teamId, slug, JSON.stringify(["app_mentions:read", "chat:write"])],
     );
-    await client.end();
+    await client.close();
     return id;
   }
 
   async seedCurrentProjectResources(): Promise<string> {
     const slackId = await this.seedSlackWorkspace("paseo");
     if (this.postgres === undefined) throw new Error("Postgres is unavailable");
-    const client = new Client({ connectionString: this.postgres.getConnectionUri() });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
+
     const githubId = "00000000-0000-4000-8000-0000000000c2";
     await client.query(
       `insert into discord_connections
@@ -293,7 +293,7 @@ export class HubHarness {
        on conflict (connection_id, repository_id) do nothing`,
       [HUB_ORGANIZATION_ID, githubId],
     );
-    await client.end();
+    await client.close();
     return slackId;
   }
 
@@ -1475,10 +1475,8 @@ export class HubHarness {
   private async startResources(): Promise<void> {
     this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     this.database = await createDatabase(this.postgres.getConnectionUri());
-    const client = new Client({
-      connectionString: this.postgres.getConnectionUri(),
-    });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
+
     await client.query(
       `insert into organization (id, name, slug) values ('org_1', 'Hub harness', 'hub-harness')`,
     );
@@ -1509,7 +1507,7 @@ export class HubHarness {
        values ($1, $2, 'Default', $3, $4)`,
       [HUB_PROJECT_ID, HUB_ORGANIZATION_ID, HUB_PROJECT_SLUG, HUB_USER_ID],
     );
-    await client.end();
+    await client.close();
     const store = new ProjectConfigurationStore(this.database, HUB_PROJECT_ID);
     await this.database.issueEnrollmentToken({
       id: "00000000-0000-4000-8000-0000000000ee",

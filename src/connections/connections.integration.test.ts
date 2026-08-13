@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { Client, type Pool } from "pg";
-import { createDatabase, createPostgresPool } from "../db/pg.js";
+import type { DatabaseRuntime, QueryHandle } from "../db/runtime/index.js";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import type { AuthServer } from "../auth/server.js";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
@@ -28,7 +29,7 @@ interface ProviderFixture {
 
 describe("provider connection facades PostgreSQL authority", () => {
   let postgres: StartedPostgreSqlContainer;
-  let pool: Pool;
+  let pool: DatabaseRuntime;
   let database: Database;
   let auth: ConnectionAuth;
   let github: TestGitHub;
@@ -38,7 +39,7 @@ describe("provider connection facades PostgreSQL authority", () => {
   beforeEach(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     database = await createDatabase(postgres.getConnectionUri());
-    pool = createPostgresPool(postgres.getConnectionUri());
+    pool = await createPostgresPool(postgres.getConnectionUri());
     await seedAccount(pool, "acme", "owner");
     auth = new ConnectionAuth(accessFor("acme", "owner"));
     github = new TestGitHub();
@@ -52,7 +53,7 @@ describe("provider connection facades PostgreSQL authority", () => {
   }, 120_000);
 
   afterEach(async () => {
-    await pool?.end();
+    await pool?.close();
     await database?.close();
     await postgres?.stop();
   }, 120_000);
@@ -619,7 +620,7 @@ function connectionsWithAuth(database: Database, auth: AuthServer): ProviderFixt
   });
 }
 
-async function seedAccount(pool: Pool, organizationId: string, role: string): Promise<void> {
+async function seedAccount(pool: QueryHandle, organizationId: string, role: string): Promise<void> {
   const userId = `user-${organizationId}`;
   await pool.query(`insert into organization (id, name, slug) values ($1,$1,$1)`, [organizationId]);
   await pool.query(`insert into "user" (id, name, email) values ($1,$2,$3)`, [
@@ -721,7 +722,7 @@ async function connectDiscord(connections: ProviderFixture): Promise<void> {
 
 async function rejectGitHubCallbackAfter(
   database: Database,
-  pool: Pool,
+  pool: QueryHandle,
   organizationId: string,
   mutateAuthority: () => Promise<void>,
 ): Promise<string | null> {
@@ -749,41 +750,39 @@ async function rejectCallbackAfterExpiryWhileLocked(
   lockedRow: { text: string; values: unknown[] },
   callback: () => Promise<Response>,
 ): Promise<string | null> {
-  const holder = new Client({ connectionString });
-  await holder.connect();
+  const holder = await createPostgresQueryRuntime(connectionString);
+
   try {
-    const scheduled = await holder.query<{ expires_at: Date }>(
-      scheduleExpiry.text,
-      scheduleExpiry.values,
-    );
-    const expiresAt = scheduled.rows[0]?.expires_at;
-    assert.notEqual(expiresAt, undefined);
-    await holder.query("begin");
-    await holder.query(lockedRow.text, lockedRow.values);
-    const response = callback();
-    await expectBlockedOnLockedAuthority(holder);
-    await holder.query(
-      `select pg_sleep(
+    let response!: Promise<Response>;
+    await holder.transaction(async (transaction) => {
+      const scheduled = await transaction.query<{ expires_at: Date }>(
+        scheduleExpiry.text,
+        scheduleExpiry.values,
+      );
+      const expiresAt = scheduled.rows[0]?.expires_at;
+      assert.notEqual(expiresAt, undefined);
+      await transaction.query(lockedRow.text, lockedRow.values);
+      response = callback();
+      await expectBlockedOnLockedAuthority(holder);
+      await transaction.query(
+        `select pg_sleep(
          greatest(extract(epoch from ($1::timestamptz - clock_timestamp())), 0) + 0.01
        )`,
-      [expiresAt],
-    );
-    const expired = await holder.query<{ expired: boolean }>(
-      `select $1::timestamptz <= clock_timestamp() as expired`,
-      [expiresAt],
-    );
-    assert.equal(expired.rows[0]?.expired, true);
-    await holder.query("commit");
+        [expiresAt],
+      );
+      const expired = await transaction.query<{ expired: boolean }>(
+        `select $1::timestamptz <= clock_timestamp() as expired`,
+        [expiresAt],
+      );
+      assert.equal(expired.rows[0]?.expired, true);
+    });
     return result(await response);
-  } catch (error) {
-    await holder.query("rollback").catch(() => undefined);
-    throw error;
   } finally {
-    await holder.end();
+    await holder.close();
   }
 }
 
-async function attemptAuthority(pool: Pool, attemptId: string) {
+async function attemptAuthority(pool: QueryHandle, attemptId: string) {
   const authority = await pool.query<{
     phase: string;
     consumed: boolean;
@@ -798,7 +797,7 @@ async function attemptAuthority(pool: Pool, attemptId: string) {
   return authority.rows[0];
 }
 
-async function expectBlockedOnLockedAuthority(client: Client): Promise<void> {
+async function expectBlockedOnLockedAuthority(client: DatabaseRuntime): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const waiting = await client.query<{ count: number }>(
       `select count(*)::integer as count
@@ -813,7 +812,7 @@ async function expectBlockedOnLockedAuthority(client: Client): Promise<void> {
   assert.fail("connection callback did not block on the locked authority row");
 }
 
-async function attemptIdForState(pool: Pool, state: string): Promise<string> {
+async function attemptIdForState(pool: QueryHandle, state: string): Promise<string> {
   const attempt = await pool.query<{ id: string }>(
     `select id from organization_connection_attempts where state_verifier = $1`,
     [createHashForTest(state)],

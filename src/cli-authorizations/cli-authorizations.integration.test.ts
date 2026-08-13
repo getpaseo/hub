@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client, type QueryResultRow } from "pg";
+import type { QueryRow } from "../db/runtime/index.js";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
-import { createDatabase, createPostgresPool } from "../db/pg.js";
+import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { OrganizationCliCredentials } from "../auth/cli-credentials.js";
 import { CliAuthorizations } from "./index.js";
@@ -69,7 +70,7 @@ describe("CLI authorization PostgreSQL state machine", () => {
     );
     assert.equal(stored[0]?.count, 1);
     assert.notEqual(stored[0]?.verifier, credential);
-    const pool = createPostgresPool(databaseUrl);
+    const pool = await createPostgresPool(databaseUrl);
     const cliCredentials = new OrganizationCliCredentials(pool);
     const authorized = await cliCredentials.authorize(
       new Request("https://hub.test/api/v1/projects", {
@@ -96,7 +97,7 @@ describe("CLI authorization PostgreSQL state machine", () => {
       ).status,
       "unauthorized",
     );
-    await pool.end();
+    await pool.close();
     assert.equal(
       (await authorizations.poll(post("/poll", { deviceCode: started.deviceCode }))).status,
       200,
@@ -136,22 +137,22 @@ describe("CLI authorization PostgreSQL state machine", () => {
   });
 
   async function sql(statement: string): Promise<void> {
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     try {
       await client.query(statement);
     } finally {
-      await client.end();
+      await client.close();
     }
   }
 
-  async function rows<T extends QueryResultRow>(statement: string): Promise<T[]> {
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+  async function rows<T extends QueryRow>(statement: string): Promise<T[]> {
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     try {
       return (await client.query<T>(statement)).rows;
     } finally {
-      await client.end();
+      await client.close();
     }
   }
 });

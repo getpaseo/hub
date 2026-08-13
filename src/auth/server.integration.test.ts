@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import type { DatabaseRuntime } from "../db/runtime/index.js";
 import { z } from "zod";
-import { createDatabase } from "../db/pg.js";
+import {
+  createDatabase,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
 import { OrganizationResources } from "../organizations/resources.js";
 import {
@@ -350,13 +355,14 @@ class PaseoAccounts {
   static async start(postgres: StartedPostgreSqlContainer): Promise<PaseoAccounts> {
     const url = isolatedDatabaseUrl(postgres);
     const database = await createDatabase(url);
-    const entitlements = composeEntitlements(database, url);
+    const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     return new PaseoAccounts(
       url,
       database,
       entitlements,
       createAuthServer({
-        databaseUrl: url,
+        database: testDatabaseRuntime(database),
+        locks: testDatabaseLocks(database),
         entitlements: entitlements.service,
         secret: "phase-one-auth-secret-at-least-32-characters",
         baseURL: "http://localhost:3000",
@@ -512,32 +518,30 @@ class PaseoAccounts {
   }
 
   async revokeDuringInvitation(actor: AccountBrowser, organizationId: string): Promise<number> {
-    const blocker = new Client({ connectionString: this.url });
-    await blocker.connect();
+    const blocker = await createPostgresQueryRuntime(this.url);
+
     try {
-      await blocker.query("begin");
-      await blocker.query(
-        `select member.id from member
+      let request!: Promise<number>;
+      await blocker.transaction(async (transaction) => {
+        await transaction.query(
+          `select member.id from member
          join "user" on "user".id = member.user_id
          where member.organization_id = $1 and lower("user".email) = $2
          for update of member`,
-        [organizationId, actor.email],
-      );
-      const request = actor.createInvitation("blocked@example.com", "member");
-      await waitForBlockedTransaction(blocker);
-      await blocker.query(
-        `delete from member using "user"
+          [organizationId, actor.email],
+        );
+        request = actor.createInvitation("blocked@example.com", "member");
+        await waitForBlockedTransaction(blocker);
+        await transaction.query(
+          `delete from member using "user"
          where member.user_id = "user".id and member.organization_id = $1
            and lower("user".email) = $2`,
-        [organizationId, actor.email],
-      );
-      await blocker.query("commit");
+          [organizationId, actor.email],
+        );
+      });
       return await request;
-    } catch (error) {
-      await blocker.query("rollback");
-      throw error;
     } finally {
-      await blocker.end();
+      await blocker.close();
     }
   }
 
@@ -614,12 +618,12 @@ class PaseoAccounts {
     text: string,
     values: unknown[] = [],
   ): Promise<TRow[]> {
-    const client = new Client({ connectionString: this.url });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(this.url);
+
     try {
       return (await client.query<TRow>(text, values)).rows;
     } finally {
-      await client.end();
+      await client.close();
     }
   }
 }
@@ -889,7 +893,7 @@ function missingResources(): ResourceIds {
   };
 }
 
-async function waitForBlockedTransaction(client: Client): Promise<void> {
+async function waitForBlockedTransaction(client: DatabaseRuntime): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const result = await client.query<{ blocked: boolean }>(
       `select exists (

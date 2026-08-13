@@ -45,6 +45,7 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.8",
+    "@electric-sql/pglite": "^0.5.4",
     "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@scalar/api-reference-react": "^0.9.37",

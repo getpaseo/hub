@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "./db/test-utils/runtime.js";
 import { HubHarness } from "./daemons/test-utils/hub-harness.js";
-import { createDatabase } from "./db/pg.js";
+import { createDatabase, testDatabaseLocks, testDatabaseRuntime } from "./db/test-utils/runtime.js";
 import { createAuthServer } from "./auth/server.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { startProductionRuntime, stopProductionRuntime } from "./index.js";
@@ -69,12 +69,12 @@ describe("production Hub cold start", () => {
     const database = await createDatabase(databaseUrl);
     await database.close();
 
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     await client.query(
       `insert into organization (id, name, slug) values ('existing-org', 'Existing', 'existing')`,
     );
-    await client.end();
+    await client.close();
 
     process.env["DATABASE_URL"] = databaseUrl;
     process.env["PASEO_REGISTRATION_MODE"] = "disabled";
@@ -83,12 +83,12 @@ describe("production Hub cold start", () => {
     delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
 
     const runtime = await startProductionRuntime();
-    const verification = new Client({ connectionString: databaseUrl });
-    await verification.connect();
+    const verification = await createPostgresQueryRuntime(databaseUrl);
+
     const result = await verification.query<{ count: number }>(
       `select count(*)::integer as count from instance_bootstrap`,
     );
-    await verification.end();
+    await verification.close();
     assert.equal(result.rows[0]?.count, 0);
     assert.ok(runtime);
   }, 120_000);
@@ -121,8 +121,8 @@ describe("production Hub cold start", () => {
     try {
       const runtime = await startProductionRuntime();
       assert.ok(runtime);
-      const client = new Client({ connectionString: databaseUrl });
-      await client.connect();
+      const client = await createPostgresQueryRuntime(databaseUrl);
+
       const result = await client.query<{
         organizations: number;
         owners: number;
@@ -133,7 +133,7 @@ describe("production Hub cold start", () => {
           (select count(*)::integer from member where role = 'owner') as owners,
           (select count(*)::integer from instance_bootstrap where completed_at is not null) as bootstrap
       `);
-      await client.end();
+      await client.close();
       assert.deepEqual(result.rows[0], { organizations: 1, owners: 1, bootstrap: 1 });
     } finally {
       for (const [name, value] of previous) restoreEnvironment(name, value);
@@ -171,18 +171,22 @@ describe("production Hub cold start", () => {
     let keyAuthorityEntitlements: ComposedEntitlements | undefined;
     try {
       const runtime = await startProductionRuntime();
-      const client = new Client({ connectionString: databaseUrl });
-      await client.connect();
+      const client = await createPostgresQueryRuntime(databaseUrl);
+
       const owner = await client.query<{ organization_id: string; user_id: string }>(
         `select organization_id, user_id from member where role = 'owner'`,
       );
-      await client.end();
+      await client.close();
       const identity = owner.rows[0];
       assert.ok(identity);
       keyAuthorityDatabase = await createDatabase(databaseUrl);
-      keyAuthorityEntitlements = composeEntitlements(keyAuthorityDatabase, databaseUrl);
+      keyAuthorityEntitlements = composeEntitlements(
+        keyAuthorityDatabase,
+        testDatabaseRuntime(keyAuthorityDatabase),
+      );
       keyAuthority = createAuthServer({
-        databaseUrl,
+        database: testDatabaseRuntime(keyAuthorityDatabase),
+        locks: testDatabaseLocks(keyAuthorityDatabase),
         entitlements: keyAuthorityEntitlements.service,
         secret,
         baseURL: "http://localhost:3000",
@@ -228,11 +232,11 @@ describe("production Hub cold start", () => {
 async function isolatedDatabaseUrl(baseUrl: string, name: string): Promise<string> {
   const base = new URL(baseUrl);
   base.pathname = "/postgres";
-  const admin = new Client({ connectionString: base.toString() });
-  await admin.connect();
+  const admin = await createPostgresQueryRuntime(base.toString());
+
   const databaseName = `${name}_${Date.now()}`;
   await admin.query(`create database "${databaseName}"`);
-  await admin.end();
+  await admin.close();
   base.pathname = `/${databaseName}`;
   return base.toString();
 }

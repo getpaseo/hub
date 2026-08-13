@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Pool, PoolClient, QueryResultRow } from "pg";
+import type {
+  DatabaseRuntime,
+  QueryHandle,
+  QueryRow,
+  TransactionHandle,
+} from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
 import { apiKeyScopesSchema, type ApiKeyScope } from "./api-key-contract.js";
 import { withApiKeySerialization } from "../db/api-key-serialization.js";
@@ -36,7 +42,7 @@ export type OperationAuthorizationResult =
   | { status: "forbidden" }
   | { status: "authorized"; access: OperationAuthorization };
 
-interface ApiKeyRow extends QueryResultRow {
+interface ApiKeyRow extends QueryRow {
   id: string;
   organization_id: string;
   name: string;
@@ -49,14 +55,17 @@ interface ApiKeyRow extends QueryResultRow {
 }
 
 export class OrganizationApiKeys {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: DatabaseRuntime,
+    private readonly locks: Locks,
+  ) {}
 
   async create(
     organizationId: string,
     createdByUserId: string,
     name: string,
     scopes: readonly ApiKeyScope[],
-    client: Pool | PoolClient = this.pool,
+    client: QueryHandle = this.pool,
   ): Promise<CreatedApiKey> {
     const keyName = apiKeyNameSchema.parse(name);
     const keyScopes = apiKeyScopesSchema.parse([...new Set(scopes)]);
@@ -98,24 +107,15 @@ export class OrganizationApiKeys {
   async revoke(
     organizationId: string,
     id: string,
-    transactionClient?: PoolClient,
+    transactionClient?: TransactionHandle,
   ): Promise<boolean> {
     return withApiKeySerialization(id, async () => {
       if (transactionClient !== undefined) {
-        return revokeWithClient(transactionClient, organizationId, id);
+        return revokeWithClient(this.locks, transactionClient, organizationId, id);
       }
-      const client = await this.pool.connect();
-      try {
-        await client.query("begin");
-        const revoked = await revokeWithClient(client, organizationId, id);
-        await client.query("commit");
-        return revoked;
-      } catch (error) {
-        await client.query("rollback").catch(() => undefined);
-        throw error;
-      } finally {
-        client.release();
-      }
+      return this.pool.transaction((client) =>
+        revokeWithClient(this.locks, client, organizationId, id),
+      );
     });
   }
 
@@ -160,11 +160,12 @@ export class OrganizationApiKeys {
 }
 
 async function revokeWithClient(
-  client: PoolClient,
+  locks: Locks,
+  client: TransactionHandle,
   organizationId: string,
   id: string,
 ): Promise<boolean> {
-  await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [id]);
+  await locks.withTxLock(client, id);
   const result = await client.query(
     `update organization_api_keys
      set revoked_at = coalesce(revoked_at, now())

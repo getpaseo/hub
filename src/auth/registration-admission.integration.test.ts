@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
-import { createDatabase } from "../db/pg.js";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import {
+  createDatabase,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements } from "./entitlements.js";
 
@@ -104,9 +108,10 @@ describe("registration policy boundary", () => {
   async function startAuth(registrationMode: "open" | "invite_only" | "disabled") {
     const url = await isolatedDatabaseUrl(postgres.getConnectionUri(), registrationMode);
     const database = await createDatabase(url);
-    const entitlements = composeEntitlements(database, url);
+    const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     const auth = createAuthServer({
-      databaseUrl: url,
+      database: testDatabaseRuntime(database),
+      locks: testDatabaseLocks(database),
       entitlements: entitlements.service,
       secret: "registration-policy-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
@@ -161,8 +166,8 @@ async function seedInvitation(
   status: "pending" | "canceled",
   expired = false,
 ): Promise<string> {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   const id = randomUUID();
   const organizationId = `org-${id}`;
   const userId = `user-${id}`;
@@ -189,28 +194,28 @@ async function seedInvitation(
       userId,
     ],
   );
-  await client.end();
+  await client.close();
   return id;
 }
 
 async function userCount(url: string): Promise<number> {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   const result = await client.query<{ count: number }>(
     `select count(*)::integer as count from "user"`,
   );
-  await client.end();
+  await client.close();
   return result.rows[0]!.count;
 }
 
 async function isolatedDatabaseUrl(baseUrl: string, name: string): Promise<string> {
   const base = new URL(baseUrl);
   base.pathname = "/postgres";
-  const admin = new Client({ connectionString: base.toString() });
-  await admin.connect();
+  const admin = await createPostgresQueryRuntime(base.toString());
+
   const databaseName = `${name}_${randomUUID().slice(0, 8)}`;
   await admin.query(`create database "${databaseName}"`);
-  await admin.end();
+  await admin.close();
   base.pathname = `/${databaseName}`;
   return base.toString();
 }

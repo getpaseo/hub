@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
-import { createDatabase, createPostgresPool } from "../db/pg.js";
+import {
+  createDatabase,
+  createPostgresPool,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import { bootstrapInstance, InstanceBootstrapError } from "./bootstrap.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements } from "./entitlements.js";
@@ -35,7 +40,7 @@ describe("instance bootstrap and first-login boundary", () => {
   it("creates one owner with a forced password change and is restart-idempotent", async () => {
     const pool = await migratedPool(databaseUrl);
     await bootstrapInstance(pool, policy);
-    await pool.end();
+    await pool.close();
 
     const first = await queryBootstrapState(databaseUrl);
     assert.equal(first.organizationCount, 1);
@@ -46,15 +51,15 @@ describe("instance bootstrap and first-login boundary", () => {
     assert.equal(first.mustChangePassword, true);
     assert.equal(first.completionOrganizationId, first.organizationId);
 
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     await client.query(`update "user" set must_change_password = false where email = $1`, [
       policy.bootstrap!.ownerEmail,
     ]);
-    await client.end();
+    await client.close();
     const restarted = await migratedPool(databaseUrl);
     await bootstrapInstance(restarted, policy);
-    await restarted.end();
+    await restarted.close();
     const afterRestart = await queryBootstrapState(databaseUrl);
     assert.equal(afterRestart.mustChangePassword, false);
     assert.deepEqual({ ...afterRestart, mustChangePassword: true }, first);
@@ -63,27 +68,27 @@ describe("instance bootstrap and first-login boundary", () => {
       ...policy,
       bootstrap: { ...policy.bootstrap!, ownerPassword: undefined },
     });
-    await completedWithoutPassword.end();
+    await completedWithoutPassword.close();
     assert.equal((await queryBootstrapState(databaseUrl)).mustChangePassword, false);
   }, 120_000);
 
   it("does not write identity data when the configured owner conflicts", async () => {
     const isolated = await isolatedDatabaseUrl(databaseUrl, "bootstrap_conflict");
     const database = await createDatabase(isolated);
-    const client = new Client({ connectionString: isolated });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(isolated);
+
     await client.query(
       `insert into "user" (id, name, email, email_verified) values ('existing', 'Existing', $1, true)`,
       [policy.bootstrap!.ownerEmail],
     );
-    await client.end();
-    const pool = createPostgresPool(isolated);
+    await client.close();
+    const pool = await createPostgresPool(isolated);
     await assert.rejects(
       bootstrapInstance(pool, policy),
       (error: unknown) =>
         error instanceof InstanceBootstrapError && error.message.includes("already belongs"),
     );
-    await pool.end();
+    await pool.close();
     await database.close();
     const verification = await queryBootstrapState(isolated);
     assert.equal(verification.organizationCount, 0);
@@ -103,7 +108,7 @@ describe("instance bootstrap and first-login boundary", () => {
         error instanceof InstanceBootstrapError &&
         error.message.includes("PASEO_BOOTSTRAP_OWNER_PASSWORD"),
     );
-    await pool.end();
+    await pool.close();
     const result = await queryBootstrapState(isolated);
     assert.equal(result.organizationCount, 0);
     assert.equal(result.ownerCount, 0);
@@ -113,10 +118,10 @@ describe("instance bootstrap and first-login boundary", () => {
   it("serializes concurrent production starts into one bootstrap result", async () => {
     const isolated = await isolatedDatabaseUrl(databaseUrl, "bootstrap_race");
     const first = await migratedPool(isolated);
-    const second = createPostgresPool(isolated);
+    const second = await createPostgresPool(isolated);
     await Promise.all([bootstrapInstance(first, policy), bootstrapInstance(second, policy)]);
-    await first.end();
-    await second.end();
+    await first.close();
+    await second.close();
     const result = await queryBootstrapState(isolated);
     assert.equal(result.organizationCount, 1);
     assert.equal(result.ownerCount, 1);
@@ -130,11 +135,12 @@ describe("instance bootstrap and first-login boundary", () => {
     const isolated = await isolatedDatabaseUrl(databaseUrl, "bootstrap_gate");
     const pool = await migratedPool(isolated);
     await bootstrapInstance(pool, policy);
-    await pool.end();
+    await pool.close();
     const database = await createDatabase(isolated);
-    const entitlements = composeEntitlements(database, isolated);
+    const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     const auth = createAuthServer({
-      databaseUrl: isolated,
+      database: testDatabaseRuntime(database),
+      locks: testDatabaseLocks(database),
       entitlements: entitlements.service,
       secret: "bootstrap-gate-secret-at-least-32-characters",
       baseURL: "http://localhost:3000",
@@ -203,18 +209,18 @@ async function migratedPool(url: string) {
 async function isolatedDatabaseUrl(baseUrl: string, name: string): Promise<string> {
   const base = new URL(baseUrl);
   base.pathname = "/postgres";
-  const admin = new Client({ connectionString: base.toString() });
-  await admin.connect();
+  const admin = await createPostgresQueryRuntime(base.toString());
+
   const databaseName = `${name}_${Date.now()}`;
   await admin.query(`create database "${databaseName}"`);
-  await admin.end();
+  await admin.close();
   base.pathname = `/${databaseName}`;
   return base.toString();
 }
 
 async function queryBootstrapState(url: string) {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   const result = await client.query<{
     organization_count: number;
     owner_count: number;
@@ -237,7 +243,7 @@ async function queryBootstrapState(url: string) {
       (select id from organization limit 1) as organization_id,
       (select count(*)::integer from instance_bootstrap) as bootstrap_rows
   `);
-  await client.end();
+  await client.close();
   const row = result.rows[0]!;
   return {
     organizationCount: row.organization_count,

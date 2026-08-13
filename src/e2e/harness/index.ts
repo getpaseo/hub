@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Pool } from "pg";
+import type { DatabaseRuntime } from "../../db/runtime/index.js";
+import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
 import { z } from "zod";
 import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
 import { DispatchedManualRunSchema, ProblemSchema } from "../../public-api/contracts.js";
@@ -144,7 +145,7 @@ export class HubE2E {
   private hubOrigin = "";
   private proxy: HubFaultProxy | undefined;
   private postgres: StartedPostgreSqlContainer | undefined;
-  private pool: Pool | undefined;
+  private pool: DatabaseRuntime | undefined;
   private hub: ManagedChild | undefined;
   private completionRunner: ManagedChild | undefined;
   private daemonHost = "";
@@ -1173,7 +1174,7 @@ export class HubE2E {
       failures,
     );
     await this.attempt(() => this.proxy?.stop(), failures);
-    await this.attempt(() => this.pool?.end(), failures);
+    await this.attempt(() => this.pool?.close(), failures);
     await this.attempt(() => this.postgres?.stop(), failures);
     if (this.root)
       await rm(this.root, { recursive: true, force: true }).catch((error) => failures.push(error));
@@ -1243,9 +1244,7 @@ export class HubE2E {
     this.hubOrigin = `http://127.0.0.1:${hubPort}`;
     this.daemonHost = `127.0.0.1:${daemonPort}`;
     this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
-    this.pool = new Pool({
-      connectionString: this.postgres.getConnectionUri(),
-    });
+    this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();
     if (this.options.realAgent !== true) {
@@ -1550,7 +1549,7 @@ export class HubE2E {
     return this.source;
   }
 
-  private requirePool(): Pool {
+  private requirePool(): DatabaseRuntime {
     if (!this.pool) throw new Error("Postgres is unavailable");
     return this.pool;
   }

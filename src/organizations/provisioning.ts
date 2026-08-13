@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "pg";
+import type { QueryHandle } from "../db/runtime/index.js";
 import {
   hashTemplate,
   UNLIMITED_TEMPLATE,
@@ -35,7 +35,7 @@ export const UNLIMITED_PROVISIONING: ProvisioningEntitlement = {
 };
 
 export async function provisionOrganization(
-  client: PoolClient,
+  client: QueryHandle,
   input: { organizationId: string; name: string; ownerUserId: string },
   entitlement: ProvisioningEntitlement,
 ): Promise<ProvisionedOrganization> {
@@ -73,7 +73,7 @@ export async function provisionOrganization(
  * organization itself.
  */
 async function stampProvisioningEntitlements(
-  client: PoolClient,
+  client: QueryHandle,
   organizationId: string,
   ownerUserId: string,
   entitlement: ProvisioningEntitlement,

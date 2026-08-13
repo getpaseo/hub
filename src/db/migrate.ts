@@ -1,8 +1,12 @@
 import "dotenv/config";
-import { createDatabase } from "./pg.js";
+import { postgresDatabaseRuntime } from "./runtime/index.js";
 
 const databaseUrl =
   process.env["DATABASE_URL"] ?? "postgres://postgres:postgres@localhost:5432/paseo_hub";
-const database = await createDatabase(databaseUrl);
+const { runtime } = await postgresDatabaseRuntime(databaseUrl);
 
-await database.close();
+try {
+  await runtime.migrate();
+} finally {
+  await runtime.close();
+}

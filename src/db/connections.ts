@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { Locks } from "./runtime/locks/index.js";
+import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
 import { slugify } from "../slug.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "./errors.js";
 import * as schema from "./schema.js";
@@ -20,15 +21,23 @@ import type {
   StartConnectionAttemptInput,
 } from "./types.js";
 
-type HubDatabase = NodePgDatabase<typeof schema>;
-type HubTransaction = Parameters<Parameters<HubDatabase["transaction"]>[0]>[0];
+type HubDatabase = DrizzleHandle;
+type HubTransaction = HubDatabase;
 type AttemptRow = typeof schema.organizationConnectionAttempts.$inferSelect;
 
 export class ConnectionRepository {
-  constructor(private readonly database: HubDatabase) {}
+  private readonly database: HubDatabase;
+
+  constructor(
+    private readonly runtime: DatabaseRuntime,
+    private readonly locks: Locks,
+  ) {
+    this.database = runtime.drizzle();
+  }
 
   async startAttempt(input: StartConnectionAttemptInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockStartAuthority(transaction, input.access);
       await transaction.delete(schema.organizationConnectionAttempts).where(orExpiredOrConsumed());
       await transaction.insert(schema.organizationConnectionAttempts).values({
@@ -45,7 +54,8 @@ export class ConnectionRepository {
   }
 
   async readAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord> {
-    return this.database.transaction(async (transaction) => {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
@@ -54,7 +64,8 @@ export class ConnectionRepository {
   }
 
   async consumeAttempt(input: ReadConnectionAttemptInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
@@ -63,7 +74,8 @@ export class ConnectionRepository {
   }
 
   async advanceGitHubAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
@@ -80,9 +92,10 @@ export class ConnectionRepository {
   }
 
   async bindGitHub(input: BindGitHubConnectionInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
-      await lockExternal(transaction, "github", String(input.installationId));
+      await lockExternal(this.locks, runtimeTransaction, "github", String(input.installationId));
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
       const [existing] = await transaction
@@ -154,9 +167,10 @@ export class ConnectionRepository {
   }
 
   async bindSlack(input: BindSlackConnectionInput): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
-      await lockExternal(transaction, "slack", input.teamId);
+      await lockExternal(this.locks, runtimeTransaction, "slack", input.teamId);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
       const [existing] = await transaction
@@ -209,9 +223,10 @@ export class ConnectionRepository {
     externalId: string,
     insert: (transaction: HubTransaction, attempt: AttemptRow) => Promise<void>,
   ): Promise<void> {
-    await this.database.transaction(async (transaction) => {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
-      await lockExternal(transaction, provider, externalId);
+      await lockExternal(this.locks, runtimeTransaction, provider, externalId);
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
       const conflict =
@@ -262,7 +277,8 @@ export class ConnectionRepository {
     connectionId: string,
     access: ConnectionStartAuthority,
   ) {
-    return this.database.transaction(async (transaction) => {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       await lockStartAuthority(transaction, access);
       if (provider === "github") {
         const [connection] = await transaction
@@ -514,12 +530,14 @@ async function expiredAtDatabaseClock(
 }
 
 async function lockExternal(
-  transaction: HubTransaction,
+  locks: Locks,
+  transaction: TransactionHandle,
   provider: ConnectionProvider,
   externalId: string,
 ): Promise<void> {
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["paseo-connection", provider, "external", externalId])}, 0))`,
+  await locks.withTxLock(
+    transaction,
+    JSON.stringify(["paseo-connection", provider, "external", externalId]),
   );
 }
 

@@ -6,6 +6,12 @@ import type { RuntimeConfig } from "./config/index.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
 import { createDatabase } from "./db/pg.js";
 import type { Database } from "./db/types.js";
+import {
+  postgresDatabaseRuntime,
+  type DatabaseRuntime,
+  type DatabaseRuntimeBundle,
+} from "./db/runtime/index.js";
+import type { Locks } from "./db/runtime/locks/index.js";
 import { logger } from "./logger.js";
 import { createFetchServer } from "./http/node-server.js";
 import { loadBuiltStartServer } from "./server/build.js";
@@ -49,8 +55,8 @@ export async function handleDaemonUpgrade(
 async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const config = loadRuntimeConfig();
   const identity = readHubIdentity();
-  const database = await createDatabaseHandle(config.databaseUrl);
-  const entitlements = composeEntitlements(database, config.databaseUrl);
+  const { database, runtime, locks } = await createDatabaseHandle(config.databaseUrl);
+  const entitlements = composeEntitlements(database, runtime);
   const billingConfig = readBillingConfig();
   const billing =
     billingConfig === undefined
@@ -69,7 +75,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   });
   const auth = createProductionAuthServer(
     entitlements,
-    config.databaseUrl,
+    runtime,
+    locks,
     config.authPolicy,
     identity,
     config.trustedClientIpHeader,
@@ -108,7 +115,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
 
 function createProductionAuthServer(
   entitlements: ComposedEntitlements,
-  databaseUrl: string,
+  database: DatabaseRuntime,
+  locks: Locks,
   authPolicy: RuntimeConfig["authPolicy"],
   identity: HubIdentity,
   trustedClientIpHeader: string | undefined,
@@ -119,7 +127,8 @@ function createProductionAuthServer(
     return null;
   }
   return createAuthServer({
-    databaseUrl,
+    database,
+    locks,
     entitlements: entitlements.service,
     secret: identity.authSecret,
     baseURL: identity.appUrl,
@@ -136,10 +145,16 @@ function createProductionAuthServer(
   });
 }
 
-async function createDatabaseHandle(databaseUrl: string): Promise<Database> {
+async function createDatabaseHandle(
+  databaseUrl: string,
+): Promise<DatabaseRuntimeBundle & { database: Database }> {
+  let bundle: DatabaseRuntimeBundle | undefined;
   try {
-    return await createDatabase(databaseUrl);
+    bundle = await postgresDatabaseRuntime(databaseUrl);
+    await bundle.runtime.migrate();
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
   } catch (error) {
+    await bundle?.runtime.close().catch(() => undefined);
     if (!(error instanceof DatabaseUnavailableError)) throw error;
     logger.error(
       { err: error },

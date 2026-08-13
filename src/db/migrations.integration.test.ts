@@ -4,10 +4,11 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client, type QueryResultRow } from "pg";
+import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
+import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { z } from "zod";
 import { dump } from "js-yaml";
-import { createDatabase, createPostgresPool } from "./pg.js";
+import { createDatabase, createPostgresPool } from "./test-utils/runtime.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
@@ -369,9 +370,9 @@ describe("database migration application", () => {
         ownerPassword: "temporary-migrated-owner-password",
       },
     };
-    const pool = createPostgresPool(fixture.url);
+    const pool = await createPostgresPool(fixture.url);
     await bootstrapInstance(pool, policy);
-    await pool.end();
+    await pool.close();
 
     assert.deepEqual(await durableSnapshot(fixture.url), before);
     const completion = await poolQuery<{
@@ -405,8 +406,8 @@ describe("database migration application", () => {
       prefix: "retired_project_evidence",
       through: "0010_classy_strong_guy",
     });
-    const client = new Client({ connectionString: url });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(url);
+
     const activeId = randomUUID();
     const historicalId = randomUUID();
     const machineId = randomUUID();
@@ -435,7 +436,7 @@ describe("database migration application", () => {
        values ($1, 'organization-bootstrap', '{}', 'terminated', $2)`,
       [machineId, activeId],
     );
-    await client.end();
+    await client.close();
 
     const database = await createDatabase(url);
     await database.close();
@@ -1107,19 +1108,19 @@ async function rejectedPhaseOneFixtures(
 async function rejectedPhaseOneFixture(
   postgres: StartedPostgreSqlContainer,
   name: string,
-  seed: (client: Client) => Promise<void>,
+  seed: (client: DatabaseRuntime) => Promise<void>,
 ): Promise<string> {
   const url = await createHistoricalBaseline({
     postgres,
     prefix: name,
     through: "0000_phase_0_spine",
   });
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     await seed(client);
   } finally {
-    await client.end();
+    await client.close();
   }
   try {
     const migrated = await createDatabase(url);
@@ -1130,7 +1131,7 @@ async function rejectedPhaseOneFixture(
   }
 }
 
-async function seedMigrationIdentity(client: Client): Promise<void> {
+async function seedMigrationIdentity(client: DatabaseRuntime): Promise<void> {
   await client.query(`
     insert into organization (id, name, slug)
       values ('organization-fixture', 'Fixture', 'fixture');
@@ -1272,7 +1273,7 @@ async function createLegacyDatabase(
      values ('legacy-operator', $1)`,
     [organizationId],
   );
-  await client.end();
+  await client.close();
   return { url, organizationId, legacyToken };
 }
 
@@ -1284,20 +1285,20 @@ async function createPendingEnrollmentDatabase(postgres: StartedPostgreSqlContai
      values ($1, $2, now() + interval '1 day')`,
     [randomUUID(), createHash("sha256").update(token).digest("base64url")],
   );
-  await client.end();
+  await client.close();
   return { url, token };
 }
 
 async function createLegacySchema(postgres: StartedPostgreSqlContainer, prefix: string) {
   const url = databaseUrl(postgres, prefix);
   const databaseName = new URL(url).pathname.slice(1);
-  const admin = new Client({ connectionString: postgres.getConnectionUri() });
-  await admin.connect();
-  await admin.query(`create database "${databaseName}"`);
-  await admin.end();
+  const admin = await createPostgresQueryRuntime(postgres.getConnectionUri());
 
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  await admin.query(`create database "${databaseName}"`);
+  await admin.close();
+
+  const client = await createPostgresQueryRuntime(url);
+
   await client.query(`
     create table paseo_hub_migrations (
       filename text primary key,
@@ -1323,7 +1324,7 @@ interface HistoricalBaselineOptions {
 
 async function createHistoricalBaseline(options: HistoricalBaselineOptions): Promise<string> {
   const baseline = await createLegacySchema(options.postgres, options.prefix);
-  await baseline.client.end();
+  await baseline.client.close();
   await applyHistoricalMigrations(baseline.url, options.through);
   return baseline.url;
 }
@@ -1332,7 +1333,7 @@ async function applyHistoricalMigrations(url: string, through: string): Promise<
   const journal = migrationJournalSchema.parse(
     JSON.parse(await readFile(join(DRIZZLE_MIGRATIONS, "meta/_journal.json"), "utf8")),
   );
-  const migrations = [];
+  const migrations: typeof journal.entries = [];
   for (const entry of journal.entries) {
     migrations.push(entry);
     if (entry.tag === through) break;
@@ -1341,8 +1342,8 @@ async function applyHistoricalMigrations(url: string, through: string): Promise<
     throw new Error(`historical migration is absent from the journal: ${through}`);
   }
 
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     await client.query("create schema if not exists drizzle");
     await client.query(`
@@ -1352,36 +1353,31 @@ async function applyHistoricalMigrations(url: string, through: string): Promise<
         created_at bigint
       )
     `);
-    await client.query("begin");
-    try {
+    await client.transaction(async (transaction) => {
       for (const entry of migrations) {
         const migration = await readFile(join(DRIZZLE_MIGRATIONS, `${entry.tag}.sql`), "utf8");
-        await applyMigration(client, migration);
+        await applyMigration(transaction, migration);
         const hash = createHash("sha256").update(migration).digest("hex");
-        await client.query(
+        await transaction.query(
           `insert into drizzle.__drizzle_migrations (hash, created_at) values ($1, $2)`,
           [hash, entry.when],
         );
       }
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    }
+    });
   } finally {
-    await client.end();
+    await client.close();
   }
 }
 
-async function applyMigration(client: Client, migration: string): Promise<void> {
+async function applyMigration(client: QueryHandle, migration: string): Promise<void> {
   for (const statement of migration.split("--> statement-breakpoint")) {
     if (statement.trim().length > 0) await client.query(statement);
   }
 }
 
 async function durableSnapshot(url: string) {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     const relation = await client.query<{ legacy: boolean }>(
       `select to_regclass('public.hub_configs') is not null as legacy`,
@@ -1406,11 +1402,11 @@ async function durableSnapshot(url: string) {
     if (row === undefined) throw new Error("durable snapshot returned no row");
     return row;
   } finally {
-    await client.end();
+    await client.close();
   }
 }
 
-interface DurableSnapshot extends QueryResultRow {
+interface DurableSnapshot extends QueryRow {
   machines: number;
   configs: number;
   daemons: number;
@@ -1424,8 +1420,8 @@ interface DurableSnapshot extends QueryResultRow {
 }
 
 async function historicalShape(url: string) {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     const shape = await client.query<{
       auth_tables: number;
@@ -1485,7 +1481,7 @@ async function historicalShape(url: string) {
       unownedEnrollmentTokens: row.unowned_enrollment_tokens,
     };
   } finally {
-    await client.end();
+    await client.close();
   }
 }
 
@@ -1509,8 +1505,8 @@ class LegacyUpgrade {
   ) {
     const apiKey = "paseo_pk_migration_test";
     const apiKeyId = "00000000-0000-4000-8000-0000000000bb";
-    const client = new Client({ connectionString: url });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(url);
+
     try {
       await client.query(
         `insert into organization_api_keys
@@ -1519,7 +1515,7 @@ class LegacyUpgrade {
         [apiKeyId, organizationId, ["configuration:install", "runs:dispatch", "daemons:enroll"]],
       );
     } finally {
-      await client.end();
+      await client.close();
     }
     const operationAuth: OperationAuthenticator = {
       async authorize(request: Request, _scope: ApiKeyScope) {
@@ -1637,8 +1633,8 @@ class LegacyUpgrade {
 }
 
 async function seedHistoricalIdentity(url: string): Promise<void> {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     await client.query(`
       insert into "user" (id, name, email)
@@ -1659,13 +1655,13 @@ async function seedHistoricalIdentity(url: string): Promise<void> {
                 'member', 'pending', now() + interval '1 day', 'user-phase-zero');
     `);
   } finally {
-    await client.end();
+    await client.close();
   }
 }
 
 async function exactIdentitySnapshot(url: string) {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     const result = await client.query<{
       account_id: string;
@@ -1714,7 +1710,7 @@ async function exactIdentitySnapshot(url: string) {
       userId: row.user_id,
     };
   } finally {
-    await client.end();
+    await client.close();
   }
 }
 
@@ -1724,16 +1720,16 @@ function databaseUrl(postgres: StartedPostgreSqlContainer, prefix: string): stri
   return url.toString();
 }
 
-async function poolQuery<Row extends QueryResultRow = QueryResultRow>(
+async function poolQuery<Row extends QueryRow = QueryRow>(
   url: string,
   text: string,
   values: unknown[] = [],
 ) {
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await createPostgresQueryRuntime(url);
+
   try {
     return await client.query<Row>(text, values);
   } finally {
-    await client.end();
+    await client.close();
   }
 }

@@ -9,7 +9,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { Client } from "pg";
 import { z } from "zod";
 import { PaseoHub, type BuiltApplication, type BuiltApplicationOptions } from "./helpers/hub.js";
-import { createDatabase } from "../src/db/pg.js";
+import { createDatabase } from "../src/db/test-utils/runtime.js";
 import { SourcePaseo } from "./helpers/source-paseo.js";
 import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../src/e2e/harness/browser-providers.js";

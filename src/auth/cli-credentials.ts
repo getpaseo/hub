@@ -1,12 +1,12 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { Pool, PoolClient, QueryResultRow } from "pg";
+import type { DatabaseRuntime, QueryHandle, QueryRow } from "../db/runtime/index.js";
 import { API_KEY_SCOPES, type ApiKeyScope } from "./api-key-contract.js";
 import type { OperationAuthorizationResult } from "./api-keys.js";
 
 export const CLI_CREDENTIAL_PREFIX = "paseo_cli_";
 const CLI_CREDENTIAL_PREFIX_LENGTH = 12;
 
-interface CliCredentialRow extends QueryResultRow {
+interface CliCredentialRow extends QueryRow {
   id: string;
   organization_id: string;
   prefix: string;
@@ -15,7 +15,7 @@ interface CliCredentialRow extends QueryResultRow {
 }
 
 export class OrganizationCliCredentials {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: DatabaseRuntime) {}
 
   async authorize(
     request: Request,
@@ -74,7 +74,7 @@ export class OrganizationCliCredentials {
   async revoke(
     organizationId: string,
     id: string,
-    client: Pool | PoolClient = this.pool,
+    client: QueryHandle = this.pool,
   ): Promise<boolean> {
     const result = await client.query(
       `update organization_cli_credentials set revoked_at = coalesce(revoked_at, now())
@@ -93,7 +93,7 @@ export interface CliCredentialSummary {
   revokedAt: Date | null;
 }
 
-interface CliCredentialSummaryRow extends QueryResultRow {
+interface CliCredentialSummaryRow extends QueryRow {
   id: string;
   prefix: string;
   created_at: Date;

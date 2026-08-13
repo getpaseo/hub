@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
+import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { composeEntitlements } from "../auth/entitlements.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
-import { createDatabase } from "../db/pg.js";
+import {
+  createDatabase,
+  testDatabaseLocks,
+  testDatabaseRuntime,
+} from "../db/test-utils/runtime.js";
 import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import {
@@ -34,8 +38,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     databaseUrl = postgres.getConnectionUri();
     const database = await createDatabase(databaseUrl);
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     await client.query(`
       insert into organization (id, name, slug) values
         ('organization-a', 'Organization A', 'organization-a'),
@@ -49,7 +53,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       insert into session (id, token, user_id, active_organization_id, expires_at) values
         ('session-a', 'session-token-a', 'user-a', 'organization-a', now() + interval '1 day');
     `);
-    await client.end();
+    await client.close();
     for (const [organizationId, userId] of [
       ["organization-a", "user-a"],
       ["organization-b", "user-b"],
@@ -89,9 +93,10 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         now: new Date("2026-08-07T00:00:00.000Z"),
       });
     }
-    const entitlements = composeEntitlements(database, databaseUrl);
+    const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     auth = createAuthServer({
-      databaseUrl,
+      database: testDatabaseRuntime(database),
+      locks: testDatabaseLocks(database),
       entitlements: entitlements.service,
       secret: "built-public-api-test-secret".padEnd(32, "-"),
       baseURL: "http://hub.test",
@@ -140,10 +145,10 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       ).status,
       200,
     );
-    const pollClient = new Client({ connectionString: databaseUrl });
-    await pollClient.connect();
+    const pollClient = await createPostgresQueryRuntime(databaseUrl);
+
     await pollClient.query("update cli_authorizations set next_poll_at = now()");
-    await pollClient.end();
+    await pollClient.close();
     const cliPoll = CliAuthorizationPollSchema.parse(
       await (
         await cliAuthorizations.poll(
@@ -223,8 +228,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       assert.equal(typeof EnrollmentTokenSchema.parse(await enrollment.json()).token, "string");
     }
 
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     const revisions = await client.query<{ organization_id: string; project_slug: string }>(`
       select revision.organization_id, project.slug as project_slug
       from project_configuration_revisions revision
@@ -248,7 +253,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       select organization_id, count(*)::text as count
       from daemon_enrollment_tokens group by organization_id order by organization_id
     `);
-    await client.end();
+    await client.close();
     assert.deepEqual(revisions.rows, [
       { organization_id: "organization-a", project_slug: "same-project" },
       { organization_id: "organization-b", project_slug: "same-project" },
@@ -272,10 +277,10 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
   }, 120_000);
 
   it("contains unexpected PostgreSQL details behind the canonical internal-error boundary", async () => {
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     await client.query("alter table projects rename to projects_unavailable_for_boundary_test");
-    await client.end();
+    await client.close();
 
     const response = await post("/api/v1/configurations/install", secrets["organization-a"], {
       projectSlug: "same-project",
@@ -283,10 +288,10 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         "environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []",
       ),
     });
-    const restore = new Client({ connectionString: databaseUrl });
-    await restore.connect();
+    const restore = await createPostgresQueryRuntime(databaseUrl);
+
     await restore.query("alter table projects_unavailable_for_boundary_test rename to projects");
-    await restore.end();
+    await restore.close();
     assert.equal(response.status, 500);
     const serialized = JSON.stringify(await response.json());
     assert.equal(ProblemSchema.parse(JSON.parse(serialized)).code, "internal_error");
@@ -366,8 +371,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     const secondInstalled = InstalledConfigurationSchema.parse(await second.json());
     assert.notEqual(firstInstalled.versionId, secondInstalled.versionId);
 
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const client = await createPostgresQueryRuntime(databaseUrl);
+
     const revisions = await client.query<{
       raw_yaml: string;
       partial_content: string;
@@ -382,7 +387,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
        where project.organization_id = 'organization-a' and project.slug = 'bundle-project'
        order by revision.version`,
     );
-    await client.end();
+    await client.close();
     assert.deepEqual(
       revisions.rows.map((row) => row.partial_content),
       ["First instructions", "Second instructions"],
