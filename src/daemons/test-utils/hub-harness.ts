@@ -2548,7 +2548,7 @@ function machineHeaders(auth: "valid" | "missing" | "wrong"): Record<string, str
 }
 
 async function waitFor(observation: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     if (await observation()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

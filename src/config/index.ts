@@ -44,7 +44,6 @@ export type {
 
 export interface RuntimeConfig {
   bind: string;
-  databaseUrl: string;
   trustedClientIpHeader?: string;
   authPolicy: InstanceAuthPolicy;
 }
