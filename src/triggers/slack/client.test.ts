@@ -3,6 +3,26 @@ import { describe, it } from "vitest";
 import { createSlackBotClient } from "./client.js";
 
 describe("Slack Web API client", () => {
+  it("looks up an authored username with the workspace bot token", async () => {
+    let request: { url: string; method: string | undefined } | undefined;
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input, init) => {
+        request = { url: requestUrl(input), method: init?.method };
+        return Response.json({ ok: true, user: { name: "operator" } });
+      },
+    });
+
+    assert.equal(
+      await client.lookupUserName?.({ organizationId: "org-1", teamId: "T1", userId: "U1" }),
+      "operator",
+    );
+    assert.deepEqual(request, {
+      url: "https://slack.com/api/users.info",
+      method: "POST",
+    });
+  });
+
   it("resolves the workspace token internally and checks Slack's ok field", async () => {
     const requests: Array<{ url: string; authorization: string | null; body: unknown }> = [];
     const authorities: Array<[string, string]> = [];

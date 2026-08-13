@@ -33,7 +33,11 @@ function matchesFilters(
   connectionId?: string | null,
 ): boolean {
   if (filters === undefined || !event.content.includes(`<@${botUserId}>`)) return false;
-  if (filters.from_users === undefined || !filters.from_users.includes(event.author.id))
+  if (
+    filters.from_users === undefined ||
+    (!filters.from_users.includes(event.author.id) &&
+      (event.author.username === undefined || !filters.from_users.includes(event.author.username)))
+  )
     return false;
   if (filters.connectionId !== undefined && filters.connectionId !== connectionId) return false;
   const workspace = readString(filters, "workspace");

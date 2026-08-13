@@ -1,4 +1,5 @@
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import type { CompiledTriggerConfig } from "../../config/index.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
@@ -118,9 +119,12 @@ export function createSlackTriggerProvider(options: {
       if (stored === undefined) return "configuration_unavailable";
       if (!stored.configuration.triggers.some((candidate) => candidate.on === trigger.source))
         return "no_trigger_for_source";
+      const event = needsSlackUsername(stored.configuration.triggers, rawEvent.author.id)
+        ? await enrichSlackAuthor(rawEvent, trigger.organizationId, options.client)
+        : rawEvent;
       const matchedTriggers = matchSlackTriggers(
         stored.configuration,
-        rawEvent,
+        event,
         botUserId,
         trigger.connectionId,
       );
@@ -258,6 +262,40 @@ export function createSlackTriggerProvider(options: {
       return reactionState;
     },
   };
+}
+
+async function enrichSlackAuthor(
+  event: NormalizedSlackMentionEvent,
+  organizationId: string,
+  client: SlackBotClient,
+): Promise<NormalizedSlackMentionEvent> {
+  if (client.lookupUserName === undefined) return event;
+  try {
+    const username = await client.lookupUserName({
+      organizationId,
+      teamId: event.teamId,
+      userId: event.author.id,
+    });
+    return username === undefined ? event : { ...event, author: { ...event.author, username } };
+  } catch (error) {
+    logger.warn(
+      { err: error, teamId: event.teamId, userId: event.author.id },
+      "Slack author username lookup failed",
+    );
+    return event;
+  }
+}
+
+function needsSlackUsername(
+  triggers: readonly Pick<CompiledTriggerConfig, "on" | "filters">[],
+  authorId: string,
+): boolean {
+  return triggers.some(
+    (candidate) =>
+      candidate.on === "slack.mention" &&
+      candidate.filters?.from_users !== undefined &&
+      !candidate.filters.from_users.includes(authorId),
+  );
 }
 
 async function removeReactionForPhase(

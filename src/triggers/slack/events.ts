@@ -65,7 +65,7 @@ export const NormalizedSlackMentionEventSchema = z.object({
   eventTs: SlackTimestampSchema,
   eventTime: z.number().int().nonnegative(),
   content: z.string(),
-  author: z.object({ id: SlackIdSchema }),
+  author: z.object({ id: SlackIdSchema, username: z.string().min(1).max(255).optional() }),
   createdAt: z.string(),
   attachments: z.array(SlackAttachmentMetadataSchema).default([]),
 });

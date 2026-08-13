@@ -7,6 +7,7 @@ export const SLACK_REQUIRED_BOT_SCOPES = [
   "files:read",
   "groups:history",
   "reactions:write",
+  "users:read",
 ] as const;
 
 const SlackOAuthResponseSchema = z
