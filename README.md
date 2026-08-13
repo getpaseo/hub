@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>. Hub stores the embedded database in `.dev/paseo-hub` and keeps it across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
+Open <http://localhost:3000>. Hub stores the embedded database and its generated authentication secret in `.dev/paseo-hub` and keeps both across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
 
 ```sh
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/paseo_hub npm run dev
@@ -59,11 +59,13 @@ Set these values in `.env`:
 
 ```dotenv
 PASEO_HUB_APP_URL=https://hub.example.com
-PASEO_HUB_AUTH_SECRET=replace-with-the-output-of-openssl-rand-hex-32
 PASEO_BOOTSTRAP_ORGANIZATION=My organization
 PASEO_BOOTSTRAP_OWNER_EMAIL=me@example.com
 PASEO_BOOTSTRAP_OWNER_PASSWORD=replace-with-a-temporary-password
 ```
+
+Hub generates and stores its authentication secret in the database. Advanced deployments may set
+`PASEO_HUB_AUTH_SECRET` to override it without replacing the stored secret.
 
 Billing is optional: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
 

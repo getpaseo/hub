@@ -98,11 +98,14 @@ describe("application runtime provider composition", () => {
   });
 
   it("rejects duplicate provider request registrations", async () => {
+    const events: string[] = [];
     const first = fakeRegistration();
     first.connection = { ...first.connection, name: "first" };
+    first.sources = [trackedSource("first", events)];
     first.requests = [{ name: "events", handle: () => Promise.resolve(new Response()) }];
     const second = fakeRegistration();
     second.connection = { ...second.connection, name: "second" };
+    second.sources = [trackedSource("second", events)];
     second.requests = [{ name: "events", handle: () => Promise.resolve(new Response()) }];
 
     const database = createMemoryDatabase();
@@ -114,10 +117,19 @@ describe("application runtime provider composition", () => {
           entitlements: entitlementsForTest(database),
           billing: null,
           registrations: [first, second],
-          close: () => Promise.resolve(),
+          close: async () => {
+            events.push("upstream:close");
+          },
         }),
       /provider request registrations must have unique names: events/u,
     );
+    assert.deepEqual(events, [
+      "first:start",
+      "second:start",
+      "first:stop",
+      "second:stop",
+      "upstream:close",
+    ]);
   });
 
   it("reports member connection status as read-only", async () => {
@@ -278,6 +290,17 @@ function fakeRegistration(name = "fake"): ProviderRegistration {
     sources: [],
     outputs: [],
     requests: [],
+  };
+}
+
+function trackedSource(name: string, events: string[]) {
+  return {
+    start: async () => {
+      events.push(`${name}:start`);
+    },
+    stop: async () => {
+      events.push(`${name}:stop`);
+    },
   };
 }
 

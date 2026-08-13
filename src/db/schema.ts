@@ -1007,6 +1007,16 @@ export const instanceBootstrap = pgTable(
   ],
 );
 
+export const runtimeConfiguration = pgTable(
+  "runtime_configuration",
+  {
+    singleton: boolean().primaryKey().default(true),
+    authSecret: text("auth_secret").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [check("runtime_configuration_singleton_check", sql`${table.singleton}`)],
+);
+
 export const organizationApiKeys = pgTable(
   "organization_api_keys",
   {

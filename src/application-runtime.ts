@@ -27,6 +27,7 @@ import {
   type PublicBillingPlan,
 } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
+import { CompositionResources } from "./composition-resources.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -45,6 +46,20 @@ export interface ApplicationCompositionOptions {
 
 export async function createApplicationRuntime(
   options: ApplicationCompositionOptions,
+): Promise<ApplicationRuntime> {
+  const resources = new CompositionResources();
+  resources.own(() => options.close());
+  try {
+    return await createOwnedApplicationRuntime(options, resources);
+  } catch (error) {
+    await resources.close();
+    throw error;
+  }
+}
+
+async function createOwnedApplicationRuntime(
+  options: ApplicationCompositionOptions,
+  ownership: CompositionResources,
 ): Promise<ApplicationRuntime> {
   const registrations = options.registrations ?? [];
   const connections = new Map(
@@ -97,6 +112,7 @@ export async function createApplicationRuntime(
       ? {}
       : { daemonConnectionForId: options.daemonConnectionForId }),
   });
+  ownership.own(() => application.hub.stop());
   await application.hub.start(registrations.flatMap((registration) => registration.sources));
 
   const resources = options.database === null ? null : new OrganizationResources(options.database);
@@ -107,7 +123,6 @@ export async function createApplicationRuntime(
     }
     requests.set(request.name, (incoming) => request.handle(incoming));
   }
-  const activeHub = application.hub;
   const githubConfigurations = registrations.flatMap((registration) =>
     registration.githubConfiguration === undefined ? [] : [registration.githubConfiguration],
   );
@@ -115,7 +130,7 @@ export async function createApplicationRuntime(
     throw new Error("GitHub configuration registrations must be unique");
   }
   return {
-    hub: activeHub,
+    hub: application.hub,
     operations: application.operations,
     publicApi: application.publicApi,
     resources,
@@ -298,10 +313,7 @@ export async function createApplicationRuntime(
     },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
-    async stop() {
-      await activeHub.stop();
-      await options.close();
-    },
+    stop: () => ownership.close(),
   };
 }
 

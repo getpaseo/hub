@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +33,8 @@ import { createDiscordRegistration } from "./providers/discord/index.js";
 import { createGitHubRegistration } from "./providers/github/index.js";
 import { createSlackRegistration } from "./providers/slack/index.js";
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
+import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
+import { CompositionResources } from "./composition-resources.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
@@ -55,64 +58,66 @@ export async function handleDaemonUpgrade(
 }
 
 async function createProductionRuntime(): Promise<ApplicationRuntime> {
-  const config = loadRuntimeConfig();
-  const identity = readHubIdentity();
-  const { database, runtime, locks } = await createDatabaseHandle();
-  const entitlements = composeEntitlements(database, runtime);
-  const billingConfig = readBillingConfig();
-  const billing =
-    billingConfig === undefined
-      ? null
-      : composeBilling({
-          config: billingConfig,
-          database,
-          catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
-          billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
-          seatUsage: entitlements.seatUsage,
-        });
-  // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
-  // starting — only the marketing catalog goes stale until the next webhook or restart.
-  await billing?.syncCatalog().catch((error: unknown) => {
-    logger.error({ err: error }, "billing catalog sync failed at boot");
-  });
-  const auth = createProductionAuthServer(
-    entitlements,
-    runtime,
-    locks,
-    config.authPolicy,
-    identity,
-    config.trustedClientIpHeader,
-    billing,
-  );
-  if (config.authPolicy.bootstrap !== undefined && auth === null) {
-    throw new Error("PASEO_HUB_AUTH_SECRET is required when instance bootstrap is configured");
+  const resources = new CompositionResources();
+  try {
+    const config = loadRuntimeConfig();
+    const { database, runtime, locks } = await createDatabaseHandle();
+    resources.own(() => database.close());
+    const identity = await resolveHubIdentity(runtime, readPort());
+    const entitlements = composeEntitlements(database, runtime);
+    resources.own(() => entitlements.close());
+    const billingConfig = readBillingConfig();
+    const billing =
+      billingConfig === undefined
+        ? null
+        : composeBilling({
+            config: billingConfig,
+            database,
+            catalogSource: createStripeCatalogSource(billingConfig.stripeSecretKey),
+            billingClient: createStripeBillingClient(billingConfig.stripeSecretKey),
+            seatUsage: entitlements.seatUsage,
+          });
+    // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
+    // starting — only the marketing catalog goes stale until the next webhook or restart.
+    await billing?.syncCatalog().catch((error: unknown) => {
+      logger.error({ err: error }, "billing catalog sync failed at boot");
+    });
+    const auth = createProductionAuthServer(
+      entitlements,
+      runtime,
+      locks,
+      config.authPolicy,
+      identity,
+      config.trustedClientIpHeader,
+      billing,
+    );
+    resources.own(() => auth.close());
+    await auth.initialize?.();
+    const providerOptions = {
+      database,
+      auth,
+      applicationBaseUrl: identity.appUrl,
+      publicBaseUrl: identity.appUrl,
+    };
+    const registrations = [
+      createGitHubRegistration(providerOptions),
+      createDiscordRegistration(providerOptions),
+      createSlackRegistration(providerOptions),
+    ];
+    return await createApplicationRuntime({
+      database,
+      auth,
+      entitlements: entitlements.service,
+      billing,
+      registrations,
+      publicBaseUrl: identity.appUrl,
+      completionTokenSecret: identity.authSecret,
+      close: () => resources.close(),
+    });
+  } catch (error) {
+    await resources.close();
+    throw error;
   }
-  await auth?.initialize?.();
-  const providerOptions = {
-    database,
-    auth,
-    applicationBaseUrl: identity.appUrl,
-    publicBaseUrl: identity.appUrl,
-  };
-  const registrations = [
-    createGitHubRegistration(providerOptions),
-    createDiscordRegistration(providerOptions),
-    createSlackRegistration(providerOptions),
-  ];
-  return createApplicationRuntime({
-    database,
-    auth,
-    entitlements: entitlements.service,
-    billing,
-    registrations,
-    publicBaseUrl: identity.appUrl,
-    ...(identity.authSecret === undefined ? {} : { completionTokenSecret: identity.authSecret }),
-    async close() {
-      await auth?.close();
-      await entitlements.close();
-      await database?.close();
-    },
-  });
 }
 
 function createProductionAuthServer(
@@ -124,10 +129,6 @@ function createProductionAuthServer(
   trustedClientIpHeader: string | undefined,
   billing: BillingRuntime | null,
 ) {
-  if (identity.authSecret === undefined) {
-    logger.warn("PASEO_HUB_AUTH_SECRET is unset; browser auth routes are closed");
-    return null;
-  }
   return createAuthServer({
     database,
     locks,
@@ -198,17 +199,27 @@ function loadRuntimeConfig(): RuntimeConfig {
 
 interface HubIdentity {
   appUrl: string;
-  authSecret?: string;
+  authSecret: string;
 }
 
-function readHubIdentity(): HubIdentity {
+async function resolveHubIdentity(
+  database: DatabaseRuntime,
+  effectivePort: number,
+): Promise<HubIdentity> {
   const configuredAppUrl = process.env["PASEO_HUB_APP_URL"];
   const configuredAuthSecret = process.env["PASEO_HUB_AUTH_SECRET"];
+  const configuration = createRuntimeConfiguration({
+    database,
+    environment: {
+      ...(configuredAppUrl === undefined ? {} : { appUrl: configuredAppUrl }),
+      ...(configuredAuthSecret === undefined ? {} : { authSecret: configuredAuthSecret }),
+    },
+    effectivePort,
+    randomBytes,
+  });
   return {
-    appUrl: new URL(configuredAppUrl ?? "http://localhost:3000").toString(),
-    ...(configuredAuthSecret === undefined || configuredAuthSecret.length === 0
-      ? {}
-      : { authSecret: configuredAuthSecret }),
+    appUrl: await configuration.publicUrl(),
+    authSecret: await configuration.authSecret(),
   };
 }
 
