@@ -28,6 +28,23 @@ Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Con
  Discord ┘                 └─ build server
 ```
 
+## Develop locally
+
+You need Node.js and npm. A fresh checkout runs with an embedded database and no external services:
+
+```sh
+npm install
+npm run dev
+```
+
+Open <http://localhost:3000>. Hub stores the embedded database in `.dev/paseo-hub` and keeps it across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
+
+```sh
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/paseo_hub npm run dev
+```
+
+Embedded mode supports one Hub process per data directory. Docker Compose continues to run Hub with PostgreSQL.
+
 ## Run with Docker Compose
 
 You need Docker, Docker Compose, and a public HTTPS URL when connecting external providers.

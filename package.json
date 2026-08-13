@@ -11,7 +11,7 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "vite dev --port 3000",
     "build": "npm run build:node && npm run build:start",
     "build:node": "tsgo -p tsconfig.json",
     "build:start": "vite build",

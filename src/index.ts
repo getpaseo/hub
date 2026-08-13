@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { validateHeaderName, type IncomingMessage } from "node:http";
+import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 import type { RuntimeConfig } from "./config/index.js";
@@ -7,6 +8,7 @@ import { DatabaseUnavailableError } from "./db/errors.js";
 import { createDatabase } from "./db/pg.js";
 import type { Database } from "./db/types.js";
 import {
+  embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
   type DatabaseRuntime,
   type DatabaseRuntimeBundle,
@@ -55,7 +57,7 @@ export async function handleDaemonUpgrade(
 async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const config = loadRuntimeConfig();
   const identity = readHubIdentity();
-  const { database, runtime, locks } = await createDatabaseHandle(config.databaseUrl);
+  const { database, runtime, locks } = await createDatabaseHandle();
   const entitlements = composeEntitlements(database, runtime);
   const billingConfig = readBillingConfig();
   const billing =
@@ -145,13 +147,33 @@ function createProductionAuthServer(
   });
 }
 
-async function createDatabaseHandle(
-  databaseUrl: string,
+async function createDatabaseHandle(): Promise<DatabaseRuntimeBundle & { database: Database }> {
+  const databaseUrl = process.env["DATABASE_URL"];
+  if (databaseUrl !== undefined && databaseUrl.length > 0) {
+    return initializeDatabaseRuntime(
+      () => postgresDatabaseRuntime(databaseUrl),
+      "database runtime ready: postgres",
+    );
+  }
+
+  const dataDirectory = resolvePath(
+    process.env["PASEO_HUB_DATA_DIR"] ?? join(process.cwd(), ".dev", "paseo-hub"),
+  );
+  return initializeDatabaseRuntime(
+    () => embeddedDatabaseRuntime(dataDirectory),
+    `database runtime ready: embedded (${dataDirectory})`,
+  );
+}
+
+async function initializeDatabaseRuntime(
+  createRuntime: () => Promise<DatabaseRuntimeBundle>,
+  readyMessage: string,
 ): Promise<DatabaseRuntimeBundle & { database: Database }> {
   let bundle: DatabaseRuntimeBundle | undefined;
   try {
-    bundle = await postgresDatabaseRuntime(databaseUrl);
+    bundle = await createRuntime();
     await bundle.runtime.migrate();
+    logger.info(readyMessage);
     return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
   } catch (error) {
     await bundle?.runtime.close().catch(() => undefined);
@@ -169,8 +191,6 @@ function loadRuntimeConfig(): RuntimeConfig {
   if (trustedClientIpHeader !== undefined) validateHeaderName(trustedClientIpHeader);
   return {
     bind: process.env["PASEO_HUB_BIND"] ?? "0.0.0.0",
-    databaseUrl:
-      process.env["DATABASE_URL"] ?? "postgres://postgres:postgres@localhost:5432/paseo_hub",
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
     authPolicy: readInstanceAuthPolicy(),
   };

@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/pglite";
@@ -14,14 +15,23 @@ import type {
 } from "../index.js";
 import { embeddedLocks } from "../locks/index.js";
 import type { EmbeddedLockLifecycle } from "../locks/index.js";
+import { acquireDataDirectoryLock, type DataDirectoryLock } from "./data-directory-lock.js";
 
 const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
 
 export async function createEmbeddedRuntime(dataDirectory: string): Promise<DatabaseRuntimeBundle> {
-  const client = new PGlite(dataDirectory);
-  await client.waitReady;
-  const locks = embeddedLocks();
-  return { runtime: new EmbeddedRuntime(client, locks), locks };
+  const resolvedDataDirectory = resolve(dataDirectory);
+  await mkdir(resolvedDataDirectory, { recursive: true });
+  const dataDirectoryLock = await acquireDataDirectoryLock(resolvedDataDirectory);
+  try {
+    const client = new PGlite(resolvedDataDirectory);
+    await client.waitReady;
+    const locks = embeddedLocks();
+    return { runtime: new EmbeddedRuntime(client, locks, dataDirectoryLock), locks };
+  } catch (error) {
+    await dataDirectoryLock.release().catch(() => undefined);
+    throw error;
+  }
 }
 
 class EmbeddedRuntime implements DatabaseRuntime {
@@ -30,6 +40,7 @@ class EmbeddedRuntime implements DatabaseRuntime {
   constructor(
     private readonly client: PGlite,
     private readonly locks: EmbeddedLockLifecycle,
+    private readonly dataDirectoryLock: DataDirectoryLock,
   ) {
     this.database = drizzle(client, { schema });
   }
@@ -118,6 +129,10 @@ class EmbeddedRuntime implements DatabaseRuntime {
   }
 
   async close(): Promise<void> {
-    await this.client.close();
+    try {
+      await this.client.close();
+    } finally {
+      await this.dataDirectoryLock.release();
+    }
   }
 }
