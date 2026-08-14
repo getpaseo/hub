@@ -3,7 +3,7 @@ import { test } from "./app.js";
 // Both journeys start a second, genuinely pristine application alongside the fixture's own.
 test.describe.configure({ timeout: 90_000 });
 
-test("an unclaimed Hub sets up its first operator and signs them in", async ({ hub }) => {
+test("a Hub with no accounts sets up the first one and signs it in", async ({ hub }) => {
   await hub.proveFirstRunOperatorClaim(
     {
       name: "First Operator",
@@ -14,8 +14,8 @@ test("an unclaimed Hub sets up its first operator and signs them in", async ({ h
   );
 });
 
-test("a second browser cannot claim a Hub that was set up while it waited", async ({ hub }) => {
-  await hub.proveFirstRunClaimIsSingleUse(
+test("a setup form opened before another account exists falls back to sign in", async ({ hub }) => {
+  await hub.proveStaleSetupFormFallsBackToSignIn(
     {
       name: "Winning Operator",
       email: "winning-operator@example.com",

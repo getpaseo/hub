@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
 
@@ -36,15 +36,18 @@ export function AuthCard({
   children: ReactNode;
   titleId?: string;
 }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Each of these cards is a whole screen, and they replace one another in place. Taking focus
+  // on arrival is what tells a screen reader the screen changed and puts a keyboard user at the
+  // top of the new card instead of back on the document body.
+  useEffect(() => heading.current?.focus(), []);
   return (
     <section
       className="grid gap-6 rounded-lg border bg-card p-6 shadow-sm"
       {...(titleId === undefined ? {} : { "aria-labelledby": titleId })}
     >
       <div className="grid gap-1.5">
-        {/* Focusable only programmatically: a surface that replaces the whole screen moves focus
-            here so keyboard and screen-reader users land on the new card, not on nothing. */}
-        <h1 id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
+        <h1 ref={heading} id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
           {title}
         </h1>
         {description === undefined ? null : (

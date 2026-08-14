@@ -1,11 +1,19 @@
+import { useEffect, useRef } from "react";
 import { AuthCard, AuthLayout, ProductMark } from "../components/app/auth-layout.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 
 export function ErrorSummary({ message }: { message: string | undefined }) {
+  const alert = useRef<HTMLDivElement>(null);
+  // Submitting disables the form, which blurs the button that was focused, so on failure focus
+  // would land on the document body. Take it to the message instead: the user hears what went
+  // wrong and tabs straight back into the fields they need to fix.
+  useEffect(() => {
+    if (message !== undefined) alert.current?.focus();
+  }, [message]);
   return message === undefined ? null : (
-    <Alert variant="destructive" className="mb-6">
+    <Alert ref={alert} tabIndex={-1} variant="destructive" className="mb-6 outline-none">
       <AlertDescription>{message}</AlertDescription>
     </Alert>
   );

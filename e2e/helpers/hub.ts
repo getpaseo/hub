@@ -250,8 +250,8 @@ export class PaseoHub {
     }
   }
 
-  /** Two browsers open the same unclaimed welcome; only the first one to submit becomes operator. */
-  async proveFirstRunClaimIsSingleUse(winner: Account, loser: Account): Promise<void> {
+  /** Two browsers open the same welcome; the one that submits second rejoins the ordinary flow. */
+  async proveStaleSetupFormFallsBackToSignIn(winner: Account, loser: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
       machineAuth: false,
@@ -271,7 +271,7 @@ export class PaseoHub {
       await winningUser.openFirstRunSetupForm();
       await winningUser.completeFirstRunClaim(winner, "Winning Organization");
 
-      await losingUser.expectFirstRunClaimRefused(loser, "Losing Organization");
+      await losingUser.expectSetupFormFallsBackToSignIn(loser, "Losing Organization");
     } finally {
       await winnerContext.close();
       await loserContext.close();
@@ -2370,6 +2370,7 @@ class HubUser {
     await this.expectFirstRunWelcome();
     await this.openFirstRunSetupForm();
     await this.expectFirstRunPasswordRefused(account, organizationName);
+    await this.expectFirstRunServerErrorRecovers(account, organizationName);
     await this.expectFirstRunBackReturnsToWelcome();
     // The operator can finish setup on a phone without a pointer at all.
     await this.page.setViewportSize({ width: 390, height: 844 });
@@ -2377,6 +2378,10 @@ class HubUser {
     await this.completeFirstRunClaimWithKeyboard(account, organizationName);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
+    // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
+    // exactly as it is after an ordinary sign-in.
+    await this.page.keyboard.press("Tab");
+    await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
 
     // Setup provisioned a working organization, not just a row: its default project opens.
     await this.navigation.openProject("Default");
@@ -2408,7 +2413,6 @@ class HubUser {
     const welcome = this.page.getByRole("heading", { name: "Welcome to Paseo Hub" });
     await expect(welcome).toBeVisible();
     await expect(welcome).toBeFocused();
-    await expect(this.page.getByRole("status")).toHaveText("Setup required");
     await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toBeInViewport();
     await expectAccessible(this.page);
     await this.page.setViewportSize({ width: 1280, height: 800 });
@@ -2422,9 +2426,9 @@ class HubUser {
     await this.page.keyboard.press("Tab");
     await expect(begin).toBeFocused();
     await this.page.keyboard.press("Enter");
-    await expect(this.page.getByRole("form", { name: "Set up Paseo Hub" })).toBeVisible();
+    await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
     // The card that replaced the screen takes focus; the next Tab reaches its first field.
-    await expect(this.page.getByRole("heading", { name: "Set up Paseo Hub" })).toBeFocused();
+    await expect(this.page.getByRole("heading", { name: "Create your account" })).toBeFocused();
     await expectAccessible(this.page);
   }
 
@@ -2436,13 +2440,41 @@ class HubUser {
     await expect(welcome).toBeFocused();
   }
 
+  /**
+   * A failed claim announces itself and takes focus, so the next Tab is back into the fields —
+   * and the very next attempt succeeds, proving the failure left nothing behind.
+   */
+  private async expectFirstRunServerErrorRecovers(
+    account: Account,
+    organizationName: string,
+  ): Promise<void> {
+    const serverFunctions = "**/_serverFn/**";
+    await this.page.route(serverFunctions, async (route) => {
+      if (route.request().postData()?.includes(organizationName) === true) {
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+    try {
+      await this.fillFirstRunSetupForm(account, organizationName);
+      const alert = this.page.getByRole("alert");
+      await expect(alert).toHaveText("We couldn't create your account. Try again.");
+      await expect(alert).toBeFocused();
+      await expectAccessible(this.page);
+    } finally {
+      await this.page.unroute(serverFunctions);
+    }
+    await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
+  }
+
   /** A password below the instance minimum never reaches the server. */
   private async expectFirstRunPasswordRefused(
     account: Account,
     organizationName: string,
   ): Promise<void> {
     await this.fillFirstRunSetupForm({ ...account, password: "short" }, organizationName);
-    await expect(this.page.getByRole("form", { name: "Set up Paseo Hub" })).toBeVisible();
+    await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toHaveCount(0);
   }
 
@@ -2458,7 +2490,7 @@ class HubUser {
     organizationName: string,
   ): Promise<void> {
     this.email = account.email.toLowerCase();
-    const form = this.page.getByRole("form", { name: "Set up Paseo Hub" });
+    const form = this.page.getByRole("form", { name: "Create your account" });
     for (const value of [account.name, account.email, account.password, organizationName]) {
       await this.page.keyboard.press("Tab");
       await this.page.keyboard.type(value);
@@ -2475,24 +2507,32 @@ class HubUser {
     await this.expectActiveOrganization(organizationName);
   }
 
-  async expectFirstRunClaimRefused(account: Account, organizationName: string): Promise<void> {
+  /**
+   * A form that was opened before someone else created the first account. Submitting it lands on
+   * the ordinary sign-in screen — no explanation of instance state, no conflict screen, and the
+   * arriving card takes focus like any other.
+   */
+  async expectSetupFormFallsBackToSignIn(
+    account: Account,
+    organizationName: string,
+  ): Promise<void> {
     await this.fillFirstRunSetupForm(account, organizationName);
-    const closed = this.page.getByRole("heading", { name: "This Hub is already set up" });
-    await expect(closed).toBeVisible();
-    await expect(closed).toBeFocused();
-    await expectAccessible(this.page);
-    await this.page.getByRole("button", { name: "Continue to sign in" }).click();
+    const signIn = this.page.getByRole("heading", { name: "Sign in to Paseo Hub" });
+    await expect(signIn).toBeVisible();
+    await expect(signIn).toBeFocused();
     await expect(this.page.getByRole("form", { name: "Sign in" })).toBeVisible();
     await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toHaveCount(0);
+    await expect(this.page.getByRole("alert")).toHaveCount(0);
+    await expectAccessible(this.page);
   }
 
   private async fillFirstRunSetupForm(account: Account, organizationName: string): Promise<void> {
-    const form = this.page.getByRole("form", { name: "Set up Paseo Hub" });
+    const form = this.page.getByRole("form", { name: "Create your account" });
     await form.getByRole("textbox", { name: "Name", exact: true }).fill(account.name);
     await form.getByLabel("Email").fill(account.email);
     await form.getByLabel("Password").fill(account.password);
     await form.getByLabel("Organization name").fill(organizationName);
-    await form.getByRole("button", { name: "Finish setup" }).click();
+    await form.getByRole("button", { name: "Create account" }).click();
   }
 
   async expectApiKeyLifecycle(): Promise<void> {
