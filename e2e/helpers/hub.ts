@@ -44,6 +44,8 @@ export interface BuiltApplication {
   cancelSubscription(organizationId: string): Promise<void>;
   /** The seat quantity billing last reported to the fixture Stripe for this organization. */
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
+  /** Arms one account-setup failure inside the built application, for the error/retry journey. */
+  failNextAccountSetup(): Promise<void>;
 }
 
 export interface BuiltApplicationOptions {
@@ -244,7 +246,9 @@ export class PaseoHub {
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
-      await user.completeFirstRunJourney(account, organizationName);
+      await user.completeFirstRunJourney(account, organizationName, () =>
+        application.failNextAccountSetup(),
+      );
     } finally {
       await context.close();
     }
@@ -2366,16 +2370,20 @@ class HubUser {
     await this.expectActiveOrganization(organizationName);
   }
 
-  async completeFirstRunJourney(account: Account, organizationName: string): Promise<void> {
+  async completeFirstRunJourney(
+    account: Account,
+    organizationName: string,
+    armAccountSetupFailure: () => Promise<void>,
+  ): Promise<void> {
     await this.expectFirstRunWelcome();
     await this.openFirstRunSetupForm();
     await this.expectFirstRunPasswordRefused(account, organizationName);
-    await this.expectFirstRunServerErrorRecovers(account, organizationName);
     await this.expectFirstRunBackReturnsToWelcome();
-    // The operator can finish setup on a phone without a pointer at all.
+    // The operator can finish on a phone without a pointer at all — and recover in place when
+    // the server refuses the first attempt.
     await this.page.setViewportSize({ width: 390, height: 844 });
     await this.openFirstRunSetupForm();
-    await this.completeFirstRunClaimWithKeyboard(account, organizationName);
+    await this.completeFirstRunClaimWithKeyboard(account, organizationName, armAccountSetupFailure);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
     // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
@@ -2440,34 +2448,6 @@ class HubUser {
     await expect(welcome).toBeFocused();
   }
 
-  /**
-   * A failed claim announces itself and takes focus, so the next Tab is back into the fields —
-   * and the very next attempt succeeds, proving the failure left nothing behind.
-   */
-  private async expectFirstRunServerErrorRecovers(
-    account: Account,
-    organizationName: string,
-  ): Promise<void> {
-    const serverFunctions = "**/_serverFn/**";
-    await this.page.route(serverFunctions, async (route) => {
-      if (route.request().postData()?.includes(organizationName) === true) {
-        await route.abort();
-        return;
-      }
-      await route.continue();
-    });
-    try {
-      await this.fillFirstRunSetupForm(account, organizationName);
-      const alert = this.page.getByRole("alert");
-      await expect(alert).toHaveText("We couldn't create your account. Try again.");
-      await expect(alert).toBeFocused();
-      await expectAccessible(this.page);
-    } finally {
-      await this.page.unroute(serverFunctions);
-    }
-    await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
-  }
-
   /** A password below the instance minimum never reaches the server. */
   private async expectFirstRunPasswordRefused(
     account: Account,
@@ -2484,10 +2464,16 @@ class HubUser {
     await this.expectFirstRunDashboard(organizationName);
   }
 
-  /** The same claim, driven from the keyboard only: no pointer touches the form. */
+  /**
+   * The account created from the keyboard only, with the server refusing the first attempt. The
+   * failure is armed inside the built application, so the browser gets a real server answer: the
+   * message is announced and focused, the form keeps what was typed, and submitting it again
+   * succeeds without leaving the screen.
+   */
   private async completeFirstRunClaimWithKeyboard(
     account: Account,
     organizationName: string,
+    armAccountSetupFailure: () => Promise<void>,
   ): Promise<void> {
     this.email = account.email.toLowerCase();
     const form = this.page.getByRole("form", { name: "Create your account" });
@@ -2496,7 +2482,18 @@ class HubUser {
       await this.page.keyboard.type(value);
     }
     await expect(form.getByLabel("Organization name")).toBeFocused();
+
+    await armAccountSetupFailure();
     await this.page.keyboard.press("Enter");
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toHaveText("We couldn't create your account. Try again.");
+    await expect(alert).toBeFocused();
+    await expect(form.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
+      account.name,
+    );
+    await expectAccessible(this.page);
+
+    await form.getByRole("button", { name: "Create account" }).click();
     await this.expectFirstRunDashboard(organizationName);
   }
 

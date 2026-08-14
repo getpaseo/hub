@@ -127,7 +127,7 @@ export const setUpInstance = createServerFn({ method: "POST" })
       const claim = await application.claimInstance(data, getRequest().headers);
       return respondOk({ state: claim.status });
     } catch {
-      return respondError({ message: "We couldn't set up this Hub. Try again." });
+      return respondError({ message: "We couldn't create your account. Try again." });
     }
   });
 

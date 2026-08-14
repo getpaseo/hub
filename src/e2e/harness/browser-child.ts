@@ -30,6 +30,7 @@ import {
   FixtureStripeCatalogSource,
   type FixtureBillingProduct,
 } from "./browser-billing.js";
+import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 
 interface DiscordCommand {
   id: string;
@@ -63,6 +64,11 @@ interface BillingInspectCommand {
   organizationId: string;
 }
 
+interface AccountSetupFailureCommand {
+  id: string;
+  type: "fail-next-account-setup";
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
@@ -87,16 +93,19 @@ async function main(): Promise<void> {
     billingClient: billingFixtureClient,
   } = await composeFixtureBilling(database, entitlements.seatUsage);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
+  const accountSetupFaults = new BrowserAccountSetupFaults();
   const auth = browserAuthEnabled()
-    ? createAuthServer({
-        database: databaseRuntime,
-        locks,
-        entitlements: entitlements.service,
-        baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
-        secret: authSecret,
-        policy: readInstanceAuthPolicy(),
-        ...billingAuthOptions(billing),
-      })
+    ? accountSetupFaults.install(
+        createAuthServer({
+          database: databaseRuntime,
+          locks,
+          entitlements: entitlements.service,
+          baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
+          secret: authSecret,
+          policy: readInstanceAuthPolicy(),
+          ...billingAuthOptions(billing),
+        }),
+      )
     : null;
   await auth?.initialize?.();
   const machineAuth = machineAuthEnabled();
@@ -205,7 +214,13 @@ async function main(): Promise<void> {
   server.listen(Number(requiredEnvironment("PORT")), "127.0.0.1");
 
   process.on("message", (message: unknown) => {
-    void acceptCommand(message, bot, githubConfiguration, billingCatalog, billingFixtureClient);
+    void acceptCommand(message, {
+      bot,
+      githubConfiguration,
+      billingCatalog,
+      billingClient: billingFixtureClient,
+      accountSetupFaults,
+    });
   });
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
@@ -243,15 +258,23 @@ async function seedMachineAuthTarget(database: DatabaseRuntime): Promise<void> {
   `);
 }
 
-async function acceptCommand(
-  message: unknown,
-  bot: BrowserDiscordBot,
-  githubConfiguration: BrowserGitHubConfiguration,
-  billingCatalog: FixtureStripeCatalogSource | null,
-  billingClient: FixtureStripeBillingClient | null,
-): Promise<void> {
+interface CommandFixtures {
+  bot: BrowserDiscordBot;
+  githubConfiguration: BrowserGitHubConfiguration;
+  billingCatalog: FixtureStripeCatalogSource | null;
+  billingClient: FixtureStripeBillingClient | null;
+  accountSetupFaults: BrowserAccountSetupFaults;
+}
+
+async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promise<void> {
+  const { bot, githubConfiguration, billingCatalog, billingClient } = fixtures;
   if (isGitHubConfigurationCommand(message)) {
     githubConfiguration.setRevision(message);
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isAccountSetupFailureCommand(message)) {
+    fixtures.accountSetupFaults.failNext();
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -339,6 +362,15 @@ function isBundleFileList(value: unknown): value is readonly { path: string; con
         typeof Reflect.get(file, "path") === "string" &&
         typeof Reflect.get(file, "content") === "string",
     )
+  );
+}
+
+function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFailureCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "fail-next-account-setup" &&
+    typeof Reflect.get(value, "id") === "string"
   );
 }
 
