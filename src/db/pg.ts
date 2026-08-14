@@ -56,6 +56,7 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
   ConnectionStartAuthority,
   ConnectionProvider,
   ReadConnectionAttemptInput,
@@ -1931,7 +1932,8 @@ class PgDatabase implements Database {
     const rows = await query<ProjectActivityRunListRow>(
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
-              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.delivery_id, receipts.signature_hash, receipts.provider_application_id,
+              receipts.provider_configuration_version, receipts.source, receipts.repo,
               receipts.received_at, receipts.dropped_reason
        from trigger_runs runs
        join provider_event_receipts receipts
@@ -1949,7 +1951,8 @@ class PgDatabase implements Database {
     const rows = await query<ProjectActivityRunRow>(
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
-              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.delivery_id, receipts.signature_hash, receipts.provider_application_id,
+              receipts.provider_configuration_version, receipts.source, receipts.repo,
               receipts.payload, receipts.received_at, receipts.dropped_reason,
               receipts.accepted_routes
        from trigger_runs runs
@@ -3361,12 +3364,13 @@ class PgDatabase implements Database {
       account_login: string;
       account_type: string;
       status: "active" | "suspended";
+      provider_application_id: string | null;
     }>(
       this.pool,
       `select connection.id, connection.organization_id, connection.slug,
               connection.installation_id,
               connection.account_id, connection.account_login, connection.account_type,
-              connection.status
+              connection.status, connection.provider_application_id
        from github_connections connection
        where connection.organization_id = $1
        order by connection.account_login, connection.id`,
@@ -3379,9 +3383,10 @@ class PgDatabase implements Database {
         slug: string;
         guild_id: string;
         guild_name: string;
+        provider_application_id: string | null;
       }>(
         this.pool,
-        `select id, organization_id, slug, guild_id, guild_name
+        `select id, organization_id, slug, guild_id, guild_name, provider_application_id
          from discord_connections where organization_id = $1
          order by guild_name, id`,
         [organizationId],
@@ -3395,9 +3400,11 @@ class PgDatabase implements Database {
         bot_user_id: string;
         bot_access_token: string;
         scopes: unknown;
+        provider_application_id: string | null;
       }>(
         this.pool,
-        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes
+        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes,
+                provider_application_id
          from slack_connections where organization_id = $1
          order by team_name, id`,
         [organizationId],
@@ -3413,6 +3420,7 @@ class PgDatabase implements Database {
         accountLogin: row.account_login,
         accountType: row.account_type,
         status: row.status,
+        providerApplicationId: row.provider_application_id,
       })),
       discord: discord.rows.map((row) => ({
         id: row.id,
@@ -3420,6 +3428,7 @@ class PgDatabase implements Database {
         slug: row.slug,
         guildId: row.guild_id,
         guildName: row.guild_name,
+        providerApplicationId: row.provider_application_id,
       })),
       slack: slack.rows.map((row) => ({
         id: row.id,
@@ -3430,6 +3439,7 @@ class PgDatabase implements Database {
         botUserId: row.bot_user_id,
         botAccessToken: row.bot_access_token,
         scopes: stringArray(row.scopes),
+        providerApplicationId: row.provider_application_id,
       })),
     };
   }
@@ -3632,6 +3642,10 @@ class PgDatabase implements Database {
 
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void> {
     return this.connections.bindSlack(input);
+  }
+
+  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void> {
+    return this.connections.completeSlackProviderApplication(input);
   }
 
   disconnectConnection(
@@ -3865,6 +3879,8 @@ export interface ProviderEventReceiptRow extends QueryRow {
   resource_id: string | null;
   delivery_id: string;
   signature_hash: string | null;
+  provider_application_id: string | null;
+  provider_configuration_version: number | null;
   source: string;
   repo: string | null;
   payload: unknown;
@@ -3906,6 +3922,8 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   resource_id: string | null;
   delivery_id: string;
   signature_hash: string | null;
+  provider_application_id: string | null;
+  provider_configuration_version: number | null;
   source: string;
   repo: string | null;
   payload: unknown;

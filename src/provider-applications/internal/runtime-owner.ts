@@ -23,17 +23,31 @@ import { parseProviderApplicationConfiguration } from "./store.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
+  retained: Map<string, ActiveRegistration>;
   identity: ProviderApplicationIdentity | undefined;
   triggerResources: TriggerProviderResources | undefined;
   handler: TriggerHandler | undefined;
 }
 
 interface ActiveRegistration {
+  provider: Provider;
+  snapshotId: string;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
   sourcesStarted: boolean;
   acceptingEvents: boolean;
+  leases: number;
+  longLeases: Set<string>;
+  retiring: boolean;
+  retirement: Promise<void> | undefined;
 }
+
+interface RuntimeSnapshotMarker {
+  snapshotId: string;
+  leaseId: string;
+}
+
+const RUNTIME_SNAPSHOT_KEY = "__paseoProviderRuntimeSnapshot";
 
 type SlackInstallationHandler = Parameters<
   NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>
@@ -64,6 +78,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   ]);
   private readonly stable = new Map<Provider, ProviderRegistration>();
   private slackInstallationHandler: SlackInstallationHandler | undefined;
+  private nextSnapshot = 0;
+  private nextLease = 0;
+  private readonly executionSnapshots = new Map<string, RuntimeSnapshotMarker>();
+  private readonly githubAuthoritySnapshots = new Map<string, RuntimeSnapshotMarker>();
 
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
     for (const provider of ["github", "slack", "discord"] as const) {
@@ -106,6 +124,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const slot = this.slot(provider);
     const triggerResources = slot.triggerResources;
     const active: ActiveRegistration = {
+      provider,
+      snapshotId: `${provider}:${configurationVersion}:${++this.nextSnapshot}`,
       registration,
       triggers:
         triggerResources === undefined
@@ -115,6 +135,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               .filter((trigger): trigger is TriggerProvider => trigger !== undefined),
       sourcesStarted: false,
       acceptingEvents: false,
+      leases: 0,
+      longLeases: new Set(),
+      retiring: false,
+      retirement: undefined,
     };
     let published = false;
     return {
@@ -137,11 +161,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         const previous = slot.active;
         if (previous !== undefined) previous.acceptingEvents = false;
         slot.active = active;
+        slot.retained.set(active.snapshotId, active);
         slot.identity = identity;
         active.acceptingEvents = true;
         published = true;
         if (previous !== undefined) {
-          void retire(provider, previous);
+          previous.retiring = true;
+          void this.retireWhenDrained(provider, slot, previous);
         }
       },
       close: () => (published ? Promise.resolve() : stopSources(active)),
@@ -234,9 +260,14 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         action,
         async (request: Request) => {
           const active = await this.registrationForAction(provider, slot, action, request);
-          return (
-            active?.registration.connection.actions[action]?.(request) ??
-            Response.json({ error: "provider_not_configured" }, { status: 409 })
+          if (active === undefined) {
+            return Response.json({ error: "provider_not_configured" }, { status: 409 });
+          }
+          return this.withLease(
+            active,
+            () =>
+              active.registration.connection.actions[action]?.(request) ??
+              Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
           );
         },
       ]),
@@ -256,9 +287,16 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               resolve: (
                 ...args: Parameters<NonNullable<ProviderRegistration["integration"]>["resolve"]>
               ) => {
-                const integration = slot.active?.registration.integration;
-                if (integration === undefined) throw new Error("github integration unavailable");
-                return integration.resolve(...args);
+                const context = args[3];
+                return this.registrationForExecution(provider, slot, context?.executionId).then(
+                  (active) => {
+                    const integration = active?.registration.integration;
+                    if (active === undefined || integration === undefined) {
+                      throw new Error("github integration unavailable");
+                    }
+                    return this.withLease(active, () => integration.resolve(...args));
+                  },
+                );
               },
               githubAuthority: {
                 mint: (
@@ -268,14 +306,34 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                     >["mint"]
                   >[0],
                 ) => {
-                  const authority = slot.active?.registration.integration?.githubAuthority;
-                  if (authority === undefined) throw new Error("github authority unavailable");
-                  return authority.mint(input);
+                  return this.registrationForExecution(provider, slot, input.executionId).then(
+                    async (active) => {
+                      const authority = active?.registration.integration?.githubAuthority;
+                      if (active === undefined || authority === undefined) {
+                        throw new Error("github authority unavailable");
+                      }
+                      const minted = await this.withLease(active, () => authority.mint(input));
+                      this.githubAuthoritySnapshots.set(
+                        minted.token,
+                        this.acquireLongLease(active),
+                      );
+                      return minted;
+                    },
+                  );
                 },
                 revoke: (token: string) => {
-                  const authority = slot.active?.registration.integration?.githubAuthority;
-                  if (authority === undefined) throw new Error("github authority unavailable");
-                  return authority.revoke(token);
+                  const marker = this.githubAuthoritySnapshots.get(token);
+                  const active =
+                    marker === undefined ? slot.active : slot.retained.get(marker.snapshotId);
+                  const authority = active?.registration.integration?.githubAuthority;
+                  if (active === undefined || authority === undefined) {
+                    throw new Error("github authority unavailable");
+                  }
+                  return this.withLease(active, () => authority.revoke(token)).then(() => {
+                    this.githubAuthoritySnapshots.delete(token);
+                    if (marker !== undefined) this.releaseLongLease(provider, slot, marker);
+                    return undefined;
+                  });
                 },
               },
             },
@@ -289,7 +347,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               .map((factory) => factory(resources))
               .filter((trigger): trigger is TriggerProvider => trigger !== undefined);
           }
-          return dynamicTrigger(provider, slot);
+          return this.dynamicTrigger(provider, slot);
         },
       ],
       sources: [source],
@@ -302,11 +360,16 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 tool: replyOutputTool,
                 available: outputContextProvider(provider),
                 execute: (input) => {
-                  const output = slot.active?.registration.outputs.find(
+                  const active = this.registrationForContext(slot, input.outputContext);
+                  const output = active?.registration.outputs.find(
                     (candidate) => candidate.type === `${provider}.reply`,
                   );
-                  if (output === undefined) throw new Error(`${provider} output unavailable`);
-                  return output.execute(input);
+                  if (active === undefined || output === undefined) {
+                    throw new Error(`${provider} output unavailable`);
+                  }
+                  return this.withLease(active, () =>
+                    output.execute({ ...input, outputContext: unmarkContext(input.outputContext) }),
+                  );
                 },
               },
             ],
@@ -316,20 +379,32 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           : [
               {
                 name: provider === "github" ? "webhook" : "slack.events",
-                handle: (request) =>
-                  slot.active?.registration.requests[0]?.handle(request) ??
-                  Promise.resolve(new Response("Not Found", { status: 404 })),
+                handle: (request) => {
+                  const active = slot.active;
+                  const handler = active?.registration.requests[0];
+                  return active === undefined || handler === undefined
+                    ? Promise.resolve(new Response("Not Found", { status: 404 }))
+                    : this.withLease(active, () => handler.handle(request));
+                },
               },
             ],
-      ...(provider === "github" ? { githubConfiguration: dynamicGitHubConfiguration(slot) } : {}),
+      ...(provider === "github"
+        ? { githubConfiguration: this.dynamicGitHubConfiguration(slot) }
+        : {}),
       ...(provider === "slack" || provider === "discord"
         ? {
             attachment: {
               provider,
               resolve: (input) => {
-                const attachment = slot.active?.registration.attachment;
-                if (attachment === undefined) throw new Error(`${provider} attachment unavailable`);
-                return attachment.resolve(input);
+                return this.registrationForExecution(provider, slot, input.executionId).then(
+                  (active) => {
+                    const attachment = active?.registration.attachment;
+                    if (active === undefined || attachment === undefined) {
+                      throw new Error(`${provider} attachment unavailable`);
+                    }
+                    return this.withLease(active, () => attachment.resolve(input));
+                  },
+                );
               },
             },
           }
@@ -341,6 +416,208 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const slot = this.slots.get(provider);
     if (slot === undefined) throw new Error(`unknown provider: ${provider}`);
     return slot;
+  }
+
+  private dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
+    const current = () => {
+      const active = slot.active;
+      const trigger = active?.triggers[0];
+      if (active === undefined || trigger === undefined) {
+        throw new Error(`${provider} trigger provider unavailable`);
+      }
+      return { active, trigger };
+    };
+    const select = (value: unknown) => {
+      const active = this.registrationForContext(slot, value);
+      const trigger = active?.triggers[0];
+      if (active === undefined || trigger === undefined) return current();
+      return { active, trigger };
+    };
+    const invoke = <T>(value: unknown, operation: (trigger: TriggerProvider) => Promise<T>) => {
+      const selected = select(value);
+      return this.withLease(selected.active, () => operation(selected.trigger));
+    };
+    return {
+      name: provider,
+      eventNames: eventNames(provider),
+      match: async (external) => {
+        const selected = current();
+        return this.withLease(selected.active, async () => {
+          const result = await selected.trigger.match(external);
+          if (typeof result === "string") return result;
+          for (const match of result) {
+            if (match.invocation.status === "rejected") continue;
+            const marker = this.acquireLongLease(selected.active);
+            match.triggerContext = markContext(match.triggerContext, marker);
+            match.outputContext = markContext(match.outputContext, marker);
+          }
+          return result;
+        });
+      },
+      materializeLaunch: (input) => {
+        const marker = snapshotMarker(input.triggerContext);
+        if (marker !== undefined) this.executionSnapshots.set(input.executionId, marker);
+        return invoke(
+          input.triggerContext,
+          (trigger) =>
+            trigger.materializeLaunch?.({
+              ...input,
+              triggerContext: unmarkContext(input.triggerContext),
+            }) ?? Promise.resolve({}),
+        );
+      },
+      materializeContext: (input) =>
+        invoke(
+          input.triggerContext,
+          (trigger) =>
+            trigger.materializeContext?.({
+              ...input,
+              triggerContext: unmarkContext(input.triggerContext),
+            }) ?? Promise.resolve(undefined),
+        ),
+      onDispatchAccepted: (triggerContext, outputContext, reactionState) =>
+        invoke(
+          triggerContext,
+          (trigger) =>
+            trigger.onDispatchAccepted?.(
+              unmarkContext(triggerContext),
+              unmarkContext(outputContext),
+              reactionState,
+            ) ?? Promise.resolve(),
+        ),
+      onAgentExecutionStarted: (triggerContext, outputContext, reactionState) =>
+        invoke(
+          triggerContext,
+          (trigger) =>
+            trigger.onAgentExecutionStarted?.(
+              unmarkContext(triggerContext),
+              unmarkContext(outputContext),
+              reactionState,
+            ) ?? Promise.resolve(),
+        ),
+      onAgentExecutionCompleted: (triggerContext, outputContext, result, reactionState) =>
+        invoke(
+          triggerContext,
+          (trigger) =>
+            trigger.onAgentExecutionCompleted?.(
+              unmarkContext(triggerContext),
+              unmarkContext(outputContext),
+              result,
+              reactionState,
+            ) ?? Promise.resolve(),
+        ),
+      onAgentExecutionFailed: (triggerContext, outputContext, reason, reactionState) =>
+        invoke(
+          triggerContext,
+          (trigger) =>
+            trigger.onAgentExecutionFailed?.(
+              unmarkContext(triggerContext),
+              unmarkContext(outputContext),
+              reason,
+              reactionState,
+            ) ?? Promise.resolve(),
+        ),
+      onAgentExecutionTerminal: async (executionId, triggerContext) => {
+        const marker = snapshotMarker(triggerContext) ?? this.executionSnapshots.get(executionId);
+        try {
+          await invoke(
+            triggerContext,
+            (trigger) =>
+              trigger.onAgentExecutionTerminal?.(executionId, unmarkContext(triggerContext)) ??
+              Promise.resolve(),
+          );
+        } finally {
+          this.executionSnapshots.delete(executionId);
+          if (marker !== undefined) this.releaseLongLease(provider, slot, marker);
+        }
+      },
+      onMachineTerminated: (triggerContext, reason, reactionState) =>
+        invoke(
+          triggerContext,
+          (trigger) =>
+            trigger.onMachineTerminated?.(unmarkContext(triggerContext), reason, reactionState) ??
+            Promise.resolve(),
+        ),
+    };
+  }
+
+  private dynamicGitHubConfiguration(slot: Slot): GitHubConfigurationProvider {
+    const invoke = <T>(operation: (configuration: GitHubConfigurationProvider) => Promise<T>) => {
+      const active = slot.active;
+      const configuration = active?.registration.githubConfiguration;
+      if (active === undefined || configuration === undefined) {
+        throw new Error("github configuration unavailable");
+      }
+      return this.withLease(active, () => operation(configuration));
+    };
+    return {
+      listInstallationRepositories: (input) =>
+        invoke((configuration) => configuration.listInstallationRepositories(input)),
+      readDefaultBranchHead: (input) =>
+        invoke((configuration) => configuration.readDefaultBranchHead(input)),
+      listFilesAtCommit: (input) =>
+        invoke((configuration) => configuration.listFilesAtCommit(input)),
+      readFileAtCommit: (input) => invoke((configuration) => configuration.readFileAtCommit(input)),
+    };
+  }
+
+  private registrationForContext(slot: Slot, value: unknown): ActiveRegistration | undefined {
+    const marker = snapshotMarker(value);
+    return marker === undefined ? slot.active : slot.retained.get(marker.snapshotId);
+  }
+
+  private async registrationForExecution(
+    _provider: Provider,
+    slot: Slot,
+    executionId: string | undefined,
+  ): Promise<ActiveRegistration | undefined> {
+    if (executionId === undefined) return slot.active;
+    let marker = this.executionSnapshots.get(executionId);
+    if (marker === undefined) {
+      const execution = await this.options.database.findAgentExecutionById(executionId);
+      marker = snapshotMarker(execution?.triggerContext);
+      if (marker !== undefined) this.executionSnapshots.set(executionId, marker);
+    }
+    return marker === undefined ? slot.active : slot.retained.get(marker.snapshotId);
+  }
+
+  private async withLease<T>(active: ActiveRegistration, operation: () => Promise<T>): Promise<T> {
+    active.leases += 1;
+    try {
+      return await operation();
+    } finally {
+      active.leases -= 1;
+      if (active.retiring) {
+        const slot = this.slots.get(active.provider);
+        if (slot !== undefined) void this.retireWhenDrained(active.provider, slot, active);
+      }
+    }
+  }
+
+  private acquireLongLease(active: ActiveRegistration): RuntimeSnapshotMarker {
+    const leaseId = `lease:${++this.nextLease}`;
+    active.longLeases.add(leaseId);
+    active.leases += 1;
+    return { snapshotId: active.snapshotId, leaseId };
+  }
+
+  private releaseLongLease(provider: Provider, slot: Slot, marker: RuntimeSnapshotMarker): void {
+    const active = slot.retained.get(marker.snapshotId);
+    if (active === undefined || !active.longLeases.delete(marker.leaseId)) return;
+    active.leases -= 1;
+    if (active.retiring) void this.retireWhenDrained(provider, slot, active);
+  }
+
+  private retireWhenDrained(
+    provider: Provider,
+    slot: Slot,
+    active: ActiveRegistration,
+  ): Promise<void> {
+    if (active.leases > 0) return Promise.resolve();
+    active.retirement ??= retire(provider, active).finally(() => {
+      slot.retained.delete(active.snapshotId);
+    });
+    return active.retirement;
   }
 
   private async registrationForAction(
@@ -376,10 +653,16 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       );
       const restored: ActiveRegistration = {
+        provider,
+        snapshotId: `${provider}:${snapshot.configurationVersion}:callback`,
         registration,
         triggers: [],
         sourcesStarted: false,
         acceptingEvents: false,
+        leases: 0,
+        longLeases: new Set(),
+        retiring: false,
+        retirement: undefined,
       };
       return restored;
     } catch {
@@ -391,6 +674,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
 function emptySlot(): Slot {
   return {
     active: undefined,
+    retained: new Map(),
     identity: undefined,
     triggerResources: undefined,
     handler: undefined,
@@ -400,53 +684,6 @@ function emptySlot(): Slot {
 function actionNames(provider: Provider): readonly string[] {
   if (provider === "github") return ["start", "disconnect", "setup", "callback"];
   return ["start", "disconnect", "callback"];
-}
-
-function dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
-  const current = () => {
-    const trigger = slot.active?.triggers[0];
-    if (trigger === undefined) throw new Error(`${provider} trigger provider unavailable`);
-    return trigger;
-  };
-  const snapshots = new WeakMap<object, TriggerProvider>();
-  const remember = (value: unknown, snapshot: TriggerProvider) => {
-    if ((typeof value === "object" && value !== null) || typeof value === "function") {
-      snapshots.set(value, snapshot);
-    }
-  };
-  const providerFor = (value: unknown) =>
-    (typeof value === "object" && value !== null ? snapshots.get(value) : undefined) ?? current();
-  return {
-    name: provider,
-    eventNames: eventNames(provider),
-    match: async (trigger) => {
-      const snapshot = current();
-      const result = await snapshot.match(trigger);
-      if (typeof result !== "string") {
-        for (const match of result) {
-          remember(match.triggerContext, snapshot);
-          remember(match.outputContext, snapshot);
-        }
-      }
-      return result;
-    },
-    materializeLaunch: (input) =>
-      providerFor(input.triggerContext).materializeLaunch?.(input) ?? Promise.resolve({}),
-    materializeContext: (input) =>
-      providerFor(input.triggerContext).materializeContext?.(input) ?? Promise.resolve(undefined),
-    onDispatchAccepted: (...args) =>
-      providerFor(args[0]).onDispatchAccepted?.(...args) ?? Promise.resolve(),
-    onAgentExecutionStarted: (...args) =>
-      providerFor(args[0]).onAgentExecutionStarted?.(...args) ?? Promise.resolve(),
-    onAgentExecutionCompleted: (...args) =>
-      providerFor(args[0]).onAgentExecutionCompleted?.(...args) ?? Promise.resolve(),
-    onAgentExecutionFailed: (...args) =>
-      providerFor(args[0]).onAgentExecutionFailed?.(...args) ?? Promise.resolve(),
-    onAgentExecutionTerminal: (...args) =>
-      providerFor(args[1]).onAgentExecutionTerminal?.(...args) ?? Promise.resolve(),
-    onMachineTerminated: (...args) =>
-      providerFor(args[0]).onMachineTerminated?.(...args) ?? Promise.resolve(),
-  };
 }
 
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
@@ -459,20 +696,6 @@ function eventNames(provider: Provider): TriggerProvider["eventNames"] {
     "github.pull_request_review_comment",
     "github.push",
   ];
-}
-
-function dynamicGitHubConfiguration(slot: Slot): GitHubConfigurationProvider {
-  const current = () => {
-    const configuration = slot.active?.registration.githubConfiguration;
-    if (configuration === undefined) throw new Error("github configuration unavailable");
-    return configuration;
-  };
-  return {
-    listInstallationRepositories: (input) => current().listInstallationRepositories(input),
-    readDefaultBranchHead: (input) => current().readDefaultBranchHead(input),
-    listFilesAtCommit: (input) => current().listFilesAtCommit(input),
-    readFileAtCommit: (input) => current().readFileAtCommit(input),
-  };
 }
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
@@ -511,4 +734,33 @@ async function retire(provider: Provider, active: ActiveRegistration): Promise<v
       "retired provider resources failed to close",
     );
   }
+}
+
+function markContext(value: unknown, marker: RuntimeSnapshotMarker): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("provider runtime contexts must be objects");
+  }
+  return { ...value, [RUNTIME_SNAPSHOT_KEY]: marker };
+}
+
+function snapshotMarker(value: unknown): RuntimeSnapshotMarker | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const marker = ownValue(value, RUNTIME_SNAPSHOT_KEY);
+  if (typeof marker !== "object" || marker === null) return undefined;
+  const snapshotId = ownValue(marker, "snapshotId");
+  const leaseId = ownValue(marker, "leaseId");
+  return typeof snapshotId === "string" && typeof leaseId === "string"
+    ? { snapshotId, leaseId }
+    : undefined;
+}
+
+function unmarkContext(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const context = { ...value };
+  Reflect.deleteProperty(context, RUNTIME_SNAPSHOT_KEY);
+  return context;
+}
+
+function ownValue(value: object, key: PropertyKey): unknown {
+  return Object.getOwnPropertyDescriptor(value, key)?.value as unknown;
 }

@@ -26,6 +26,7 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
   ConnectionStartAuthority,
   ConnectionProvider,
   ReadConnectionAttemptInput,
@@ -2635,6 +2636,10 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  completeSlackProviderApplication(_input: CompleteSlackProviderApplicationInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
   disconnectConnection(
     _provider: ConnectionProvider,
     _connectionId: string,
@@ -2809,6 +2814,8 @@ class MemoryDatabase implements Database {
     input: {
       deliveryId: string;
       signatureHash?: string | null;
+      providerApplicationId?: string | null;
+      providerConfigurationVersion?: number | null;
       source: string;
       repo?: string | null;
       payload: unknown;
@@ -2824,6 +2831,8 @@ class MemoryDatabase implements Database {
       resourceId: input.resourceId,
       deliveryId: input.input.deliveryId,
       signatureHash: input.input.signatureHash ?? null,
+      providerApplicationId: input.input.providerApplicationId ?? null,
+      providerConfigurationVersion: input.input.providerConfigurationVersion ?? null,
       source: input.input.source,
       repo: input.input.repo ?? null,
       payload: input.input.payload,

@@ -52,6 +52,8 @@ export const providerEventReceipts = pgTable(
     resourceId: text("resource_id"),
     deliveryId: text("delivery_id").notNull(),
     signatureHash: text("signature_hash"),
+    providerApplicationId: text("provider_application_id"),
+    providerConfigurationVersion: integer("provider_configuration_version"),
     source: text().notNull(),
     repo: text(),
     payload: jsonb().notNull(),
@@ -746,6 +748,7 @@ export const githubConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     installationId: bigint("installation_id", { mode: "number" }).notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     accountId: text("account_id").notNull(),
     accountLogin: text("account_login").notNull(),
@@ -801,6 +804,7 @@ export const discordConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     guildId: text("guild_id").notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     guildName: text("guild_name").notNull(),
     connectedByUserId: text("connected_by_user_id").references(() => users.id, {
@@ -826,6 +830,7 @@ export const slackConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     teamId: text("team_id").notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     teamName: text("team_name").notNull(),
     botUserId: text("bot_user_id").notNull(),

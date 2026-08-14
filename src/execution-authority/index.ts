@@ -129,6 +129,7 @@ export function createExecutionAuthority(
         }
         const repositories = repositoriesForAuthority(input.github, input.triggerContext);
         const authority = await options.githubAuthority.mint({
+          executionId: input.executionId,
           projectId: input.projectId,
           connectionSlug: input.github.connection,
           repositories,

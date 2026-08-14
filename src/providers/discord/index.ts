@@ -299,7 +299,7 @@ async function completeAuthorization(
         "discord",
       );
     }
-    await bindDiscord(options.database, state, access, guild);
+    await bindDiscord(options.database, state, access, guild, options.configuration.clientId);
     return connectionResult(callbackOrigin, attempt.returnRoute, "discord_connected", "discord");
   } catch (error) {
     return connectionCallbackFailure({
@@ -317,8 +317,10 @@ async function bindDiscord(
   state: string,
   access: Awaited<ReturnType<typeof callbackConnectionAccess>>,
   guild: DiscordGuildIdentity,
+  providerApplicationId: string,
 ): Promise<void> {
   await database.bindDiscordConnection({
+    providerApplicationId,
     stateVerifier: stateHash(state),
     phase: "discord_authorization",
     access,

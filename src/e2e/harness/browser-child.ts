@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
-import { createAuthServer } from "../../auth/server.js";
+import { createAuthServer, type AuthServer } from "../../auth/server.js";
 import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
@@ -35,11 +35,10 @@ import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 import {
   BrowserProviderApplicationVerifier,
   browserRegistrationFactory,
-  fixtureEnvironmentIdentity,
 } from "./browser-provider-applications.js";
 import {
+  activateProviderApplicationsAtStartup,
   DynamicProviderRuntime,
-  PROVIDERS,
   createProviderApplicationInventory,
   createProviderApplicationStore,
   createProviderApplications,
@@ -47,6 +46,7 @@ import {
   resolveCallbackOrigin,
   type ProviderApplications,
 } from "../../provider-applications/index.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 
 interface DiscordCommand {
   id: string;
@@ -92,7 +92,8 @@ const FIXTURE_STRIPE_SECRET_KEY = "sk_test_e2e_fixture_0000000000000000000000";
 
 async function main(): Promise<void> {
   const databaseUrl = requiredEnvironment("DATABASE_URL");
-  const publicBaseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
+  const publicBaseUrl =
+    process.env["PASEO_HUB_APP_URL"] ?? `http://127.0.0.1:${requiredEnvironment("PORT")}`;
   const scenario = readScenario();
   const {
     database,
@@ -116,7 +117,7 @@ async function main(): Promise<void> {
           database: databaseRuntime,
           locks,
           entitlements: entitlements.service,
-          baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
+          baseURL: publicBaseUrl,
           secret: authSecret,
           policy: readInstanceAuthPolicy(process.env),
           ...billingAuthOptions(billing),
@@ -126,9 +127,7 @@ async function main(): Promise<void> {
   await auth?.initialize?.();
   const machineAuth = machineAuthEnabled();
   const databaseProfile = requiredEnvironment("PASEO_E2E_DATABASE_PROFILE");
-  if (auth !== null && machineAuth && databaseProfile === "fresh") {
-    await seedMachineAuthTarget(databaseRuntime);
-  }
+  await seedMachineAuthTargetIfRequired(auth, machineAuth, databaseProfile, databaseRuntime);
   const machineKey =
     auth === null || !machineAuth
       ? undefined
@@ -237,7 +236,7 @@ async function main(): Promise<void> {
   await start.startApplication(() => runtime);
   const server = createFetchServer(
     (request) => browserProviderPage(request, publicBaseUrl) ?? start.default.fetch(request),
-    await testTlsOptions(),
+    await testServerOptions(),
   );
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void runtime.hub.handleUpgrade?.(request, socket, head);
@@ -258,12 +257,20 @@ async function main(): Promise<void> {
   process.once("SIGINT", stop);
 }
 
-async function testTlsOptions(): Promise<{ tls?: { key: string; cert: string } }> {
+async function testServerOptions(): Promise<{
+  tls?: { key: string; cert: string };
+  trustedClientIpHeader?: string;
+}> {
   const keyPath = process.env["PASEO_E2E_TLS_KEY"];
   const certPath = process.env["PASEO_E2E_TLS_CERT"];
-  if (keyPath === undefined && certPath === undefined) return {};
+  const trustedClientIpHeader = process.env["PASEO_HUB_TRUSTED_CLIENT_IP_HEADER"];
+  const trusted = trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader };
+  if (keyPath === undefined && certPath === undefined) return trusted;
   if (keyPath === undefined || certPath === undefined) throw new Error("incomplete test TLS");
-  return { tls: { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") } };
+  return {
+    ...trusted,
+    tls: { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") },
+  };
 }
 
 function browserProviderPage(request: Request, publicBaseUrl: string): Response | undefined {
@@ -271,7 +278,10 @@ function browserProviderPage(request: Request, publicBaseUrl: string): Response 
   if (url.pathname !== "/e2e/providers/slack/authorize") return undefined;
   const state = url.searchParams.get("state");
   if (state === null) return new Response("Missing state", { status: 400 });
-  const callback = new URL("/api/integrations/slack/callback", publicBaseUrl);
+  const callback = new URL(
+    "/api/integrations/slack/callback",
+    request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? publicBaseUrl,
+  );
   callback.searchParams.set("state", state);
   callback.searchParams.set("code", "accepted");
   return new Response(
@@ -309,6 +319,17 @@ async function seedMachineAuthTarget(database: DatabaseRuntime): Promise<void> {
       values ('phase-zero-owner', 'phase-zero', 'phase-zero-user', 'owner')
       on conflict (id) do nothing;
   `);
+}
+
+async function seedMachineAuthTargetIfRequired(
+  auth: AuthServer | null,
+  machineAuth: boolean,
+  databaseProfile: string,
+  database: DatabaseRuntime,
+): Promise<void> {
+  if (auth !== null && machineAuth && databaseProfile === "fresh") {
+    await seedMachineAuthTarget(database);
+  }
 }
 
 interface CommandFixtures {
@@ -604,7 +625,7 @@ async function composeProviderApplications(input: {
 } | null> {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
   const environment = await readProviderApplicationEnvironment(process.env);
-  const store = createProviderApplicationStore(input.databaseRuntime, input.locks);
+  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
   const verifier = new BrowserProviderApplicationVerifier();
   const inventory = createProviderApplicationInventory(input.databaseRuntime);
   const providerRuntime = new DynamicProviderRuntime({
@@ -621,23 +642,16 @@ async function composeProviderApplications(input: {
       githubConfiguration: input.githubConfiguration,
     }),
   });
-  const stored = new Map(
-    (await store.readAll()).map((configuration) => [configuration.provider, configuration]),
-  );
-  for (const provider of PROVIDERS) {
-    const fromEnvironment = environment[provider];
-    const persisted = stored.get(provider);
-    const configuration = fromEnvironment ?? persisted?.configuration;
-    if (configuration === undefined) continue;
-    const candidate = await providerRuntime.prepare(
-      provider,
-      configuration,
-      input.publicBaseUrl,
-      fromEnvironment === undefined ? persisted!.identity : fixtureEnvironmentIdentity(provider),
-      fromEnvironment === undefined ? persisted!.version : 0,
-    );
-    await candidate.start();
-    candidate.publish();
+  const failures = await activateProviderApplicationsAtStartup({
+    store,
+    environment,
+    runtime: providerRuntime,
+    verifier,
+    inventory,
+    callbackOrigin: input.publicBaseUrl,
+  });
+  if (failures[0] !== undefined) {
+    throw failures[0].error;
   }
   const capability = createProviderApplications({
     auth: input.auth,
@@ -646,7 +660,7 @@ async function composeProviderApplications(input: {
     runtime: providerRuntime,
     verifier,
     inventory,
-    callbackOrigin: (request) => resolveCallbackOrigin(request, input.publicBaseUrl),
+    callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
       const organizationSlug = await inventory.organizationSlug(organizationId);
       if (organizationSlug === undefined) throw new Error("organization unavailable");

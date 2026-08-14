@@ -110,7 +110,12 @@ export function createGitHubRegistration(
           client,
         );
   const webhook = createWebhookSource(configuration.webhookSecret, {
-    accept: (input) => database.acceptGitHubEvent(input),
+    accept: (input) =>
+      database.acceptGitHubEvent({
+        ...input,
+        providerApplicationId: configuration.appId,
+        providerConfigurationVersion: options.configurationVersion ?? 0,
+      }),
     applyLifecycle: (delivery) => applyLifecycle(database, client, delivery),
     async synchronizePush(input) {
       const payload = PushPayloadSchema.safeParse(input.payload);
@@ -470,7 +475,7 @@ async function completeAuthorization(
         "github",
       );
     }
-    await bindGitHub(options.database, state, access, identity);
+    await bindGitHub(options.database, state, access, identity, options.configuration.appId);
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
@@ -488,8 +493,10 @@ async function bindGitHub(
   state: string,
   access: Awaited<ReturnType<typeof callbackConnectionAccess>>,
   identity: GitHubInstallationIdentity,
+  providerApplicationId: string,
 ): Promise<void> {
   await database.bindGitHubConnection({
+    providerApplicationId,
     stateVerifier: stateHash(state),
     phase: "github_user_authorization",
     access,

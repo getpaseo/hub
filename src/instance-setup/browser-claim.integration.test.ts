@@ -14,6 +14,7 @@ import { createAuthServer, type AuthServer } from "../auth/server.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { RegistrationAdmissionError } from "../auth/registration-admission.js";
 import type { InitialOperator } from "./index.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 
 const ORIGIN = "http://localhost:3000";
 
@@ -183,6 +184,24 @@ describe("first-run claim at the browser boundary", () => {
 
       assert.equal(await countUsers(instance), 0);
       assert.equal((await readAccountState(instance.auth)).status, "instanceSetupRequired");
+    } finally {
+      await instance.close();
+    }
+  }, 120_000);
+
+  it("claims through the adapter's trusted reverse-proxy origin", async () => {
+    const instance = await startInstance(postgres, "browser_claim_proxy_origin");
+    try {
+      const externalOrigin = "https://hub.example.test";
+      const headers = new Headers({ origin: externalOrigin });
+      headers.set(TRUSTED_REQUEST_ORIGIN_HEADER, externalOrigin);
+
+      assert.deepEqual(await instance.auth.claimInstance!(operator, headers), {
+        status: "claimed",
+      });
+      assert.deepEqual(await sessionsPerOperator(instance), [
+        { email: operator.email, sessions: 1 },
+      ]);
     } finally {
       await instance.close();
     }

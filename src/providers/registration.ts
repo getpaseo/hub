@@ -32,6 +32,7 @@ export interface ProviderIntegrationRegistration {
 
 export interface GitHubAuthorityRegistration {
   mint(input: {
+    executionId?: string;
     projectId: string;
     connectionSlug: string;
     repositories: readonly string[];

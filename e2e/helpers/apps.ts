@@ -10,6 +10,12 @@ export type AppStatus =
   | "Action needed"
   | "Managed by environment";
 
+const APP_SUMMARIES: Readonly<Record<AppProvider, string>> = {
+  GitHub: "Reads issues and pull requests, and lets agents push.",
+  Slack: "Reads mentions in your workspace and replies in the thread.",
+  Discord: "Reads mentions in your server and replies in the thread.",
+};
+
 /** The credentials the fixture providers accept. Anything else is a genuine rejection. */
 export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<string, string>>>> =
   {
@@ -78,13 +84,31 @@ export class AppSection {
     await expect(this.body()).toBeVisible();
   }
 
+  async expectCompactHeaderLayout(): Promise<void> {
+    const title = await this.header().getByText(this.provider, { exact: true }).boundingBox();
+    const description = await this.header()
+      .getByText(APP_SUMMARIES[this.provider], { exact: true })
+      .boundingBox();
+    const status = await this.header()
+      .getByText(/^(?:Not set up|Verified|Connected|Action needed|Managed by environment)$/u)
+      .boundingBox();
+    expect(title).not.toBeNull();
+    expect(description).not.toBeNull();
+    expect(status).not.toBeNull();
+    expect(description!.y).toBeGreaterThan(title!.y);
+    expect(status!.y).toBeGreaterThan(description!.y);
+    expect(status!.x).toBeLessThan(title!.x + 8);
+  }
+
   async expand(): Promise<void> {
+    await expect(this.page.getByLabel("Loading your apps")).toHaveCount(0);
     if ((await this.header().getAttribute("aria-expanded")) === "true") return;
     await this.header().click();
     await this.expectExpanded();
   }
 
   async collapse(): Promise<void> {
+    await expect(this.page.getByLabel("Loading your apps")).toHaveCount(0);
     if ((await this.header().getAttribute("aria-expanded")) === "false") return;
     await this.header().click();
     await this.expectCollapsed();
@@ -222,6 +246,40 @@ export class AppSetupSurface {
     await this.github.expectExpanded();
     await this.slack.expectExpanded();
     await this.discord.expectCollapsed();
+  }
+
+  async collapseAll(): Promise<void> {
+    for (const section of this.sections()) await section.collapse();
+  }
+
+  async expandAll(): Promise<void> {
+    for (const section of this.sections()) await section.expand();
+  }
+
+  async verifyGitHubFromKeyboard(): Promise<void> {
+    const github = this.github;
+    await github.expectExpanded();
+    // The loading surface deliberately exposes the same static instructions and controls.
+    // Wait for the dynamic form before starting the uninterrupted tab-order assertion so
+    // hydration cannot replace the currently focused node halfway through the journey.
+    await expect(github.form()).toBeVisible();
+    await github.header().focus();
+    await this.tabTo(github.body().getByRole("link", { name: "Create a GitHub App" }));
+    for (const label of ["Homepage URL", "Callback URL", "Setup URL", "Webhook URL"]) {
+      await this.tabTo(github.body().getByRole("button", { name: `Copy ${label}` }));
+    }
+    for (const [label, value] of Object.entries(WORKING_CREDENTIALS.GitHub)) {
+      const field = github.form().getByLabel(label, { exact: true });
+      await this.tabTo(field);
+      await field.fill(value);
+    }
+    await this.tabTo(github.action("Verify and save"));
+    await this.page.keyboard.press("Enter");
+  }
+
+  private async tabTo(target: Locator): Promise<void> {
+    await this.page.keyboard.press("Tab");
+    await expect(target).toBeFocused();
   }
 
   async accessible(): Promise<void> {

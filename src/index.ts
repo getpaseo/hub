@@ -34,14 +34,13 @@ import { loadRuntimeEnvironment, type RuntimeEnvironmentSource } from "./runtime
 import { isCommandLineEntrypoint } from "./command-line.js";
 import {
   DynamicProviderRuntime,
-  PROVIDERS,
+  activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
   createProviderApplications,
   createProviderApplicationVerifier,
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
-  type ProviderApplicationIdentity,
 } from "./provider-applications/index.js";
 
 export interface ProductionRuntimeOptions {
@@ -110,7 +109,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     resources.own(() => auth.close());
     await auth.initialize?.();
     const providerEnvironment = await readProviderApplicationEnvironment(process.env);
-    const providerStore = createProviderApplicationStore(runtime, locks);
+    const providerStore = createProviderApplicationStore(runtime, locks, database);
     const providerVerifier = createProviderApplicationVerifier();
     const providerInventory = createProviderApplicationInventory(runtime);
     const providerRuntime = new DynamicProviderRuntime({
@@ -118,45 +117,19 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       auth,
       applicationBaseUrl: identity.appUrl,
     });
-    const storedProviders = new Map(
-      (await providerStore.readAll()).map((configuration) => [
-        configuration.provider,
-        configuration,
-      ]),
-    );
-    for (const provider of PROVIDERS) {
-      const environmentConfiguration = providerEnvironment[provider];
-      const stored = storedProviders.get(provider);
-      const configuration = environmentConfiguration ?? stored?.configuration;
-      if (configuration === undefined) continue;
-      let verifiedIdentity: ProviderApplicationIdentity;
-      try {
-        if (environmentConfiguration === undefined) {
-          verifiedIdentity = stored!.identity;
-        } else if (provider === "slack" && environmentConfiguration.provider === "slack") {
-          verifiedIdentity = {
-            provider: "slack",
-            id: environmentConfiguration.appId,
-            name: "Slack app",
-          };
-        } else {
-          verifiedIdentity = await providerVerifier.verify(provider, environmentConfiguration);
-        }
-        const candidate = await providerRuntime.prepare(
-          provider,
-          configuration,
-          identity.appUrl,
-          verifiedIdentity,
-          environmentConfiguration === undefined ? stored!.version : 0,
-        );
-        await candidate.start();
-        candidate.publish();
-      } catch (error) {
-        logger.error(
-          { provider, errorType: error instanceof Error ? error.name : "UnknownError" },
-          "provider application could not be activated at startup",
-        );
-      }
+    const activationFailures = await activateProviderApplicationsAtStartup({
+      store: providerStore,
+      environment: providerEnvironment,
+      runtime: providerRuntime,
+      verifier: providerVerifier,
+      inventory: providerInventory,
+      callbackOrigin: identity.appUrl,
+    });
+    for (const { provider, error } of activationFailures) {
+      logger.error(
+        { provider, errorType: error instanceof Error ? error.name : "UnknownError" },
+        "provider application could not be activated at startup",
+      );
     }
     const providerApplications = createProviderApplications({
       auth,

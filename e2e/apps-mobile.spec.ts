@@ -21,15 +21,18 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     const { surface, page } = session;
     const github = surface.github;
     await surface.expectOnboarding();
+    await github.expectExpanded();
+    await github.collapse();
     await surface.shoot(SHOTS, "apps-01-chooser.mobile");
+    await github.expand();
 
     // Sections stack, and each header is a touch target rather than a hover affordance.
     for (const section of surface.sections()) {
       const box = await section.header().boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      await section.expectCompactHeaderLayout();
     }
 
-    await github.expectExpanded();
     // A generated URL and its copy button share a row without pushing the layout sideways.
     const document = await page.evaluate(() => ({
       scrollWidth: window.document.documentElement.scrollWidth,
@@ -110,17 +113,14 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
       surface.slack.body().getByText("Slack requires a public HTTPS address.", { exact: false }),
     ).toBeVisible();
     await surface.shoot(SHOTS, "apps-08-slack-https-required.mobile");
-    await surface.shoot(SHOTS, "apps-06-slack-expanded.mobile");
     await surface.slack.collapse();
 
     await surface.discord.expand();
     await surface.discord.fillWorkingCredentials();
     await surface.discord.save();
     await surface.discord.expectStatus("Verified");
-    await surface.shoot(SHOTS, "apps-10-discord-verified.mobile");
     await surface.discord.action("Add to a Discord server").click();
     await surface.discord.expectStatus("Connected");
-    await surface.shoot(SHOTS, "apps-11-discord-connected.mobile");
 
     // Until the operator leaves app setup, every URL is app setup — including /apps.
     await surface.leave("Finish");
@@ -140,7 +140,6 @@ test("mobile evidence covers skipping and later environment-managed apps", async
   const skipped = await hub.openAppSetup({ account: OPERATOR, organizationName: "Acme" });
   try {
     await skipped.surface.leave("Do this later");
-    await skipped.surface.shoot(SHOTS, "apps-14-skip-dashboard.mobile");
   } finally {
     await skipped.close();
   }

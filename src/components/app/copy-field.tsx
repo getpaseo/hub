@@ -127,7 +127,13 @@ export function CopyBlock({
           {action}
         </CopyButton>
       </div>
-      <pre className="max-h-48 max-w-full overflow-auto rounded-md border bg-muted p-3 font-mono text-xs sm:max-h-64">
+      <pre
+        aria-readonly="true"
+        aria-label={`${label} value`}
+        className="max-h-48 max-w-full overflow-auto rounded-md border bg-muted p-3 font-mono text-xs sm:max-h-64"
+        role="textbox"
+        tabIndex={0}
+      >
         {value}
       </pre>
       {state === "manual" ? (

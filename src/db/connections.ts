@@ -9,6 +9,7 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
   ConnectionAccountAccess,
   ConnectionAttemptPhase,
   ConnectionAttemptRecord,
@@ -151,6 +152,7 @@ export class ConnectionRepository {
               .values({
                 organizationId: attempt.organizationId,
                 installationId: input.installationId,
+                providerApplicationId: input.providerApplicationId,
                 slug: await uniqueConnectionSlug(
                   transaction,
                   attempt.organizationId,
@@ -188,6 +190,7 @@ export class ConnectionRepository {
         .values({
           organizationId: attempt.organizationId,
           guildId: input.guildId,
+          providerApplicationId: input.providerApplicationId,
           guildName: input.guildName,
           slug: await uniqueConnectionSlug(
             transaction,
@@ -202,6 +205,19 @@ export class ConnectionRepository {
   }
 
   async bindSlack(input: BindSlackConnectionInput): Promise<void> {
+    await this.bindSlackTransition(input);
+  }
+
+  async completeSlackProviderApplication(
+    input: CompleteSlackProviderApplicationInput,
+  ): Promise<void> {
+    await this.bindSlackTransition(input, input.providerConfiguration);
+  }
+
+  private async bindSlackTransition(
+    input: BindSlackConnectionInput,
+    providerConfiguration?: CompleteSlackProviderApplicationInput["providerConfiguration"],
+  ): Promise<void> {
     await this.runtime.transaction(async (runtimeTransaction) => {
       const transaction = runtimeTransaction.drizzle();
       await lockAccountSession(transaction, input.access);
@@ -223,6 +239,7 @@ export class ConnectionRepository {
         await transaction.insert(schema.slackConnections).values({
           organizationId: attempt.organizationId,
           teamId: input.teamId,
+          providerApplicationId: input.providerApplicationId,
           teamName: input.teamName,
           slug: await uniqueConnectionSlug(
             transaction,
@@ -240,6 +257,7 @@ export class ConnectionRepository {
           .update(schema.slackConnections)
           .set({
             teamName: input.teamName,
+            providerApplicationId: input.providerApplicationId,
             botUserId: input.botUserId,
             botAccessToken: input.botAccessToken,
             scopes: input.scopes,
@@ -247,6 +265,41 @@ export class ConnectionRepository {
             updatedAt: sql`clock_timestamp()`,
           })
           .where(eq(schema.slackConnections.id, existing.id));
+      }
+      if (providerConfiguration !== undefined) {
+        const [stored] = await transaction
+          .select({ version: schema.runtimeProviderConfiguration.version })
+          .from(schema.runtimeProviderConfiguration)
+          .where(eq(schema.runtimeProviderConfiguration.provider, "slack"))
+          .for("update");
+        if (stored?.version !== providerConfiguration.expectedVersion) {
+          const error = new Error("provider configuration changed");
+          error.name = "ProviderConfigurationConflictError";
+          throw error;
+        }
+        if (stored === undefined) {
+          await transaction.insert(schema.runtimeProviderConfiguration).values({
+            provider: "slack",
+            configuration: providerConfiguration.configuration,
+            verifiedExternalIdentity: providerConfiguration.identity,
+            version: 1,
+            verifiedAt: sql`clock_timestamp()`,
+            updatedAt: sql`clock_timestamp()`,
+            updatedByUserId: providerConfiguration.updatedByUserId,
+          });
+        } else {
+          await transaction
+            .update(schema.runtimeProviderConfiguration)
+            .set({
+              configuration: providerConfiguration.configuration,
+              verifiedExternalIdentity: providerConfiguration.identity,
+              version: sql`${schema.runtimeProviderConfiguration.version} + 1`,
+              verifiedAt: sql`clock_timestamp()`,
+              updatedAt: sql`clock_timestamp()`,
+              updatedByUserId: providerConfiguration.updatedByUserId,
+            })
+            .where(eq(schema.runtimeProviderConfiguration.provider, "slack"));
+        }
       }
       await consumeLockedAttempt(transaction, attempt.id);
     });
@@ -621,6 +674,7 @@ function githubConnection(
     accountLogin: row.accountLogin,
     accountType: row.accountType,
     status: row.status,
+    providerApplicationId: row.providerApplicationId,
   };
 }
 function discordConnection(
@@ -632,6 +686,7 @@ function discordConnection(
     slug: row.slug,
     guildId: row.guildId,
     guildName: row.guildName,
+    providerApplicationId: row.providerApplicationId,
   };
 }
 function slackConnection(row: typeof schema.slackConnections.$inferSelect): SlackConnectionRecord {
@@ -644,6 +699,7 @@ function slackConnection(row: typeof schema.slackConnections.$inferSelect): Slac
     botUserId: row.botUserId,
     botAccessToken: row.botAccessToken,
     scopes: row.scopes,
+    providerApplicationId: row.providerApplicationId,
   };
 }
 

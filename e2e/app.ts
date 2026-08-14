@@ -1,7 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { get as httpsGet } from "node:https";
+import { request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, get as httpsGet, type Server } from "node:https";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -88,28 +89,37 @@ class BuiltApplications {
     const databaseUrl = postgres.getConnectionUri();
     await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
     const port = await availablePort();
-    const tls = options.https === true ? await createTestTls() : undefined;
-    const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${port}`;
+    const reverseProxyPort = options.reverseProxy === true ? await availablePort() : undefined;
+    const tls =
+      options.https === true || options.reverseProxy === true ? await createTestTls() : undefined;
+    const publicPort = reverseProxyPort ?? port;
+    const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${publicPort}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
     const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
       cwd: process.cwd(),
       env: applicationEnvironment({
         databaseUrl,
         origin,
+        ...(options.reverseProxy === true ? {} : { appUrl: origin }),
         port,
         machineKeyFile,
-        ...(tls === undefined ? {} : { tls }),
+        ...(options.https === true && tls !== undefined ? { tls } : {}),
         ...options,
       }),
       stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
     const output: string[] = [];
+    const proxy =
+      reverseProxyPort === undefined || tls === undefined
+        ? undefined
+        : await startReverseProxy(reverseProxyPort, port, tls);
     const application: RunningApplication = {
       origin,
       databaseUrl,
       machineKey: "",
       postgres,
       server,
+      ...(proxy === undefined ? {} : { proxy }),
       ...(tls === undefined ? {} : { tlsRoot: tls.root }),
       logs: () => output.join(""),
       deliverDiscord: (event: BrowserDiscordEvent) => deliverDiscord(server, event),
@@ -148,6 +158,7 @@ class BuiltApplications {
     await Promise.all(
       applications.map(async (application) => {
         await stopServer(application.server);
+        await stopProxy(application.proxy);
         await application.postgres.stop();
         if (application.tlsRoot !== undefined) {
           await rm(application.tlsRoot, { recursive: true, force: true });
@@ -167,11 +178,13 @@ interface RunningApplication extends BuiltApplication {
   postgres: StartedPostgreSqlContainer;
   server: ChildProcess;
   tlsRoot?: string;
+  proxy?: Server;
 }
 
 interface ApplicationEnvironmentInput {
   databaseUrl: string;
   origin: string;
+  appUrl?: string;
   port: number;
   registrationMode?: BuiltApplicationOptions["registrationMode"];
   organizationCreation?: BuiltApplicationOptions["organizationCreation"];
@@ -187,16 +200,16 @@ interface ApplicationEnvironmentInput {
   bootstrap?: BuiltApplicationOptions["bootstrap"];
   billing?: BuiltApplicationOptions["billing"];
   tls?: TestTls;
+  reverseProxy?: boolean;
 }
 
 function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.ProcessEnv {
   const browserAuthEnabled = input.browserAuth !== false;
-  return {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     DATABASE_URL: input.databaseUrl,
     PORT: String(input.port),
     PASEO_HUB_BIND: "127.0.0.1",
-    PASEO_HUB_APP_URL: input.origin,
     PASEO_REGISTRATION_MODE:
       input.registrationMode ?? (input.bootstrap === undefined ? "open" : "invite_only"),
     PASEO_ORGANIZATION_CREATION:
@@ -220,6 +233,9 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           ? "approval"
           : "connected"),
     PASEO_BROWSER_PROVIDER_APPS: input.providerApplications === true ? "dynamic" : "static",
+    ...(input.reverseProxy === true
+      ? { PASEO_HUB_TRUSTED_CLIENT_IP_HEADER: "x-paseo-e2e-client-ip" }
+      : {}),
     ...(input.tls === undefined
       ? {}
       : { PASEO_E2E_TLS_KEY: input.tls.key, PASEO_E2E_TLS_CERT: input.tls.cert }),
@@ -232,6 +248,9 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           PASEO_BOOTSTRAP_OWNER_PASSWORD: input.bootstrap.ownerPassword,
         }),
   };
+  if (input.appUrl === undefined) delete environment["PASEO_HUB_APP_URL"];
+  else environment["PASEO_HUB_APP_URL"] = input.appUrl;
+  return environment;
 }
 
 interface TestTls {
@@ -405,6 +424,52 @@ async function stopServer(server: ChildProcess): Promise<void> {
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]);
   if (server.exitCode === null) server.kill("SIGKILL");
+}
+
+async function startReverseProxy(port: number, targetPort: number, tls: TestTls): Promise<Server> {
+  const proxy = createHttpsServer(
+    { key: await readFile(tls.key, "utf8"), cert: await readFile(tls.cert, "utf8") },
+    (incoming, outgoing) => {
+      const upstream = httpRequest(
+        {
+          hostname: "127.0.0.1",
+          port: targetPort,
+          method: incoming.method,
+          path: incoming.url,
+          headers: {
+            ...incoming.headers,
+            host: `127.0.0.1:${targetPort}`,
+            "x-forwarded-host": incoming.headers.host,
+            "x-forwarded-proto": "https",
+            "x-paseo-e2e-client-ip": "127.0.0.1",
+          },
+        },
+        (response) => {
+          outgoing.writeHead(response.statusCode ?? 502, response.headers);
+          response.pipe(outgoing);
+        },
+      );
+      upstream.once("error", () => {
+        if (!outgoing.headersSent) outgoing.writeHead(502);
+        outgoing.end("Bad Gateway");
+      });
+      incoming.pipe(upstream);
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(port, "127.0.0.1", resolve);
+  });
+  return proxy;
+}
+
+async function stopProxy(proxy: Server | undefined): Promise<void> {
+  if (proxy === undefined) return;
+  proxy.closeIdleConnections();
+  proxy.closeAllConnections();
+  await new Promise<void>((resolve, reject) => {
+    proxy.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
 }
 
 async function availablePort(): Promise<number> {

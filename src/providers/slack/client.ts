@@ -103,6 +103,7 @@ export function createSlackConnectionClient(options: {
       };
     },
     async verifyInstallation(installation) {
+      if (!hasRequiredSlackScopes(installation.scopes)) throw new SlackBotVerificationError();
       const response = await request("https://slack.com/api/auth.test", {
         headers: { authorization: `Bearer ${installation.botAccessToken}` },
       });

@@ -39,13 +39,13 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.discord.expectCollapsed();
     await expect(surface.wayOut("Finish")).toHaveCount(0);
     await surface.accessible();
+    await surface.github.collapse();
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
     await surface.leave("Do this later");
     // Business as usual once the transition completes: reloading never returns here.
     await page.reload();
     await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
   } finally {
     await session.close();
   }
@@ -75,6 +75,7 @@ test("GitHub is verified, installed, and reported honestly at each boundary", as
     await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
     await github.save();
     await github.expectFocusedError(/GitHub didn't accept these credentials/u);
+    await surface.accessible();
     await github.expectStatus("Not set up");
     expect(await github.value("App ID")).toBe("42");
     await surface.shoot(SHOTS, "apps-04-github-verify-failed.desktop");
@@ -101,10 +102,19 @@ test("GitHub is verified, installed, and reported honestly at each boundary", as
     // Once one arrives, the section says so — and only then.
     await session.seedSignedDelivery("github");
     await page.reload();
+    await github.expectStatus("Connected");
     await github.expand();
     await github.expectResult("Last event");
     await expect(github.status()).not.toContainText("Waiting for an event");
     await surface.shoot(SHOTS, "apps-05b-github-receiving-events.desktop");
+
+    // The connection survives a same-app secret rotation, but old signed evidence does not.
+    await github.action("Replace credentials").click();
+    await github.fillWorkingCredentials();
+    await github.save();
+    await github.expectStatus("Connected");
+    await github.expectResult("Waiting for an event");
+    await expect(github.status()).not.toContainText("Last event");
 
     // The way out now reads as finishing.
     await expect(surface.wayOut("Finish")).toBeVisible();
@@ -210,6 +220,29 @@ test("Slack explains why setup is unavailable on plain HTTP", async ({ hub }) =>
   }
 });
 
+test("Slack setup trusts an HTTPS reverse proxy when no app URL is configured", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    organizationName: "Acme",
+    reverseProxy: true,
+  });
+  try {
+    const { page, surface, origin } = session;
+    expect(origin).toMatch(/^https:\/\//u);
+    await surface.slack.expand();
+    expect(await surface.slack.copiedManifest()).toContain(
+      `${origin}/api/integrations/slack/callback`,
+    );
+    await surface.slack.fillWorkingCredentials();
+    await surface.slack.save();
+    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
+    await page.getByRole("link", { name: "Accept installation" }).click();
+    await surface.slack.expectStatus("Connected");
+  } finally {
+    await session.close();
+  }
+});
+
 test("sections open and close independently and keep what was typed", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
@@ -232,7 +265,20 @@ test("sections open and close independently and keep what was typed", async ({ h
     await surface.slack.expectExpanded();
     await surface.slack.toggleFromKeyboard();
     await surface.slack.expectCollapsed();
+    await surface.collapseAll();
     await surface.accessible();
+    await surface.expandAll();
+    await surface.accessible();
+  } finally {
+    await session.close();
+  }
+});
+
+test("GitHub setup can be tabbed through and submitted without a pointer", async ({ hub }) => {
+  const session = await openSetup(hub);
+  try {
+    await session.surface.verifyGitHubFromKeyboard();
+    await session.surface.github.expectFocusedResult("Paseo Hub · owned by acme-inc");
   } finally {
     await session.close();
   }

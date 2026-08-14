@@ -8,11 +8,10 @@ import { AuthLayout } from "../components/app/auth-layout.js";
 import { PageHeader } from "../components/app/page.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import { PROVIDER_GUIDES } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
-import { ProviderSection, type SectionReturn } from "./provider-section.js";
+import { ProviderSection, ProviderSectionLoading, type SectionReturn } from "./provider-section.js";
 import type { Provider, ProviderApplicationOverview, ProviderApplicationSurface } from "./index.js";
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
@@ -102,19 +101,16 @@ function ProviderApplications({
 }
 
 function OverviewLoading() {
+  const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
   return (
     <div aria-label="Loading your apps" aria-busy="true" className="grid gap-3">
       {PROVIDER_GUIDES.map((guide) => (
-        <div
+        <ProviderSectionLoading
           key={guide.provider}
-          className="flex min-h-11 items-center gap-3 rounded-lg border bg-card px-4 py-3"
-        >
-          <span className="grid min-w-0 flex-1 gap-1">
-            <span className="font-medium">{guide.name}</span>
-            <span className="text-sm text-muted-foreground">{guide.summary}</span>
-          </span>
-          <Skeleton className="h-5 w-24 rounded-full" />
-        </div>
+          guide={guide}
+          origin={origin}
+          open={guide.provider === "github"}
+        />
       ))}
     </div>
   );

@@ -11,6 +11,7 @@ import { StatusPill } from "../components/app/status-pill.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { FieldSet } from "../components/ui/field.js";
+import { Skeleton } from "../components/ui/skeleton.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import type { Result } from "../contract/respond.js";
 import { cn } from "../lib/utils.js";
@@ -253,6 +254,45 @@ export function ProviderSection({
     </Disclosure>
   );
 }
+
+/** Static setup guidance remains useful while only persisted status and credentials are loading. */
+export function ProviderSectionLoading({
+  guide,
+  origin,
+  open,
+}: {
+  guide: ProviderGuide;
+  origin: string;
+  open: boolean;
+}) {
+  return (
+    <div aria-busy="true">
+      <Disclosure
+        id={guide.provider}
+        open={open}
+        onOpenChange={ignoreLoadingDisclosureChange}
+        media={<ProviderGlyph provider={guide.provider} />}
+        title={guide.name}
+        description={guide.summary}
+        status={<Skeleton className="h-5 w-24 rounded-full" />}
+      >
+        <div className="grid gap-6">
+          <Steps guide={guide} origin={origin} />
+          <div className="grid max-w-md gap-4">
+            {guide.fields.map((field) => (
+              <div key={field.name} className="grid gap-2">
+                <span className="text-sm font-medium">{field.label}</span>
+                <Skeleton className="h-9 w-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
+
+function ignoreLoadingDisclosureChange(): void {}
 
 /** Keeps an absent identifier absent rather than present-and-undefined. */
 function storedDefault(value: string | undefined): { defaultValue?: string } {

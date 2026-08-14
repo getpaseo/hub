@@ -64,6 +64,8 @@ export interface BuiltApplicationOptions {
   environmentApps?: readonly ("github" | "slack" | "discord")[];
   /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
   https?: boolean;
+  /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
+  reverseProxy?: boolean;
   bootstrap?: {
     organizationName: string;
     ownerEmail: string;
@@ -271,15 +273,19 @@ export class PaseoHub {
     organizationName: string;
     environmentApps?: readonly ("github" | "slack" | "discord")[];
     https?: boolean;
+    reverseProxy?: boolean;
   }): Promise<AppSetupSession> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
       machineAuth: false,
       providerApplications: true,
       https: input.https === true,
+      reverseProxy: input.reverseProxy === true,
       ...(input.environmentApps === undefined ? {} : { environmentApps: input.environmentApps }),
     });
-    const context = await this.browser.newContext({ ignoreHTTPSErrors: input.https === true });
+    const context = await this.browser.newContext({
+      ignoreHTTPSErrors: input.https === true || input.reverseProxy === true,
+    });
     const page = await context.newPage();
     await allowClipboard(page, application.origin);
     const user = new HubUser(application.origin, context, page);
@@ -300,7 +306,7 @@ export class PaseoHub {
       },
       providerApplicationVersion: (provider) =>
         providerApplicationVersion(application.databaseUrl, provider),
-      seedSignedDelivery: (provider) => seedSignedDelivery(application.databaseUrl, provider),
+      seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -4692,21 +4698,59 @@ export interface AppSetupSession {
 }
 
 async function seedSignedDelivery(
-  databaseUrl: string,
+  page: Page,
+  origin: string,
   provider: "github" | "slack",
 ): Promise<void> {
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  try {
-    await client.query(
-      `insert into provider_event_receipts
-         (organization_id, provider, delivery_id, signature_hash, source, payload)
-       select id, $1, $2, 'signed', 'webhook', '{}'::jsonb from organization limit 1`,
-      [provider, `delivery-${randomUUID()}`],
-    );
-  } finally {
-    await client.end();
+  if (provider === "github") {
+    const body = JSON.stringify({ installation: { id: 42 } });
+    const signature = `sha256=${createHmac("sha256", "phase-zero-webhook-secret")
+      .update(body)
+      .digest("hex")}`;
+    const response = await page.request.post(`${origin}/webhook`, {
+      data: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": `delivery-${randomUUID()}`,
+        "x-github-event": "ping",
+        "x-hub-signature-256": signature,
+      },
+    });
+    expect(response.ok()).toBe(true);
+    return;
   }
+
+  const timestamp = String(Math.floor(Date.now() / 1_000));
+  const body = JSON.stringify({
+    type: "event_callback",
+    team_id: "T-ACME",
+    api_app_id: "browser-slack-app",
+    event_id: `event-${randomUUID()}`,
+    event_time: Number(timestamp),
+    event: {
+      type: "app_mention",
+      user: "U1",
+      channel: "C1",
+      text: "<@B1> verify delivery",
+      ts: `${timestamp}.000100`,
+      event_ts: `${timestamp}.000100`,
+    },
+  });
+  const signature = `v0=${createHmac("sha256", "phase-zero-slack-webhook-secret")
+    .update("v0:")
+    .update(timestamp)
+    .update(":")
+    .update(body)
+    .digest("hex")}`;
+  const response = await page.request.post(`${origin}/api/integrations/slack/events`, {
+    data: body,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+  });
+  expect(response.ok()).toBe(true);
 }
 
 async function providerApplicationVersion(

@@ -1,4 +1,5 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
+import type { BindSlackConnectionInput } from "../db/types.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
 
@@ -63,6 +64,13 @@ export interface ProviderApplicationStore {
     expectedVersion: number | undefined;
     updatedByUserId: string;
   }): Promise<StoredProviderApplication>;
+  completeSlackInstallation(input: {
+    configuration: SlackProviderApplicationConfiguration;
+    identity: Extract<ProviderApplicationIdentity, { provider: "slack" }>;
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+    binding: BindSlackConnectionInput;
+  }): Promise<void>;
 }
 
 export interface ProviderRuntimeCandidate {
@@ -93,6 +101,7 @@ export interface ProviderRuntimeOwner {
       callbackOrigin: string;
       userId: string;
       installation: VerifiedSlackInstallation;
+      binding: BindSlackConnectionInput;
     }) => Promise<void>,
   ): void;
 }
@@ -107,12 +116,17 @@ export interface ProviderApplicationVerifier {
 export interface ConnectedProviderIdentity {
   id: string;
   name: string;
+  applicationId: string | null;
   status: "connected" | "actionNeeded";
 }
 
 export interface ProviderApplicationInventory {
   connectedIdentities(provider: Provider): Promise<readonly ConnectedProviderIdentity[]>;
-  lastEventAt(provider: Provider): Promise<Date | null>;
+  lastEventAt(
+    provider: Provider,
+    identity: ProviderApplicationIdentity,
+    configurationVersion: number,
+  ): Promise<Date | null>;
 }
 
 export type ProviderApplicationStatus =
@@ -161,6 +175,8 @@ export interface VerifiedSlackInstallation {
   teamId: string;
   teamName: string;
   botUserId: string;
+  botAccessToken: string;
+  scopes: string[];
 }
 
 export type ProviderApplicationErrorCode =
@@ -266,6 +282,7 @@ export function createProviderApplications(
           const connections = await options.inventory.connectedIdentities(provider);
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
+          const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
           const view: ProviderApplicationView = {
             provider,
             status,
@@ -274,11 +291,13 @@ export function createProviderApplications(
             identity,
             connections,
             lastEventAt:
-              provider === "discord"
+              provider === "discord" || identity === null || configurationVersion === null
                 ? null
-                : ((await options.inventory.lastEventAt(provider))?.toISOString() ?? null),
+                : ((
+                    await options.inventory.lastEventAt(provider, identity, configurationVersion)
+                  )?.toISOString() ?? null),
             replaceable: connections.length === 0,
-            configurationVersion: environment === undefined ? (persisted?.version ?? null) : 0,
+            configurationVersion,
           };
           return [provider, view] as const;
         }),
@@ -316,14 +335,14 @@ export function createProviderApplications(
       rejectMutation(options, request);
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
-      const stored = await options.store.read(provider);
-      const configuration = options.environment[provider] ?? stored?.configuration;
-      if (configuration === undefined || options.beginCandidateConnection === undefined) {
-        throw new ProviderApplicationError("invalidInput");
-      }
-      const configurationVersion =
-        options.environment[provider] === undefined ? stored!.version : 0;
       return serialize(queues, provider, async () => {
+        const stored = await options.store.read(provider);
+        const configuration = options.environment[provider] ?? stored?.configuration;
+        if (configuration === undefined || options.beginCandidateConnection === undefined) {
+          throw new ProviderApplicationError("invalidInput");
+        }
+        const configurationVersion =
+          options.environment[provider] === undefined ? stored!.version : 0;
         const identity = options.runtime.identity?.(provider) ?? stored?.identity;
         if (identity === undefined) throw new ProviderApplicationError("invalidInput");
         let candidate: ProviderRuntimeCandidate | undefined;
@@ -338,7 +357,7 @@ export function createProviderApplications(
           if (candidate.beginConnection === undefined) {
             throw new Error("provider connection unavailable");
           }
-          const result = await options.beginCandidateConnection!(
+          const result = await options.beginCandidateConnection(
             request,
             organizationId,
             providerApplicationReturnRoute(surface),
@@ -448,6 +467,25 @@ function sameExternalIdentity(
   return left.provider === right.provider && left.id === right.id;
 }
 
+function identityConflictsWithConnections(
+  identity: ProviderApplicationIdentity,
+  previous: StoredProviderApplication | undefined,
+  connections: readonly ConnectedProviderIdentity[],
+): boolean {
+  if (connections.length === 0) return false;
+  if (
+    connections.some(
+      (connection) => connection.applicationId !== null && connection.applicationId !== identity.id,
+    )
+  ) {
+    return true;
+  }
+  return (
+    connections.some((connection) => connection.applicationId === null) &&
+    (previous === undefined || !sameExternalIdentity(previous.identity, identity))
+  );
+}
+
 function isConfigurationConflict(error: unknown): boolean {
   return (
     error !== null &&
@@ -478,6 +516,66 @@ export { readProviderApplicationEnvironment } from "./internal/environment.js";
 export { createProviderApplicationVerifier } from "./internal/verifier.js";
 export { DynamicProviderRuntime } from "./internal/runtime-owner.js";
 export { createProviderApplicationInventory } from "./internal/inventory.js";
+
+export async function activateProviderApplicationsAtStartup(options: {
+  store: ProviderApplicationStore;
+  environment: Partial<Record<Provider, ProviderApplicationConfiguration>>;
+  runtime: ProviderRuntimeOwner;
+  verifier: ProviderApplicationVerifier;
+  inventory: ProviderApplicationInventory;
+  callbackOrigin: string;
+}): Promise<readonly { provider: Provider; error: unknown }[]> {
+  const failures: { provider: Provider; error: unknown }[] = [];
+  const storedProviders = new Map(
+    (await options.store.readAll()).map((configuration) => [configuration.provider, configuration]),
+  );
+  for (const provider of PROVIDERS) {
+    const environmentConfiguration = options.environment[provider];
+    const stored = storedProviders.get(provider);
+    const configuration = environmentConfiguration ?? stored?.configuration;
+    if (configuration === undefined) continue;
+    try {
+      const identity = await startupIdentity(
+        provider,
+        environmentConfiguration,
+        stored,
+        options.verifier,
+      );
+      const connections = await options.inventory.connectedIdentities(provider);
+      if (identityConflictsWithConnections(identity, stored, connections)) {
+        throw new ProviderApplicationError("identityConflict", stored?.identity.name);
+      }
+      const candidate = await options.runtime.prepare(
+        provider,
+        configuration,
+        options.callbackOrigin,
+        identity,
+        environmentConfiguration === undefined ? stored!.version : 0,
+      );
+      await candidate.start();
+      candidate.publish();
+    } catch (error) {
+      failures.push({ provider, error });
+    }
+  }
+  return failures;
+}
+
+async function startupIdentity(
+  provider: Provider,
+  environmentConfiguration: ProviderApplicationConfiguration | undefined,
+  stored: StoredProviderApplication | undefined,
+  verifier: ProviderApplicationVerifier,
+): Promise<ProviderApplicationIdentity> {
+  if (environmentConfiguration === undefined) {
+    if (stored === undefined) throw new Error("stored provider application unavailable");
+    return stored.identity;
+  }
+  if (provider === "slack" && environmentConfiguration.provider === "slack") {
+    return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
+  }
+  return verifier.verify(provider, environmentConfiguration);
+}
 
 function parseHttpOrigin(value: string): string {
   const url = new URL(value);
@@ -558,12 +656,8 @@ async function verifyAndActivateProvider(
   if (identity.provider !== provider) throw new ProviderApplicationError("credentialsRejected");
   const previous = await options.store.read(provider);
   const connections = await options.inventory.connectedIdentities(provider);
-  if (
-    connections.length > 0 &&
-    previous !== undefined &&
-    !sameExternalIdentity(previous.identity, identity)
-  ) {
-    throw new ProviderApplicationError("identityConflict", previous.identity.name);
+  if (identityConflictsWithConnections(identity, previous, connections)) {
+    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
   }
   let candidate: ProviderRuntimeCandidate | undefined;
   try {
@@ -603,6 +697,7 @@ async function completeSlackInstallation(
     callbackOrigin: string;
     userId: string;
     installation: VerifiedSlackInstallation;
+    binding: BindSlackConnectionInput;
   },
 ): Promise<void> {
   const configuration = parseProviderApplicationConfiguration(input.configuration);
@@ -616,12 +711,8 @@ async function completeSlackInstallation(
     id: input.installation.appId,
     name: input.installation.appId,
   };
-  if (
-    connections.length > 0 &&
-    previous !== undefined &&
-    !sameExternalIdentity(previous.identity, identity)
-  ) {
-    throw new ProviderApplicationError("identityConflict", previous.identity.name);
+  if (identityConflictsWithConnections(identity, previous, connections)) {
+    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
   }
   let candidate: ProviderRuntimeCandidate | undefined;
   try {
@@ -633,12 +724,12 @@ async function completeSlackInstallation(
       (input.expectedConfigurationVersion ?? 0) + 1,
     );
     await candidate.start();
-    await options.store.save({
-      provider: "slack",
+    await options.store.completeSlackInstallation({
       configuration,
       identity,
       expectedVersion: input.expectedConfigurationVersion,
       updatedByUserId: input.userId,
+      binding: input.binding,
     });
     candidate.publish();
     candidate = undefined;

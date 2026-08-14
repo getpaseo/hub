@@ -13,7 +13,7 @@ import {
   stateHash,
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
-import type { Database, SlackConnectionRecord } from "../../db/types.js";
+import type { BindSlackConnectionInput, Database, SlackConnectionRecord } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
@@ -55,6 +55,7 @@ export interface CreateSlackRegistrationOptions {
     callbackOrigin: string;
     userId: string;
     installation: SlackInstallation;
+    binding: BindSlackConnectionInput;
   }) => Promise<void>;
 }
 
@@ -91,7 +92,17 @@ export function createSlackRegistration(
   const accept =
     database === null
       ? () => Promise.reject(new DatabaseUnavailableError())
-      : (input: Parameters<Database["acceptSlackEvent"]>[0]) => database.acceptSlackEvent(input);
+      : (
+          input: Omit<
+            Parameters<Database["acceptSlackEvent"]>[0],
+            "providerApplicationId" | "providerConfigurationVersion"
+          >,
+        ) =>
+          database.acceptSlackEvent({
+            ...input,
+            providerApplicationId: configuration.appId,
+            providerConfigurationVersion: options.configurationVersion ?? 0,
+          });
   const webhook = createSlackWebhookSource({
     appId: configuration.appId,
     signingSecret: configuration.signingSecret,
@@ -315,16 +326,23 @@ async function completeAuthorization(
     callbackOrigin = attempt.callbackOrigin;
     const installation = await client.exchangeCode(code);
     await client.verifyInstallation(installation);
+    if (!hasRequiredSlackScopes(installation.scopes)) throw new SlackBotVerificationError();
+    const binding = slackBinding(state, access, installation);
     if (attempt.activateConfiguration) {
-      await options.onVerifiedInstallation?.({
+      if (options.onVerifiedInstallation === undefined) {
+        throw new Error("Slack installation handler unavailable");
+      }
+      await options.onVerifiedInstallation({
         configuration: attempt.configurationSnapshot,
         expectedConfigurationVersion: attempt.expectedConfigurationVersion ?? undefined,
         callbackOrigin: attempt.callbackOrigin,
         userId: attempt.userId,
         installation,
+        binding,
       });
+    } else {
+      await options.database.bindSlackConnection(binding);
     }
-    await bindSlack(options.database, state, access, installation);
     return connectionResult(callbackOrigin, attempt.returnRoute, "slack_connected", "slack");
   } catch (error) {
     if (error instanceof SlackBotVerificationError) {
@@ -340,18 +358,18 @@ async function completeAuthorization(
   }
 }
 
-async function bindSlack(
-  database: Database,
+function slackBinding(
   state: string,
   access: Awaited<ReturnType<typeof callbackConnectionAccess>>,
   installation: SlackInstallation,
-): Promise<void> {
-  await database.bindSlackConnection({
+): BindSlackConnectionInput {
+  return {
+    providerApplicationId: installation.appId,
     stateVerifier: stateHash(state),
     phase: "slack_authorization",
     access,
     ...installation,
-  });
+  };
 }
 
 function slackStatus(configured: boolean, bindings: readonly SlackConnectionRecord[]) {

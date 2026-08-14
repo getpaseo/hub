@@ -78,6 +78,7 @@ describe("Hub execution authority", () => {
 
     assert.deepEqual(mint.inputs, [
       {
+        executionId: "execution-manual",
         projectId: "project-1",
         connectionSlug: "getpaseo-github",
         repositories: ["getpaseo/paseo", "getpaseo/hub"],

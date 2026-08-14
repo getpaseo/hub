@@ -9,7 +9,8 @@ import {
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
-import { createProviderApplicationStore } from "./index.js";
+import { createDatabase } from "../db/pg.js";
+import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
 
 const roots: string[] = [];
 
@@ -23,6 +24,7 @@ describe("provider application persistence", () => {
     roots.push(root);
     const first = await embeddedDatabaseRuntime(root);
     await exercisePersistence(first);
+    await exerciseSlackAtomicTransition(first);
     await first.runtime.close();
 
     const reopened = await embeddedDatabaseRuntime(root);
@@ -43,6 +45,7 @@ describe("provider application persistence", () => {
     try {
       const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
       await exercisePersistence(bundle);
+      await exerciseSlackAtomicTransition(bundle);
       await bundle.runtime.close();
 
       const reopened = await postgresDatabaseRuntime(postgres.getConnectionUri());
@@ -112,4 +115,122 @@ async function exercisePersistence(bundle: DatabaseRuntimeBundle) {
     updatedByUserId: "operator",
   });
   assert.equal(rotated.version, 2);
+}
+
+async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
+  const database = createDatabase(bundle.runtime, bundle.locks);
+  await bundle.runtime.query(
+    `insert into organization (id, name, slug) values ('org', 'Org', 'org')`,
+  );
+  await bundle.runtime.query(
+    `insert into session (id, token, user_id, active_organization_id, expires_at)
+     values ('session', 'session-token', 'operator', 'org', now() + interval '1 hour')`,
+  );
+  await bundle.runtime.query(
+    `insert into member (id, organization_id, user_id, role)
+     values ('member', 'org', 'operator', 'owner')`,
+  );
+  const configuration = {
+    provider: "slack" as const,
+    appId: "A1",
+    clientId: "client",
+    clientSecret: "secret",
+    signingSecret: "signing-secret",
+  };
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const startAttempt = async (stateVerifier: string, expectedVersion: number | null) => {
+    await database.startConnectionAttempt({
+      provider: "slack",
+      stateVerifier,
+      access: {
+        sessionId: "session",
+        userId: "operator",
+        membershipId: "member",
+        organizationId: "org",
+        returnRoute: "/settings/apps",
+      },
+      lifetimeMinutes: 10,
+      configurationVersion: (expectedVersion ?? 0) + 1,
+      callbackOrigin: "https://hub.test",
+      configurationSnapshot: configuration,
+      expectedConfigurationVersion: expectedVersion,
+      activateConfiguration: true,
+    });
+  };
+  const complete = (stateVerifier: string, teamId: string, expectedVersion: number | undefined) =>
+    store.completeSlackInstallation({
+      configuration,
+      identity: { provider: "slack", id: "A1", name: "Acme" },
+      expectedVersion,
+      updatedByUserId: "operator",
+      binding: {
+        providerApplicationId: "A1",
+        stateVerifier,
+        phase: "slack_authorization",
+        access: { sessionId: "session", userId: "operator" },
+        teamId,
+        teamName: "Acme",
+        botUserId: "UBOT",
+        botAccessToken: "xoxb-token",
+        scopes: ["chat:write"],
+      },
+    });
+
+  await startAttempt("state-ok", null);
+  await complete("state-ok", "T1", undefined);
+  assert.equal((await store.read("slack"))?.version, 1);
+  assert.equal((await database.findSlackConnection("T1"))?.providerApplicationId, "A1");
+  assert.equal(
+    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("slack"))[0]
+      ?.status,
+    "actionNeeded",
+  );
+
+  await startAttempt("state-conflict", 1);
+  await assert.rejects(() => complete("state-conflict", "T2", 99));
+  assert.equal(await database.findSlackConnection("T2"), undefined);
+  assert.equal((await store.read("slack"))?.version, 1);
+  assert.equal(
+    (
+      await bundle.runtime.query<{ consumed_at: Date | null }>(
+        `select consumed_at from organization_connection_attempts where state_verifier = 'state-conflict'`,
+      )
+    ).rows[0]?.consumed_at,
+    null,
+  );
+
+  await bundle.runtime.query(
+    `create function reject_slack_attempt_consumption() returns trigger language plpgsql as $$
+       begin
+         if new.state_verifier = 'state-crash' and new.consumed_at is not null then
+           raise exception 'simulated crash boundary';
+         end if;
+         return new;
+       end;
+     $$`,
+  );
+  await bundle.runtime.query(
+    `create trigger reject_slack_attempt_consumption
+     before update on organization_connection_attempts
+     for each row execute function reject_slack_attempt_consumption()`,
+  );
+  await startAttempt("state-crash", 1);
+  await assert.rejects(
+    () => complete("state-crash", "T3", 1),
+    (error: unknown) =>
+      error !== null &&
+      typeof error === "object" &&
+      String(Reflect.get(Reflect.get(error, "cause") ?? {}, "message")) ===
+        "simulated crash boundary",
+  );
+  assert.equal(await database.findSlackConnection("T3"), undefined);
+  assert.equal((await store.read("slack"))?.version, 1);
+  assert.equal(
+    (
+      await bundle.runtime.query<{ consumed_at: Date | null }>(
+        `select consumed_at from organization_connection_attempts where state_verifier = 'state-crash'`,
+      )
+    ).rows[0]?.consumed_at,
+    null,
+  );
 }

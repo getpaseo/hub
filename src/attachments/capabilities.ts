@@ -25,6 +25,7 @@ export interface AttachmentDescriptor extends AttachmentReference {
 }
 
 export interface AttachmentResolverInput {
+  executionId?: string;
   organizationId: string;
   connectionId: string;
   locator: unknown;
@@ -107,6 +108,7 @@ export function createAttachmentCapabilityRegistry(options: {
       let upstream: Response;
       try {
         upstream = await resolver({
+          executionId,
           organizationId: attachment.organizationId,
           connectionId: attachment.connectionId,
           locator: attachment.locator,

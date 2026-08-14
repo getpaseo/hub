@@ -101,13 +101,13 @@ describe("Slack registration", () => {
       botClient: new SlackBotFake(),
       configurationVersion: 1,
       activateConfiguration: true,
-      onVerifiedInstallation: (input) => {
+      onVerifiedInstallation: async (input) => {
         assert.equal(client.verified, true);
         assert.deepEqual(input.configuration, { provider: "slack", ...slackConfiguration() });
         assert.equal(input.callbackOrigin, "https://callback.test");
         assert.equal(input.installation.teamName, "Acme");
+        await database.bindSlackConnection(input.binding);
         activated = true;
-        return Promise.resolve();
       },
     });
     const start = await registration.connection.actions["start"]!(
@@ -169,6 +169,77 @@ describe("Slack registration", () => {
     assert.equal(callback.boundInstallation, undefined);
   });
 
+  it("rejects a new installation that did not grant every required bot scope", async () => {
+    const callback = callbackDatabase();
+    const client = new CompletingSlackConnectionFake(false, ["app_mentions:read", "chat:write"]);
+    let activated = false;
+    const registration = createSlackRegistration({
+      database: callback.database,
+      auth: new RegistrationAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://callback.test",
+      configuration: slackConfiguration(),
+      connectionClient: client,
+      botClient: new SlackBotFake(),
+      activateConfiguration: true,
+      onVerifiedInstallation: () => {
+        activated = true;
+        return Promise.resolve();
+      },
+    });
+    const start = await registration.connection.actions["start"]!(
+      new Request("https://hub.test/start?organizationSlug=org", { method: "POST" }),
+    );
+    const state = new URL(
+      z.object({ url: z.string() }).parse(await start.json()).url,
+    ).searchParams.get("state");
+    assert(state !== null);
+
+    const response = await registration.connection.actions["callback"]!(
+      new Request(`https://hub.test/callback?state=${state}&code=accepted`),
+    );
+
+    assert.equal(activated, false);
+    assert.equal(callback.boundInstallation, undefined);
+    assert.equal(
+      response.headers.get("location"),
+      "https://callback.test/o/org/connections?app=slack&result=slack_bot_failed",
+    );
+  });
+
+  it("does not publish configuration when the durable workspace bind fails", async () => {
+    const callback = callbackDatabase();
+    callback.database.bindSlackConnection = () => Promise.reject(new Error("bind failed"));
+    let published = false;
+    const registration = createSlackRegistration({
+      database: callback.database,
+      auth: new RegistrationAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://callback.test",
+      configuration: slackConfiguration(),
+      connectionClient: new CompletingSlackConnectionFake(),
+      botClient: new SlackBotFake(),
+      activateConfiguration: true,
+      onVerifiedInstallation: async (input) => {
+        await callback.database.bindSlackConnection(input.binding);
+        published = true;
+      },
+    });
+    const start = await registration.connection.actions["start"]!(
+      new Request("https://hub.test/start?organizationSlug=org", { method: "POST" }),
+    );
+    const state = new URL(
+      z.object({ url: z.string() }).parse(await start.json()).url,
+    ).searchParams.get("state");
+    assert(state !== null);
+
+    await registration.connection.actions["callback"]!(
+      new Request(`https://hub.test/callback?state=${state}&code=accepted`),
+    );
+
+    assert.equal(published, false);
+  });
+
   it("returns a trusted callback result when the operator cancels at Slack", async () => {
     const callback = callbackDatabase();
     const registration = createSlackRegistration({
@@ -221,6 +292,7 @@ describe("Slack registration", () => {
             botUserId: "UBOT",
             botAccessToken: "token",
             scopes: [],
+            providerApplicationId: "A1",
           },
         ],
       }),
@@ -239,6 +311,7 @@ describe("Slack registration", () => {
         teamName: "Workspace",
         botUserId: "UBOT-B",
         botAccessToken: "token-b",
+        providerApplicationId: "A1",
         scopes: [
           "app_mentions:read",
           "channels:history",
@@ -369,7 +442,18 @@ class SlackConnectionFake implements SlackConnectionClient {
 class CompletingSlackConnectionFake implements SlackConnectionClient {
   verified = false;
 
-  constructor(private readonly failVerification = false) {}
+  constructor(
+    private readonly failVerification = false,
+    private readonly scopes = [
+      "app_mentions:read",
+      "channels:history",
+      "chat:write",
+      "files:read",
+      "groups:history",
+      "reactions:write",
+      "users:read",
+    ],
+  ) {}
 
   authorizationUrl(state: string): string {
     return `https://slack.test/oauth?state=${state}`;
@@ -382,15 +466,7 @@ class CompletingSlackConnectionFake implements SlackConnectionClient {
       teamName: "Acme",
       botUserId: "UBOT",
       botAccessToken: "xoxb-token",
-      scopes: [
-        "app_mentions:read",
-        "channels:history",
-        "chat:write",
-        "files:read",
-        "groups:history",
-        "reactions:write",
-        "users:read",
-      ],
+      scopes: this.scopes,
     });
   }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
+import type { Database } from "../../db/types.js";
 import type {
   Provider,
   ProviderApplicationConfiguration,
@@ -76,6 +77,7 @@ export class ProviderConfigurationConflictError extends Error {
 export function createProviderApplicationStore(
   database: DatabaseRuntime,
   locks: Locks,
+  connections?: Pick<Database, "completeSlackProviderApplication">,
 ): ProviderApplicationStore {
   return {
     async read(provider) {
@@ -136,6 +138,18 @@ export function createProviderApplicationStore(
           return parseRow(saved);
         }),
       );
+    },
+    completeSlackInstallation(input) {
+      if (connections === undefined) throw new Error("Slack application persistence unavailable");
+      return connections.completeSlackProviderApplication({
+        ...input.binding,
+        providerConfiguration: {
+          configuration: input.configuration,
+          identity: input.identity,
+          expectedVersion: input.expectedVersion,
+          updatedByUserId: input.updatedByUserId,
+        },
+      });
     },
   };
 }
