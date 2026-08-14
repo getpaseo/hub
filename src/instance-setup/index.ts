@@ -5,7 +5,13 @@ import {
   type BootstrapSettings,
   type InstanceAuthPolicy,
 } from "../auth/instance-policy.js";
-import type { DatabaseRuntime, QueryHandle, QueryRow } from "../db/runtime/index.js";
+import type {
+  DatabaseRuntime,
+  QueryHandle,
+  QueryRow,
+  TransactionHandle,
+} from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import {
   provisionOrganization,
   type ProvisioningEntitlement,
@@ -13,6 +19,13 @@ import {
 } from "../organizations/provisioning.js";
 
 const BOOTSTRAP_ROW_ID = "default";
+
+/**
+ * Serializes everything that can create an account on this instance against a first-run claim.
+ * Without it a generic signup could commit between a claim's pristine check and its completion,
+ * and the claim would have granted instance ownership on a database that was no longer unowned.
+ */
+const ACCOUNT_ADMISSION_LOCK = "paseo:instance-setup:account-admission";
 
 /**
  * Whether this instance still has a first operator to create.
@@ -82,6 +95,7 @@ interface OperatorAccount {
 
 export interface InstanceSetupOptions {
   database: DatabaseRuntime;
+  locks: Locks;
   policy: InstanceAuthPolicy;
   /** What a provisioned organization is stamped with — resolved before the transaction opens. */
   provisioningEntitlements: ProvisioningEntitlementResolver;
@@ -135,8 +149,8 @@ export class InstanceSetup {
   }
 
   /**
-   * Whether interactive setup is open. Advisory only: it renders the welcome journey, and
-   * `claim` re-decides under the row lock, so a stale `available` cannot hand out ownership.
+   * Whether interactive setup is open. Advisory only: it renders the welcome journey, and `claim`
+   * re-decides while holding the locks below, so a stale `available` cannot hand out ownership.
    */
   async status(): Promise<InstanceSetupStatus> {
     const database = this.options.database;
@@ -150,17 +164,29 @@ export class InstanceSetup {
   }
 
   /**
+   * Runs an account-creating action under the instance's ownership lock. Generic registration
+   * goes through here so a new account cannot land between a claim's pristine check and its
+   * completion; the claim holds the same lock for its whole transaction. This decides nothing
+   * about who may register — that stays with registration admission.
+   */
+  admitAccountCreation<T>(create: () => Promise<T>): Promise<T> {
+    return this.options.locks.withLock(ACCOUNT_ADMISSION_LOCK, create);
+  }
+
+  /**
    * Creates the first operator, their organization, and the completion record in one
-   * transaction. Losing callers of a concurrent claim get `unavailable` and write nothing:
-   * eligibility is decided after the singleton row is locked, so the second caller reads the
-   * winner's account rather than its own stale snapshot.
+   * transaction. Losing callers get `unavailable` and leave the database exactly as they found
+   * it: eligibility is decided while holding both the account-admission lock and the singleton
+   * row, so the loser reads the winner's committed account rather than a stale snapshot, and a
+   * refused claim rolls back rather than leaving a setup record behind.
    */
   async claim(operator: InitialOperator): Promise<InstanceClaim> {
     const entitlement = await this.options.provisioningEntitlements();
     return this.options.database.transaction(async (client) => {
+      await this.options.locks.withTxLock(client, ACCOUNT_ADMISSION_LOCK);
       const row = await lockBootstrapRow(client);
       const counts = await tenantCounts(client);
-      if (setupStatus(row, counts) !== "available") return { status: "unavailable" };
+      if (setupStatus(row, counts) !== "available") return refuse(client);
       const ownerUserId = await createOperatorAccount(client, {
         name: operator.name,
         email: normalizeEmail(operator.email),
@@ -176,6 +202,15 @@ export class InstanceSetup {
       return { status: "claimed" };
     });
   }
+}
+
+/**
+ * Refuses the claim by rolling back. Taking the singleton row lock has to insert the row when it
+ * is missing, so a refused claim must undo that write — a public request that changes nothing
+ * must leave nothing behind, including an empty setup record.
+ */
+function refuse(client: TransactionHandle): never {
+  return client.rollback({ status: "unavailable" });
 }
 
 function setupStatus(row: BootstrapRow, counts: TenantCountRow): InstanceSetupStatus {

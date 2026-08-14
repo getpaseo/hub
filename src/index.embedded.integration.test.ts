@@ -18,6 +18,8 @@ const ENVIRONMENT_NAMES = [
   "PASEO_BOOTSTRAP_OWNER_PASSWORD",
 ] as const;
 
+const APP_URL = "http://localhost:3000";
+
 let root: string;
 let previousEnvironment: Map<string, string | undefined>;
 const originalDirectory = process.cwd();
@@ -50,12 +52,39 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
 
   const runtime = await startProductionRuntime();
-  const state = await runtime.browserAccount!(
-    new Request("http://localhost:3000/api/auth/paseo/state"),
-  );
+  const state = await runtime.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
 
   assert.equal(state.status, 200);
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+});
+
+it("keeps an interactive claim across a restart and then shows ordinary sign-in", async () => {
+  delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
+  process.env["PASEO_HUB_APP_URL"] = APP_URL;
+  const operator = {
+    name: "Restart Operator",
+    email: "restart-operator@example.test",
+    password: "restart-operator-password",
+    organizationName: "Restart Organization",
+  };
+
+  const first = await startProductionRuntime();
+  assert.deepEqual(await first.claimInstance!(operator, new Headers({ origin: APP_URL })), {
+    status: "claimed",
+  });
+  await stopProductionRuntime();
+
+  // A new process against the same embedded storage: setup is over, and the chosen password
+  // still signs the operator in without a temporary-password gate.
+  const restarted = await startProductionRuntime();
+  const state = await restarted.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
+  assert.deepEqual(await state.json(), { status: "signedOut", registration: "invite_only" });
+  await restarted.signInEmail!(
+    { email: operator.email, password: operator.password },
+    new Headers({ origin: APP_URL }),
+  );
 });
 
 it("releases embedded storage when runtime configuration is invalid", async () => {

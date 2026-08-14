@@ -12,7 +12,8 @@ import type { Database } from "../db/types.js";
 import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
-import type { InitialOperator } from "./index.js";
+import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
+import { InstanceSetup, type InitialOperator } from "./index.js";
 
 const ORIGIN = "http://localhost:3000";
 
@@ -52,6 +53,11 @@ describe("first-run claim at the browser boundary", () => {
       const claim = await instance.auth.claimInstance!(operator, browserHeaders());
       assert.deepEqual(claim, { status: "claimed" });
 
+      // The claim itself established the browser session — nothing signed in afterwards.
+      assert.deepEqual(await sessionsPerOperator(instance), [
+        { email: operator.email, sessions: 1 },
+      ]);
+
       // The claimed instance shows ordinary sign-in to anyone without a session.
       const signedOut = await readAccountState(instance.auth);
       assert.equal(signedOut.status, "signedOut");
@@ -65,6 +71,78 @@ describe("first-run claim at the browser boundary", () => {
       assert.equal(active.account?.email, operator.email);
       assert.equal(active.organization?.name, operator.organizationName);
       assert.equal(active.isInstanceOperator, true);
+    } finally {
+      await instance.close();
+    }
+  }, 120_000);
+
+  /**
+   * Registration policy is unchanged, but every account it admits is now created under the
+   * instance's account-admission lock, so a signup cannot land inside a claim's decision window.
+   */
+  it("creates generic signup accounts under the instance account-admission lock", async () => {
+    const instance = await startInstance(postgres, "browser_claim_signup_lock", "open");
+    try {
+      let admitted = () => {};
+      const holding = new Promise<void>((resolve) => {
+        admitted = resolve;
+      });
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const held = instanceSetupFor(instance).admitAccountCreation(async () => {
+        admitted();
+        await released;
+      });
+      await holding;
+
+      let signedUp = false;
+      const signup = (async () => {
+        await instance.auth.signUpEmail!(
+          { name: "Waiting", email: "waiting@example.test", password: "waiting-password" },
+          browserHeaders(),
+        );
+        signedUp = true;
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(signedUp, false);
+      assert.equal(await countUsers(instance), 0);
+
+      release();
+      await held;
+      await signup;
+      assert.equal(signedUp, true);
+      assert.equal(await countUsers(instance), 1);
+    } finally {
+      await instance.close();
+    }
+  }, 120_000);
+
+  /**
+   * The two paths racing for real. Whichever wins, the instance never ends up with a completed
+   * claim that was decided against a database someone else had already written an account into.
+   */
+  it("keeps a concurrent claim and signup consistent", async () => {
+    const instance = await startInstance(postgres, "browser_claim_signup_race", "open");
+    try {
+      const [claim] = await Promise.all([
+        instance.auth.claimInstance!(operator, browserHeaders()),
+        instance.auth.signUpEmail!(
+          { name: "Racing", email: "racing@example.test", password: "racing-password" },
+          browserHeaders(),
+        ),
+      ]);
+
+      const claimed = claim.status === "claimed";
+      assert.deepEqual(await claimOutcome(instance), {
+        operators: claimed ? 1 : 0,
+        completions: claimed ? 1 : 0,
+        // The claim only ever provisions on a database it found empty, so a completed claim means
+        // the signup landed after it: two accounts. A refused claim leaves only the signup's.
+        users: claimed ? 2 : 1,
+        completionOwnedByOperator: claimed,
+      });
     } finally {
       await instance.close();
     }
@@ -116,7 +194,18 @@ describe("first-run claim at the browser boundary", () => {
 interface RunningInstance {
   auth: AuthServer;
   database: ReturnType<typeof testDatabaseRuntime>;
+  locks: ReturnType<typeof testDatabaseLocks>;
   close(): Promise<void>;
+}
+
+/** The same authority the auth server composed, reached through the same database and locks. */
+function instanceSetupFor(instance: RunningInstance): InstanceSetup {
+  return new InstanceSetup({
+    database: instance.database,
+    locks: instance.locks,
+    policy: { registrationMode: "open", organizationCreation: "disabled", bootstrap: undefined },
+    provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
+  });
 }
 
 async function startInstance(
@@ -141,6 +230,7 @@ async function startInstance(
   return {
     auth,
     database: testDatabaseRuntime(database),
+    locks: testDatabaseLocks(database),
     async close() {
       await auth.close();
       await entitlements.close();
@@ -162,6 +252,44 @@ async function readAccountState(auth: AuthServer, cookie?: string) {
   );
   assert.equal(response.status, 200);
   return accountStateSchema.parse(await response.json());
+}
+
+/** One row per instance operator with the number of sessions Better Auth has issued to it. */
+async function sessionsPerOperator(instance: RunningInstance) {
+  const result = await instance.database.query<{ email: string; sessions: number }>(
+    `select "user".email,
+            (select count(*)::integer from session where session.user_id = "user".id) as sessions
+     from "user"
+     where "user".is_instance_operator
+     order by "user".email`,
+  );
+  return result.rows;
+}
+
+async function claimOutcome(instance: RunningInstance) {
+  const result = await instance.database.query<{
+    operators: number;
+    completions: number;
+    users: number;
+    completion_owned_by_operator: boolean;
+  }>(`
+    select
+      (select count(*)::integer from "user" where is_instance_operator) as operators,
+      (select count(*)::integer from instance_bootstrap where completed_at is not null) as completions,
+      (select count(*)::integer from "user") as users,
+      exists (
+        select 1 from instance_bootstrap
+        join "user" on "user".id = instance_bootstrap.owner_user_id
+        where instance_bootstrap.completed_at is not null and "user".is_instance_operator
+      ) as completion_owned_by_operator
+  `);
+  const row = result.rows[0]!;
+  return {
+    operators: row.operators,
+    completions: row.completions,
+    users: row.users,
+    completionOwnedByOperator: row.completion_owned_by_operator,
+  };
 }
 
 async function countUsers(instance: RunningInstance): Promise<number> {

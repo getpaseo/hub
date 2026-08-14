@@ -5,7 +5,6 @@ import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { z } from "zod";
 import {
   createDatabase,
-  createPostgresPool,
   testDatabaseLocks,
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
@@ -13,7 +12,7 @@ import { InstanceBootstrapError, InstanceSetup } from "./index.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { composeEntitlements } from "../auth/entitlements.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
-import type { DatabaseRuntime } from "../db/runtime/index.js";
+import { postgresDatabaseRuntime, type DatabaseRuntimeBundle } from "../db/runtime/index.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 
 const policy: InstanceAuthPolicy = {
@@ -42,7 +41,7 @@ describe("instance bootstrap and first-login boundary", () => {
   it("creates one owner with a forced password change and is restart-idempotent", async () => {
     const pool = await migratedPool(databaseUrl);
     await bootstrapFromEnvironment(pool, policy);
-    await pool.close();
+    await pool.runtime.close();
 
     const first = await queryBootstrapState(databaseUrl);
     assert.equal(first.organizationCount, 1);
@@ -61,7 +60,7 @@ describe("instance bootstrap and first-login boundary", () => {
     await client.close();
     const restarted = await migratedPool(databaseUrl);
     await bootstrapFromEnvironment(restarted, policy);
-    await restarted.close();
+    await restarted.runtime.close();
     const afterRestart = await queryBootstrapState(databaseUrl);
     assert.equal(afterRestart.mustChangePassword, false);
     assert.deepEqual({ ...afterRestart, mustChangePassword: true }, first);
@@ -70,7 +69,7 @@ describe("instance bootstrap and first-login boundary", () => {
       ...policy,
       bootstrap: { ...policy.bootstrap!, ownerPassword: undefined },
     });
-    await completedWithoutPassword.close();
+    await completedWithoutPassword.runtime.close();
     assert.equal((await queryBootstrapState(databaseUrl)).mustChangePassword, false);
   }, 120_000);
 
@@ -84,13 +83,13 @@ describe("instance bootstrap and first-login boundary", () => {
       [policy.bootstrap!.ownerEmail],
     );
     await client.close();
-    const pool = await createPostgresPool(isolated);
+    const pool = await postgresDatabaseRuntime(isolated);
     await assert.rejects(
       bootstrapFromEnvironment(pool, policy),
       (error: unknown) =>
         error instanceof InstanceBootstrapError && error.message.includes("already belongs"),
     );
-    await pool.close();
+    await pool.runtime.close();
     await database.close();
     const verification = await queryBootstrapState(isolated);
     assert.equal(verification.organizationCount, 0);
@@ -110,7 +109,7 @@ describe("instance bootstrap and first-login boundary", () => {
         error instanceof InstanceBootstrapError &&
         error.message.includes("PASEO_BOOTSTRAP_OWNER_PASSWORD"),
     );
-    await pool.close();
+    await pool.runtime.close();
     const result = await queryBootstrapState(isolated);
     assert.equal(result.organizationCount, 0);
     assert.equal(result.ownerCount, 0);
@@ -120,13 +119,13 @@ describe("instance bootstrap and first-login boundary", () => {
   it("serializes concurrent production starts into one bootstrap result", async () => {
     const isolated = await isolatedDatabaseUrl(databaseUrl, "bootstrap_race");
     const first = await migratedPool(isolated);
-    const second = await createPostgresPool(isolated);
+    const second = await postgresDatabaseRuntime(isolated);
     await Promise.all([
       bootstrapFromEnvironment(first, policy),
       bootstrapFromEnvironment(second, policy),
     ]);
-    await first.close();
-    await second.close();
+    await first.runtime.close();
+    await second.runtime.close();
     const result = await queryBootstrapState(isolated);
     assert.equal(result.organizationCount, 1);
     assert.equal(result.ownerCount, 1);
@@ -140,7 +139,7 @@ describe("instance bootstrap and first-login boundary", () => {
     const isolated = await isolatedDatabaseUrl(databaseUrl, "bootstrap_gate");
     const pool = await migratedPool(isolated);
     await bootstrapFromEnvironment(pool, policy);
-    await pool.close();
+    await pool.runtime.close();
     const database = await createDatabase(isolated);
     const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
     const auth = createAuthServer({
@@ -189,11 +188,12 @@ describe("instance bootstrap and first-login boundary", () => {
 });
 
 function bootstrapFromEnvironment(
-  database: DatabaseRuntime,
+  bundle: DatabaseRuntimeBundle,
   configured: InstanceAuthPolicy,
 ): Promise<void> {
   return new InstanceSetup({
-    database,
+    database: bundle.runtime,
+    locks: bundle.locks,
     policy: configured,
     provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
   }).initializeFromPolicy();
@@ -216,10 +216,10 @@ async function signIn(auth: AuthServer, email: string, password: string): Promis
   return cookie;
 }
 
-async function migratedPool(url: string) {
+async function migratedPool(url: string): Promise<DatabaseRuntimeBundle> {
   const database = await createDatabase(url);
   await database.close();
-  return createPostgresPool(url);
+  return postgresDatabaseRuntime(url);
 }
 
 async function isolatedDatabaseUrl(baseUrl: string, name: string): Promise<string> {

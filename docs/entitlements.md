@@ -77,10 +77,8 @@ teams still see their own limits and usage.
 
 ### Granting operator
 
-Instance setup (`src/instance-setup/`) creates the first operator: the bootstrap owner
-(`PASEO_BOOTSTRAP_OWNER_EMAIL`) when the environment configures one, otherwise the account that
-claims a pristine instance through the first-run welcome journey. Every other operator is granted
-by one SQL statement — no UI, no env var, no invite flow:
+The bootstrap owner (`PASEO_BOOTSTRAP_OWNER_EMAIL`) is the first operator. Every other operator is
+granted by one SQL statement — no UI, no env var, no invite flow:
 
 ```sql
 update "user" set is_instance_operator = true where lower(email) = lower('someone@example.com');

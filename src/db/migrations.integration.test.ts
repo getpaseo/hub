@@ -4,11 +4,12 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { z } from "zod";
 import { dump } from "js-yaml";
-import { createDatabase, createPostgresPool } from "./test-utils/runtime.js";
+import { createDatabase } from "./test-utils/runtime.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
@@ -371,13 +372,14 @@ describe("database migration application", () => {
         ownerPassword: "temporary-migrated-owner-password",
       },
     };
-    const pool = await createPostgresPool(fixture.url);
+    const bundle = await postgresDatabaseRuntime(fixture.url);
     await new InstanceSetup({
-      database: pool,
+      database: bundle.runtime,
+      locks: bundle.locks,
       policy,
       provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
     }).initializeFromPolicy();
-    await pool.close();
+    await bundle.runtime.close();
 
     assert.deepEqual(await durableSnapshot(fixture.url), before);
     const completion = await poolQuery<{

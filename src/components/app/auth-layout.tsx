@@ -42,7 +42,9 @@ export function AuthCard({
       {...(titleId === undefined ? {} : { "aria-labelledby": titleId })}
     >
       <div className="grid gap-1.5">
-        <h1 id={titleId} className="text-base font-medium">
+        {/* Focusable only programmatically: a surface that replaces the whole screen moves focus
+            here so keyboard and screen-reader users land on the new card, not on nothing. */}
+        <h1 id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
           {title}
         </h1>
         {description === undefined ? null : (
