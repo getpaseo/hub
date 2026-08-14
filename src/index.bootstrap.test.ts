@@ -77,6 +77,8 @@ describe("production Hub cold start", () => {
     await client.close();
 
     process.env["DATABASE_URL"] = databaseUrl;
+    delete process.env["PASEO_HUB_AUTH_SECRET"];
+    delete process.env["PASEO_HUB_APP_URL"];
     process.env["PASEO_REGISTRATION_MODE"] = "disabled";
     delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
     delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
@@ -85,12 +87,22 @@ describe("production Hub cold start", () => {
     const runtime = await startProductionRuntime();
     const verification = await createPostgresQueryRuntime(databaseUrl);
 
-    const result = await verification.query<{ count: number }>(
-      `select count(*)::integer as count from instance_bootstrap`,
-    );
+    const result = await verification.query<{
+      bootstraps: number;
+      runtimeConfigurations: number;
+      authSecret: string;
+    }>(`select
+          (select count(*)::integer from instance_bootstrap) as "bootstraps",
+          (select count(*)::integer from runtime_configuration) as "runtimeConfigurations",
+          (select auth_secret from runtime_configuration) as "authSecret"`);
     await verification.close();
-    assert.equal(result.rows[0]?.count, 0);
-    assert.ok(runtime);
+    assert.equal(result.rows[0]?.bootstraps, 0);
+    assert.equal(result.rows[0]?.runtimeConfigurations, 1);
+    assert.match(result.rows[0]?.authSecret ?? "", /^[a-f0-9]{64}$/u);
+    assert.notEqual(
+      (await runtime.auth(new Request("http://localhost:3000/api/auth/get-session"))).status,
+      503,
+    );
   }, 120_000);
 
   it("runs configured bootstrap before exposing the production runtime", async () => {

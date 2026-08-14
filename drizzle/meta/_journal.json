@@ -239,6 +239,13 @@
       "when": 1786372632385,
       "tag": "0033_tense_joseph",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786649830424,
+      "tag": "0034_wandering_roxanne_simpson",
+      "breakpoints": true
     }
   ]
 }
