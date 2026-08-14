@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "./db/test-utils/runtime.js";
@@ -35,12 +38,16 @@ describe("production Hub runtime", () => {
 describe("production Hub cold start", () => {
   let postgres: StartedPostgreSqlContainer;
   let previousEnvironment: Map<string, string | undefined>;
+  let root: string;
+  const originalDirectory = process.cwd();
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
   }, 120_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "hub-production-postgres-"));
+    process.chdir(root);
     previousEnvironment = new Map(
       [
         "DATABASE_URL",
@@ -58,6 +65,8 @@ describe("production Hub cold start", () => {
   afterEach(async () => {
     await stopProductionRuntime();
     for (const [name, value] of previousEnvironment) restoreEnvironment(name, value);
+    process.chdir(originalDirectory);
+    await rm(root, { recursive: true, force: true });
   });
 
   afterAll(async () => {

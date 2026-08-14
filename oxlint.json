@@ -83,7 +83,7 @@
     "import/no-unassigned-import": [
       "error",
       {
-        "allow": ["**/dotenv/config", "**/*.css", "**/styles.entry.js"]
+        "allow": ["**/*.css", "**/styles.entry.js"]
       }
     ],
 

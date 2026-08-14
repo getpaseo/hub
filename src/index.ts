@@ -1,8 +1,6 @@
-import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 import type { RuntimeConfig } from "./config/index.js";
 import { DatabaseUnavailableError } from "./db/errors.js";
@@ -35,8 +33,17 @@ import { createSlackRegistration } from "./providers/slack/index.js";
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
+import { loadRuntimeEnvironment, type RuntimeEnvironmentSource } from "./runtime-environment.js";
+import { isCommandLineEntrypoint } from "./command-line.js";
 
-export function startProductionRuntime(): Promise<ApplicationRuntime> {
+export interface ProductionRuntimeOptions {
+  environmentSource: RuntimeEnvironmentSource;
+}
+
+export function startProductionRuntime(
+  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
+): Promise<ApplicationRuntime> {
+  loadRuntimeEnvironment(options.environmentSource);
   return startApplication(createProductionRuntime);
 }
 
@@ -48,8 +55,9 @@ export async function handleDaemonUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
 ): Promise<void> {
-  const runtime = await startProductionRuntime();
+  const runtime = await startProductionRuntime(options);
   if (runtime.hub.handleUpgrade === null) {
     socket.destroy();
     return;
@@ -224,10 +232,10 @@ async function resolveHubIdentity(
 }
 
 async function main(): Promise<void> {
-  const config = loadRuntimeConfig();
-  const port = readPort();
   const build = await loadBuiltStartServer();
   await build.startProductionRuntime();
+  const config = loadRuntimeConfig();
+  const port = readPort();
   const server = createFetchServer(
     (request) => build.default.fetch(request),
     config.trustedClientIpHeader === undefined
@@ -270,7 +278,7 @@ function readPort(): number {
   return port;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isCommandLineEntrypoint(import.meta.url)) {
   main().catch((error: unknown) => {
     logger.fatal(error);
     process.exit(1);

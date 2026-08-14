@@ -20,9 +20,11 @@ const ENVIRONMENT_NAMES = [
 
 let root: string;
 let previousEnvironment: Map<string, string | undefined>;
+const originalDirectory = process.cwd();
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "hub-production-embedded-"));
+  process.chdir(root);
   previousEnvironment = new Map(ENVIRONMENT_NAMES.map((name) => [name, process.env[name]]));
   delete process.env["DATABASE_URL"];
   process.env["PASEO_HUB_DATA_DIR"] = join(root, "database");
@@ -38,6 +40,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await stopProductionRuntime().catch(() => undefined);
   for (const [name, value] of previousEnvironment) restoreEnvironment(name, value);
+  process.chdir(originalDirectory);
   await rm(root, { recursive: true, force: true });
 });
 
