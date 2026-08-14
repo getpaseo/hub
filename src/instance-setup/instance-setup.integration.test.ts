@@ -120,33 +120,33 @@ describe("interactive instance setup", () => {
   }, 120_000);
 
   /**
-   * The race the account-admission lock exists for: a generic signup that has been admitted but
-   * has not committed yet. The claim must not be able to read "no accounts" in that window, so it
-   * blocks until the account is durable and then refuses.
+   * The race the table lock exists for: an account insert that has not committed yet. The claim
+   * must not be able to read "no accounts" in that window, so it waits for the writer and then
+   * refuses. Without the lock it would read a stale empty database and claim the instance.
    */
-  it("cannot decide eligibility while an admitted account creation is in flight", async () => {
+  it("cannot decide eligibility while an account insert is in flight", async () => {
     const instance = await pristineInstance(postgres, "claim_signup_race");
-    const setup = instanceSetup(instance);
-    let admitted = () => {};
+    const writer = await connectTo(instance.url);
+    let inserted = () => {};
     const inFlight = new Promise<void>((resolve) => {
-      admitted = resolve;
+      inserted = resolve;
     });
     let release = () => {};
     const released = new Promise<void>((resolve) => {
       release = resolve;
     });
 
-    const signup = setup.admitAccountCreation(async () => {
-      await instance.runtime.query(
+    const signup = writer.runtime.transaction(async (client) => {
+      await client.query(
         `insert into "user" (id, name, email, email_verified)
          values ('signup', 'Signup', 'signup@example.test', true)`,
       );
-      admitted();
+      inserted();
       await released;
     });
     await inFlight;
 
-    const claim = setup.claim(operator);
+    const claim = instanceSetup(instance).claim(operator);
     assert.equal(await Promise.race([claim, settledLater()]), "pending");
 
     release();
@@ -156,6 +156,7 @@ describe("interactive instance setup", () => {
     assert.equal(state.users, 1);
     assert.equal(state.operators, 0);
     assert.equal(state.bootstrapRows, 0);
+    await writer.close();
     await instance.close();
   }, 120_000);
 
@@ -200,7 +201,6 @@ describe("interactive instance setup", () => {
     const instance = await pristineInstance(postgres, "claim_after_bootstrap");
     const bootstrapped = new InstanceSetup({
       database: instance.runtime,
-      locks: instance.locks,
       policy: {
         ...policy,
         bootstrap: {
@@ -251,7 +251,6 @@ interface PristineInstance {
 function instanceSetup(instance: PristineInstance): InstanceSetup {
   return new InstanceSetup({
     database: instance.runtime,
-    locks: instance.locks,
     policy,
     provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
   });

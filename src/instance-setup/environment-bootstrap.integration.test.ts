@@ -193,7 +193,6 @@ function bootstrapFromEnvironment(
 ): Promise<void> {
   return new InstanceSetup({
     database: bundle.runtime,
-    locks: bundle.locks,
     policy: configured,
     provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
   }).initializeFromPolicy();

@@ -118,18 +118,12 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const apiKeys = new OrganizationApiKeys(options.database, options.locks);
   const cliCredentials = new OrganizationCliCredentials(options.database);
   const publicCredentials = new PublicCredentialAuthenticator(apiKeys, cliCredentials);
+  const registration = new RegistrationAdmission(options.database, options.locks, policy);
   const instanceSetup = new InstanceSetup({
     database: options.database,
-    locks: options.locks,
     policy,
     provisioningEntitlements,
   });
-  const registration = new RegistrationAdmission(
-    options.database,
-    options.locks,
-    policy,
-    instanceSetup,
-  );
   const authSchema = {
     user: schema.users,
     session: schema.sessions,

@@ -375,7 +375,6 @@ describe("database migration application", () => {
     const bundle = await postgresDatabaseRuntime(fixture.url);
     await new InstanceSetup({
       database: bundle.runtime,
-      locks: bundle.locks,
       policy,
       provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
     }).initializeFromPolicy();

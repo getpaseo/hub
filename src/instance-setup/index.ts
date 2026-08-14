@@ -11,7 +11,6 @@ import type {
   QueryRow,
   TransactionHandle,
 } from "../db/runtime/index.js";
-import type { Locks } from "../db/runtime/locks/index.js";
 import {
   provisionOrganization,
   type ProvisioningEntitlement,
@@ -21,11 +20,17 @@ import {
 const BOOTSTRAP_ROW_ID = "default";
 
 /**
- * Serializes everything that can create an account on this instance against a first-run claim.
- * Without it a generic signup could commit between a claim's pristine check and its completion,
- * and the claim would have granted instance ownership on a database that was no longer unowned.
+ * What makes "this database has no accounts" hold until the claim commits. `share row exclusive`
+ * conflicts with the `row exclusive` mode every INSERT takes, so a registration that would
+ * invalidate the check waits on its own connection, inside the transaction it was already going
+ * to open — no lock is held on its behalf, and nothing else in the codebase has to know.
+ *
+ * Reads are unaffected: the mode does not conflict with `access share` or `row share`.
+ *
+ * Ordering matters. This is taken *after* the setup row lock so that a claim and a startup
+ * bootstrap — which locks the setup row and then inserts a user — acquire in the same order.
  */
-const ACCOUNT_ADMISSION_LOCK = "paseo:instance-setup:account-admission";
+const PRISTINE_TABLES_LOCK = `lock table "user", organization in share row exclusive mode`;
 
 /**
  * Whether this instance still has a first operator to create.
@@ -88,14 +93,14 @@ interface ExistingOrganization extends QueryRow {
 interface OperatorAccount {
   name: string;
   email: string;
-  password: string;
+  /** Hashed before the transaction opens: hashing is slow and this runs under a table lock. */
+  passwordHash: string;
   /** Environment bootstrap issues a temporary password; an interactively chosen one is final. */
   mustChangePassword: boolean;
 }
 
 export interface InstanceSetupOptions {
   database: DatabaseRuntime;
-  locks: Locks;
   policy: InstanceAuthPolicy;
   /** What a provisioned organization is stamped with — resolved before the transaction opens. */
   provisioningEntitlements: ProvisioningEntitlementResolver;
@@ -164,33 +169,28 @@ export class InstanceSetup {
   }
 
   /**
-   * Runs an account-creating action under the instance's ownership lock. Generic registration
-   * goes through here so a new account cannot land between a claim's pristine check and its
-   * completion; the claim holds the same lock for its whole transaction. This decides nothing
-   * about who may register — that stays with registration admission.
-   */
-  admitAccountCreation<T>(create: () => Promise<T>): Promise<T> {
-    return this.options.locks.withLock(ACCOUNT_ADMISSION_LOCK, create);
-  }
-
-  /**
    * Creates the first operator, their organization, and the completion record in one
    * transaction. Losing callers get `unavailable` and leave the database exactly as they found
-   * it: eligibility is decided while holding both the account-admission lock and the singleton
-   * row, so the loser reads the winner's committed account rather than a stale snapshot, and a
-   * refused claim rolls back rather than leaving a setup record behind.
+   * it: eligibility is decided after the setup row and the account tables are locked, so no
+   * registration can land between the check and the commit, the loser of a concurrent claim
+   * reads the winner's account rather than a stale snapshot, and a refused claim rolls back
+   * rather than leaving a setup record behind.
+   *
+   * Everything slow happens before the transaction opens, so the tables are held for a handful
+   * of inserts and nothing else.
    */
   async claim(operator: InitialOperator): Promise<InstanceClaim> {
     const entitlement = await this.options.provisioningEntitlements();
+    const passwordHash = await hashPassword(operator.password);
     return this.options.database.transaction(async (client) => {
-      await this.options.locks.withTxLock(client, ACCOUNT_ADMISSION_LOCK);
       const row = await lockBootstrapRow(client);
+      await client.query(PRISTINE_TABLES_LOCK);
       const counts = await tenantCounts(client);
       if (setupStatus(row, counts) !== "available") return refuse(client);
       const ownerUserId = await createOperatorAccount(client, {
         name: operator.name,
         email: normalizeEmail(operator.email),
-        password: operator.password,
+        passwordHash,
         mustChangePassword: false,
       });
       const organization = await provisionOrganization(
@@ -278,7 +278,6 @@ async function createOperatorAccount(
   operator: OperatorAccount,
 ): Promise<string> {
   const ownerUserId = randomUUID();
-  const password = await hashPassword(operator.password);
   await client.query(
     `insert into "user"
        (id, name, email, email_verified, must_change_password, is_instance_operator)
@@ -289,7 +288,7 @@ async function createOperatorAccount(
     `insert into account
        (id, account_id, provider_id, user_id, password)
      values ($1, $2, 'credential', $2, $3)`,
-    [randomUUID(), ownerUserId, password],
+    [randomUUID(), ownerUserId, operator.passwordHash],
   );
   return ownerUserId;
 }
@@ -324,7 +323,7 @@ async function createBootstrapData(
   const ownerUserId = await createOperatorAccount(client, {
     name: settings.ownerEmail.split("@")[0] ?? settings.ownerEmail,
     email: settings.ownerEmail,
-    password: settings.ownerPassword,
+    passwordHash: await hashPassword(settings.ownerPassword),
     mustChangePassword: true,
   });
 

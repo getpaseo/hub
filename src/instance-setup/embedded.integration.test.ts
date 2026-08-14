@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../db/runtime/index.js";
-import type { Locks } from "../db/runtime/locks/index.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import { InstanceSetup, type InitialOperator } from "./index.js";
@@ -43,13 +42,11 @@ const ONE_CLAIMED_INSTANCE = {
 describe("interactive instance setup on embedded storage", () => {
   let root: string;
   let database: DatabaseRuntime;
-  let locks: Locks;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "hub-instance-setup-embedded-"));
     const bundle = await embeddedDatabaseRuntime(join(root, "database"));
     database = bundle.runtime;
-    locks = bundle.locks;
     await database.migrate();
   }, 120_000);
 
@@ -59,7 +56,7 @@ describe("interactive instance setup on embedded storage", () => {
   });
 
   it("claims a pristine embedded instance once", async () => {
-    const setup = instanceSetup(database, locks);
+    const setup = instanceSetup(database);
     assert.equal(await setup.status(), "available");
 
     assert.deepEqual(await setup.claim(operator), { status: "claimed" });
@@ -69,7 +66,7 @@ describe("interactive instance setup on embedded storage", () => {
   }, 120_000);
 
   it("gives concurrent embedded claims exactly one winner", async () => {
-    const setup = instanceSetup(database, locks);
+    const setup = instanceSetup(database);
 
     const outcomes = await Promise.all([
       setup.claim(operator),
@@ -88,8 +85,8 @@ describe("interactive instance setup on embedded storage", () => {
     );
     const before = await durableState(database);
 
-    assert.equal(await instanceSetup(database, locks).status(), "blocked");
-    assert.deepEqual(await instanceSetup(database, locks).claim(operator), {
+    assert.equal(await instanceSetup(database).status(), "blocked");
+    assert.deepEqual(await instanceSetup(database).claim(operator), {
       status: "unavailable",
     });
 
@@ -98,10 +95,9 @@ describe("interactive instance setup on embedded storage", () => {
   }, 120_000);
 });
 
-function instanceSetup(database: DatabaseRuntime, locks: Locks): InstanceSetup {
+function instanceSetup(database: DatabaseRuntime): InstanceSetup {
   return new InstanceSetup({
     database,
-    locks,
     policy,
     provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
   });

@@ -12,10 +12,13 @@ import type { Database } from "../db/types.js";
 import { composeEntitlements, type ComposedEntitlements } from "../auth/entitlements.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
-import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
-import { InstanceSetup, type InitialOperator } from "./index.js";
+import { RegistrationAdmissionError } from "../auth/registration-admission.js";
+import type { InitialOperator } from "./index.js";
 
 const ORIGIN = "http://localhost:3000";
+
+/** node-postgres' default pool size — the burst has to be at least this wide to matter. */
+const POOL_SIZE = 10;
 
 const operator: InitialOperator = {
   name: "Browser Operator",
@@ -77,76 +80,86 @@ describe("first-run claim at the browser boundary", () => {
   }, 120_000);
 
   /**
-   * Registration policy is unchanged, but every account it admits is now created under the
-   * instance's account-admission lock, so a signup cannot land inside a claim's decision window.
+   * A pool's worth of real Better Auth signups against one claim. The claim's table lock is the
+   * only serialization, and it is held inside the claim's own transaction, so no registration
+   * parks a connection waiting for it: every request has to finish. An earlier design wrapped
+   * each signup in a session advisory lock and starved this exact scenario of connections.
    */
-  it("creates generic signup accounts under the instance account-admission lock", async () => {
-    const instance = await startInstance(postgres, "browser_claim_signup_lock", "open");
+  it("settles a pool-sized signup burst racing a claim", async () => {
+    const instance = await startInstance(postgres, "browser_claim_burst", "open");
     try {
-      let admitted = () => {};
-      const holding = new Promise<void>((resolve) => {
-        admitted = resolve;
-      });
-      let release = () => {};
-      const released = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const held = instanceSetupFor(instance).admitAccountCreation(async () => {
-        admitted();
-        await released;
-      });
-      await holding;
-
-      let signedUp = false;
-      const signup = (async () => {
-        await instance.auth.signUpEmail!(
-          { name: "Waiting", email: "waiting@example.test", password: "waiting-password" },
-          browserHeaders(),
-        );
-        signedUp = true;
-      })();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      assert.equal(signedUp, false);
-      assert.equal(await countUsers(instance), 0);
-
-      release();
-      await held;
-      await signup;
-      assert.equal(signedUp, true);
-      assert.equal(await countUsers(instance), 1);
-    } finally {
-      await instance.close();
-    }
-  }, 120_000);
-
-  /**
-   * The two paths racing for real. Whichever wins, the instance never ends up with a completed
-   * claim that was decided against a database someone else had already written an account into.
-   */
-  it("keeps a concurrent claim and signup consistent", async () => {
-    const instance = await startInstance(postgres, "browser_claim_signup_race", "open");
-    try {
-      const [claim] = await Promise.all([
-        instance.auth.claimInstance!(operator, browserHeaders()),
+      const started = Date.now();
+      const signups = Array.from({ length: POOL_SIZE }, (_, index) =>
         instance.auth.signUpEmail!(
-          { name: "Racing", email: "racing@example.test", password: "racing-password" },
+          {
+            name: `Burst ${index}`,
+            email: `burst-${index}@example.test`,
+            password: `burst-${index}-password`,
+          },
           browserHeaders(),
         ),
+      );
+      const outcomes = await Promise.allSettled([
+        instance.auth.claimInstance!(operator, browserHeaders()),
+        ...signups,
       ]);
 
-      const claimed = claim.status === "claimed";
+      // Nothing timed out, deadlocked, or was starved of a connection.
+      assert.deepEqual(outcomes.filter(({ status }) => status === "rejected").map(reasonOf), []);
+      assert.ok(Date.now() - started < 30_000);
+      const claim = outcomes[0];
+      assert.ok(claim.status === "fulfilled");
+      const claimed = claim.value.status === "claimed";
       assert.deepEqual(await claimOutcome(instance), {
         operators: claimed ? 1 : 0,
         completions: claimed ? 1 : 0,
-        // The claim only ever provisions on a database it found empty, so a completed claim means
-        // the signup landed after it: two accounts. A refused claim leaves only the signup's.
-        users: claimed ? 2 : 1,
+        // The claim only provisions on a database it found empty, so a completed claim means it
+        // went first and every signup landed after it.
+        users: claimed ? POOL_SIZE + 1 : POOL_SIZE,
         completionOwnedByOperator: claimed,
       });
     } finally {
       await instance.close();
     }
-  }, 120_000);
+  }, 180_000);
+
+  /**
+   * The same burst under invite-only. Registration admission refuses each one on its own, before
+   * anything touches instance setup, and the claim is unaffected.
+   */
+  it("refuses an inadmissible signup burst without disturbing the claim", async () => {
+    const instance = await startInstance(postgres, "browser_claim_burst_closed");
+    try {
+      const outcomes = await Promise.allSettled([
+        instance.auth.claimInstance!(operator, browserHeaders()),
+        ...Array.from({ length: POOL_SIZE }, (_, index) =>
+          instance.auth.signUpEmail!(
+            {
+              name: `Closed ${index}`,
+              email: `closed-${index}@example.test`,
+              password: `closed-${index}-password`,
+            },
+            browserHeaders(),
+          ),
+        ),
+      ]);
+
+      const [claim, ...signups] = outcomes;
+      assert.deepEqual(claim, { status: "fulfilled", value: { status: "claimed" } });
+      assert.deepEqual(
+        signups.map((outcome) => outcome.status === "rejected" && isAdmissionRefusal(outcome)),
+        Array.from({ length: POOL_SIZE }, () => true),
+      );
+      assert.deepEqual(await claimOutcome(instance), {
+        operators: 1,
+        completions: 1,
+        users: 1,
+        completionOwnedByOperator: true,
+      });
+    } finally {
+      await instance.close();
+    }
+  }, 180_000);
 
   it("refuses a claim that does not come from the browser origin", async () => {
     const instance = await startInstance(postgres, "browser_claim_origin");
@@ -196,16 +209,6 @@ interface RunningInstance {
   database: ReturnType<typeof testDatabaseRuntime>;
   locks: ReturnType<typeof testDatabaseLocks>;
   close(): Promise<void>;
-}
-
-/** The same authority the auth server composed, reached through the same database and locks. */
-function instanceSetupFor(instance: RunningInstance): InstanceSetup {
-  return new InstanceSetup({
-    database: instance.database,
-    locks: instance.locks,
-    policy: { registrationMode: "open", organizationCreation: "disabled", bootstrap: undefined },
-    provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
-  });
 }
 
 async function startInstance(
@@ -290,6 +293,14 @@ async function claimOutcome(instance: RunningInstance) {
     users: row.users,
     completionOwnedByOperator: row.completion_owned_by_operator,
   };
+}
+
+function reasonOf(outcome: PromiseSettledResult<unknown>): unknown {
+  return outcome.status === "rejected" ? outcome.reason : undefined;
+}
+
+function isAdmissionRefusal(outcome: PromiseRejectedResult): boolean {
+  return outcome.reason instanceof RegistrationAdmissionError;
 }
 
 async function countUsers(instance: RunningInstance): Promise<number> {

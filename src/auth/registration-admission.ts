@@ -1,7 +1,6 @@
 import type { DatabaseRuntime, TransactionHandle } from "../db/runtime/index.js";
 import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
-import type { InstanceSetup } from "../instance-setup/index.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import { normalizeEmail } from "./instance-policy.js";
 
@@ -17,9 +16,6 @@ export class RegistrationAdmission {
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
     private readonly policy: InstanceAuthPolicy,
-    /** Owns whether this instance is still unclaimed; every account this class admits is created
-     * under its lock so a signup cannot invalidate a first-run claim mid-flight. */
-    private readonly instanceSetup: InstanceSetup,
   ) {}
 
   async handleSignUp(
@@ -59,23 +55,19 @@ export class RegistrationAdmission {
     invitationId: string | undefined,
     action: () => Promise<T>,
   ): Promise<T> {
-    // Every admitted signup — open or invited — creates its account inside the instance's
-    // account-admission lock. Registration policy is unchanged by it; only the timing is.
-    return this.instanceSetup.admitAccountCreation(async () => {
-      if (this.policy.registrationMode === "open") return action();
-      if (invitationId === undefined) throw new RegistrationAdmissionError();
-      const lockKey = invitationLockName(invitationId);
-      return this.locks.withLock(lockKey, async () => {
-        if (!(await this.isAdmitted(email, invitationId))) {
-          throw new RegistrationAdmissionError();
-        }
-        const existingUser = await this.pool.query(
-          `select 1 from "user" where lower(email) = $1 limit 1`,
-          [normalizeEmail(email)],
-        );
-        if (existingUser.rowCount !== 0) throw new RegistrationAdmissionError();
-        return await action();
-      });
+    if (this.policy.registrationMode === "open") return action();
+    if (invitationId === undefined) throw new RegistrationAdmissionError();
+    const lockKey = invitationLockName(invitationId);
+    return this.locks.withLock(lockKey, async () => {
+      if (!(await this.isAdmitted(email, invitationId))) {
+        throw new RegistrationAdmissionError();
+      }
+      const existingUser = await this.pool.query(
+        `select 1 from "user" where lower(email) = $1 limit 1`,
+        [normalizeEmail(email)],
+      );
+      if (existingUser.rowCount !== 0) throw new RegistrationAdmissionError();
+      return await action();
     });
   }
 
