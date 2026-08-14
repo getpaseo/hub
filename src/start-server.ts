@@ -1,10 +1,26 @@
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
-import { startProductionRuntime } from "./index.js";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
+import {
+  handleDaemonUpgrade as handleProductionDaemonUpgrade,
+  startProductionRuntime as startHubProductionRuntime,
+  stopProductionRuntime,
+} from "./index.js";
+import { readHubCommandLine } from "./command-line.js";
 import { hasApplication, startApplication } from "./server/runtime.js";
-export { handleDaemonUpgrade, startProductionRuntime, stopProductionRuntime } from "./index.js";
 export { startApplication } from "./server/runtime.js";
 
 const startFetch = createStartHandler(defaultStreamHandler);
+
+export function startProductionRuntime() {
+  return startHubProductionRuntime(readHubCommandLine());
+}
+
+export function handleDaemonUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
+  return handleProductionDaemonUpgrade(request, socket, head, readHubCommandLine());
+}
+
+export { stopProductionRuntime };
 
 const fetch = async (request: Request) => {
   if (!hasApplication()) await startProductionRuntime();
