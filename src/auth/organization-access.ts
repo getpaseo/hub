@@ -13,6 +13,7 @@ import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import type { InstanceSetup } from "../instance-setup/index.js";
+import type { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import type {
   OrganizationResourceReader,
   OrganizationResources,
@@ -92,6 +93,7 @@ interface OrganizationAccessOptions {
   policy: InstanceAuthPolicy;
   /** Decides whether a signed-out visitor sees the first-run welcome or ordinary sign-in. */
   instanceSetup: InstanceSetup;
+  appOnboarding: InstanceAppOnboarding;
   apiKeys: OrganizationApiKeys;
   cliCredentials: OrganizationCliCredentials;
   entitlements: EntitlementsService;
@@ -266,6 +268,16 @@ export class OrganizationAccess {
         ...(invitationId !== null && invitation === undefined
           ? { invitationUnavailable: true }
           : {}),
+      });
+    }
+
+    if (resolvedSession.isInstanceOperator && !(await this.options.appOnboarding.isComplete())) {
+      return Response.json({
+        status: "appSetupRequired",
+        account,
+        memberships: membershipSummaries(memberships),
+        organization: access.organization,
+        capabilities: access.capabilities,
       });
     }
 

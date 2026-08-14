@@ -7,6 +7,7 @@ import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../db/runtime/ind
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import { InstanceSetup, type InitialOperator } from "./index.js";
+import { InstanceAppOnboarding } from "./app-onboarding.js";
 
 const policy: InstanceAuthPolicy = {
   registrationMode: "invite_only",
@@ -77,6 +78,16 @@ describe("interactive instance setup on embedded storage", () => {
     assert.equal(outcomes.filter(({ status }) => status === "unavailable").length, 1);
     assert.deepEqual(await durableState(database), ONE_CLAIMED_INSTANCE);
   }, 120_000);
+
+  it("keeps app onboarding incomplete until the operator finishes or skips it", async () => {
+    await instanceSetup(database).claim(operator);
+    const onboarding = new InstanceAppOnboarding(database);
+    assert.equal(await onboarding.isComplete(), false);
+
+    await onboarding.complete();
+    await onboarding.complete();
+    assert.equal(await onboarding.isComplete(), true);
+  });
 
   it("stays closed, and changes nothing, on an embedded instance with accounts", async () => {
     await database.query(

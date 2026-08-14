@@ -40,7 +40,7 @@ describe("connection callback failures", () => {
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get("location"),
-      "https://hub.test/o/acme/connections?result=connection_unavailable",
+      "https://hub.test/o/acme/connections?app=github&result=connection_unavailable",
     );
   });
 });

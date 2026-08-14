@@ -1,9 +1,11 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
+import { get as httpsGet } from "node:https";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { promisify } from "node:util";
 import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
@@ -86,7 +88,8 @@ class BuiltApplications {
     const databaseUrl = postgres.getConnectionUri();
     await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
     const port = await availablePort();
-    const origin = `http://127.0.0.1:${port}`;
+    const tls = options.https === true ? await createTestTls() : undefined;
+    const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${port}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
     const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
       cwd: process.cwd(),
@@ -95,6 +98,7 @@ class BuiltApplications {
         origin,
         port,
         machineKeyFile,
+        ...(tls === undefined ? {} : { tls }),
         ...options,
       }),
       stdio: ["pipe", "pipe", "pipe", "ipc"],
@@ -106,6 +110,7 @@ class BuiltApplications {
       machineKey: "",
       postgres,
       server,
+      ...(tls === undefined ? {} : { tlsRoot: tls.root }),
       logs: () => output.join(""),
       deliverDiscord: (event: BrowserDiscordEvent) => deliverDiscord(server, event),
       setGitHubConfiguration: (input: {
@@ -144,6 +149,9 @@ class BuiltApplications {
       applications.map(async (application) => {
         await stopServer(application.server);
         await application.postgres.stop();
+        if (application.tlsRoot !== undefined) {
+          await rm(application.tlsRoot, { recursive: true, force: true });
+        }
       }),
     );
   }
@@ -158,6 +166,7 @@ class BuiltApplications {
 interface RunningApplication extends BuiltApplication {
   postgres: StartedPostgreSqlContainer;
   server: ChildProcess;
+  tlsRoot?: string;
 }
 
 interface ApplicationEnvironmentInput {
@@ -171,10 +180,13 @@ interface ApplicationEnvironmentInput {
   providerConnections?: boolean;
   githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
+  providerApplications?: boolean;
+  environmentApps?: readonly ("github" | "slack" | "discord")[];
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
   billing?: BuiltApplicationOptions["billing"];
+  tls?: TestTls;
 }
 
 function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.ProcessEnv {
@@ -207,6 +219,11 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
         : input.githubApprovalRequired === true
           ? "approval"
           : "connected"),
+    PASEO_BROWSER_PROVIDER_APPS: input.providerApplications === true ? "dynamic" : "static",
+    ...(input.tls === undefined
+      ? {}
+      : { PASEO_E2E_TLS_KEY: input.tls.key, PASEO_E2E_TLS_CERT: input.tls.cert }),
+    ...environmentAppVariables(input.environmentApps ?? []),
     ...(input.bootstrap === undefined
       ? {}
       : {
@@ -215,6 +232,67 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           PASEO_BOOTSTRAP_OWNER_PASSWORD: input.bootstrap.ownerPassword,
         }),
   };
+}
+
+interface TestTls {
+  root: string;
+  key: string;
+  cert: string;
+}
+
+const execFileAsync = promisify(execFile);
+
+async function createTestTls(): Promise<TestTls> {
+  const root = await mkdtemp(join(tmpdir(), "paseo-e2e-tls-"));
+  const key = join(root, "localhost-key.pem");
+  const cert = join(root, "localhost-cert.pem");
+  await execFileAsync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    key,
+    "-out",
+    cert,
+    "-days",
+    "1",
+    "-subj",
+    "/CN=127.0.0.1",
+    "-addext",
+    "subjectAltName=IP:127.0.0.1",
+  ]);
+  return { root, key, cert };
+}
+
+/**
+ * Environment-managed apps, spelled with the same variables an operator would set. The fixture
+ * credentials match the fixture providers, so an environment-managed provider is genuinely
+ * connectable — read-only in the UI is a product rule, not a broken app.
+ */
+function environmentAppVariables(
+  providers: readonly ("github" | "slack" | "discord")[],
+): NodeJS.ProcessEnv {
+  const variables: NodeJS.ProcessEnv = {};
+  if (providers.includes("github")) {
+    variables["GITHUB_APP_ID"] = "42";
+    variables["GITHUB_APP_SLUG"] = "paseo";
+    variables["GITHUB_APP_CLIENT_ID"] = "client";
+    variables["GITHUB_APP_CLIENT_SECRET"] = "secret";
+    variables["GITHUB_APP_PRIVATE_KEY"] = "fixture-private-key";
+  }
+  if (providers.includes("discord")) {
+    variables["DISCORD_CLIENT_ID"] = "900";
+    variables["DISCORD_CLIENT_SECRET"] = "secret";
+    variables["DISCORD_BOT_TOKEN"] = "token";
+  }
+  if (providers.includes("slack")) {
+    variables["SLACK_APP_ID"] = "browser-slack-app";
+    variables["SLACK_CLIENT_ID"] = "browser-slack-client";
+    variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
+  }
+  return variables;
 }
 
 async function deliverDiscord(server: ChildProcess, event: BrowserDiscordEvent): Promise<void> {
@@ -300,13 +378,23 @@ async function serverReady(server: ChildProcess, origin: string, output: string[
       throw new Error(`built application exited before readiness\n${output.join("")}`);
     }
     try {
-      const response = await fetch(`${origin}/health`);
-      if (response.status === 200) return;
+      if (await healthReady(origin)) return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   throw new Error(`built application did not become ready\n${output.join("")}`);
+}
+
+async function healthReady(origin: string): Promise<boolean> {
+  if (!origin.startsWith("https://")) return (await fetch(`${origin}/health`)).status === 200;
+  return await new Promise<boolean>((resolve, reject) => {
+    const request = httpsGet(`${origin}/health`, { rejectUnauthorized: false }, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.once("error", reject);
+  });
 }
 
 async function stopServer(server: ChildProcess): Promise<void> {

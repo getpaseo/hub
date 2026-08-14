@@ -21,6 +21,7 @@ import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
+import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -108,6 +109,11 @@ const ShellOperatorRoute = ShellOperatorRouteImport.update({
 const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
   id: '/cli-login',
   path: '/cli-login',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellAppsRoute = ShellAppsRouteImport.update({
+  id: '/apps',
+  path: '/apps',
   getParentRoute: () => ShellRoute,
 } as any)
 const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
@@ -284,6 +290,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -325,6 +332,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -367,6 +375,7 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/operator': typeof ShellOperatorRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
@@ -412,6 +421,7 @@ export interface FileRouteTypes {
     | '/'
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
     | '/api/openapi.json'
@@ -453,6 +463,7 @@ export interface FileRouteTypes {
   to:
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
     | '/api/openapi.json'
@@ -494,6 +505,7 @@ export interface FileRouteTypes {
     | '/_shell'
     | '/health'
     | '/webhook'
+    | '/_shell/apps'
     | '/_shell/cli-login'
     | '/_shell/operator'
     | '/api/openapi.json'
@@ -644,6 +656,13 @@ declare module '@tanstack/react-router' {
       path: '/cli-login'
       fullPath: '/cli-login'
       preLoaderRoute: typeof ShellCliLoginRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/apps': {
+      id: '/_shell/apps'
+      path: '/apps'
+      fullPath: '/apps'
+      preLoaderRoute: typeof ShellAppsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/api/v1/cli-authorizations': {
@@ -898,6 +917,7 @@ const ShellOOrganizationSlugProjectsRouteWithChildren =
   )
 
 interface ShellRouteChildren {
+  ShellAppsRoute: typeof ShellAppsRoute
   ShellCliLoginRoute: typeof ShellCliLoginRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellIndexRoute: typeof ShellIndexRoute
@@ -911,6 +931,7 @@ interface ShellRouteChildren {
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellAppsRoute: ShellAppsRoute,
   ShellCliLoginRoute: ShellCliLoginRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellIndexRoute: ShellIndexRoute,

@@ -3606,6 +3606,10 @@ class PgDatabase implements Database {
     return this.connections.startAttempt(input);
   }
 
+  findConnectionAttemptConfiguration(stateVerifier: string) {
+    return this.connections.findAttemptConfiguration(stateVerifier);
+  }
+
   readConnectionAttempt(input: ReadConnectionAttemptInput) {
     return this.connections.readAttempt(input);
   }

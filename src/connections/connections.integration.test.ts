@@ -119,6 +119,31 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.deepEqual(discord.leftGuilds, ["9001"]);
   });
 
+  it("returns provider-specific cancellation results from the attempt's trusted origin", async () => {
+    const githubStart = await start(connections, "github");
+    const githubState = await completeSetup(connections, githubStart.state, 42);
+    const githubCancelled = await connectionAction(
+      connections,
+      request(`/api/integrations/github/callback?state=${githubState}&error=access_denied`),
+      "github",
+      "callback",
+    );
+    assert.equal(result(githubCancelled), "github_cancelled");
+
+    const discordStart = await start(connections, "discord");
+    const discordCancelled = await connectionAction(
+      connections,
+      request(`/api/integrations/discord/callback?state=${discordStart.state}&error=access_denied`),
+      "discord",
+      "callback",
+    );
+    assert.equal(result(discordCancelled), "discord_cancelled");
+    assert.deepEqual(await resolutions(connections), {
+      github: { status: "unbound" },
+      discord: { status: "unbound" },
+    });
+  });
+
   it("fails closed for role changes, expiry, active-organization changes, and cross-tenant conflicts", async () => {
     const expired = await start(connections, "github");
     await pool.query(
@@ -948,10 +973,12 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
         applicationBaseUrl: "https://hub.example.test",
         publicBaseUrl: "https://hub.example.test",
         configuration: {
+          appId: "42",
           appSlug: "paseo",
           clientId: "client",
           clientSecret: "secret",
           webhookSecret: TEST_WEBHOOK_SECRET,
+          privateKey: "test-private-key",
         },
         connectionClient: options.github,
       }),

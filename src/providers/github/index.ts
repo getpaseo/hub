@@ -8,6 +8,7 @@ import type { ProviderConnectionRegistration, ProviderRegistration } from "../re
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   callbackConnectionAccess,
+  cancelledConnectionResult,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
@@ -15,7 +16,6 @@ import {
   manageConnectionAccess,
   newConnectionState,
   positiveInteger,
-  readNonEmptyEnvironmentVariable,
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
@@ -38,9 +38,11 @@ import type { ConnectionResolutionContext } from "../../config/connections.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 
 export interface GitHubRegistrationConfiguration {
+  appId: string;
   appSlug: string;
   clientId: string;
   clientSecret: string;
+  privateKey: string;
   webhookSecret: string;
 }
 
@@ -49,28 +51,28 @@ export interface CreateGitHubRegistrationOptions {
   auth: AuthServer | null;
   applicationBaseUrl: string;
   publicBaseUrl?: string;
-  environment?: NodeJS.ProcessEnv;
   configuration?: GitHubRegistrationConfiguration | null;
   appAuth?: GitHubAuth;
   connectionClient?: GitHubConnectionClient;
   reactionClient?: GitHubReactionClient;
   fetch?: typeof fetch;
   configurationProvider?: GitHubConfigurationProvider;
+  configurationVersion?: number;
 }
 
 interface GitHubConnectionOptions {
   database: Database;
   auth: AuthServer;
   applicationBaseUrl: string;
+  callbackOrigin: string;
+  configurationVersion: number;
+  configuration: GitHubRegistrationConfiguration;
 }
 
 export function createGitHubRegistration(
   options: CreateGitHubRegistrationOptions,
 ): ProviderRegistration {
-  const configuration =
-    options.configuration === undefined
-      ? readGitHubConfiguration(options.publicBaseUrl, options.environment ?? process.env)
-      : options.configuration;
+  const configuration = options.configuration ?? null;
   if (configuration === null || options.publicBaseUrl === undefined) {
     return emptyGitHubRegistration(options);
   }
@@ -80,7 +82,9 @@ export function createGitHubRegistration(
   const database = options.database;
   let configurationForProject: ((projectId: string) => ProjectConfigurationStore) | undefined;
 
-  const appAuth = options.appAuth ?? createGitHubAuth();
+  const appAuth =
+    options.appAuth ??
+    createGitHubAuth({ appId: configuration.appId, privateKey: configuration.privateKey });
   const client =
     options.connectionClient ??
     createGitHubConnectionClient({
@@ -99,6 +103,9 @@ export function createGitHubRegistration(
             database,
             auth: options.auth,
             applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.publicBaseUrl,
+            configurationVersion: options.configurationVersion ?? 0,
+            configuration,
           },
           client,
         );
@@ -142,6 +149,10 @@ export function createGitHubRegistration(
   const reactions = options.reactionClient ?? createGitHubReactionClient(appAuth);
   logger.info("using webhook event source");
   return {
+    configurationSnapshot: {
+      version: options.configurationVersion ?? 0,
+      callbackOrigin: options.publicBaseUrl,
+    },
     connection,
     integration: {
       async resolve(projectId, connectionSlug, value, context?: ConnectionResolutionContext) {
@@ -225,7 +236,21 @@ function emptyGitHubRegistration(
     database === null || auth === null
       ? githubConnectionStatus(false)
       : createGitHubConnection(
-          { database, auth, applicationBaseUrl: options.applicationBaseUrl },
+          {
+            database,
+            auth,
+            applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.applicationBaseUrl,
+            configurationVersion: 0,
+            configuration: {
+              appId: "unconfigured",
+              appSlug: "unconfigured",
+              clientId: "unconfigured",
+              clientSecret: "unconfigured",
+              privateKey: "unconfigured",
+              webhookSecret: "unconfigured",
+            },
+          },
           undefined,
         );
   return {
@@ -280,6 +305,11 @@ function createGitHubConnection(
         stateVerifier: stateHash(state),
         access: connectionAccess(access),
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+        callbackOrigin: options.callbackOrigin,
+        configurationVersion: options.configurationVersion,
+        configurationSnapshot: { provider: "github", ...options.configuration },
+        expectedConfigurationVersion: null,
+        activateConfiguration: false,
       });
       return Response.json({ url: client.setupUrl(state) });
     } catch (error) {
@@ -327,6 +357,7 @@ async function completeSetup(
   if (state === null || client === undefined)
     return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
   let returnRoute = "/";
+  let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
     const attempt = await options.database.readConnectionAttempt({
@@ -335,6 +366,7 @@ async function completeSetup(
       access,
     });
     returnRoute = attempt.returnRoute;
+    callbackOrigin = attempt.callbackOrigin;
     if (action === "request") {
       await options.database.consumeConnectionAttempt({
         stateVerifier: stateHash(state),
@@ -342,16 +374,18 @@ async function completeSetup(
         access,
       });
       return connectionResult(
-        options.applicationBaseUrl,
+        callbackOrigin,
         attempt.returnRoute,
         "github_approval_required",
+        "github",
       );
     }
     if ((action !== "install" && action !== "update") || installationId === undefined) {
       return connectionResult(
-        options.applicationBaseUrl,
+        callbackOrigin,
         attempt.returnRoute,
         "connection_unavailable",
+        "github",
       );
     }
     const nextState = newConnectionState();
@@ -376,7 +410,7 @@ async function completeSetup(
       error,
       provider: "github",
       phase: "setup",
-      applicationBaseUrl: options.applicationBaseUrl,
+      applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
   }
@@ -390,10 +424,22 @@ async function completeAuthorization(
   const url = new URL(request.url);
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
+  if (state !== null && code === null && url.searchParams.get("error") === "access_denied") {
+    return cancelledConnectionResult({
+      auth: options.auth,
+      database: options.database,
+      request,
+      provider: "github",
+      phase: "github_user_authorization",
+      state,
+      applicationBaseUrl: options.applicationBaseUrl,
+    });
+  }
   if (state === null || code === null || client === undefined) {
     return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
   }
   let returnRoute = "/";
+  let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
     const attempt = await options.database.readConnectionAttempt({
@@ -402,6 +448,7 @@ async function completeAuthorization(
       access,
     });
     returnRoute = attempt.returnRoute;
+    callbackOrigin = attempt.callbackOrigin;
     const installationId = positiveInteger(attempt.candidateExternalId);
     if (installationId === undefined || attempt.pkceVerifier === null)
       throw new Error("invalid attempt");
@@ -417,19 +464,20 @@ async function completeAuthorization(
         access,
       });
       return connectionResult(
-        options.applicationBaseUrl,
+        callbackOrigin,
         attempt.returnRoute,
         "connection_unavailable",
+        "github",
       );
     }
     await bindGitHub(options.database, state, access, identity);
-    return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "github_connected");
+    return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
       error,
       provider: "github",
       phase: "authorization",
-      applicationBaseUrl: options.applicationBaseUrl,
+      applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
   }
@@ -491,39 +539,6 @@ function githubStatus(configured: boolean, bindings: readonly GitHubConnectionRe
   return bindings.every((binding) => binding.status === "suspended")
     ? { status: "suspended" as const }
     : { status: "connected" as const };
-}
-
-function readGitHubConfiguration(
-  publicBaseUrl: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): GitHubRegistrationConfiguration | null {
-  if (publicBaseUrl === undefined) return null;
-  const appSlug = readNonEmptyEnvironmentVariable(environment, "GITHUB_APP_SLUG");
-  const clientId = readNonEmptyEnvironmentVariable(environment, "GITHUB_APP_CLIENT_ID");
-  const clientSecret = readNonEmptyEnvironmentVariable(environment, "GITHUB_APP_CLIENT_SECRET");
-  const appId = readNonEmptyEnvironmentVariable(environment, "GITHUB_APP_ID");
-  const privateKey = readNonEmptyEnvironmentVariable(environment, "GITHUB_APP_PRIVATE_KEY");
-  const privateKeyPath = readNonEmptyEnvironmentVariable(
-    environment,
-    "GITHUB_APP_PRIVATE_KEY_PATH",
-  );
-  const webhookSecret = readNonEmptyEnvironmentVariable(environment, "GITHUB_WEBHOOK_SECRET");
-  if (
-    appSlug === undefined ||
-    clientId === undefined ||
-    clientSecret === undefined ||
-    appId === undefined ||
-    (privateKey === undefined && privateKeyPath === undefined) ||
-    webhookSecret === undefined
-  ) {
-    return null;
-  }
-  return {
-    appSlug,
-    clientId,
-    clientSecret,
-    webhookSecret,
-  };
 }
 
 function pkceChallenge(verifier: string): string {

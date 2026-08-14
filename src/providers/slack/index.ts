@@ -2,13 +2,13 @@ import type { AuthServer } from "../../auth/server.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   callbackConnectionAccess,
+  cancelledConnectionResult,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
   manageConnectionAccess,
   newConnectionState,
-  readNonEmptyEnvironmentVariable,
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
@@ -27,6 +27,7 @@ import {
   hasRequiredSlackScopes,
   type SlackConnectionClient,
   type SlackInstallation,
+  SlackBotVerificationError,
 } from "./client.js";
 
 export interface SlackRegistrationConfiguration {
@@ -41,26 +42,38 @@ export interface CreateSlackRegistrationOptions {
   auth: AuthServer | null;
   applicationBaseUrl: string;
   publicBaseUrl?: string;
-  environment?: NodeJS.ProcessEnv;
   configuration?: SlackRegistrationConfiguration | null;
   connectionClient?: SlackConnectionClient;
   botClient?: SlackBotClient;
   fetch?: typeof fetch;
+  configurationVersion?: number;
+  expectedConfigurationVersion?: number;
+  activateConfiguration?: boolean;
+  onVerifiedInstallation?: (input: {
+    configuration: unknown;
+    expectedConfigurationVersion: number | undefined;
+    callbackOrigin: string;
+    userId: string;
+    installation: SlackInstallation;
+  }) => Promise<void>;
 }
 
 interface SlackConnectionOptions {
   database: Database;
   auth: AuthServer;
   applicationBaseUrl: string;
+  callbackOrigin: string;
+  configurationVersion: number;
+  configuration: SlackRegistrationConfiguration;
+  expectedConfigurationVersion: number | undefined;
+  activateConfiguration: boolean;
+  onVerifiedInstallation: CreateSlackRegistrationOptions["onVerifiedInstallation"];
 }
 
 export function createSlackRegistration(
   options: CreateSlackRegistrationOptions,
 ): ProviderRegistration {
-  const configuration =
-    options.configuration === undefined
-      ? readSlackConfiguration(options.publicBaseUrl, options.environment ?? process.env)
-      : options.configuration;
+  const configuration = options.configuration ?? null;
   if (configuration === null || options.publicBaseUrl === undefined) {
     return emptySlackRegistration(options);
   }
@@ -109,11 +122,21 @@ export function createSlackRegistration(
             database,
             auth: options.auth,
             applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.publicBaseUrl,
+            configurationVersion: options.configurationVersion ?? 0,
+            configuration,
+            expectedConfigurationVersion: options.expectedConfigurationVersion,
+            activateConfiguration: options.activateConfiguration ?? false,
+            onVerifiedInstallation: options.onVerifiedInstallation,
           },
           connectionClient,
         );
 
   return {
+    configurationSnapshot: {
+      version: options.configurationVersion ?? 0,
+      callbackOrigin: options.publicBaseUrl,
+    },
     connection,
     triggerProviders: [
       ({ configurationStoreForProject, attachments }) =>
@@ -161,6 +184,17 @@ function emptySlackRegistration(
             database: options.database,
             auth: options.auth,
             applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.applicationBaseUrl,
+            configurationVersion: 0,
+            configuration: {
+              appId: "unconfigured",
+              clientId: "unconfigured",
+              clientSecret: "unconfigured",
+              signingSecret: "unconfigured",
+            },
+            expectedConfigurationVersion: undefined,
+            activateConfiguration: false,
+            onVerifiedInstallation: undefined,
           },
           undefined,
         );
@@ -199,6 +233,11 @@ function createSlackConnection(
         stateVerifier: stateHash(state),
         access: connectionAccess(access),
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+        callbackOrigin: options.callbackOrigin,
+        configurationVersion: options.configurationVersion,
+        configurationSnapshot: { provider: "slack", ...options.configuration },
+        expectedConfigurationVersion: options.expectedConfigurationVersion ?? null,
+        activateConfiguration: options.activateConfiguration,
       });
       return Response.json({ url: client.authorizationUrl(state) });
     } catch (error) {
@@ -249,10 +288,22 @@ async function completeAuthorization(
   const url = new URL(request.url);
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
+  if (state !== null && code === null && url.searchParams.get("error") === "access_denied") {
+    return cancelledConnectionResult({
+      auth: options.auth,
+      database: options.database,
+      request,
+      provider: "slack",
+      phase: "slack_authorization",
+      state,
+      applicationBaseUrl: options.applicationBaseUrl,
+    });
+  }
   if (state === null || code === null || client === undefined) {
     return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
   }
   let returnRoute = "/";
+  let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
     const attempt = await options.database.readConnectionAttempt({
@@ -261,15 +312,29 @@ async function completeAuthorization(
       access,
     });
     returnRoute = attempt.returnRoute;
+    callbackOrigin = attempt.callbackOrigin;
     const installation = await client.exchangeCode(code);
+    await client.verifyInstallation(installation);
+    if (attempt.activateConfiguration) {
+      await options.onVerifiedInstallation?.({
+        configuration: attempt.configurationSnapshot,
+        expectedConfigurationVersion: attempt.expectedConfigurationVersion ?? undefined,
+        callbackOrigin: attempt.callbackOrigin,
+        userId: attempt.userId,
+        installation,
+      });
+    }
     await bindSlack(options.database, state, access, installation);
-    return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "slack_connected");
+    return connectionResult(callbackOrigin, attempt.returnRoute, "slack_connected", "slack");
   } catch (error) {
+    if (error instanceof SlackBotVerificationError) {
+      return connectionResult(callbackOrigin, returnRoute, "slack_bot_failed", "slack");
+    }
     return connectionCallbackFailure({
       error,
       provider: "slack",
       phase: "authorization",
-      applicationBaseUrl: options.applicationBaseUrl,
+      applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
   }
@@ -295,21 +360,4 @@ function slackStatus(configured: boolean, bindings: readonly SlackConnectionReco
   return bindings.some((binding) => !hasRequiredSlackScopes(binding.scopes))
     ? { status: "requiresReauthorization" as const }
     : { status: "connected" as const };
-}
-
-function readSlackConfiguration(
-  publicBaseUrl: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): SlackRegistrationConfiguration | null {
-  if (publicBaseUrl === undefined) return null;
-  const appId = readNonEmptyEnvironmentVariable(environment, "SLACK_APP_ID");
-  const clientId = readNonEmptyEnvironmentVariable(environment, "SLACK_CLIENT_ID");
-  const clientSecret = readNonEmptyEnvironmentVariable(environment, "SLACK_CLIENT_SECRET");
-  const signingSecret = readNonEmptyEnvironmentVariable(environment, "SLACK_SIGNING_SECRET");
-  return appId === undefined ||
-    clientId === undefined ||
-    clientSecret === undefined ||
-    signingSecret === undefined
-    ? null
-    : { appId, clientId, clientSecret, signingSecret };
 }

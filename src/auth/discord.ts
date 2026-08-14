@@ -3,9 +3,11 @@ export interface DiscordOperatorAuth {
   clientId?: string;
 }
 
-export function readDiscordOperatorAuth(): DiscordOperatorAuth | undefined {
-  const token = process.env["DISCORD_BOT_TOKEN"];
-  const clientId = process.env["DISCORD_CLIENT_ID"];
+export function readDiscordOperatorAuth(
+  environment: Record<string, string | undefined>,
+): DiscordOperatorAuth | undefined {
+  const token = environment["DISCORD_BOT_TOKEN"];
+  const clientId = environment["DISCORD_CLIENT_ID"];
 
   if (token === undefined || token.length === 0) {
     return undefined;

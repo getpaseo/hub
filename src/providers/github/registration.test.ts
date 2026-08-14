@@ -147,10 +147,12 @@ describe("GitHub registration", () => {
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
       configuration: {
+        appId: "42",
         appSlug: "paseo",
         clientId: "client",
         clientSecret: "secret",
         webhookSecret: "webhook-secret",
+        privateKey: "test-private-key",
       },
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
@@ -476,10 +478,12 @@ describe("GitHub registration", () => {
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
       configuration: {
+        appId: "42",
         appSlug: "paseo",
         clientId: "client",
         clientSecret: "secret",
         webhookSecret: "webhook-secret",
+        privateKey: "test-private-key",
       },
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
@@ -632,10 +636,12 @@ class RegistrationAuth implements AuthServer {
 
 function githubConfiguration() {
   return {
+    appId: "42",
     appSlug: "paseo",
     clientId: "client",
     clientSecret: "secret",
     webhookSecret: "webhook-secret",
+    privateKey: "test-private-key",
   };
 }
 

@@ -48,6 +48,11 @@ export class ConnectionRepository {
         returnRoute: input.access.returnRoute,
         userId: input.access.userId,
         sessionId: input.access.sessionId,
+        configurationVersion: input.configurationVersion,
+        callbackOrigin: input.callbackOrigin,
+        configurationSnapshot: input.configurationSnapshot,
+        expectedConfigurationVersion: input.expectedConfigurationVersion,
+        activateConfiguration: input.activateConfiguration,
         expiresAt: sql`clock_timestamp() + (${input.lifetimeMinutes} * interval '1 minute')`,
       });
     });
@@ -61,6 +66,36 @@ export class ConnectionRepository {
       await lockStoredAuthority(transaction, attempt);
       return toAttempt(attempt);
     });
+  }
+
+  async findAttemptConfiguration(stateVerifier: string): Promise<
+    | {
+        configurationVersion: number;
+        callbackOrigin: string;
+        configurationSnapshot: unknown;
+        expectedConfigurationVersion: number | null;
+        activateConfiguration: boolean;
+      }
+    | undefined
+  > {
+    const [attempt] = await this.database
+      .select({
+        configurationVersion: schema.organizationConnectionAttempts.configurationVersion,
+        callbackOrigin: schema.organizationConnectionAttempts.callbackOrigin,
+        configurationSnapshot: schema.organizationConnectionAttempts.configurationSnapshot,
+        expectedConfigurationVersion:
+          schema.organizationConnectionAttempts.expectedConfigurationVersion,
+        activateConfiguration: schema.organizationConnectionAttempts.activateConfiguration,
+      })
+      .from(schema.organizationConnectionAttempts)
+      .where(
+        and(
+          eq(schema.organizationConnectionAttempts.stateVerifier, stateVerifier),
+          isNull(schema.organizationConnectionAttempts.consumedAt),
+        ),
+      )
+      .limit(1);
+    return attempt;
   }
 
   async consumeAttempt(input: ReadConnectionAttemptInput): Promise<void> {
@@ -564,6 +599,11 @@ function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
     sessionId: row.sessionId,
     candidateExternalId: row.candidateExternalId,
     pkceVerifier: row.pkceVerifier,
+    configurationVersion: row.configurationVersion,
+    callbackOrigin: row.callbackOrigin,
+    configurationSnapshot: row.configurationSnapshot,
+    expectedConfigurationVersion: row.expectedConfigurationVersion,
+    activateConfiguration: row.activateConfiguration,
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
   };

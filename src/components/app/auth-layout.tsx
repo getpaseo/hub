@@ -7,17 +7,25 @@ import { cn } from "../../lib/utils.js";
  * gate, invitations, and daemon approval. A product mark, then one card. The mark is
  * the branding — surfaces do not repeat it as a badge above their own title.
  */
+const LAYOUT_WIDTHS = { sm: "max-w-sm", md: "max-w-lg", lg: "max-w-3xl" } as const;
+
 export function AuthLayout({
   children,
   width = "sm",
 }: {
   children: ReactNode;
-  width?: "sm" | "md";
+  /** `lg` is for the app setup journey, whose generated URLs need room beside a copy button. */
+  width?: keyof typeof LAYOUT_WIDTHS;
 }) {
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-6 bg-background p-6">
+    <main
+      className={cn(
+        "flex min-h-svh flex-col items-center gap-6 bg-background p-6",
+        width === "lg" ? "justify-start py-10" : "justify-center",
+      )}
+    >
       <ProductMark />
-      <div className={cn("w-full", width === "sm" ? "max-w-sm" : "max-w-lg")}>{children}</div>
+      <div className={cn("min-w-0 w-full", LAYOUT_WIDTHS[width])}>{children}</div>
     </main>
   );
 }

@@ -66,9 +66,17 @@ describe("first-run claim at the browser boundary", () => {
       assert.equal(signedOut.status, "signedOut");
       assert.equal(signedOut.registration, "invite_only");
 
-      // The chosen password is final: signing in with it lands on the dashboard rather than the
-      // temporary-password gate that environment bootstrap requires.
+      // The chosen password is final, but the first operator must explicitly finish or skip app
+      // setup before the durable account state becomes active.
       const cookie = await signIn(instance.auth, operator.email, operator.password);
+      const appSetup = await readAccountState(instance.auth, cookie);
+      assert.equal(appSetup.status, "appSetupRequired");
+      await instance.auth.completeAppOnboarding!(
+        new Request(`${ORIGIN}/`, {
+          method: "POST",
+          headers: { cookie, origin: ORIGIN },
+        }),
+      );
       const active = await readAccountState(instance.auth, cookie);
       assert.equal(active.status, "active");
       assert.equal(active.account?.email, operator.email);

@@ -2607,6 +2607,10 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  findConnectionAttemptConfiguration() {
+    return Promise.resolve(undefined);
+  }
+
   readConnectionAttempt(_input: ReadConnectionAttemptInput) {
     return connectionPersistenceUnavailable();
   }

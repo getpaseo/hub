@@ -35,6 +35,7 @@ import {
   UNLIMITED_PROVISIONING,
   type ProvisioningEntitlementResolver,
 } from "../organizations/provisioning.js";
+import { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -52,6 +53,7 @@ export interface AuthServer {
   ): Promise<void>;
   /** Creates the first operator on a pristine instance and signs the browser in. */
   claimInstance?(operator: InitialOperator, headers: Headers): Promise<InstanceClaim>;
+  completeAppOnboarding?(request: Request): Promise<void>;
   resources(
     request: Request,
     organizations: OrganizationResources,
@@ -124,6 +126,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     policy,
     provisioningEntitlements,
   });
+  const appOnboarding = new InstanceAppOnboarding(options.database);
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -194,6 +197,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     cliCredentials,
     entitlements: options.entitlements,
     instanceSetup,
+    appOnboarding,
     provisioningEntitlements,
     ...(options.onMembershipChanged === undefined
       ? {}
@@ -259,6 +263,13 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         headers,
       });
       return claim;
+    },
+    async completeAppOnboarding(request) {
+      const rejected = rejectCrossOriginCookieMutation(request, browserOrigin);
+      if (rejected !== undefined) throw new Error("invalid origin");
+      const account = await access.account(request);
+      if (!account.isInstanceOperator) throw new Error("forbidden");
+      await appOnboarding.complete();
     },
     async signOut(headers) {
       requireBrowserOrigin(headers, browserOrigin);

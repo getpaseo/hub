@@ -72,4 +72,11 @@ describe("database migrations", () => {
     assert.match(cutover, /provider_event_receipt_id/);
     assert.match(cutover, /preserve|disposition/iu);
   });
+
+  it("backfills app onboarding only for installations that already exist", () => {
+    const migration = readFileSync(join(here, "../../drizzle/0035_smooth_wonder_man.sql"), "utf8");
+    assert.match(migration, /UPDATE "instance_bootstrap"[\s\S]*app_onboarding_completed_at/u);
+    assert.match(migration, /WHERE EXISTS \(SELECT 1 FROM "user"\)/u);
+    assert.match(migration, /DELETE FROM "organization_connection_attempts"/u);
+  });
 });

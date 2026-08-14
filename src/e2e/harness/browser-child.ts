@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
@@ -12,6 +12,7 @@ import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import type { ProviderRegistration } from "../../providers/registration.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import {
@@ -31,6 +32,21 @@ import {
   type FixtureBillingProduct,
 } from "./browser-billing.js";
 import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
+import {
+  BrowserProviderApplicationVerifier,
+  browserRegistrationFactory,
+  fixtureEnvironmentIdentity,
+} from "./browser-provider-applications.js";
+import {
+  DynamicProviderRuntime,
+  PROVIDERS,
+  createProviderApplicationInventory,
+  createProviderApplicationStore,
+  createProviderApplications,
+  readProviderApplicationEnvironment,
+  resolveCallbackOrigin,
+  type ProviderApplications,
+} from "../../provider-applications/index.js";
 
 interface DiscordCommand {
   id: string;
@@ -102,7 +118,7 @@ async function main(): Promise<void> {
           entitlements: entitlements.service,
           baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
           secret: authSecret,
-          policy: readInstanceAuthPolicy(),
+          policy: readInstanceAuthPolicy(process.env),
           ...billingAuthOptions(billing),
         }),
       )
@@ -142,10 +158,12 @@ async function main(): Promise<void> {
             publicBaseUrl,
             configuration: githubConfigured
               ? {
+                  appId: "42",
                   appSlug: "paseo",
                   clientId: "client",
                   clientSecret: "secret",
                   webhookSecret: requiredEnvironment("GITHUB_WEBHOOK_SECRET"),
+                  privateKey: "fixture-private-key",
                 }
               : null,
             ...(githubConfigured
@@ -191,12 +209,22 @@ async function main(): Promise<void> {
             ...(slackConfigured ? { botClient: slackBot } : {}),
           }),
         ];
+  const providers = await providerRuntimeOptions(auth, registrations, {
+    database,
+    databaseRuntime,
+    locks,
+    publicBaseUrl,
+    scenario,
+    bot,
+    slackBot,
+    githubConfiguration,
+  });
   const runtime = await createApplicationRuntime({
     database,
     auth,
     entitlements: entitlements.service,
     billing,
-    registrations,
+    ...providers,
     publicBaseUrl,
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     async close() {
@@ -207,7 +235,10 @@ async function main(): Promise<void> {
   });
   const start = await loadBuiltStartServer();
   await start.startApplication(() => runtime);
-  const server = createFetchServer((request) => start.default.fetch(request));
+  const server = createFetchServer(
+    (request) => browserProviderPage(request, publicBaseUrl) ?? start.default.fetch(request),
+    await testTlsOptions(),
+  );
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void runtime.hub.handleUpgrade?.(request, socket, head);
   });
@@ -225,6 +256,28 @@ async function main(): Promise<void> {
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+async function testTlsOptions(): Promise<{ tls?: { key: string; cert: string } }> {
+  const keyPath = process.env["PASEO_E2E_TLS_KEY"];
+  const certPath = process.env["PASEO_E2E_TLS_CERT"];
+  if (keyPath === undefined && certPath === undefined) return {};
+  if (keyPath === undefined || certPath === undefined) throw new Error("incomplete test TLS");
+  return { tls: { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") } };
+}
+
+function browserProviderPage(request: Request, publicBaseUrl: string): Response | undefined {
+  const url = new URL(request.url);
+  if (url.pathname !== "/e2e/providers/slack/authorize") return undefined;
+  const state = url.searchParams.get("state");
+  if (state === null) return new Response("Missing state", { status: 400 });
+  const callback = new URL("/api/integrations/slack/callback", publicBaseUrl);
+  callback.searchParams.set("state", state);
+  callback.searchParams.set("code", "accepted");
+  return new Response(
+    `<!doctype html><html><body><main><h1>Install Paseo in Acme</h1><p>Slack is asking you to accept this app.</p><a href="${callback.toString()}">Accept installation</a></main></body></html>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
 }
 
 /** Hosted harness: new organizations start on the Free plan and membership changes re-report
@@ -508,6 +561,102 @@ async function composeFixtureBilling(
   });
   await billing.syncCatalog();
   return { billing, billingCatalog, billingClient };
+}
+
+/**
+ * The registration set the application runs on. Dynamic mode hands over to the operator-managed
+ * runtime entirely; every other scenario keeps the statically configured providers it has always
+ * had, so existing journeys are untouched.
+ */
+async function providerRuntimeOptions(
+  auth: Parameters<typeof createApplicationRuntime>[0]["auth"],
+  registrations: readonly ProviderRegistration[],
+  fixtures: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
+): Promise<
+  Pick<Parameters<typeof createApplicationRuntime>[0], "registrations"> & {
+    providerApplications?: ProviderApplications;
+  }
+> {
+  const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
+  return apps === null
+    ? { registrations }
+    : { registrations: apps.registrations, providerApplications: apps.capability };
+}
+
+/**
+ * The operator-managed provider applications, backed by the fixture provider clients. Dynamic mode
+ * replaces the statically configured registrations entirely, so the app setup journey starts on an
+ * instance with nothing configured and activates providers exactly the way production does.
+ */
+async function composeProviderApplications(input: {
+  database: Database;
+  databaseRuntime: DatabaseRuntime;
+  locks: Parameters<typeof createProviderApplicationStore>[1];
+  auth: NonNullable<Parameters<typeof createApplicationRuntime>[0]["auth"]>;
+  publicBaseUrl: string;
+  scenario: BrowserProviderScenario;
+  bot: BrowserDiscordBot;
+  slackBot: BrowserSlackBot;
+  githubConfiguration: BrowserGitHubConfiguration;
+}): Promise<{
+  capability: ProviderApplications;
+  registrations: readonly ProviderRegistration[];
+} | null> {
+  if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
+  const environment = await readProviderApplicationEnvironment(process.env);
+  const store = createProviderApplicationStore(input.databaseRuntime, input.locks);
+  const verifier = new BrowserProviderApplicationVerifier();
+  const inventory = createProviderApplicationInventory(input.databaseRuntime);
+  const providerRuntime = new DynamicProviderRuntime({
+    database: input.database,
+    auth: input.auth,
+    applicationBaseUrl: input.publicBaseUrl,
+    registrationFactory: browserRegistrationFactory({
+      database: input.database,
+      auth: input.auth,
+      applicationBaseUrl: input.publicBaseUrl,
+      scenario: input.scenario,
+      bot: input.bot,
+      slackBot: input.slackBot,
+      githubConfiguration: input.githubConfiguration,
+    }),
+  });
+  const stored = new Map(
+    (await store.readAll()).map((configuration) => [configuration.provider, configuration]),
+  );
+  for (const provider of PROVIDERS) {
+    const fromEnvironment = environment[provider];
+    const persisted = stored.get(provider);
+    const configuration = fromEnvironment ?? persisted?.configuration;
+    if (configuration === undefined) continue;
+    const candidate = await providerRuntime.prepare(
+      provider,
+      configuration,
+      input.publicBaseUrl,
+      fromEnvironment === undefined ? persisted!.identity : fixtureEnvironmentIdentity(provider),
+      fromEnvironment === undefined ? persisted!.version : 0,
+    );
+    await candidate.start();
+    candidate.publish();
+  }
+  const capability = createProviderApplications({
+    auth: input.auth,
+    store,
+    environment,
+    runtime: providerRuntime,
+    verifier,
+    inventory,
+    callbackOrigin: (request) => resolveCallbackOrigin(request, input.publicBaseUrl),
+    beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
+      const organizationSlug = await inventory.organizationSlug(organizationId);
+      if (organizationSlug === undefined) throw new Error("organization unavailable");
+      const url = new URL(request.url);
+      url.searchParams.set("organizationSlug", organizationSlug);
+      url.searchParams.set("returnRoute", returnRoute);
+      return begin(new Request(url, { method: "POST", headers: request.headers }));
+    },
+  });
+  return { capability, registrations: providerRuntime.registrations() };
 }
 
 main().catch((error: unknown) => {

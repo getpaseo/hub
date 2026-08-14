@@ -5,13 +5,13 @@ import type { ProviderConnectionRegistration, ProviderRegistration } from "../re
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   callbackConnectionAccess,
+  cancelledConnectionResult,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
   manageConnectionAccess,
   newConnectionState,
-  readNonEmptyEnvironmentVariable,
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
@@ -38,26 +38,26 @@ export interface CreateDiscordRegistrationOptions {
   auth: AuthServer | null;
   applicationBaseUrl: string;
   publicBaseUrl?: string;
-  environment?: NodeJS.ProcessEnv;
   configuration?: DiscordRegistrationConfiguration | null;
   bot?: DiscordBotClient;
   connectionClient?: DiscordConnectionClient;
   fetch?: typeof fetch;
+  configurationVersion?: number;
 }
 
 interface DiscordConnectionOptions {
   database: Database;
   auth: AuthServer;
   applicationBaseUrl: string;
+  callbackOrigin: string;
+  configurationVersion: number;
+  configuration: DiscordRegistrationConfiguration;
 }
 
 export function createDiscordRegistration(
   options: CreateDiscordRegistrationOptions,
 ): ProviderRegistration {
-  const configuration =
-    options.configuration === undefined
-      ? readDiscordConfiguration(options.publicBaseUrl, options.environment ?? process.env)
-      : options.configuration;
+  const configuration = options.configuration ?? null;
   if (configuration === null || options.publicBaseUrl === undefined) {
     return emptyDiscordRegistration(options);
   }
@@ -89,6 +89,9 @@ export function createDiscordRegistration(
             database,
             auth: options.auth,
             applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.publicBaseUrl,
+            configurationVersion: options.configurationVersion ?? 0,
+            configuration,
           },
           client,
         );
@@ -99,6 +102,10 @@ export function createDiscordRegistration(
       applyGuildRemoval(database, client, guildId, unavailable),
   });
   return {
+    configurationSnapshot: {
+      version: options.configurationVersion ?? 0,
+      callbackOrigin: options.publicBaseUrl,
+    },
     connection,
     triggerProviders: [
       ({ configurationStoreForProject, attachments }) =>
@@ -135,7 +142,18 @@ function emptyDiscordRegistration(
     database === null || auth === null
       ? discordConnectionStatus(false)
       : createDiscordConnection(
-          { database, auth, applicationBaseUrl: options.applicationBaseUrl },
+          {
+            database,
+            auth,
+            applicationBaseUrl: options.applicationBaseUrl,
+            callbackOrigin: options.applicationBaseUrl,
+            configurationVersion: 0,
+            configuration: {
+              clientId: "unconfigured",
+              clientSecret: "unconfigured",
+              botToken: "unconfigured",
+            },
+          },
           undefined,
         );
   return {
@@ -183,6 +201,11 @@ function createDiscordConnection(
         stateVerifier: stateHash(state),
         access: connectionAccess(access),
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+        callbackOrigin: options.callbackOrigin,
+        configurationVersion: options.configurationVersion,
+        configurationSnapshot: { provider: "discord", ...options.configuration },
+        expectedConfigurationVersion: null,
+        activateConfiguration: false,
       });
       return Response.json({ url: client.authorizationUrl(state) });
     } catch (error) {
@@ -237,10 +260,22 @@ async function completeAuthorization(
   const url = new URL(request.url);
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
+  if (state !== null && code === null && url.searchParams.get("error") === "access_denied") {
+    return cancelledConnectionResult({
+      auth: options.auth,
+      database: options.database,
+      request,
+      provider: "discord",
+      phase: "discord_authorization",
+      state,
+      applicationBaseUrl: options.applicationBaseUrl,
+    });
+  }
   if (state === null || code === null || client === undefined) {
     return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
   }
   let returnRoute = "/";
+  let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
     const attempt = await options.database.readConnectionAttempt({
@@ -249,6 +284,7 @@ async function completeAuthorization(
       access,
     });
     returnRoute = attempt.returnRoute;
+    callbackOrigin = attempt.callbackOrigin;
     const guild = await client.verifyGuild(code);
     if (guild === undefined) {
       await options.database.consumeConnectionAttempt({
@@ -257,19 +293,20 @@ async function completeAuthorization(
         access,
       });
       return connectionResult(
-        options.applicationBaseUrl,
+        callbackOrigin,
         attempt.returnRoute,
         "connection_unavailable",
+        "discord",
       );
     }
     await bindDiscord(options.database, state, access, guild);
-    return connectionResult(options.applicationBaseUrl, attempt.returnRoute, "discord_connected");
+    return connectionResult(callbackOrigin, attempt.returnRoute, "discord_connected", "discord");
   } catch (error) {
     return connectionCallbackFailure({
       error,
       provider: "discord",
       phase: "authorization",
-      applicationBaseUrl: options.applicationBaseUrl,
+      applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
   }
@@ -305,22 +342,6 @@ function discordStatus(configured: boolean, bindings: readonly DiscordConnection
   return bindings.length === 0
     ? { status: "disconnected" as const }
     : { status: "connected" as const };
-}
-
-function readDiscordConfiguration(
-  publicBaseUrl: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): DiscordRegistrationConfiguration | null {
-  if (publicBaseUrl === undefined) return null;
-  const botToken = readNonEmptyEnvironmentVariable(environment, "DISCORD_BOT_TOKEN");
-  const clientId = readNonEmptyEnvironmentVariable(environment, "DISCORD_CLIENT_ID");
-  const clientSecret = readNonEmptyEnvironmentVariable(environment, "DISCORD_CLIENT_SECRET");
-  if (botToken === undefined || clientId === undefined || clientSecret === undefined) return null;
-  return {
-    botToken,
-    clientId,
-    clientSecret,
-  };
 }
 
 function errorType(error: unknown): string {

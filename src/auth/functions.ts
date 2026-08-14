@@ -131,6 +131,19 @@ export const setUpInstance = createServerFn({ method: "POST" })
     }
   });
 
+export const completeAppSetup = createServerFn({ method: "POST" }).handler(
+  async (): Promise<Result<Record<string, never>>> => {
+    try {
+      const application = await getApplication();
+      if (application.completeAppOnboarding === undefined) throw new Error("auth unavailable");
+      await application.completeAppOnboarding(getRequest());
+      return respondOk({});
+    } catch {
+      return respondError({ message: "We couldn't finish app setup. Try again." });
+    }
+  },
+);
+
 export const signOut = createServerFn({ method: "POST" }).handler(
   async (): Promise<Result<Record<string, never>>> => {
     try {

@@ -28,6 +28,7 @@ import {
 } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
+import type { ProviderApplications } from "./provider-applications/index.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -37,6 +38,7 @@ export interface ApplicationCompositionOptions {
   /** HOSTED only. Present when `readBillingConfig()` finds `STRIPE_SECRET_KEY`; null self-hosted. */
   billing: BillingRuntime | null;
   registrations?: readonly ProviderRegistration[];
+  providerApplications?: ProviderApplications;
   publicBaseUrl?: string;
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
@@ -135,6 +137,7 @@ async function createOwnedApplicationRuntime(
     publicApi: application.publicApi,
     resources,
     billing: options.billing,
+    providerApplications: providerApplicationsFor(options),
     projectDashboard:
       options.database === null || options.auth === null
         ? null
@@ -177,6 +180,12 @@ async function createOwnedApplicationRuntime(
         return Promise.reject(new Error("auth unavailable"));
       }
       return options.auth.claimInstance(operator, headers);
+    },
+    completeAppOnboarding(request) {
+      if (options.database === null || options.auth?.completeAppOnboarding === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.completeAppOnboarding(request);
     },
     signOut(headers) {
       if (options.database === null || options.auth?.signOut === undefined) {
@@ -321,6 +330,12 @@ async function createOwnedApplicationRuntime(
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),
   };
+}
+
+function providerApplicationsFor(
+  options: ApplicationCompositionOptions,
+): ProviderApplications | null {
+  return options.providerApplications ?? null;
 }
 
 function createConnectionsForProject(

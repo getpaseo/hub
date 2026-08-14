@@ -5,6 +5,7 @@ import { AccountEntry, InvitationEntry, OrganizationGate } from "./account-entry
 import { FailedEntry, LoadingEntry, UnavailableInvitation } from "./account-states.js";
 import { DashboardShell } from "./dashboard-shell.js";
 import { InstanceSetupEntry } from "./instance-setup-entry.js";
+import { AppSetupEntry } from "../provider-applications/panel.js";
 import { PasswordChangeEntry } from "./password-change.js";
 
 export function AccountApp() {
@@ -33,6 +34,9 @@ export function AccountApp() {
   if (state.status === "instanceSetupRequired") return <InstanceSetupEntry />;
   if (state.status === "passwordChangeRequired")
     return <PasswordChangeEntry account={state.account} />;
+  if (state.status === "appSetupRequired") {
+    return <AppSetupEntry organizationId={state.organization.id} />;
+  }
   if (state.invitationUnavailable === true) {
     return <UnavailableInvitation message="This invitation is unavailable." />;
   }

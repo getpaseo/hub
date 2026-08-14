@@ -14,6 +14,14 @@ import { resolveRouteTenant } from "../projects/access.js";
 
 export const CONNECTION_ATTEMPT_LIFETIME_MINUTES = 10;
 
+/**
+ * The only routes a connection may be sent back to besides the organization's own connections
+ * page: Hub's two app surfaces. An allowlist rather than a route the caller supplies, because
+ * the start request's query is reachable from the browser — an arbitrary `returnRoute` would be
+ * an open redirect wearing a Hub URL.
+ */
+const ALLOWED_RETURN_ROUTES = new Set(["/", "/apps"]);
+
 export async function manageConnectionAccess(
   auth: AuthServer,
   database: Database,
@@ -30,7 +38,11 @@ export async function manageConnectionAccess(
     organizationSlug,
   });
   if (tenant.membership.role === "member") throw new ConnectionAccessDeniedError();
-  const returnRoute = `/o/${tenant.organization.slug}/connections`;
+  const requested = url.searchParams.get("returnRoute");
+  const returnRoute =
+    requested !== null && ALLOWED_RETURN_ROUTES.has(requested)
+      ? requested
+      : `/o/${tenant.organization.slug}/connections`;
   return { account, tenant, returnRoute };
 }
 
@@ -66,10 +78,54 @@ export function connectionResult(
   publicBaseUrl: string,
   returnRoute: string,
   result: string,
+  provider?: "github" | "discord" | "slack",
 ): Response {
   const url = new URL(returnRoute, publicBaseUrl);
+  if (provider !== undefined) url.searchParams.set("app", provider);
   url.searchParams.set("result", result);
   return Response.redirect(url, 303);
+}
+
+export async function cancelledConnectionResult(input: {
+  auth: AuthServer;
+  database: Database;
+  request: Request;
+  provider: "github" | "discord" | "slack";
+  phase: "github_user_authorization" | "discord_authorization" | "slack_authorization";
+  state: string;
+  applicationBaseUrl: string;
+}): Promise<Response> {
+  let callbackOrigin = input.applicationBaseUrl;
+  let returnRoute = "/";
+  try {
+    const access = await callbackConnectionAccess(input.auth, input.request);
+    const attempt = await input.database.readConnectionAttempt({
+      stateVerifier: stateHash(input.state),
+      phase: input.phase,
+      access,
+    });
+    callbackOrigin = attempt.callbackOrigin;
+    returnRoute = attempt.returnRoute;
+    await input.database.consumeConnectionAttempt({
+      stateVerifier: stateHash(input.state),
+      phase: input.phase,
+      access,
+    });
+    return connectionResult(
+      callbackOrigin,
+      returnRoute,
+      `${input.provider}_cancelled`,
+      input.provider,
+    );
+  } catch (error) {
+    return connectionCallbackFailure({
+      error,
+      provider: input.provider,
+      phase: `${input.phase}_cancelled`,
+      applicationBaseUrl: callbackOrigin,
+      returnRoute,
+    });
+  }
 }
 
 export function connectionCallbackFailure(input: {
@@ -90,7 +146,12 @@ export function connectionCallbackFailure(input: {
     },
     "connection callback unavailable",
   );
-  return connectionResult(input.applicationBaseUrl, input.returnRoute, "connection_unavailable");
+  return connectionResult(
+    input.applicationBaseUrl,
+    input.returnRoute,
+    "connection_unavailable",
+    input.provider,
+  );
 }
 
 export function connectionActionFailure(

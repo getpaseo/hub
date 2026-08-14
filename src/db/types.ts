@@ -348,8 +348,21 @@ export interface ConnectionAttemptRecord {
   sessionId: string;
   candidateExternalId: string | null;
   pkceVerifier: string | null;
+  configurationVersion: number;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
   expiresAt: Date;
   consumedAt: Date | null;
+}
+
+export interface ConnectionAttemptConfigurationSnapshot {
+  configurationVersion: number;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
 }
 
 export interface GitHubConnectionRecord {
@@ -387,6 +400,11 @@ export interface StartConnectionAttemptInput {
   stateVerifier: string;
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
+  configurationVersion: number;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
 }
 
 export interface ReadConnectionAttemptInput {
@@ -1345,6 +1363,9 @@ export interface Database {
   ): Promise<ProviderEventReceiptSummary[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
+  findConnectionAttemptConfiguration(
+    stateVerifier: string,
+  ): Promise<ConnectionAttemptConfigurationSnapshot | undefined>;
   readConnectionAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord>;
   consumeConnectionAttempt(input: ReadConnectionAttemptInput): Promise<void>;
   advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void>;

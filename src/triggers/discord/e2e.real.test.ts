@@ -19,7 +19,7 @@ describe.skipIf(!SHOULD_RUN)("Discord real E2E", () => {
   let source: TriggerSource | undefined;
 
   beforeAll(() => {
-    const auth = readDiscordOperatorAuth();
+    const auth = readDiscordOperatorAuth(process.env);
     if (auth === undefined) {
       throw new Error("DISCORD_BOT_TOKEN required for RUN_DISCORD_REAL_E2E=1");
     }

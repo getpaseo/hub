@@ -69,6 +69,7 @@ export interface ProviderAttachmentRegistration {
 }
 
 export interface ProviderRegistration {
+  configurationSnapshot?: { version: number; callbackOrigin: string };
   connection: ProviderConnectionRegistration;
   integration?: ProviderIntegrationRegistration;
   triggerProviders: readonly TriggerProviderFactory[];

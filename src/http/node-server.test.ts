@@ -5,6 +5,32 @@ import { createMemoryDatabase } from "../db/memory.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
 import { createFetchServer } from "./node-server.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
+
+describe("trusted request origin metadata", () => {
+  it("overwrites a caller-supplied internal header with direct HTTP metadata", async () => {
+    assert.equal(
+      await observedOrigin(
+        {},
+        { host: "hub.example.test:4317", [TRUSTED_REQUEST_ORIGIN_HEADER]: "https://attacker.test" },
+      ),
+      "http://hub.example.test:4317",
+    );
+  });
+
+  it("uses forwarded protocol and host only when proxy metadata is explicitly trusted", async () => {
+    const headers = {
+      host: "internal:3000",
+      "x-forwarded-host": "hub.example.test",
+      "x-forwarded-proto": "https",
+    };
+    assert.equal(await observedOrigin({}, headers), "http://internal:3000");
+    assert.equal(
+      await observedOrigin({ trustedClientIpHeader: "fly-client-ip" }, headers),
+      "https://hub.example.test",
+    );
+  });
+});
 
 describe("CLI authorization client address", () => {
   it("uses the socket peer regardless of caller-supplied proxy headers or user agents", async () => {
@@ -132,6 +158,35 @@ function closeServer(server: ReturnType<typeof createFetchServer>): Promise<void
       else reject(error);
     });
   });
+}
+
+async function observedOrigin(
+  options: { trustedClientIpHeader?: string },
+  headers: Record<string, string>,
+): Promise<string> {
+  const server = createFetchServer(
+    (request) => new Response(request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER)),
+    options,
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("server did not bind");
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const outgoing = httpRequest(
+        { host: "127.0.0.1", port: address.port, path: "/", headers },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        },
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+  } finally {
+    await closeServer(server);
+  }
 }
 
 class CliAuthorizationServer {

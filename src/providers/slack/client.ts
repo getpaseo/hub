@@ -25,8 +25,13 @@ const SlackOAuthResponseSchema = z
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
   .passthrough();
+const SlackAuthTestResponseSchema = SlackApiResponseSchema.extend({
+  team_id: z.string().min(1).optional(),
+  user_id: z.string().min(1).optional(),
+});
 
 export interface SlackInstallation {
+  appId: string;
   teamId: string;
   teamName: string;
   botUserId: string;
@@ -42,6 +47,7 @@ export function hasRequiredSlackScopes(scopes: readonly string[]): boolean {
 export interface SlackConnectionClient {
   authorizationUrl(state: string): string;
   exchangeCode(code: string): Promise<SlackInstallation>;
+  verifyInstallation(installation: SlackInstallation): Promise<void>;
   revoke(botAccessToken: string): Promise<void>;
 }
 
@@ -88,12 +94,27 @@ export function createSlackConnectionClient(options: {
         throw new Error("Slack OAuth returned an invalid installation");
       }
       return {
+        appId: result.app_id,
         teamId: result.team.id,
         teamName: result.team.name,
         botUserId: result.bot_user_id,
         botAccessToken: result.access_token,
         scopes: parseSlackScopes(result.scope),
       };
+    },
+    async verifyInstallation(installation) {
+      const response = await request("https://slack.com/api/auth.test", {
+        headers: { authorization: `Bearer ${installation.botAccessToken}` },
+      });
+      if (!response.ok) throw new SlackBotVerificationError();
+      const result = SlackAuthTestResponseSchema.parse(await response.json());
+      if (
+        !result.ok ||
+        result.team_id !== installation.teamId ||
+        result.user_id !== installation.botUserId
+      ) {
+        throw new SlackBotVerificationError();
+      }
     },
     async revoke(botAccessToken) {
       const response = await request("https://slack.com/api/auth.revoke", {
@@ -108,6 +129,13 @@ export function createSlackConnectionClient(options: {
       if (!result.ok) throw new Error(`Slack revoke ${result.error ?? "unknown_error"}`);
     },
   };
+}
+
+export class SlackBotVerificationError extends Error {
+  constructor() {
+    super("Slack bot verification failed");
+    this.name = "SlackBotVerificationError";
+  }
 }
 
 function parseSlackScopes(scope: string | undefined): string[] {

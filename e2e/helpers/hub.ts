@@ -25,6 +25,7 @@ import { createDatabase } from "../../src/db/test-utils/runtime.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
+import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { ProjectNavigation } from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
 
@@ -57,6 +58,12 @@ export interface BuiltApplicationOptions {
   providerConnections?: boolean;
   githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
+  /** Operator-managed provider applications, starting from nothing configured. */
+  providerApplications?: boolean;
+  /** Providers the instance environment configures, which the surface must render read-only. */
+  environmentApps?: readonly ("github" | "slack" | "discord")[];
+  /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
+  https?: boolean;
   bootstrap?: {
     organizationName: string;
     ownerEmail: string;
@@ -252,6 +259,58 @@ export class PaseoHub {
     } finally {
       await context.close();
     }
+  }
+
+  /**
+   * A fresh instance with operator-managed apps and nothing configured, claimed by a first
+   * operator who is left standing on the app setup screen. The caller drives the surface through
+   * the returned DSL; closing the session tears the browser context down.
+   */
+  async openAppSetup(input: {
+    account: Account;
+    organizationName: string;
+    environmentApps?: readonly ("github" | "slack" | "discord")[];
+    https?: boolean;
+  }): Promise<AppSetupSession> {
+    const application = await this.startApplication({
+      databaseProfile: "fresh",
+      machineAuth: false,
+      providerApplications: true,
+      https: input.https === true,
+      ...(input.environmentApps === undefined ? {} : { environmentApps: input.environmentApps }),
+    });
+    const context = await this.browser.newContext({ ignoreHTTPSErrors: input.https === true });
+    const page = await context.newPage();
+    await allowClipboard(page, application.origin);
+    const user = new HubUser(application.origin, context, page);
+    await user.claimInstance(input.account, input.organizationName);
+    const surface = new AppSetupSurface(page);
+    await surface.expectOnboarding();
+    return {
+      application,
+      page,
+      surface,
+      origin: application.origin,
+      openManagement: async () => {
+        await page.goto(`${application.origin}/apps`);
+        await surface.expectManagement();
+      },
+      returnFromProvider: async (provider, result) => {
+        await page.goto(`${application.origin}/?app=${provider}&result=${result}`);
+      },
+      providerApplicationVersion: (provider) =>
+        providerApplicationVersion(application.databaseUrl, provider),
+      seedSignedDelivery: (provider) => seedSignedDelivery(application.databaseUrl, provider),
+      openMember: async (member) => {
+        const memberContext = await this.browser.newContext();
+        const memberPage = await memberContext.newPage();
+        const joining = new HubUser(application.origin, memberContext, memberPage);
+        await joining.signUp(member);
+        await joining.createOrganization("Member Organization");
+        return { page: memberPage, close: () => memberContext.close() };
+      },
+      close: () => context.close(),
+    };
   }
 
   /** Two browsers open the same welcome; the one that submits second rejoins the ordinary flow. */
@@ -705,13 +764,31 @@ export class PaseoHub {
 
   /**
    * Grant the instance-operator flag exactly as an administrator would in production — a single
-   * SQL update, documented in docs/entitlements.md, with no UI. Reload so the client re-reads the
-   * account state and the operator nav appears; the server-side guard already honours the flag.
+   * SQL statement, documented in docs/entitlements.md, with no UI. These journeys are not
+   * app-onboarding journeys, so the same transition also records that the instance has deferred app
+   * setup. Reload so the client re-reads both states and the operator nav appears.
    */
   async grantOperator(alias: string): Promise<void> {
     await this.queryDatabaseRows(
       this.primary.databaseUrl,
-      `update "user" set is_instance_operator = true where lower(email) = lower($1)`,
+      `with promoted as (
+         update "user"
+         set is_instance_operator = true
+         where lower(email) = lower($1)
+         returning id
+       )
+       insert into instance_bootstrap (
+         id, organization_id, owner_user_id, completed_at, app_onboarding_completed_at
+       )
+       select 'default', member.organization_id, promoted.id, now(), now()
+       from promoted
+       join member on member.user_id = promoted.id
+       limit 1
+       on conflict (id) do update
+       set app_onboarding_completed_at = coalesce(
+         instance_bootstrap.app_onboarding_completed_at,
+         excluded.app_onboarding_completed_at
+       )`,
       [this.requireUser(alias).accountEmail],
     );
     await this.page.reload();
@@ -2366,8 +2443,18 @@ class HubUser {
       .fill(replacementPassword);
     await change.getByLabel("Confirm new password").fill(replacementPassword);
     await change.getByRole("button", { name: "Save password" }).click();
+    await this.skipAppSetup();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(organizationName);
+  }
+
+  /**
+   * A new instance operator meets app setup before the dashboard. Journeys that are not about
+   * apps pass straight through it, which is exactly what the operator can do.
+   */
+  async skipAppSetup(): Promise<void> {
+    await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
   }
 
   async completeFirstRunJourney(
@@ -2500,6 +2587,7 @@ class HubUser {
   /** The dashboard the claim lands on. The signed-in identity lives in the desktop sidebar, so
    * the journey asserts it once it is back at desktop width. */
   private async expectFirstRunDashboard(organizationName: string): Promise<void> {
+    await this.skipAppSetup();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(organizationName);
   }
@@ -2521,6 +2609,14 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toHaveCount(0);
     await expect(this.page.getByRole("alert")).toHaveCount(0);
     await expectAccessible(this.page);
+  }
+
+  /** Creates the first operator and stops on whatever screen the claim lands on. */
+  async claimInstance(account: Account, organizationName: string): Promise<void> {
+    this.email = account.email.toLowerCase();
+    await this.page.goto(this.origin);
+    await this.page.getByRole("button", { name: "Set up Paseo Hub" }).click();
+    await this.fillFirstRunSetupForm(account, organizationName);
   }
 
   private async fillFirstRunSetupForm(account: Account, organizationName: string): Promise<void> {
@@ -2906,6 +3002,8 @@ class HubUser {
     await menu.getByRole("menuitem", { name, exact: true }).click();
     await expect(menu).toBeHidden();
     await expect(switcher).toContainText(name);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
+    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
   }
 
   async returnToProjects(): Promise<void> {
@@ -4575,6 +4673,56 @@ class HubUser {
     await listbox.getByRole("option", { name: option, exact: true }).click();
     await expect(listbox).toBeHidden();
     await expect(select).toHaveText(option);
+  }
+}
+
+export interface AppSetupSession {
+  application: BuiltApplication;
+  page: Page;
+  surface: AppSetupSurface;
+  origin: string;
+  openManagement(): Promise<void>;
+  returnFromProvider(provider: "github" | "slack" | "discord", result: string): Promise<void>;
+  providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
+  /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
+  seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
+  /** A second, ordinary account on the same instance. Never its operator. */
+  openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
+  close(): Promise<void>;
+}
+
+async function seedSignedDelivery(
+  databaseUrl: string,
+  provider: "github" | "slack",
+): Promise<void> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    await client.query(
+      `insert into provider_event_receipts
+         (organization_id, provider, delivery_id, signature_hash, source, payload)
+       select id, $1, $2, 'signed', 'webhook', '{}'::jsonb from organization limit 1`,
+      [provider, `delivery-${randomUUID()}`],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function providerApplicationVersion(
+  databaseUrl: string,
+  provider: "github" | "slack" | "discord",
+): Promise<number | null> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query<{ version: number }>(
+      `select version from runtime_provider_configuration where provider = $1`,
+      [provider],
+    );
+    return result.rows[0]?.version ?? null;
+  } finally {
+    await client.end();
   }
 }
 

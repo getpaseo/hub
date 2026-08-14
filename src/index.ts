@@ -27,14 +27,22 @@ import {
   type BillingRuntime,
 } from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
-import { createDiscordRegistration } from "./providers/discord/index.js";
-import { createGitHubRegistration } from "./providers/github/index.js";
-import { createSlackRegistration } from "./providers/slack/index.js";
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
 import { loadRuntimeEnvironment, type RuntimeEnvironmentSource } from "./runtime-environment.js";
 import { isCommandLineEntrypoint } from "./command-line.js";
+import {
+  DynamicProviderRuntime,
+  PROVIDERS,
+  createProviderApplicationInventory,
+  createProviderApplicationStore,
+  createProviderApplications,
+  createProviderApplicationVerifier,
+  readProviderApplicationEnvironment,
+  resolveCallbackOrigin,
+  type ProviderApplicationIdentity,
+} from "./provider-applications/index.js";
 
 export interface ProductionRuntimeOptions {
   environmentSource: RuntimeEnvironmentSource;
@@ -101,23 +109,79 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
-    const providerOptions = {
+    const providerEnvironment = await readProviderApplicationEnvironment(process.env);
+    const providerStore = createProviderApplicationStore(runtime, locks);
+    const providerVerifier = createProviderApplicationVerifier();
+    const providerInventory = createProviderApplicationInventory(runtime);
+    const providerRuntime = new DynamicProviderRuntime({
       database,
       auth,
       applicationBaseUrl: identity.appUrl,
-      publicBaseUrl: identity.appUrl,
-    };
-    const registrations = [
-      createGitHubRegistration(providerOptions),
-      createDiscordRegistration(providerOptions),
-      createSlackRegistration(providerOptions),
-    ];
+    });
+    const storedProviders = new Map(
+      (await providerStore.readAll()).map((configuration) => [
+        configuration.provider,
+        configuration,
+      ]),
+    );
+    for (const provider of PROVIDERS) {
+      const environmentConfiguration = providerEnvironment[provider];
+      const stored = storedProviders.get(provider);
+      const configuration = environmentConfiguration ?? stored?.configuration;
+      if (configuration === undefined) continue;
+      let verifiedIdentity: ProviderApplicationIdentity;
+      try {
+        if (environmentConfiguration === undefined) {
+          verifiedIdentity = stored!.identity;
+        } else if (provider === "slack" && environmentConfiguration.provider === "slack") {
+          verifiedIdentity = {
+            provider: "slack",
+            id: environmentConfiguration.appId,
+            name: "Slack app",
+          };
+        } else {
+          verifiedIdentity = await providerVerifier.verify(provider, environmentConfiguration);
+        }
+        const candidate = await providerRuntime.prepare(
+          provider,
+          configuration,
+          identity.appUrl,
+          verifiedIdentity,
+          environmentConfiguration === undefined ? stored!.version : 0,
+        );
+        await candidate.start();
+        candidate.publish();
+      } catch (error) {
+        logger.error(
+          { provider, errorType: error instanceof Error ? error.name : "UnknownError" },
+          "provider application could not be activated at startup",
+        );
+      }
+    }
+    const providerApplications = createProviderApplications({
+      auth,
+      store: providerStore,
+      environment: providerEnvironment,
+      runtime: providerRuntime,
+      verifier: providerVerifier,
+      inventory: providerInventory,
+      callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
+      beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
+        const organizationSlug = await providerInventory.organizationSlug(organizationId);
+        if (organizationSlug === undefined) throw new Error("organization unavailable");
+        const url = new URL(request.url);
+        url.searchParams.set("organizationSlug", organizationSlug);
+        url.searchParams.set("returnRoute", returnRoute);
+        return begin(new Request(url, { method: "POST", headers: request.headers }));
+      },
+    });
     return await createApplicationRuntime({
       database,
       auth,
       entitlements: entitlements.service,
       billing,
-      registrations,
+      registrations: providerRuntime.registrations(),
+      providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,
       close: () => resources.close(),
@@ -201,13 +265,14 @@ function loadRuntimeConfig(): RuntimeConfig {
   return {
     bind: process.env["PASEO_HUB_BIND"] ?? "0.0.0.0",
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
-    authPolicy: readInstanceAuthPolicy(),
+    authPolicy: readInstanceAuthPolicy(process.env),
   };
 }
 
 interface HubIdentity {
   appUrl: string;
   authSecret: string;
+  explicitAppUrl?: string;
 }
 
 async function resolveHubIdentity(
@@ -228,6 +293,7 @@ async function resolveHubIdentity(
   return {
     appUrl: await configuration.publicUrl(),
     authSecret: await configuration.authSecret(),
+    ...(configuredAppUrl === undefined ? {} : { explicitAppUrl: configuredAppUrl }),
   };
 }
 
