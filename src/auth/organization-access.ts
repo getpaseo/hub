@@ -12,6 +12,7 @@ import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
+import type { InstanceSetup } from "../instance-setup/index.js";
 import type {
   OrganizationResourceReader,
   OrganizationResources,
@@ -89,6 +90,8 @@ interface OrganizationAccessOptions {
   sessions: AccountSessionReader;
   baseURL: string;
   policy: InstanceAuthPolicy;
+  /** Decides whether a signed-out visitor sees the first-run welcome or ordinary sign-in. */
+  instanceSetup: InstanceSetup;
   apiKeys: OrganizationApiKeys;
   cliCredentials: OrganizationCliCredentials;
   entitlements: EntitlementsService;
@@ -223,6 +226,11 @@ export class OrganizationAccess {
     const session = await this.options.sessions.read(request.headers);
     const invitationId = new URL(request.url).searchParams.get("invitation");
     if (session === undefined) {
+      // A pristine instance has no accounts to sign in to and no invitations to carry, so the
+      // first-run journey replaces the sign-in wall entirely until someone claims it.
+      if ((await this.options.instanceSetup.status()) === "available") {
+        return Response.json({ status: "instanceSetupRequired" });
+      }
       const invitation =
         invitationId === null
           ? undefined

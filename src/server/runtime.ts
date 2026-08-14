@@ -1,4 +1,5 @@
 import type { HubOperations, HubRuntime } from "../app.js";
+import type { InitialOperator, InstanceClaim } from "../instance-setup/index.js";
 import type { BillingRuntime, CurrentSubscriptionView } from "../billing/index.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { OperatorConsole } from "../operator/console.js";
@@ -84,6 +85,8 @@ export interface ApplicationRuntime {
     data: { currentPassword: string; newPassword: string },
     headers: Headers,
   ): Promise<void>;
+  /** First-run only: creates the instance's operator and organization, then signs them in. */
+  claimInstance?(operator: InitialOperator, headers: Headers): Promise<InstanceClaim>;
   organizationResources(request: Request): Promise<OrganizationResourceReader>;
   webhook(request: Request): Promise<Response>;
   /** The Stripe product/price/subscription webhook. Unconfigured 404s as if unregistered. */

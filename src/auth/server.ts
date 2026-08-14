@@ -8,7 +8,11 @@ import type { Locks } from "../db/runtime/locks/index.js";
 import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { PublicCredentialAuthenticator } from "./public-credentials.js";
-import { bootstrapInstance } from "./bootstrap.js";
+import {
+  InstanceSetup,
+  type InitialOperator,
+  type InstanceClaim,
+} from "../instance-setup/index.js";
 import {
   defaultInstanceAuthPolicy,
   PASSWORD_MIN_LENGTH,
@@ -46,6 +50,8 @@ export interface AuthServer {
     data: { currentPassword: string; newPassword: string },
     headers: Headers,
   ): Promise<void>;
+  /** Creates the first operator on a pristine instance and signs the browser in. */
+  claimInstance?(operator: InitialOperator, headers: Headers): Promise<InstanceClaim>;
   resources(
     request: Request,
     organizations: OrganizationResources,
@@ -113,6 +119,11 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   const cliCredentials = new OrganizationCliCredentials(options.database);
   const publicCredentials = new PublicCredentialAuthenticator(apiKeys, cliCredentials);
   const registration = new RegistrationAdmission(options.database, options.locks, policy);
+  const instanceSetup = new InstanceSetup({
+    database: options.database,
+    policy,
+    provisioningEntitlements,
+  });
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -145,8 +156,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           returned: true,
         },
         // The instance operator flag: read into the session so cross-org operator authorization
-        // resolves from it. Granted only by bootstrap or SQL — never client input — so `input:
-        // false` keeps it off every sign-up/update body. Threaded exactly like mustChangePassword.
+        // resolves from it. Granted only by instance setup or SQL — never client input — so
+        // `input: false` keeps it off every sign-up/update body. Threaded like mustChangePassword.
         isInstanceOperator: {
           type: "boolean",
           defaultValue: false,
@@ -182,6 +193,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     apiKeys,
     cliCredentials,
     entitlements: options.entitlements,
+    instanceSetup,
     provisioningEntitlements,
     ...(options.onMembershipChanged === undefined
       ? {}
@@ -235,6 +247,19 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         await auth.api.signUpEmail({ body: data, headers });
       });
     },
+    async claimInstance(operator, headers) {
+      requireBrowserOrigin(headers, browserOrigin);
+      const claim = await instanceSetup.claim(operator);
+      if (claim.status !== "claimed") return claim;
+      // The account exists and owns the instance the moment the claim commits; signing in here
+      // is what turns that into the operator's browser session. A failure past this point costs
+      // them a sign-in, never the claim.
+      await auth.api.signInEmail({
+        body: { email: operator.email, password: operator.password },
+        headers,
+      });
+      return claim;
+    },
     async signOut(headers) {
       requireBrowserOrigin(headers, browserOrigin);
       await auth.api.signOut({ headers });
@@ -258,7 +283,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     resolveOrganizationAccess: (request) => access.resolve(request),
     resolveAccount: (request) => access.account(request),
     rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
-    initialize: () => bootstrapInstance(options.database, policy, provisioningEntitlements),
+    initialize: () => instanceSetup.initializeFromPolicy(),
     apiKeys,
     cliCredentials,
     publicCredentials,

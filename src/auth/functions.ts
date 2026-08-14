@@ -22,6 +22,10 @@ const signUpSchema = credentialsSchema.extend({
   invitation: z.string().min(1).optional(),
 });
 const invitationSchema = z.object({ invitation: z.string().optional() });
+const initialOperatorSchema = credentialsSchema.extend({
+  name: z.string().trim().min(1).max(100),
+  organizationName: z.string().trim().min(1).max(100),
+});
 const createOrganizationSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const selectOrganizationSchema = z.object({ organizationId: z.string().min(1) });
 const createInvitationSchema = z.object({ email: z.string().email(), role: invitationRoleSchema });
@@ -107,6 +111,23 @@ export const signUp = createServerFn({ method: "POST" })
       return respondOk({});
     } catch {
       return respondError({ message: "We couldn't create that account." });
+    }
+  });
+
+/**
+ * The first-run claim. Answers `unavailable` — never an error — when this instance already
+ * belongs to someone, so the public form cannot be used to probe an instance's history.
+ */
+export const setUpInstance = createServerFn({ method: "POST" })
+  .validator(initialOperatorSchema)
+  .handler(async ({ data }): Promise<Result<{ state: "claimed" | "unavailable" }>> => {
+    try {
+      const application = await getApplication();
+      if (application.claimInstance === undefined) throw new Error("auth unavailable");
+      const claim = await application.claimInstance(data, getRequest().headers);
+      return respondOk({ state: claim.status });
+    } catch {
+      return respondError({ message: "We couldn't set up this Hub. Try again." });
     }
   });
 

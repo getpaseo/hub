@@ -230,6 +230,54 @@ export class PaseoHub {
     }
   }
 
+  /**
+   * The whole first-run journey on an instance nobody owns: welcome, the initial operator form,
+   * the dashboard it lands on, and the ordinary sign-in wall that replaces setup afterwards.
+   * `machineAuth: false` is what keeps this application genuinely pristine — the machine-key
+   * fixture seeds an organization and user into every other fresh application.
+   */
+  async proveFirstRunOperatorClaim(account: Account, organizationName: string): Promise<void> {
+    const application = await this.startApplication({
+      databaseProfile: "fresh",
+      machineAuth: false,
+    });
+    const context = await this.browser.newContext();
+    try {
+      const user = new HubUser(application.origin, context, await context.newPage());
+      await user.completeFirstRunJourney(account, organizationName);
+    } finally {
+      await context.close();
+    }
+  }
+
+  /** Two browsers open the same unclaimed welcome; only the first one to submit becomes operator. */
+  async proveFirstRunClaimIsSingleUse(winner: Account, loser: Account): Promise<void> {
+    const application = await this.startApplication({
+      databaseProfile: "fresh",
+      machineAuth: false,
+    });
+    const winnerContext = await this.browser.newContext();
+    const loserContext = await this.browser.newContext();
+    try {
+      const loserPage = await loserContext.newPage();
+      const losingUser = new HubUser(application.origin, loserContext, loserPage);
+      await losingUser.openFirstRunSetupForm();
+
+      const winningUser = new HubUser(
+        application.origin,
+        winnerContext,
+        await winnerContext.newPage(),
+      );
+      await winningUser.openFirstRunSetupForm();
+      await winningUser.completeFirstRunClaim(winner, "Winning Organization");
+
+      await losingUser.expectFirstRunClaimRefused(loser, "Losing Organization");
+    } finally {
+      await winnerContext.close();
+      await loserContext.close();
+    }
+  }
+
   async expectApiKeyLifecycle(alias: string): Promise<void> {
     await this.requireUser(alias).expectApiKeyLifecycle();
   }
@@ -2316,6 +2364,96 @@ class HubUser {
     await change.getByRole("button", { name: "Save password" }).click();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(organizationName);
+  }
+
+  async completeFirstRunJourney(account: Account, organizationName: string): Promise<void> {
+    await this.expectFirstRunWelcome();
+    await this.openFirstRunSetupForm();
+    await this.expectFirstRunPasswordRefused(account, organizationName);
+    await this.completeFirstRunClaim(account, organizationName);
+
+    // Setup provisioned a working organization, not just a row: its default project opens.
+    await this.navigation.openProject("Default");
+    await this.returnToProjects();
+    // The instance operator surface is the proof that this account owns the instance, not just
+    // its organization: the console refuses anyone without the flag, server-side.
+    await this.openOperatorConsole();
+    await this.returnToProjects();
+
+    await this.signOut();
+    await this.page.goto(this.origin);
+    await expect(this.page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Welcome to Paseo Hub" })).toHaveCount(0);
+    await expectAccessible(this.page);
+
+    // The chosen password is final — there is no temporary-password gate to pass through.
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await signIn.getByLabel("Email").fill(account.email);
+    await signIn.getByLabel("Password").fill(account.password);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await this.expectActiveOrganization(organizationName);
+  }
+
+  /** The welcome screen, first at phone width and then on the desktop layout it scales up to. */
+  private async expectFirstRunWelcome(): Promise<void> {
+    await this.page.setViewportSize({ width: 390, height: 844 });
+    await this.page.goto(this.origin);
+    await expect(this.page.getByRole("heading", { name: "Welcome to Paseo Hub" })).toBeVisible();
+    await expect(this.page.getByRole("status")).toHaveText("Setup required");
+    await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toBeInViewport();
+    await expectAccessible(this.page);
+    await this.page.setViewportSize({ width: 1280, height: 800 });
+    await expect(this.page.getByRole("heading", { name: "Welcome to Paseo Hub" })).toBeVisible();
+  }
+
+  async openFirstRunSetupForm(): Promise<void> {
+    await this.page.goto(this.origin);
+    const begin = this.page.getByRole("button", { name: "Set up Paseo Hub" });
+    await expect(begin).toBeVisible();
+    await this.page.keyboard.press("Tab");
+    await expect(begin).toBeFocused();
+    await this.page.keyboard.press("Enter");
+    await expect(this.page.getByRole("form", { name: "Set up Paseo Hub" })).toBeVisible();
+    await expectAccessible(this.page);
+  }
+
+  /** A password below the instance minimum never reaches the server. */
+  private async expectFirstRunPasswordRefused(
+    account: Account,
+    organizationName: string,
+  ): Promise<void> {
+    await this.fillFirstRunSetupForm({ ...account, password: "short" }, organizationName);
+    await expect(this.page.getByRole("form", { name: "Set up Paseo Hub" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toHaveCount(0);
+  }
+
+  async completeFirstRunClaim(account: Account, organizationName: string): Promise<void> {
+    this.email = account.email.toLowerCase();
+    await this.fillFirstRunSetupForm(account, organizationName);
+    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await this.expectActiveOrganization(organizationName);
+    await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
+  }
+
+  async expectFirstRunClaimRefused(account: Account, organizationName: string): Promise<void> {
+    await this.fillFirstRunSetupForm(account, organizationName);
+    await expect(
+      this.page.getByRole("heading", { name: "This Hub is already set up" }),
+    ).toBeVisible();
+    await expectAccessible(this.page);
+    await this.page.getByRole("button", { name: "Continue to sign in" }).click();
+    await expect(this.page.getByRole("form", { name: "Sign in" })).toBeVisible();
+    await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toHaveCount(0);
+  }
+
+  private async fillFirstRunSetupForm(account: Account, organizationName: string): Promise<void> {
+    const form = this.page.getByRole("form", { name: "Set up Paseo Hub" });
+    await form.getByRole("textbox", { name: "Name", exact: true }).fill(account.name);
+    await form.getByLabel("Email").fill(account.email);
+    await form.getByLabel("Password").fill(account.password);
+    await form.getByLabel("Organization name").fill(organizationName);
+    await form.getByRole("button", { name: "Finish setup" }).click();
   }
 
   async expectApiKeyLifecycle(): Promise<void> {

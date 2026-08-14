@@ -44,6 +44,20 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+it("opens first-run setup when nothing is configured and no data exists", async () => {
+  delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
+
+  const runtime = await startProductionRuntime();
+  const state = await runtime.browserAccount!(
+    new Request("http://localhost:3000/api/auth/paseo/state"),
+  );
+
+  assert.equal(state.status, 200);
+  assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+});
+
 it("releases embedded storage when runtime configuration is invalid", async () => {
   process.env["PASEO_HUB_APP_URL"] = "not a URL";
 

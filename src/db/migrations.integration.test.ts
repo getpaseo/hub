@@ -12,7 +12,8 @@ import { createDatabase, createPostgresPool } from "./test-utils/runtime.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
-import { bootstrapInstance } from "../auth/bootstrap.js";
+import { InstanceSetup } from "../instance-setup/index.js";
+import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
@@ -371,7 +372,11 @@ describe("database migration application", () => {
       },
     };
     const pool = await createPostgresPool(fixture.url);
-    await bootstrapInstance(pool, policy);
+    await new InstanceSetup({
+      database: pool,
+      policy,
+      provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
+    }).initializeFromPolicy();
     await pool.close();
 
     assert.deepEqual(await durableSnapshot(fixture.url), before);
