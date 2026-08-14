@@ -25,7 +25,15 @@ async function openSetup(
 }
 
 test("a first account continues to app setup, and skipping it is durable", async ({ hub }) => {
-  const session = await openSetup(hub);
+  const organizationName = "Northstar Research";
+  const session = await hub.openAppSetup({
+    account: {
+      name: "Northstar Operator",
+      email: "northstar-operator@example.com",
+      password: "northstar-operator-password",
+    },
+    organizationName,
+  });
   try {
     const { surface, page } = session;
     await surface.expectStatuses({
@@ -43,6 +51,13 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
     await surface.leave("Do this later");
+    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByRole("navigation", { name: "Breadcrumb", exact: true })
+        .getByText(organizationName, { exact: true }),
+    ).toBeVisible();
+    await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
     // Business as usual once the transition completes: reloading never returns here.
     await page.reload();
     await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
@@ -204,35 +219,33 @@ test("Slack completes its HTTPS install before saving and activating the app", a
   }
 });
 
-test("Slack explains why setup is unavailable on plain HTTP", async ({ hub }) => {
+test("Slack is genuinely blocked on plain HTTP", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
     const slack = session.surface.slack;
     await slack.expand();
-    await expect(
-      slack.body().getByText("Slack requires a public HTTPS address.", { exact: false }),
-    ).toBeVisible();
-    await expect(slack.form().getByLabel("App ID", { exact: true })).toBeDisabled();
-    await expect(slack.action("Save and continue to Slack")).toBeDisabled();
+    await slack.expectHttpsBlocked();
     await session.surface.shoot(SHOTS, "apps-08-slack-https-required.desktop");
   } finally {
     await session.close();
   }
 });
 
-test("Slack setup trusts an HTTPS reverse proxy when no app URL is configured", async ({ hub }) => {
+test("Slack setup uses the exact built zero-env PGlite workspace proxy journey", async ({
+  hub,
+}) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
     organizationName: "Acme",
     reverseProxy: true,
+    embedded: true,
   });
   try {
-    const { page, surface, origin } = session;
+    const { application, page, surface, origin } = session;
     expect(origin).toMatch(/^https:\/\//u);
+    expect(application.logs()).toContain("database runtime ready: embedded");
     await surface.slack.expand();
-    expect(await surface.slack.copiedManifest()).toContain(
-      `${origin}/api/integrations/slack/callback`,
-    );
+    await surface.slack.expectSlackSetupActionable(origin);
     await surface.slack.fillWorkingCredentials();
     await surface.slack.save();
     await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();

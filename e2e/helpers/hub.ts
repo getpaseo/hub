@@ -66,6 +66,8 @@ export interface BuiltApplicationOptions {
   https?: boolean;
   /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
   reverseProxy?: boolean;
+  /** Exercise the built application with its zero-DATABASE_URL embedded PGlite runtime. */
+  embedded?: boolean;
   bootstrap?: {
     organizationName: string;
     ownerEmail: string;
@@ -274,6 +276,7 @@ export class PaseoHub {
     environmentApps?: readonly ("github" | "slack" | "discord")[];
     https?: boolean;
     reverseProxy?: boolean;
+    embedded?: boolean;
   }): Promise<AppSetupSession> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -281,6 +284,7 @@ export class PaseoHub {
       providerApplications: true,
       https: input.https === true,
       reverseProxy: input.reverseProxy === true,
+      embedded: input.embedded === true,
       ...(input.environmentApps === undefined ? {} : { environmentApps: input.environmentApps }),
     });
     const context = await this.browser.newContext({

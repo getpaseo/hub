@@ -246,6 +246,7 @@ function createSlackConnection(
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
         callbackOrigin: options.callbackOrigin,
         configurationVersion: options.configurationVersion,
+        providerApplicationId: options.configuration.appId,
         configurationSnapshot: { provider: "slack", ...options.configuration },
         expectedConfigurationVersion: options.expectedConfigurationVersion ?? null,
         activateConfiguration: options.activateConfiguration,

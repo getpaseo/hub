@@ -41,6 +41,11 @@ describe("provider connection facades PostgreSQL authority", () => {
     database = await createDatabase(postgres.getConnectionUri());
     pool = await createPostgresPool(postgres.getConnectionUri());
     await seedAccount(pool, "acme", "owner");
+    await pool.query(
+      `insert into runtime_provider_activation
+         (provider, provider_application_id, configuration_version)
+       values ('github', '42', 0), ('discord', '900', 0)`,
+    );
     auth = new ConnectionAuth(accessFor("acme", "owner"));
     github = new TestGitHub();
     discord = new TestDiscord();

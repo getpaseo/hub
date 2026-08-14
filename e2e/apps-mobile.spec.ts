@@ -11,6 +11,32 @@ const OPERATOR = {
   password: "mobile-operator-password",
 };
 
+test("a phone operator can skip app setup and reach their dashboard", async ({ hub }) => {
+  const organizationName = "Harbor Cooperative";
+  const session = await hub.openAppSetup({
+    account: {
+      name: "Harbor Operator",
+      email: "harbor-operator@example.com",
+      password: "harbor-operator-password",
+    },
+    organizationName,
+  });
+  try {
+    await session.surface.leave("Do this later");
+    await expect(
+      session.page.getByRole("heading", { name: "Projects", exact: true }),
+    ).toBeVisible();
+    await expect(
+      session.page
+        .getByRole("navigation", { name: "Breadcrumb", exact: true })
+        .getByText(organizationName, { exact: true }),
+    ).toBeVisible();
+    await session.surface.shoot(SHOTS, "apps-14-skip-dashboard.mobile");
+  } finally {
+    await session.close();
+  }
+});
+
 test("the whole app setup journey completes at phone width", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
@@ -109,9 +135,7 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
   try {
     const { surface } = session;
     await surface.slack.expand();
-    await expect(
-      surface.slack.body().getByText("Slack requires a public HTTPS address.", { exact: false }),
-    ).toBeVisible();
+    await surface.slack.expectHttpsBlocked();
     await surface.shoot(SHOTS, "apps-08-slack-https-required.mobile");
     await surface.slack.collapse();
 

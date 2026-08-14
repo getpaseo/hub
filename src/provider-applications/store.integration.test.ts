@@ -151,6 +151,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
       },
       lifetimeMinutes: 10,
       configurationVersion: (expectedVersion ?? 0) + 1,
+      providerApplicationId: configuration.appId,
       callbackOrigin: "https://hub.test",
       configurationSnapshot: configuration,
       expectedConfigurationVersion: expectedVersion,

@@ -312,6 +312,7 @@ function createGitHubConnection(
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
         callbackOrigin: options.callbackOrigin,
         configurationVersion: options.configurationVersion,
+        providerApplicationId: options.configuration.appId,
         configurationSnapshot: { provider: "github", ...options.configuration },
         expectedConfigurationVersion: null,
         activateConfiguration: false,

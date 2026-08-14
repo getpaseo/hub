@@ -175,82 +175,90 @@ export function ProviderSection({
       description={guide.summary}
       status={<StatusPill tone={status.tone}>{status.label}</StatusPill>}
     >
-      <div className="grid gap-6">
-        {view.managedByEnvironment ? (
-          <Alert>
-            <AlertDescription>Set by this Hub's environment. Change it there.</AlertDescription>
-          </Alert>
-        ) : null}
-        {secure ? null : <InsecureOriginNotice guide={guide} origin={callbackOrigin} />}
-        <Steps guide={guide} origin={callbackOrigin} />
-        {showForm ? (
-          // The actions sit outside the form so the result region below can be one element that
-          // survives the switch to the saved view — focus moved to a node that then unmounts is
-          // focus dropped on the floor.
-          <form id={formId} aria-label={`Set up ${guide.name}`} aria-busy={busy} onSubmit={submit}>
-            <FieldSet className="max-w-md gap-4" disabled={busy || blocked}>
+      {blocked ? (
+        <InsecureOriginNotice guide={guide} origin={callbackOrigin} />
+      ) : (
+        <div className="grid gap-6">
+          {view.managedByEnvironment ? (
+            <Alert>
+              <AlertDescription>Set by this Hub's environment. Change it there.</AlertDescription>
+            </Alert>
+          ) : null}
+          {secure ? null : <InsecureOriginNotice guide={guide} origin={callbackOrigin} />}
+          <Steps guide={guide} origin={callbackOrigin} />
+          {showForm ? (
+            // The actions sit outside the form so the result region below can be one element that
+            // survives the switch to the saved view — focus moved to a node that then unmounts is
+            // focus dropped on the floor.
+            <form
+              id={formId}
+              aria-label={`Set up ${guide.name}`}
+              aria-busy={busy}
+              onSubmit={submit}
+            >
+              <FieldSet className="max-w-md gap-4" disabled={busy}>
+                {guide.fields.map((field) => (
+                  <ApplicationField
+                    key={field.name}
+                    id={`${guide.provider}-${field.name}`}
+                    name={field.name}
+                    label={field.label}
+                    kind={field.kind}
+                    {...(field.description === undefined ? {} : { description: field.description })}
+                    {...(errors[field.name] === undefined ? {} : { error: errors[field.name] })}
+                    {...storedDefault(identifierValue(view, field.identifier))}
+                  />
+                ))}
+              </FieldSet>
+            </form>
+          ) : (
+            <div className="grid max-w-md gap-3 sm:grid-cols-2">
               {guide.fields.map((field) => (
-                <ApplicationField
+                <StoredValue
                   key={field.name}
-                  id={`${guide.provider}-${field.name}`}
-                  name={field.name}
                   label={field.label}
-                  kind={field.kind}
-                  {...(field.description === undefined ? {} : { description: field.description })}
-                  {...(errors[field.name] === undefined ? {} : { error: errors[field.name] })}
-                  {...storedDefault(identifierValue(view, field.identifier))}
+                  value={identifierValue(view, field.identifier)}
                 />
               ))}
-            </FieldSet>
-          </form>
-        ) : (
-          <div className="grid max-w-md gap-3 sm:grid-cols-2">
-            {guide.fields.map((field) => (
-              <StoredValue
-                key={field.name}
-                label={field.label}
-                value={identifierValue(view, field.identifier)}
-              />
-            ))}
-          </div>
-        )}
-        <ResultRegion ref={result} errorRef={error} view={view} guide={guide} outcome={outcome} />
-        <div>
-          <Actions>
-            {showForm ? (
-              <Button type="submit" form={formId} disabled={busy || blocked}>
-                {save.isPending || leaving ? guide.actions.savePending : guide.actions.save}
-              </Button>
-            ) : (
-              <ConnectAction
-                guide={guide}
-                view={view}
+            </div>
+          )}
+          <ResultRegion ref={result} errorRef={error} view={view} guide={guide} outcome={outcome} />
+          <div>
+            <Actions>
+              {showForm ? (
+                <Button type="submit" form={formId} disabled={busy}>
+                  {save.isPending || leaving ? guide.actions.savePending : guide.actions.save}
+                </Button>
+              ) : (
+                <ConnectAction
+                  guide={guide}
+                  view={view}
+                  busy={busy}
+                  pending={connect.isPending || leaving}
+                  onConnect={startConnection}
+                />
+              )}
+              <SecondaryAction
                 busy={busy}
-                blocked={blocked}
-                pending={connect.isPending || leaving}
-                onConnect={startConnection}
+                editing={showForm}
+                replacing={replacing}
+                managed={view.managedByEnvironment}
+                replaceRef={replace}
+                onCancel={() => {
+                  setReplacing(false);
+                  requestAnimationFrame(() => replace.current?.focus());
+                }}
+                onReplace={() => {
+                  setErrors({});
+                  setOutcome(undefined);
+                  setReplacing(true);
+                }}
               />
-            )}
-            <SecondaryAction
-              busy={busy}
-              editing={showForm}
-              replacing={replacing}
-              managed={view.managedByEnvironment}
-              replaceRef={replace}
-              onCancel={() => {
-                setReplacing(false);
-                requestAnimationFrame(() => replace.current?.focus());
-              }}
-              onReplace={() => {
-                setErrors({});
-                setOutcome(undefined);
-                setReplacing(true);
-              }}
-            />
-          </Actions>
-          <SaveNotes guide={guide} editing={showForm} replacing={replacing} />
+            </Actions>
+            <SaveNotes guide={guide} editing={showForm} replacing={replacing} />
+          </div>
         </div>
-      </div>
+      )}
     </Disclosure>
   );
 }
@@ -265,6 +273,7 @@ export function ProviderSectionLoading({
   origin: string;
   open: boolean;
 }) {
+  const blocked = guide.requiresHttps && !isSecureOrigin(origin);
   return (
     <div aria-busy="true">
       <Disclosure
@@ -276,17 +285,21 @@ export function ProviderSectionLoading({
         description={guide.summary}
         status={<Skeleton className="h-5 w-24 rounded-full" />}
       >
-        <div className="grid gap-6">
-          <Steps guide={guide} origin={origin} />
-          <div className="grid max-w-md gap-4">
-            {guide.fields.map((field) => (
-              <div key={field.name} className="grid gap-2">
-                <span className="text-sm font-medium">{field.label}</span>
-                <Skeleton className="h-9 w-full" />
-              </div>
-            ))}
+        {blocked ? (
+          <InsecureOriginNotice guide={guide} origin={origin} />
+        ) : (
+          <div className="grid gap-6">
+            <Steps guide={guide} origin={origin} />
+            <div className="grid max-w-md gap-4">
+              {guide.fields.map((field) => (
+                <div key={field.name} className="grid gap-2">
+                  <span className="text-sm font-medium">{field.label}</span>
+                  <Skeleton className="h-9 w-full" />
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </Disclosure>
     </div>
   );
@@ -375,14 +388,12 @@ function ConnectAction({
   guide,
   view,
   busy,
-  blocked,
   pending,
   onConnect,
 }: {
   guide: ProviderGuide;
   view: ProviderApplicationView;
   busy: boolean;
-  blocked: boolean;
   pending: boolean;
   onConnect: () => void;
 }) {
@@ -390,7 +401,7 @@ function ConnectAction({
     view.connections.length > 0 ? guide.actions.connectAgain : (guide.actions.connect ?? undefined);
   if (label === undefined) return null;
   return (
-    <Button type="button" disabled={busy || blocked} onClick={onConnect}>
+    <Button type="button" disabled={busy} onClick={onConnect}>
       {pending ? "Opening…" : label}
     </Button>
   );

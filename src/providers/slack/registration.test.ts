@@ -395,6 +395,7 @@ function callbackDatabase() {
       candidateExternalId: null,
       pkceVerifier: null,
       configurationVersion: input.configurationVersion,
+      providerApplicationId: input.providerApplicationId,
       callbackOrigin: input.callbackOrigin,
       configurationSnapshot: input.configurationSnapshot,
       expectedConfigurationVersion: input.expectedConfigurationVersion,

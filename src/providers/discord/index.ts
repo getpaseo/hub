@@ -203,6 +203,7 @@ function createDiscordConnection(
         lifetimeMinutes: CONNECTION_ATTEMPT_LIFETIME_MINUTES,
         callbackOrigin: options.callbackOrigin,
         configurationVersion: options.configurationVersion,
+        providerApplicationId: options.configuration.clientId,
         configurationSnapshot: { provider: "discord", ...options.configuration },
         expectedConfigurationVersion: null,
         activateConfiguration: false,

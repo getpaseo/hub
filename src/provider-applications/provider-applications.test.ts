@@ -516,6 +516,7 @@ function createFixture(
               ]
             : [],
         ),
+      claimLegacyConnections: () => Promise.resolve(true),
       lastEventAt: (_provider, _identity?: ProviderApplicationIdentity, version?: number) =>
         Promise.resolve(
           version === options.eventEvidenceVersion ? new Date("2026-08-14T10:00:00Z") : null,
@@ -566,6 +567,7 @@ function connectedInventory(applicationId: string) {
             ]
           : [],
       ),
+    claimLegacyConnections: () => Promise.resolve(true),
     lastEventAt: () => Promise.resolve(null),
   };
 }
@@ -604,6 +606,10 @@ class MemoryStore implements ProviderApplicationStore {
     };
     this.values.set(input.provider, value);
     return Promise.resolve(value);
+  }
+
+  activate(_input: Parameters<ProviderApplicationStore["activate"]>[0]) {
+    return Promise.resolve();
   }
 
   async completeSlackInstallation(

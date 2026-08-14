@@ -351,6 +351,7 @@ export interface ConnectionAttemptRecord {
   candidateExternalId: string | null;
   pkceVerifier: string | null;
   configurationVersion: number;
+  providerApplicationId: string | null;
   callbackOrigin: string;
   configurationSnapshot: unknown;
   expectedConfigurationVersion: number | null;
@@ -406,6 +407,7 @@ export interface StartConnectionAttemptInput {
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
   configurationVersion: number;
+  providerApplicationId: string;
   callbackOrigin: string;
   configurationSnapshot: unknown;
   expectedConfigurationVersion: number | null;
@@ -451,7 +453,7 @@ export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
 export interface CompleteSlackProviderApplicationInput extends BindSlackConnectionInput {
   providerConfiguration: {
     configuration: unknown;
-    identity: unknown;
+    identity: { id: string };
     expectedVersion: number | undefined;
     updatedByUserId: string;
   };

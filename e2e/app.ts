@@ -83,11 +83,16 @@ class BuiltApplications {
   private readonly sourcePaseos: SourcePaseo[] = [];
 
   async start(options: BuiltApplicationOptions = {}): Promise<BuiltApplication> {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine")
-      .withStartupTimeout(30_000)
-      .start();
-    const databaseUrl = postgres.getConnectionUri();
-    await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
+    const postgres =
+      options.embedded === true
+        ? undefined
+        : await new PostgreSqlContainer("postgres:17-alpine").withStartupTimeout(30_000).start();
+    const dataDirectory =
+      options.embedded === true ? await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-")) : undefined;
+    const databaseUrl = postgres?.getConnectionUri();
+    if (databaseUrl !== undefined) {
+      await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
+    }
     const port = await availablePort();
     const reverseProxyPort = options.reverseProxy === true ? await availablePort() : undefined;
     const tls =
@@ -98,7 +103,8 @@ class BuiltApplications {
     const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
       cwd: process.cwd(),
       env: applicationEnvironment({
-        databaseUrl,
+        ...(databaseUrl === undefined ? {} : { databaseUrl }),
+        ...(dataDirectory === undefined ? {} : { dataDirectory }),
         origin,
         ...(options.reverseProxy === true ? {} : { appUrl: origin }),
         port,
@@ -115,9 +121,10 @@ class BuiltApplications {
         : await startReverseProxy(reverseProxyPort, port, tls);
     const application: RunningApplication = {
       origin,
-      databaseUrl,
+      databaseUrl: databaseUrl ?? `embedded:${dataDirectory}`,
       machineKey: "",
-      postgres,
+      ...(postgres === undefined ? {} : { postgres }),
+      ...(dataDirectory === undefined ? {} : { dataDirectory }),
       server,
       ...(proxy === undefined ? {} : { proxy }),
       ...(tls === undefined ? {} : { tlsRoot: tls.root }),
@@ -159,7 +166,10 @@ class BuiltApplications {
       applications.map(async (application) => {
         await stopServer(application.server);
         await stopProxy(application.proxy);
-        await application.postgres.stop();
+        await application.postgres?.stop();
+        if (application.dataDirectory !== undefined) {
+          await rm(application.dataDirectory, { recursive: true, force: true });
+        }
         if (application.tlsRoot !== undefined) {
           await rm(application.tlsRoot, { recursive: true, force: true });
         }
@@ -175,14 +185,16 @@ class BuiltApplications {
 }
 
 interface RunningApplication extends BuiltApplication {
-  postgres: StartedPostgreSqlContainer;
+  postgres?: StartedPostgreSqlContainer;
+  dataDirectory?: string;
   server: ChildProcess;
   tlsRoot?: string;
   proxy?: Server;
 }
 
 interface ApplicationEnvironmentInput {
-  databaseUrl: string;
+  databaseUrl?: string;
+  dataDirectory?: string;
   origin: string;
   appUrl?: string;
   port: number;
@@ -207,7 +219,6 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
   const browserAuthEnabled = input.browserAuth !== false;
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
-    DATABASE_URL: input.databaseUrl,
     PORT: String(input.port),
     PASEO_HUB_BIND: "127.0.0.1",
     PASEO_REGISTRATION_MODE:
@@ -248,6 +259,10 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           PASEO_BOOTSTRAP_OWNER_PASSWORD: input.bootstrap.ownerPassword,
         }),
   };
+  if (input.databaseUrl === undefined) delete environment["DATABASE_URL"];
+  else environment["DATABASE_URL"] = input.databaseUrl;
+  if (input.dataDirectory === undefined) delete environment["PASEO_HUB_DATA_DIR"];
+  else environment["PASEO_HUB_DATA_DIR"] = input.dataDirectory;
   if (input.appUrl === undefined) delete environment["PASEO_HUB_APP_URL"];
   else environment["PASEO_HUB_APP_URL"] = input.appUrl;
   return environment;

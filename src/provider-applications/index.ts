@@ -64,6 +64,11 @@ export interface ProviderApplicationStore {
     expectedVersion: number | undefined;
     updatedByUserId: string;
   }): Promise<StoredProviderApplication>;
+  activate(input: {
+    provider: Provider;
+    identity: ProviderApplicationIdentity;
+    configurationVersion: number;
+  }): Promise<void>;
   completeSlackInstallation(input: {
     configuration: SlackProviderApplicationConfiguration;
     identity: Extract<ProviderApplicationIdentity, { provider: "slack" }>;
@@ -122,6 +127,11 @@ export interface ConnectedProviderIdentity {
 
 export interface ProviderApplicationInventory {
   connectedIdentities(provider: Provider): Promise<readonly ConnectedProviderIdentity[]>;
+  /** Durably assigns pre-feature, unowned connections before their environment runtime publishes. */
+  claimLegacyConnections(
+    provider: Provider,
+    identity: ProviderApplicationIdentity,
+  ): Promise<boolean>;
   lastEventAt(
     provider: Provider,
     identity: ProviderApplicationIdentity,
@@ -494,6 +504,14 @@ function isConfigurationConflict(error: unknown): boolean {
   );
 }
 
+function isIdentityConflict(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    Reflect.get(error, "name") === "ProviderApplicationIdentityConflictError"
+  );
+}
+
 export { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 
 export function resolveCallbackOrigin(request: Request, explicitAppUrl?: string): string {
@@ -542,18 +560,40 @@ export async function activateProviderApplicationsAtStartup(options: {
         options.verifier,
       );
       const connections = await options.inventory.connectedIdentities(provider);
-      if (identityConflictsWithConnections(identity, stored, connections)) {
+      const claimLegacyConnections =
+        stored === undefined &&
+        connections.length > 0 &&
+        connections.every((connection) => connection.applicationId === null);
+      if (
+        identityConflictsWithConnections(identity, stored, connections) &&
+        !claimLegacyConnections
+      ) {
         throw new ProviderApplicationError("identityConflict", stored?.identity.name);
       }
-      const candidate = await options.runtime.prepare(
-        provider,
-        configuration,
-        options.callbackOrigin,
-        identity,
-        environmentConfiguration === undefined ? stored!.version : 0,
-      );
-      await candidate.start();
-      candidate.publish();
+      let candidate: ProviderRuntimeCandidate | undefined;
+      try {
+        const configurationVersion = environmentConfiguration === undefined ? stored!.version : 0;
+        candidate = await options.runtime.prepare(
+          provider,
+          configuration,
+          options.callbackOrigin,
+          identity,
+          configurationVersion,
+        );
+        await candidate.start();
+        if (
+          claimLegacyConnections &&
+          !(await options.inventory.claimLegacyConnections(provider, identity))
+        ) {
+          throw new ProviderApplicationError("identityConflict");
+        }
+        await options.store.activate({ provider, identity, configurationVersion });
+        candidate.publish();
+        candidate = undefined;
+      } catch (error) {
+        await candidate?.close().catch(() => undefined);
+        throw error;
+      }
     } catch (error) {
       failures.push({ provider, error });
     }
@@ -682,6 +722,9 @@ async function verifyAndActivateProvider(
   } catch (error) {
     await candidate?.close().catch(() => undefined);
     if (error instanceof ProviderApplicationError) throw error;
+    if (isIdentityConflict(error)) {
+      throw new ProviderApplicationError("identityConflict", previous?.identity.name);
+    }
     if (isConfigurationConflict(error)) {
       throw new ProviderApplicationError("configurationConflict");
     }

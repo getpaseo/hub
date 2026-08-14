@@ -114,6 +114,25 @@ describe("production Hub cold start", () => {
     );
   }, 120_000);
 
+  it("treats a blank app URL override as absent during zero-environment startup", async () => {
+    const databaseUrl = await isolatedDatabaseUrl(
+      postgres.getConnectionUri(),
+      "production_blank_app_url",
+    );
+    process.env["DATABASE_URL"] = databaseUrl;
+    process.env["PASEO_HUB_AUTH_SECRET"] = "production-blank-url-secret-at-least-32-characters";
+    process.env["PASEO_HUB_APP_URL"] = "";
+    process.env["PASEO_REGISTRATION_MODE"] = "disabled";
+    process.env["PASEO_ORGANIZATION_CREATION"] = "disabled";
+    delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+    delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+    delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
+
+    const runtime = await startProductionRuntime();
+
+    assert.ok(runtime);
+  }, 120_000);
+
   it("runs configured bootstrap before exposing the production runtime", async () => {
     const databaseUrl = await isolatedDatabaseUrl(
       postgres.getConnectionUri(),

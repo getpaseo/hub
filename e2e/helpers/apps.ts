@@ -183,6 +183,35 @@ export class AppSection {
     await expect(alert).toContainText(message);
     await expect(alert).toBeFocused();
   }
+
+  /** Plain HTTP is a terminal Slack setup state, not an editable workflow with disabled inputs. */
+  async expectHttpsBlocked(): Promise<void> {
+    await this.expectExpanded();
+    await expect(
+      this.body().getByText("Slack requires Hub to use HTTPS before you can set it up.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(this.body().getByRole("link", { name: "Create a Slack app" })).toHaveCount(0);
+    await expect(this.body().getByRole("list")).toHaveCount(0);
+    await expect(this.body().getByRole("button", { name: "Copy manifest" })).toHaveCount(0);
+    await expect(this.form()).toHaveCount(0);
+    await expect(this.action("Save and continue to Slack")).toHaveCount(0);
+  }
+
+  /** HTTPS exposes every user action needed to create and install the Slack app. */
+  async expectSlackSetupActionable(origin: string): Promise<void> {
+    await this.expectExpanded();
+    await expect(this.body().getByRole("link", { name: "Create a Slack app" })).toBeVisible();
+    await expect(this.body().getByRole("list")).toBeVisible();
+    await expect(this.body().getByRole("button", { name: "Copy manifest" })).toBeVisible();
+    await expect(this.form()).toBeVisible();
+    for (const label of Object.keys(WORKING_CREDENTIALS.Slack)) {
+      await expect(this.form().getByLabel(label, { exact: true })).toBeEnabled();
+    }
+    await expect(this.action("Save and continue to Slack")).toBeEnabled();
+    expect(await this.copiedManifest()).toContain(`${origin}/api/integrations/slack/callback`);
+  }
 }
 
 /**

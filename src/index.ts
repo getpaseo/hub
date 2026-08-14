@@ -252,7 +252,7 @@ async function resolveHubIdentity(
   database: DatabaseRuntime,
   effectivePort: number,
 ): Promise<HubIdentity> {
-  const configuredAppUrl = process.env["PASEO_HUB_APP_URL"];
+  const configuredAppUrl = nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]);
   const configuredAuthSecret = process.env["PASEO_HUB_AUTH_SECRET"];
   const configuration = createRuntimeConfiguration({
     database,
@@ -268,6 +268,10 @@ async function resolveHubIdentity(
     authSecret: await configuration.authSecret(),
     ...(configuredAppUrl === undefined ? {} : { explicitAppUrl: configuredAppUrl }),
   };
+}
+
+function nonEmptyEnvironment(value: string | undefined): string | undefined {
+  return value === undefined || value.trim().length === 0 ? undefined : value;
 }
 
 async function main(): Promise<void> {

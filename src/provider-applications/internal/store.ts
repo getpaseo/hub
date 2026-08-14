@@ -100,6 +100,8 @@ export function createProviderApplicationStore(
     save(input) {
       return locks.withLock(`provider-configuration:${input.provider}`, () =>
         database.transaction(async (transaction) => {
+          await lockProviderActivation(locks, transaction, input.provider);
+          await requireCompatibleConnections(transaction, input.provider, input.identity.id);
           const existing = await transaction.query<{ version: number }>(
             `select version from runtime_provider_configuration where provider = $1 for update`,
             [input.provider],
@@ -135,7 +137,28 @@ export function createProviderApplicationStore(
           );
           const saved = result.rows[0];
           if (saved === undefined) throw new Error("provider configuration save returned no row");
-          return parseRow(saved);
+          const parsed = parseRow(saved);
+          await writeProviderActivation(
+            transaction,
+            input.provider,
+            input.identity.id,
+            parsed.version,
+          );
+          return parsed;
+        }),
+      );
+    },
+    activate(input) {
+      return locks.withLock(`provider-configuration:${input.provider}`, () =>
+        database.transaction(async (transaction) => {
+          await lockProviderActivation(locks, transaction, input.provider);
+          await requireCompatibleConnections(transaction, input.provider, input.identity.id);
+          await writeProviderActivation(
+            transaction,
+            input.provider,
+            input.identity.id,
+            input.configurationVersion,
+          );
         }),
       );
     },
@@ -152,6 +175,58 @@ export function createProviderApplicationStore(
       });
     },
   };
+}
+
+async function lockProviderActivation(
+  locks: Locks,
+  transaction: Parameters<Locks["withTxLock"]>[0],
+  provider: Provider,
+): Promise<void> {
+  await locks.withTxLock(transaction, JSON.stringify(["provider-application", provider]));
+}
+
+async function requireCompatibleConnections(
+  transaction: Parameters<Locks["withTxLock"]>[0],
+  provider: Provider,
+  applicationId: string,
+): Promise<void> {
+  const table = connectionTable(provider);
+  const conflicts = await transaction.query<{ conflict: boolean }>(
+    `select exists (
+       select 1 from ${table}
+       where provider_application_id is null or provider_application_id <> $1
+     ) as conflict`,
+    [applicationId],
+  );
+  if (conflicts.rows[0]?.conflict === true) {
+    const error = new Error("provider application identity conflicts with active connections");
+    error.name = "ProviderApplicationIdentityConflictError";
+    throw error;
+  }
+}
+
+async function writeProviderActivation(
+  transaction: Parameters<Locks["withTxLock"]>[0],
+  provider: Provider,
+  applicationId: string,
+  configurationVersion: number,
+): Promise<void> {
+  await transaction.query(
+    `insert into runtime_provider_activation
+       (provider, provider_application_id, configuration_version, activated_at)
+     values ($1, $2, $3, now())
+     on conflict (provider) do update
+       set provider_application_id = excluded.provider_application_id,
+           configuration_version = excluded.configuration_version,
+           activated_at = excluded.activated_at`,
+    [provider, applicationId, configurationVersion],
+  );
+}
+
+function connectionTable(provider: Provider): string {
+  if (provider === "github") return "github_connections";
+  if (provider === "slack") return "slack_connections";
+  return "discord_connections";
 }
 
 function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {

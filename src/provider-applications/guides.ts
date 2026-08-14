@@ -280,9 +280,9 @@ export const SLACK_GUIDE: ProviderGuide = {
   },
   saveHint: "Slack asks you to install the app before anything is saved.",
   requiresHttps: true,
-  insecureOriginNotice: (origin) => ({
+  insecureOriginNotice: () => ({
     tone: "warning",
-    message: `Slack requires a public HTTPS address. This Hub is at ${origin}. Open Hub at its public HTTPS address to set up Slack.`,
+    message: "Slack requires Hub to use HTTPS before you can set it up.",
   }),
   receivesEvents: true,
 };

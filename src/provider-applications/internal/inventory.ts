@@ -42,6 +42,25 @@ export function createProviderApplicationInventory(
       const value = result.rows[0]?.received_at;
       return value === null || value === undefined ? null : new Date(value);
     },
+    async claimLegacyConnections(provider, identity) {
+      const table = connectionTable(provider);
+      return database.transaction(async (transaction) => {
+        await transaction.query(
+          `update ${table} set provider_application_id = $1
+           where provider_application_id is null`,
+          [identity.id],
+        );
+        const ownership = await transaction.query<{ owned: boolean }>(
+          `select exists (select 1 from ${table})
+              and not exists (
+                select 1 from ${table}
+                where provider_application_id is null or provider_application_id <> $1
+              ) as owned`,
+          [identity.id],
+        );
+        return ownership.rows[0]?.owned === true;
+      });
+    },
     async organizationSlug(id) {
       const result = await database.query<{ slug: string }>(
         `select slug from organization where id = $1`,
@@ -50,6 +69,12 @@ export function createProviderApplicationInventory(
       return result.rows[0]?.slug;
     },
   };
+}
+
+function connectionTable(provider: Provider): string {
+  if (provider === "github") return "github_connections";
+  if (provider === "slack") return "slack_connections";
+  return "discord_connections";
 }
 
 function connectionIdentityQuery(provider: Provider): string {

@@ -11,17 +11,42 @@ switch (action) {
     await copyWorkspaceEnvironment();
     break;
   case "dev":
-    await runNpm(
-      ["run", "dev", "--", "--host", process.env.HOST ?? "127.0.0.1", "--port", requiredPort()],
-      {
-        PASEO_HUB_APP_URL: process.env.PASEO_URL ?? `http://127.0.0.1:${requiredPort()}`,
-      },
-    );
+  case "evidence":
+    await runEvidenceApplication();
     break;
   case "teardown":
     break;
   default:
-    throw new Error("Expected one of: setup, dev, teardown");
+    throw new Error("Expected one of: setup, dev, evidence, teardown");
+}
+
+async function runEvidenceApplication() {
+  await runNpm(["run", "build"], {});
+  await runCommand(process.execPath, ["dist/index.js"], {
+    PORT: requiredPort(),
+    PASEO_HUB_BIND: process.env.HOST ?? "127.0.0.1",
+    PASEO_HUB_DATA_DIR: join(workspacePath, ".dev", "operator-app-evidence", "runtime"),
+    DATABASE_URL: "",
+    PASEO_HUB_APP_URL: "",
+    PASEO_HUB_AUTH_SECRET: "",
+    GITHUB_APP_ID: "",
+    GITHUB_APP_SLUG: "",
+    GITHUB_APP_CLIENT_ID: "",
+    GITHUB_APP_CLIENT_SECRET: "",
+    GITHUB_APP_PRIVATE_KEY: "",
+    GITHUB_APP_PRIVATE_KEY_PATH: "",
+    GITHUB_WEBHOOK_SECRET: "",
+    SLACK_APP_ID: "",
+    SLACK_CLIENT_ID: "",
+    SLACK_CLIENT_SECRET: "",
+    SLACK_SIGNING_SECRET: "",
+    DISCORD_CLIENT_ID: "",
+    DISCORD_CLIENT_SECRET: "",
+    DISCORD_BOT_TOKEN: "",
+    PASEO_BOOTSTRAP_ORGANIZATION: "",
+    PASEO_BOOTSTRAP_OWNER_EMAIL: "",
+    PASEO_BOOTSTRAP_OWNER_PASSWORD: "",
+  });
 }
 
 async function copyWorkspaceEnvironment() {
@@ -48,9 +73,14 @@ function requiredPort() {
 
 async function runNpm(args, environment) {
   const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  await runCommand(command, args, environment);
+}
+
+async function runCommand(command, args, environment) {
+  const childEnvironment = { ...process.env, ...environment };
   const child = spawn(command, args, {
     cwd: workspacePath,
-    env: { ...process.env, ...environment },
+    env: childEnvironment,
     stdio: "inherit",
   });
 

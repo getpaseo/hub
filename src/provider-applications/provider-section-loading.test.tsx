@@ -25,4 +25,16 @@ describe("provider application loading surface", () => {
     assert.match(markup, /https:\/\/hub\.test\/api\/integrations\/github\/callback/u);
     assert.match(markup, /aria-busy="true"/u);
   });
+
+  it("renders only the HTTPS requirement when Slack is open on HTTP", () => {
+    const slack = PROVIDER_GUIDES.find((guide) => guide.provider === "slack")!;
+    const markup = renderToStaticMarkup(
+      <ProviderSectionLoading guide={slack} origin="http://hub.test" open />,
+    );
+
+    assert.match(markup, /Slack requires Hub to use HTTPS before you can set it up\./u);
+    assert.doesNotMatch(markup, /Create a Slack app/u);
+    assert.doesNotMatch(markup, /App manifest/u);
+    assert.doesNotMatch(markup, /App ID/u);
+  });
 });

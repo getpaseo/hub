@@ -712,6 +712,7 @@ export const organizationConnectionAttempts = pgTable(
     candidateExternalId: text("candidate_external_id"),
     pkceVerifier: text("pkce_verifier"),
     configurationVersion: integer("configuration_version").notNull(),
+    providerApplicationId: text("provider_application_id"),
     callbackOrigin: text("callback_origin").notNull(),
     configurationSnapshot: jsonb("configuration_snapshot").notNull(),
     expectedConfigurationVersion: integer("expected_configuration_version"),
@@ -1047,6 +1048,23 @@ export const runtimeProviderConfiguration = pgTable(
       sql`${table.provider} in ('github', 'slack', 'discord')`,
     ),
     check("runtime_provider_configuration_version_check", sql`${table.version} > 0`),
+  ],
+);
+
+export const runtimeProviderActivations = pgTable(
+  "runtime_provider_activation",
+  {
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    providerApplicationId: text("provider_application_id").notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "runtime_provider_activation_provider_check",
+      sql`${table.provider} in ('github', 'slack', 'discord')`,
+    ),
+    check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
   ],
 );
 

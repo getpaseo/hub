@@ -7,7 +7,8 @@ import { composeBilling, type BillingConfig, type BillingRuntime } from "../../b
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
-import type { DatabaseRuntime } from "../../db/runtime/index.js";
+import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
+import { createDatabase } from "../../db/pg.js";
 import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
@@ -45,6 +46,7 @@ import {
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
   type ProviderApplications,
+  type ProviderApplicationIdentity,
 } from "../../provider-applications/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 
@@ -91,15 +93,10 @@ interface AccountSetupFailureCommand {
 const FIXTURE_STRIPE_SECRET_KEY = "sk_test_e2e_fixture_0000000000000000000000";
 
 async function main(): Promise<void> {
-  const databaseUrl = requiredEnvironment("DATABASE_URL");
   const publicBaseUrl =
     process.env["PASEO_HUB_APP_URL"] ?? `http://127.0.0.1:${requiredEnvironment("PORT")}`;
   const scenario = readScenario();
-  const {
-    database,
-    runtime: databaseRuntime,
-    locks,
-  } = await createPostgresTestRuntime(databaseUrl);
+  const { database, runtime: databaseRuntime, locks } = await createBrowserDatabase();
   const entitlements = composeEntitlements(database, databaseRuntime);
   // Compose (and sync) billing before auth: a billing-configured harness provisions new
   // organizations onto the Free plan, so the resolver must exist before createAuthServer, and the
@@ -255,6 +252,22 @@ async function main(): Promise<void> {
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+async function createBrowserDatabase() {
+  const databaseUrl = process.env["DATABASE_URL"];
+  if (databaseUrl !== undefined && databaseUrl.length > 0) {
+    return createPostgresTestRuntime(databaseUrl);
+  }
+  const bundle = await embeddedDatabaseRuntime(requiredEnvironment("PASEO_HUB_DATA_DIR"));
+  try {
+    await bundle.runtime.migrate();
+    process.stdout.write("database runtime ready: embedded\n");
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+  } catch (error) {
+    await bundle.runtime.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 async function testServerOptions(): Promise<{
@@ -599,9 +612,32 @@ async function providerRuntimeOptions(
   }
 > {
   const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
-  return apps === null
-    ? { registrations }
-    : { registrations: apps.registrations, providerApplications: apps.capability };
+  if (apps !== null) {
+    return { registrations: apps.registrations, providerApplications: apps.capability };
+  }
+  if (auth !== null) {
+    await activateStaticProviderApplications(fixtures);
+  }
+  return { registrations };
+}
+
+async function activateStaticProviderApplications(
+  input: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
+): Promise<void> {
+  const identities: ProviderApplicationIdentity[] = [];
+  if (hasBrowserGitHub(input.scenario)) {
+    identities.push({ provider: "github", id: "42", name: "paseo", ownerLogin: "acme-inc" });
+  }
+  if (input.scenario !== "not-configured" && input.scenario !== "slack-only") {
+    identities.push({ provider: "discord", id: "900", name: "Paseo" });
+  }
+  if (input.scenario === "slack-only") {
+    identities.push({ provider: "slack", id: "browser-slack-app", name: "Paseo" });
+  }
+  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
+  for (const identity of identities) {
+    await store.activate({ provider: identity.provider, identity, configurationVersion: 0 });
+  }
 }
 
 /**
