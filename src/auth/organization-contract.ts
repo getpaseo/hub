@@ -47,6 +47,9 @@ export const organizationCapabilitiesSchema = z.object({
 
 export const accountStateSchema = z.discriminatedUnion("status", [
   z.object({
+    status: z.literal("instanceSetupRequired"),
+  }),
+  z.object({
     status: z.literal("signedOut"),
     registration: z.enum(REGISTRATION_MODES),
     invitation: invitationSchema.optional(),

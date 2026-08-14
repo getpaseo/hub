@@ -4,6 +4,7 @@ import { accountState } from "./functions.js";
 import { AccountEntry, InvitationEntry, OrganizationGate } from "./account-entry.js";
 import { FailedEntry, LoadingEntry, UnavailableInvitation } from "./account-states.js";
 import { DashboardShell } from "./dashboard-shell.js";
+import { InstanceSetupEntry } from "./instance-setup-entry.js";
 import { PasswordChangeEntry } from "./password-change.js";
 
 export function AccountApp() {
@@ -29,6 +30,7 @@ export function AccountApp() {
     );
   }
   const state = account.data.data;
+  if (state.status === "instanceSetupRequired") return <InstanceSetupEntry />;
   if (state.status === "passwordChangeRequired")
     return <PasswordChangeEntry account={state.account} />;
   if (state.invitationUnavailable === true) {

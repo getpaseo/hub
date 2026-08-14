@@ -4,15 +4,17 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { z } from "zod";
 import { dump } from "js-yaml";
-import { createDatabase, createPostgresPool } from "./test-utils/runtime.js";
+import { createDatabase } from "./test-utils/runtime.js";
 import { createHubApplication } from "../app.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
-import { bootstrapInstance } from "../auth/bootstrap.js";
+import { InstanceSetup } from "../instance-setup/index.js";
+import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
@@ -370,9 +372,13 @@ describe("database migration application", () => {
         ownerPassword: "temporary-migrated-owner-password",
       },
     };
-    const pool = await createPostgresPool(fixture.url);
-    await bootstrapInstance(pool, policy);
-    await pool.close();
+    const bundle = await postgresDatabaseRuntime(fixture.url);
+    await new InstanceSetup({
+      database: bundle.runtime,
+      policy,
+      provisioningEntitlements: () => Promise.resolve(UNLIMITED_PROVISIONING),
+    }).initializeFromPolicy();
+    await bundle.runtime.close();
 
     assert.deepEqual(await durableSnapshot(fixture.url), before);
     const completion = await poolQuery<{

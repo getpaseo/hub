@@ -172,6 +172,12 @@ async function createOwnedApplicationRuntime(
       }
       return options.auth.signUpEmail(data, headers, invitationId);
     },
+    claimInstance(operator, headers) {
+      if (options.database === null || options.auth?.claimInstance === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.claimInstance(operator, headers);
+    },
     signOut(headers) {
       if (options.database === null || options.auth?.signOut === undefined) {
         return Promise.reject(new Error("auth unavailable"));
