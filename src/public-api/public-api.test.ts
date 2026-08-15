@@ -397,6 +397,7 @@ function successfulOperations(): PublicOperations {
         github: [],
         discord: [],
         slack: [],
+        linear: [],
       }),
     validateConfiguration: () =>
       Promise.resolve({

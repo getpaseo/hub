@@ -473,6 +473,9 @@ function providerConfiguration(provider: Provider, id: string): ProviderApplicat
     };
   }
   if (provider === "slack") return slackConfiguration(id);
+  if (provider === "linear") {
+    return { provider, clientId: id, clientSecret: "secret", webhookSecret: "webhook" };
+  }
   return { provider, applicationId: id, clientSecret: "secret", botToken: "token" };
 }
 
@@ -484,6 +487,7 @@ function providerIdentity(provider: Provider, id: string): ProviderApplicationId
 function providerConfigurationId(configuration: ProviderApplicationConfiguration): string {
   if (configuration.provider === "github") return configuration.appId;
   if (configuration.provider === "slack") return configuration.appId;
+  if (configuration.provider === "linear") return configuration.clientId;
   return configuration.applicationId;
 }
 
