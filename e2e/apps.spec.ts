@@ -200,6 +200,8 @@ test("Slack completes its HTTPS install before saving and activating the app", a
     ]) {
       expect(manifest).toContain(`- ${scope}`);
     }
+    // The wrapped manifest is a compact-width fix, so the wide frame gets the same guarantee.
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-06-slack-expanded.desktop");
 
     await slack.fillWorkingCredentials();

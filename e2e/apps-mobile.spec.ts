@@ -60,11 +60,7 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     }
 
     // A generated URL and its copy button share a row without pushing the layout sideways.
-    const document = await page.evaluate(() => ({
-      scrollWidth: window.document.documentElement.scrollWidth,
-      clientWidth: window.document.documentElement.clientWidth,
-    }));
-    expect(document.scrollWidth).toBeLessThanOrEqual(document.clientWidth + 1);
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-02-github-expanded.mobile");
     await github.expectGeneratedUrl(
       "Callback URL",
@@ -91,11 +87,10 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 
     await github.collapse();
     await surface.slack.expand();
-    const slackDocument = await page.evaluate(() => ({
-      scrollWidth: window.document.documentElement.scrollWidth,
-      clientWidth: window.document.documentElement.clientWidth,
-    }));
-    expect(slackDocument.scrollWidth).toBeLessThanOrEqual(slackDocument.clientWidth + 1);
+    // Slack carries the longest content on the surface — the manifest, its own copy control, and
+    // the widest generated URLs. None of it may run off the side of the section.
+    await surface.expectNothingClipped();
+    await surface.accessible();
     await surface.shoot(SHOTS, "apps-06-slack-expanded.mobile");
     await surface.slack.fillWorkingCredentials();
     await surface.slack.save();
@@ -103,10 +98,12 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
     await surface.slack.expectResult("Connected to Acme.");
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-07-slack-connected.mobile");
 
     await surface.slack.collapse();
     await surface.discord.expand();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-09-discord-expanded.mobile");
     await surface.discord.fillWorkingCredentials();
     await surface.discord.save();
@@ -136,6 +133,7 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
     const { surface } = session;
     await surface.slack.expand();
     await surface.slack.expectHttpsBlocked();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-08-slack-https-required.mobile");
     await surface.slack.collapse();
 
@@ -154,6 +152,12 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
       Slack: "Not set up",
       Discord: "Connected",
     });
+    // Instance → Apps renders the same sections inside the dashboard shell, whose padding leaves
+    // each section narrower still. The generated URLs and the connected result read there too.
+    await surface.github.expand();
+    await surface.discord.expand();
+    await surface.expectNothingClipped();
+    await surface.collapseAll();
     await surface.shoot(SHOTS, "apps-15-instance-apps.mobile");
   } finally {
     await session.close();
@@ -178,6 +182,7 @@ test("mobile evidence covers skipping and later environment-managed apps", async
     await managed.openManagement();
     await managed.surface.github.expand();
     await expect(managed.surface.github.form()).toHaveCount(0);
+    await managed.surface.expectNothingClipped();
     await managed.surface.shoot(SHOTS, "apps-16-instance-apps-environment.mobile");
   } finally {
     await managed.close();
@@ -194,6 +199,7 @@ test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub
     await session.surface.github.expand();
     await session.surface.github.action("Replace credentials").click();
     expect(await session.surface.github.value("Private key")).toBe("");
+    await session.surface.expectNothingClipped();
     await session.surface.shoot(SHOTS, "apps-17-replace-credentials.mobile");
   } finally {
     await session.close();

@@ -127,10 +127,14 @@ export function CopyBlock({
           {action}
         </CopyButton>
       </div>
+      {/* Wrapping is what keeps the block inside its card. An unwrapped `pre` is as wide as its
+          longest line, and that width propagates out through the section's grid tracks until the
+          whole body is wider than the phone and the section clips the parts that no longer fit.
+          `break-all` is what makes a bare URL a wrappable line rather than one long word. */}
       <pre
         aria-readonly="true"
         aria-label={`${label} value`}
-        className="max-h-48 max-w-full overflow-auto rounded-md border bg-muted p-3 font-mono text-xs sm:max-h-64"
+        className="max-h-48 overflow-auto rounded-md border bg-muted p-3 font-mono text-xs break-all whitespace-pre-wrap sm:max-h-64"
         role="textbox"
         tabIndex={0}
       >

@@ -100,6 +100,36 @@ export class AppSection {
     expect(status!.x).toBeLessThan(title!.x + 8);
   }
 
+  /**
+   * Everything the operator has to read or press has to fit inside the card it lives in. The
+   * section body clips its own overflow, so a descendant that is too wide is silently cut off
+   * instead of producing a page scrollbar — `documentElement.scrollWidth` says nothing about it.
+   * Each candidate is measured by how far right its content actually reaches, which also catches
+   * a block that fits only because it scrolls its own content out of sight.
+   */
+  async expectNothingClipped(): Promise<void> {
+    const clipped = await this.root.evaluate((card) => {
+      const edge = Math.min(card.getBoundingClientRect().right, window.innerWidth);
+      const carriesContent = (node: Element): boolean =>
+        node.matches("input, textarea, select, button, a, pre, img") ||
+        [...node.childNodes].some(
+          (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== "",
+        );
+      const cut: string[] = [];
+      for (const node of card.querySelectorAll("*")) {
+        if (node.getClientRects().length === 0 || !carriesContent(node)) continue;
+        const rect = node.getBoundingClientRect();
+        const hidden = Math.max(0, node.scrollWidth - node.clientWidth);
+        const overflow = Math.round(rect.right + hidden - edge);
+        if (overflow <= 1) continue;
+        const text = (node.textContent ?? "").replace(/\s+/gu, " ").trim().slice(0, 60);
+        cut.push(`${node.tagName.toLowerCase()} +${overflow}px "${text}"`);
+      }
+      return cut;
+    });
+    expect(clipped, `${this.provider} content cut off at the section edge`).toEqual([]);
+  }
+
   async expand(): Promise<void> {
     await expect(this.page.getByLabel("Loading your apps")).toHaveCount(0);
     if ((await this.header().getAttribute("aria-expanded")) === "true") return;
@@ -266,6 +296,16 @@ export class AppSetupSurface {
 
   async expectStatuses(expected: Readonly<Record<AppProvider, AppStatus>>): Promise<void> {
     for (const section of this.sections()) await section.expectStatus(expected[section.provider]);
+  }
+
+  /** No sideways page scroll, and no section paying for that by clipping its own content. */
+  async expectNothingClipped(): Promise<void> {
+    const document = await this.page.evaluate(() => ({
+      scrollWidth: window.document.documentElement.scrollWidth,
+      clientWidth: window.document.documentElement.clientWidth,
+    }));
+    expect(document.scrollWidth).toBeLessThanOrEqual(document.clientWidth + 1);
+    for (const section of this.sections()) await section.expectNothingClipped();
   }
 
   /** Only one section open at a time is an accordion's rule, not this surface's. */
