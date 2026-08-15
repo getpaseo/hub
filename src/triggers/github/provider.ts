@@ -13,6 +13,7 @@ import {
   readGitHubInvocationParserMessage,
   readGitHubMention,
 } from "./match.js";
+import type { GitHubTeamMembershipClient } from "./team-membership.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import {
   IssueCommentPayloadSchema,
@@ -129,6 +130,7 @@ interface GitHubReactionState {
 export function createGitHubTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   reactions: GitHubReactionClient;
+  teamMemberships: GitHubTeamMembershipClient;
 }): TriggerProvider<"github", GitHubTriggerContext> {
   return {
     name: "github",
@@ -151,11 +153,12 @@ export function createGitHubTriggerProvider(options: {
         return "no_trigger_for_source";
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
 
-      for (const match of matchTriggers(
-        stored.configuration,
-        event,
-        externalTrigger.connectionId,
-      )) {
+      for (const match of await matchTriggers(stored.configuration, event, {
+        teamMemberships: options.teamMemberships,
+        ...(externalTrigger.connectionId === undefined
+          ? {}
+          : { connectionId: externalTrigger.connectionId }),
+      })) {
         const compiledTrigger = stored.configuration.triggers.find(
           (candidate) => candidate.name === match.trigger.name,
         );

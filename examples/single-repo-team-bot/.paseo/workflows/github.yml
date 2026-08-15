@@ -3,7 +3,7 @@ on: github.issue_comment
 max_runtime: 2h
 filters:
   repo: your-org/your-repo
-  from_users: [your-github-login]
+  from_teams: [your-org/your-team]
   contains: "@your-bot"
 steps:
   - id: classify
