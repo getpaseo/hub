@@ -42,10 +42,8 @@ export function InstanceSetupEntry() {
       const data = new FormData(event.currentTarget);
       claim.mutate({
         data: {
-          name: formValue(data, "name"),
           email: formValue(data, "email"),
           password: formValue(data, "password"),
-          organizationName: formValue(data, "organizationName"),
         },
       });
     },
@@ -101,7 +99,6 @@ function AccountSetupForm({
         <ErrorSummary message={message} />
         <form method="post" onSubmit={onSubmit} aria-label="Create your account" aria-busy={busy}>
           <FieldSet className="gap-4" disabled={busy}>
-            <FormField label="Name" name="name" id="operator-name" autoComplete="name" />
             <FormField
               label="Email"
               name="email"
@@ -116,12 +113,6 @@ function AccountSetupForm({
               type="password"
               autoComplete="new-password"
               minLength={12}
-            />
-            <FormField
-              label="Organization name"
-              name="organizationName"
-              id="operator-organization"
-              autoComplete="organization"
             />
             <Field>
               <Button type="submit" disabled={busy}>

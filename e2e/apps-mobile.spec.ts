@@ -12,14 +12,12 @@ const OPERATOR = {
 };
 
 test("a phone operator can skip app setup and reach their dashboard", async ({ hub }) => {
-  const organizationName = "Harbor Cooperative";
   const session = await hub.openAppSetup({
     account: {
       name: "Harbor Operator",
       email: "harbor-operator@example.com",
       password: "harbor-operator-password",
     },
-    organizationName,
   });
   try {
     await session.surface.leave("Do this later");
@@ -29,7 +27,7 @@ test("a phone operator can skip app setup and reach their dashboard", async ({ h
     await expect(
       session.page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
-        .getByText(organizationName, { exact: true }),
+        .getByText("Paseo Hub", { exact: true }),
     ).toBeVisible();
     await session.surface.shoot(SHOTS, "apps-14-skip-dashboard.mobile");
   } finally {
@@ -40,7 +38,6 @@ test("a phone operator can skip app setup and reach their dashboard", async ({ h
 test("the whole app setup journey completes at phone width", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     https: true,
   });
   try {
@@ -128,7 +125,7 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 });
 
 test("Slack and Discord read correctly on a phone", async ({ hub }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR, organizationName: "Acme" });
+  const session = await hub.openAppSetup({ account: OPERATOR });
   try {
     const { surface } = session;
     await surface.slack.expand();
@@ -165,7 +162,7 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
 });
 
 test("mobile evidence covers skipping and later environment-managed apps", async ({ hub }) => {
-  const skipped = await hub.openAppSetup({ account: OPERATOR, organizationName: "Acme" });
+  const skipped = await hub.openAppSetup({ account: OPERATOR });
   try {
     await skipped.surface.leave("Do this later");
   } finally {
@@ -174,7 +171,6 @@ test("mobile evidence covers skipping and later environment-managed apps", async
 
   const managed = await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     environmentApps: ["github"],
   });
   try {
@@ -190,7 +186,7 @@ test("mobile evidence covers skipping and later environment-managed apps", async
 });
 
 test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR, organizationName: "Acme" });
+  const session = await hub.openAppSetup({ account: OPERATOR });
   try {
     await session.surface.github.fillWorkingCredentials();
     await session.surface.github.save();

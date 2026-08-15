@@ -22,10 +22,7 @@ const signUpSchema = credentialsSchema.extend({
   invitation: z.string().min(1).optional(),
 });
 const invitationSchema = z.object({ invitation: z.string().optional() });
-const initialOperatorSchema = credentialsSchema.extend({
-  name: z.string().trim().min(1).max(100),
-  organizationName: z.string().trim().min(1).max(100),
-});
+const initialOperatorSchema = credentialsSchema.strip();
 const createOrganizationSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const selectOrganizationSchema = z.object({ organizationId: z.string().min(1) });
 const createInvitationSchema = z.object({ email: z.string().email(), role: invitationRoleSchema });

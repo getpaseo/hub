@@ -19,20 +19,17 @@ async function openSetup(
 ): Promise<AppSetupSession> {
   return await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     ...(environmentApps === undefined ? {} : { environmentApps }),
   });
 }
 
 test("a first account continues to app setup, and skipping it is durable", async ({ hub }) => {
-  const organizationName = "Northstar Research";
   const session = await hub.openAppSetup({
     account: {
       name: "Northstar Operator",
       email: "northstar-operator@example.com",
       password: "northstar-operator-password",
     },
-    organizationName,
   });
   try {
     const { surface, page } = session;
@@ -55,7 +52,7 @@ test("a first account continues to app setup, and skipping it is durable", async
     await expect(
       page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
-        .getByText(organizationName, { exact: true }),
+        .getByText("Paseo Hub", { exact: true }),
     ).toBeVisible();
     await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
     // Business as usual once the transition completes: reloading never returns here.
@@ -177,7 +174,6 @@ test("Discord is verified and added to a server from its own section", async ({ 
 test("Slack completes its HTTPS install before saving and activating the app", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     https: true,
   });
   try {
@@ -238,7 +234,6 @@ test("Slack setup uses the exact built zero-env PGlite workspace proxy journey",
 }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     reverseProxy: true,
     embedded: true,
   });
@@ -368,7 +363,6 @@ test("credentials can be replaced in place after they are saved", async ({ hub }
 test("the operator finishes, then manages the same apps under Instance → Apps", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
-    organizationName: "Acme",
     https: true,
   });
   try {

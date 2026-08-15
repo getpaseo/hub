@@ -64,10 +64,8 @@ it("keeps an interactive claim across a restart and then shows ordinary sign-in"
   delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
   process.env["PASEO_HUB_APP_URL"] = APP_URL;
   const operator = {
-    name: "Restart Operator",
     email: "restart-operator@example.test",
     password: "restart-operator-password",
-    organizationName: "Restart Organization",
   };
 
   const first = await startProductionRuntime();
