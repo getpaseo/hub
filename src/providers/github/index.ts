@@ -11,6 +11,7 @@ import {
   type GitHubReactionClient,
 } from "../../triggers/github/provider.js";
 import { organizationBillingUrl } from "../../triggers/failure-notice.js";
+import { createGitHubTeamMembershipClient } from "../../triggers/github/team-membership.js";
 import { createWebhookSource } from "../../triggers/github/webhook.js";
 import { createGitHubConnectionClient, type GitHubConnectionClient } from "./client.js";
 import { createGitHubConnection, githubConnectionStatus } from "./connection.js";
@@ -63,6 +64,7 @@ export function createGitHubRegistration(
   const appAuth =
     options.appAuth ??
     createGitHubAuth({ appId: configuration.appId, privateKey: configuration.privateKey });
+  const teamMemberships = createGitHubTeamMembershipClient(appAuth);
   const client =
     options.connectionClient ??
     createGitHubConnectionClient({
@@ -229,6 +231,7 @@ export function createGitHubRegistration(
           comments,
           billingUrlForOrganization: (organizationId) =>
             organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
+          teamMemberships,
         });
       },
     ],
