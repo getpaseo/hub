@@ -29,6 +29,7 @@ const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
 const DURATION = /^([1-9][0-9]*)(ms|s|m|h)$/u;
 const MAX_DURATION_MS = 24 * 60 * 60_000;
 const INPUT_NAME = /^[a-z][a-z0-9_-]*$/u;
+const GITHUB_TEAM_REFERENCE = /^[^/\s]+\/[^/\s]+$/u;
 const DYNAMIC_INPUT_REFERENCE = /^\$\{\{\s*paseo\.inputs\.([a-z][a-z0-9_-]*)\s*\}\}$/u;
 const EXPRESSION_START = "${{";
 const EXPRESSION_END = "}}";
@@ -89,6 +90,9 @@ const AuthoredTriggerFilterSchema = z
     workspace: z.string().min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    from_teams: z
+      .array(z.string().regex(GITHUB_TEAM_REFERENCE, "must be formatted as organization/team-slug"))
+      .optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
     connection: z
       .string()
@@ -243,9 +247,10 @@ export interface CompiledStep {
 export type CompiledSteps = readonly CompiledStep[];
 
 export type CompiledTriggerFilter = Readonly<
-  Omit<AuthoredTriggerFilter, "channels" | "from_users"> & {
+  Omit<AuthoredTriggerFilter, "channels" | "from_users" | "from_teams"> & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
+    from_teams?: readonly string[] | undefined;
     inputs?: Readonly<Record<string, JsonPrimitive>> | undefined;
     connectionId?: string | undefined;
     resourceId?: string | undefined;
@@ -1312,10 +1317,18 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
 }
 
 function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
+  const fromTeams = trigger.filters?.from_teams ?? [];
+  if (fromTeams.length > 0 && !trigger.on.startsWith("github.")) {
+    throw new Error(`trigger ${trigger.name} may use filters.from_teams only for GitHub events`);
+  }
   if (trigger.on === "manual.run") return;
-  if ((trigger.filters?.from_users?.length ?? 0) === 0) {
+  const fromUsers = trigger.filters?.from_users ?? [];
+  if (fromUsers.length === 0 && fromTeams.length === 0) {
+    const allowlist = trigger.on.startsWith("github.")
+      ? "filters.from_users or filters.from_teams"
+      : "filters.from_users";
     throw new Error(
-      `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,
+      `trigger ${trigger.name} requires a non-empty ${allowlist} allowlist for externally sourced events`,
     );
   }
 }

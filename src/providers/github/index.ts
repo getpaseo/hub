@@ -24,6 +24,7 @@ import {
   createGitHubTriggerProvider,
   type GitHubReactionClient,
 } from "../../triggers/github/provider.js";
+import { createGitHubTeamMembershipClient } from "../../triggers/github/team-membership.js";
 import { createWebhookSource } from "../../triggers/github/webhook.js";
 import {
   createGitHubConnectionClient,
@@ -81,6 +82,7 @@ export function createGitHubRegistration(
   let configurationForProject: ((projectId: string) => ProjectConfigurationStore) | undefined;
 
   const appAuth = options.appAuth ?? createGitHubAuth();
+  const teamMemberships = createGitHubTeamMembershipClient(appAuth);
   const client =
     options.connectionClient ??
     createGitHubConnectionClient({
@@ -207,6 +209,7 @@ export function createGitHubRegistration(
         return createGitHubTriggerProvider({
           configurationStoreForProject,
           reactions,
+          teamMemberships,
         });
       },
     ],
