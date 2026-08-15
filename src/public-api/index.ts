@@ -259,6 +259,7 @@ function configurationResourcesResponse(
         github: result.github,
         discord: result.discord,
         slack: result.slack,
+        linear: result.linear,
       })
     : infrastructureProblem(requestId);
 }

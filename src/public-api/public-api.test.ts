@@ -425,6 +425,7 @@ function successfulOperations(): PublicOperations {
         github: [],
         discord: [],
         slack: [],
+        linear: [],
       }),
     listSetupResources: () =>
       Promise.resolve({

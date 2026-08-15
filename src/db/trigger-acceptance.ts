@@ -5,6 +5,7 @@ import { ConnectionRepository } from "./connections.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptLinearEventInput,
   AcceptSlackEventInput,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
@@ -39,8 +40,12 @@ export class ProviderEventAcceptanceRepository {
     return this.acceptProvider("slack", input.teamId, input.teamId, input);
   }
 
+  acceptLinear(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
+    return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
+  }
+
   private async acceptProvider(
-    provider: "github" | "slack" | "discord",
+    provider: "github" | "slack" | "discord" | "linear",
     externalId: number | string,
     resourceId: number | string | undefined,
     input: ProviderEventEvidence,
@@ -401,7 +406,7 @@ function selectFirstRoutePerProject<Route extends { projectId: string }>(
 
 async function findConnection(
   transaction: HubTransaction,
-  provider: "github" | "slack" | "discord",
+  provider: "github" | "slack" | "discord" | "linear",
   externalId: number | string,
 ) {
   if (provider === "github") {
@@ -427,6 +432,17 @@ async function findConnection(
       .limit(1);
     return row;
   }
+  if (provider === "linear") {
+    const [row] = await transaction
+      .select({
+        id: schema.linearConnections.id,
+        organizationId: schema.linearConnections.organizationId,
+      })
+      .from(schema.linearConnections)
+      .where(eq(schema.linearConnections.linearOrganizationId, String(externalId)))
+      .limit(1);
+    return row;
+  }
   const [row] = await transaction
     .select({
       id: schema.discordConnections.id,
@@ -442,7 +458,7 @@ async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "manual";
+    provider: "github" | "slack" | "discord" | "linear" | "manual";
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;
