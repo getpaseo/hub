@@ -450,6 +450,17 @@ export class AppSetupSurface {
     ).toBeVisible();
   }
 
+  /** The alert that reports a failed attempt to leave app setup, with its own retry. */
+  exitFailure(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "Hub couldn't leave app setup" });
+  }
+
+  async expectFocusedExitFailure(message: string): Promise<void> {
+    const alert = this.exitFailure();
+    await expect(alert).toContainText(message);
+    await expect(alert).toBeFocused();
+  }
+
   wayOut(label: "Finish" | "Do this later"): Locator {
     return this.page.getByRole("button", { name: label, exact: true });
   }

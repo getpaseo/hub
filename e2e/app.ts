@@ -26,13 +26,19 @@ export const test = base.extend<{
   projectExternal: ProjectExternalFacts;
   billing: boolean;
   providerScenario: BrowserProviderScenario;
+  primaryDatabase: "postgres" | "embedded";
 }>({
   // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
   // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
   billing: [false, { option: true }],
   providerScenario: ["connected" as BrowserProviderScenario, { option: true }],
+  // The fixture always has a primary application, but a spec that claims its own applications
+  // never touches it. Set with `test.use({ primaryDatabase: "embedded" })` so those specs stop
+  // paying for a PostgreSQL container nothing reads. Anything asserting persistence behaviour
+  // keeps the default.
+  primaryDatabase: ["postgres" as "postgres" | "embedded", { option: true }],
   hub: async (
-    { browser, browserName, page, context, billing, providerScenario },
+    { browser, browserName, page, context, billing, providerScenario, primaryDatabase },
     provide,
     testInfo,
   ) => {
@@ -52,6 +58,7 @@ export const test = base.extend<{
         databaseProfile: "fresh",
         billing,
         providerScenario,
+        ...(primaryDatabase === "embedded" ? { embedded: true } : {}),
       });
       await provide(
         new PaseoHub(

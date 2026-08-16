@@ -126,6 +126,12 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
     },
   });
   const done = useCallback(() => finish.mutate({}), [finish]);
+  const exitFailure = useRef<HTMLDivElement>(null);
+  const failure = exitFailureMessage(finish);
+  // The operator pressed a button and stayed where they were. Say why, where they are looking.
+  useEffect(() => {
+    if (failure !== undefined) exitFailure.current?.focus();
+  }, [failure]);
   return (
     <AuthLayout width="xl">
       <div className="grid min-w-0 gap-6">
@@ -142,13 +148,7 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
             the ones you want to use.
           </p>
         </div>
-        {finish.data?.status === "error" ? (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertTitle>Hub couldn't leave app setup</AlertTitle>
-            <AlertDescription>{finish.data.error.message}</AlertDescription>
-          </Alert>
-        ) : null}
+        <ExitFailure ref={exitFailure} message={exitFailureMessage(finish)} onRetry={done} />
         <ProviderApplications surface="appSetup" organizationId={organizationId} />
         <div className="sticky bottom-0 -mx-6 border-t bg-background px-6 py-4 sm:static sm:mx-0 sm:flex sm:justify-end sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
           <Button
@@ -162,6 +162,49 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
         </div>
       </div>
     </AuthLayout>
+  );
+}
+
+/**
+ * Why leaving app setup did not work.
+ *
+ * A rejected request and a request that never arrived are different failures with the same
+ * consequence: the operator is still here and nothing has changed. The server owns the first and
+ * says so itself; the second never reached a server, so this page is the only thing that can
+ * report it, and it does rather than swallowing the press.
+ */
+function exitFailureMessage(finish: {
+  data: Result<Record<string, never>> | undefined;
+  isError: boolean;
+}): string | undefined {
+  if (finish.data?.status === "error") return finish.data.error.message;
+  if (finish.isError) {
+    return "Hub didn't get the request, so nothing changed. Check your connection, then try again.";
+  }
+  return undefined;
+}
+
+function ExitFailure({
+  ref,
+  message,
+  onRetry,
+}: {
+  ref: React.RefObject<HTMLDivElement | null>;
+  message: string | undefined;
+  onRetry: () => void;
+}) {
+  if (message === undefined) return null;
+  return (
+    <Alert ref={ref} tabIndex={-1} variant="destructive">
+      <TriangleAlert />
+      <AlertTitle>Hub couldn't leave app setup</AlertTitle>
+      <AlertDescription>
+        <p>{message}</p>
+        <Button type="button" size="sm" variant="outline" onClick={onRetry}>
+          Try again
+        </Button>
+      </AlertDescription>
+    </Alert>
   );
 }
 

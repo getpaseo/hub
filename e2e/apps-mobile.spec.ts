@@ -4,6 +4,9 @@ import { GITHUB_EVENT_CREDENTIALS, WORKING_CREDENTIALS } from "./helpers/apps.js
 import { SHOTS } from "./helpers/app-evidence.js";
 
 test.describe.configure({ timeout: 240_000 });
+// Every journey here claims its own pristine application, so the fixture's primary is never
+// navigated to. It must not cost a PostgreSQL container nobody reads.
+test.use({ primaryDatabase: "embedded" });
 
 const OPERATOR = {
   name: "Mobile Operator",

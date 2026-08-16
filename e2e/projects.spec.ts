@@ -156,6 +156,49 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await app.configuration.expectActiveRevision(3);
 });
 
+test("a save owns its activation, so the next edit never races the remount", async ({
+  hub,
+  page,
+}) => {
+  const app = projectApp(page);
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await hub.seedDaemonSlug("owner", "editor-daemon");
+  await app.navigation.openProject("Default");
+  await app.navigation.openProjectSection("Configuration");
+  await app.configuration.switchToManual();
+
+  // The activation lands, then the refresh that remounts the workbench takes far longer than any
+  // fixed wait a later command could reasonably hold. Saving has to absorb that itself.
+  await app.configuration.delayRefreshAfterNextSave(7_000);
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.addWorkflow(
+    "second.yml",
+    [
+      "name: second",
+      "on: manual.run",
+      "max_runtime: 1h",
+      "steps:",
+      "  - id: work",
+      "    environment: runner",
+      "    max_runtime: 10m",
+      "    idle_timeout: 1m",
+      "    agent: { provider: test }",
+      "    prompt: [{ text: second }]",
+    ].join("\n"),
+  );
+  await app.configuration.save();
+
+  // The second workflow was written into the mount that survived, not one that was replaced
+  // underneath it.
+  await app.configuration.expectActiveRevision(2);
+  await expect(
+    page
+      .getByRole("list", { name: "Configuration files" })
+      .getByRole("button", { name: ".paseo/workflows/second.yml", exact: true }),
+  ).toBeVisible();
+});
+
 test("keeps the GitHub source controls inside the editor rail", async ({ hub, page }) => {
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);

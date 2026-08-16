@@ -335,23 +335,34 @@ function billingAuthOptions(billing: BillingRuntime | null) {
   };
 }
 
+/**
+ * One statement per call. A semicolon-separated batch only works on PostgreSQL's simple query
+ * protocol; PGlite prepares every statement and refuses a batch, so a single query here made
+ * the harness silently PostgreSQL-only.
+ */
 async function seedMachineAuthTarget(database: DatabaseRuntime): Promise<void> {
   await database.query(`
       insert into organization (id, name, slug)
       values ('phase-zero', 'E2E machine organization', 'phase-zero')
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
+  `);
+  await database.query(`
       insert into organization_entitlements
         (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
       values ('phase-zero',
               '{"seats":{"max":null},"canInviteMembers":true,"meters":{"executions.monthly":{"limit":null}}}'::jsonb,
               '{}'::jsonb, null, null, now(), now())
-      on conflict (organization_id) do nothing;
+      on conflict (organization_id) do nothing
+  `);
+  await database.query(`
       insert into "user" (id, name, email, email_verified)
       values ('phase-zero-user', 'E2E machine user', 'phase-zero@example.test', true)
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
+  `);
+  await database.query(`
       insert into member (id, organization_id, user_id, role)
       values ('phase-zero-owner', 'phase-zero', 'phase-zero-user', 'owner')
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
   `);
 }
 

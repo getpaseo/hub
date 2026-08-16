@@ -7,6 +7,9 @@ import type { PaseoHub } from "./helpers/hub.js";
 
 // Every journey claims a second, genuinely pristine application beside the fixture's own.
 test.describe.configure({ timeout: 150_000 });
+// Every journey here claims its own pristine application, so the fixture's primary is never
+// navigated to. It must not cost a PostgreSQL container nobody reads.
+test.use({ primaryDatabase: "embedded" });
 
 const OPERATOR = {
   name: "App Operator",
@@ -25,6 +28,12 @@ async function openSetup(
     ...(environmentApps === undefined ? {} : { environmentApps }),
   });
 }
+
+test("onboarding journeys never claim a database they do not read", async ({ hub }) => {
+  // Each journey below starts its own application. The fixture's primary exists only because the
+  // fixture always has one, and a PostgreSQL container per test to hold nothing is pure cost.
+  expect(hub.primaryApplication().databaseUrl).toMatch(/^embedded:/u);
+});
 
 test("a first account continues to app setup, and skipping it is durable", async ({ hub }) => {
   const session = await hub.openAppSetup({
@@ -820,6 +829,51 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
     for (const section of surface.sections()) await section.expectCollapsed();
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-15-instance-apps.desktop");
+  } finally {
+    await session.close();
+  }
+});
+
+test("an exit that never reaches Hub says so, keeps the work, and retries in place", async ({
+  hub,
+}) => {
+  const session = await openSetup(hub);
+  try {
+    const { surface, page } = session;
+    const github = surface.github;
+    await github.expand();
+    await github.fill({ "App ID": "42", "App slug": "paseo" });
+
+    // The browser drops the request. Hub never sees it, so nobody but this page can report it.
+    let dropped = false;
+    await page.route("**/_serverFn/**", async (route) => {
+      if (!dropped && route.request().method() === "POST") {
+        dropped = true;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await surface.wayOut("Do this later").click();
+
+    await surface.expectFocusedExitFailure(
+      "Hub didn't get the request, so nothing changed. Check your connection, then try again.",
+    );
+    // Still here, and nothing typed was thrown away.
+    await expect(page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
+    await github.expectExpanded();
+    expect(await github.value("App ID")).toBe("42");
+    expect(await github.value("App slug")).toBe("paseo");
+    await surface.accessible();
+    await surface.shoot(SHOTS, "apps-22-exit-transport-failed.desktop");
+
+    // The same screen retries, without reloading or retyping.
+    await page.unroute("**/_serverFn/**");
+    await surface.exitFailure().getByRole("button", { name: "Try again", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+
+    // A request that never left the browser is nobody's failure to record on the server.
+    expect(recordsFor(session.application.logs(), "auth.complete_app_setup")).toHaveLength(0);
   } finally {
     await session.close();
   }
