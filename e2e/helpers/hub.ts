@@ -266,7 +266,10 @@ export class PaseoHub {
       const logs = plainLogs(application.logs());
       expect(logs).toContain("auth.setup_instance");
       expect(logs).toMatch(/failureKind:\s*["']?internal/u);
-      expect(logs).toContain("account setup failed");
+      expect(logs).toMatch(/err:\s*\{/u);
+      expect(logs).toMatch(/type:\s*["']?Error/u);
+      expect(logs).toMatch(/stack:/u);
+      expect(logs).not.toContain("account setup failed");
       expect(logs).not.toContain(account.email);
       expect(logs).not.toContain(account.password);
     } finally {
