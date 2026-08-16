@@ -6,7 +6,7 @@ import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
 import { registerResponseLifecycle } from "../http/response-lifecycle.js";
-import { reportFailure } from "../failures/index.js";
+import { reportFailure, withReference } from "../failures/index.js";
 import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
 import {
   executionToolDefinitions,
@@ -59,7 +59,7 @@ export function createExecutionCapabilityServer(
         return Response.json(
           {
             error: "required_output_capability_unavailable",
-            message: `${outputCapabilityMessage(error)} Reference: ${failure.requestId}.`,
+            message: withReference(outputCapabilityMessage(error), failure.requestId),
           },
           { status: 409 },
         );
@@ -226,7 +226,10 @@ async function finishExecutionCall(
       executionId: execution.id,
     });
     return toolFailure(
-      `Execution could not be finished. Check its current status and required outputs. Reference: ${failure.requestId}.`,
+      withReference(
+        "Execution could not be finished. Check its current status and required outputs.",
+        failure.requestId,
+      ),
     );
   }
 }
@@ -291,7 +294,10 @@ async function executeOutputCall(
       });
     }
     return toolFailure(
-      `Output delivery failed. Check the provider connection and output configuration before calling \`${toolName}\` again. Reference: ${failure.requestId}.`,
+      withReference(
+        `Output delivery failed. Check the provider connection and output configuration before calling \`${toolName}\` again.`,
+        failure.requestId,
+      ),
     );
   }
 }

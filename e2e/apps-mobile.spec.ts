@@ -1,6 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
-import { WORKING_CREDENTIALS } from "./helpers/apps.js";
+import { GITHUB_EVENT_CREDENTIALS, WORKING_CREDENTIALS } from "./helpers/apps.js";
 import { SHOTS } from "./helpers/app-evidence.js";
 
 test.describe.configure({ timeout: 240_000 });
@@ -44,10 +44,10 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     const { surface, page } = session;
     const github = surface.github;
     await surface.expectOnboarding();
-    await github.expectExpanded();
-    await github.collapse();
+
+    // Untouched, and already the right shape: three closed choices with no manual in sight.
+    for (const section of surface.sections()) await section.expectCollapsed();
     await surface.shoot(SHOTS, "apps-01-chooser.mobile");
-    await github.expand();
 
     // Sections stack, and each header is a touch target rather than a hover affordance.
     for (const section of surface.sections()) {
@@ -56,8 +56,9 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
       await section.expectCompactHeaderLayout();
     }
 
-    // A generated URL and its copy button share a row without pushing the layout sideways.
-    await surface.expectNothingClipped();
+    await github.expand();
+    // The same task, in the same order, stacked instead of side by side.
+    await github.expectStackedLayout();
     await surface.shoot(SHOTS, "apps-02-github-expanded.mobile");
     await github.expectGeneratedUrl(
       "Callback URL",
@@ -67,26 +68,34 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 
     await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
     await github.save();
-    await github.expectFocusedError(/GitHub didn't accept these credentials/u);
+    await github.expectFocusedError(/GitHub rejected the Private key for this App\./u);
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-04-github-verify-failed.mobile");
-    await github.fill({ "Private key": WORKING_CREDENTIALS.GitHub["Private key"]! });
+
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, ...GITHUB_EVENT_CREDENTIALS });
     await github.save();
-    await github.expectFocusedResult("Paseo Hub · owned by acme-inc");
+    await github.expectFocusedResult("GitHub accepted this App.");
     await github.expectStatus("Verified");
+    await github.expectSummary({ App: "Paseo Hub", Owner: "acme-inc", Installations: "None yet" });
+    await github.expectSetupStepsRetired();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-03-github-verified.mobile");
 
     await github.action("Install on GitHub").click();
     await github.expectStatus("Connected");
-    await github.expectResult("Connected to acme-inc.");
-    await github.expectResult("Waiting for an event");
+    await github.expectSummary({
+      Installations: "acme-inc",
+      Events: "Waiting for the first event",
+    });
     await surface.accessible();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-05-github-connected.mobile");
 
     await github.collapse();
     await surface.slack.expand();
     // Slack carries the longest content on the surface — the manifest, its own copy control, and
     // the widest generated URLs. None of it may run off the side of the section.
-    await surface.expectNothingClipped();
+    await surface.slack.expectStackedLayout();
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-06-slack-expanded.mobile");
     await surface.slack.fillWorkingCredentials();
@@ -94,13 +103,13 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
     await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
-    await surface.slack.expectResult("Connected to Acme.");
+    await surface.slack.expectSummary({ Workspaces: "Acme" });
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-07-slack-connected.mobile");
 
     await surface.slack.collapse();
     await surface.discord.expand();
-    await surface.expectNothingClipped();
+    await surface.discord.expectStackedLayout();
     await surface.shoot(SHOTS, "apps-09-discord-expanded.mobile");
     await surface.discord.fillWorkingCredentials();
     await surface.discord.save();
@@ -108,7 +117,8 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await surface.shoot(SHOTS, "apps-10-discord-verified.mobile");
     await surface.discord.action("Add to a Discord server").click();
     await surface.discord.expectStatus("Connected");
-    await surface.discord.expectResult("Connected to Acme Guild.");
+    await surface.discord.expectSummary({ Application: "Paseo", Servers: "Acme Guild" });
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-11-discord-connected.mobile");
 
     // The way out is a full-width button pinned to the bottom of a phone screen.
@@ -129,7 +139,7 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
   try {
     const { surface } = session;
     await surface.slack.expand();
-    await surface.slack.expectHttpsBlocked();
+    await surface.slack.expectHttpsBlocked(session.origin);
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-08-slack-https-required.mobile");
     await surface.slack.collapse();
@@ -152,6 +162,7 @@ test("Slack and Discord read correctly on a phone", async ({ hub }) => {
     // Instance → Apps renders the same sections inside the dashboard shell, whose padding leaves
     // each section narrower still. The generated URLs and the connected result read there too.
     await surface.github.expand();
+    await surface.github.expectStackedLayout();
     await surface.discord.expand();
     await surface.expectNothingClipped();
     await surface.collapseAll();
@@ -178,6 +189,9 @@ test("mobile evidence covers skipping and later environment-managed apps", async
     await managed.openManagement();
     await managed.surface.github.expand();
     await expect(managed.surface.github.form()).toHaveCount(0);
+    await expect(managed.surface.github.body().getByRole("alert")).toContainText(
+      "GITHUB_APP_PRIVATE_KEY",
+    );
     await managed.surface.expectNothingClipped();
     await managed.surface.shoot(SHOTS, "apps-16-instance-apps-environment.mobile");
   } finally {
@@ -188,6 +202,7 @@ test("mobile evidence covers skipping and later environment-managed apps", async
 test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub }) => {
   const session = await hub.openAppSetup({ account: OPERATOR });
   try {
+    await session.surface.github.expand();
     await session.surface.github.fillWorkingCredentials();
     await session.surface.github.save();
     await session.surface.leave("Do this later");
@@ -202,23 +217,40 @@ test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub
   }
 });
 
-test("Discord network failure stays actionable and contained at phone width", async ({ hub }) => {
-  const session = await hub.openAppSetup({
+test("Discord failures stay actionable and contained at phone width", async ({ hub }) => {
+  const network = await hub.openAppSetup({
     account: OPERATOR,
     embedded: true,
     providerScenario: "discord-verification-network",
   });
   try {
-    const discord = session.surface.discord;
+    const discord = network.surface.discord;
     await discord.expand();
     await discord.fillWorkingCredentials();
     await discord.save();
     await discord.expectFocusedError(
-      "Hub couldn't connect to Discord. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
+      "Hub couldn't reach Discord. Nothing was saved. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
     );
-    await session.surface.expectNothingClipped();
-    await session.surface.shoot(SHOTS, "apps-19-discord-network-failed.mobile");
+    await network.surface.expectNothingClipped();
+    await network.surface.shoot(SHOTS, "apps-19-discord-network-failed.mobile");
   } finally {
-    await session.close();
+    await network.close();
+  }
+
+  const intents = await hub.openAppSetup({
+    account: OPERATOR,
+    embedded: true,
+    providerScenario: "discord-disallowed-intents",
+  });
+  try {
+    const discord = intents.surface.discord;
+    await discord.expand();
+    await discord.fillWorkingCredentials();
+    await discord.save();
+    await discord.expectFocusedError(/Message Content Intent is off/u);
+    await intents.surface.expectNothingClipped();
+    await intents.surface.shoot(SHOTS, "apps-20-discord-missing-intent.mobile");
+  } finally {
+    await intents.close();
   }
 });

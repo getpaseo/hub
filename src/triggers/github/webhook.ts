@@ -54,13 +54,22 @@ interface VerifiedWebhook {
   signatureHash: string;
 }
 
+/**
+ * @param secret the App's webhook secret, or `undefined` when event triggers are not set up.
+ * Without a secret there is nothing to check a signature against, so every delivery is refused
+ * rather than trusted — an unconfigured endpoint must not become an unauthenticated one.
+ */
 export function createWebhookSource(
-  secret: string,
+  secret: string | undefined,
   options: WebhookSourceOptions,
 ): WebhookEndpoint {
   const handlers = new Set<TriggerHandler>();
 
   async function handle(request: Request): Promise<Response> {
+    if (secret === undefined) {
+      reportGitHubRejection("webhook_secret_unconfigured", 503);
+      return new Response("Service Unavailable", { status: 503 });
+    }
     const verified = await verifyWebhookRequest(request, secret);
     if (verified instanceof Response) return verified;
 
@@ -75,7 +84,10 @@ export function createWebhookSource(
           provider: "github",
           status: isDatabaseUnavailableError(error) ? 503 : 500,
         },
-        { status: isDatabaseUnavailableError(error) ? 503 : 500, scrubValues: [secret] },
+        {
+          status: isDatabaseUnavailableError(error) ? 503 : 500,
+          scrubValues: secret === undefined ? [] : [secret],
+        },
       );
       if (isDatabaseUnavailableError(error)) {
         return Response.json({ error: "database_unavailable" }, { status: 503 });
@@ -226,6 +238,13 @@ async function verifyWebhookRequest(
   return { body: parsedBody.data, deliveryId, eventType, signatureHash };
 }
 
+/** A refused delivery is an unsigned one (401), an unconfigured endpoint (503), or malformed. */
+function rejectionKind(status: number): "authentication" | "conflict" | "validation" {
+  if (status === 401) return "authentication";
+  if (status === 503) return "conflict";
+  return "validation";
+}
+
 function reportGitHubRejection(
   reason: string,
   status: number,
@@ -237,7 +256,7 @@ function reportGitHubRejection(
     { operation: "github.webhook.verify", component: "triggers", provider: "github", status },
     {
       status,
-      kind: status === 401 ? "authentication" : "validation",
+      kind: rejectionKind(status),
       scrubValues: [
         ...(secret === undefined ? [] : [secret]),
         ...(signature === undefined ? [] : [signature]),

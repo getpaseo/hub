@@ -7,7 +7,12 @@ import { cn } from "../../lib/utils.js";
  * gate, invitations, and daemon approval. A product mark, then one card. The mark is
  * the branding — surfaces do not repeat it as a badge above their own title.
  */
-const LAYOUT_WIDTHS = { sm: "max-w-sm", md: "max-w-lg", lg: "max-w-3xl" } as const;
+const LAYOUT_WIDTHS = {
+  sm: "max-w-sm",
+  md: "max-w-lg",
+  lg: "max-w-3xl",
+  xl: "max-w-5xl",
+} as const;
 
 export function AuthLayout({
   children,

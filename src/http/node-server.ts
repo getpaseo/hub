@@ -4,7 +4,12 @@ import { once } from "node:events";
 import { isIP } from "node:net";
 import type { Logger } from "pino";
 import { logger as defaultLogger } from "../logger.js";
-import { failureWasReported, reportFailure, runWithFailureTracking } from "../failures/index.js";
+import {
+  failureWasReported,
+  reportFailure,
+  runWithFailureTracking,
+  withReference,
+} from "../failures/index.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "./client-address.js";
 import { takeResponseLifecycle } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
@@ -144,7 +149,7 @@ async function forwardRequest(
       return;
     }
     outgoing.setHeader("content-type", "text/plain; charset=utf-8");
-    outgoing.end(`Hub couldn't complete this request. Reference: ${report.requestId}.`);
+    outgoing.end(withReference("Hub couldn't complete this request.", report.requestId));
   }
 }
 

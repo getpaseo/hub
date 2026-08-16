@@ -43,7 +43,8 @@ export interface GitHubRegistrationConfiguration {
   clientId: string;
   clientSecret: string;
   privateKey: string;
-  webhookSecret: string;
+  /** Absent when event triggers are not set up. Deliveries are then refused, not accepted blind. */
+  webhookSecret?: string;
 }
 
 export interface CreateGitHubRegistrationOptions {
@@ -253,7 +254,6 @@ function emptyGitHubRegistration(
               clientId: "unconfigured",
               clientSecret: "unconfigured",
               privateKey: "unconfigured",
-              webhookSecret: "unconfigured",
             },
           },
           undefined,

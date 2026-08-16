@@ -135,8 +135,17 @@ export function respondWithFailure(
   const report = reportFailure(error, context, options);
   const message = messages[report.kind] ?? messages.fallback;
   return respondError({
-    message: shouldCorrelate(report.kind) ? `${message} Reference: ${report.requestId}.` : message,
+    message: shouldCorrelate(report.kind) ? withReference(message, report.requestId) : message,
   });
+}
+
+/**
+ * Appends the correlation ID, after the copy that is actually useful and with the one instruction
+ * that makes it worth reading. A bare identifier at the end of a sentence tells the reader
+ * nothing about what they are supposed to do with it.
+ */
+export function withReference(message: string, requestId: string): string {
+  return `${message} If it happens again, quote reference ${requestId} when reporting it.`;
 }
 
 export function classifyFailure(error: unknown, status?: number): FailureKind {

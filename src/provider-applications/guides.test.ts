@@ -5,15 +5,19 @@ import { z } from "zod";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 import {
   PROVIDER_GUIDES,
+  guideFields,
   guideFor,
+  guideGroups,
   guideUrl,
   identityLabel,
   isSecureOrigin,
   slackManifest,
   statusPresentation,
+  type GuideStep,
 } from "./guides.js";
 
 const ORIGIN = "https://hub.example.com";
+const LOCAL = "http://127.0.0.1:6791";
 const manifestSchema = z.object({
   oauth_config: z.object({
     redirect_urls: z.array(z.string()),
@@ -21,6 +25,10 @@ const manifestSchema = z.object({
   }),
   settings: z.object({ event_subscriptions: z.object({ request_url: z.string() }) }),
 });
+
+function stepText(step: GuideStep): string {
+  return step.segments.map((segment) => segment.value).join("");
+}
 
 test("the Slack manifest asks for exactly the scopes Hub checks installations against", () => {
   const manifest = manifestSchema.parse(load(slackManifest(ORIGIN)));
@@ -57,10 +65,6 @@ test("only a connection paints the surface green", () => {
   assert.equal(statusPresentation("managedByEnvironment").tone, "neutral");
   assert.equal(statusPresentation("actionNeeded").tone, "warning");
   assert.equal(statusPresentation("connected").tone, "success");
-  assert.deepEqual(
-    PROVIDER_GUIDES.map(() => statusPresentation("verified").label),
-    ["Verified", "Verified", "Verified"],
-  );
 });
 
 test("status labels are the agreed vocabulary and nothing else", () => {
@@ -70,16 +74,6 @@ test("status labels are the agreed vocabulary and nothing else", () => {
     ).map((status) => statusPresentation(status).label),
     ["Not set up", "Verified", "Connected", "Action needed", "Managed by environment"],
   );
-});
-
-test("Slack alone blocks on a plain-HTTP origin; the others explain and carry on", () => {
-  assert.equal(guideFor("slack").requiresHttps, true);
-  assert.equal(guideFor("github").requiresHttps, false);
-  assert.equal(guideFor("discord").requiresHttps, false);
-  assert.equal(isSecureOrigin("http://localhost:3000"), false);
-  assert.equal(isSecureOrigin(ORIGIN), true);
-  assert.equal(guideFor("discord").insecureOriginNotice("http://localhost:3000").tone, "default");
-  assert.equal(guideFor("slack").insecureOriginNotice("http://localhost:3000").tone, "warning");
 });
 
 test("only Discord has no inbound events to wait for", () => {
@@ -103,31 +97,9 @@ test("Slack has one action because its save is its install", () => {
   assert.equal(guideFor("github").actions.connect, "Install on GitHub");
 });
 
-test("every field the boundary needs is asked for, in the portal's own words", () => {
-  assert.deepEqual(
-    guideFor("github").fields.map((field) => [field.name, field.label]),
-    [
-      ["appId", "App ID"],
-      ["appSlug", "App slug"],
-      ["clientId", "Client ID"],
-      ["clientSecret", "Client secret"],
-      ["privateKey", "Private key"],
-      ["webhookSecret", "Webhook secret"],
-    ],
-  );
-  assert.deepEqual(
-    guideFor("slack").fields.map((field) => field.label),
-    ["App ID", "Client ID", "Client Secret", "Signing Secret"],
-  );
-  assert.deepEqual(
-    guideFor("discord").fields.map((field) => field.label),
-    ["Application ID", "Client Secret", "Bot token"],
-  );
-});
-
 test("only non-secret identifiers can be echoed back into the form", () => {
   const secrets = PROVIDER_GUIDES.flatMap((guide) =>
-    guide.fields.filter((field) => field.kind !== "text"),
+    guideFields(guide, ORIGIN).filter((field) => field.kind !== "text"),
   );
   assert.ok(secrets.length > 0);
   for (const field of secrets) assert.equal(field.identifier, undefined);
@@ -144,6 +116,193 @@ test("identity lines name the app the operator created", () => {
   );
 });
 
+test("Slack alone treats plain HTTP as a hard gate", () => {
+  assert.equal(guideFor("slack").requiresHttps, true);
+  assert.equal(guideFor("github").requiresHttps, false);
+  assert.equal(guideFor("discord").requiresHttps, false);
+  assert.equal(isSecureOrigin(LOCAL), false);
+  assert.equal(isSecureOrigin(ORIGIN), true);
+  assert.equal(
+    guideFor("slack").httpsRequirement(LOCAL),
+    `Slack only works over HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Slack.`,
+  );
+});
+
+test("Discord says nothing about plain HTTP, because nothing about it needs saying", () => {
+  const discord = guideFor("discord");
+  const copy = guideGroups(discord, LOCAL)
+    .flatMap((group) => [group.title ?? "", group.description ?? "", group.unavailable ?? ""])
+    .join(" ");
+  assert.ok(!copy.toLowerCase().includes("local address"));
+  assert.ok(!copy.toLowerCase().includes("doesn't call"));
+  assert.deepEqual(
+    guideGroups(discord, LOCAL).map((group) => group.id),
+    guideGroups(discord, ORIGIN).map((group) => group.id),
+  );
+});
+
+test("GitHub separates repository access from event triggers", () => {
+  const github = guideFor("github");
+  assert.deepEqual(
+    guideGroups(github, ORIGIN).map((group) => group.id),
+    ["access", "events"],
+  );
+  const [access, events] = guideGroups(github, ORIGIN);
+  assert.equal(access!.title, undefined);
+  assert.equal(events!.title, "Event triggers");
+  assert.equal(events!.unavailable, undefined);
+  assert.deepEqual(
+    guideFields(github, ORIGIN).map((field) => field.name),
+    ["appId", "appSlug", "clientId", "clientSecret", "privateKey", "webhookSecret"],
+  );
+});
+
+test("on plain HTTP GitHub keeps repository access and defers event triggers", () => {
+  const github = guideFor("github");
+  const [access, events] = guideGroups(github, LOCAL);
+  assert.ok(access!.steps.length > 0);
+  assert.deepEqual(events!.steps, []);
+  assert.deepEqual(events!.fields, []);
+  assert.equal(
+    events!.unavailable,
+    `GitHub delivers events to a webhook URL, so this part needs a public HTTPS address. Hub is at ${LOCAL}. Repository access works now; reopen Hub at its HTTPS address to add event triggers.`,
+  );
+  // The core credentials still stand alone, so a plain-HTTP operator can finish repository access.
+  assert.deepEqual(
+    guideFields(github, LOCAL).map((field) => field.name),
+    ["appId", "appSlug", "clientId", "clientSecret", "privateKey"],
+  );
+});
+
+test("the webhook secret is the one GitHub value the operator may leave out", () => {
+  const optional = guideFields(guideFor("github"), ORIGIN).filter(
+    (field) => field.optional === true,
+  );
+  assert.deepEqual(
+    optional.map((field) => field.name),
+    ["webhookSecret"],
+  );
+});
+
+test("GitHub renders permissions as a mapping and events as a list, never as prose", () => {
+  const steps = guideGroups(guideFor("github"), ORIGIN).flatMap((group) => group.steps);
+  const permissions = steps.flatMap((step) => step.permissions ?? []);
+  assert.deepEqual(permissions, [
+    { name: "Contents", access: "Read and write" },
+    { name: "Issues", access: "Read and write" },
+    { name: "Pull requests", access: "Read and write" },
+    { name: "Metadata", access: "Read-only" },
+  ]);
+  assert.deepEqual(
+    steps.flatMap((step) => step.events ?? []),
+    ["Issue comment", "Issues", "Pull request review", "Pull request review comment", "Push"],
+  );
+  const prose = steps.map(stepText).join(" ");
+  assert.ok(
+    !prose.includes("Read and write, Issues"),
+    "permissions were flattened back into prose",
+  );
+  assert.ok(!prose.includes("Pull request review comment, and Push"), "events ran on in prose");
+});
+
+test("the organization ownership decision comes before the App is created", () => {
+  const [access] = guideGroups(guideFor("github"), ORIGIN);
+  const texts = access!.steps.map(stepText);
+  const ownership = texts.findIndex((text) => text.includes("owns the App"));
+  const create = texts.findIndex((text) => text.includes("Create a GitHub App"));
+  assert.ok(ownership >= 0 && create >= 0);
+  assert.ok(ownership < create, "ownership decision must precede app creation");
+});
+
+test("Discord's steps walk the portal in the order its pages appear", () => {
+  const [only, ...rest] = guideGroups(guideFor("discord"), ORIGIN);
+  assert.deepEqual(rest, []);
+  assert.deepEqual(only!.steps.map(stepText), [
+    "Open the Discord developer portal, choose New Application, and give it a name.",
+    "Open General Information and copy the Application ID.",
+    "Open OAuth2, copy the Client Secret, and add this Redirect:",
+    "Open Bot, choose Reset Token, and copy the token.",
+    "Under Bot → Privileged Gateway Intents, turn on Message Content Intent. Without it the bot only receives empty messages.",
+  ]);
+  assert.deepEqual(
+    guideFields(guideFor("discord"), ORIGIN).map((field) => field.label),
+    ["Application ID", "Client Secret", "Bot token"],
+  );
+});
+
+test("Slack says once, not twice, that installing is what saves the app", () => {
+  const slack = guideFor("slack");
+  const steps = guideGroups(slack, ORIGIN)
+    .flatMap((group) => group.steps)
+    .map(stepText);
+  const mentions = steps.filter((text) => text.toLowerCase().includes("install"));
+  assert.deepEqual(mentions, [], "the install hint belongs under the button, once");
+  assert.equal(slack.saveHint, "Slack asks you to install the app before anything is saved.");
+});
+
+test("every field the boundary needs is asked for, in the portal's own words", () => {
+  assert.deepEqual(
+    guideFields(guideFor("github"), ORIGIN).map((field) => [field.name, field.label]),
+    [
+      ["appId", "App ID"],
+      ["appSlug", "App slug"],
+      ["clientId", "Client ID"],
+      ["clientSecret", "Client secret"],
+      ["privateKey", "Private key"],
+      ["webhookSecret", "Webhook secret"],
+    ],
+  );
+  assert.deepEqual(
+    guideFields(guideFor("slack"), ORIGIN).map((field) => field.label),
+    ["App ID", "Client ID", "Client Secret", "Signing Secret"],
+  );
+});
+
+test("each provider names the panel the operator pastes into after that provider", () => {
+  assert.deepEqual(
+    PROVIDER_GUIDES.map((guide) => guide.formTitle),
+    ["Paste from GitHub", "Paste from Slack", "Paste from Discord"],
+  );
+});
+
+test("a connected app is summarised with labelled rows rather than loose sentences", () => {
+  assert.deepEqual(guideFor("github").summaryLabels, {
+    identity: "App",
+    owner: "Owner",
+    connections: "Installations",
+  });
+  assert.deepEqual(guideFor("slack").summaryLabels, {
+    identity: "App ID",
+    connections: "Workspaces",
+  });
+  assert.deepEqual(guideFor("discord").summaryLabels, {
+    identity: "Application",
+    connections: "Servers",
+  });
+});
+
+test("environment-managed copy can name the exact variables the operator has to change", () => {
+  assert.deepEqual(guideFor("slack").environmentVariables, [
+    "SLACK_APP_ID",
+    "SLACK_CLIENT_ID",
+    "SLACK_CLIENT_SECRET",
+    "SLACK_SIGNING_SECRET",
+  ]);
+  assert.deepEqual(guideFor("discord").environmentVariables, [
+    "DISCORD_CLIENT_ID",
+    "DISCORD_CLIENT_SECRET",
+    "DISCORD_BOT_TOKEN",
+  ]);
+  assert.deepEqual(guideFor("github").environmentVariables, [
+    "GITHUB_APP_ID",
+    "GITHUB_APP_SLUG",
+    "GITHUB_APP_CLIENT_ID",
+    "GITHUB_APP_CLIENT_SECRET",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+  ]);
+});
+
 test("no guide leaks Paseo's internal vocabulary into operator-facing copy", () => {
   const forbidden = [
     "runtime configuration",
@@ -156,22 +315,26 @@ test("no guide leaks Paseo's internal vocabulary into operator-facing copy", () 
     "latch",
     "factory",
     "project",
-    "environment variable",
+    "this hub",
+    "app settings",
   ];
   const phrases: string[] = [];
   for (const guide of PROVIDER_GUIDES) {
     phrases.push(
       guide.summary,
-      guide.note ?? "",
+      guide.formTitle,
       guide.saveHint ?? "",
       guide.verifiedMessage ?? "",
-      guide.insecureOriginNotice("http://localhost:3000").message,
+      guide.httpsRequirement(LOCAL),
     );
-    for (const step of guide.steps) {
-      for (const segment of step.segments) phrases.push(segment.value);
-    }
-    for (const field of guide.fields) {
-      phrases.push(field.label, field.description ?? "", field.required);
+    for (const origin of [ORIGIN, LOCAL]) {
+      for (const group of guideGroups(guide, origin)) {
+        phrases.push(group.title ?? "", group.description ?? "", group.unavailable ?? "");
+        for (const step of group.steps) phrases.push(stepText(step));
+        for (const field of group.fields) {
+          phrases.push(field.label, field.description ?? "", field.required);
+        }
+      }
     }
   }
   const copy = phrases.join(" ").toLowerCase();

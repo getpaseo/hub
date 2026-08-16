@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
-import { WORKING_CREDENTIALS } from "./helpers/apps.js";
+import { GITHUB_EVENT_CREDENTIALS, WORKING_CREDENTIALS } from "./helpers/apps.js";
+import { expectOneFailure, recordsFor, stripAnsi } from "./helpers/logs.js";
 import { SHOTS, type AppSetupSession } from "./helpers/app-evidence.js";
 import type { PaseoHub } from "./helpers/hub.js";
 
@@ -12,6 +13,8 @@ const OPERATOR = {
   email: "app-operator@example.com",
   password: "app-operator-password",
 };
+
+const SAVE = "provider_application.verify_and_save";
 
 async function openSetup(
   hub: PaseoHub,
@@ -38,13 +41,12 @@ test("a first account continues to app setup, and skipping it is durable", async
       Slack: "Not set up",
       Discord: "Not set up",
     });
-    // One job on arrival: GitHub is open, the other two wait.
-    await surface.github.expectExpanded();
-    await surface.slack.expectCollapsed();
-    await surface.discord.expectCollapsed();
+    // A chooser, not three open manuals. This is also the evidence contract: the screenshot
+    // below is taken before anything on the page has been touched, so it cannot be a shot of a
+    // wall of instructions that a `collapse()` call tidied away first.
+    for (const section of surface.sections()) await section.expectCollapsed();
     await expect(surface.wayOut("Finish")).toHaveCount(0);
     await surface.accessible();
-    await surface.github.collapse();
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
     await surface.leave("Do this later");
@@ -63,54 +65,64 @@ test("a first account continues to app setup, and skipping it is durable", async
   }
 });
 
-test("GitHub is verified, installed, and reported honestly at each boundary", async ({ hub }) => {
+test("GitHub repository access is set up on plain HTTP while event triggers wait", async ({
+  hub,
+}) => {
   const session = await openSetup(hub);
   try {
     const { surface, page, origin } = session;
     const github = surface.github;
-    await github.expectExpanded();
+    await github.expand();
+
+    // The task reads as two columns: the portal checklist, and the values it produces.
+    await github.expectSideBySideLayout();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-02-github-expanded.desktop");
 
-    // The URLs the operator pastes into GitHub are generated from this Hub's own origin.
+    // The ownership decision comes before there is an App to own.
+    const steps = await github.stepOrder();
+    expect(steps[0]).toContain("Decide who owns the App");
+    expect(steps[1]).toContain("Create a GitHub App");
+
+    // Permissions are a mapping, not six settings buried in one sentence.
+    expect(await github.permissionMapping()).toEqual({
+      Contents: "Read and write",
+      Issues: "Read and write",
+      "Pull requests": "Read and write",
+      Metadata: "Read-only",
+    });
+
+    // Event triggers are a separate, deferred job here — and repository access is not blocked.
+    await expect(github.body().getByRole("heading", { name: "Event triggers" })).toBeVisible();
+    await expect(github.body().getByRole("alert")).toContainText("Not available at this address");
+    await expect(github.body().getByRole("alert")).toContainText(
+      `Repository access works now; reopen Hub at its HTTPS address to add event triggers.`,
+    );
+    await expect(github.form().getByLabel("Webhook secret", { exact: true })).toHaveCount(0);
+    await expect(github.body().getByRole("button", { name: "Copy Webhook URL" })).toHaveCount(0);
+
     await github.expectGeneratedUrl("Homepage URL", origin);
     await github.expectGeneratedUrl("Callback URL", `${origin}/api/integrations/github/callback`);
     await github.expectGeneratedUrl("Setup URL", `${origin}/api/integrations/github/setup`);
-    await github.expectGeneratedUrl("Webhook URL", `${origin}/webhook`);
     await surface.shoot(SHOTS, "apps-18-copy-confirmed.desktop");
 
-    // Nothing reaches the provider until every field is present.
+    // Nothing reaches the provider until every required field is present.
     await github.save();
     await github.expectFieldError("Enter the App ID.");
     await github.expectStatus("Not set up");
 
-    // A real server refusal: wrong credentials, a focused message, and the form still filled.
-    await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
+    await github.fillWorkingCredentials();
     await github.save();
-    await github.expectFocusedError(/GitHub didn't accept these credentials/u);
-    await expect
-      .poll(() => session.application.logs())
-      .toContain("provider_application.verify_and_save");
-    const rejectionLogs = plainLogs(session.application.logs());
-    expect(rejectionLogs).toMatch(/provider:\s*["']?github/u);
-    expect(rejectionLogs).toMatch(/failureKind:\s*["']?credentialsRejected/u);
-    for (const secret of [
-      WORKING_CREDENTIALS.GitHub["Client secret"]!,
-      "wrong-key",
-      WORKING_CREDENTIALS.GitHub["Webhook secret"]!,
-    ]) {
-      expect(rejectionLogs).not.toContain(secret);
-    }
-    await surface.accessible();
-    await github.expectStatus("Not set up");
-    expect(await github.value("App ID")).toBe("42");
-    await surface.shoot(SHOTS, "apps-04-github-verify-failed.desktop");
-
-    // Retry in place on the same button.
-    await github.fill({ "Private key": WORKING_CREDENTIALS.GitHub["Private key"]! });
-    await github.save();
-    await github.expectFocusedResult("Paseo Hub · owned by acme-inc");
+    await github.expectFocusedResult("GitHub accepted this App.");
     // Verified is not green: credentials a provider accepted are not a working integration.
     await github.expectStatus("Verified");
+    await github.expectSummary({
+      App: "Paseo Hub",
+      Owner: "acme-inc",
+      Installations: "None yet",
+      Events: "Needs a public HTTPS address",
+    });
+    await github.expectSetupStepsRetired();
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-03-github-verified.desktop");
 
@@ -119,27 +131,9 @@ test("GitHub is verified, installed, and reported honestly at each boundary", as
     // The outcome is consumed, so a reload cannot replay it.
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
     await github.expectStatus("Connected");
-    await github.expectResult("Connected to acme-inc.");
-    // The webhook secret is proven by a signed delivery and nothing else.
-    await github.expectResult("Waiting for an event");
+    await github.expectSummary({ Installations: "acme-inc" });
+    await github.expectSetupStepsRetired();
     await surface.shoot(SHOTS, "apps-05-github-connected.desktop");
-
-    // Once one arrives, the section says so — and only then.
-    await session.seedSignedDelivery("github");
-    await page.reload();
-    await github.expectStatus("Connected");
-    await github.expand();
-    await github.expectResult("Last event");
-    await expect(github.status()).not.toContainText("Waiting for an event");
-    await surface.shoot(SHOTS, "apps-05b-github-receiving-events.desktop");
-
-    // The connection survives a same-app secret rotation, but old signed evidence does not.
-    await github.action("Replace credentials").click();
-    await github.fillWorkingCredentials();
-    await github.save();
-    await github.expectStatus("Connected");
-    await github.expectResult("Waiting for an event");
-    await expect(github.status()).not.toContainText("Last event");
 
     // The way out now reads as finishing.
     await expect(surface.wayOut("Finish")).toBeVisible();
@@ -149,79 +143,255 @@ test("GitHub is verified, installed, and reported honestly at each boundary", as
   }
 });
 
-test("Discord is verified and added to a server from its own section", async ({ hub }) => {
+test("on HTTPS GitHub event triggers are set up beside repository access", async ({ hub }) => {
+  const session = await hub.openAppSetup({ account: OPERATOR, https: true });
+  try {
+    const { surface, page, origin } = session;
+    const github = surface.github;
+    await github.expand();
+
+    await expect(github.body().getByRole("heading", { name: "Event triggers" })).toBeVisible();
+    await expect(github.body().getByRole("alert")).toHaveCount(0);
+    await github.expectGeneratedUrl("Webhook URL", `${origin}/webhook`);
+    // Subscribed events are a readable list, in the order GitHub shows them.
+    expect(await github.subscribedEvents()).toEqual([
+      "Issue comment",
+      "Issues",
+      "Pull request review",
+      "Pull request review comment",
+      "Push",
+    ]);
+    await surface.shoot(SHOTS, "apps-02b-github-expanded-https.desktop");
+
+    // The webhook secret is the one value that may be left out, and leaving it out is honest.
+    await github.fillWorkingCredentials();
+    await github.save();
+    await github.expectStatus("Verified");
+    await github.expectSummary({ Events: "Not set up" });
+
+    await github.action("Install on GitHub").click();
+    await github.expectStatus("Connected");
+    await github.expectSummary({ Installations: "acme-inc", Events: "Not set up" });
+
+    // Adding it turns event triggers on, and still claims nothing about deliveries.
+    await github.action("Replace credentials").click();
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, ...GITHUB_EVENT_CREDENTIALS });
+    await github.save();
+    await github.expectStatus("Connected");
+    await github.expectSummary({ Events: "Waiting for the first event" });
+
+    // Only a correctly signed delivery may change that.
+    await session.seedSignedDelivery("github");
+    await page.reload();
+    await github.expand();
+    await github.expectSummary({ Events: /^Last received/u });
+    await surface.shoot(SHOTS, "apps-05b-github-receiving-events.desktop");
+  } finally {
+    await session.close();
+  }
+});
+
+test("a rejected GitHub key names the key, and a wrong App ID names the mismatch", async ({
+  hub,
+}) => {
+  const session = await openSetup(hub);
+  try {
+    const { surface } = session;
+    const github = surface.github;
+    await github.expand();
+
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
+    await github.save();
+    await github.expectFocusedError(
+      "GitHub rejected the Private key for this App. Nothing was saved. Generate a new private key on the App's settings page, paste the whole .pem file, then verify again.",
+    );
+    await github.expectStatus("Not set up");
+    // Retry is the same button with the operator's work still in the form.
+    expect(await github.value("App ID")).toBe("42");
+    expect(await github.value("App slug")).toBe("paseo");
+    await surface.accessible();
+    await surface.shoot(SHOTS, "apps-04-github-verify-failed.desktop");
+
+    await expect.poll(() => recordsFor(session.application.logs(), SAVE).length).toBe(1);
+    const rejection = expectOneFailure(session.application.logs(), {
+      operation: SAVE,
+      failureKind: "credentialsRejected",
+      provider: "github",
+    });
+    expect(rejection.requestId, "an expected failure still gets a record").toBeTruthy();
+    const text = stripAnsi(session.application.logs());
+    for (const secret of [WORKING_CREDENTIALS.GitHub["Client secret"]!, "wrong-key"]) {
+      expect(text).not.toContain(secret);
+    }
+
+    // A key that authenticates a different App is a different problem with a different fix.
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, "App ID": "77" });
+    await github.save();
+    await github.expectFocusedError(
+      "These credentials belong to a different GitHub App than the App ID you entered. Nothing was saved. Copy the App ID from the same App's settings page, then verify again.",
+    );
+    await github.expectStatus("Not set up");
+
+    await github.fill(WORKING_CREDENTIALS.GitHub);
+    await github.save();
+    await github.expectStatus("Verified");
+  } finally {
+    await session.close();
+  }
+});
+
+test("an unclassified GitHub fault says nothing was saved and offers a usable reference", async ({
+  hub,
+}) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    embedded: true,
+    providerScenario: "github-verification-internal",
+  });
+  try {
+    const github = session.surface.github;
+    await github.expand();
+    await github.fillWorkingCredentials();
+    await github.save();
+
+    await github.expectFocusedError(
+      /^Something went wrong while saving GitHub\. Nothing was saved\. Try again\. If it happens again, quote reference [\w-]+ when reporting it\.$/u,
+    );
+    await github.expectStatus("Not set up");
+    await expect.poll(() => recordsFor(session.application.logs(), SAVE).length).toBe(1);
+    const record = expectOneFailure(session.application.logs(), {
+      operation: SAVE,
+      failureKind: "internal",
+      provider: "github",
+    });
+    // The identifier on screen is the identifier in the record, or it is worth nothing.
+    const shown = /reference ([\w-]+) when/u.exec((await github.status().innerText()) ?? "");
+    expect(shown?.[1]).toBe(record.requestId);
+  } finally {
+    await session.close();
+  }
+});
+
+test("Discord walks its portal in order and proves both secrets before saying Verified", async ({
+  hub,
+}) => {
   const session = await openSetup(hub);
   try {
     const { surface } = session;
     const discord = surface.discord;
     await discord.expand();
+
+    // The portal order, and the form in the same order.
+    expect(await discord.stepOrder()).toEqual([
+      "Open the Discord developer portal, choose New Application, and give it a name.",
+      "Open General Information and copy the Application ID.",
+      "Open OAuth2, copy the Client Secret, and add this Redirect:",
+      "Open Bot, choose Reset Token, and copy the token.",
+      "Under Bot → Privileged Gateway Intents, turn on Message Content Intent. Without it the bot only receives empty messages.",
+    ]);
+    expect(await discord.fieldOrder()).toEqual(["Application ID", "Client Secret", "Bot token"]);
+
+    // Nothing about a local address needs saying, so nothing is said.
+    await expect(discord.body().getByRole("alert")).toHaveCount(0);
     await discord.expectGeneratedUrl(
       "Redirect",
       `${session.origin}/api/integrations/discord/callback`,
     );
-    // Discord never posts to Hub, so a loopback address is genuinely fine.
-    await expect(
-      discord.body().getByText("Discord doesn't call this Hub, so a local address is fine here."),
-    ).toBeVisible();
+    await discord.expectSideBySideLayout();
+    await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-09-discord-expanded.desktop");
 
-    await discord.fillWorkingCredentials();
+    // The Client Secret is verified too, so "Verified" means the connection flow can run.
+    await discord.fill({ ...WORKING_CREDENTIALS.Discord, "Client Secret": "not-the-secret" });
     await discord.save();
-    await discord.expectFocusedResult("Paseo · application 900");
+    await discord.expectFocusedError(
+      "Discord rejected the Client Secret. Nothing was saved. Open OAuth2, reset the Client Secret, copy it, then verify again.",
+    );
+    await discord.expectStatus("Not set up");
+
+    // A token from another application is not the same as a token Discord refused.
+    await discord.fill({ ...WORKING_CREDENTIALS.Discord, "Application ID": "901" });
+    await discord.save();
+    await discord.expectFocusedError(
+      "That bot token belongs to a different Discord application than the Application ID you entered. Nothing was saved. Copy both values from the same application, then verify again.",
+    );
+
+    await discord.fill(WORKING_CREDENTIALS.Discord);
+    await discord.save();
+    await discord.expectFocusedResult("Discord accepted this application.");
     await discord.expectStatus("Verified");
+    await discord.expectSummary({
+      Application: "Paseo",
+      "Application ID": "900",
+      Servers: "None yet",
+    });
+    await discord.expectSetupStepsRetired();
     await surface.shoot(SHOTS, "apps-10-discord-verified.desktop");
 
     await discord.action("Add to a Discord server").click();
     await discord.expectFocusedResult("Discord connected.");
     await expect(session.page).not.toHaveURL(/[?&](?:app|result)=/u);
     await discord.expectStatus("Connected");
-    await discord.expectResult("Connected to Acme Guild.");
-    // No event line at all: there is nothing inbound to wait for.
-    await expect(discord.status()).not.toContainText("Waiting for an event");
+    await discord.expectSummary({ Servers: "Acme Guild" });
+    // No event row at all: there is nothing inbound to wait for.
+    expect(Object.keys(await discord.summaryValues())).not.toContain("Events");
     await surface.shoot(SHOTS, "apps-11-discord-connected.desktop");
   } finally {
     await session.close();
   }
 });
 
-test("Discord network verification failure is actionable, logged, and secret-safe", async ({
+test("Discord transport, rate limit, and intent failures each name their own fix", async ({
   hub,
 }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    embedded: true,
-    providerScenario: "discord-verification-network",
-  });
-  const fakeClientSecret = "PRIVATE-DISCORD-CLIENT-SECRET-DO-NOT-LOG";
-  const fakeBotToken = "PRIVATE-DISCORD-BOT-TOKEN-DO-NOT-LOG";
-  try {
-    const discord = session.surface.discord;
-    await discord.expand();
-    await discord.fill({
-      "Application ID": "900",
-      "Client Secret": fakeClientSecret,
-      "Bot token": fakeBotToken,
+  for (const scenario of [
+    {
+      name: "discord-verification-network" as const,
+      copy: "Hub couldn't reach Discord. Nothing was saved. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
+      kind: "network",
+      shot: "apps-19-discord-network-failed.desktop",
+    },
+    {
+      name: "discord-rate-limited" as const,
+      copy: "Discord is rate limiting Hub. Nothing was saved. Wait a few minutes, then verify again.",
+      kind: "rateLimited",
+      shot: undefined,
+    },
+  ]) {
+    const session = await hub.openAppSetup({
+      account: OPERATOR,
+      embedded: true,
+      providerScenario: scenario.name,
     });
-    await discord.save();
+    const fakeClientSecret = `PRIVATE-DISCORD-CLIENT-SECRET-${scenario.kind}`;
+    const fakeBotToken = `PRIVATE-DISCORD-BOT-TOKEN-${scenario.kind}`;
+    try {
+      const discord = session.surface.discord;
+      await discord.expand();
+      await discord.fill({
+        "Application ID": "900",
+        "Client Secret": fakeClientSecret,
+        "Bot token": fakeBotToken,
+      });
+      await discord.save();
 
-    await discord.expectFocusedError(
-      "Hub couldn't connect to Discord. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
-    );
-    await session.surface.shoot(SHOTS, "apps-19-discord-network-failed.desktop");
-    await expect
-      .poll(() => session.application.logs())
-      .toContain("provider_application.verify_and_save");
-    const logs = plainLogs(session.application.logs());
-    expect(logs).toMatch(/provider:\s*["']?discord/u);
-    expect(logs).toMatch(/failureKind:\s*["']?network/u);
-    expect(logs).toMatch(/err:/u);
-    expect(logs).toContain("ProviderVerificationError");
-    expect(logs).not.toContain(fakeClientSecret);
-    expect(logs).not.toContain(fakeBotToken);
-    expect(await discord.status().textContent()).not.toContain(fakeClientSecret);
-    expect(await discord.status().textContent()).not.toContain(fakeBotToken);
-  } finally {
-    await session.close();
+      await discord.expectFocusedError(scenario.copy);
+      if (scenario.shot !== undefined) await session.surface.shoot(SHOTS, scenario.shot);
+      await expect.poll(() => recordsFor(session.application.logs(), SAVE).length).toBe(1);
+      expectOneFailure(session.application.logs(), {
+        operation: SAVE,
+        failureKind: scenario.kind,
+        provider: "discord",
+      });
+      const text = stripAnsi(session.application.logs());
+      expect(text).not.toContain(fakeClientSecret);
+      expect(text).not.toContain(fakeBotToken);
+      const shown = (await discord.status().textContent()) ?? "";
+      expect(shown).not.toContain(fakeClientSecret);
+      expect(shown).not.toContain(fakeBotToken);
+    } finally {
+      await session.close();
+    }
   }
 });
 
@@ -246,29 +416,36 @@ test("Discord disallowed intents explains the exact portal setting and logs one 
     await discord.save();
 
     await discord.expectFocusedError(
-      "Discord requires Message Content Intent. Turn it on under Bot → Privileged Gateway Intents, save in Discord, then verify again.",
+      "Discord refused the bot because Message Content Intent is off, so it would only receive empty messages. Nothing was saved. Turn it on under Bot → Privileged Gateway Intents, save in Discord, then verify again.",
     );
-    await expect.poll(() => session.application.logs()).toContain("gatewayCloseCode");
-    const logs = plainLogs(session.application.logs());
-    expect(logs.match(/provider_application\.verify_and_save failed/gu)).toHaveLength(1);
-    expect(logs).toMatch(/failureKind:\s*["']?permissionMissing/u);
-    expect(logs).toMatch(/gatewayCloseCode:\s*4014/u);
-    expect(logs).toMatch(/gatewayFailure:\s*["']?disallowedIntents/u);
-    expect(logs).not.toContain("formatless-browser-gateway-cause-6ad1");
-    expect(logs).not.toContain(fakeClientSecret);
-    expect(logs).not.toContain(fakeBotToken);
-    expect(await discord.status().textContent()).not.toContain(fakeClientSecret);
-    expect(await discord.status().textContent()).not.toContain(fakeBotToken);
+    await session.surface.shoot(SHOTS, "apps-20-discord-missing-intent.desktop");
+
+    await expect.poll(() => recordsFor(session.application.logs(), SAVE).length).toBe(1);
+    const record = expectOneFailure(session.application.logs(), {
+      operation: SAVE,
+      failureKind: "permissionMissing",
+      provider: "discord",
+    });
+    // The close code is a field of the record, whatever the runtime chose to print it as.
+    expect(record.diagnostic).toMatchObject({
+      gatewayCloseCode: 4014,
+      gatewayFailure: "disallowedIntents",
+    });
+
+    const text = stripAnsi(session.application.logs());
+    expect(text).not.toContain("formatless-browser-gateway-cause-6ad1");
+    expect(text).not.toContain(fakeClientSecret);
+    expect(text).not.toContain(fakeBotToken);
+    const shown = (await discord.status().textContent()) ?? "";
+    expect(shown).not.toContain(fakeClientSecret);
+    expect(shown).not.toContain(fakeBotToken);
   } finally {
     await session.close();
   }
 });
 
 test("Slack completes its HTTPS install before saving and activating the app", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    https: true,
-  });
+  const session = await hub.openAppSetup({ account: OPERATOR, https: true });
   try {
     const { surface, page } = session;
     const slack = surface.slack;
@@ -289,7 +466,14 @@ test("Slack completes its HTTPS install before saving and activating the app", a
     ]) {
       expect(manifest).toContain(`- ${scope}`);
     }
-    // The wrapped manifest is a compact-width fix, so the wide frame gets the same guarantee.
+    // Installing is what saves the app. It is said once, under the button.
+    const steps = (await slack.stepOrder()).join(" ").toLowerCase();
+    expect(steps).not.toContain("install");
+    await expect(
+      slack.form().getByText("Slack asks you to install the app before anything is saved."),
+    ).toBeVisible();
+
+    await slack.expectSideBySideLayout();
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-06-slack-expanded.desktop");
 
@@ -300,8 +484,12 @@ test("Slack completes its HTTPS install before saving and activating the app", a
     await slack.expectExpanded();
     await slack.expectFocusedResult("Slack connected.");
     await slack.expectStatus("Connected");
-    await slack.expectResult("Connected to Acme.");
-    await slack.expectResult("Waiting for an event");
+    await slack.expectSummary({
+      "App ID": WORKING_CREDENTIALS.Slack["App ID"]!,
+      Workspaces: "Acme",
+      Events: "Waiting for the first event",
+    });
+    await slack.expectSetupStepsRetired();
     expect(await session.providerApplicationVersion("slack")).toBe(1);
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
     await surface.shoot(SHOTS, "apps-07-slack-connected.desktop");
@@ -326,37 +514,38 @@ test("Slack missing scopes are actionable, logged, and secret-safe", async ({ hu
     ).toBeVisible();
     await session.page.getByRole("link", { name: "Accept installation" }).click();
     await slack.expectFocusedError(
-      "Slack didn't grant every required bot permission. Update the app scopes, then reinstall it. Nothing was saved.",
+      "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
     );
+    await session.surface.shoot(SHOTS, "apps-21-slack-missing-scopes.desktop");
+
     await expect
       .poll(() => session.application.logs())
       .toContain("connection.callback.bot_verification");
-    const logs = plainLogs(session.application.logs());
-    expect(logs).toMatch(/provider:\s*["']?slack/u);
-    expect(logs).toMatch(/failureKind:\s*["']?permissionMissing/u);
-    expect(logs).toContain("SlackBotVerificationError");
+    const records = recordsFor(session.application.logs(), "connection.callback.bot_verification");
+    expect(records.length).toBeGreaterThan(0);
+    expect(records[0]?.failureKind).toBe("permissionMissing");
+    expect(records[0]?.provider).toBe("slack");
+    const text = stripAnsi(session.application.logs());
+    expect(text).toContain("SlackBotVerificationError");
     for (const secret of [
       WORKING_CREDENTIALS.Slack["Client Secret"]!,
       WORKING_CREDENTIALS.Slack["Signing Secret"]!,
       "xoxb-fixture",
     ]) {
-      expect(logs).not.toContain(secret);
+      expect(text).not.toContain(secret);
     }
   } finally {
     await session.close();
   }
 });
 
-function plainLogs(value: string): string {
-  return value.replace(/\u001B\[[0-9;]*m/gu, "");
-}
-
 test("Slack is genuinely blocked on plain HTTP", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
     const slack = session.surface.slack;
     await slack.expand();
-    await slack.expectHttpsBlocked();
+    await slack.expectHttpsBlocked(session.origin);
+    await session.surface.accessible();
     await session.surface.shoot(SHOTS, "apps-08-slack-https-required.desktop");
   } finally {
     await session.close();
@@ -382,6 +571,78 @@ test("Slack setup uses the exact built zero-env PGlite workspace proxy journey",
     await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
     await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
+  } finally {
+    await session.close();
+  }
+});
+
+test("every way a provider can send the operator back is answered in that section", async ({
+  hub,
+}) => {
+  const session = await openSetup(hub);
+  try {
+    const { surface, page } = session;
+    const returns = [
+      {
+        provider: "github" as const,
+        result: "github_cancelled",
+        copy: "Installation cancelled at GitHub. Nothing changed. Start again when you're ready.",
+        focus: "result" as const,
+      },
+      {
+        provider: "github" as const,
+        result: "github_approval_required",
+        copy: "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
+        focus: "error" as const,
+      },
+      {
+        provider: "discord" as const,
+        result: "connection_invalid",
+        copy: "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
+        focus: "error" as const,
+      },
+      {
+        provider: "slack" as const,
+        result: "connection_conflict",
+        copy: "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
+        focus: "error" as const,
+      },
+      {
+        provider: "discord" as const,
+        result: "provider_not_configured",
+        copy: "There are no saved credentials to connect yet. Verify and save the app first.",
+        focus: "error" as const,
+      },
+      {
+        provider: "github" as const,
+        result: "something_nobody_mapped",
+        copy: "GitHub ended the connection without saying why. Nothing was connected. Start the connection again from this page.",
+        focus: "error" as const,
+      },
+    ];
+    for (const outcome of returns) {
+      await session.returnFromProvider(outcome.provider, outcome.result);
+      const section = surface.section(
+        outcome.provider === "github"
+          ? "GitHub"
+          : outcome.provider === "slack"
+            ? "Slack"
+            : "Discord",
+      );
+      // The provider's own section opens, takes the keyboard, and says what happened there.
+      await section.expectExpanded();
+      if (outcome.focus === "error") await section.expectFocusedError(outcome.copy);
+      else await section.expectFocusedResult(outcome.copy);
+      // Never a page-level banner, and never replayable: a reload comes back to a closed
+      // chooser, and opening the section again shows no trace of what happened last time.
+      await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
+      await page.reload();
+      await section.expectCollapsed();
+      await section.expand();
+      await expect(section.status()).not.toContainText(outcome.copy);
+      await section.collapse();
+    }
+    await surface.accessible();
   } finally {
     await session.close();
   }
@@ -421,14 +682,15 @@ test("sections open and close independently and keep what was typed", async ({ h
 test("GitHub setup can be tabbed through and submitted without a pointer", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
+    await session.surface.github.expand();
     await session.surface.verifyGitHubFromKeyboard();
-    await session.surface.github.expectFocusedResult("Paseo Hub · owned by acme-inc");
+    await session.surface.github.expectFocusedResult("GitHub accepted this App.");
   } finally {
     await session.close();
   }
 });
 
-test("an environment-managed app is read-only, connectable, and says so plainly", async ({
+test("an environment-managed app is read-only, connectable, and names its variables", async ({
   hub,
 }) => {
   const session = await openSetup(hub, ["github"]);
@@ -439,22 +701,35 @@ test("an environment-managed app is read-only, connectable, and says so plainly"
     await surface.leave("Do this later");
     await session.openManagement();
     await github.expand();
-    await expect(
-      github.body().getByText("Set by this Hub's environment. Change it there."),
-    ).toBeVisible();
+
+    const notice = github.body().getByRole("alert");
+    await expect(notice).toContainText("Managed by environment");
+    for (const variable of [
+      "GITHUB_APP_ID",
+      "GITHUB_APP_SLUG",
+      "GITHUB_APP_CLIENT_ID",
+      "GITHUB_APP_CLIENT_SECRET",
+      "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_WEBHOOK_SECRET",
+    ]) {
+      await expect(notice).toContainText(variable);
+    }
+    await expect(notice).toContainText("restart Hub");
+
     // No form, no save, no way to replace what the environment owns.
     await expect(github.form()).toHaveCount(0);
     await expect(github.action("Verify and save")).toHaveCount(0);
     await expect(github.action("Replace credentials")).toHaveCount(0);
     // Identifiers are shown; secrets are not, and were never sent to the browser.
-    await expect(github.body().getByText("42", { exact: true })).toBeVisible();
+    await github.expectSummary({ "App ID": "42", "App slug": "paseo" });
     await expect(github.body().getByText("fixture-private-key")).toHaveCount(0);
+    await surface.accessible();
     await surface.shoot(SHOTS, "apps-16-instance-apps-environment.desktop");
 
     // Environment-managed is still connectable.
     await github.action("Install on GitHub").click();
     await github.expectStatus("Managed by environment");
-    await github.expectResult("Connected to acme-inc.");
+    await github.expectSummary({ Installations: "acme-inc" });
   } finally {
     await session.close();
   }
@@ -465,6 +740,7 @@ test("credentials can be replaced in place after they are saved", async ({ hub }
   try {
     const { surface } = session;
     const github = surface.github;
+    await github.expand();
     await github.fillWorkingCredentials();
     await github.save();
     await github.expectStatus("Verified");
@@ -480,15 +756,21 @@ test("credentials can be replaced in place after they are saved", async ({ hub }
     expect(await github.value("Private key")).toBe("");
     await expect(
       github
-        .body()
+        .form()
         .getByText("Rotating secrets for the same app keeps your connections.", { exact: false }),
     ).toBeVisible();
+    // The manual stays out of the way even while credentials are being rotated.
+    await expect(github.setupSteps()).toHaveAttribute("aria-expanded", "false");
     await surface.shoot(SHOTS, "apps-17-replace-credentials.desktop");
 
     await github.action("Cancel").click();
     await expect(github.action("Replace credentials")).toBeFocused();
     await expect(github.form()).toHaveCount(0);
     await github.expectStatus("Verified");
+
+    // The instructions are still reachable, just not in the way.
+    await github.openSetupSteps();
+    await expect(github.body().getByRole("link", { name: "Create a GitHub App" })).toBeVisible();
   } finally {
     await session.close();
   }
@@ -501,6 +783,7 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
   });
   try {
     const { surface, page } = session;
+    await surface.github.expand();
     await surface.github.fillWorkingCredentials();
     await surface.github.save();
     await surface.github.action("Install on GitHub").click();
@@ -519,9 +802,7 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
     await surface.discord.action("Add to a Discord server").click();
     await surface.discord.expectStatus("Connected");
 
-    await surface.github.collapse();
-    await surface.slack.collapse();
-    await surface.discord.collapse();
+    await surface.collapseAll();
     await surface.shoot(SHOTS, "apps-12-all-three-connected.desktop");
 
     await surface.leave("Finish");
@@ -535,7 +816,7 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
       Slack: "Connected",
       Discord: "Connected",
     });
-    // Nothing is open on arrival here; there is no journey to lead.
+    // Nothing is open on arrival here either; there is no journey to lead.
     for (const section of surface.sections()) await section.expectCollapsed();
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-15-instance-apps.desktop");
@@ -558,9 +839,7 @@ test("a member has no Apps surface at all", async ({ hub }) => {
       await member.page.goto(`${session.origin}/apps`);
       // The route renders, the capability refuses: no credential status of any kind.
       await expect(
-        member.page.getByText(
-          "Hub couldn't load your apps. Reload the page and use the reference if the problem continues.",
-        ),
+        member.page.getByText("Only an instance operator can view app setup."),
       ).toBeVisible();
       await expect(member.page.getByRole("form", { name: "Set up GitHub" })).toHaveCount(0);
       await expect(member.page.getByText("Not set up")).toHaveCount(0);

@@ -17,7 +17,8 @@ const githubConfigurationSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().min(1),
   privateKey: z.string().min(1),
-  webhookSecret: z.string().min(1),
+  // Optional: an App without one has repository access and no event triggers.
+  webhookSecret: z.string().min(1).optional(),
 });
 const slackConfigurationSchema = z.object({
   provider: z.literal("slack"),
@@ -42,7 +43,12 @@ const configurationSchema = z.discriminatedUnion("provider", [
 export function parseProviderApplicationConfiguration(
   value: unknown,
 ): ProviderApplicationConfiguration {
-  return configurationSchema.parse(value) as ProviderApplicationConfiguration;
+  const parsed = configurationSchema.parse(value);
+  // An absent optional value stays absent rather than becoming present-and-undefined, which is
+  // what the rest of the codebase means by optional.
+  if (parsed.provider !== "github") return parsed;
+  const { webhookSecret, ...rest } = parsed;
+  return webhookSecret === undefined ? rest : { ...rest, webhookSecret };
 }
 const identitySchema = z.discriminatedUnion("provider", [
   z.object({

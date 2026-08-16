@@ -6,7 +6,8 @@ import { completeAppSetup } from "../auth/functions.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { AuthLayout } from "../components/app/auth-layout.js";
 import { PageHeader } from "../components/app/page.js";
-import { Alert, AlertDescription } from "../components/ui/alert.js";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { TriangleAlert } from "lucide-react";
 import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
 import { PROVIDER_GUIDES } from "./guides.js";
@@ -38,12 +39,9 @@ function connectedProviderCount(overview: ProviderApplicationOverview): number {
 function ProviderApplications({
   surface,
   organizationId,
-  initiallyOpen,
 }: {
   surface: ProviderApplicationSurface;
   organizationId: string;
-  /** Opened on arrival when nothing else claims it — one job on screen, not three. */
-  initiallyOpen?: Provider;
 }) {
   const [returned] = useState(readAppReturn);
   const [open, setOpen] = useState<Partial<Record<Provider, boolean>>>(() =>
@@ -60,10 +58,12 @@ function ProviderApplications({
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
+        <TriangleAlert />
+        <AlertTitle>Your apps couldn't be loaded</AlertTitle>
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "Hub did not receive the app status. Check your connection and reload the page."}
+            : "Hub did not answer. Check your connection, then reload the page."}
         </AlertDescription>
       </Alert>
     );
@@ -83,12 +83,9 @@ function ProviderApplications({
             callbackOrigin={overview.callbackOrigin}
             surface={surface}
             organizationId={organizationId}
-            open={
-              open[guide.provider] ??
-              (initiallyOpen === guide.provider &&
-                overview.providers[guide.provider].status !== "connected" &&
-                overview.providers[guide.provider].status !== "managedByEnvironment")
-            }
+            // Closed until the operator picks one, or until a provider's own return has
+            // something to show them. Three open manuals is not a choice, it is a wall.
+            open={open[guide.provider] ?? false}
             onOpenChange={(next) => setOpen((current) => ({ ...current, [guide.provider]: next }))}
             {...(returned?.provider === guide.provider
               ? { returned: returned.outcome }
@@ -101,16 +98,10 @@ function ProviderApplications({
 }
 
 function OverviewLoading() {
-  const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
   return (
     <div aria-label="Loading your apps" aria-busy="true" className="grid gap-3">
       {PROVIDER_GUIDES.map((guide) => (
-        <ProviderSectionLoading
-          key={guide.provider}
-          guide={guide}
-          origin={origin}
-          open={guide.provider === "github"}
-        />
+        <ProviderSectionLoading key={guide.provider} guide={guide} open={false} />
       ))}
     </div>
   );
@@ -136,7 +127,7 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
   });
   const done = useCallback(() => finish.mutate({}), [finish]);
   return (
-    <AuthLayout width="lg">
+    <AuthLayout width="xl">
       <div className="grid min-w-0 gap-6">
         <div className="grid gap-1.5">
           <h1
@@ -153,14 +144,12 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
         </div>
         {finish.data?.status === "error" ? (
           <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertTitle>Hub couldn't leave app setup</AlertTitle>
             <AlertDescription>{finish.data.error.message}</AlertDescription>
           </Alert>
         ) : null}
-        <ProviderApplications
-          surface="appSetup"
-          organizationId={organizationId}
-          initiallyOpen="github"
-        />
+        <ProviderApplications surface="appSetup" organizationId={organizationId} />
         <div className="sticky bottom-0 -mx-6 border-t bg-background px-6 py-4 sm:static sm:mx-0 sm:flex sm:justify-end sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
           <Button
             className="w-full sm:w-auto"
@@ -181,8 +170,11 @@ export function AppsPanel() {
   const account = useActiveAccount();
   return (
     <>
-      <PageHeader title="Apps" description="The GitHub, Slack, and Discord apps this Hub uses." />
-      <div className="max-w-3xl">
+      <PageHeader
+        title="Apps"
+        description="The GitHub, Slack, and Discord apps Hub uses to reach your workspaces."
+      />
+      <div className="max-w-5xl">
         <ProviderApplications surface="apps" organizationId={account.organization.id} />
       </div>
     </>
@@ -194,35 +186,49 @@ interface AppReturn {
   outcome: SectionReturn;
 }
 
+/**
+ * Every outcome a provider can send an operator back with. Each one says what happened and what
+ * to do next; a cancellation is neutral because nothing about it is broken.
+ */
 const RETURN_MESSAGES: Readonly<Record<string, SectionReturn>> = {
   github_connected: { tone: "success", message: "GitHub connected." },
   slack_connected: { tone: "success", message: "Slack connected." },
   discord_connected: { tone: "success", message: "Discord connected." },
-  github_cancelled: { tone: "error", message: "You cancelled the GitHub installation." },
-  slack_cancelled: { tone: "error", message: "You cancelled the Slack installation." },
-  discord_cancelled: { tone: "error", message: "You cancelled the Discord installation." },
+  github_cancelled: {
+    tone: "success",
+    message: "Installation cancelled at GitHub. Nothing changed. Start again when you're ready.",
+  },
+  slack_cancelled: {
+    tone: "success",
+    message: "Installation cancelled at Slack. Nothing changed. Start again when you're ready.",
+  },
+  discord_cancelled: {
+    tone: "success",
+    message: "Authorization cancelled at Discord. Nothing changed. Start again when you're ready.",
+  },
   github_approval_required: {
     tone: "error",
-    message: "GitHub owner approval is required. Retry after approval.",
+    message:
+      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
   },
   slack_bot_failed: {
     tone: "error",
     message:
-      "Slack didn't grant every required bot permission. Update the app scopes, then reinstall it. Nothing was saved.",
+      "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
   },
   provider_not_configured: {
     tone: "error",
-    message: "Set up the app before connecting it.",
+    message: "There are no saved credentials to connect yet. Verify and save the app first.",
   },
   connection_invalid: {
     tone: "error",
     message:
-      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
+      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
   },
   connection_conflict: {
     tone: "error",
     message:
-      "That provider account is already connected elsewhere. Review existing connections before starting again.",
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
   },
 };
 
@@ -241,7 +247,7 @@ function readAppReturn(): AppReturn | undefined {
     provider,
     outcome: RETURN_MESSAGES[result] ?? {
       tone: "error",
-      message: `${providerName(provider)} couldn't complete the connection. Start again from this Hub; if it repeats, check the app credentials and provider status.`,
+      message: `${providerName(provider)} ended the connection without saying why. Nothing was connected. Start the connection again from this page.`,
     },
   };
 }

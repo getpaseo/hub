@@ -10,13 +10,25 @@ export type AppStatus =
   | "Action needed"
   | "Managed by environment";
 
+/** The link each section offers into the provider's own portal, by its visible name. */
+const PORTAL_LINKS: Readonly<Record<AppProvider, string>> = {
+  GitHub: "Create a GitHub App",
+  Slack: "Create a Slack app",
+  Discord: "Discord developer portal",
+};
+
 const APP_SUMMARIES: Readonly<Record<AppProvider, string>> = {
   GitHub: "Reads issues and pull requests, and lets agents push.",
   Slack: "Reads mentions in your workspace and replies in the thread.",
   Discord: "Reads mentions in your server and replies in the thread.",
 };
 
-/** The credentials the fixture providers accept. Anything else is a genuine rejection. */
+/**
+ * The credentials the fixture providers accept. Anything else is a genuine rejection.
+ *
+ * GitHub's webhook secret is deliberately not here: it belongs to event triggers, which only
+ * exist on an HTTPS origin, so a test that wants it asks for it by name.
+ */
 export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<string, string>>>> =
   {
     GitHub: {
@@ -25,7 +37,6 @@ export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<s
       "Client ID": "client",
       "Client secret": "secret",
       "Private key": "fixture-private-key",
-      "Webhook secret": "phase-zero-webhook-secret",
     },
     Discord: {
       "Application ID": "900",
@@ -39,6 +50,9 @@ export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<s
       "Signing Secret": "phase-zero-slack-webhook-secret",
     },
   };
+
+/** The one GitHub value that only exists once the origin can receive deliveries. */
+export const GITHUB_EVENT_CREDENTIALS = { "Webhook secret": "phase-zero-webhook-secret" } as const;
 
 /**
  * One provider's collapsible section. Everything is addressed by role and accessible name, so a
@@ -208,25 +222,176 @@ export class AppSection {
     await expect(this.status()).toBeFocused();
   }
 
+  /**
+   * The alert says what happened and what to do, under a title that says which provider it
+   * belongs to. The copy assertion is scoped to the description so an anchored expectation is
+   * about the sentence, not about the title stuck to the front of it.
+   */
   async expectFocusedError(message: string | RegExp): Promise<void> {
     const alert = this.status().getByRole("alert");
-    await expect(alert).toContainText(message);
+    await expect(alert.locator('[data-slot="alert-description"]')).toContainText(message);
+    await expect(alert).toContainText(`${this.provider} setup didn't finish`);
     await expect(alert).toBeFocused();
   }
 
   /** Plain HTTP is a terminal Slack setup state, not an editable workflow with disabled inputs. */
-  async expectHttpsBlocked(): Promise<void> {
+  async expectHttpsBlocked(origin: string): Promise<void> {
     await this.expectExpanded();
-    await expect(
-      this.body().getByText("Slack requires Hub to use HTTPS before you can set it up.", {
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(this.body().getByRole("alert")).toContainText("HTTPS required");
+    await expect(this.body().getByRole("alert")).toContainText(
+      `Slack only works over HTTPS, and Hub is at ${origin}. Reopen Hub at its public HTTPS address to set up Slack.`,
+    );
     await expect(this.body().getByRole("link", { name: "Create a Slack app" })).toHaveCount(0);
     await expect(this.body().getByRole("list")).toHaveCount(0);
     await expect(this.body().getByRole("button", { name: "Copy manifest" })).toHaveCount(0);
     await expect(this.form()).toHaveCount(0);
     await expect(this.action("Save and continue to Slack")).toHaveCount(0);
+    await expect(this.setupSteps()).toHaveCount(0);
+  }
+
+  /** The ordered portal checklist. Its first list is the steps; chips and mappings nest inside. */
+  steps(): Locator {
+    return this.body().getByRole("list").first();
+  }
+
+  setupSteps(): Locator {
+    return this.body().getByRole("button", { name: "Setup steps", exact: true });
+  }
+
+  /**
+   * The saved summary. A `dl` has no ARIA role to address it by, so this is the escape hatch —
+   * and giving it a role purely to be locatable would cost the rows their term/definition
+   * semantics, which is the whole point of the panel.
+   */
+  summary(): Locator {
+    return this.body().locator(`dl[data-summary="${this.provider} app"]`);
+  }
+
+  /**
+   * The portal-control mapping a step renders instead of listing six settings in one sentence.
+   * Read as pairs, because that is the whole claim: each control has one value.
+   */
+  async permissionMapping(): Promise<Readonly<Record<string, string>>> {
+    return await this.steps()
+      .locator("dl")
+      .first()
+      .evaluate((list) => {
+        const pairs: Record<string, string> = {};
+        const terms = [...list.querySelectorAll("dt")];
+        for (const term of terms) {
+          const definition = term.nextElementSibling;
+          if (definition?.tagName.toLowerCase() !== "dd") continue;
+          pairs[(term.textContent ?? "").trim()] = (definition.textContent ?? "").trim();
+        }
+        return pairs;
+      });
+  }
+
+  /** The named checkboxes a step renders as items rather than as a comma run-on. */
+  async subscribedEvents(): Promise<readonly string[]> {
+    return (await this.body().locator("ol ul").first().locator("li").allInnerTexts()).map((text) =>
+      text.trim(),
+    );
+  }
+
+  /**
+   * The step sentences, in the order the operator will walk the provider's portal. Only the
+   * sentence: the copy fields, mappings and chips a step renders under itself are asserted on
+   * their own, and folding them in here would make the order assertion about layout.
+   */
+  async stepOrder(): Promise<readonly string[]> {
+    const sentences = await this.steps().locator("> li > span:first-child").allInnerTexts();
+    // An inline link is a flex box, so the browser puts a space either side of it. That is a
+    // rendering artefact of the icon, not a space in the copy.
+    return sentences.map((text) =>
+      text
+        .replace(/\s+/gu, " ")
+        .replace(/\s+([,.:;])/gu, "$1")
+        .trim(),
+    );
+  }
+
+  async fieldOrder(): Promise<readonly string[]> {
+    return await this.form().locator("label").allInnerTexts();
+  }
+
+  /** Finished work is never buried under the manual that produced it. */
+  async expectSetupStepsRetired(): Promise<void> {
+    await expect(this.setupSteps()).toBeVisible();
+    await expect(this.setupSteps()).toHaveAttribute("aria-expanded", "false");
+    await expect(this.body().getByRole("link", { name: PORTAL_LINKS[this.provider] })).toBeHidden();
+  }
+
+  async openSetupSteps(): Promise<void> {
+    await this.setupSteps().click();
+    await expect(this.setupSteps()).toHaveAttribute("aria-expanded", "true");
+  }
+
+  /** The saved summary as the labelled facts it claims to be. */
+  async summaryValues(): Promise<Readonly<Record<string, string>>> {
+    return await this.summary().evaluate((panel) => {
+      const values: Record<string, string> = {};
+      for (const row of panel.querySelectorAll(":scope > div")) {
+        const term = row.querySelector("dt");
+        const definition = row.querySelector("dd");
+        if (term === null || definition === null) continue;
+        values[(term.textContent ?? "").trim()] = (definition.textContent ?? "")
+          .replace(/\s+/gu, " ")
+          .trim();
+      }
+      return values;
+    });
+  }
+
+  async expectSummary(expected: Readonly<Record<string, string | RegExp>>): Promise<void> {
+    await expect(this.summary()).toBeVisible();
+    const matchers = Object.fromEntries(
+      Object.entries(expected).map(([label, value]) => [
+        label,
+        typeof value === "string" ? value : expect.stringMatching(value),
+      ]),
+    );
+    await expect.poll(() => this.summaryValues()).toMatchObject(matchers);
+    // One statement of each fact. The rejected surface said "Connected to X" and "X connected"
+    // one line apart, and repeated the identity a third time above both.
+    const text = (await this.summary().innerText()).replace(/\s+/gu, " ");
+    expect(text).not.toMatch(/Connected to /u);
+  }
+
+  /**
+   * On a wide screen the instructions and the form share the row rather than the form hiding in
+   * a narrow strip at the bottom left of a full-width wall of text.
+   */
+  async expectSideBySideLayout(): Promise<void> {
+    const [steps, form] = await this.taskBoxes();
+    expect(form.x, "the paste form should start to the right of the instructions").toBeGreaterThan(
+      steps.x + steps.width - 1,
+    );
+    const overlap =
+      Math.min(steps.y + steps.height, form.y + form.height) - Math.max(steps.y, form.y);
+    expect(overlap, "the two columns should share vertical space").toBeGreaterThan(0);
+  }
+
+  /** On a phone the same task reads top to bottom in the same order. */
+  async expectStackedLayout(): Promise<void> {
+    const [steps, form] = await this.taskBoxes();
+    expect(form.y, "the paste form should follow the instructions").toBeGreaterThanOrEqual(
+      steps.y + steps.height - 1,
+    );
+    await this.expectNothingClipped();
+  }
+
+  private async taskBoxes(): Promise<
+    [
+      { x: number; y: number; width: number; height: number },
+      { x: number; y: number; width: number; height: number },
+    ]
+  > {
+    const steps = await this.steps().boundingBox();
+    const form = await this.form().boundingBox();
+    expect(steps, "no instructions on screen").not.toBeNull();
+    expect(form, "no paste form on screen").not.toBeNull();
+    return [steps!, form!];
   }
 
   /** HTTPS exposes every user action needed to create and install the Slack app. */
@@ -281,7 +446,7 @@ export class AppSetupSurface {
   async expectManagement(): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Apps", exact: true })).toBeVisible();
     await expect(
-      this.page.getByText("The GitHub, Slack, and Discord apps this Hub uses."),
+      this.page.getByText("The GitHub, Slack, and Discord apps Hub uses to reach your workspaces."),
     ).toBeVisible();
   }
 
@@ -334,7 +499,9 @@ export class AppSetupSurface {
     await expect(github.form()).toBeVisible();
     await github.header().focus();
     await this.tabTo(github.body().getByRole("link", { name: "Create a GitHub App" }));
-    for (const label of ["Homepage URL", "Callback URL", "Setup URL", "Webhook URL"]) {
+    // The copy controls come in the order their URLs are read off the page, and on a plain-HTTP
+    // origin the webhook URL is not one of them.
+    for (const label of ["Homepage URL", "Callback URL", "Setup URL"]) {
       await this.tabTo(github.body().getByRole("button", { name: `Copy ${label}` }));
     }
     for (const [label, value] of Object.entries(WORKING_CREDENTIALS.GitHub)) {
@@ -358,6 +525,11 @@ export class AppSetupSurface {
     expect(results.violations).toEqual([]);
   }
 
+  /**
+   * Paseo's own vocabulary never reaches this surface. "Restart" is the one exception and it is
+   * not a general one: an environment-managed app genuinely cannot be changed without restarting
+   * Hub, so that alert says so and is measured separately.
+   */
   async expectCopyContract(): Promise<void> {
     const copy = (await this.page.locator("body").innerText()).toLowerCase();
     for (const phrase of [
@@ -369,7 +541,6 @@ export class AppSetupSurface {
       "provider registration",
       "factory",
       "hot reload",
-      "restart",
       "activation",
       "environment precedence",
       "latch",
@@ -377,10 +548,19 @@ export class AppSetupSurface {
       "snapshot",
       "first owner",
       "instance operator flag",
+      "this hub",
+      "app settings",
       "project",
       "projects",
     ]) {
       expect(copy, `visible copy contains prohibited phrase: ${phrase}`).not.toContain(phrase);
+    }
+    const restarts = await this.page.getByText("restart Hub", { exact: false }).all();
+    for (const mention of restarts) {
+      await expect(
+        mention.locator("xpath=ancestor-or-self::*[@data-slot='alert']"),
+        "only an environment-managed app may speak about restarting Hub",
+      ).toHaveCount(1);
     }
   }
 

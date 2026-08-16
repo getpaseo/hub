@@ -29,6 +29,13 @@ export interface GuideStep {
   urls?: readonly string[];
   /** Renders the generated manifest under this step. */
   manifest?: boolean;
+  /**
+   * A portal control and the value to give it, rendered as a mapping. Prose that lists six
+   * settings in one sentence is prose nobody checks off against the screen they are on.
+   */
+  permissions?: readonly { name: string; access: string }[];
+  /** Named checkboxes, rendered as a list rather than a comma run-on. */
+  events?: readonly string[];
 }
 
 export interface GuideUrl {
@@ -45,8 +52,31 @@ export interface GuideField {
   description?: string;
   /** Present when the value is a non-secret identifier the overview can echo back. */
   identifier?: string;
-  /** Shown when the operator submits it empty. */
+  /** Shown when the operator submits it empty. Unused for an optional field. */
   required: string;
+  /** The app works without it; only the capability it unlocks is unavailable. */
+  optional?: true;
+}
+
+/**
+ * One job inside a provider's setup, with the steps that do it and the values it produces.
+ * GitHub has two — repository access, then event triggers — because they have different
+ * requirements and an operator on a plain-HTTP address can finish the first and not the second.
+ */
+export interface GuideGroup {
+  id: string;
+  /** Absent on the first group: the section header already names the job. */
+  title?: string;
+  description?: string;
+  /** Set when the current origin cannot support this group. Steps and fields are then empty. */
+  unavailable?: string;
+  steps: readonly GuideStep[];
+  fields: readonly GuideField[];
+}
+
+interface GuideGroupSource extends Omit<GuideGroup, "unavailable"> {
+  /** Returns the reason this group cannot be set up here, or undefined when it can. */
+  unavailableAt?: (origin: string) => string | undefined;
 }
 
 export interface ProviderGuide {
@@ -54,10 +84,14 @@ export interface ProviderGuide {
   name: string;
   summary: string;
   portal: { label: string; href: string };
-  steps: readonly GuideStep[];
-  note?: string;
+  groups: readonly GuideGroupSource[];
   urls: readonly GuideUrl[];
-  fields: readonly GuideField[];
+  /** Names the bounded panel the operator pastes into, after the portal they copied from. */
+  formTitle: string;
+  /** Row labels for the saved summary, in the vocabulary of that provider. */
+  summaryLabels: { identity: string; owner?: string; connections: string };
+  /** The exact names an operator has to change when the environment owns this app. */
+  environmentVariables: readonly string[];
   /** Slack's save continues into Slack, so it has one action rather than verify-then-connect. */
   savingContinues: boolean;
   actions: {
@@ -68,9 +102,9 @@ export interface ProviderGuide {
   };
   saveHint?: string;
   verifiedMessage?: string;
-  /** Slack cannot be set up at all without HTTPS; the others only lose inbound events. */
+  /** Slack cannot be set up at all without HTTPS; GitHub only loses inbound events. */
   requiresHttps: boolean;
-  insecureOriginNotice: (origin: string) => { tone: "warning" | "default"; message: string };
+  httpsRequirement: (origin: string) => string;
   /** Discord never posts to Hub, so it has no event line to wait on. */
   receivesEvents: boolean;
 }
@@ -80,111 +114,174 @@ export const GITHUB_GUIDE: ProviderGuide = {
   name: "GitHub",
   summary: "Reads issues and pull requests, and lets agents push.",
   portal: { label: "Create a GitHub App", href: "https://github.com/settings/apps/new" },
-  steps: [
-    {
-      segments: [
-        { kind: "text", value: "Open " },
-        {
-          kind: "link",
-          value: "Create a GitHub App",
-          href: "https://github.com/settings/apps/new",
-        },
-        { kind: "text", value: " and give it a name." },
-      ],
-    },
-    {
-      segments: [{ kind: "text", value: "Set these URLs:" }],
-      urls: ["homepage", "callback", "setup", "webhook"],
-    },
-    {
-      segments: [
-        { kind: "text", value: "Turn on " },
-        { kind: "term", value: "Redirect on update" },
-        { kind: "text", value: " and " },
-        { kind: "term", value: "Active" },
-        { kind: "text", value: " under Webhook, then set a " },
-        { kind: "term", value: "Webhook secret" },
-        { kind: "text", value: " you generate." },
-      ],
-    },
-    {
-      segments: [
-        { kind: "text", value: "Under " },
-        { kind: "term", value: "Repository permissions" },
-        {
-          kind: "text",
-          value:
-            " set Contents to Read and write, Issues to Read and write, Pull requests to Read and write, and Metadata to Read-only.",
-        },
-      ],
-    },
-    {
-      segments: [
-        { kind: "text", value: "Under " },
-        { kind: "term", value: "Subscribe to events" },
-        {
-          kind: "text",
-          value:
-            " select Issue comment, Issues, Pull request review, Pull request review comment, and Push.",
-        },
-      ],
-    },
-    {
-      segments: [
-        { kind: "text", value: "Create the App, then generate a client secret and a private key." },
-      ],
-    },
-    { segments: [{ kind: "text", value: "Paste the values below." }] },
+  formTitle: "Paste from GitHub",
+  summaryLabels: { identity: "App", owner: "Owner", connections: "Installations" },
+  environmentVariables: [
+    "GITHUB_APP_ID",
+    "GITHUB_APP_SLUG",
+    "GITHUB_APP_CLIENT_ID",
+    "GITHUB_APP_CLIENT_SECRET",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
   ],
-  note: "To let an organization own the App, start from that organization's Developer settings instead.",
+  groups: [
+    {
+      id: "access",
+      steps: [
+        {
+          segments: [
+            {
+              kind: "text",
+              value:
+                "Decide who owns the App. To let an organization own it, start from that organization's ",
+            },
+            { kind: "term", value: "Developer settings" },
+            { kind: "text", value: ". Otherwise it belongs to your account." },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            {
+              kind: "link",
+              value: "Create a GitHub App",
+              href: "https://github.com/settings/apps/new",
+            },
+            { kind: "text", value: " and give it a name." },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Set these URLs, and turn on " },
+            { kind: "term", value: "Redirect on update" },
+            { kind: "text", value: " under " },
+            { kind: "term", value: "Setup URL" },
+            { kind: "text", value: ":" },
+          ],
+          urls: ["homepage", "callback", "setup"],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Under " },
+            { kind: "term", value: "Repository permissions" },
+            { kind: "text", value: ", grant:" },
+          ],
+          permissions: [
+            { name: "Contents", access: "Read and write" },
+            { name: "Issues", access: "Read and write" },
+            { name: "Pull requests", access: "Read and write" },
+            { name: "Metadata", access: "Read-only" },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Create the App, then generate a " },
+            { kind: "term", value: "Client secret" },
+            { kind: "text", value: " and a " },
+            { kind: "term", value: "Private key" },
+            { kind: "text", value: "." },
+          ],
+        },
+      ],
+      fields: [
+        {
+          name: "appId",
+          label: "App ID",
+          kind: "text",
+          identifier: "appId",
+          required: "Enter the App ID.",
+        },
+        {
+          name: "appSlug",
+          label: "App slug",
+          kind: "text",
+          description: "The last part of the App's public link: github.com/apps/your-app",
+          identifier: "appSlug",
+          required: "Enter the App slug.",
+        },
+        {
+          name: "clientId",
+          label: "Client ID",
+          kind: "text",
+          identifier: "clientId",
+          required: "Enter the Client ID.",
+        },
+        {
+          name: "clientSecret",
+          label: "Client secret",
+          kind: "secret",
+          required: "Enter the Client secret.",
+        },
+        {
+          name: "privateKey",
+          label: "Private key",
+          kind: "multiline",
+          description: "Paste the contents of the .pem file you downloaded.",
+          required: "Enter the Private key.",
+        },
+      ],
+    },
+    {
+      id: "events",
+      title: "Event triggers",
+      description:
+        "Start workflows from GitHub issues, comments, and pushes. Repository access works without this.",
+      unavailableAt: (origin) =>
+        isSecureOrigin(origin)
+          ? undefined
+          : `GitHub delivers events to a webhook URL, so this part needs a public HTTPS address. Hub is at ${origin}. Repository access works now; reopen Hub at its HTTPS address to add event triggers.`,
+      steps: [
+        {
+          segments: [
+            { kind: "text", value: "In the App's settings, under " },
+            { kind: "term", value: "Webhook" },
+            { kind: "text", value: ", turn on " },
+            { kind: "term", value: "Active" },
+            { kind: "text", value: " and set the " },
+            { kind: "term", value: "Webhook URL" },
+            { kind: "text", value: ":" },
+          ],
+          urls: ["webhook"],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Set a " },
+            { kind: "term", value: "Webhook secret" },
+            { kind: "text", value: " you generate." },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Under " },
+            { kind: "term", value: "Subscribe to events" },
+            { kind: "text", value: ", select:" },
+          ],
+          events: [
+            "Issue comment",
+            "Issues",
+            "Pull request review",
+            "Pull request review comment",
+            "Push",
+          ],
+        },
+      ],
+      fields: [
+        {
+          name: "webhookSecret",
+          label: "Webhook secret",
+          kind: "secret",
+          description: "Until this is set, GitHub events are rejected and no trigger fires.",
+          required: "Enter the Webhook secret.",
+          optional: true,
+        },
+      ],
+    },
+  ],
   urls: [
     { key: "homepage", label: "Homepage URL", path: "" },
     { key: "callback", label: "Callback URL", path: "/api/integrations/github/callback" },
     { key: "setup", label: "Setup URL", path: "/api/integrations/github/setup" },
     { key: "webhook", label: "Webhook URL", path: "/webhook" },
-  ],
-  fields: [
-    {
-      name: "appId",
-      label: "App ID",
-      kind: "text",
-      identifier: "appId",
-      required: "Enter the App ID.",
-    },
-    {
-      name: "appSlug",
-      label: "App slug",
-      kind: "text",
-      description: "The last part of the App's public link: github.com/apps/your-app",
-      identifier: "appSlug",
-      required: "Enter the App slug.",
-    },
-    {
-      name: "clientId",
-      label: "Client ID",
-      kind: "text",
-      identifier: "clientId",
-      required: "Enter the Client ID.",
-    },
-    {
-      name: "clientSecret",
-      label: "Client secret",
-      kind: "secret",
-      required: "Enter the Client secret.",
-    },
-    {
-      name: "privateKey",
-      label: "Private key",
-      kind: "multiline",
-      description: "Paste the contents of the .pem file you downloaded.",
-      required: "Enter the Private key.",
-    },
-    {
-      name: "webhookSecret",
-      label: "Webhook secret",
-      kind: "secret",
-      required: "Enter the Webhook secret.",
-    },
   ],
   savingContinues: false,
   actions: {
@@ -195,10 +292,8 @@ export const GITHUB_GUIDE: ProviderGuide = {
   },
   verifiedMessage: "GitHub accepted this App.",
   requiresHttps: false,
-  insecureOriginNotice: (origin) => ({
-    tone: "warning",
-    message: `GitHub delivers events to the webhook URL, so it has to be reachable from the internet. This Hub is at ${origin}.`,
-  }),
+  httpsRequirement: (origin) =>
+    `GitHub event triggers need a public HTTPS address, and Hub is at ${origin}.`,
   receivesEvents: true,
 };
 
@@ -207,34 +302,70 @@ export const SLACK_GUIDE: ProviderGuide = {
   name: "Slack",
   summary: "Reads mentions in your workspace and replies in the thread.",
   portal: { label: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
-  steps: [
+  formTitle: "Paste from Slack",
+  summaryLabels: { identity: "App ID", connections: "Workspaces" },
+  environmentVariables: [
+    "SLACK_APP_ID",
+    "SLACK_CLIENT_ID",
+    "SLACK_CLIENT_SECRET",
+    "SLACK_SIGNING_SECRET",
+  ],
+  groups: [
     {
-      segments: [
-        { kind: "text", value: "Open " },
-        { kind: "link", value: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
-        { kind: "text", value: " and choose " },
-        { kind: "term", value: "From a manifest" },
-        { kind: "text", value: "." },
-      ],
-    },
-    {
-      segments: [{ kind: "text", value: "Pick your workspace, then paste this manifest:" }],
-      manifest: true,
-    },
-    { segments: [{ kind: "text", value: "Create the app." }] },
-    {
-      segments: [
-        { kind: "text", value: "From " },
-        { kind: "term", value: "Basic Information → App Credentials" },
-        { kind: "text", value: ", paste the values below." },
-      ],
-    },
-    {
-      segments: [
+      id: "app",
+      steps: [
         {
+          segments: [
+            { kind: "text", value: "Open " },
+            {
+              kind: "link",
+              value: "Create a Slack app",
+              href: "https://api.slack.com/apps?new_app=1",
+            },
+            { kind: "text", value: " and choose " },
+            { kind: "term", value: "From a manifest" },
+            { kind: "text", value: "." },
+          ],
+        },
+        {
+          segments: [{ kind: "text", value: "Pick your workspace, then paste this manifest:" }],
+          manifest: true,
+        },
+        { segments: [{ kind: "text", value: "Create the app." }] },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            { kind: "term", value: "Basic Information → App Credentials" },
+            { kind: "text", value: " and copy the four values." },
+          ],
+        },
+      ],
+      fields: [
+        {
+          name: "appId",
+          label: "App ID",
           kind: "text",
-          value:
-            "Choose Save and continue to Slack. Slack asks you to install the app in your workspace.",
+          identifier: "appId",
+          required: "Enter the App ID.",
+        },
+        {
+          name: "clientId",
+          label: "Client ID",
+          kind: "text",
+          identifier: "clientId",
+          required: "Enter the Client ID.",
+        },
+        {
+          name: "clientSecret",
+          label: "Client Secret",
+          kind: "secret",
+          required: "Enter the Client Secret.",
+        },
+        {
+          name: "signingSecret",
+          label: "Signing Secret",
+          kind: "secret",
+          required: "Enter the Signing Secret.",
         },
       ],
     },
@@ -242,34 +373,6 @@ export const SLACK_GUIDE: ProviderGuide = {
   urls: [
     { key: "redirect", label: "Redirect URL", path: "/api/integrations/slack/callback" },
     { key: "events", label: "Request URL", path: "/api/integrations/slack/events" },
-  ],
-  fields: [
-    {
-      name: "appId",
-      label: "App ID",
-      kind: "text",
-      identifier: "appId",
-      required: "Enter the App ID.",
-    },
-    {
-      name: "clientId",
-      label: "Client ID",
-      kind: "text",
-      identifier: "clientId",
-      required: "Enter the Client ID.",
-    },
-    {
-      name: "clientSecret",
-      label: "Client Secret",
-      kind: "secret",
-      required: "Enter the Client Secret.",
-    },
-    {
-      name: "signingSecret",
-      label: "Signing Secret",
-      kind: "secret",
-      required: "Enter the Signing Secret.",
-    },
   ],
   savingContinues: true,
   actions: {
@@ -280,10 +383,8 @@ export const SLACK_GUIDE: ProviderGuide = {
   },
   saveHint: "Slack asks you to install the app before anything is saved.",
   requiresHttps: true,
-  insecureOriginNotice: () => ({
-    tone: "warning",
-    message: "Slack requires Hub to use HTTPS before you can set it up.",
-  }),
+  httpsRequirement: (origin) =>
+    `Slack only works over HTTPS, and Hub is at ${origin}. Reopen Hub at its public HTTPS address to set up Slack.`,
   receivesEvents: true,
 };
 
@@ -295,73 +396,93 @@ export const DISCORD_GUIDE: ProviderGuide = {
     label: "Open the Discord developer portal",
     href: "https://discord.com/developers/applications",
   },
-  steps: [
+  formTitle: "Paste from Discord",
+  summaryLabels: { identity: "Application", connections: "Servers" },
+  environmentVariables: ["DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_BOT_TOKEN"],
+  groups: [
     {
-      segments: [
-        { kind: "text", value: "Open the " },
+      id: "application",
+      steps: [
         {
-          kind: "link",
-          value: "Discord developer portal",
-          href: "https://discord.com/developers/applications",
+          segments: [
+            { kind: "text", value: "Open the " },
+            {
+              kind: "link",
+              value: "Discord developer portal",
+              href: "https://discord.com/developers/applications",
+            },
+            { kind: "text", value: ", choose " },
+            { kind: "term", value: "New Application" },
+            { kind: "text", value: ", and give it a name." },
+          ],
         },
-        { kind: "text", value: ", choose " },
-        { kind: "term", value: "New Application" },
-        { kind: "text", value: ", and give it a name." },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            { kind: "term", value: "General Information" },
+            { kind: "text", value: " and copy the " },
+            { kind: "term", value: "Application ID" },
+            { kind: "text", value: "." },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            { kind: "term", value: "OAuth2" },
+            { kind: "text", value: ", copy the " },
+            { kind: "term", value: "Client Secret" },
+            { kind: "text", value: ", and add this " },
+            { kind: "term", value: "Redirect" },
+            { kind: "text", value: ":" },
+          ],
+          urls: ["redirect"],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            { kind: "term", value: "Bot" },
+            { kind: "text", value: ", choose " },
+            { kind: "term", value: "Reset Token" },
+            { kind: "text", value: ", and copy the token." },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Under " },
+            { kind: "term", value: "Bot → Privileged Gateway Intents" },
+            { kind: "text", value: ", turn on " },
+            { kind: "term", value: "Message Content Intent" },
+            { kind: "text", value: ". Without it the bot only receives empty messages." },
+          ],
+        },
+      ],
+      fields: [
+        {
+          name: "applicationId",
+          label: "Application ID",
+          kind: "text",
+          description: "From General Information.",
+          identifier: "applicationId",
+          required: "Enter the Application ID.",
+        },
+        {
+          name: "clientSecret",
+          label: "Client Secret",
+          kind: "secret",
+          description: "From OAuth2.",
+          required: "Enter the Client Secret.",
+        },
+        {
+          name: "botToken",
+          label: "Bot token",
+          kind: "secret",
+          description: "From Bot → Reset Token.",
+          required: "Enter the Bot token.",
+        },
       ],
     },
-    {
-      segments: [
-        { kind: "text", value: "Open " },
-        { kind: "term", value: "Bot" },
-        { kind: "text", value: ", choose " },
-        { kind: "term", value: "Reset Token" },
-        { kind: "text", value: ", and copy the token." },
-      ],
-    },
-    {
-      segments: [
-        { kind: "text", value: "On the same page turn on " },
-        { kind: "term", value: "Message Content Intent" },
-        { kind: "text", value: ". Without it the bot receives empty messages." },
-      ],
-    },
-    {
-      segments: [
-        { kind: "text", value: "Open " },
-        { kind: "term", value: "OAuth2" },
-        { kind: "text", value: " and add this " },
-        { kind: "term", value: "Redirect" },
-        { kind: "text", value: ":" },
-      ],
-      urls: ["redirect"],
-    },
-    { segments: [{ kind: "text", value: "Paste the values below." }] },
   ],
   urls: [{ key: "redirect", label: "Redirect", path: "/api/integrations/discord/callback" }],
-  fields: [
-    {
-      name: "applicationId",
-      label: "Application ID",
-      kind: "text",
-      description: "From General Information.",
-      identifier: "applicationId",
-      required: "Enter the Application ID.",
-    },
-    {
-      name: "clientSecret",
-      label: "Client Secret",
-      kind: "secret",
-      description: "From OAuth2.",
-      required: "Enter the Client Secret.",
-    },
-    {
-      name: "botToken",
-      label: "Bot token",
-      kind: "secret",
-      description: "From Bot → Reset Token.",
-      required: "Enter the Bot token.",
-    },
-  ],
   savingContinues: false,
   actions: {
     save: "Verify and save",
@@ -371,10 +492,7 @@ export const DISCORD_GUIDE: ProviderGuide = {
   },
   verifiedMessage: "Discord accepted this application.",
   requiresHttps: false,
-  insecureOriginNotice: () => ({
-    tone: "default",
-    message: "Discord doesn't call this Hub, so a local address is fine here.",
-  }),
+  httpsRequirement: (origin) => `Discord is set up the same way at ${origin}.`,
   receivesEvents: false,
 };
 
@@ -384,6 +502,24 @@ export function guideFor(provider: Provider): ProviderGuide {
   const guide = PROVIDER_GUIDES.find((candidate) => candidate.provider === provider);
   if (guide === undefined) throw new Error(`unknown provider: ${provider}`);
   return guide;
+}
+
+/**
+ * The guide's groups as the current origin can actually be followed. A group the origin cannot
+ * support keeps its heading and says why, and gives up its steps and fields — an operator should
+ * not be typing into a form for a capability that cannot work from where they are.
+ */
+export function guideGroups(guide: ProviderGuide, origin: string): readonly GuideGroup[] {
+  return guide.groups.map((group) => {
+    const unavailable = group.unavailableAt?.(origin);
+    const { unavailableAt: _ignored, ...rest } = group;
+    return unavailable === undefined ? rest : { ...rest, unavailable, steps: [], fields: [] };
+  });
+}
+
+/** Every value the operator can submit from this origin, in the order the groups ask for them. */
+export function guideFields(guide: ProviderGuide, origin: string): readonly GuideField[] {
+  return guideGroups(guide, origin).flatMap((group) => group.fields);
 }
 
 export function guideUrl(origin: string, path: string): string {

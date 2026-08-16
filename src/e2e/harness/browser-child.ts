@@ -25,6 +25,7 @@ import {
   BrowserGitHubReactions,
   BrowserSlackBot,
   type BrowserDiscordEvent,
+  isBrowserProviderScenario,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
 import {
@@ -557,19 +558,7 @@ async function shutdown(
 
 function readScenario(): BrowserProviderScenario {
   const value = process.env["PASEO_BROWSER_PROVIDER_SCENARIO"] ?? "connected";
-  if (
-    value === "connected" ||
-    value === "approval" ||
-    value === "conflict" ||
-    value === "discord-verification-network" ||
-    value === "discord-disallowed-intents" ||
-    value === "slack-permission-missing" ||
-    value === "not-configured" ||
-    value === "discord-only" ||
-    value === "slack-only"
-  ) {
-    return value;
-  }
+  if (isBrowserProviderScenario(value)) return value;
   throw new Error(`invalid browser provider scenario: ${value}`);
 }
 

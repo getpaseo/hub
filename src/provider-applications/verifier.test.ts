@@ -3,6 +3,45 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, it } from "vitest";
 import { ProviderVerificationError, createProviderApplicationVerifier } from "./index.js";
 
+const DISCORD_IDENTITY = { id: "100", username: "Paseo", bot: true };
+const DISCORD_CONFIGURATION = {
+  provider: "discord" as const,
+  applicationId: "100",
+  clientSecret: "secret",
+  botToken: "token",
+};
+
+/**
+ * Answers the way Discord does: the bot identity from `users/@me`, an access token from the
+ * client credentials grant, and an accepted revocation. Each call is recorded so a test can
+ * assert what was actually asked of the provider.
+ */
+function discordProvider(
+  overrides: {
+    identity?: () => Response;
+    token?: (authorization: string, body: string) => Response;
+  } = {},
+) {
+  const calls: { url: string; authorization: string; body: string }[] = [];
+  const fetchLike: typeof fetch = (input, init) => {
+    const url = requestUrl(input);
+    const authorization = new Headers(init?.headers).get("authorization") ?? "";
+    const body = typeof init?.body === "string" ? init.body : "";
+    calls.push({ url, authorization, body });
+    if (url.endsWith("/users/@me")) {
+      return Promise.resolve(overrides.identity?.() ?? Response.json(DISCORD_IDENTITY));
+    }
+    if (url.endsWith("/oauth2/token")) {
+      return Promise.resolve(
+        overrides.token?.(authorization, body) ??
+          Response.json({ access_token: "minted", token_type: "Bearer", expires_in: 604800 }),
+      );
+    }
+    return Promise.resolve(new Response(null, { status: 200 }));
+  };
+  return { calls, fetch: fetchLike };
+}
+
 describe("provider application verification", () => {
   it("authenticates a GitHub App against the fixed API endpoint and returns its identity", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -33,26 +72,93 @@ describe("provider application verification", () => {
     assert.deepEqual(requests, ["https://api.github.com/app"]);
   });
 
-  it("proves the Discord bot identity and rejects a different application", async () => {
+  it("says an App ID that names a different App is a mismatch, not a bad key", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const verifier = createProviderApplicationVerifier({
-      fetch: () => Promise.resolve(Response.json({ id: "100", username: "Paseo", bot: true })),
+      fetch: () =>
+        Promise.resolve(Response.json({ id: 99, name: "Other App", owner: { login: "acme" } })),
     });
-    const configuration = {
-      provider: "discord" as const,
-      applicationId: "100",
-      clientSecret: "secret",
-      botToken: "token",
-    };
-    assert.deepEqual(await verifier.verify("discord", configuration), {
+
+    await assert.rejects(
+      verifier.verify("github", {
+        provider: "github",
+        appId: "42",
+        appSlug: "paseo",
+        clientId: "client",
+        clientSecret: "secret",
+        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      }),
+      (error: unknown) =>
+        error instanceof ProviderVerificationError && error.subject === "identityMismatch",
+    );
+  });
+
+  it("proves the Discord bot identity and the Client Secret before claiming Verified", async () => {
+    const provider = discordProvider();
+    const verifier = createProviderApplicationVerifier({ fetch: provider.fetch });
+
+    assert.deepEqual(await verifier.verify("discord", DISCORD_CONFIGURATION), {
       provider: "discord",
       id: "100",
       name: "Paseo",
     });
-    await assert.rejects(
-      verifier.verify("discord", { ...configuration, applicationId: "200" }),
-      (error: unknown) =>
-        error instanceof ProviderVerificationError && error.reason === "credentialsRejected",
+
+    const token = provider.calls.find((call) => call.url.endsWith("/oauth2/token"));
+    assert.ok(token, "the Client Secret was never checked against Discord");
+    // The documented client credentials grant: Basic auth of client id and secret, form encoded.
+    assert.equal(token.authorization, `Basic ${Buffer.from("100:secret").toString("base64")}`);
+    assert.match(token.body, /grant_type=client_credentials/u);
+    assert.match(token.body, /scope=identify/u);
+    // Verification must not leave a live bearer token behind that nobody asked for.
+    assert.ok(
+      provider.calls.some((call) => call.url.endsWith("/oauth2/token/revoke")),
+      "the minted access token was never revoked",
     );
+  });
+
+  it("keeps a rejected bot token, a rejected Client Secret, and a wrong application apart", async () => {
+    const rejectedToken = createProviderApplicationVerifier({
+      fetch: discordProvider({ identity: () => new Response(null, { status: 401 }) }).fetch,
+    });
+    await assert.rejects(
+      rejectedToken.verify("discord", DISCORD_CONFIGURATION),
+      (error: unknown) =>
+        error instanceof ProviderVerificationError &&
+        error.reason === "credentialsRejected" &&
+        error.subject === "botToken",
+    );
+
+    const wrongApplication = createProviderApplicationVerifier({ fetch: discordProvider().fetch });
+    await assert.rejects(
+      wrongApplication.verify("discord", { ...DISCORD_CONFIGURATION, applicationId: "200" }),
+      (error: unknown) =>
+        error instanceof ProviderVerificationError && error.subject === "identityMismatch",
+    );
+
+    const rejectedSecret = createProviderApplicationVerifier({
+      fetch: discordProvider({
+        token: () => Response.json({ error: "invalid_client" }, { status: 401 }),
+      }).fetch,
+    });
+    await assert.rejects(
+      rejectedSecret.verify("discord", DISCORD_CONFIGURATION),
+      (error: unknown) =>
+        error instanceof ProviderVerificationError &&
+        error.reason === "credentialsRejected" &&
+        error.subject === "clientSecret",
+    );
+  });
+
+  it("still verifies when Discord refuses to revoke the token it just minted", async () => {
+    const provider = discordProvider();
+    const verifier = createProviderApplicationVerifier({
+      fetch: (input, init) =>
+        requestUrl(input).endsWith("/oauth2/token/revoke")
+          ? Promise.reject(new Error("revocation unavailable"))
+          : provider.fetch(input, init),
+    });
+
+    assert.equal((await verifier.verify("discord", DISCORD_CONFIGURATION)).id, "100");
   });
 
   it("projects transport failures without returning upstream details", async () => {
@@ -60,12 +166,7 @@ describe("provider application verification", () => {
       fetch: () => Promise.reject(new Error("token=super-secret")),
     });
     await assert.rejects(
-      verifier.verify("discord", {
-        provider: "discord",
-        applicationId: "100",
-        clientSecret: "secret",
-        botToken: "super-secret",
-      }),
+      verifier.verify("discord", { ...DISCORD_CONFIGURATION, botToken: "super-secret" }),
       (error: unknown) =>
         error instanceof ProviderVerificationError &&
         error.reason === "network" &&
@@ -111,12 +212,7 @@ describe("provider application verification", () => {
       fetch: () => Promise.resolve(new Response("not-json", { status: 200 })),
     });
     await assert.rejects(
-      verifier.verify("discord", {
-        provider: "discord",
-        applicationId: "100",
-        clientSecret: "secret",
-        botToken: "token",
-      }),
+      verifier.verify("discord", DISCORD_CONFIGURATION),
       (error: unknown) =>
         error instanceof ProviderVerificationError && error.reason === "invalidResponse",
     );

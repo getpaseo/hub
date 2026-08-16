@@ -37,16 +37,30 @@ const DISCORD_GUILDS: readonly DiscordGuildIdentity[] = [
   { guildId: "200", guildName: "Orbit Guild" },
 ];
 
-export type BrowserProviderScenario =
-  | "connected"
-  | "approval"
-  | "conflict"
-  | "discord-verification-network"
-  | "discord-disallowed-intents"
-  | "slack-permission-missing"
-  | "not-configured"
-  | "discord-only"
-  | "slack-only";
+/**
+ * How the fixture providers behave for one journey. One list, so adding a scenario is one edit
+ * rather than an edit and a matching branch in the child process that reads it back.
+ */
+export const BROWSER_PROVIDER_SCENARIOS = [
+  "connected",
+  "approval",
+  "conflict",
+  "discord-verification-network",
+  "discord-disallowed-intents",
+  "discord-client-secret-rejected",
+  "discord-rate-limited",
+  "github-verification-internal",
+  "slack-permission-missing",
+  "not-configured",
+  "discord-only",
+  "slack-only",
+] as const;
+
+export type BrowserProviderScenario = (typeof BROWSER_PROVIDER_SCENARIOS)[number];
+
+export function isBrowserProviderScenario(value: string): value is BrowserProviderScenario {
+  return (BROWSER_PROVIDER_SCENARIOS as readonly string[]).includes(value);
+}
 
 export class BrowserGitHubAuth implements GitHubAuth {
   getInstallation() {

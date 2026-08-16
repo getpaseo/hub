@@ -5,7 +5,7 @@ import type {
   Database,
   InsertAttachmentInput,
 } from "../db/types.js";
-import { reportFailure, type FailureKind } from "../failures/index.js";
+import { reportFailure, withReference, type FailureKind } from "../failures/index.js";
 
 export type { AttachmentProvider } from "../db/types.js";
 
@@ -206,7 +206,7 @@ function attachmentFailure(
     { kind },
   );
   const correlated = ["network", "rateLimited", "upstreamUnavailable", "internal"].includes(kind);
-  return new Response(correlated ? `${message} Reference: ${report.requestId}.` : message, {
+  return new Response(correlated ? withReference(message, report.requestId) : message, {
     status,
   });
 }

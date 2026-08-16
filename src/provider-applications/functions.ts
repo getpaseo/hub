@@ -22,7 +22,8 @@ const configurationSchema = z.discriminatedUnion("provider", [
     clientId: z.string().trim().min(1),
     clientSecret: z.string().min(1),
     privateKey: z.string().min(1),
-    webhookSecret: z.string().min(1),
+    // Optional: event triggers need a public HTTPS address, repository access does not.
+    webhookSecret: z.string().min(1).optional(),
     expectedVersion: expectedVersionSchema,
     surface: surfaceSchema,
   }),
@@ -61,8 +62,11 @@ export const providerApplicationsOverview = createServerFn({ method: "GET" }).ha
         error,
         { operation: "provider_application.overview", component: "provider_applications" },
         {
-          fallback:
-            "Hub couldn't load your apps. Reload the page and use the reference if the problem continues.",
+          fallback: "Hub couldn't load your apps. Reload the page.",
+          forbidden: "Only an instance operator can view app setup.",
+          authentication: "Your session has expired. Sign in again to view app setup.",
+          network: "Hub couldn't reach its own data to read your apps. Reload the page.",
+          timeout: "Reading your apps took too long. Reload the page.",
         },
       );
     }
@@ -116,13 +120,16 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
           provider: data.provider,
         },
         {
-          fallback: `Hub couldn't start the ${name} connection. Reload the app status before starting it again.`,
-          forbidden: `You don't have permission to connect ${name}.`,
-          conflict: `${name} changed while this connection was starting. Reload the app status and start again.`,
-          network: `Hub couldn't connect to ${name}. Check this server's network, DNS, and TLS access to ${providerHost(data.provider)}, then start again.`,
-          timeout: `${name} did not respond before the connection timed out. Check provider status and start again.`,
-          rateLimited: `${name} rate limited Hub. Wait a few minutes before starting the connection again.`,
-          upstreamUnavailable: `${name} is unavailable right now. Check ${name}'s status page before starting the connection again.`,
+          fallback: `Something went wrong while starting the ${name} connection. Nothing was connected. Try again.`,
+          forbidden: `You don't have permission to connect ${name} to this organization.`,
+          authentication: `Your session has expired. Nothing was connected. Sign in again, then start the connection again.`,
+          notFound: `There are no saved ${name} credentials to connect. Verify and save the app first.`,
+          validation: `Hub couldn't confirm the address this page was opened at, so the connection was refused. Nothing was connected. Open Hub at its usual address, then start again.`,
+          conflict: `The ${name} app changed while this connection was starting. Nothing was connected. Reload the page, then start again.`,
+          network: `Hub couldn't reach ${name}. Nothing was connected. Check this server's network, DNS, and TLS access to ${providerHost(data.provider)}, then start again.`,
+          timeout: `${name} didn't answer in time. Nothing was connected. Try again.`,
+          rateLimited: `${name} is rate limiting Hub. Nothing was connected. Wait a few minutes, then start again.`,
+          upstreamUnavailable: `${name} returned an error of its own. Nothing was connected. Check ${name}'s status page, then start again.`,
         },
       );
     }
@@ -132,7 +139,11 @@ function sensitiveConfigurationValues(
   configuration: z.infer<typeof configurationSchema>,
 ): readonly string[] {
   if (configuration.provider === "github") {
-    return [configuration.clientSecret, configuration.privateKey, configuration.webhookSecret];
+    return [
+      configuration.clientSecret,
+      configuration.privateKey,
+      ...(configuration.webhookSecret === undefined ? [] : [configuration.webhookSecret]),
+    ];
   }
   if (configuration.provider === "slack") {
     return [configuration.clientSecret, configuration.signingSecret];
@@ -153,7 +164,7 @@ function normalizedConfiguration(
       clientId: data.clientId,
       clientSecret: data.clientSecret,
       privateKey: data.privateKey,
-      webhookSecret: data.webhookSecret,
+      ...(data.webhookSecret === undefined ? {} : { webhookSecret: data.webhookSecret }),
       ...version,
     };
   }

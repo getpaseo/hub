@@ -75,15 +75,30 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
       return Promise.reject(new ProviderVerificationError("credentialsRejected"));
     }
     if (configuration.provider === "github") {
+      if (this.scenario === "github-verification-internal") {
+        return Promise.reject(new Error("fixture github verification fault"));
+      }
       const expected = FIXTURE_APP_CREDENTIALS.github;
-      return configuration.appId === expected.appId &&
-        configuration.privateKey === expected.privateKey
+      if (configuration.privateKey !== expected.privateKey) {
+        return Promise.reject(
+          new ProviderVerificationError("credentialsRejected", 401, { subject: "privateKey" }),
+        );
+      }
+      // The key authenticated an App; the App ID names which one. A mismatch is its own answer.
+      return configuration.appId === expected.appId
         ? Promise.resolve(FIXTURE_APP_IDENTITIES.github)
-        : Promise.reject(new ProviderVerificationError("credentialsRejected"));
+        : Promise.reject(
+            new ProviderVerificationError("credentialsRejected", undefined, {
+              subject: "identityMismatch",
+            }),
+          );
     }
     if (configuration.provider === "discord") {
       if (this.scenario === "discord-verification-network") {
         return Promise.reject(new ProviderVerificationError("network"));
+      }
+      if (this.scenario === "discord-rate-limited") {
+        return Promise.reject(new ProviderVerificationError("rateLimited", 429));
       }
       if (
         this.scenario === "discord-disallowed-intents" &&
@@ -92,10 +107,26 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
         return Promise.resolve(FIXTURE_APP_IDENTITIES.discord);
       }
       const expected = FIXTURE_APP_CREDENTIALS.discord;
-      return configuration.applicationId === expected.applicationId &&
-        configuration.botToken === expected.botToken
-        ? Promise.resolve(FIXTURE_APP_IDENTITIES.discord)
-        : Promise.reject(new ProviderVerificationError("credentialsRejected"));
+      if (configuration.botToken !== expected.botToken) {
+        return Promise.reject(
+          new ProviderVerificationError("credentialsRejected", 401, { subject: "botToken" }),
+        );
+      }
+      if (configuration.applicationId !== expected.applicationId) {
+        return Promise.reject(
+          new ProviderVerificationError("credentialsRejected", undefined, {
+            subject: "identityMismatch",
+          }),
+        );
+      }
+      // Discord's client credentials grant is the only thing that can prove the Client Secret,
+      // so the fixture checks it too — otherwise "Verified" would mean less here than in production.
+      return this.scenario === "discord-client-secret-rejected" ||
+        configuration.clientSecret !== expected.clientSecret
+        ? Promise.reject(
+            new ProviderVerificationError("credentialsRejected", 401, { subject: "clientSecret" }),
+          )
+        : Promise.resolve(FIXTURE_APP_IDENTITIES.discord);
     }
     // Slack matches production: client credentials have no honest verification endpoint, so the
     // installation callback is the only thing that can accept them.

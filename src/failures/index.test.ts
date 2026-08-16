@@ -63,7 +63,11 @@ describe("failure boundary", () => {
       { logger, kind: "network" },
     );
     const log = stream.text();
-    assert.match(result.error.message, /^Hub couldn't connect to Discord\. Reference: [\w-]+\.$/u);
+    // The identifier is only useful with an instruction attached to it.
+    assert.match(
+      result.error.message,
+      /^Hub couldn't connect to Discord\. If it happens again, quote reference [\w-]+ when reporting it\.$/u,
+    );
     assert.match(log, /"operation":"provider_application\.verify_and_save"/u);
     assert.match(log, /"provider":"discord"/u);
     assert.match(log, /"failureKind":"network"/u);

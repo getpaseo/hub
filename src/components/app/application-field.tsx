@@ -58,16 +58,3 @@ export function ApplicationField({
     </Field>
   );
 }
-
-/**
- * The saved state of a field. Identifiers keep their value so the operator can check them
- * against the portal; secrets show only that something is stored.
- */
-export function StoredValue({ label, value }: { label: string; value: string | undefined }) {
-  return (
-    <div className="grid gap-1">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <span className="font-mono text-xs break-all">{value ?? "••••••••"}</span>
-    </div>
-  );
-}

@@ -14,7 +14,8 @@ export interface GitHubProviderApplicationConfiguration {
   clientId: string;
   clientSecret: string;
   privateKey: string;
-  webhookSecret: string;
+  /** Absent until the operator sets up event triggers, which need a public HTTPS address. */
+  webhookSecret?: string;
   expectedVersion?: number;
 }
 
@@ -154,6 +155,12 @@ export interface ProviderApplicationView {
   identifiers: Readonly<Record<string, string>>;
   identity: ProviderApplicationIdentity | null;
   connections: readonly ConnectedProviderIdentity[];
+  /**
+   * Whether inbound deliveries can be admitted at all. GitHub's webhook secret is optional, and
+   * without it every delivery is rejected — so the surface must not offer to wait for an event
+   * that can never be accepted.
+   */
+  eventsConfigured: boolean;
   lastEventAt: string | null;
   replaceable: boolean;
   configurationVersion: number | null;
@@ -218,6 +225,18 @@ export class ProviderApplicationError extends Error {
   }
 }
 
+/**
+ * Which credential the provider actually objected to. Collapsing "this secret is wrong" into
+ * "these credentials are wrong" sends the operator back to the portal to re-copy every field,
+ * and collapsing "this belongs to a different app" into either one sends them looking for a
+ * typo that is not there.
+ */
+export type ProviderVerificationSubject =
+  | "botToken"
+  | "clientSecret"
+  | "privateKey"
+  | "identityMismatch";
+
 export class ProviderVerificationError extends Error {
   constructor(
     readonly reason:
@@ -229,11 +248,14 @@ export class ProviderVerificationError extends Error {
       | "upstreamUnavailable"
       | "invalidResponse",
     readonly safeStatus?: number,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { subject?: ProviderVerificationSubject },
   ) {
     super(reason, options);
     this.name = "ProviderVerificationError";
+    this.subject = options?.subject;
   }
+
+  readonly subject: ProviderVerificationSubject | undefined;
 }
 
 /**
@@ -319,6 +341,7 @@ export function createProviderApplications(
             identifiers: resolved === undefined ? {} : publicIdentifiers(resolved),
             identity,
             connections,
+            eventsConfigured: acceptsEvents(resolved),
             lastEventAt:
               provider === "discord" || identity === null || configurationVersion === null
                 ? null
@@ -463,6 +486,17 @@ function providerStatus(
   if (connections.some((connection) => connection.status === "actionNeeded")) return "actionNeeded";
   if (connections.length > 0) return "connected";
   return identity === null ? "notConfigured" : "verified";
+}
+
+/**
+ * GitHub admits a delivery only when it can check the signature, so an App saved without a
+ * webhook secret has repository access and no event triggers. Slack's signing secret is part of
+ * its credentials, and Discord never delivers anything here.
+ */
+function acceptsEvents(configuration: ProviderApplicationConfiguration | undefined): boolean {
+  if (configuration === undefined) return false;
+  if (configuration.provider === "github") return (configuration.webhookSecret ?? "") !== "";
+  return configuration.provider === "slack";
 }
 
 function publicIdentifiers(
@@ -709,7 +743,9 @@ async function verifyAndActivateProvider(
     identity = await options.verifier.verify(provider, input);
   } catch (error) {
     if (error instanceof ProviderVerificationError) {
-      throw new ProviderApplicationError(error.reason, undefined, { cause: error });
+      // The subject travels as safe context so the copy can name the field the provider
+      // objected to instead of sending the operator back over all of them.
+      throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
     }
     throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
