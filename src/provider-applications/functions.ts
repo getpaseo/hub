@@ -1,16 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import {
-  ProviderApplicationError,
-  type Provider,
   type ProviderApplicationConfiguration,
   type ProviderApplicationOverview,
   type ProviderApplicationSaveResult,
 } from "./index.js";
+import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
 const providerSchema = z.enum(["github", "slack", "discord"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
@@ -85,7 +84,11 @@ export const verifyAndSaveProviderApplication = createServerFn({ method: "POST" 
         ),
       );
     } catch (error) {
-      return saveFailure(data.provider, error);
+      return providerApplicationSaveFailure(
+        data.provider,
+        error,
+        sensitiveConfigurationValues(data),
+      );
     }
   });
 
@@ -125,101 +128,16 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
     }
   });
 
-function saveFailure(provider: Provider, error: unknown): ReturnType<typeof respondError> {
-  const name = providerName(provider);
-  const code = errorCode(error);
-  const operation = "provider_application.verify_and_save";
-  if (provider === "slack" && code === "httpsRequired") {
-    return respondWithFailure(
-      error,
-      { operation, component: "provider_applications", provider },
-      {
-        fallback: `Slack requires a public HTTPS address. This Hub is at ${errorContext(error) ?? "an HTTP address"}. Open Hub at its public HTTPS address to set up Slack.`,
-      },
-      { kind: "validation" },
-    );
+function sensitiveConfigurationValues(
+  configuration: z.infer<typeof configurationSchema>,
+): readonly string[] {
+  if (configuration.provider === "github") {
+    return [configuration.clientSecret, configuration.privateKey, configuration.webhookSecret];
   }
-  if (code === "managedByEnvironment") {
-    return respondWithFailure(
-      error,
-      { operation, component: "provider_applications", provider },
-      { fallback: `${name} is managed by this Hub's environment. Change its credentials there.` },
-      { kind: "conflict" },
-    );
+  if (configuration.provider === "slack") {
+    return [configuration.clientSecret, configuration.signingSecret];
   }
-  if (code === "configurationConflict") {
-    return respondWithFailure(
-      error,
-      { operation, component: "provider_applications", provider },
-      {
-        fallback: `Someone else changed the ${name} app. Reload its current settings before saving again.`,
-      },
-      { kind: "conflict" },
-    );
-  }
-  if (code === "identityConflict") {
-    const identity = errorContext(error) ?? name;
-    return respondWithFailure(
-      error,
-      { operation, component: "provider_applications", provider },
-      {
-        fallback: `This Hub is connected to the ${name} App ${identity}. Remove its connections before setting up a different App.`,
-      },
-      { kind: "conflict" },
-    );
-  }
-  return respondWithFailure(
-    error,
-    { operation, component: "provider_applications", provider },
-    {
-      fallback: `Hub couldn't verify and save ${name}. Reload the app settings before saving again.`,
-      forbidden: `Only the instance operator can change the ${name} app.`,
-      credentialsRejected: credentialMessage(provider),
-      permissionMissing: `${name} accepted the credentials, but the app is missing a required permission. Review the setup guide and grant every listed permission before verifying again.`,
-      network: `Hub couldn't connect to ${name}. Check this server's network, DNS, and TLS access to ${providerHost(provider)}, then verify again.`,
-      timeout: `${name} did not respond before verification timed out. Check this server's connection to ${providerHost(provider)}, then verify again.`,
-      rateLimited: `${name} rate limited Hub. Wait a few minutes before verifying again.`,
-      upstreamUnavailable: `${name} is unavailable or returned an invalid response. Check ${name}'s status page before verifying again.`,
-      conflict: `The ${name} app changed while it was being saved. Reload its current settings before saving again.`,
-      validation: `The ${name} app settings are invalid. Review every required field before saving again.`,
-    },
-  );
-}
-
-function credentialMessage(provider: Provider): string {
-  if (provider === "github") {
-    return "GitHub didn't accept these credentials. Check the App ID and private key, then verify again.";
-  }
-  if (provider === "discord") {
-    return "Discord didn't accept these credentials. Check the Application ID and bot token, then verify again.";
-  }
-  return "Slack didn't accept these app credentials. Check the App ID, client credentials, and signing secret before continuing.";
-}
-
-function providerHost(provider: Provider): string {
-  if (provider === "github") return "api.github.com";
-  if (provider === "slack") return "slack.com";
-  return "discord.com";
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (error instanceof ProviderApplicationError) return error.code;
-  if (typeof error !== "object" || error === null) return undefined;
-  const code: unknown = Reflect.get(error, "code");
-  return typeof code === "string" ? code : undefined;
-}
-
-function errorContext(error: unknown): string | undefined {
-  if (error instanceof ProviderApplicationError) return error.safeContext;
-  if (typeof error !== "object" || error === null) return undefined;
-  const context: unknown = Reflect.get(error, "safeContext");
-  return typeof context === "string" ? context : undefined;
-}
-
-function providerName(provider: Provider): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "slack") return "Slack";
-  return "Discord";
+  return [configuration.clientSecret, configuration.botToken];
 }
 
 function normalizedConfiguration(

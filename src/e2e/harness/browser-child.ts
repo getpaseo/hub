@@ -143,7 +143,7 @@ async function main(): Promise<void> {
     machineKey?.secret ?? "",
     "utf8",
   );
-  const bot = new BrowserDiscordBot();
+  const bot = new BrowserDiscordBot(scenario);
   const slackBot = new BrowserSlackBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
@@ -562,6 +562,7 @@ function readScenario(): BrowserProviderScenario {
     value === "approval" ||
     value === "conflict" ||
     value === "discord-verification-network" ||
+    value === "discord-disallowed-intents" ||
     value === "slack-permission-missing" ||
     value === "not-configured" ||
     value === "discord-only" ||

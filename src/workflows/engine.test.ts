@@ -26,6 +26,8 @@ import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
+import { createLogger } from "../logger.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
 describe("durable multi-step workflow engine", () => {
   it.each(["github", "discord"] as const)(
@@ -200,10 +202,12 @@ describe("durable multi-step workflow engine", () => {
 
   it("logs an initial recovery rejection and retries on the next interval", async () => {
     vi.useFakeTimers();
+    const canary = "workflow-recovery-secret-61f4";
+    const stream = new FailureLogStream();
     const fixture = await workflowFixture();
     const recovery = vi
       .spyOn(fixture.database, "recoverWorkflowDeadlines")
-      .mockRejectedValueOnce(new Error("recovery unavailable"));
+      .mockRejectedValueOnce(new Error(canary));
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", onUnhandled);
@@ -212,6 +216,7 @@ describe("durable multi-step workflow engine", () => {
       entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
       workerIntervalMs: 10,
+      logger: createLogger(stream),
       dispatchLaunchMachineIntent: async (intent) => {
         const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
           intent.workflowStepRunId!,
@@ -228,6 +233,11 @@ describe("durable multi-step workflow engine", () => {
       await vi.advanceTimersByTimeAsync(10);
       assert.equal(recovery.mock.calls.length, 2);
       assert.deepEqual(unhandled, []);
+      assertOneFailure(stream, {
+        operation: "workflow.worker.recover",
+        component: "workflows",
+        canary,
+      });
     } finally {
       process.off("unhandledRejection", onUnhandled);
       await engine.stop();

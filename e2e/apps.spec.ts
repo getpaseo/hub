@@ -225,6 +225,45 @@ test("Discord network verification failure is actionable, logged, and secret-saf
   }
 });
 
+test("Discord disallowed intents explains the exact portal setting and logs one safe code", async ({
+  hub,
+}) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    embedded: true,
+    providerScenario: "discord-disallowed-intents",
+  });
+  const fakeClientSecret = "formatless-discord-client-secret-9c41";
+  const fakeBotToken = "formatless-discord-bot-token-84e2";
+  try {
+    const discord = session.surface.discord;
+    await discord.expand();
+    await discord.fill({
+      "Application ID": "900",
+      "Client Secret": fakeClientSecret,
+      "Bot token": fakeBotToken,
+    });
+    await discord.save();
+
+    await discord.expectFocusedError(
+      "Discord requires Message Content Intent. Turn it on under Bot → Privileged Gateway Intents, save in Discord, then verify again.",
+    );
+    await expect.poll(() => session.application.logs()).toContain("gatewayCloseCode");
+    const logs = plainLogs(session.application.logs());
+    expect(logs.match(/provider_application\.verify_and_save failed/gu)).toHaveLength(1);
+    expect(logs).toMatch(/failureKind:\s*["']?permissionMissing/u);
+    expect(logs).toMatch(/gatewayCloseCode:\s*4014/u);
+    expect(logs).toMatch(/gatewayFailure:\s*["']?disallowedIntents/u);
+    expect(logs).not.toContain("formatless-browser-gateway-cause-6ad1");
+    expect(logs).not.toContain(fakeClientSecret);
+    expect(logs).not.toContain(fakeBotToken);
+    expect(await discord.status().textContent()).not.toContain(fakeClientSecret);
+    expect(await discord.status().textContent()).not.toContain(fakeBotToken);
+  } finally {
+    await session.close();
+  }
+});
+
 test("Slack completes its HTTPS install before saving and activating the app", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,

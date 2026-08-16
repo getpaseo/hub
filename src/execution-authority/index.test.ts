@@ -3,6 +3,8 @@ import { describe, it } from "vitest";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import type { CreateExecutionAuthorityOptions, ExecutionAuthorityClock } from "./index.js";
 import { createExecutionAuthority as createProductionExecutionAuthority } from "./index.js";
+import { createLogger } from "../logger.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
 function createExecutionAuthority(
   options: Omit<CreateExecutionAuthorityOptions, "isExecutionActive"> &
@@ -550,6 +552,8 @@ describe("Hub execution authority", () => {
   });
 
   it("keeps graceful shutdown pending until a transient revocation succeeds", async () => {
+    const canary = "execution-authority-secret-75ad";
+    const stream = new FailureLogStream();
     const clock = new TestClock();
     let attempts = 0;
     let firstAttempt!: () => void;
@@ -569,11 +573,12 @@ describe("Hub execution authority", () => {
           attempts += 1;
           if (attempts === 1) {
             firstAttempt();
-            throw new Error("transient upstream failure");
+            throw new Error(canary);
           }
         },
       },
       clock,
+      logger: createLogger(stream),
     });
     await authority.materialize({
       executionId: "shutdown-retry",
@@ -602,6 +607,12 @@ describe("Hub execution authority", () => {
     await clock.advance(1_000);
     await stopping;
     assert.equal(attempts, 2);
+    assertOneFailure(stream, {
+      operation: "execution-authority.token.revoke",
+      component: "execution-authority",
+      failureKind: "upstreamUnavailable",
+      canary,
+    });
   });
 
   it("returns bounded token-free residual exposure when shutdown revocation keeps failing", async () => {

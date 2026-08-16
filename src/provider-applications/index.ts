@@ -742,6 +742,12 @@ async function verifyAndActivateProvider(
   } catch (error) {
     await closeCandidate(candidate, provider, "verify_and_save");
     if (error instanceof ProviderApplicationError) throw error;
+    const gateway = provider === "discord" ? discordGatewayFailure(error) : undefined;
+    if (gateway !== undefined) {
+      throw new ProviderApplicationError(gateway.code, discordGatewayContext(gateway.failure), {
+        cause: error,
+      });
+    }
     if (isIdentityConflict(error)) {
       throw new ProviderApplicationError("identityConflict", previous?.identity.name);
     }
@@ -750,6 +756,28 @@ async function verifyAndActivateProvider(
     }
     throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
+}
+
+function discordGatewayContext(failure: string): string {
+  return `discordGateway${failure[0]?.toUpperCase()}${failure.slice(1)}`;
+}
+
+function discordGatewayFailure(error: unknown):
+  | {
+      code: "credentialsRejected" | "permissionMissing" | "internal";
+      failure: string;
+    }
+  | undefined {
+  if (!(error instanceof Error) || error.name !== "DiscordGatewayError") return undefined;
+  const code: unknown = Reflect.get(error, "code");
+  const failure: unknown = Reflect.get(error, "gatewayFailure");
+  if (
+    (code !== "credentialsRejected" && code !== "permissionMissing" && code !== "internal") ||
+    typeof failure !== "string"
+  ) {
+    return undefined;
+  }
+  return { code, failure };
 }
 
 async function completeSlackInstallation(

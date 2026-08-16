@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
 import type { Duplex } from "node:stream";
+import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
 import { createDatabase } from "./db/pg.js";
 import type { Database } from "./db/types.js";
@@ -14,6 +15,7 @@ import {
 import type { Locks } from "./db/runtime/locks/index.js";
 import { logger } from "./logger.js";
 import { reportFailure } from "./failures/index.js";
+import { installProcessFailureHandlers } from "./failures/process.js";
 import { createFetchServer } from "./http/node-server.js";
 import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
@@ -285,6 +287,7 @@ function nonEmptyEnvironment(value: string | undefined): string | undefined {
 }
 
 async function main(): Promise<void> {
+  const removeProcessFailureHandlers = installProcessFailureHandlers();
   const build = await loadBuiltStartServer();
   await build.startProductionRuntime();
   const config = loadRuntimeConfig();
@@ -296,7 +299,11 @@ async function main(): Promise<void> {
       : { trustedClientIpHeader: config.trustedClientIpHeader },
   );
   server.on("upgrade", (request, socket, head) => {
-    void build.handleDaemonUpgrade(request, socket, head);
+    void handleDaemonUpgradeRequest({
+      request,
+      socket,
+      handle: () => build.handleDaemonUpgrade(request, socket, head),
+    });
   });
   server.listen(port, config.bind, () => {
     logger.info({ bind: config.bind, port }, "server started");
@@ -315,13 +322,64 @@ async function main(): Promise<void> {
     await build.stopProductionRuntime();
   };
   const stopAfterSignal = () => {
-    void stop().catch((error: unknown) => {
-      reportFailure(error, { operation: "server.shutdown", component: "server" });
-      process.exitCode = 1;
-    });
+    void shutdownProductionServer(stop)
+      .then((clean) => {
+        if (!clean) process.exitCode = 1;
+        return undefined;
+      })
+      .finally(removeProcessFailureHandlers);
   };
   process.once("SIGTERM", stopAfterSignal);
   process.once("SIGINT", stopAfterSignal);
+}
+
+export async function shutdownProductionServer(
+  stop: () => Promise<void>,
+  failureLogger?: Pick<Logger, "warn" | "error">,
+): Promise<boolean> {
+  try {
+    await stop();
+    return true;
+  } catch (error) {
+    reportFailure(
+      error,
+      { operation: "server.shutdown", component: "server" },
+      failureLogger === undefined ? {} : { logger: failureLogger },
+    );
+    return false;
+  }
+}
+
+export async function handleDaemonUpgradeRequest(options: {
+  request: Pick<IncomingMessage, "method" | "url">;
+  socket: Pick<Duplex, "destroy">;
+  handle(): Promise<void>;
+  logger?: Pick<Logger, "warn" | "error">;
+}): Promise<void> {
+  try {
+    await options.handle();
+  } catch (error) {
+    reportFailure(
+      error,
+      {
+        operation: "daemon.upgrade",
+        component: "daemons",
+        ...(options.request.method === undefined ? {} : { method: options.request.method }),
+        path: requestPath(options.request.url),
+      },
+      options.logger === undefined ? {} : { logger: options.logger },
+    );
+    options.socket.destroy();
+  }
+}
+
+function requestPath(value: string | undefined): string {
+  if (value === undefined) return "/";
+  try {
+    return new URL(value, "http://hub.invalid").pathname;
+  } catch {
+    return "/";
+  }
 }
 
 function readPort(): number {

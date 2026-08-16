@@ -85,6 +85,12 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
       if (this.scenario === "discord-verification-network") {
         return Promise.reject(new ProviderVerificationError("network"));
       }
+      if (
+        this.scenario === "discord-disallowed-intents" &&
+        configuration.applicationId === FIXTURE_APP_CREDENTIALS.discord.applicationId
+      ) {
+        return Promise.resolve(FIXTURE_APP_IDENTITIES.discord);
+      }
       const expected = FIXTURE_APP_CREDENTIALS.discord;
       return configuration.applicationId === expected.applicationId &&
         configuration.botToken === expected.botToken

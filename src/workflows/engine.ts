@@ -43,6 +43,7 @@ import {
   type ExpressionContext,
 } from "./expression.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { Logger } from "pino";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
@@ -78,10 +79,11 @@ export interface DurableWorkflowEngineOptions {
   onWorkflowRunAccepted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
   onWorkflowRunStarted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
   onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<JsonValue | null | void>;
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 export class DurableWorkflowEngine {
-  private readonly logger = defaultLogger;
+  private readonly logger: Pick<Logger, "warn" | "error">;
   private readonly leaseMs: number;
   private readonly workerIntervalMs: number;
   private readonly now: () => Date;
@@ -92,6 +94,7 @@ export class DurableWorkflowEngine {
   private stopped = false;
 
   constructor(private readonly options: DurableWorkflowEngineOptions) {
+    this.logger = options.logger ?? defaultLogger;
     this.leaseMs = options.leaseMs ?? DEFAULT_WAKEUP_LEASE_MS;
     this.workerIntervalMs = options.workerIntervalMs ?? DEFAULT_WORKER_INTERVAL_MS;
     this.now = options.now ?? (() => new Date());

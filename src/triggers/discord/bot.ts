@@ -11,6 +11,49 @@ import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import { NormalizedDiscordContextMessageSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage } from "./events.js";
 
+type DiscordGatewayFailure =
+  | "authenticationFailed"
+  | "invalidShard"
+  | "shardingRequired"
+  | "invalidApiVersion"
+  | "invalidIntents"
+  | "disallowedIntents";
+
+type DiscordGatewayFailureCode = "credentialsRejected" | "permissionMissing" | "internal";
+
+const UNRECOVERABLE_GATEWAY_FAILURES = new Map<
+  number,
+  { failure: DiscordGatewayFailure; code: DiscordGatewayFailureCode }
+>([
+  [4004, { failure: "authenticationFailed", code: "credentialsRejected" }],
+  [4010, { failure: "invalidShard", code: "internal" }],
+  [4011, { failure: "shardingRequired", code: "internal" }],
+  [4012, { failure: "invalidApiVersion", code: "internal" }],
+  [4013, { failure: "invalidIntents", code: "internal" }],
+  [4014, { failure: "disallowedIntents", code: "permissionMissing" }],
+]);
+
+class DiscordGatewayError extends Error {
+  override readonly name = "DiscordGatewayError";
+
+  constructor(
+    readonly gatewayCloseCode: number,
+    readonly gatewayFailure: DiscordGatewayFailure,
+    readonly code: DiscordGatewayFailureCode,
+    options?: ErrorOptions,
+  ) {
+    super("Discord gateway rejected the connection", options);
+  }
+}
+
+function discordGatewayError(closeCode: number, cause: unknown): DiscordGatewayError | undefined {
+  const classification = UNRECOVERABLE_GATEWAY_FAILURES.get(closeCode);
+  if (classification === undefined) return undefined;
+  return new DiscordGatewayError(closeCode, classification.failure, classification.code, {
+    cause,
+  });
+}
+
 export interface DiscordReactionInput {
   channelId: string;
   messageId: string;
@@ -116,8 +159,21 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       if (started) {
         return;
       }
-      await client.login(options.token);
-      started = true;
+      let gatewayCloseCode: number | undefined;
+      const observeGatewayClose = (event: { code: number }) => {
+        gatewayCloseCode = event.code;
+      };
+      client.on("shardDisconnect", observeGatewayClose);
+      try {
+        await client.login(options.token);
+        started = true;
+      } catch (error) {
+        const classified =
+          gatewayCloseCode === undefined ? undefined : discordGatewayError(gatewayCloseCode, error);
+        throw classified ?? error;
+      } finally {
+        client.off("shardDisconnect", observeGatewayClose);
+      }
     },
     async stop() {
       if (!started) {

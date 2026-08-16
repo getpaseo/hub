@@ -1502,7 +1502,9 @@ export class DaemonDispatchLifecycle {
         () => {
           canceled = true;
           for (const handler of cancelHandlers) {
-            void handler();
+            void handler().catch((error: unknown) => {
+              this.report(error, "daemon.dispatch.cancel", { executionId: input.executionId });
+            });
           }
         },
         (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
@@ -1778,7 +1780,13 @@ export class DaemonDispatchLifecycle {
   }
 
   private scheduleDeadline(callback: () => Promise<void>, delayMs: number): () => void {
-    return this.deadlineClock.schedule(callback, delayMs);
+    return this.deadlineClock.schedule(async () => {
+      try {
+        await callback();
+      } catch (error) {
+        this.report(error, "daemon.deadline.callback");
+      }
+    }, delayMs);
   }
 
   private get deadlineClock(): ExecutionDeadlineClock {

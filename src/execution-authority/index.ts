@@ -5,7 +5,8 @@ import {
 } from "../config/connection-template.js";
 import type { ConnectionResolver } from "../config/connections.js";
 import type { GitHubAuthorityRegistration } from "../providers/registration.js";
-import { reportFailure } from "../failures/index.js";
+import { reportFailure, type FailureContext, type ReportOptions } from "../failures/index.js";
+import type { Logger } from "pino";
 
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
@@ -67,6 +68,7 @@ export interface CreateExecutionAuthorityOptions {
   githubAuthority?: GitHubAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
   isExecutionActive: (executionId: string) => Promise<boolean>;
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 interface TokenLease {
@@ -103,6 +105,13 @@ export function createExecutionAuthority(
   const terminalCleanups = new Map<string, TerminalCleanup>();
   let stopped = false;
   let stopPromise: Promise<ExecutionAuthorityStopResult> | undefined;
+
+  const report = (error: unknown, context: FailureContext, reportOptions: ReportOptions = {}) => {
+    reportFailure(error, context, {
+      ...reportOptions,
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    });
+  };
 
   async function materialize(
     input: ExecutionAuthorityMaterialization,
@@ -285,7 +294,7 @@ export function createExecutionAuthority(
       deleteEmptyState(states, executionId, state);
     })()
       .catch((error: unknown) => {
-        reportFailure(error, {
+        report(error, {
           operation: "execution-authority.terminal.cleanup",
           component: "execution-authority",
           executionId,
@@ -350,7 +359,7 @@ export function createExecutionAuthority(
       cancelGrace();
       const residualExposures = outcome === "clean" ? [] : collectResidualExposures(activeStates);
       if (residualExposures.length > 0) {
-        reportFailure(
+        report(
           Object.assign(new Error("Execution authority shutdown grace elapsed"), {
             code: "shutdown_timeout",
           }),
@@ -426,7 +435,7 @@ export function createExecutionAuthority(
         ));
       if (now >= retryUntil) {
         removeLease(states, executionId, state, lease);
-        reportFailure(
+        report(
           Object.assign(new Error("Execution authority revocation retry window elapsed"), {
             code: "revocation_retry_exhausted",
           }),
@@ -540,7 +549,7 @@ export function createExecutionAuthority(
       await Promise.race([Promise.resolve().then(revoke), timeout]);
       return true;
     } catch (error) {
-      reportFailure(
+      report(
         error,
         {
           operation: "execution-authority.token.revoke",

@@ -42,6 +42,7 @@ export type BrowserProviderScenario =
   | "approval"
   | "conflict"
   | "discord-verification-network"
+  | "discord-disallowed-intents"
   | "slack-permission-missing"
   | "not-configured"
   | "discord-only"
@@ -238,8 +239,25 @@ export interface BrowserDiscordEvent {
 }
 
 export class BrowserDiscordBot extends MemoryDiscordBotClient {
-  constructor() {
+  constructor(private readonly scenario: BrowserProviderScenario = "connected") {
     super({ selfUserId: "900" });
+  }
+
+  override async start(): Promise<void> {
+    if (this.scenario === "discord-disallowed-intents") {
+      throw Object.assign(
+        new Error("safe gateway failure", {
+          cause: new Error("formatless-browser-gateway-cause-6ad1"),
+        }),
+        {
+          name: "DiscordGatewayError",
+          gatewayCloseCode: 4014,
+          gatewayFailure: "disallowedIntents",
+          code: "permissionMissing",
+        },
+      );
+    }
+    await super.start();
   }
 
   deliver(event: BrowserDiscordEvent): Promise<void> {

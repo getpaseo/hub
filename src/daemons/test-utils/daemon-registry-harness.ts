@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
+import type { Logger } from "pino";
 import type { DaemonRecord } from "../../db/types.js";
 import type { HubExecutionAgentSnapshot } from "../../hub/protocol.js";
-import type { DaemonAgentSnapshot, DaemonConnection, DaemonEvent } from "../protocol.js";
+import type {
+  DaemonAgentSnapshot,
+  DaemonConnection,
+  DaemonEvent,
+  DaemonEventHandler,
+} from "../protocol.js";
 import { ActiveDaemonRegistry } from "../registry.js";
 
 const SessionRequestSchema = z.object({
@@ -25,16 +31,21 @@ interface PendingRequest<T> {
 
 export class DaemonRegistryHarness {
   private readonly presence = new DaemonPresence();
-  private readonly registry = new ActiveDaemonRegistry(this.presence);
+  private readonly registry: ActiveDaemonRegistry;
   private readonly server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   private readonly clients: WebSocket[] = [];
   private socket: RegistrySocket | undefined;
   private readonly daemon = daemonRecord();
   private shutdown: Promise<void> | undefined;
   private didShutdown = false;
+  private stopped = false;
 
-  static async start(): Promise<DaemonRegistryHarness> {
-    const harness = new DaemonRegistryHarness();
+  constructor(logger?: Pick<Logger, "warn" | "error">) {
+    this.registry = new ActiveDaemonRegistry(this.presence, undefined, logger);
+  }
+
+  static async start(logger?: Pick<Logger, "warn" | "error">): Promise<DaemonRegistryHarness> {
+    const harness = new DaemonRegistryHarness(logger);
     await harness.serverListening();
     await harness.replaceConnection();
     return harness;
@@ -146,6 +157,33 @@ export class DaemonRegistryHarness {
     return { supersededClosed: superseded?.closed ?? false };
   }
 
+  onConnected(handler: (daemon: DaemonRecord) => void | Promise<void>): () => void {
+    return this.registry.onConnected(handler);
+  }
+
+  subscribe(handler: DaemonEventHandler): () => void {
+    return this.connection().on(handler);
+  }
+
+  failOfflinePresence(error: Error): void {
+    this.presence.failNext(error);
+  }
+
+  async disconnectCurrent(): Promise<void> {
+    const socket = this.currentSocket();
+    socket.close();
+    await socket.waitUntilClosed();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  sendRaw(value: string): void {
+    this.currentSocket().sendRaw(value);
+  }
+
+  waitUntilCurrentClosed(): Promise<void> {
+    return this.currentSocket().waitUntilClosed();
+  }
+
   async completeCreate(executionId: string, agentId: string): Promise<DaemonAgentSnapshot> {
     const pending = await this.pendingCreate(executionId);
     this.currentSocket().send({
@@ -198,9 +236,14 @@ export class DaemonRegistryHarness {
   }
 
   async stop(): Promise<void> {
-    await this.registry.stop();
-    for (const client of this.clients) client.terminate();
-    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+    if (this.stopped) return;
+    this.stopped = true;
+    try {
+      await this.registry.stop();
+    } finally {
+      for (const client of this.clients) client.terminate();
+      await new Promise<void>((resolve) => this.server.close(() => resolve()));
+    }
   }
 
   holdOfflinePresence(): void {
@@ -255,6 +298,11 @@ class DaemonPresence {
   private resolveWriting: (() => void) | undefined;
   private persistence: Promise<void> | undefined;
   private resolvePersistence: (() => void) | undefined;
+  private nextFailure: Error | undefined;
+
+  failNext(error: Error): void {
+    this.nextFailure = error;
+  }
 
   hold(): void {
     this.writing = new Promise<void>((resolve) => {
@@ -267,6 +315,11 @@ class DaemonPresence {
 
   async setDaemonPresence(_id: string, _presence: "offline" | "connected"): Promise<void> {
     this.writes += 1;
+    if (this.nextFailure !== undefined) {
+      const error = this.nextFailure;
+      this.nextFailure = undefined;
+      throw error;
+    }
     if (this.writes !== 1) return;
     this.resolveWriting?.();
     await this.persistence;
@@ -314,6 +367,19 @@ class RegistrySocket {
 
   send(message: unknown): void {
     this.socket.send(JSON.stringify({ type: "session", message }));
+  }
+
+  sendRaw(value: string): void {
+    this.socket.send(value);
+  }
+
+  close(): void {
+    this.socket.close();
+  }
+
+  async waitUntilClosed(): Promise<void> {
+    if (this.didClose) return;
+    await new Promise<void>((resolve) => this.socket.once("close", () => resolve()));
   }
 }
 
