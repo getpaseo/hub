@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { reportFailure } from "../failures/index.js";
 import {
   IssueCommentPayloadSchema,
   IssuesPayloadSchema,
@@ -69,7 +70,12 @@ function summarizeGitHubEvent(type: string, payload: unknown): GitHubHeadline {
   if (summarize === undefined) return { headline: humanize(type), actor: null };
   try {
     return summarize(payload);
-  } catch {
+  } catch (error) {
+    reportFailure(error, {
+      operation: "project_activity.summarize",
+      component: "projects",
+      provider: "github",
+    });
     return { headline: humanize(type), actor: null };
   }
 }

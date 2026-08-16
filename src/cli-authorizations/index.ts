@@ -5,6 +5,7 @@ import { CLI_CREDENTIAL_PREFIX, cliCredentialParts } from "../auth/cli-credentia
 import { ProductRequestError } from "../auth/organization-access.js";
 import type { Database } from "../db/types.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "../http/client-address.js";
+import { reportFailure } from "../failures/index.js";
 
 const LIFETIME_SECONDS = 10 * 60;
 const INITIAL_POLL_INTERVAL_SECONDS = 5;
@@ -28,7 +29,9 @@ export class CliAuthorizations {
   ) {}
 
   async start(request: Request): Promise<Response> {
-    const input = emptyBody.safeParse(await request.json().catch(() => ({})));
+    const input = emptyBody.safeParse(
+      await this.parsedJson(request, "cli_authorization.start.parse"),
+    );
     if (!input.success) return invalidRequest();
     const deviceCode = randomBytes(32).toString("base64url");
     const userCode = formatUserCode(base32(randomBytes(8)));
@@ -70,7 +73,9 @@ export class CliAuthorizations {
   }
 
   async poll(request: Request): Promise<Response> {
-    const input = pollBody.safeParse(await request.json().catch(() => undefined));
+    const input = pollBody.safeParse(
+      await this.parsedJson(request, "cli_authorization.poll.parse"),
+    );
     if (!input.success) return invalidRequest();
     const credential = deriveCredential(input.data.deviceCode);
     const outcome = await this.database.pollCliAuthorization({
@@ -89,7 +94,9 @@ export class CliAuthorizations {
   async inspect(request: Request): Promise<Response> {
     const access = await this.browserAccess(request, true);
     if (access instanceof Response) return access;
-    const input = codeBody.safeParse(await request.json().catch(() => undefined));
+    const input = codeBody.safeParse(
+      await this.parsedJson(request, "cli_authorization.inspect.parse"),
+    );
     if (!input.success) return invalidRequest();
     const authorization = await this.database.inspectCliAuthorization(
       verifier(normalizeUserCode(input.data.userCode)),
@@ -108,7 +115,9 @@ export class CliAuthorizations {
     if (!access.capabilities.manageResources) {
       return Response.json({ error: "forbidden" }, { status: 403 });
     }
-    const input = decisionBody.safeParse(await request.json().catch(() => undefined));
+    const input = decisionBody.safeParse(
+      await this.parsedJson(request, "cli_authorization.decide.parse"),
+    );
     if (!input.success) return invalidRequest();
     if (input.data.organizationId !== access.organization.id) {
       return Response.json({ error: "organization_required" }, { status: 403 });
@@ -143,6 +152,15 @@ export class CliAuthorizations {
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
       throw error;
+    }
+  }
+
+  private async parsedJson(request: Request, operation: string): Promise<unknown> {
+    try {
+      return await request.json();
+    } catch (error) {
+      reportFailure(error, { operation, component: "cli_authorizations" }, { kind: "validation" });
+      return undefined;
     }
   }
 }

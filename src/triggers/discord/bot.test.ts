@@ -1,9 +1,64 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import type { Client } from "discord.js";
 import { describe, it } from "vitest";
 import { createDiscordBotClient } from "./bot.js";
 
 describe("Discord bot client", () => {
+  it("classifies a disallowed-intents gateway close from its structured code", async () => {
+    const canary = "gateway-login-secret-3f72";
+    const client = new FakeGatewayClient(4014, new Error(canary));
+    const bot = createDiscordBotClient({
+      token: canary,
+      clientId: "900",
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- focused event-compatible client double
+      client: client as unknown as Client,
+    });
+
+    await assert.rejects(bot.start(), (error: unknown) => {
+      if (!(error instanceof Error)) return false;
+      return (
+        error.name === "DiscordGatewayError" &&
+        Reflect.get(error, "code") === "permissionMissing" &&
+        Reflect.get(error, "gatewayCloseCode") === 4014 &&
+        Reflect.get(error, "gatewayFailure") === "disallowedIntents"
+      );
+    });
+  });
+
+  it.each([
+    [4004, "credentialsRejected"],
+    [4013, "internal"],
+    [4014, "permissionMissing"],
+  ] as const)("maps unrecoverable gateway close %i to %s", async (closeCode, expectedCode) => {
+    const client = new FakeGatewayClient(closeCode, new Error("ignored"));
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- focused event-compatible client double
+      client: client as unknown as Client,
+    });
+
+    await assert.rejects(
+      bot.start(),
+      (error: unknown) => error instanceof Error && Reflect.get(error, "code") === expectedCode,
+    );
+  });
+
+  it.each([4008, 4009])("does not misclassify recoverable gateway close %i", async (closeCode) => {
+    const original = new Error("recoverable close");
+    const client = new FakeGatewayClient(closeCode, original);
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- focused event-compatible client double
+      client: client as unknown as Client,
+    });
+
+    // Discord.js reconnects or resumes these; presenting them as a durable setup fault would lie.
+    await assert.rejects(bot.start(), (error: unknown) => error === original);
+  });
+
   it("disables all mention parsing when sending channel messages", async () => {
     const channel = new FakeSendableChannel();
     const bot = createDiscordBotClient({
@@ -165,6 +220,22 @@ class FakeSendableChannel {
   async send(payload: unknown): Promise<void> {
     this.sentPayloads.push(payload);
   }
+}
+
+class FakeGatewayClient extends EventEmitter {
+  constructor(
+    private readonly closeCode: number,
+    private readonly loginError: Error,
+  ) {
+    super();
+  }
+
+  async login(): Promise<never> {
+    this.emit("shardDisconnect", { code: this.closeCode, reason: this.loginError.message }, 0);
+    throw this.loginError;
+  }
+
+  destroy(): void {}
 }
 
 class FakeMessage {

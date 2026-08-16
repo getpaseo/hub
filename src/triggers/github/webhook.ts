@@ -4,6 +4,7 @@ import { WebhookPayloadSchema } from "../../auth/github-events.js";
 import type { WebhookPayload } from "../../auth/github-events.js";
 import { isDatabaseUnavailableError } from "../../db/errors.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
+import { reportFailure } from "../../failures/index.js";
 import { logger } from "../../logger.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
@@ -53,31 +54,45 @@ interface VerifiedWebhook {
   signatureHash: string;
 }
 
+/**
+ * @param secret the App's webhook secret, or `undefined` when event triggers are not set up.
+ * Without a secret there is nothing to check a signature against, so every delivery is refused
+ * rather than trusted — an unconfigured endpoint must not become an unauthenticated one.
+ */
 export function createWebhookSource(
-  secret: string,
+  secret: string | undefined,
   options: WebhookSourceOptions,
 ): WebhookEndpoint {
   const handlers = new Set<TriggerHandler>();
 
   async function handle(request: Request): Promise<Response> {
+    if (secret === undefined) {
+      reportGitHubRejection("webhook_secret_unconfigured", 503);
+      return new Response("Service Unavailable", { status: 503 });
+    }
     const verified = await verifyWebhookRequest(request, secret);
     if (verified instanceof Response) return verified;
 
     try {
       return await handleVerifiedWebhook(verified, options, handlers);
     } catch (error) {
-      logger.error(
+      reportFailure(
+        error,
         {
-          err: error,
-          deliveryId: verified.deliveryId,
-          eventType: verified.eventType,
+          operation: "github.webhook.handle",
+          component: "triggers",
+          provider: "github",
+          status: isDatabaseUnavailableError(error) ? 503 : 500,
         },
-        "GitHub webhook handling failed",
+        {
+          status: isDatabaseUnavailableError(error) ? 503 : 500,
+          scrubValues: secret === undefined ? [] : [secret],
+        },
       );
       if (isDatabaseUnavailableError(error)) {
         return Response.json({ error: "database_unavailable" }, { status: 503 });
       }
-      throw error;
+      return Response.json({ error: "webhook_processing_failed" }, { status: 500 });
     }
   }
 
@@ -100,7 +115,7 @@ async function handleVerifiedWebhook(
   const { body, deliveryId, eventType, signatureHash } = verified;
   const installationId = body.installation?.id;
   if (typeof installationId !== "number") {
-    logger.warn({ deliveryId, eventType }, "rejecting webhook without an installation ID");
+    reportGitHubRejection("installation_id_missing", 400);
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -169,7 +184,7 @@ async function verifyWebhookRequest(
   const signature = request.headers.get("X-Hub-Signature-256") ?? undefined;
 
   if (signature === undefined) {
-    logger.warn("rejecting webhook request because signature header is missing");
+    reportGitHubRejection("signature_header_missing", 401, secret);
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -177,7 +192,7 @@ async function verifyWebhookRequest(
   if (captured instanceof Response) return captured;
 
   if (!verifySignature(secret, captured, signature)) {
-    logger.warn("rejecting webhook request because signature verification failed");
+    reportGitHubRejection("signature_verification_failed", 401, secret, signature);
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -193,10 +208,7 @@ async function verifyWebhookRequest(
     eventType.length === 0 ||
     deliveryId.length === 0
   ) {
-    logger.warn(
-      { eventType, deliveryId },
-      "rejecting webhook request because required headers are missing",
-    );
+    reportGitHubRejection("required_headers_missing", 400, secret, signature);
     return new Response("Bad Request", { status: 400 });
   }
 
@@ -204,10 +216,11 @@ async function verifyWebhookRequest(
 
   try {
     rawJson = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured));
-  } catch {
-    logger.warn(
-      { eventType, deliveryId },
-      "rejecting webhook request because payload is invalid JSON",
+  } catch (error) {
+    reportFailure(
+      error,
+      { operation: "github.webhook.parse", component: "triggers", provider: "github", status: 400 },
+      { status: 400, scrubValues: [secret, signature] },
     );
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
@@ -215,7 +228,7 @@ async function verifyWebhookRequest(
   const parsedBody = WebhookPayloadSchema.safeParse(rawJson);
 
   if (!parsedBody.success) {
-    logger.warn({ eventType, deliveryId }, "rejecting webhook request because payload is invalid");
+    reportGitHubRejection("invalid_payload", 400, secret, signature);
     return Response.json(
       { error: "invalid webhook payload", issues: parsedBody.error.format() },
       { status: 400 },
@@ -223,6 +236,33 @@ async function verifyWebhookRequest(
   }
 
   return { body: parsedBody.data, deliveryId, eventType, signatureHash };
+}
+
+/** A refused delivery is an unsigned one (401), an unconfigured endpoint (503), or malformed. */
+function rejectionKind(status: number): "authentication" | "conflict" | "validation" {
+  if (status === 401) return "authentication";
+  if (status === 503) return "conflict";
+  return "validation";
+}
+
+function reportGitHubRejection(
+  reason: string,
+  status: number,
+  secret?: string,
+  signature?: string,
+): void {
+  reportFailure(
+    Object.assign(new Error("GitHub webhook request rejected"), { code: reason }),
+    { operation: "github.webhook.verify", component: "triggers", provider: "github", status },
+    {
+      status,
+      kind: rejectionKind(status),
+      scrubValues: [
+        ...(secret === undefined ? [] : [secret]),
+        ...(signature === undefined ? [] : [signature]),
+      ],
+    },
+  );
 }
 
 async function handleLifecycle(

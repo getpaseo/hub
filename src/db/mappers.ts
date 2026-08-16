@@ -80,6 +80,8 @@ export function toProviderEventReceiptRecord(
     resourceId: row.resource_id,
     deliveryId: row.delivery_id,
     signatureHash: row.signature_hash,
+    providerApplicationId: row.provider_application_id,
+    providerConfigurationVersion: row.provider_configuration_version,
     source: row.source,
     repo: row.repo,
     payload: row.payload,

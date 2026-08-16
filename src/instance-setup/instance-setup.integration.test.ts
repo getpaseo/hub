@@ -15,10 +15,8 @@ const policy: InstanceAuthPolicy = {
 };
 
 const operator: InitialOperator = {
-  name: "First Operator",
   email: "First.Operator@Example.test",
   password: "first-operator-password",
-  organizationName: "First Organization",
 };
 
 describe("interactive instance setup", () => {
@@ -54,9 +52,9 @@ describe("interactive instance setup", () => {
       bootstrapRows: 1,
       completedSetups: 1,
       operatorEmail: "first.operator@example.test",
-      operatorName: "First Operator",
+      operatorName: "first.operator",
       mustChangePassword: false,
-      organizationName: "First Organization",
+      organizationName: "Paseo Hub",
       completionMatchesOwner: true,
     });
     assert.equal(await setup.status(), "claimed");
@@ -69,6 +67,23 @@ describe("interactive instance setup", () => {
     await instance.close();
   }, 120_000);
 
+  it("owns deterministic interactive names instead of trusting extra client fields", async () => {
+    const instance = await pristineInstance(postgres, "claim_owned_names");
+    const untrustedInput = {
+      email: "  Mo@Example.com  ",
+      password: operator.password,
+      name: "Spoofed operator",
+      organizationName: "Spoofed organization",
+    } as InitialOperator & { name: string; organizationName: string };
+
+    assert.deepEqual(await instanceSetup(instance).claim(untrustedInput), { status: "claimed" });
+    const state = await durableState(instance.runtime);
+    assert.equal(state.operatorEmail, "mo@example.com");
+    assert.equal(state.operatorName, "mo");
+    assert.equal(state.organizationName, "Paseo Hub");
+    await instance.close();
+  }, 120_000);
+
   it("gives concurrent claims exactly one winner and no partial state", async () => {
     const instance = await pristineInstance(postgres, "claim_race");
     const second = await connectTo(instance.url);
@@ -78,7 +93,6 @@ describe("interactive instance setup", () => {
       instanceSetup(second).claim({
         ...operator,
         email: "racing@example.test",
-        organizationName: "Racing Organization",
       }),
     ]);
 

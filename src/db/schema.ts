@@ -52,6 +52,8 @@ export const providerEventReceipts = pgTable(
     resourceId: text("resource_id"),
     deliveryId: text("delivery_id").notNull(),
     signatureHash: text("signature_hash"),
+    providerApplicationId: text("provider_application_id"),
+    providerConfigurationVersion: integer("provider_configuration_version"),
     source: text().notNull(),
     repo: text(),
     payload: jsonb().notNull(),
@@ -709,6 +711,12 @@ export const organizationConnectionAttempts = pgTable(
       .references(() => sessions.id, { onDelete: "cascade" }),
     candidateExternalId: text("candidate_external_id"),
     pkceVerifier: text("pkce_verifier"),
+    configurationVersion: integer("configuration_version").notNull(),
+    providerApplicationId: text("provider_application_id"),
+    callbackOrigin: text("callback_origin").notNull(),
+    configurationSnapshot: jsonb("configuration_snapshot").notNull(),
+    expectedConfigurationVersion: integer("expected_configuration_version"),
+    activateConfiguration: boolean("activate_configuration").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
@@ -741,6 +749,7 @@ export const githubConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     installationId: bigint("installation_id", { mode: "number" }).notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     accountId: text("account_id").notNull(),
     accountLogin: text("account_login").notNull(),
@@ -796,6 +805,7 @@ export const discordConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     guildId: text("guild_id").notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     guildName: text("guild_name").notNull(),
     connectedByUserId: text("connected_by_user_id").references(() => users.id, {
@@ -821,6 +831,7 @@ export const slackConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     teamId: text("team_id").notNull().unique(),
+    providerApplicationId: text("provider_application_id"),
     slug: text().notNull(),
     teamName: text("team_name").notNull(),
     botUserId: text("bot_user_id").notNull(),
@@ -997,6 +1008,7 @@ export const instanceBootstrap = pgTable(
     }),
     ownerUserId: text("owner_user_id").references(() => users.id, { onDelete: "restrict" }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    appOnboardingCompletedAt: timestamp("app_onboarding_completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -1015,6 +1027,45 @@ export const runtimeConfiguration = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [check("runtime_configuration_singleton_check", sql`${table.singleton}`)],
+);
+
+export const runtimeProviderConfiguration = pgTable(
+  "runtime_provider_configuration",
+  {
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    configuration: jsonb().notNull(),
+    verifiedExternalIdentity: jsonb("verified_external_identity").notNull(),
+    version: integer().default(1).notNull(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedByUserId: text("updated_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => [
+    check(
+      "runtime_provider_configuration_provider_check",
+      sql`${table.provider} in ('github', 'slack', 'discord')`,
+    ),
+    check("runtime_provider_configuration_version_check", sql`${table.version} > 0`),
+  ],
+);
+
+export const runtimeProviderActivations = pgTable(
+  "runtime_provider_activation",
+  {
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    providerApplicationId: text("provider_application_id").notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "runtime_provider_activation_provider_check",
+      sql`${table.provider} in ('github', 'slack', 'discord')`,
+    ),
+    check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
+  ],
 );
 
 export const organizationApiKeys = pgTable(

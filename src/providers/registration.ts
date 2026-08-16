@@ -32,6 +32,7 @@ export interface ProviderIntegrationRegistration {
 
 export interface GitHubAuthorityRegistration {
   mint(input: {
+    executionId?: string;
     projectId: string;
     connectionSlug: string;
     repositories: readonly string[];
@@ -69,6 +70,7 @@ export interface ProviderAttachmentRegistration {
 }
 
 export interface ProviderRegistration {
+  configurationSnapshot?: { version: number; callbackOrigin: string };
   connection: ProviderConnectionRegistration;
   integration?: ProviderIntegrationRegistration;
   triggerProviders: readonly TriggerProviderFactory[];

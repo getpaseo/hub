@@ -196,17 +196,13 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       assert.equal(ConfigurationResourcesSchema.parse(await resources.json()).daemons.length, 1);
       const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
         projectSlug: "same-project",
-        files: configurationBundleFixture(
-          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
-        ),
+        files: configurationBundleFixture(validPublicApiConfiguration()),
       });
-      assert.equal(validation.status, 200);
+      assert.equal(validation.status, 200, await validation.clone().text());
       ValidatedConfigurationSchema.parse(await validation.json());
       const install = await post("/api/v1/configurations/install", secrets[organizationId], {
         projectSlug: "same-project",
-        files: configurationBundleFixture(
-          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
-        ),
+        files: configurationBundleFixture(validPublicApiConfiguration()),
       });
       assert.equal(install.status, 201);
       const installed = InstalledConfigurationSchema.parse(await install.json());
@@ -457,3 +453,24 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     });
   }
 });
+
+function validPublicApiConfiguration(): string {
+  return [
+    "environments:",
+    "  - name: runner",
+    "    kind: daemon",
+    `    daemon: ${TEST_DAEMON_SLUG}`,
+    "    cwd: /repo",
+    "triggers:",
+    "  - name: configured",
+    "    on: manual.run",
+    "    max_runtime: 1h",
+    "    steps:",
+    "      - id: work",
+    "        environment: runner",
+    "        max_runtime: 10m",
+    "        idle_timeout: 1m",
+    "        agent: { provider: test }",
+    '        prompt: [{ text: "Run the configured work" }]',
+  ].join("\n");
+}

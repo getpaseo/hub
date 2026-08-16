@@ -1,6 +1,6 @@
 import type { Database, SyncBillingPlanInput, SyncBillingPlanPriceInput } from "../db/types.js";
 import { hashTemplate } from "../entitlements/catalog.js";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import { parsePlanMetadata, type ParsedPlanTemplate } from "./plan-template.js";
 import type {
   StripeCatalogPrice,
@@ -38,16 +38,26 @@ export async function syncBillingCatalog(
   const ambiguousSlugs = duplicateValidSlugs(parsed);
   for (const { product, result } of parsed) {
     if (!result.success) {
-      logger.error(
-        { productId: product.id, productName: product.name, reason: result.message },
-        "billing catalog sync: rejected product with invalid entitlement metadata; keeping the last known good row",
+      reportFailure(
+        Object.assign(new Error("Billing product metadata rejected"), {
+          code: "invalid_plan_metadata",
+        }),
+        { operation: "billing.catalog.product.validate", component: "billing", provider: "stripe" },
+        { kind: "validation", diagnostic: { productId: product.id } },
       );
       continue;
     }
     if (ambiguousSlugs.has(result.data.slug)) {
-      logger.error(
-        { productId: product.id, slug: result.data.slug },
-        "billing catalog sync: rejected product whose plan slug is claimed by another product; keeping the last known good row",
+      reportFailure(
+        Object.assign(new Error("Billing product slug is ambiguous"), {
+          code: "configurationConflict",
+        }),
+        {
+          operation: "billing.catalog.product.reconcile",
+          component: "billing",
+          provider: "stripe",
+        },
+        { kind: "conflict", diagnostic: { productId: product.id, planSlug: result.data.slug } },
       );
       continue;
     }
@@ -92,9 +102,10 @@ function syncablePrices(
 ): SyncBillingPlanPriceInput[] {
   return prices.flatMap((price) => {
     if (price.lookupKey === null || price.interval === null) {
-      logger.warn(
-        { priceId: price.id, productId },
-        "billing catalog sync: skipping price without a lookup key or a recurring interval",
+      reportFailure(
+        Object.assign(new Error("Billing price is incomplete"), { code: "invalid_plan_price" }),
+        { operation: "billing.catalog.price.validate", component: "billing", provider: "stripe" },
+        { kind: "validation", diagnostic: { priceId: price.id, productId } },
       );
       return [];
     }

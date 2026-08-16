@@ -6,6 +6,7 @@ import { z } from "zod";
 import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
 import { registerResponseLifecycle } from "../http/response-lifecycle.js";
+import { reportFailure, withReference } from "../failures/index.js";
 import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
 import {
   executionToolDefinitions,
@@ -50,11 +51,15 @@ export function createExecutionCapabilityServer(
           execution.outputContext,
         );
       } catch (error) {
+        const failure = reportFailure(error, {
+          operation: "execution_capability.materialize_outputs",
+          component: "execution_capabilities",
+          executionId,
+        });
         return Response.json(
           {
             error: "required_output_capability_unavailable",
-            message:
-              error instanceof Error ? error.message : "required output capability unavailable",
+            message: withReference(outputCapabilityMessage(error), failure.requestId),
           },
           { status: 409 },
         );
@@ -68,8 +73,8 @@ export function createExecutionCapabilityServer(
       });
       let responseLifecycleRegistered = false;
       const closeMcp = async (): Promise<void> => {
-        await server.close().catch(() => undefined);
-        await transport.close().catch(() => undefined);
+        await closeCapabilityResource("mcp_server", executionId, () => server.close());
+        await closeCapabilityResource("mcp_transport", executionId, () => transport.close());
       };
       try {
         await server.connect(transport);
@@ -87,6 +92,13 @@ export function createExecutionCapabilityServer(
       }
     },
   };
+}
+
+function outputCapabilityMessage(error: unknown): string {
+  if (error instanceof Error && error.name === "OutputCapabilityValidationError") {
+    return error.message;
+  }
+  return "A required output capability is unavailable. Check the workflow output configuration.";
 }
 
 async function authenticateExecution(
@@ -169,14 +181,38 @@ async function finishExecutionCall(
 ) {
   try {
     const missingOutputs = missingRequiredOutputs(execution, materializedOutputs);
-    if (missingOutputs.length > 0) return toolFailure(requiredOutputsGuidance(missingOutputs));
+    if (missingOutputs.length > 0) {
+      reportFailure(
+        new Error("required execution outputs are missing"),
+        {
+          operation: "execution_capability.finish.required_outputs",
+          component: "execution_capabilities",
+          executionId: execution.id,
+        },
+        { kind: "validation" },
+      );
+      return toolFailure(requiredOutputsGuidance(missingOutputs));
+    }
     const output = Object.hasOwn(args, "output") ? args["output"] : undefined;
     const completed = await options.completeExecution({
       executionId: execution.id,
       token,
       ...(output === undefined ? {} : { output }),
     });
-    if (completed.status !== "succeeded") return toolFailure("Execution could not be finished");
+    if (completed.status !== "succeeded") {
+      reportFailure(
+        new Error(`execution completion ended with status ${completed.status}`),
+        {
+          operation: "execution_capability.finish.transition",
+          component: "execution_capabilities",
+          executionId: execution.id,
+        },
+        { kind: "conflict" },
+      );
+      return toolFailure(
+        "Execution could not be finished because its state changed. Reload its current status before finishing again.",
+      );
+    }
     await options.database.recordAgentExecutionHubAcknowledgement(execution.id, {
       kind: "finish_execution",
       status: "completed",
@@ -184,7 +220,17 @@ async function finishExecutionCall(
     });
     return toolSuccess("Execution finished");
   } catch (error) {
-    return toolFailure(error instanceof Error ? error.message : "Execution could not be finished");
+    const failure = reportFailure(error, {
+      operation: "execution_capability.finish",
+      component: "execution_capabilities",
+      executionId: execution.id,
+    });
+    return toolFailure(
+      withReference(
+        "Execution could not be finished. Check its current status and required outputs.",
+        failure.requestId,
+      ),
+    );
   }
 }
 
@@ -201,8 +247,18 @@ async function executeOutputCall(
     output.declaration.max,
     options.now?.() ?? new Date(),
   );
-  if (attempt === undefined)
+  if (attempt === undefined) {
+    reportFailure(
+      new Error("execution output limit reached"),
+      {
+        operation: "execution_capability.output.limit",
+        component: "execution_capabilities",
+        executionId: execution.id,
+      },
+      { kind: "conflict" },
+    );
     return toolFailure(`Output limit reached for ${output.declaration.type}`);
+  }
   try {
     await options.outputs.execute({
       agentExecutionId: execution.id,
@@ -218,11 +274,47 @@ async function executeOutputCall(
     );
     if (recorded === undefined) throw new Error("output emission could not be recorded");
     return toolSuccess("Output sent");
-  } catch {
-    await options.database
-      .failAgentExecutionOutput(execution.id, attempt.id, options.now?.() ?? new Date())
-      .catch(() => undefined);
-    return toolFailure(`Output delivery failed; retry \`${toolName}\`.`);
+  } catch (error) {
+    const failure = reportFailure(error, {
+      operation: "execution_capability.output.deliver",
+      component: "execution_capabilities",
+      executionId: execution.id,
+    });
+    try {
+      await options.database.failAgentExecutionOutput(
+        execution.id,
+        attempt.id,
+        options.now?.() ?? new Date(),
+      );
+    } catch (recordError) {
+      reportFailure(recordError, {
+        operation: "execution_capability.output.record_failure",
+        component: "execution_capabilities",
+        executionId: execution.id,
+      });
+    }
+    return toolFailure(
+      withReference(
+        `Output delivery failed. Check the provider connection and output configuration before calling \`${toolName}\` again.`,
+        failure.requestId,
+      ),
+    );
+  }
+}
+
+async function closeCapabilityResource(
+  resource: string,
+  executionId: string,
+  close: () => Promise<void>,
+): Promise<void> {
+  try {
+    await close();
+  } catch (error) {
+    reportFailure(error, {
+      operation: `execution_capability.${resource}.close`,
+      component: "execution_capabilities",
+      executionId,
+    });
   }
 }
 

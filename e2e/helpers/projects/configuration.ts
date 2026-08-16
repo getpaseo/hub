@@ -2,6 +2,11 @@ import { expect, type Page } from "@playwright/test";
 import { load } from "js-yaml";
 
 const BASELINE_WORKFLOW_PATH = ".paseo/workflows/baseline.yml";
+/**
+ * A save is a round trip plus a refetch, so its budget is a server's, not a rendered locator's.
+ * This is the command waiting for its own completion — nothing else waits on a save.
+ */
+const ACTIVATION_TIMEOUT_MS = 30_000;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -53,19 +58,11 @@ export class ProjectConfiguration {
   private async startEditing() {
     const editing = this.page.getByText("Editing");
     const edit = this.page.getByRole("button", { name: "Edit", exact: true });
-    const save = this.page.getByRole("button", { name: "Save and activate" });
-    // Switching the source to manual refetches the snapshot; neither control is on
-    // the page until it lands. A caller may also follow a successful activation
-    // immediately; wait for that pending save to settle before opening another
-    // edit, because activation remounts the workbench on the new revision.
+    // Switching the source to manual refetches the snapshot, so neither control is on the page
+    // until it lands. Beyond that this waits on nothing: either the workbench is read-only and
+    // this opens it, or an edit is already open and this is a no-op. It does not reason about a
+    // previous save, because `save()` does not return until its activation has landed.
     await expect(edit.or(editing).first()).toBeVisible();
-    await expect
-      .poll(
-        async () =>
-          (await edit.isVisible()) ||
-          ((await editing.isVisible()) && (await save.getAttribute("aria-busy")) !== "true"),
-      )
-      .toBe(true);
     if (await edit.isVisible()) await edit.click();
     await expect(editing).toBeVisible();
   }
@@ -84,7 +81,7 @@ export class ProjectConfiguration {
       await this.page.getByRole("button", { name: "Add", exact: true }).click();
       await this.editor().fill(baselineWorkflow(rawYaml));
     }
-    await this.page.getByRole("button", { name: "Save and activate" }).click();
+    await this.save();
   }
 
   /** Activate the open documents exactly as they are — the preserved switch-to-manual bundle. */
@@ -93,8 +90,32 @@ export class ProjectConfiguration {
     await this.save();
   }
 
+  /**
+   * Save and activate, returning only once the save has actually finished.
+   *
+   * Finished is not "the click landed". An activation creates a revision, and the workbench is
+   * keyed on it, so the editor remounts on the new revision some time after the mutation itself
+   * resolved — and the operator's next edit belongs in that new mount, not in the one about to
+   * be discarded. Owning the whole outcome here is what lets every other command stop guessing
+   * whether a previous one is still settling.
+   */
   async save() {
-    await this.page.getByRole("button", { name: "Save and activate" }).click();
+    const button = this.page.getByRole("button", { name: "Save and activate" });
+    const activated = this.page.getByText(/^Configuration saved and activated as Revision \d+\.$/u);
+    const refused = this.page.getByText("Configuration couldn't be activated");
+    const unreachable = this.page.getByText("Hub did not receive the project action result", {
+      exact: false,
+    });
+    await button.click();
+    // The mutation reported one of its three outcomes.
+    await expect(activated.or(refused).or(unreachable).first()).toBeVisible({
+      timeout: ACTIVATION_TIMEOUT_MS,
+    });
+    if (!(await activated.isVisible())) return;
+    // It activated, so the workbench is being replaced. Wait for the new one.
+    await expect(this.page.getByRole("button", { name: "Edit", exact: true })).toBeVisible({
+      timeout: ACTIVATION_TIMEOUT_MS,
+    });
   }
 
   async openFile(name: string) {
@@ -178,6 +199,32 @@ export class ProjectConfiguration {
     await expect(this.page.getByRole("status")).toHaveText(
       `Configuration saved and activated as Revision ${String(version)}.`,
     );
+  }
+
+  /**
+   * Holds back the project refresh that follows the next save, so the activation's remount
+   * lands well after the mutation itself resolved. Real instances do this under load; this makes
+   * it deterministic, and it is the exact window a save command must not return inside.
+   */
+  async delayRefreshAfterNextSave(milliseconds: number) {
+    let saved = false;
+    let delayed = false;
+    await this.page.route("**/_serverFn/**", async (route) => {
+      const request = route.request();
+      if (!saved && request.method() === "POST" && (request.postData() ?? "").includes("files")) {
+        saved = true;
+        await route.continue();
+        return;
+      }
+      if (!saved || delayed) {
+        await route.continue();
+        return;
+      }
+      delayed = true;
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, milliseconds));
+      await route.fulfill({ response });
+    });
   }
 
   async expectActiveRevision(version: number) {

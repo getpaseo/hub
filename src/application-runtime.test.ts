@@ -177,6 +177,7 @@ describe("application runtime provider composition", () => {
           accountLogin: "getpaseo",
           accountType: "Organization",
           status: "active",
+          providerApplicationId: "42",
         },
         {
           id: "connection-2",
@@ -187,6 +188,7 @@ describe("application runtime provider composition", () => {
           accountLogin: "paseo",
           accountType: "Organization",
           status: "active",
+          providerApplicationId: "42",
         },
       ],
       discord: [],

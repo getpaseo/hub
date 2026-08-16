@@ -246,6 +246,27 @@
       "when": 1786649830424,
       "tag": "0034_wandering_roxanne_simpson",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786715730006,
+      "tag": "0035_smooth_wonder_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786732140122,
+      "tag": "0036_giant_spyke",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786744919219,
+      "tag": "0037_robust_brother_voodoo",
+      "breakpoints": true
     }
   ]
 }

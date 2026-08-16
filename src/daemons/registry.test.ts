@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLogger } from "../logger.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 import { DaemonCreateRejectedError, DaemonCreateResponseLostError } from "./protocol.js";
 import { DaemonRegistryHarness } from "./test-utils/daemon-registry-harness.js";
 
 describe("daemon socket generations", () => {
   let daemon: DaemonRegistryHarness;
+  let stream: FailureLogStream;
 
   beforeEach(async () => {
-    daemon = await DaemonRegistryHarness.start();
+    stream = new FailureLogStream();
+    daemon = await DaemonRegistryHarness.start(createLogger(stream));
   });
 
   afterEach(async () => {
@@ -83,6 +87,71 @@ describe("daemon socket generations", () => {
     assert.equal(event.type, "agent_update");
     assert.equal(event.executionId, "execution-1");
     if (event.type === "agent_update") assert.equal(event.agent.status, "idle");
+  });
+
+  it("logs an offline-presence storage rejection exactly once", async () => {
+    const canary = "offline-presence-secret-7e12";
+    daemon.failOfflinePresence(new Error(canary));
+    await daemon.disconnectCurrent();
+    await vi.waitFor(() => assert.equal(stream.records().length, 1));
+    await assert.rejects(daemon.stop(), { message: canary });
+
+    assertOneFailure(stream, {
+      operation: "daemon.presence.offline",
+      component: "daemons",
+      canary,
+    });
+  });
+
+  it("logs a connected recovery rejection without blocking later handlers", async () => {
+    const canary = "connected-recovery-secret-32f1";
+    let laterHandlerRan = false;
+    daemon.onConnected(() => Promise.reject(new Error(canary)));
+    daemon.onConnected(() => {
+      laterHandlerRan = true;
+    });
+    await daemon.replaceConnection();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(laterHandlerRan, true);
+    assertOneFailure(stream, {
+      operation: "daemon.connected.handler",
+      component: "daemons",
+      canary,
+    });
+  });
+
+  it("closes malformed WebSocket JSON intentionally and logs no payload", async () => {
+    const canary = "malformed-websocket-secret-a83f";
+    daemon.sendRaw(`not-json-${canary}`);
+    await daemon.waitUntilCurrentClosed();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assertOneFailure(stream, {
+      operation: "daemon.websocket.message.parse",
+      component: "daemons",
+      failureKind: "validation",
+      level: 40,
+      canary,
+    });
+  });
+
+  it("logs a rejecting subscriber exactly once and still calls its peers", async () => {
+    const canary = "subscriber-secret-b21c";
+    let peerCalls = 0;
+    daemon.subscribe(() => Promise.reject(new Error(canary)));
+    daemon.subscribe(() => {
+      peerCalls += 1;
+    });
+    await daemon.reportAgentStatus("execution-subscriber", "idle");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(peerCalls).toBe(1);
+    assertOneFailure(stream, {
+      operation: "daemon.event.subscriber",
+      component: "daemons",
+      canary,
+    });
   });
 
   it("pairs execution-control acknowledgements by request, execution, and action", async () => {

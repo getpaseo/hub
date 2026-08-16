@@ -77,7 +77,9 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
   const request = snapshot.data.data;
   let message: string | undefined;
   if (decide.data?.status === "error") message = decide.data.error.message;
-  else if (decide.isError) message = "We couldn't decide this CLI login request.";
+  else if (decide.isError)
+    message =
+      "Hub did not receive this CLI login decision. Check your connection and confirm the request is still active.";
   return (
     <Centered>
       <AuthCard

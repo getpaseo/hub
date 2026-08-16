@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 
 export interface DiscordGuildIdentity {
@@ -89,9 +89,10 @@ export function createDiscordConnectionClient(input: {
         if (response.ok) return "present";
         return response.status === 404 ? "absent" : "unknown";
       } catch (error) {
-        logger.warn(
-          { err: error, provider: "discord", guildId },
-          "Discord guild membership check failed",
+        reportFailure(
+          error,
+          { operation: "discord.guild.membership", component: "providers", provider: "discord" },
+          { scrubValues: [input.botToken], diagnostic: { guildId } },
         );
         return "unknown";
       }

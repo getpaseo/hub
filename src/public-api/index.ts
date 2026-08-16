@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { isDatabaseUnavailableError } from "../db/errors.js";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
@@ -122,8 +122,17 @@ async function executeSafely(
     }
     return await execute(id, request, requestId, composition.authenticator, operations);
   } catch (error) {
+    reportFailure(
+      error,
+      {
+        operation: `public-api.${id}`,
+        component: "public-api",
+        requestId,
+        status: isDatabaseUnavailableError(error) ? 503 : 500,
+      },
+      { status: isDatabaseUnavailableError(error) ? 503 : 500 },
+    );
     if (isDatabaseUnavailableError(error)) return infrastructureProblem(requestId);
-    logger.error({ err: error, requestId, operationId: id }, "public API internal error");
     return problem(
       requestId,
       500,

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { it } from "vitest";
 import { TenantRouteNotFoundError } from "./access.js";
 import { ProjectCommandError } from "./command-error.js";
-import { commandForbiddenMessage, unavailableMessage } from "./functions.js";
+import {
+  commandForbiddenMessage,
+  readUnavailableMessage,
+  unavailableMessage,
+} from "./functions.js";
 
 /**
  * `createServerFn` handlers bundle into a chunk separate from the composition root that throws
@@ -29,4 +33,16 @@ it("maps a cross-chunk forbidden ProjectCommandError to the friendly permission 
   const error = crossChunkError("ProjectCommandError", { code: "forbidden" });
   assert.equal(error instanceof ProjectCommandError, false);
   assert.equal(commandForbiddenMessage(error), "You don't have permission to manage this project.");
+});
+
+it("describes project and organization read failures as load failures", () => {
+  const error = new Error("storage unavailable");
+  assert.equal(
+    readUnavailableMessage(error, true),
+    "Hub couldn't load this project's configuration. Reload the page to try again.",
+  );
+  assert.equal(
+    readUnavailableMessage(error, false),
+    "Hub couldn't load this organization. Reload the page to try again.",
+  );
 });

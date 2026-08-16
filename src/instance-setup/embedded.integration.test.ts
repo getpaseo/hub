@@ -7,6 +7,7 @@ import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../db/runtime/ind
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
 import { InstanceSetup, type InitialOperator } from "./index.js";
+import { InstanceAppOnboarding } from "./app-onboarding.js";
 
 const policy: InstanceAuthPolicy = {
   registrationMode: "invite_only",
@@ -15,10 +16,8 @@ const policy: InstanceAuthPolicy = {
 };
 
 const operator: InitialOperator = {
-  name: "Embedded Operator",
   email: "embedded.operator@example.test",
   password: "embedded-operator-password",
-  organizationName: "Embedded Organization",
 };
 
 /** Everything one claim must have provisioned, and nothing a second claim may add. */
@@ -35,6 +34,8 @@ const ONE_CLAIMED_INSTANCE = {
   entitlementChanges: 1,
   bootstrapRows: 1,
   completedSetups: 1,
+  operatorName: "embedded.operator",
+  organizationName: "Paseo Hub",
   mustChangePassword: false,
   completionMatchesOwner: true,
 };
@@ -75,8 +76,21 @@ describe("interactive instance setup on embedded storage", () => {
 
     assert.equal(outcomes.filter(({ status }) => status === "claimed").length, 1);
     assert.equal(outcomes.filter(({ status }) => status === "unavailable").length, 1);
-    assert.deepEqual(await durableState(database), ONE_CLAIMED_INSTANCE);
+    assert.deepEqual(await durableState(database), {
+      ...ONE_CLAIMED_INSTANCE,
+      operatorName: outcomes[0]?.status === "claimed" ? "embedded.operator" : "racing",
+    });
   }, 120_000);
+
+  it("keeps app onboarding incomplete until the operator finishes or skips it", async () => {
+    await instanceSetup(database).claim(operator);
+    const onboarding = new InstanceAppOnboarding(database);
+    assert.equal(await onboarding.isComplete(), false);
+
+    await onboarding.complete();
+    await onboarding.complete();
+    assert.equal(await onboarding.isComplete(), true);
+  });
 
   it("stays closed, and changes nothing, on an embedded instance with accounts", async () => {
     await database.query(
@@ -117,6 +131,8 @@ async function durableState(runtime: DatabaseRuntime) {
     entitlement_changes: number;
     bootstrap_rows: number;
     completed_setups: number;
+    operator_name: string | null;
+    organization_name: string | null;
     must_change_password: boolean | null;
     completion_matches_owner: boolean;
   }>(`
@@ -133,6 +149,8 @@ async function durableState(runtime: DatabaseRuntime) {
       (select count(*)::integer from entitlement_changes) as entitlement_changes,
       (select count(*)::integer from instance_bootstrap) as bootstrap_rows,
       (select count(*)::integer from instance_bootstrap where completed_at is not null) as completed_setups,
+      (select name from "user" where is_instance_operator limit 1) as operator_name,
+      (select name from organization limit 1) as organization_name,
       (select bool_or(must_change_password) from "user") as must_change_password,
       exists (
         select 1 from instance_bootstrap
@@ -160,6 +178,8 @@ async function durableState(runtime: DatabaseRuntime) {
     entitlementChanges: row.entitlement_changes,
     bootstrapRows: row.bootstrap_rows,
     completedSetups: row.completed_setups,
+    operatorName: row.operator_name,
+    organizationName: row.organization_name,
     mustChangePassword: row.must_change_password,
     completionMatchesOwner: row.completion_matches_owner,
   };

@@ -493,6 +493,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(launchEnv["GIT_CONFIG_COUNT"], "5");
     assert.deepEqual(hub.authorityMintInputs(), [
       {
+        executionId: handedOff.execution.id,
         projectId: "00000000-0000-4000-8000-000000000001",
         connectionSlug: "getpaseo-github",
         repositories: ["getpaseo/paseo"],

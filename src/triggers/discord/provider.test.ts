@@ -98,6 +98,7 @@ describe("Discord Phase 1 trigger provider", () => {
       slug: "secondary",
       guildId: "100",
       guildName: "Secondary",
+      providerApplicationId: "discord-app",
     };
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [connection] });

@@ -42,10 +42,8 @@ export function InstanceSetupEntry() {
       const data = new FormData(event.currentTarget);
       claim.mutate({
         data: {
-          name: formValue(data, "name"),
           email: formValue(data, "email"),
           password: formValue(data, "password"),
-          organizationName: formValue(data, "organizationName"),
         },
       });
     },
@@ -55,7 +53,9 @@ export function InstanceSetupEntry() {
   if (!accountRequested) return <Welcome onBegin={requestAccount} />;
   let message: string | undefined;
   if (claim.data?.status === "error") message = claim.data.error.message;
-  if (claim.isError) message = "We couldn't create your account. Try again.";
+  if (claim.isError)
+    message =
+      "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed.";
   return (
     <AccountSetupForm
       // Stay busy through the account refetch, so the form cannot be resubmitted in the moment
@@ -101,7 +101,6 @@ function AccountSetupForm({
         <ErrorSummary message={message} />
         <form method="post" onSubmit={onSubmit} aria-label="Create your account" aria-busy={busy}>
           <FieldSet className="gap-4" disabled={busy}>
-            <FormField label="Name" name="name" id="operator-name" autoComplete="name" />
             <FormField
               label="Email"
               name="email"
@@ -116,12 +115,6 @@ function AccountSetupForm({
               type="password"
               autoComplete="new-password"
               minLength={12}
-            />
-            <FormField
-              label="Organization name"
-              name="organizationName"
-              id="operator-organization"
-              autoComplete="organization"
             />
             <Field>
               <Button type="submit" disabled={busy}>

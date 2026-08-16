@@ -18,6 +18,7 @@ import {
 } from "../organizations/provisioning.js";
 
 const BOOTSTRAP_ROW_ID = "default";
+const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
 
 /**
  * What makes "this database has no accounts" hold until the claim commits. `share row exclusive`
@@ -45,10 +46,8 @@ export type InstanceSetupStatus = "available" | "claimed" | "blocked";
 
 /** What the first operator supplies interactively. Validated at the request boundary. */
 export interface InitialOperator {
-  name: string;
   email: string;
   password: string;
-  organizationName: string;
 }
 
 /**
@@ -180,6 +179,9 @@ export class InstanceSetup {
    * of inserts and nothing else.
    */
   async claim(operator: InitialOperator): Promise<InstanceClaim> {
+    const email = normalizeEmail(operator.email);
+    const accountName = interactiveAccountName(email);
+    const organizationName = INTERACTIVE_ORGANIZATION_NAME;
     const entitlement = await this.options.provisioningEntitlements();
     const passwordHash = await hashPassword(operator.password);
     return this.options.database.transaction(async (client) => {
@@ -188,20 +190,27 @@ export class InstanceSetup {
       const counts = await tenantCounts(client);
       if (setupStatus(row, counts) !== "available") return refuse(client);
       const ownerUserId = await createOperatorAccount(client, {
-        name: operator.name,
-        email: normalizeEmail(operator.email),
+        name: accountName,
+        email,
         passwordHash,
         mustChangePassword: false,
       });
       const organization = await provisionOrganization(
         client,
-        { organizationId: randomUUID(), name: operator.organizationName, ownerUserId },
+        { organizationId: randomUUID(), name: organizationName, ownerUserId },
         entitlement,
       );
       await completeBootstrap(client, organization.id, ownerUserId);
       return { status: "claimed" };
     });
   }
+}
+
+/** Interactive identity is derived once from the normalized address, never from public input. */
+function interactiveAccountName(normalizedEmail: string): string {
+  const separator = normalizedEmail.indexOf("@");
+  const localPart = separator > 0 ? normalizedEmail.slice(0, separator) : "";
+  return localPart || normalizedEmail;
 }
 
 /**

@@ -27,6 +27,15 @@ export class ConnectionConflictError extends Error {
   }
 }
 
+export class ConnectionAttemptUnavailableError extends Error {
+  readonly code = "invalidInput";
+
+  constructor() {
+    super("connection attempt is invalid, expired, or already used");
+    this.name = "ConnectionAttemptUnavailableError";
+  }
+}
+
 export function isDatabaseUnavailableError(error: unknown): error is DatabaseUnavailableError {
   return error instanceof DatabaseUnavailableError;
 }

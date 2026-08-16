@@ -49,6 +49,7 @@ describe("attachment capability boundary", () => {
       {
         organizationId: "org-1",
         connectionId: "connection-1",
+        executionId: fixture.executionId,
         locator: { fileId: "F1" },
       },
     ]);

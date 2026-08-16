@@ -10,6 +10,7 @@ import type {
 import type { ProjectDashboard } from "../projects/dashboard.js";
 import type { PublicApi } from "../public-api/index.js";
 import type { UsageDashboard } from "../usage/dashboard.js";
+import type { ProviderApplications } from "../provider-applications/index.js";
 
 /**
  * The public plan catalog shape — name, slug, prices by interval, marketing bullets. Never
@@ -71,6 +72,7 @@ export interface ApplicationRuntime {
   /** Instance-scoped operator back office. Present whenever database + browser auth are; its own
    * server-side guard refuses non-operators regardless of this being wired. */
   operatorConsole: OperatorConsole | null;
+  providerApplications: ProviderApplications | null;
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
@@ -87,6 +89,7 @@ export interface ApplicationRuntime {
   ): Promise<void>;
   /** First-run only: creates the instance's operator and organization, then signs them in. */
   claimInstance?(operator: InitialOperator, headers: Headers): Promise<InstanceClaim>;
+  completeAppOnboarding?(request: Request): Promise<void>;
   organizationResources(request: Request): Promise<OrganizationResourceReader>;
   webhook(request: Request): Promise<Response>;
   /** The Stripe product/price/subscription webhook. Unconfigured 404s as if unregistered. */

@@ -1,5 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- dynamic tenant URLs are assembled from server-resolved route metadata */
 import {
+  Blocks,
   Cable,
   Check,
   ChevronsUpDown,
@@ -433,6 +434,7 @@ function InstanceNavigationGroup() {
         </div>
         <SidebarGroupContent>
           <SidebarMenu>
+            <NavItem to="/apps" label="Apps" icon={Blocks} />
             <NavItem to="/operator" label="Operator" icon={ShieldCheck} />
           </SidebarMenu>
         </SidebarGroupContent>
@@ -672,6 +674,7 @@ const ROUTE_SECTIONS = [
   { suffix: "/team", label: "Team" },
   { suffix: "/usage", label: "Usage" },
   { suffix: "/billing", label: "Billing" },
+  { suffix: "/apps", label: "Apps" },
   { suffix: "/operator", label: "Operator" },
 ] as const;
 

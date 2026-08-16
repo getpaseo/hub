@@ -1,17 +1,19 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
-import { createAuthServer } from "../../auth/server.js";
+import { createAuthServer, type AuthServer } from "../../auth/server.js";
 import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
-import type { DatabaseRuntime } from "../../db/runtime/index.js";
+import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
+import { createDatabase } from "../../db/pg.js";
 import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import type { ProviderRegistration } from "../../providers/registration.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import {
@@ -23,6 +25,7 @@ import {
   BrowserGitHubReactions,
   BrowserSlackBot,
   type BrowserDiscordEvent,
+  isBrowserProviderScenario,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
 import {
@@ -31,6 +34,22 @@ import {
   type FixtureBillingProduct,
 } from "./browser-billing.js";
 import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
+import {
+  BrowserProviderApplicationVerifier,
+  browserRegistrationFactory,
+} from "./browser-provider-applications.js";
+import {
+  activateProviderApplicationsAtStartup,
+  DynamicProviderRuntime,
+  createProviderApplicationInventory,
+  createProviderApplicationStore,
+  createProviderApplications,
+  readProviderApplicationEnvironment,
+  resolveCallbackOrigin,
+  type ProviderApplications,
+  type ProviderApplicationIdentity,
+} from "../../provider-applications/index.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 
 interface DiscordCommand {
   id: string;
@@ -69,20 +88,21 @@ interface AccountSetupFailureCommand {
   type: "fail-next-account-setup";
 }
 
+interface ProjectReadFailureCommand {
+  id: string;
+  type: "fail-next-project-read";
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
 const FIXTURE_STRIPE_SECRET_KEY = "sk_test_e2e_fixture_0000000000000000000000";
 
 async function main(): Promise<void> {
-  const databaseUrl = requiredEnvironment("DATABASE_URL");
-  const publicBaseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
+  const publicBaseUrl =
+    process.env["PASEO_HUB_APP_URL"] ?? `http://127.0.0.1:${requiredEnvironment("PORT")}`;
   const scenario = readScenario();
-  const {
-    database,
-    runtime: databaseRuntime,
-    locks,
-  } = await createPostgresTestRuntime(databaseUrl);
+  const { database, runtime: databaseRuntime, locks } = await createBrowserDatabase();
   const entitlements = composeEntitlements(database, databaseRuntime);
   // Compose (and sync) billing before auth: a billing-configured harness provisions new
   // organizations onto the Free plan, so the resolver must exist before createAuthServer, and the
@@ -100,9 +120,9 @@ async function main(): Promise<void> {
           database: databaseRuntime,
           locks,
           entitlements: entitlements.service,
-          baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
+          baseURL: publicBaseUrl,
           secret: authSecret,
-          policy: readInstanceAuthPolicy(),
+          policy: readInstanceAuthPolicy(process.env),
           ...billingAuthOptions(billing),
         }),
       )
@@ -110,9 +130,7 @@ async function main(): Promise<void> {
   await auth?.initialize?.();
   const machineAuth = machineAuthEnabled();
   const databaseProfile = requiredEnvironment("PASEO_E2E_DATABASE_PROFILE");
-  if (auth !== null && machineAuth && databaseProfile === "fresh") {
-    await seedMachineAuthTarget(databaseRuntime);
-  }
+  await seedMachineAuthTargetIfRequired(auth, machineAuth, databaseProfile, databaseRuntime);
   const machineKey =
     auth === null || !machineAuth
       ? undefined
@@ -126,7 +144,7 @@ async function main(): Promise<void> {
     machineKey?.secret ?? "",
     "utf8",
   );
-  const bot = new BrowserDiscordBot();
+  const bot = new BrowserDiscordBot(scenario);
   const slackBot = new BrowserSlackBot();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
@@ -142,10 +160,12 @@ async function main(): Promise<void> {
             publicBaseUrl,
             configuration: githubConfigured
               ? {
+                  appId: "42",
                   appSlug: "paseo",
                   clientId: "client",
                   clientSecret: "secret",
                   webhookSecret: requiredEnvironment("GITHUB_WEBHOOK_SECRET"),
+                  privateKey: "fixture-private-key",
                 }
               : null,
             ...(githubConfigured
@@ -191,12 +211,22 @@ async function main(): Promise<void> {
             ...(slackConfigured ? { botClient: slackBot } : {}),
           }),
         ];
+  const providers = await providerRuntimeOptions(auth, registrations, {
+    database,
+    databaseRuntime,
+    locks,
+    publicBaseUrl,
+    scenario,
+    bot,
+    slackBot,
+    githubConfiguration,
+  });
   const runtime = await createApplicationRuntime({
     database,
     auth,
     entitlements: entitlements.service,
     billing,
-    registrations,
+    ...providers,
     publicBaseUrl,
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     async close() {
@@ -205,9 +235,24 @@ async function main(): Promise<void> {
       await database.close();
     },
   });
+  let failNextProjectRead = false;
+  const projectDashboard = runtime.projectDashboard;
+  if (projectDashboard !== null) {
+    const readProjectSnapshot = projectDashboard.projectSnapshot.bind(projectDashboard);
+    projectDashboard.projectSnapshot = async (...args) => {
+      if (failNextProjectRead) {
+        failNextProjectRead = false;
+        throw new Error("project read failed with formatless-project-secret-8ac72f");
+      }
+      return readProjectSnapshot(...args);
+    };
+  }
   const start = await loadBuiltStartServer();
   await start.startApplication(() => runtime);
-  const server = createFetchServer((request) => start.default.fetch(request));
+  const server = createFetchServer(
+    (request) => browserProviderPage(request, publicBaseUrl) ?? start.default.fetch(request),
+    await testServerOptions(),
+  );
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void runtime.hub.handleUpgrade?.(request, socket, head);
   });
@@ -220,11 +265,63 @@ async function main(): Promise<void> {
       billingCatalog,
       billingClient: billingFixtureClient,
       accountSetupFaults,
+      failNextProjectRead: () => {
+        failNextProjectRead = true;
+      },
     });
   });
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+async function createBrowserDatabase() {
+  const databaseUrl = process.env["DATABASE_URL"];
+  if (databaseUrl !== undefined && databaseUrl.length > 0) {
+    return createPostgresTestRuntime(databaseUrl);
+  }
+  const bundle = await embeddedDatabaseRuntime(requiredEnvironment("PASEO_HUB_DATA_DIR"));
+  try {
+    await bundle.runtime.migrate();
+    process.stdout.write("database runtime ready: embedded\n");
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+  } catch (error) {
+    await bundle.runtime.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function testServerOptions(): Promise<{
+  tls?: { key: string; cert: string };
+  trustedClientIpHeader?: string;
+}> {
+  const keyPath = process.env["PASEO_E2E_TLS_KEY"];
+  const certPath = process.env["PASEO_E2E_TLS_CERT"];
+  const trustedClientIpHeader = process.env["PASEO_HUB_TRUSTED_CLIENT_IP_HEADER"];
+  const trusted = trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader };
+  if (keyPath === undefined && certPath === undefined) return trusted;
+  if (keyPath === undefined || certPath === undefined) throw new Error("incomplete test TLS");
+  return {
+    ...trusted,
+    tls: { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") },
+  };
+}
+
+function browserProviderPage(request: Request, publicBaseUrl: string): Response | undefined {
+  const url = new URL(request.url);
+  if (url.pathname !== "/e2e/providers/slack/authorize") return undefined;
+  const state = url.searchParams.get("state");
+  if (state === null) return new Response("Missing state", { status: 400 });
+  const callback = new URL(
+    "/api/integrations/slack/callback",
+    request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? publicBaseUrl,
+  );
+  callback.searchParams.set("state", state);
+  callback.searchParams.set("code", "accepted");
+  return new Response(
+    `<!doctype html><html><body><main><h1>Install Paseo in Acme</h1><p>Slack is asking you to accept this app.</p><a href="${callback.toString()}">Accept installation</a></main></body></html>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
 }
 
 /** Hosted harness: new organizations start on the Free plan and membership changes re-report
@@ -238,24 +335,46 @@ function billingAuthOptions(billing: BillingRuntime | null) {
   };
 }
 
+/**
+ * One statement per call. A semicolon-separated batch only works on PostgreSQL's simple query
+ * protocol; PGlite prepares every statement and refuses a batch, so a single query here made
+ * the harness silently PostgreSQL-only.
+ */
 async function seedMachineAuthTarget(database: DatabaseRuntime): Promise<void> {
   await database.query(`
       insert into organization (id, name, slug)
       values ('phase-zero', 'E2E machine organization', 'phase-zero')
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
+  `);
+  await database.query(`
       insert into organization_entitlements
         (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
       values ('phase-zero',
               '{"seats":{"max":null},"canInviteMembers":true,"meters":{"executions.monthly":{"limit":null}}}'::jsonb,
               '{}'::jsonb, null, null, now(), now())
-      on conflict (organization_id) do nothing;
+      on conflict (organization_id) do nothing
+  `);
+  await database.query(`
       insert into "user" (id, name, email, email_verified)
       values ('phase-zero-user', 'E2E machine user', 'phase-zero@example.test', true)
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
+  `);
+  await database.query(`
       insert into member (id, organization_id, user_id, role)
       values ('phase-zero-owner', 'phase-zero', 'phase-zero-user', 'owner')
-      on conflict (id) do nothing;
+      on conflict (id) do nothing
   `);
+}
+
+async function seedMachineAuthTargetIfRequired(
+  auth: AuthServer | null,
+  machineAuth: boolean,
+  databaseProfile: string,
+  database: DatabaseRuntime,
+): Promise<void> {
+  if (auth !== null && machineAuth && databaseProfile === "fresh") {
+    await seedMachineAuthTarget(database);
+  }
 }
 
 interface CommandFixtures {
@@ -264,6 +383,7 @@ interface CommandFixtures {
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
   accountSetupFaults: BrowserAccountSetupFaults;
+  failNextProjectRead(): void;
 }
 
 async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promise<void> {
@@ -275,6 +395,11 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
   }
   if (isAccountSetupFailureCommand(message)) {
     fixtures.accountSetupFaults.failNext();
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isProjectReadFailureCommand(message)) {
+    fixtures.failNextProjectRead();
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -374,6 +499,15 @@ function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFail
   );
 }
 
+function isProjectReadFailureCommand(value: unknown): value is ProjectReadFailureCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "fail-next-project-read" &&
+    typeof Reflect.get(value, "id") === "string"
+  );
+}
+
 function isBillingProductCommand(value: unknown): value is BillingProductCommand {
   return (
     typeof value === "object" &&
@@ -435,16 +569,7 @@ async function shutdown(
 
 function readScenario(): BrowserProviderScenario {
   const value = process.env["PASEO_BROWSER_PROVIDER_SCENARIO"] ?? "connected";
-  if (
-    value === "connected" ||
-    value === "approval" ||
-    value === "conflict" ||
-    value === "not-configured" ||
-    value === "discord-only" ||
-    value === "slack-only"
-  ) {
-    return value;
-  }
+  if (isBrowserProviderScenario(value)) return value;
   throw new Error(`invalid browser provider scenario: ${value}`);
 }
 
@@ -508,6 +633,118 @@ async function composeFixtureBilling(
   });
   await billing.syncCatalog();
   return { billing, billingCatalog, billingClient };
+}
+
+/**
+ * The registration set the application runs on. Dynamic mode hands over to the operator-managed
+ * runtime entirely; every other scenario keeps the statically configured providers it has always
+ * had, so existing journeys are untouched.
+ */
+async function providerRuntimeOptions(
+  auth: Parameters<typeof createApplicationRuntime>[0]["auth"],
+  registrations: readonly ProviderRegistration[],
+  fixtures: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
+): Promise<
+  Pick<Parameters<typeof createApplicationRuntime>[0], "registrations"> & {
+    providerApplications?: ProviderApplications;
+  }
+> {
+  const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
+  if (apps !== null) {
+    return { registrations: apps.registrations, providerApplications: apps.capability };
+  }
+  if (auth !== null) {
+    await activateStaticProviderApplications(fixtures);
+  }
+  return { registrations };
+}
+
+async function activateStaticProviderApplications(
+  input: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
+): Promise<void> {
+  const identities: ProviderApplicationIdentity[] = [];
+  if (hasBrowserGitHub(input.scenario)) {
+    identities.push({ provider: "github", id: "42", name: "paseo", ownerLogin: "acme-inc" });
+  }
+  if (input.scenario !== "not-configured" && input.scenario !== "slack-only") {
+    identities.push({ provider: "discord", id: "900", name: "Paseo" });
+  }
+  if (input.scenario === "slack-only") {
+    identities.push({ provider: "slack", id: "browser-slack-app", name: "Paseo" });
+  }
+  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
+  for (const identity of identities) {
+    await store.activate({ provider: identity.provider, identity, configurationVersion: 0 });
+  }
+}
+
+/**
+ * The operator-managed provider applications, backed by the fixture provider clients. Dynamic mode
+ * replaces the statically configured registrations entirely, so the app setup journey starts on an
+ * instance with nothing configured and activates providers exactly the way production does.
+ */
+async function composeProviderApplications(input: {
+  database: Database;
+  databaseRuntime: DatabaseRuntime;
+  locks: Parameters<typeof createProviderApplicationStore>[1];
+  auth: NonNullable<Parameters<typeof createApplicationRuntime>[0]["auth"]>;
+  publicBaseUrl: string;
+  scenario: BrowserProviderScenario;
+  bot: BrowserDiscordBot;
+  slackBot: BrowserSlackBot;
+  githubConfiguration: BrowserGitHubConfiguration;
+}): Promise<{
+  capability: ProviderApplications;
+  registrations: readonly ProviderRegistration[];
+} | null> {
+  if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
+  const environment = await readProviderApplicationEnvironment(process.env);
+  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
+  const verifier = new BrowserProviderApplicationVerifier(input.scenario);
+  const inventory = createProviderApplicationInventory(input.databaseRuntime);
+  const providerRuntime = new DynamicProviderRuntime({
+    database: input.database,
+    auth: input.auth,
+    applicationBaseUrl: input.publicBaseUrl,
+    registrationFactory: browserRegistrationFactory({
+      database: input.database,
+      auth: input.auth,
+      applicationBaseUrl: input.publicBaseUrl,
+      scenario: input.scenario,
+      bot: input.bot,
+      slackBot: input.slackBot,
+      githubConfiguration: input.githubConfiguration,
+    }),
+  });
+  const failures = await activateProviderApplicationsAtStartup({
+    store,
+    environment,
+    runtime: providerRuntime,
+    verifier,
+    inventory,
+    callbackOrigin: input.publicBaseUrl,
+  });
+  if (failures[0] !== undefined) {
+    throw failures[0].error;
+  }
+  const capability = createProviderApplications({
+    auth: input.auth,
+    store,
+    environment,
+    runtime: providerRuntime,
+    verifier,
+    inventory,
+    callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
+    beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
+      const organizationSlug = await inventory.organizationSlug(organizationId);
+      if (organizationSlug === undefined) throw new Error("organization unavailable");
+      const url = new URL(request.url);
+      url.searchParams.set("organizationSlug", organizationSlug);
+      url.searchParams.set("returnRoute", returnRoute);
+      return begin(new Request(url, { method: "POST", headers: request.headers }));
+    },
+  });
+  return { capability, registrations: providerRuntime.registrations() };
 }
 
 main().catch((error: unknown) => {

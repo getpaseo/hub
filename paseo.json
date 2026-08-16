@@ -7,6 +7,10 @@
     "app": {
       "type": "service",
       "command": "node ./scripts/paseo-workspace.mjs dev"
+    },
+    "evidence": {
+      "type": "service",
+      "command": "node ./scripts/paseo-workspace.mjs evidence"
     }
   }
 }

@@ -35,6 +35,8 @@ import {
   UNLIMITED_PROVISIONING,
   type ProvisioningEntitlementResolver,
 } from "../organizations/provisioning.js";
+import { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -52,6 +54,7 @@ export interface AuthServer {
   ): Promise<void>;
   /** Creates the first operator on a pristine instance and signs the browser in. */
   claimInstance?(operator: InitialOperator, headers: Headers): Promise<InstanceClaim>;
+  completeAppOnboarding?(request: Request): Promise<void>;
   resources(
     request: Request,
     organizations: OrganizationResources,
@@ -124,6 +127,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     policy,
     provisioningEntitlements,
   });
+  const appOnboarding = new InstanceAppOnboarding(options.database);
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -194,6 +198,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     cliCredentials,
     entitlements: options.entitlements,
     instanceSetup,
+    appOnboarding,
     provisioningEntitlements,
     ...(options.onMembershipChanged === undefined
       ? {}
@@ -205,7 +210,10 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     handle(request) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/auth/paseo/")) {
-        const rejected = rejectCrossOriginCookieMutation(request, browserOrigin);
+        const rejected = rejectCrossOriginCookieMutation(
+          request,
+          requestBrowserOrigin(request, browserOrigin),
+        );
         if (rejected !== undefined) return Promise.resolve(rejected);
         return access.handle(request);
       }
@@ -220,7 +228,10 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           });
       }
       if (path === "/api/auth/change-password") {
-        const rejected = rejectCrossOriginCookieMutation(request, browserOrigin);
+        const rejected = rejectCrossOriginCookieMutation(
+          request,
+          requestBrowserOrigin(request, browserOrigin),
+        );
         if (rejected !== undefined) return Promise.resolve(rejected);
         return changePassword(request);
       }
@@ -232,23 +243,26 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     browserAccount: (request) => {
       const path = new URL(request.url).pathname;
       if (path === "/api/auth/change-password") {
-        const rejected = rejectCrossOriginCookieMutation(request, browserOrigin);
+        const rejected = rejectCrossOriginCookieMutation(
+          request,
+          requestBrowserOrigin(request, browserOrigin),
+        );
         return rejected === undefined ? changePassword(request) : Promise.resolve(rejected);
       }
       return access.handle(request);
     },
     async signInEmail(data, headers) {
-      requireBrowserOrigin(headers, browserOrigin);
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       await auth.api.signInEmail({ body: data, headers });
     },
     async signUpEmail(data, headers, invitationId) {
-      requireBrowserOrigin(headers, browserOrigin);
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       await registration.withAdmission(data.email, invitationId, async () => {
         await auth.api.signUpEmail({ body: data, headers });
       });
     },
     async claimInstance(operator, headers) {
-      requireBrowserOrigin(headers, browserOrigin);
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       const claim = await instanceSetup.claim(operator);
       if (claim.status !== "claimed") return claim;
       // The account exists and owns the instance the moment the claim commits; signing in here
@@ -260,12 +274,22 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       });
       return claim;
     },
+    async completeAppOnboarding(request) {
+      const rejected = rejectCrossOriginCookieMutation(
+        request,
+        requestBrowserOrigin(request, browserOrigin),
+      );
+      if (rejected !== undefined) throw new Error("invalid origin");
+      const account = await access.account(request);
+      if (!account.isInstanceOperator) throw new Error("forbidden");
+      await appOnboarding.complete();
+    },
     async signOut(headers) {
-      requireBrowserOrigin(headers, browserOrigin);
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       await auth.api.signOut({ headers });
     },
     async changePassword(data, headers) {
-      requireBrowserOrigin(headers, browserOrigin);
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       const session = await sessions.read(headers);
       if (session === undefined) throw new Error("unauthenticated");
       await auth.api.changePassword({
@@ -282,7 +306,8 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     },
     resolveOrganizationAccess: (request) => access.resolve(request),
     resolveAccount: (request) => access.account(request),
-    rejectCookieMutation: (request) => rejectCrossOriginCookieMutation(request, browserOrigin),
+    rejectCookieMutation: (request) =>
+      rejectCrossOriginCookieMutation(request, requestBrowserOrigin(request, browserOrigin)),
     initialize: () => instanceSetup.initializeFromPolicy(),
     apiKeys,
     cliCredentials,
@@ -314,6 +339,27 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     }
     return response;
   }
+}
+
+function requestBrowserOrigin(request: Request, fallback: string): string {
+  return headersBrowserOrigin(request.headers, fallback);
+}
+
+function headersBrowserOrigin(headers: Headers, fallback: string): string {
+  const trusted = headers.get(TRUSTED_REQUEST_ORIGIN_HEADER);
+  if (trusted === null) return fallback;
+  const url = new URL(trusted);
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error("invalid trusted request origin");
+  }
+  return url.origin;
 }
 
 function requireBrowserOrigin(headers: Headers, browserOrigin: string): void {

@@ -1,9 +1,12 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
+import { request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, get as httpsGet, type Server } from "node:https";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { promisify } from "node:util";
 import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
@@ -23,13 +26,19 @@ export const test = base.extend<{
   projectExternal: ProjectExternalFacts;
   billing: boolean;
   providerScenario: BrowserProviderScenario;
+  primaryDatabase: "postgres" | "embedded";
 }>({
   // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
   // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
   billing: [false, { option: true }],
   providerScenario: ["connected" as BrowserProviderScenario, { option: true }],
+  // The fixture always has a primary application, but a spec that claims its own applications
+  // never touches it. Set with `test.use({ primaryDatabase: "embedded" })` so those specs stop
+  // paying for a PostgreSQL container nothing reads. Anything asserting persistence behaviour
+  // keeps the default.
+  primaryDatabase: ["postgres" as "postgres" | "embedded", { option: true }],
   hub: async (
-    { browser, browserName, page, context, billing, providerScenario },
+    { browser, browserName, page, context, billing, providerScenario, primaryDatabase },
     provide,
     testInfo,
   ) => {
@@ -49,6 +58,7 @@ export const test = base.extend<{
         databaseProfile: "fresh",
         billing,
         providerScenario,
+        ...(primaryDatabase === "embedded" ? { embedded: true } : {}),
       });
       await provide(
         new PaseoHub(
@@ -80,32 +90,51 @@ class BuiltApplications {
   private readonly sourcePaseos: SourcePaseo[] = [];
 
   async start(options: BuiltApplicationOptions = {}): Promise<BuiltApplication> {
-    const postgres = await new PostgreSqlContainer("postgres:17-alpine")
-      .withStartupTimeout(30_000)
-      .start();
-    const databaseUrl = postgres.getConnectionUri();
-    await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
+    const postgres =
+      options.embedded === true
+        ? undefined
+        : await new PostgreSqlContainer("postgres:17-alpine").withStartupTimeout(30_000).start();
+    const dataDirectory =
+      options.embedded === true ? await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-")) : undefined;
+    const databaseUrl = postgres?.getConnectionUri();
+    if (databaseUrl !== undefined) {
+      await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
+    }
     const port = await availablePort();
-    const origin = `http://127.0.0.1:${port}`;
+    const reverseProxyPort = options.reverseProxy === true ? await availablePort() : undefined;
+    const tls =
+      options.https === true || options.reverseProxy === true ? await createTestTls() : undefined;
+    const publicPort = reverseProxyPort ?? port;
+    const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${publicPort}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
     const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
       cwd: process.cwd(),
       env: applicationEnvironment({
-        databaseUrl,
+        ...(databaseUrl === undefined ? {} : { databaseUrl }),
+        ...(dataDirectory === undefined ? {} : { dataDirectory }),
         origin,
+        ...(options.reverseProxy === true ? {} : { appUrl: origin }),
         port,
         machineKeyFile,
+        ...(options.https === true && tls !== undefined ? { tls } : {}),
         ...options,
       }),
       stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
     const output: string[] = [];
+    const proxy =
+      reverseProxyPort === undefined || tls === undefined
+        ? undefined
+        : await startReverseProxy(reverseProxyPort, port, tls);
     const application: RunningApplication = {
       origin,
-      databaseUrl,
+      databaseUrl: databaseUrl ?? `embedded:${dataDirectory}`,
       machineKey: "",
-      postgres,
+      ...(postgres === undefined ? {} : { postgres }),
+      ...(dataDirectory === undefined ? {} : { dataDirectory }),
       server,
+      ...(proxy === undefined ? {} : { proxy }),
+      ...(tls === undefined ? {} : { tlsRoot: tls.root }),
       logs: () => output.join(""),
       deliverDiscord: (event: BrowserDiscordEvent) => deliverDiscord(server, event),
       setGitHubConfiguration: (input: {
@@ -118,6 +147,7 @@ class BuiltApplications {
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
+      failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
       reportedSeatQuantity: async (organizationId: string) => {
         const data = await deliverCommandForData(server, {
           type: "billing-inspect",
@@ -143,7 +173,14 @@ class BuiltApplications {
     await Promise.all(
       applications.map(async (application) => {
         await stopServer(application.server);
-        await application.postgres.stop();
+        await stopProxy(application.proxy);
+        await application.postgres?.stop();
+        if (application.dataDirectory !== undefined) {
+          await rm(application.dataDirectory, { recursive: true, force: true });
+        }
+        if (application.tlsRoot !== undefined) {
+          await rm(application.tlsRoot, { recursive: true, force: true });
+        }
       }),
     );
   }
@@ -156,13 +193,18 @@ class BuiltApplications {
 }
 
 interface RunningApplication extends BuiltApplication {
-  postgres: StartedPostgreSqlContainer;
+  postgres?: StartedPostgreSqlContainer;
+  dataDirectory?: string;
   server: ChildProcess;
+  tlsRoot?: string;
+  proxy?: Server;
 }
 
 interface ApplicationEnvironmentInput {
-  databaseUrl: string;
+  databaseUrl?: string;
+  dataDirectory?: string;
   origin: string;
+  appUrl?: string;
   port: number;
   registrationMode?: BuiltApplicationOptions["registrationMode"];
   organizationCreation?: BuiltApplicationOptions["organizationCreation"];
@@ -171,20 +213,22 @@ interface ApplicationEnvironmentInput {
   providerConnections?: boolean;
   githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
+  providerApplications?: boolean;
+  environmentApps?: readonly ("github" | "slack" | "discord")[];
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
   billing?: BuiltApplicationOptions["billing"];
+  tls?: TestTls;
+  reverseProxy?: boolean;
 }
 
 function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.ProcessEnv {
   const browserAuthEnabled = input.browserAuth !== false;
-  return {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
-    DATABASE_URL: input.databaseUrl,
     PORT: String(input.port),
     PASEO_HUB_BIND: "127.0.0.1",
-    PASEO_HUB_APP_URL: input.origin,
     PASEO_REGISTRATION_MODE:
       input.registrationMode ?? (input.bootstrap === undefined ? "open" : "invite_only"),
     PASEO_ORGANIZATION_CREATION:
@@ -207,6 +251,14 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
         : input.githubApprovalRequired === true
           ? "approval"
           : "connected"),
+    PASEO_BROWSER_PROVIDER_APPS: input.providerApplications === true ? "dynamic" : "static",
+    ...(input.reverseProxy === true
+      ? { PASEO_HUB_TRUSTED_CLIENT_IP_HEADER: "x-paseo-e2e-client-ip" }
+      : {}),
+    ...(input.tls === undefined
+      ? {}
+      : { PASEO_E2E_TLS_KEY: input.tls.key, PASEO_E2E_TLS_CERT: input.tls.cert }),
+    ...environmentAppVariables(input.environmentApps ?? []),
     ...(input.bootstrap === undefined
       ? {}
       : {
@@ -215,6 +267,74 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           PASEO_BOOTSTRAP_OWNER_PASSWORD: input.bootstrap.ownerPassword,
         }),
   };
+  if (input.databaseUrl === undefined) delete environment["DATABASE_URL"];
+  else environment["DATABASE_URL"] = input.databaseUrl;
+  if (input.dataDirectory === undefined) delete environment["PASEO_HUB_DATA_DIR"];
+  else environment["PASEO_HUB_DATA_DIR"] = input.dataDirectory;
+  if (input.appUrl === undefined) delete environment["PASEO_HUB_APP_URL"];
+  else environment["PASEO_HUB_APP_URL"] = input.appUrl;
+  return environment;
+}
+
+interface TestTls {
+  root: string;
+  key: string;
+  cert: string;
+}
+
+const execFileAsync = promisify(execFile);
+
+async function createTestTls(): Promise<TestTls> {
+  const root = await mkdtemp(join(tmpdir(), "paseo-e2e-tls-"));
+  const key = join(root, "localhost-key.pem");
+  const cert = join(root, "localhost-cert.pem");
+  await execFileAsync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    key,
+    "-out",
+    cert,
+    "-days",
+    "1",
+    "-subj",
+    "/CN=127.0.0.1",
+    "-addext",
+    "subjectAltName=IP:127.0.0.1",
+  ]);
+  return { root, key, cert };
+}
+
+/**
+ * Environment-managed apps, spelled with the same variables an operator would set. The fixture
+ * credentials match the fixture providers, so an environment-managed provider is genuinely
+ * connectable — read-only in the UI is a product rule, not a broken app.
+ */
+function environmentAppVariables(
+  providers: readonly ("github" | "slack" | "discord")[],
+): NodeJS.ProcessEnv {
+  const variables: NodeJS.ProcessEnv = {};
+  if (providers.includes("github")) {
+    variables["GITHUB_APP_ID"] = "42";
+    variables["GITHUB_APP_SLUG"] = "paseo";
+    variables["GITHUB_APP_CLIENT_ID"] = "client";
+    variables["GITHUB_APP_CLIENT_SECRET"] = "secret";
+    variables["GITHUB_APP_PRIVATE_KEY"] = "fixture-private-key";
+  }
+  if (providers.includes("discord")) {
+    variables["DISCORD_CLIENT_ID"] = "900";
+    variables["DISCORD_CLIENT_SECRET"] = "secret";
+    variables["DISCORD_BOT_TOKEN"] = "token";
+  }
+  if (providers.includes("slack")) {
+    variables["SLACK_APP_ID"] = "browser-slack-app";
+    variables["SLACK_CLIENT_ID"] = "browser-slack-client";
+    variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
+  }
+  return variables;
 }
 
 async function deliverDiscord(server: ChildProcess, event: BrowserDiscordEvent): Promise<void> {
@@ -300,13 +420,23 @@ async function serverReady(server: ChildProcess, origin: string, output: string[
       throw new Error(`built application exited before readiness\n${output.join("")}`);
     }
     try {
-      const response = await fetch(`${origin}/health`);
-      if (response.status === 200) return;
+      if (await healthReady(origin)) return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
   throw new Error(`built application did not become ready\n${output.join("")}`);
+}
+
+async function healthReady(origin: string): Promise<boolean> {
+  if (!origin.startsWith("https://")) return (await fetch(`${origin}/health`)).status === 200;
+  return await new Promise<boolean>((resolve, reject) => {
+    const request = httpsGet(`${origin}/health`, { rejectUnauthorized: false }, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.once("error", reject);
+  });
 }
 
 async function stopServer(server: ChildProcess): Promise<void> {
@@ -317,6 +447,52 @@ async function stopServer(server: ChildProcess): Promise<void> {
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]);
   if (server.exitCode === null) server.kill("SIGKILL");
+}
+
+async function startReverseProxy(port: number, targetPort: number, tls: TestTls): Promise<Server> {
+  const proxy = createHttpsServer(
+    { key: await readFile(tls.key, "utf8"), cert: await readFile(tls.cert, "utf8") },
+    (incoming, outgoing) => {
+      const upstream = httpRequest(
+        {
+          hostname: "127.0.0.1",
+          port: targetPort,
+          method: incoming.method,
+          path: incoming.url,
+          headers: {
+            ...incoming.headers,
+            host: `127.0.0.1:${targetPort}`,
+            "x-forwarded-host": incoming.headers.host,
+            "x-forwarded-proto": "https",
+            "x-paseo-e2e-client-ip": "127.0.0.1",
+          },
+        },
+        (response) => {
+          outgoing.writeHead(response.statusCode ?? 502, response.headers);
+          response.pipe(outgoing);
+        },
+      );
+      upstream.once("error", () => {
+        if (!outgoing.headersSent) outgoing.writeHead(502);
+        outgoing.end("Bad Gateway");
+      });
+      incoming.pipe(upstream);
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(port, "127.0.0.1", resolve);
+  });
+  return proxy;
+}
+
+async function stopProxy(proxy: Server | undefined): Promise<void> {
+  if (proxy === undefined) return;
+  proxy.closeIdleConnections();
+  proxy.closeAllConnections();
+  await new Promise<void>((resolve, reject) => {
+    proxy.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
 }
 
 async function availablePort(): Promise<number> {

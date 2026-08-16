@@ -1,5 +1,6 @@
 import type { QueryHandle, TransactionHandle } from "../../index.js";
 import type { Locks } from "../index.js";
+import { reportFailure } from "../../../../failures/index.js";
 
 export class PostgresLocks implements Locks {
   constructor(
@@ -14,9 +15,14 @@ export class PostgresLocks implements Locks {
       try {
         return await operation();
       } finally {
-        await connection
-          .query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [key])
-          .catch(() => undefined);
+        try {
+          await connection.query(`select pg_advisory_unlock(hashtextextended($1, 0))`, [key]);
+        } catch (error) {
+          reportFailure(error, {
+            operation: "database.postgres.advisory_lock.release",
+            component: "database",
+          });
+        }
       }
     });
   }

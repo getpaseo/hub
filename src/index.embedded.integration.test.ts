@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, it } from "vitest";
 import { embeddedDatabaseRuntime } from "./db/runtime/index.js";
 import { startProductionRuntime, stopProductionRuntime } from "./index.js";
+import { runWithFailureTracking } from "./failures/index.js";
+import { createLogger } from "./logger.js";
+import { assertOneFailure, FailureLogStream } from "./test-utils/failure-logs.js";
 
 const ENVIRONMENT_NAMES = [
   "DATABASE_URL",
@@ -58,16 +61,35 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
 });
 
+it("logs an embedded database startup failure exactly once", async () => {
+  const canary = "database-startup-secret-1d42";
+  const stream = new FailureLogStream();
+  const blockedPath = join(root, canary);
+  await writeFile(blockedPath, "not a directory");
+  process.env["PASEO_HUB_DATA_DIR"] = blockedPath;
+
+  await assert.rejects(() =>
+    runWithFailureTracking(
+      () => startProductionRuntime({ environmentSource: "process-only" }),
+      createLogger(stream),
+    ),
+  );
+
+  assertOneFailure(stream, {
+    operation: "database.startup",
+    component: "database",
+    canary,
+  });
+});
+
 it("keeps an interactive claim across a restart and then shows ordinary sign-in", async () => {
   delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
   delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
   delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
   process.env["PASEO_HUB_APP_URL"] = APP_URL;
   const operator = {
-    name: "Restart Operator",
     email: "restart-operator@example.test",
     password: "restart-operator-password",
-    organizationName: "Restart Organization",
   };
 
   const first = await startProductionRuntime();

@@ -96,8 +96,12 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   let message: string | undefined;
   if (mutation.data?.status === "error") message = mutation.data.error.message;
   if (mutation.isError) {
-    if (mode === "signIn") message = "We couldn't sign you in. Try again.";
-    else message = "We couldn't create that account.";
+    if (mode === "signIn") {
+      message = "Hub did not receive the sign-in result. Check your connection and submit again.";
+    } else {
+      message =
+        "Hub did not receive the account-creation result. Check your connection and invitation before submitting again.";
+    }
   }
   let title = "Create an account";
   let description = "Get your agent operations in one place.";

@@ -19,8 +19,10 @@ import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
+import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
+import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -100,6 +102,11 @@ const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
   path: '/api/openapi.json',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSplatRoute = ApiSplatRouteImport.update({
+  id: '/api/$',
+  path: '/api/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellOperatorRoute = ShellOperatorRouteImport.update({
   id: '/operator',
   path: '/operator',
@@ -108,6 +115,11 @@ const ShellOperatorRoute = ShellOperatorRouteImport.update({
 const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
   id: '/cli-login',
   path: '/cli-login',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellAppsRoute = ShellAppsRouteImport.update({
+  id: '/apps',
+  path: '/apps',
   getParentRoute: () => ShellRoute,
 } as any)
 const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
@@ -284,8 +296,10 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -325,8 +339,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -367,8 +383,10 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -412,8 +430,10 @@ export interface FileRouteTypes {
     | '/'
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -453,8 +473,10 @@ export interface FileRouteTypes {
   to:
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -494,8 +516,10 @@ export interface FileRouteTypes {
     | '/_shell'
     | '/health'
     | '/webhook'
+    | '/_shell/apps'
     | '/_shell/cli-login'
     | '/_shell/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -538,6 +562,7 @@ export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
+  ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
@@ -632,6 +657,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/$': {
+      id: '/api/$'
+      path: '/api/$'
+      fullPath: '/api/$'
+      preLoaderRoute: typeof ApiSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/operator': {
       id: '/_shell/operator'
       path: '/operator'
@@ -644,6 +676,13 @@ declare module '@tanstack/react-router' {
       path: '/cli-login'
       fullPath: '/cli-login'
       preLoaderRoute: typeof ShellCliLoginRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/apps': {
+      id: '/_shell/apps'
+      path: '/apps'
+      fullPath: '/apps'
+      preLoaderRoute: typeof ShellAppsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/api/v1/cli-authorizations': {
@@ -898,6 +937,7 @@ const ShellOOrganizationSlugProjectsRouteWithChildren =
   )
 
 interface ShellRouteChildren {
+  ShellAppsRoute: typeof ShellAppsRoute
   ShellCliLoginRoute: typeof ShellCliLoginRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellIndexRoute: typeof ShellIndexRoute
@@ -911,6 +951,7 @@ interface ShellRouteChildren {
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellAppsRoute: ShellAppsRoute,
   ShellCliLoginRoute: ShellCliLoginRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellIndexRoute: ShellIndexRoute,
@@ -945,6 +986,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
+  ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,

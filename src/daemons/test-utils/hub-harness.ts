@@ -1612,6 +1612,7 @@ export class HubHarness {
       projectDashboard: null,
       usageDashboard: null,
       operatorConsole: null,
+      providerApplications: null,
       testTriggerRoutes: true,
       auth: () => Promise.resolve(new Response("Not Found", { status: 404 })),
       organizationResources: () => Promise.reject(new Error("organization resources unavailable")),

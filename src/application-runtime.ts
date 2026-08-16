@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
-import { logger } from "./logger.js";
+import { reportFailure } from "./failures/index.js";
 import type { ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
@@ -28,6 +28,7 @@ import {
 } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
+import type { ProviderApplications } from "./provider-applications/index.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -37,6 +38,7 @@ export interface ApplicationCompositionOptions {
   /** HOSTED only. Present when `readBillingConfig()` finds `STRIPE_SECRET_KEY`; null self-hosted. */
   billing: BillingRuntime | null;
   registrations?: readonly ProviderRegistration[];
+  providerApplications?: ProviderApplications;
   publicBaseUrl?: string;
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
@@ -135,6 +137,7 @@ async function createOwnedApplicationRuntime(
     publicApi: application.publicApi,
     resources,
     billing: options.billing,
+    providerApplications: providerApplicationsFor(options),
     projectDashboard:
       options.database === null || options.auth === null
         ? null
@@ -178,6 +181,12 @@ async function createOwnedApplicationRuntime(
       }
       return options.auth.claimInstance(operator, headers);
     },
+    completeAppOnboarding(request) {
+      if (options.database === null || options.auth?.completeAppOnboarding === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.completeAppOnboarding(request);
+    },
     signOut(headers) {
       if (options.database === null || options.auth?.signOut === undefined) {
         return Promise.reject(new Error("auth unavailable"));
@@ -200,29 +209,25 @@ async function createOwnedApplicationRuntime(
       if (options.database === null || options.auth === null) {
         return Response.json({ error: "database_unavailable" }, { status: 503 });
       }
-      try {
-        const url = new URL(request.url);
-        const organizationSlug = url.searchParams.get("organizationSlug");
-        if (organizationSlug === null) {
-          return Response.json({ error: "organization_required" }, { status: 400 });
-        }
-        const { tenant } = await resolveRouteTenant(options.auth, options.database, request, {
-          organizationSlug,
-        });
-        const bindings = await options.database.organizationConnectionUsage(tenant.organization.id);
-        const statuses = Object.fromEntries(
-          [...connections.values()].map((connection) => [
-            connection.name,
-            connection.status(bindings),
-          ]),
-        );
-        return Response.json({
-          canManage: tenant.membership.role !== "member",
-          ...statuses,
-        });
-      } catch {
-        return Response.json({ error: "connection_status_unavailable" }, { status: 503 });
+      const url = new URL(request.url);
+      const organizationSlug = url.searchParams.get("organizationSlug");
+      if (organizationSlug === null) {
+        return Response.json({ error: "organization_required" }, { status: 400 });
       }
+      const { tenant } = await resolveRouteTenant(options.auth, options.database, request, {
+        organizationSlug,
+      });
+      const bindings = await options.database.organizationConnectionUsage(tenant.organization.id);
+      const statuses = Object.fromEntries(
+        [...connections.values()].map((connection) => [
+          connection.name,
+          connection.status(bindings),
+        ]),
+      );
+      return Response.json({
+        canManage: tenant.membership.role !== "member",
+        ...statuses,
+      });
     },
     connectionAction: (request, provider, action) => {
       if (options.database === null || options.auth === null) {
@@ -321,6 +326,12 @@ async function createOwnedApplicationRuntime(
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),
   };
+}
+
+function providerApplicationsFor(
+  options: ApplicationCompositionOptions,
+): ProviderApplications | null {
+  return options.providerApplications ?? null;
 }
 
 function createConnectionsForProject(
@@ -453,9 +464,10 @@ function activePriceForInterval(
     const price = selectActivePlanPrice(record.prices, record.slug, interval);
     return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
   } catch (error) {
-    logger.warn(
-      { err: error, slug: record.slug, interval },
-      "billing plan has ambiguous pricing; omitting the price from the public catalog",
+    reportFailure(
+      error,
+      { operation: "billing.catalog.price.select", component: "billing", provider: "stripe" },
+      { kind: "conflict", diagnostic: { planSlug: record.slug, interval } },
     );
     return null;
   }

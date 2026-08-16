@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
-import { logger } from "../logger.js";
+import { respondOk, type Result } from "../contract/respond.js";
+import { respondWithFailure } from "../failures/index.js";
 import { handleConnections } from "../server/runtime.js";
 
 const githubStatusSchema = z.discriminatedUnion("status", [
@@ -54,12 +54,18 @@ export const connectionStatus = createServerFn({ method: "GET" })
         "status",
       );
       if (!response.ok) {
-        return respondError({ message: "We couldn't load this organization's connections." });
+        return connectionResponseFailure(
+          "connection.status",
+          response,
+          "Hub couldn't load this organization's connections. Reload the page.",
+          data,
+        );
       }
       return respondOk(connectionStatusSchema.parse(await response.json()));
     } catch (error) {
-      logger.error({ err: error, operation: "status" }, "connection dashboard request failed");
-      return respondError({ message: "We couldn't load this organization's connections." });
+      return respondWithFailure(error, connectionContext("connection.status", data), {
+        fallback: "Hub couldn't load this organization's connections. Reload the page.",
+      });
     }
   });
 
@@ -74,18 +80,26 @@ export const startConnection = createServerFn({ method: "POST" })
         operation,
       );
       if (response.status === 403) {
-        return respondError({ message: `You don't have permission to start ${name}.` });
+        return connectionResponseFailure(
+          "connection.start",
+          response,
+          `You don't have permission to start ${name}.`,
+          data,
+        );
       }
       if (!response.ok) {
-        return respondError({ message: `We couldn't start the ${name} connection. Try again.` });
+        return connectionResponseFailure(
+          "connection.start",
+          response,
+          `Hub couldn't start the ${name} connection. Check the app status and provider availability before starting again.`,
+          data,
+        );
       }
       return respondOk(startSchema.parse(await response.json()));
     } catch (error) {
-      logger.error(
-        { err: error, provider: data.provider, operation: "start" },
-        "connection dashboard request failed",
-      );
-      return respondError({ message: `We couldn't start the ${name} connection. Try again.` });
+      return respondWithFailure(error, connectionContext("connection.start", data), {
+        fallback: `Hub couldn't start the ${name} connection. Check the app status and provider availability before starting again.`,
+      });
     }
   });
 
@@ -100,18 +114,26 @@ export const disconnectConnection = createServerFn({ method: "POST" })
         operation,
       );
       if (response.status === 403) {
-        return respondError({ message: `You don't have permission to disconnect ${name}.` });
+        return connectionResponseFailure(
+          "connection.disconnect",
+          response,
+          `You don't have permission to disconnect ${name}.`,
+          data,
+        );
       }
       if (!response.ok) {
-        return respondError({ message: `We couldn't disconnect ${name}. Try again.` });
+        return connectionResponseFailure(
+          "connection.disconnect",
+          response,
+          `Hub couldn't disconnect ${name}. Reload its connection status before disconnecting again.`,
+          data,
+        );
       }
       return respondOk({ result: `${data.provider}_disconnected` as const });
     } catch (error) {
-      logger.error(
-        { err: error, provider: data.provider, operation: "disconnect" },
-        "connection dashboard request failed",
-      );
-      return respondError({ message: `We couldn't disconnect ${name}. Try again.` });
+      return respondWithFailure(error, connectionContext("connection.disconnect", data), {
+        fallback: `Hub couldn't disconnect ${name}. Reload its connection status before disconnecting again.`,
+      });
     }
   });
 
@@ -124,6 +146,48 @@ const CONNECTION_OPERATIONS = {
 function providerName(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub";
   return provider === "discord" ? "Discord" : "Slack";
+}
+
+function connectionContext(
+  operation: string,
+  data: {
+    organizationSlug: string;
+    projectSlug?: string | undefined;
+    provider?: ConnectionProvider | undefined;
+  },
+) {
+  return {
+    operation,
+    component: "connections",
+    organizationSlug: data.organizationSlug,
+    ...(data.projectSlug === undefined ? {} : { projectSlug: data.projectSlug }),
+    ...(data.provider === undefined ? {} : { provider: data.provider }),
+  } as const;
+}
+
+function connectionResponseFailure(
+  operation: string,
+  response: Response,
+  message: string,
+  data: {
+    organizationSlug: string;
+    projectSlug?: string | undefined;
+    provider?: ConnectionProvider | undefined;
+  },
+) {
+  return respondWithFailure(
+    new Error(`connection operation returned HTTP ${response.status}`),
+    { ...connectionContext(operation, data), status: response.status },
+    {
+      fallback: message,
+      authentication: message,
+      forbidden: message,
+      notFound: message,
+      conflict: message,
+      validation: message,
+    },
+    { status: response.status },
+  );
 }
 
 function operationRequest(

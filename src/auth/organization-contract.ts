@@ -60,6 +60,13 @@ export const accountStateSchema = z.discriminatedUnion("status", [
     account: accountSchema,
   }),
   z.object({
+    status: z.literal("appSetupRequired"),
+    account: accountSchema,
+    organization: z.object({ id: z.string(), name: z.string(), slug: z.string().optional() }),
+    memberships: z.array(membershipSchema),
+    capabilities: organizationCapabilitiesSchema,
+  }),
+  z.object({
     status: z.literal("organizationRequired"),
     account: accountSchema,
     memberships: z.array(membershipSchema),

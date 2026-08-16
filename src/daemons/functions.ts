@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondOk, type Result } from "../contract/respond.js";
+import { reportFailure, respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 
 const daemonSchema = z.object({
@@ -38,11 +39,18 @@ export const daemonList = createServerFn({ method: "GET" })
         operationRequest("GET", "/organization/daemons", undefined, data.organizationSlug),
       );
       if (!response.ok) {
-        return respondError({ message: "We couldn't load this organization's daemons." });
+        return daemonResponseFailure(
+          "daemon.list",
+          response,
+          "Hub couldn't load this organization's daemons. Reload the page.",
+          data.organizationSlug,
+        );
       }
       return respondOk(daemonListSchema.parse(await response.json()));
-    } catch {
-      return respondError({ message: "We couldn't load this organization's daemons." });
+    } catch (error) {
+      return respondWithFailure(error, daemonContext("daemon.list", data.organizationSlug), {
+        fallback: "Hub couldn't load this organization's daemons. Reload the page.",
+      });
     }
   });
 
@@ -63,11 +71,12 @@ export const renameDaemon = createServerFn({ method: "POST" })
         ),
         data.daemonId,
       );
-      if (response.status === 401) return respondOk({ state: "sessionExpired" });
+      if (response.status === 401)
+        return daemonStateFailure("daemon.rename", response, "sessionExpired", data);
       if (response.status === 403) {
         const failure = z.object({ error: z.string() }).safeParse(await response.json());
         if (failure.success && failure.data.error === "organization_required") {
-          return respondOk({ state: "organizationRequired" });
+          return daemonStateFailure("daemon.rename", response, "organizationRequired", data);
         }
       }
       if (response.status === 409) {
@@ -75,15 +84,34 @@ export const renameDaemon = createServerFn({ method: "POST" })
           .object({ error: z.literal("daemon_slug_conflict"), slug: z.string() })
           .safeParse(await response.json());
         if (failure.success) {
-          return respondError({
-            message: `The daemon slug “${failure.data.slug}” is already in use. Choose another slug.`,
-          });
+          return respondWithFailure(
+            new Error("daemon slug conflict"),
+            daemonContext("daemon.rename", data.organizationSlug, data.daemonId),
+            {
+              fallback: `The daemon slug “${failure.data.slug}” is already in use. Choose another slug.`,
+            },
+            { kind: "conflict" },
+          );
         }
       }
-      if (!response.ok) return respondError({ message: "We couldn't rename that daemon." });
+      if (!response.ok)
+        return daemonResponseFailure(
+          "daemon.rename",
+          response,
+          "Hub couldn't rename the daemon. Reload its current name before submitting again.",
+          data.organizationSlug,
+          data.daemonId,
+        );
       return respondOk({ state: "complete" });
-    } catch {
-      return respondError({ message: "We couldn't rename that daemon." });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.rename", data.organizationSlug, data.daemonId),
+        {
+          fallback:
+            "Hub couldn't rename the daemon. Reload its current name before submitting again.",
+        },
+      );
     }
   });
 
@@ -97,17 +125,29 @@ export const revokeDaemon = createServerFn({ method: "POST" })
         operationRequest("POST", "/organization/daemons/revoke", {}, data.organizationSlug),
         data.daemonId,
       );
-      if (response.status === 401) return respondOk({ state: "sessionExpired" });
+      if (response.status === 401)
+        return daemonStateFailure("daemon.revoke", response, "sessionExpired", data);
       if (response.status === 403) {
         const failure = z.object({ error: z.string() }).safeParse(await response.json());
         if (failure.success && failure.data.error === "organization_required") {
-          return respondOk({ state: "organizationRequired" });
+          return daemonStateFailure("daemon.revoke", response, "organizationRequired", data);
         }
       }
-      if (!response.ok) return respondError({ message: "We couldn't revoke that daemon." });
+      if (!response.ok)
+        return daemonResponseFailure(
+          "daemon.revoke",
+          response,
+          "Hub couldn't revoke the daemon. Reload its status before submitting again.",
+          data.organizationSlug,
+          data.daemonId,
+        );
       return respondOk({ state: "complete" });
-    } catch {
-      return respondError({ message: "We couldn't revoke that daemon." });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.revoke", data.organizationSlug, data.daemonId),
+        { fallback: "Hub couldn't revoke the daemon. Reload its status before submitting again." },
+      );
     }
   });
 
@@ -128,4 +168,49 @@ function operationRequest(
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+}
+
+function daemonContext(operation: string, organizationSlug: string, daemonId?: string) {
+  return {
+    operation,
+    component: "daemons",
+    organizationSlug,
+    ...(daemonId === undefined ? {} : { daemonId }),
+  } as const;
+}
+
+function daemonResponseFailure(
+  operation: string,
+  response: Response,
+  message: string,
+  organizationSlug: string,
+  daemonId?: string,
+) {
+  return respondWithFailure(
+    new Error(`daemon operation returned HTTP ${response.status}`),
+    { ...daemonContext(operation, organizationSlug, daemonId), status: response.status },
+    {
+      fallback: message,
+      authentication: message,
+      forbidden: message,
+      notFound: message,
+      conflict: message,
+      validation: message,
+    },
+    { status: response.status },
+  );
+}
+
+function daemonStateFailure(
+  operation: string,
+  response: Response,
+  state: "sessionExpired" | "organizationRequired",
+  data: { organizationSlug: string; daemonId: string },
+): Result<DaemonCommand> {
+  reportFailure(
+    new Error(`daemon operation returned HTTP ${response.status}`),
+    { ...daemonContext(operation, data.organizationSlug, data.daemonId), status: response.status },
+    { status: response.status },
+  );
+  return respondOk({ state });
 }

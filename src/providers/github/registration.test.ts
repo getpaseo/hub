@@ -46,6 +46,7 @@ describe("GitHub registration", () => {
         accountLogin: "acme",
         accountType: "Organization",
         status: "active" as const,
+        providerApplicationId: "42",
       });
     const target = {
       id: "repository-catalog-1",
@@ -147,10 +148,12 @@ describe("GitHub registration", () => {
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
       configuration: {
+        appId: "42",
         appSlug: "paseo",
         clientId: "client",
         clientSecret: "secret",
         webhookSecret: "webhook-secret",
+        privateKey: "test-private-key",
       },
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
@@ -223,6 +226,7 @@ describe("GitHub registration", () => {
           accountLogin: "getpaseo",
           accountType: "Organization",
           status: "active",
+          providerApplicationId: "42",
         },
       ],
       discord: [],
@@ -281,6 +285,7 @@ describe("GitHub registration", () => {
           accountLogin: "getpaseo",
           accountType: "Organization",
           status: "active",
+          providerApplicationId: "42",
         },
       ],
       discord: [],
@@ -476,10 +481,12 @@ describe("GitHub registration", () => {
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
       configuration: {
+        appId: "42",
         appSlug: "paseo",
         clientId: "client",
         clientSecret: "secret",
         webhookSecret: "webhook-secret",
+        privateKey: "test-private-key",
       },
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
@@ -632,10 +639,12 @@ class RegistrationAuth implements AuthServer {
 
 function githubConfiguration() {
   return {
+    appId: "42",
     appSlug: "paseo",
     clientId: "client",
     clientSecret: "secret",
     webhookSecret: "webhook-secret",
+    privateKey: "test-private-key",
   };
 }
 
