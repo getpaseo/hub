@@ -267,7 +267,7 @@ export class PaseoHub {
       expect(logs).toContain("auth.setup_instance");
       expect(logs).toMatch(/failureKind:\s*["']?internal/u);
       expect(logs).toMatch(/err:\s*\{/u);
-      expect(logs).toMatch(/type:\s*["']?Error/u);
+      expect(logs).toMatch(/["']?type["']?\s*:\s*["']?Error/u);
       expect(logs).toMatch(/stack:/u);
       expect(logs).not.toContain("account setup failed");
       expect(logs).not.toContain(account.email);
