@@ -29,6 +29,7 @@ const configurationSchema = z.discriminatedUnion("provider", [
   }),
   z.object({
     provider: z.literal("slack"),
+    transport: z.literal("webhook"),
     appId: z.string().trim().min(1),
     clientId: z.string().trim().min(1),
     clientSecret: z.string().min(1),
@@ -50,6 +51,12 @@ const connectionSchema = z.object({
   organizationId: z.string().min(1),
   surface: surfaceSchema,
 });
+const slackSocketSchema = z.object({
+  appToken: z.string().trim().startsWith("xapp-").min(6),
+  botToken: z.string().trim().startsWith("xoxb-").min(6),
+  expectedVersion: expectedVersionSchema,
+});
+const slackBotTokenSchema = z.object({ botToken: z.string().trim().startsWith("xoxb-").min(6) });
 
 export const providerApplicationsOverview = createServerFn({ method: "GET" }).handler(
   async (): Promise<Result<ProviderApplicationOverview>> => {
@@ -135,6 +142,67 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
     }
   });
 
+export const configureSlackSocketApplication = createServerFn({ method: "POST" })
+  .validator(slackSocketSchema)
+  .handler(async ({ data }): Promise<Result<ProviderApplicationSaveResult>> => {
+    try {
+      const capability = (await getApplication()).providerApplications;
+      if (capability === null) throw new Error("unavailable");
+      return respondOk(
+        await capability.configureSlackSocket(getRequest(), {
+          appToken: data.appToken,
+          botToken: data.botToken,
+          ...(data.expectedVersion === undefined ? {} : { expectedVersion: data.expectedVersion }),
+        }),
+      );
+    } catch (error) {
+      return providerApplicationSaveFailure("slack", error, [data.appToken, data.botToken]);
+    }
+  });
+
+export const connectSlackSocketWorkspace = createServerFn({ method: "POST" })
+  .validator(slackBotTokenSchema)
+  .handler(async ({ data }): Promise<Result<void>> => {
+    try {
+      const capability = (await getApplication()).providerApplications;
+      if (capability === null) throw new Error("unavailable");
+      await capability.connectSlackSocketWorkspace(getRequest(), data);
+      return respondOk(undefined);
+    } catch (error) {
+      return providerApplicationSaveFailure(
+        "slack",
+        error,
+        [data.botToken],
+        "provider_application.connect_slack_workspace",
+      );
+    }
+  });
+
+export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(
+  async (): Promise<Result<void>> => {
+    try {
+      const capability = (await getApplication()).providerApplications;
+      if (capability === null) throw new Error("unavailable");
+      await capability.retrySlackSocket(getRequest());
+      return respondOk(undefined);
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        {
+          operation: "slack.socket.retry",
+          component: "provider_applications",
+          provider: "slack",
+        },
+        {
+          fallback: "Hub couldn't retry Slack. Try again.",
+          forbidden: "Only an instance operator can retry Slack.",
+          authentication: "Your session has expired. Sign in again, then retry.",
+        },
+      );
+    }
+  },
+);
+
 function sensitiveConfigurationValues(
   configuration: z.infer<typeof configurationSchema>,
 ): readonly string[] {
@@ -171,6 +239,7 @@ function normalizedConfiguration(
   if (data.provider === "slack") {
     return {
       provider: data.provider,
+      transport: data.transport,
       appId: data.appId,
       clientId: data.clientId,
       clientSecret: data.clientSecret,

@@ -41,9 +41,11 @@ import {
   createProviderApplicationStore,
   createProviderApplications,
   createProviderApplicationVerifier,
+  createProviderRuntimeReconciler,
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
+import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 
 export interface ProductionRuntimeOptions {
   environmentSource: RuntimeEnvironmentSource;
@@ -123,6 +125,38 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       auth,
       applicationBaseUrl: identity.appUrl,
     });
+    const providerApplications = createProviderApplications({
+      auth,
+      store: providerStore,
+      environment: providerEnvironment,
+      runtime: providerRuntime,
+      verifier: providerVerifier,
+      slackSocketVerifier: createSlackSocketInstallationVerifier(),
+      inventory: providerInventory,
+      callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
+      beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
+        const organizationSlug = await providerInventory.organizationSlug(organizationId);
+        if (organizationSlug === undefined) throw new Error("organization unavailable");
+        const url = new URL(request.url);
+        url.searchParams.set("organizationSlug", organizationSlug);
+        url.searchParams.set("returnRoute", returnRoute);
+        return begin(new Request(url, { method: "POST", headers: request.headers }));
+      },
+    });
+    const storedSlackVersion = (await providerStore.read("slack"))?.version ?? 0;
+    let providerReconciler: ReturnType<typeof createProviderRuntimeReconciler> | undefined;
+    const application = await createApplicationRuntime({
+      database,
+      auth,
+      entitlements: entitlements.service,
+      billing,
+      registrations: providerRuntime.registrations(),
+      providerApplications,
+      publicBaseUrl: identity.appUrl,
+      completionTokenSecret: identity.authSecret,
+      stopBeforeProviders: () => providerReconciler?.stop() ?? Promise.resolve(),
+      close: () => resources.close(),
+    });
     const activationFailures = await activateProviderApplicationsAtStartup({
       store: providerStore,
       environment: providerEnvironment,
@@ -138,34 +172,23 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
         provider,
       });
     }
-    const providerApplications = createProviderApplications({
-      auth,
+    const slackActivationFailed = activationFailures.some(({ provider }) => provider === "slack");
+    providerReconciler = createProviderRuntimeReconciler({
+      database: runtime,
       store: providerStore,
-      environment: providerEnvironment,
       runtime: providerRuntime,
-      verifier: providerVerifier,
-      inventory: providerInventory,
-      callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
-      beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
-        const organizationSlug = await providerInventory.organizationSlug(organizationId);
-        if (organizationSlug === undefined) throw new Error("organization unavailable");
-        const url = new URL(request.url);
-        url.searchParams.set("organizationSlug", organizationSlug);
-        url.searchParams.set("returnRoute", returnRoute);
-        return begin(new Request(url, { method: "POST", headers: request.headers }));
-      },
+      callbackOrigin: identity.appUrl,
+      instanceId: randomBytes(16).toString("hex"),
+      initialSlackVersion:
+        providerEnvironment.slack === undefined && !slackActivationFailed ? storedSlackVersion : 0,
+      environmentManaged: providerEnvironment.slack !== undefined,
+      ...(providerEnvironment.slack?.provider === "slack" &&
+      providerEnvironment.slack.transport === "socket"
+        ? { environmentSlack: providerEnvironment.slack }
+        : {}),
     });
-    return await createApplicationRuntime({
-      database,
-      auth,
-      entitlements: entitlements.service,
-      billing,
-      registrations: providerRuntime.registrations(),
-      providerApplications,
-      publicBaseUrl: identity.appUrl,
-      completionTokenSecret: identity.authSecret,
-      close: () => resources.close(),
-    });
+    providerReconciler.start();
+    return application;
   } catch (error) {
     await resources.close();
     throw error;

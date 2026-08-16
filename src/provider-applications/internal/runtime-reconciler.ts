@@ -1,0 +1,174 @@
+import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
+import { reportFailure } from "../../failures/index.js";
+import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import type {
+  ProviderApplicationStore,
+  ProviderRuntimeCandidate,
+  ProviderRuntimeOwner,
+  SlackProviderApplicationConfiguration,
+} from "../index.js";
+
+interface ActivationRow extends QueryRow {
+  provider_application_id: string;
+  configuration_version: number;
+}
+
+/** @package */
+export function createProviderRuntimeReconciler(options: {
+  database: DatabaseRuntime;
+  store: Pick<ProviderApplicationStore, "read">;
+  runtime: ProviderRuntimeOwner;
+  callbackOrigin: string;
+  instanceId: string;
+  initialSlackVersion: number;
+  environmentManaged: boolean;
+  environmentSlack?: Extract<SlackProviderApplicationConfiguration, { transport: "socket" }>;
+  intervalMs?: number;
+}): { start(): void; stop(): Promise<void> } {
+  let stopped = true;
+  let timer: NodeJS.Timeout | undefined;
+  let currentVersion = options.initialSlackVersion;
+  let running = Promise.resolve();
+  let failureActive = false;
+  const intervalMs = options.intervalMs ?? 5_000;
+
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      running = tick().finally(schedule);
+    }, intervalMs);
+    timer.unref();
+  };
+
+  const tick = async () => {
+    try {
+      if (!options.environmentManaged) await reconcileActivation();
+      await writeObservation();
+      failureActive = false;
+    } catch (error) {
+      if (!failureActive) {
+        failureActive = true;
+        reportFailure(error, {
+          operation: "provider_application.reconcile",
+          component: "provider_applications",
+          provider: "slack",
+        });
+      }
+    }
+  };
+
+  const reconcileActivation = async () => {
+    const activation = await options.database.query<ActivationRow>(
+      `select provider_application_id, configuration_version
+       from runtime_provider_activation where provider = 'slack'`,
+    );
+    const active = activation.rows[0];
+    if (active === undefined || active.configuration_version <= currentVersion) return;
+    const stored = await options.store.read("slack");
+    if (
+      stored === undefined ||
+      stored.version !== active.configuration_version ||
+      stored.identity.id !== active.provider_application_id
+    ) {
+      return;
+    }
+    let candidate: ProviderRuntimeCandidate | undefined;
+    try {
+      candidate = await options.runtime.prepare(
+        "slack",
+        stored.configuration,
+        options.callbackOrigin,
+        stored.identity,
+        stored.version,
+      );
+      await candidate.start();
+      candidate.publish();
+      candidate = undefined;
+      currentVersion = stored.version;
+    } finally {
+      await candidate?.close();
+    }
+  };
+
+  const writeObservation = async () => {
+    const persisted = await options.store.read("slack");
+    const stored =
+      options.environmentSlack === undefined
+        ? persisted
+        : {
+            configuration: options.environmentSlack,
+            identity: options.runtime.identity?.("slack"),
+            version: 0,
+          };
+    if (
+      stored?.configuration.provider !== "slack" ||
+      stored.configuration.transport !== "socket" ||
+      stored.identity === undefined
+    ) {
+      await deleteObservation();
+      return;
+    }
+    const status = options.runtime.slackDeliveryStatus?.();
+    if (status === undefined || status.state === "stopped") return;
+    const state = observationState(status);
+    const reason = observationReason(status);
+    await options.database.query(
+      `insert into runtime_provider_instances
+         (provider, instance_id, provider_application_id, configuration_version, state, reason,
+          observed_at)
+       values ('slack', $1, $2, $3, $4, $5, now())
+       on conflict (provider, instance_id) do update set
+         provider_application_id = excluded.provider_application_id,
+         configuration_version = excluded.configuration_version,
+         state = excluded.state,
+         reason = excluded.reason,
+         observed_at = excluded.observed_at`,
+      [options.instanceId, stored.identity.id, stored.version, state, reason],
+    );
+    await options.database.query(
+      `delete from runtime_provider_instances
+       where provider = 'slack' and configuration_version <> $1
+         and observed_at < now() - interval '45 seconds'`,
+      [stored.version],
+    );
+  };
+
+  const deleteObservation = () =>
+    options.database
+      .query(
+        `delete from runtime_provider_instances where provider = 'slack' and instance_id = $1`,
+        [options.instanceId],
+      )
+      .then(() => undefined);
+
+  return {
+    start() {
+      if (!stopped) return;
+      stopped = false;
+      running = tick().finally(schedule);
+    },
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      await running;
+      await deleteObservation();
+    },
+  };
+}
+
+function observationState(status: SlackDeliveryStatus): string {
+  if (status.state === "actionNeeded") return "action_needed";
+  if (status.state === "rateLimited") return "rate_limited";
+  return status.state;
+}
+
+function observationReason(status: SlackDeliveryStatus): string | null {
+  if (status.state === "connected" && status.connectionLimitReached === true) {
+    return "connection_limit";
+  }
+  if (status.state !== "actionNeeded") return null;
+  if (status.reason === "socketModeOff") return "socket_mode_off";
+  if (status.reason === "connectionLimit") return "connection_limit";
+  return "app_token_rejected";
+}

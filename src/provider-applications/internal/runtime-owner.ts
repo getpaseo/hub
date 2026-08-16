@@ -21,6 +21,7 @@ import type {
   ProviderRuntimeOwner,
 } from "../index.js";
 import { parseProviderApplicationConfiguration } from "./store.js";
+import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -41,6 +42,8 @@ interface ActiveRegistration {
   longLeases: Set<string>;
   retiring: boolean;
   retirement: Promise<void> | undefined;
+  publication: Promise<boolean>;
+  resolvePublication(published: boolean): void;
 }
 
 interface RuntimeSnapshotMarker {
@@ -98,6 +101,14 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
+  slackDeliveryStatus(): SlackDeliveryStatus {
+    return this.slot("slack").active?.registration.slackDelivery?.status() ?? { state: "stopped" };
+  }
+
+  retrySlackDelivery(): Promise<void> {
+    return this.slot("slack").active?.registration.slackDelivery?.retry() ?? Promise.resolve();
+  }
+
   onSlackInstallation(
     handler: NonNullable<DynamicProviderRuntime["slackInstallationHandler"]>,
   ): void {
@@ -140,6 +151,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       longLeases: new Set(),
       retiring: false,
       retirement: undefined,
+      ...publicationGate(),
     };
     let published = false;
     return {
@@ -165,13 +177,24 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         slot.retained.set(active.snapshotId, active);
         slot.identity = identity;
         active.acceptingEvents = true;
+        active.resolvePublication(true);
         published = true;
         if (previous !== undefined) {
           previous.retiring = true;
+          void stopSources(previous).catch((error: unknown) => {
+            reportFailure(error, {
+              operation: "provider_runtime.retire_inbound",
+              component: "provider_runtime",
+              provider,
+            });
+          });
           void this.retireWhenDrained(provider, slot, previous);
         }
       },
-      close: () => (published ? Promise.resolve() : stopSources(active)),
+      close: () => {
+        if (!published) active.resolvePublication(false);
+        return published ? Promise.resolve() : stopSources(active);
+      },
     };
   }
 
@@ -664,7 +687,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         longLeases: new Set(),
         retiring: false,
         retirement: undefined,
+        ...publicationGate(),
       };
+      restored.resolvePublication(true);
       return restored;
     } catch (error) {
       reportFailure(error, {
@@ -710,7 +735,14 @@ async function startSources(active: ActiveRegistration, handler: TriggerHandler)
   try {
     for (const source of active.registration.sources) {
       await source.start((trigger) =>
-        active.acceptingEvents ? handler(trigger) : Promise.resolve(),
+        active.acceptingEvents
+          ? handler(trigger)
+          : active.publication.then((published) => {
+              if (!published || !active.acceptingEvents) {
+                throw new Error("provider candidate is not accepting events");
+              }
+              return handler(trigger);
+            }),
       );
       started.push(source);
     }
@@ -728,6 +760,20 @@ async function startSources(active: ActiveRegistration, handler: TriggerHandler)
     }
     throw error;
   }
+}
+
+function publicationGate(): Pick<ActiveRegistration, "publication" | "resolvePublication"> {
+  let resolvePublication: ((published: boolean) => void) | undefined;
+  const publication = new Promise<boolean>((resolve) => {
+    resolvePublication = resolve;
+  });
+  return {
+    publication,
+    resolvePublication(published) {
+      resolvePublication?.(published);
+      resolvePublication = undefined;
+    },
+  };
 }
 
 async function stopSources(active: ActiveRegistration): Promise<void> {

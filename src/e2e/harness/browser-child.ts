@@ -36,6 +36,7 @@ import {
 import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 import {
   BrowserProviderApplicationVerifier,
+  BrowserSlackSocketFixture,
   browserRegistrationFactory,
 } from "./browser-provider-applications.js";
 import {
@@ -146,6 +147,8 @@ async function main(): Promise<void> {
   );
   const bot = new BrowserDiscordBot(scenario);
   const slackBot = new BrowserSlackBot();
+  const slackSocket = new BrowserSlackSocketFixture(scenario);
+  await slackSocket.start();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
   const slackConfigured = scenario === "slack-only";
@@ -202,10 +205,11 @@ async function main(): Promise<void> {
             publicBaseUrl,
             configuration: slackConfigured
               ? {
+                  transport: "webhook",
                   appId: "browser-slack-app",
                   clientId: "browser-slack-client",
                   clientSecret: "browser-slack-client-secret",
-                  signingSecret: requiredEnvironment("SLACK_SIGNING_SECRET"),
+                  signingSecret: requiredEnvironment("PASEO_E2E_SLACK_SIGNING_SECRET"),
                 }
               : null,
             ...(slackConfigured ? { botClient: slackBot } : {}),
@@ -219,6 +223,7 @@ async function main(): Promise<void> {
     scenario,
     bot,
     slackBot,
+    slackSocket,
     githubConfiguration,
   });
   const runtime = await createApplicationRuntime({
@@ -232,6 +237,7 @@ async function main(): Promise<void> {
     async close() {
       await auth?.close();
       await entitlements.close();
+      await slackSocket.close();
       await database.close();
     },
   });
@@ -692,6 +698,7 @@ async function composeProviderApplications(input: {
   scenario: BrowserProviderScenario;
   bot: BrowserDiscordBot;
   slackBot: BrowserSlackBot;
+  slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
 }): Promise<{
   capability: ProviderApplications;
@@ -713,6 +720,7 @@ async function composeProviderApplications(input: {
       scenario: input.scenario,
       bot: input.bot,
       slackBot: input.slackBot,
+      slackSocket: input.slackSocket,
       githubConfiguration: input.githubConfiguration,
     }),
   });
@@ -733,6 +741,7 @@ async function composeProviderApplications(input: {
     environment,
     runtime: providerRuntime,
     verifier,
+    slackSocketVerifier: input.slackSocket.verifier(),
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {

@@ -13,10 +13,10 @@ export function providerApplicationSaveFailure(
   provider: Provider,
   error: unknown,
   scrubValues: readonly string[] = [],
+  operation = "provider_application.verify_and_save",
 ): ReturnType<typeof respondError> {
   const name = providerName(provider);
   const code = errorCode(error);
-  const operation = "provider_application.verify_and_save";
   const gateway = discordGatewayDiagnostic(error);
   const report = { operation, component: "provider_applications", provider } as const;
 
@@ -67,6 +67,14 @@ export function providerApplicationSaveFailure(
       report,
       { fallback: credentialMessage(provider, errorContext(error)) },
       { kind: "credentialsRejected", scrubValues },
+    );
+  }
+  if (provider === "slack" && code === "permissionMissing") {
+    return respondWithFailure(
+      error,
+      report,
+      { fallback: slackPermissionMessage(errorContext(error)) },
+      { kind: "permissionMissing", scrubValues },
     );
   }
   if (provider === "discord" && errorContext(error) === "discordGatewayDisallowedIntents") {
@@ -150,7 +158,20 @@ function credentialMessage(provider: Provider, subject: string | undefined): str
     }
     return "Discord rejected these credentials. Nothing was saved. Check the Application ID, Client Secret, and bot token, then verify again.";
   }
+  if (subject === "appToken") {
+    return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
+  }
+  if (subject === "botToken") {
+    return "Slack rejected the bot token. Nothing was saved. Reinstall the app in that workspace, copy its new bot token, then connect again.";
+  }
   return "Slack rejected these app credentials. Nothing was saved. Check every value under Basic Information → App Credentials, then continue again.";
+}
+
+function slackPermissionMessage(subject: string | undefined): string {
+  if (subject === "appToken") {
+    return "The app-level token is missing connections:write. Nothing was saved. Generate a new app-level token with that scope, then connect again.";
+  }
+  return "The bot token is missing permissions Hub needs. Nothing was saved. Reapply the Socket Mode manifest, reinstall the app in the workspace, then connect again.";
 }
 
 function identityMismatchMessage(provider: Provider): string {
@@ -160,7 +181,7 @@ function identityMismatchMessage(provider: Provider): string {
   if (provider === "discord") {
     return "That bot token belongs to a different Discord application than the Application ID you entered. Nothing was saved. Copy both values from the same application, then verify again.";
   }
-  return "These credentials belong to a different Slack app than the App ID you entered. Nothing was saved. Copy every value from the same app, then continue again.";
+  return "The app-level token and bot token belong to different Slack apps. Nothing was saved. Copy both tokens from the same app, then connect again.";
 }
 
 function errorCode(error: unknown): string | undefined {

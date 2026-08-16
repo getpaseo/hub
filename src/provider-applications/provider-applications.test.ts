@@ -24,6 +24,7 @@ const githubConfiguration: ProviderApplicationConfiguration = {
 };
 const slackConfiguration: ProviderApplicationConfiguration = {
   provider: "slack",
+  transport: "webhook",
   appId: "A1",
   clientId: "client",
   clientSecret: "client-secret",
@@ -338,6 +339,45 @@ describe("provider applications", () => {
     assert.notEqual(fixture.runtime.active("slack"), undefined);
   });
 
+  it("verifies and atomically publishes Socket Mode with its first workspace", async () => {
+    const fixture = createFixture();
+
+    const result = await fixture.applications.configureSlackSocket(request("POST"), {
+      appToken: "xapp-secret",
+      botToken: "xoxb-secret",
+    });
+
+    assert.deepEqual(result, {
+      status: "verified",
+      provider: "slack",
+      identity: { provider: "slack", id: "A1", name: "A1" },
+      configurationVersion: 1,
+    });
+    assert.deepEqual(fixture.store.values.get("slack")?.configuration, {
+      provider: "slack",
+      transport: "socket",
+      appId: "A1",
+      appToken: "xapp-secret",
+    });
+    assert.equal(fixture.store.socketOrganizationId, "org");
+    assert.notEqual(fixture.runtime.active("slack"), undefined);
+  });
+
+  it("binds another Socket Mode workspace without changing the app version", async () => {
+    const fixture = createFixture();
+    await fixture.applications.configureSlackSocket(request("POST"), {
+      appToken: "xapp-secret",
+      botToken: "xoxb-first",
+    });
+
+    await fixture.applications.connectSlackSocketWorkspace(request("POST"), {
+      botToken: "xoxb-second",
+    });
+
+    assert.equal(fixture.store.values.get("slack")?.version, 1);
+    assert.equal(fixture.store.socketOrganizationId, "org");
+  });
+
   it("keeps Slack unconfigured when post-OAuth activation fails", async () => {
     const fixture = createFixture();
     await fixture.applications.verifyAndSave(request("POST"), "slack", slackConfiguration);
@@ -502,6 +542,18 @@ function createFixture(
     verifier: {
       verify: (provider) => Promise.resolve(identityFor(provider, verificationIdentity)),
     },
+    slackSocketVerifier: {
+      verify: (_appToken, botToken) =>
+        Promise.resolve({
+          appId: "A1",
+          teamId: "T1",
+          teamName: "Acme",
+          botId: "B1",
+          botUserId: "U1",
+          botAccessToken: botToken,
+          scopes: ["app_mentions:read", "chat:write"],
+        }),
+    },
     inventory: {
       connectedIdentities: (provider) =>
         Promise.resolve(
@@ -576,6 +628,7 @@ class MemoryStore implements ProviderApplicationStore {
   readonly values = new Map<string, Awaited<ReturnType<ProviderApplicationStore["read"]>> & {}>();
   reads = 0;
   private failSlackCompletion = false;
+  socketOrganizationId: string | undefined;
 
   failNextSlackCompletion() {
     this.failSlackCompletion = true;
@@ -626,6 +679,26 @@ class MemoryStore implements ProviderApplicationStore {
       expectedVersion: input.expectedVersion,
       updatedByUserId: input.updatedByUserId,
     });
+  }
+
+  completeSlackSocketApplication(
+    input: Parameters<ProviderApplicationStore["completeSlackSocketApplication"]>[0],
+  ) {
+    this.socketOrganizationId = input.organizationId;
+    return this.save({
+      provider: "slack",
+      configuration: input.configuration,
+      identity: input.identity,
+      expectedVersion: input.expectedVersion,
+      updatedByUserId: input.updatedByUserId,
+    });
+  }
+
+  bindSlackSocketWorkspace(
+    input: Parameters<ProviderApplicationStore["bindSlackSocketWorkspace"]>[0],
+  ) {
+    this.socketOrganizationId = input.organizationId;
+    return Promise.resolve();
   }
 }
 

@@ -43,6 +43,7 @@ export interface ApplicationCompositionOptions {
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
   daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
+  stopBeforeProviders?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -59,6 +60,7 @@ export async function createApplicationRuntime(
   }
 }
 
+// eslint-disable-next-line complexity -- composition validates and wires optional product surfaces.
 async function createOwnedApplicationRuntime(
   options: ApplicationCompositionOptions,
   ownership: CompositionResources,
@@ -115,6 +117,7 @@ async function createOwnedApplicationRuntime(
       : { daemonConnectionForId: options.daemonConnectionForId }),
   });
   ownership.own(() => application.hub.stop());
+  ownership.own(options.stopBeforeProviders ?? (() => Promise.resolve()));
   await application.hub.start(registrations.flatMap((registration) => registration.sources));
 
   const resources = options.database === null ? null : new OrganizationResources(options.database);

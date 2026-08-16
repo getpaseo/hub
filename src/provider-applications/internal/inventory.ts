@@ -1,6 +1,7 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import { hasRequiredSlackScopes } from "../../providers/slack/client.js";
 import type { Provider, ProviderApplicationInventory } from "../index.js";
+import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 
 interface ConnectionIdentityRow extends QueryRow {
   id: string;
@@ -61,6 +62,45 @@ export function createProviderApplicationInventory(
         return ownership.rows[0]?.owned === true;
       });
     },
+    async slackDeliveryStatus(applicationId, configurationVersion) {
+      const result = await database.query<{
+        state: string;
+        reason: string | null;
+        observed_at: Date | string;
+      }>(
+        `select state, reason, observed_at
+         from runtime_provider_instances
+         where provider = 'slack'
+           and provider_application_id = $1
+           and configuration_version = $2
+           and observed_at > now() - interval '45 seconds'
+         order by observed_at desc`,
+        [applicationId, configurationVersion],
+      );
+      if (result.rows.length === 0) return undefined;
+      const observedAt = new Date(result.rows[0]!.observed_at);
+      const connected = result.rows.filter((row) => row.state === "connected");
+      if (connected.length > 0) {
+        return {
+          state: "connected",
+          since: observedAt,
+          connectionCount: connected.length,
+          ...(connected.some((row) => row.reason === "connection_limit")
+            ? { connectionLimitReached: true }
+            : {}),
+        } satisfies SlackDeliveryStatus;
+      }
+      const action = result.rows.find((row) => row.state === "action_needed");
+      if (action !== undefined) {
+        const reason = slackActionReason(action.reason);
+        return { state: "actionNeeded", reason, since: observedAt } satisfies SlackDeliveryStatus;
+      }
+      const rateLimited = result.rows.find((row) => row.state === "rate_limited");
+      if (rateLimited !== undefined) {
+        return { state: "rateLimited", teamId: "workspace", since: observedAt };
+      }
+      return { state: "reconnecting", since: observedAt };
+    },
     async organizationSlug(id) {
       const result = await database.query<{ slug: string }>(
         `select slug from organization where id = $1`,
@@ -69,6 +109,14 @@ export function createProviderApplicationInventory(
       return result.rows[0]?.slug;
     },
   };
+}
+
+function slackActionReason(
+  reason: string | null,
+): "socketModeOff" | "connectionLimit" | "appTokenRejected" {
+  if (reason === "socket_mode_off") return "socketModeOff";
+  if (reason === "connection_limit") return "connectionLimit";
+  return "appTokenRejected";
 }
 
 function connectionTable(provider: Provider): string {

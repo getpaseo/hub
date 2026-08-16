@@ -3,6 +3,7 @@ import type { Database } from "../../db/types.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
 import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import {
@@ -47,6 +48,120 @@ export const FIXTURE_APP_CREDENTIALS = {
     clientSecret: "browser-slack-client-secret",
   },
 } as const;
+
+export const FIXTURE_SLACK_SOCKET_CREDENTIALS = {
+  appToken: "xapp-browser-fixture",
+  botToken: "xoxb-browser-fixture",
+} as const;
+
+/** A provider-side HTTP + WebSocket fixture. Browser journeys cross the same wire boundaries as
+ * production; only Slack's side of the internet is local. */
+export class BrowserSlackSocketFixture {
+  private readonly sockets = new WebSocketServer({ noServer: true });
+  private server: Server | undefined;
+  apiBaseUrl = "";
+
+  constructor(private readonly scenario: BrowserProviderScenario = "connected") {}
+
+  async start(): Promise<void> {
+    const server = createServer((request, response) => {
+      const authorization = request.headers.authorization;
+      const url = new URL(request.url ?? "/", this.apiBaseUrl);
+      response.setHeader("content-type", "application/json");
+      if (url.pathname === "/api/apps.connections.open") {
+        if (authorization !== `Bearer ${FIXTURE_SLACK_SOCKET_CREDENTIALS.appToken}`) {
+          response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
+          return;
+        }
+        response.end(
+          JSON.stringify({ ok: true, url: `${this.apiBaseUrl.replace("http", "ws")}/socket` }),
+        );
+        return;
+      }
+      if (url.pathname === "/api/auth.test") {
+        if (authorization !== `Bearer ${FIXTURE_SLACK_SOCKET_CREDENTIALS.botToken}`) {
+          response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
+          return;
+        }
+        response.setHeader(
+          "x-oauth-scopes",
+          this.scenario === "slack-permission-missing"
+            ? "chat:write"
+            : "app_mentions:read,channels:history,chat:write,files:read,groups:history,reactions:write,users:read",
+        );
+        response.end(
+          JSON.stringify({
+            ok: true,
+            team_id: "T-ACME",
+            team: "Acme",
+            user_id: "B1",
+            bot_id: "B-BROWSER",
+          }),
+        );
+        return;
+      }
+      if (url.pathname === "/api/bots.info") {
+        response.end(
+          JSON.stringify({
+            ok: true,
+            bot: { id: "B-BROWSER", app_id: FIXTURE_APP_CREDENTIALS.slack.appId, user_id: "B1" },
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ ok: false, error: "not_found" }));
+    });
+    server.on("upgrade", (request, socket, head) => {
+      if (request.url !== "/socket") {
+        socket.destroy();
+        return;
+      }
+      this.sockets.handleUpgrade(request, socket, head, (webSocket) => {
+        this.sockets.emit("connection", webSocket, request);
+      });
+    });
+    this.sockets.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          num_connections: this.sockets.clients.size,
+          connection_info: { app_id: FIXTURE_APP_CREDENTIALS.slack.appId },
+        }),
+      );
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("Slack fixture did not listen");
+    this.server = server;
+    this.apiBaseUrl = `http://127.0.0.1:${address.port}`;
+  }
+
+  verifier() {
+    return createSlackSocketInstallationVerifier({ apiBaseUrl: `${this.apiBaseUrl}/api` });
+  }
+
+  async close(): Promise<void> {
+    for (const socket of this.sockets.clients) socket.terminate();
+    this.sockets.close();
+    if (this.server === undefined) return;
+    await closeServer(this.server);
+  }
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error !== undefined) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicationIdentity>> = {
   github: { provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme-inc" },
@@ -142,6 +257,7 @@ export interface BrowserProviderApplicationFixtures {
   bot: BrowserDiscordBot;
   slackBot: BrowserSlackBot;
   githubConfiguration: BrowserGitHubConfiguration;
+  slackSocket: BrowserSlackSocketFixture;
 }
 
 /**
@@ -212,6 +328,7 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
         : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
       activateConfiguration: input.activateConfiguration,
       onVerifiedInstallation: input.onVerifiedSlackInstallation,
+      socket: { apiUrl: `${fixtures.slackSocket.apiBaseUrl}/api/apps.connections.open` },
     });
   };
 }
@@ -262,3 +379,6 @@ class BrowserSlackConnections implements SlackConnectionClient {
     return Promise.resolve();
   }
 }
+import { createServer, type Server } from "node:http";
+import { once } from "node:events";
+import { WebSocketServer } from "ws";

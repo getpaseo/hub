@@ -9,6 +9,7 @@ import type {
   AttachmentProvider,
   AttachmentResolver,
 } from "../attachments/capabilities.js";
+import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 
 export interface TriggerProviderResources {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -79,4 +80,5 @@ export interface ProviderRegistration {
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
   githubConfiguration?: GitHubConfigurationProvider;
+  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

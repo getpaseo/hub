@@ -62,8 +62,8 @@ describe("dynamic provider runtime", () => {
     second.publish();
     await new Promise((resolve) => setImmediate(resolve));
 
-    // The old source is retired only after the execution that matched against it is terminal.
-    assert.deepEqual(stopped, []);
+    // Inbound delivery stops at publication; leased outputs stay alive until their execution ends.
+    assert.deepEqual(stopped, ["A1"]);
 
     await trigger.onAgentExecutionCompleted?.(oldMatch!.triggerContext, oldMatch!.outputContext, {
       status: "succeeded",
@@ -145,7 +145,7 @@ describe("dynamic provider runtime", () => {
     });
 
     assert.deepEqual(used, ["launch:A1", "reply:A1", "attachment:A1"]);
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(stopped, ["A1"]);
@@ -218,7 +218,7 @@ describe("dynamic provider runtime", () => {
     await second.start();
     second.publish();
 
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     releaseConfiguration?.();
     await pendingConfiguration;
     await stable.integration!.resolve("project", "github", "token", {
@@ -239,10 +239,10 @@ describe("dynamic provider runtime", () => {
       "integration:A1",
       "authority-mint:A1",
     ]);
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await stable.integration!.githubAuthority!.revoke(authority.token);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(used.at(-1), "authority-revoke:A1");
@@ -440,8 +440,9 @@ describe("dynamic provider runtime", () => {
       1,
     );
     await first.start();
-    await sourceHandlers.get("one")!(durableEvent("before-first-publish"));
+    const beforeFirst = sourceHandlers.get("one")!(durableEvent("before-first-publish"));
     first.publish();
+    await beforeFirst;
     await sourceHandlers.get("one")!(durableEvent("first-active"));
     const second = await runtime.prepare(
       "slack",
@@ -451,12 +452,18 @@ describe("dynamic provider runtime", () => {
       2,
     );
     await second.start();
-    await sourceHandlers.get("two")!(durableEvent("before-second-publish"));
+    const beforeSecond = sourceHandlers.get("two")!(durableEvent("before-second-publish"));
     second.publish();
-    await sourceHandlers.get("one")!(durableEvent("retired"));
+    await beforeSecond;
+    await assert.rejects(() => sourceHandlers.get("one")!(durableEvent("retired")));
     await sourceHandlers.get("two")!(durableEvent("second-active"));
 
-    assert.deepEqual(accepted, ["first-active", "second-active"]);
+    assert.deepEqual(accepted, [
+      "before-first-publish",
+      "first-active",
+      "before-second-publish",
+      "second-active",
+    ]);
   });
 });
 
@@ -517,6 +524,7 @@ function connectionRegistration(
 function slackConfiguration(appId: string): SlackProviderApplicationConfiguration {
   return {
     provider: "slack",
+    transport: "webhook",
     appId,
     clientId: "client",
     clientSecret: "secret",

@@ -20,7 +20,8 @@ import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
-import { createSlackWebhookSource } from "../../triggers/slack/webhook.js";
+import { createSlackEventSource } from "../../triggers/slack/source/index.js";
+import type { SlackSocketSourceOptions } from "../../triggers/slack/source/internal/socket.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createSlackConnectionClient,
@@ -30,12 +31,19 @@ import {
   SlackBotVerificationError,
 } from "./client.js";
 
-export interface SlackRegistrationConfiguration {
-  appId: string;
-  clientId: string;
-  clientSecret: string;
-  signingSecret: string;
-}
+export type SlackRegistrationConfiguration =
+  | {
+      transport: "socket";
+      appId: string;
+      appToken: string;
+    }
+  | {
+      transport: "webhook";
+      appId: string;
+      clientId: string;
+      clientSecret: string;
+      signingSecret: string;
+    };
 
 export interface CreateSlackRegistrationOptions {
   database: Database | null;
@@ -46,6 +54,7 @@ export interface CreateSlackRegistrationOptions {
   connectionClient?: SlackConnectionClient;
   botClient?: SlackBotClient;
   fetch?: typeof fetch;
+  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "fetch" | "webSocket" | "now" | "random">;
   configurationVersion?: number;
   expectedConfigurationVersion?: number;
   activateConfiguration?: boolean;
@@ -80,14 +89,16 @@ export function createSlackRegistration(
   }
 
   const connectionClient =
-    options.connectionClient ??
-    createSlackConnectionClient({
-      appId: configuration.appId,
-      clientId: configuration.clientId,
-      clientSecret: configuration.clientSecret,
-      publicBaseUrl: options.publicBaseUrl,
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-    });
+    configuration.transport === "webhook"
+      ? (options.connectionClient ??
+        createSlackConnectionClient({
+          appId: configuration.appId,
+          clientId: configuration.clientId,
+          clientSecret: configuration.clientSecret,
+          publicBaseUrl: options.publicBaseUrl,
+          ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        }))
+      : undefined;
   const database = options.database;
   const accept =
     database === null
@@ -103,18 +114,20 @@ export function createSlackRegistration(
             providerApplicationId: configuration.appId,
             providerConfigurationVersion: options.configurationVersion ?? 0,
           });
-  const webhook = createSlackWebhookSource({
-    appId: configuration.appId,
-    signingSecret: configuration.signingSecret,
+  const events = createSlackEventSource({
+    configuration: { provider: "slack", ...configuration },
+    configurationVersion: options.configurationVersion ?? 0,
     accept,
+    ...slackSocketOptions(options),
   });
   if (database === null) {
     return {
       connection: slackConnectionStatus(true),
       triggerProviders: [],
-      sources: [webhook],
+      sources: [events.source],
       outputs: [],
-      requests: [{ name: "slack.events", handle: (request) => webhook.handle(request) }],
+      requests:
+        events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
     };
   }
 
@@ -159,7 +172,7 @@ export function createSlackRegistration(
           client: bot,
         }),
     ],
-    sources: [webhook],
+    sources: [events.source],
     outputs: [
       {
         type: "slack.reply",
@@ -168,8 +181,22 @@ export function createSlackRegistration(
         execute: createSlackReplyExecutor({ client: bot }),
       },
     ],
-    requests: [{ name: "slack.events", handle: (request) => webhook.handle(request) }],
+    requests:
+      events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
     attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
+    slackDelivery: { status: () => events.status(), retry: () => events.retry() },
+  };
+}
+
+function slackSocketOptions(
+  options: Pick<CreateSlackRegistrationOptions, "fetch" | "socket">,
+): Pick<Parameters<typeof createSlackEventSource>[0], "socket"> {
+  if (options.socket === undefined && options.fetch === undefined) return {};
+  return {
+    socket: {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...options.socket,
+    },
   };
 }
 
@@ -198,6 +225,7 @@ function emptySlackRegistration(
             callbackOrigin: options.applicationBaseUrl,
             configurationVersion: 0,
             configuration: {
+              transport: "webhook",
               appId: "unconfigured",
               clientId: "unconfigured",
               clientSecret: "unconfigured",

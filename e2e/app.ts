@@ -241,7 +241,7 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     PASEO_E2E_MACHINE_KEY_FILE: input.machineKeyFile,
     PASEO_E2E_DATABASE_PROFILE: input.databaseProfile ?? "legacy",
     GITHUB_WEBHOOK_SECRET: "phase-zero-webhook-secret",
-    SLACK_SIGNING_SECRET: "phase-zero-slack-webhook-secret",
+    PASEO_E2E_SLACK_SIGNING_SECRET: "phase-zero-slack-webhook-secret",
     STRIPE_WEBHOOK_SECRET: "whsec_phase_zero_fixture_secret",
     PASEO_BROWSER_BILLING_SCENARIO: input.billing === true ? "configured" : "unconfigured",
     PASEO_BROWSER_PROVIDER_SCENARIO:
@@ -330,9 +330,11 @@ function environmentAppVariables(
     variables["DISCORD_BOT_TOKEN"] = "token";
   }
   if (providers.includes("slack")) {
+    variables["SLACK_TRANSPORT"] = "webhook";
     variables["SLACK_APP_ID"] = "browser-slack-app";
     variables["SLACK_CLIENT_ID"] = "browser-slack-client";
     variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
+    variables["SLACK_SIGNING_SECRET"] = "phase-zero-slack-webhook-secret";
   }
   return variables;
 }
