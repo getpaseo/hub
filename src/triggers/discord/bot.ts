@@ -6,7 +6,7 @@ import {
   type TextBasedChannel,
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import { NormalizedDiscordContextMessageSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage } from "./events.js";
@@ -81,14 +81,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
   client.on("messageCreate", (message: Message) => {
     void Promise.all(Array.from(handlers, (handler) => handler(message))).catch(
       (error: unknown) => {
-        logger.error(
+        reportFailure(
+          error,
+          { operation: "discord.event.handoff", component: "triggers", provider: "discord" },
           {
-            err: error,
-            deliveryId: `discord-${message.id}`,
-            guildId: message.guildId,
-            channelId: message.channelId,
+            scrubValues: [options.token],
+            diagnostic: {
+              deliveryId: `discord-${message.id}`,
+              guildId: message.guildId,
+              channelId: message.channelId,
+            },
           },
-          "Discord event handoff failed",
         );
       },
     );
@@ -99,7 +102,13 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       Array.from(guildDeleteHandlers, (handler) =>
         handler({ id: guildId, unavailable: !guild.available }),
       ),
-    ).catch((error: unknown) => logger.error({ err: error }, "discord guildDelete handler failed"));
+    ).catch((error: unknown) =>
+      reportFailure(
+        error,
+        { operation: "discord.guild-delete.handoff", component: "triggers", provider: "discord" },
+        { scrubValues: [options.token], diagnostic: { guildId } },
+      ),
+    );
   });
 
   return {

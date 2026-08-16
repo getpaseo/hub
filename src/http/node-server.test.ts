@@ -1,8 +1,14 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import { describe, it } from "vitest";
+import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
+import { createLogger } from "../logger.js";
+import { createPublicApi } from "../public-api/index.js";
+import type { PublicOperations } from "../public-operations/index.js";
+import { createSlackWebhookSource } from "../triggers/slack/webhook.js";
 import { createFetchServer } from "./node-server.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
@@ -145,6 +151,129 @@ describe("fetch response lifecycle", () => {
     }
   });
 });
+
+describe("HTTP failure ownership", () => {
+  it("emits exactly one record for a reported expected 4xx response", async () => {
+    const stream = new CaptureStream();
+    const endpoint = createSlackWebhookSource({
+      appId: "A_FAKE",
+      signingSecret: "formatless-fake-signing-value-8d71",
+      accept: () => Promise.reject(new Error("must not accept an unsigned request")),
+    });
+    const server = createFetchServer((request) => endpoint.handle(request), {
+      logger: createLogger(stream),
+    });
+
+    await requestOnce(server, { method: "POST", body: "{}" });
+    const records = stream.records();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.["operation"], "slack.webhook.verify");
+    assert.equal(records[0]?.["failureKind"], "authentication");
+  });
+
+  it("emits exactly one top-level record for a genuinely unreported 5xx response", async () => {
+    const stream = new CaptureStream();
+    const server = createFetchServer(() => new Response("failed", { status: 503 }), {
+      logger: createLogger(stream),
+    });
+
+    await requestOnce(server);
+    const records = stream.records();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.["operation"], "http.response");
+    assert.equal(records[0]?.["status"], 503);
+  });
+
+  it("does not duplicate a public API owner record with the HTTP fallback", async () => {
+    const stream = new CaptureStream();
+    const failure = new Error("storage exploded with formatless-secret-f09e");
+    const failOperation = () => Promise.reject(failure);
+    const operations: PublicOperations = {
+      listProjects: failOperation,
+      listConfigurationResources: failOperation,
+      validateConfiguration: failOperation,
+      installConfiguration: failOperation,
+      dispatchManualRun: failOperation,
+      issueEnrollmentToken: failOperation,
+    };
+    const api = createPublicApi(
+      {
+        status: "enabled",
+        authenticator: {
+          authorize: () =>
+            Promise.resolve({
+              status: "authorized" as const,
+              access: {
+                kind: "apiKey" as const,
+                credentialId: "credential-fake",
+                organizationId: "organization-fake",
+                scopes: ["projects:read" as const],
+              },
+            }),
+        },
+      },
+      operations,
+    );
+    const server = createFetchServer((request) => api.handle(request), {
+      logger: createLogger(stream),
+    });
+
+    await requestOnce(
+      server,
+      { headers: { authorization: "Bearer fake-not-logged" } },
+      "/api/v1/projects",
+    );
+    const records = stream.records();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.["operation"], "public-api.listProjects");
+    assert.equal(records[0]?.["status"], 500);
+    assert.equal(stream.text().includes("formatless-secret-f09e"), false);
+    assert.equal(stream.text().includes("fake-not-logged"), false);
+  });
+});
+
+class CaptureStream extends Writable {
+  private readonly chunks: string[] = [];
+
+  override _write(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.chunks.push(chunk.toString());
+    callback();
+  }
+
+  records(): Record<string, unknown>[] {
+    return this.text()
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => logRecordSchema.parse(JSON.parse(line)));
+  }
+
+  text(): string {
+    return this.chunks.join("");
+  }
+}
+
+const logRecordSchema = z.record(z.string(), z.unknown());
+
+async function requestOnce(
+  server: ReturnType<typeof createFetchServer>,
+  init?: RequestInit,
+  path = "/failure",
+): Promise<void> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("server did not bind");
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}${path}`, init);
+    await response.body?.cancel();
+  } finally {
+    await closeServer(server);
+  }
+}
 
 function drainIncomingResponse(incoming: IncomingMessage, resolve: () => void): void {
   incoming.resume();

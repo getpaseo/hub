@@ -8,6 +8,7 @@ import { compareBundlePaths } from "../config/bundle-contract.js";
 import { rawConfigurationHash } from "../config/compiler.js";
 import type { PromptPartialReadResult } from "../config/prompt-partials.js";
 import type { Database, ProjectConfigurationRevisionRecord } from "../db/types.js";
+import { reportFailure } from "../failures/index.js";
 import { ConfigurationActivationValidationError, ProjectConfigurationStore } from "./store.js";
 
 export interface GitHubConfigurationProvider {
@@ -62,7 +63,11 @@ export async function synchronizeGitHubProjectConfiguration(input: {
       prefix: ".paseo",
     });
   } catch (error) {
-    await recordAttempt(input, "fetch_failed", { stage: "bundle-list", reason: message(error) });
+    reportConfigurationSyncFailure(error, "bundle-list", input.projectId);
+    await recordAttempt(input, "fetch_failed", {
+      stage: "bundle-list",
+      reason: "provider_request_failed",
+    });
     return { outcome: "fetch_failed" };
   }
   if (!listed.some(({ path }) => path === HUB_RESOURCE_PATH)) {
@@ -99,7 +104,11 @@ export async function synchronizeGitHubProjectConfiguration(input: {
       files.push({ path: entry.path, content: read.content });
     }
   } catch (error) {
-    await recordAttempt(input, "fetch_failed", { stage: "bundle-read", reason: message(error) });
+    reportConfigurationSyncFailure(error, "bundle-read", input.projectId);
+    await recordAttempt(input, "fetch_failed", {
+      stage: "bundle-read",
+      reason: "provider_request_failed",
+    });
     return { outcome: "fetch_failed" };
   }
   try {
@@ -160,6 +169,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
       defaultBranch: target.defaultBranch,
     });
   } catch (error) {
+    reportConfigurationSyncFailure(error, "default-branch-head", input.projectId);
     await input.database.recordConfigurationSyncAttempt({
       projectId: input.projectId,
       githubConnectionId: target.connectionId,
@@ -167,7 +177,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
       webhookDeliveryId: input.webhookDeliveryId,
       commitSha: input.expectedCommitSha ?? "unknown",
       outcome: "fetch_failed",
-      evidence: { stage: "default_branch_head", reason: message(error) },
+      evidence: { stage: "default_branch_head", reason: "provider_request_failed" },
     });
     return { outcome: "fetch_failed" };
   }
@@ -252,6 +262,11 @@ async function recordAttempt(
   });
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "GitHub configuration bundle failed";
+function reportConfigurationSyncFailure(error: unknown, stage: string, projectId: string): void {
+  reportFailure(error, {
+    operation: `github.configuration.${stage}`,
+    component: "configuration",
+    provider: "github",
+    projectId,
+  });
 }

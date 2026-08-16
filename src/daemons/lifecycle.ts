@@ -20,6 +20,7 @@ import type {
 } from "../db/types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
@@ -333,13 +334,7 @@ export class DaemonDispatchLifecycle {
         return undefined;
       })
       .catch((error: unknown) => {
-        this.logger.error(
-          {
-            err: error,
-            executionId: execution.id,
-          },
-          "prelaunch failure lifecycle notification failed",
-        );
+        this.report(error, "daemon.prelaunch.notification", { executionId: execution.id });
       })
       .finally(() => {
         if (this.activeExecutionDispatches.get(execution.id) === tracked) {
@@ -478,13 +473,7 @@ export class DaemonDispatchLifecycle {
     const tracked = Promise.resolve(accepted)
       .then(() => this.spawnPreparedDispatch(prepared, false))
       .catch((error: unknown) => {
-        this.logger.error(
-          {
-            err: error,
-            executionId: prepared.execution.id,
-          },
-          "durable trigger dispatch failed after handoff",
-        );
+        this.report(error, "daemon.dispatch.durable", { executionId: prepared.execution.id });
       })
       .finally(() => {
         if (this.activeExecutionDispatches.get(prepared.execution.id) === tracked) {
@@ -923,10 +912,7 @@ export class DaemonDispatchLifecycle {
         }
         this.armExecutionDeadline(execution);
       } catch (error: unknown) {
-        this.logger.error(
-          { err: error, agent_execution_id: execution.id },
-          "execution deadline recovery failed",
-        );
+        this.report(error, "daemon.execution.deadline.recover", { executionId: execution.id });
       }
     }
   }
@@ -1004,14 +990,10 @@ export class DaemonDispatchLifecycle {
     const recovery = this.recoverExecution(daemon, execution)
       .catch((error: unknown) => {
         if (!this.stopping) {
-          this.logger.error(
-            {
-              err: error,
-              agent_execution_id: execution.id,
-              daemon_id: daemon.id,
-            },
-            "execution daemon recovery failed",
-          );
+          this.report(error, "daemon.execution.recover", {
+            executionId: execution.id,
+            daemonId: daemon.id,
+          });
         }
       })
       .finally(() => {
@@ -1101,7 +1083,9 @@ export class DaemonDispatchLifecycle {
         execution === undefined
           ? Promise.resolve()
           : this.notifyMachineTerminatedForExecution(execution, reason).catch((error: unknown) => {
-              this.logger.error({ err: error }, "provider machine termination hook failed");
+              this.report(error, "daemon.provider.machine-termination", {
+                executionId: execution.id,
+              });
             }),
       ),
     );
@@ -1118,7 +1102,7 @@ export class DaemonDispatchLifecycle {
 
     const { execution } = transition;
     await this.notifyExecutionLifecycle(execution).catch((error: unknown) => {
-      this.logger.error({ err: error }, "provider start hook failed");
+      this.report(error, "daemon.provider.execution-start", { executionId });
     });
   }
 
@@ -1165,7 +1149,7 @@ export class DaemonDispatchLifecycle {
     if (options.deferHubAction !== true) await this.reconcileHubActionSafely(execution);
     if (execution.workflowStepRunId === null) {
       await this.notifyExecutionLifecycle(execution).catch((error: unknown) => {
-        this.logger.error({ err: error }, "provider completion hook failed");
+        this.report(error, "daemon.provider.execution-complete", { executionId });
       });
     }
     return execution;
@@ -1235,7 +1219,7 @@ export class DaemonDispatchLifecycle {
     await this.reconcileHubActionSafely(execution);
     if (details.notifyProvider !== false && execution.workflowStepRunId === null) {
       await this.notifyExecutionLifecycle(execution, reason).catch((error: unknown) => {
-        this.logger.error({ err: error }, "provider failure hook failed");
+        this.report(error, "daemon.provider.execution-fail", { executionId });
       });
     }
 
@@ -1276,14 +1260,10 @@ export class DaemonDispatchLifecycle {
 
   private reconcileHubActionSafely(execution: AgentExecutionRecord): Promise<void> {
     return this.reconcileHubAction(execution).catch((error: unknown) => {
-      this.logger.error(
-        {
-          err: error,
-          agent_execution_id: execution.id,
-          hub_action: execution.hubAction,
-        },
-        "execution Hub action remains pending",
-      );
+      this.report(error, "daemon.execution.hub-action", {
+        executionId: execution.id,
+        hubAction: execution.hubAction,
+      });
     });
   }
 
@@ -1376,7 +1356,7 @@ export class DaemonDispatchLifecycle {
       });
       await this.options.database.setAgentExecutionReactionState(execution.id, reactionState);
     } catch (error: unknown) {
-      this.logger.error({ err: error }, "provider acceptance hook failed");
+      this.report(error, "daemon.provider.dispatch-accepted", { executionId });
       if (!swallowErrors) throw error;
     }
   }
@@ -1402,10 +1382,7 @@ export class DaemonDispatchLifecycle {
         executionId: execution.id,
         triggerContext: execution.triggerContext,
       }).catch((error: unknown) => {
-        this.logger.warn(
-          { err: error, agent_execution_id: execution.id },
-          "provider terminal cleanup hook failed",
-        );
+        this.report(error, "daemon.provider.terminal-cleanup", { executionId: execution.id });
       });
     }
     await Promise.all(
@@ -1415,10 +1392,9 @@ export class DaemonDispatchLifecycle {
             this.options.executionAuthority
               .onExecutionTerminal(execution.id)
               .catch((error: unknown) => {
-                this.logger.warn(
-                  { err: error, agent_execution_id: execution.id },
-                  "execution authority terminal cleanup hook failed",
-                );
+                this.report(error, "daemon.execution-authority.terminal-cleanup", {
+                  executionId: execution.id,
+                });
               }),
           ],
     );
@@ -1459,31 +1435,32 @@ export class DaemonDispatchLifecycle {
     },
   ): void {
     if (failure.cause instanceof DaemonSpawnAckTimeoutError) {
-      this.logger.error(
-        {
-          daemon_id: fields.daemonId,
-          authored_slug: fields.authoredSlug,
-          machine_id: fields.machineId,
-          agent_execution_id: fields.executionId,
-          delivery_id: fields.deliveryId,
-          timeout_ms: failure.cause.timeoutMs,
-        },
-        "daemon timeout after 30s waiting for spawn ack",
+      this.report(
+        failure,
+        "daemon.dispatch.spawn-ack",
+        { ...fields, timeoutMs: failure.cause.timeoutMs },
+        "timeout",
       );
       return;
     }
 
-    this.logger.error(
+    this.report(failure, "daemon.dispatch", fields);
+  }
+
+  private report(
+    error: unknown,
+    operation: string,
+    diagnostic?: Record<string, unknown>,
+    kind?: "timeout",
+  ): void {
+    reportFailure(
+      error,
+      { operation, component: "daemons" },
       {
-        err: failure.cause,
-        daemon_id: fields.daemonId,
-        authored_slug: fields.authoredSlug,
-        machine_id: fields.machineId,
-        agent_execution_id: fields.executionId,
-        delivery_id: fields.deliveryId,
-        reason: failure.reason,
+        logger: this.logger,
+        ...(kind === undefined ? {} : { kind }),
+        ...(diagnostic === undefined ? {} : { diagnostic }),
       },
-      "daemon dispatch failed",
     );
   }
 
@@ -1583,7 +1560,7 @@ export class DaemonDispatchLifecycle {
     const trackHandler = (operation: Promise<void>): Promise<void> => {
       const tracked = operation.catch((error: unknown) => {
         if (!disposed) {
-          this.logger.error({ err: error }, "daemon launch event handler failed");
+          this.report(error, "daemon.launch.event", { executionId: input.executionId });
         }
       });
       pendingHandlers.add(tracked);
@@ -1639,7 +1616,7 @@ export class DaemonDispatchLifecycle {
           await cleanup();
         }
       })().catch((error: unknown) => {
-        this.logger.error({ err: error }, "daemon dispatch watcher failed");
+        this.report(error, "daemon.dispatch.watch", { executionId: input.executionId });
       });
       return agent.id;
     } catch (error) {
@@ -1678,15 +1655,11 @@ export class DaemonDispatchLifecycle {
     const delayMs = Math.max(0, deadline.at.getTime() - this.now());
     const clear = this.scheduleDeadline(async () => {
       await this.expireExecutionAtCurrentDeadline(execution.id).catch((error: unknown) => {
-        this.logger.error(
-          { err: error, agent_execution_id: execution.id },
-          "execution timeout failed",
-        );
+        this.report(error, "daemon.execution.timeout", { executionId: execution.id });
         void this.retryExecutionDeadline(execution.id).catch((retryError: unknown) => {
-          this.logger.error(
-            { err: retryError, agent_execution_id: execution.id },
-            "execution timeout retry setup failed",
-          );
+          this.report(retryError, "daemon.execution.timeout.retry-schedule", {
+            executionId: execution.id,
+          });
         });
       });
     }, delayMs);
@@ -1780,15 +1753,9 @@ export class DaemonDispatchLifecycle {
     this.clearExecutionDeadline(executionId);
     const clear = this.scheduleDeadline(async () => {
       await this.expireExecutionAtCurrentDeadline(executionId).catch((error: unknown) => {
-        this.logger.error(
-          { err: error, agent_execution_id: executionId },
-          "execution timeout retry failed",
-        );
+        this.report(error, "daemon.execution.timeout.retry", { executionId });
         void this.retryExecutionDeadline(executionId).catch((retryError: unknown) => {
-          this.logger.error(
-            { err: retryError, agent_execution_id: executionId },
-            "execution timeout retry setup failed",
-          );
+          this.report(retryError, "daemon.execution.timeout.retry-schedule", { executionId });
         });
       });
     }, 1_000);

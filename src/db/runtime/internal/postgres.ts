@@ -4,7 +4,6 @@ import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
-import { logger } from "../../../logger.js";
 import * as schema from "../../schema.js";
 import { DatabaseUnavailableError, toDatabaseError } from "../../errors.js";
 import { TransactionRollback } from "../index.js";
@@ -146,7 +145,9 @@ export function createPool(connectionString: string): Pool {
     statement_timeout: QUERY_DEADLINE_MS,
   };
   const pool = new Pool(config);
-  pool.on("error", (error) => logger.error({ err: error }, "PostgreSQL pool client error"));
+  pool.on("error", (error) =>
+    reportFailure(error, { operation: "database.postgres.pool", component: "database" }),
+  );
   return pool;
 }
 

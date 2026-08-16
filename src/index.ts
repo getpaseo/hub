@@ -3,7 +3,6 @@ import { validateHeaderName, type IncomingMessage } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
 import type { Duplex } from "node:stream";
 import type { RuntimeConfig } from "./config/index.js";
-import { DatabaseUnavailableError } from "./db/errors.js";
 import { createDatabase } from "./db/pg.js";
 import type { Database } from "./db/types.js";
 import {
@@ -96,7 +95,11 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     // Sync on boot, per the plan. A Stripe outage here must not block the whole instance from
     // starting — only the marketing catalog goes stale until the next webhook or restart.
     await billing?.syncCatalog().catch((error: unknown) => {
-      logger.error({ err: error }, "billing catalog sync failed at boot");
+      reportFailure(error, {
+        operation: "billing.catalog.sync.startup",
+        component: "billing",
+        provider: "stripe",
+      });
     });
     const auth = createProductionAuthServer(
       entitlements,
@@ -234,11 +237,7 @@ async function initializeDatabaseRuntime(
         });
       }
     }
-    if (!(error instanceof DatabaseUnavailableError)) throw error;
-    logger.error(
-      { err: error },
-      "database unavailable at startup; refusing to start the public server",
-    );
+    reportFailure(error, { operation: "database.startup", component: "database" });
     throw error;
   }
 }
@@ -317,7 +316,7 @@ async function main(): Promise<void> {
   };
   const stopAfterSignal = () => {
     void stop().catch((error: unknown) => {
-      logger.error({ err: error }, "server shutdown failed");
+      reportFailure(error, { operation: "server.shutdown", component: "server" });
       process.exitCode = 1;
     });
   };
@@ -334,7 +333,7 @@ function readPort(): number {
 
 if (isCommandLineEntrypoint(import.meta.url)) {
   main().catch((error: unknown) => {
-    logger.fatal(error);
+    reportFailure(error, { operation: "server.startup.fatal", component: "server" });
     process.exit(1);
   });
 }

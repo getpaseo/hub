@@ -37,7 +37,8 @@ describe("connection callback failures", () => {
     assert.match(output, /stack/u);
     assert.match(output, /github/u);
     assert.match(output, /authorization/u);
-    assert.match(output, /github oauth exchange failed: 401/u);
+    assert.match(output, /"type":"Error"/u);
+    assert.doesNotMatch(output, /github oauth exchange failed/u);
     assert.equal(output.includes(token), false);
     assert.equal(response.status, 303);
     assert.equal(

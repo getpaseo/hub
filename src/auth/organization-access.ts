@@ -7,7 +7,7 @@ import type {
 } from "../db/runtime/index.js";
 import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
@@ -193,7 +193,11 @@ export class OrganizationAccess {
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
       if (error instanceof EntitlementDenied) return entitlementDenialResponse(error.payload());
-      logger.error({ err: error }, "account organization request failed");
+      reportFailure(error, {
+        operation: "auth.organization.request",
+        component: "auth",
+        status: 500,
+      });
       return Response.json({ error: "request_failed" }, { status: 500 });
     }
   }
@@ -690,9 +694,14 @@ export class OrganizationAccess {
     try {
       await this.options.onMembershipChanged?.(organizationId);
     } catch (error) {
-      logger.warn(
-        { err: error, organizationId },
-        "seat-usage notification after membership change failed",
+      reportFailure(
+        error,
+        {
+          operation: "billing.seat-usage.notify",
+          component: "billing",
+          organizationId,
+        },
+        { kind: "upstreamUnavailable" },
       );
     }
   }

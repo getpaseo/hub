@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createServer as createHttpsServer } from "node:https";
 import { once } from "node:events";
 import { isIP } from "node:net";
-import { logger } from "../logger.js";
+import type { Logger } from "pino";
+import { logger as defaultLogger } from "../logger.js";
 import { failureWasReported, reportFailure, runWithFailureTracking } from "../failures/index.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "./client-address.js";
 import { takeResponseLifecycle } from "./response-lifecycle.js";
@@ -18,6 +19,7 @@ interface FetchServerOptions {
   trustedClientIpHeader?: string;
   /** Test and embedded adapters may terminate TLS directly; production normally uses its proxy. */
   tls?: { key: string; cert: string };
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 export function createFetchServer(
@@ -44,7 +46,7 @@ async function forwardRequest(
     const tracked = await runWithFailureTracking(async () => {
       const response = await fetchHandler(request);
       return { response, failureReported: failureWasReported() };
-    });
+    }, options.logger);
     const { response } = tracked;
     let responseRequestId: string | undefined;
     if (response.status >= 400 && !tracked.failureReported) {
@@ -57,7 +59,10 @@ async function forwardRequest(
           path: new URL(request.url).pathname,
           status: response.status,
         },
-        { status: response.status },
+        {
+          status: response.status,
+          ...(options.logger === undefined ? {} : { logger: options.logger }),
+        },
       ).requestId;
     }
     const lifecycle = takeResponseLifecycle(response);
@@ -67,7 +72,11 @@ async function forwardRequest(
       if (callback === undefined || lifecycleSettled) return;
       lifecycleSettled = true;
       void Promise.resolve(callback()).catch((error: unknown) => {
-        logger.error({ err: error }, "response lifecycle cleanup failed");
+        reportFailure(
+          error,
+          { operation: "http.response.lifecycle", component: "http", method: request.method },
+          options.logger === undefined ? {} : { logger: options.logger },
+        );
       });
     };
     const abortLifecycle = (): void => {
@@ -111,12 +120,16 @@ async function forwardRequest(
     outgoing.end();
   } catch (error) {
     const path = safeRequestPath(incoming.url);
-    const report = reportFailure(error, {
-      operation: "http.request",
-      component: "http",
-      method: incoming.method ?? "GET",
-      path,
-    });
+    const report = reportFailure(
+      error,
+      {
+        operation: "http.request",
+        component: "http",
+        method: incoming.method ?? "GET",
+        path,
+      },
+      { logger: options.logger ?? defaultLogger },
+    );
     outgoing.statusCode = 500;
     outgoing.setHeader("x-request-id", report.requestId);
     if (path.startsWith("/api/")) {

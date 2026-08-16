@@ -140,6 +140,7 @@ class BuiltApplications {
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
+      failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
       reportedSeatQuantity: async (organizationId: string) => {
         const data = await deliverCommandForData(server, {
           type: "billing-inspect",

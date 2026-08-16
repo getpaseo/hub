@@ -48,6 +48,8 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  /** Arms one project snapshot read failure inside the disposable built application. */
+  failNextProjectRead(): Promise<void>;
 }
 
 export interface BuiltApplicationOptions {
@@ -873,7 +875,7 @@ export class PaseoHub {
 
     await expect
       .poll(() => application.logs())
-      .toContain("rejected product with invalid entitlement metadata");
+      .toContain("billing.catalog.product.validate failed");
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
 
     // A product that loses its paseo_plan tag drops out of the reconciled snapshot: the sync

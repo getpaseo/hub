@@ -6,7 +6,7 @@ import {
   type TriggerProviderReactionState,
 } from "../index.js";
 import type { GitHubAuth } from "../../auth/github.js";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import {
   matchTriggers,
   readGitHubInvocationMessage,
@@ -320,14 +320,10 @@ async function deleteReactionSafely(
       reactionId,
     });
   } catch (error) {
-    logger.warn(
-      {
-        err: error,
-        repo: triggerContext.target.repository,
-        subject: triggerContext.reactionSubject,
-        reactionId,
-      },
-      "github reaction cleanup failed",
+    reportFailure(
+      error,
+      { operation: "github.reaction.cleanup", component: "triggers", provider: "github" },
+      { diagnostic: { repository: triggerContext.target.repository, reactionId } },
     );
   }
 }

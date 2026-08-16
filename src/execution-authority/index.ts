@@ -5,7 +5,7 @@ import {
 } from "../config/connection-template.js";
 import type { ConnectionResolver } from "../config/connections.js";
 import type { GitHubAuthorityRegistration } from "../providers/registration.js";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
@@ -285,14 +285,11 @@ export function createExecutionAuthority(
       deleteEmptyState(states, executionId, state);
     })()
       .catch((error: unknown) => {
-        logger.warn(
-          {
-            executionId,
-            phase: "terminal-cleanup",
-            errorType: error instanceof Error ? error.name : "unknown",
-          },
-          "execution authority detached terminal cleanup failed",
-        );
+        reportFailure(error, {
+          operation: "execution-authority.terminal.cleanup",
+          component: "execution-authority",
+          executionId,
+        });
       })
       .finally(() => {
         if (terminalCleanups.get(executionId) === cleanup) {
@@ -353,9 +350,18 @@ export function createExecutionAuthority(
       cancelGrace();
       const residualExposures = outcome === "clean" ? [] : collectResidualExposures(activeStates);
       if (residualExposures.length > 0) {
-        logger.warn(
-          { shutdownGraceMs: SHUTDOWN_GRACE_MS, residualExposures },
-          "execution authority shutdown grace elapsed with residual credential exposure",
+        reportFailure(
+          Object.assign(new Error("Execution authority shutdown grace elapsed"), {
+            code: "shutdown_timeout",
+          }),
+          { operation: "execution-authority.shutdown", component: "execution-authority" },
+          {
+            kind: "timeout",
+            diagnostic: {
+              shutdownGraceMs: SHUTDOWN_GRACE_MS,
+              residualExposureCount: residualExposures.length,
+            },
+          },
         );
       }
       return { residualExposures };
@@ -420,14 +426,19 @@ export function createExecutionAuthority(
         ));
       if (now >= retryUntil) {
         removeLease(states, executionId, state, lease);
-        logger.warn(
+        reportFailure(
+          Object.assign(new Error("Execution authority revocation retry window elapsed"), {
+            code: "revocation_retry_exhausted",
+          }),
           {
+            operation: "execution-authority.token.revoke",
+            component: "execution-authority",
             executionId,
-            reason,
-            attempts: lease.revocationAttempts,
-            outcome: "upstream_expired_or_retry_window_elapsed",
           },
-          "execution authority token lease closed after failed revocation",
+          {
+            kind: "upstreamUnavailable",
+            diagnostic: { reason, attempts: lease.revocationAttempts },
+          },
         );
         return;
       }
@@ -529,15 +540,14 @@ export function createExecutionAuthority(
       await Promise.race([Promise.resolve().then(revoke), timeout]);
       return true;
     } catch (error) {
-      logger.warn(
+      reportFailure(
+        error,
         {
+          operation: "execution-authority.token.revoke",
+          component: "execution-authority",
           executionId,
-          phase: "revoke",
-          reason: details.reason,
-          attempt: details.attempt,
-          errorType: error instanceof Error ? error.name : "unknown",
         },
-        "execution authority token revocation failed",
+        { kind: "upstreamUnavailable", diagnostic: details },
       );
       return false;
     } finally {

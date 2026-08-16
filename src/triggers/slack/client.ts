@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
@@ -198,15 +198,10 @@ export function createSlackBotClient(options: {
         if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
       } catch (error) {
         if (selected.length === 0) throw error;
-        logger.warn(
-          {
-            err: error,
-            teamId: input.teamId,
-            channelId: input.channelId,
-            threadTs: input.threadTs,
-            pagesRead,
-          },
-          "Slack thread history hydration incomplete",
+        reportFailure(
+          error,
+          { operation: "slack.thread.history.page", component: "providers", provider: "slack" },
+          { diagnostic: { teamId: input.teamId, channelId: input.channelId, pagesRead } },
         );
         complete = false;
         break;

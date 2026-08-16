@@ -142,7 +142,7 @@ async function read<T>(
   try {
     return respondOk(await operation(await requireDashboard()));
   } catch (error) {
-    const message = unavailableMessage(error, scope.projectSlug !== undefined);
+    const message = readUnavailableMessage(error, scope.projectSlug !== undefined);
     return respondWithFailure(error, projectFailureContext("project.read", scope), {
       fallback: message,
       notFound: message,
@@ -207,6 +207,15 @@ export function unavailableMessage(error: unknown, projectScoped: boolean): stri
   return projectScoped
     ? "Hub couldn't update this project. Reload its current state before submitting again."
     : "Hub couldn't update this organization. Reload its current state before submitting again.";
+}
+
+export function readUnavailableMessage(error: unknown, projectScoped: boolean): string {
+  if (isTenantRouteNotFoundError(error)) {
+    return projectScoped ? "Project unavailable." : "Organization unavailable.";
+  }
+  return projectScoped
+    ? "Hub couldn't load this project's configuration. Reload the page to try again."
+    : "Hub couldn't load this organization. Reload the page to try again.";
 }
 
 export function commandForbiddenMessage(error: unknown): string | undefined {

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
-import { logger } from "./logger.js";
+import { reportFailure } from "./failures/index.js";
 import type { ConnectionResolver } from "./config/connections.js";
 import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
@@ -464,9 +464,10 @@ function activePriceForInterval(
     const price = selectActivePlanPrice(record.prices, record.slug, interval);
     return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
   } catch (error) {
-    logger.warn(
-      { err: error, slug: record.slug, interval },
-      "billing plan has ambiguous pricing; omitting the price from the public catalog",
+    reportFailure(
+      error,
+      { operation: "billing.catalog.price.select", component: "billing", provider: "stripe" },
+      { kind: "conflict", diagnostic: { planSlug: record.slug, interval } },
     );
     return null;
   }

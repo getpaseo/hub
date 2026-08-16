@@ -1,4 +1,5 @@
 import { test } from "./app.js";
+import { expect } from "@playwright/test";
 import { expectAccessibleProjectRoute } from "./helpers/projects/assertions.js";
 import {
   expectNoProjectActivity,
@@ -62,6 +63,24 @@ const bundle = (hub: string, files: readonly { path: string; content: string }[]
   },
   ...files,
 ];
+
+test("project read failure tells the truth and emits a safe owned server record", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await hub.primaryApplication().failNextProjectRead();
+
+  await page.getByRole("link", { name: "Default" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Project unavailable");
+  await expect(alert).toContainText(
+    "Hub couldn't load this project's configuration. Reload the page to try again.",
+  );
+  await expect.poll(() => hub.primaryApplication().logs()).toContain("project.read failed");
+  expect(hub.primaryApplication().logs()).not.toContain("formatless-project-secret-8ac72f");
+});
 
 test("creates and archives projects through the organization project list", async ({
   hub,

@@ -1,5 +1,6 @@
 import { isDatabaseUnavailableError } from "../../db/errors.js";
 import type { Database } from "../../db/types.js";
+import { reportFailure } from "../../failures/index.js";
 import { logger } from "../../logger.js";
 import type { TriggerDispatchOutcome, TriggerHandler, TriggerSource } from "../index.js";
 import { parseManualTriggerPayload } from "./parse.js";
@@ -99,9 +100,10 @@ async function handleManualRequest(request: Request, source: TriggerSource): Pro
   try {
     body = await request.json();
   } catch (error) {
-    logger.warn(
-      { errorType: error instanceof Error ? error.name : "UnknownError" },
-      "rejecting manual trigger because payload is invalid JSON",
+    reportFailure(
+      error,
+      { operation: "manual-trigger.parse", component: "triggers", status: 400 },
+      { status: 400 },
     );
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
@@ -109,7 +111,11 @@ async function handleManualRequest(request: Request, source: TriggerSource): Pro
   const parsed = parseManualTriggerPayload(body);
 
   if (typeof parsed === "string") {
-    logger.warn({ reason: parsed }, "rejecting manual trigger because payload is invalid");
+    reportFailure(
+      Object.assign(new Error("Manual trigger payload rejected"), { code: "invalid_request" }),
+      { operation: "manual-trigger.validate", component: "triggers", status: 400 },
+      { status: 400 },
+    );
     return Response.json({ error: parsed }, { status: 400 });
   }
 
@@ -119,9 +125,10 @@ async function handleManualRequest(request: Request, source: TriggerSource): Pro
     await dispatchManualTrigger(source, trigger);
   } catch (error) {
     if (isDatabaseUnavailableError(error)) {
-      logger.error(
-        { err: error, deliveryId: trigger.deliveryId },
-        "rejecting manual trigger because database is unavailable",
+      reportFailure(
+        error,
+        { operation: "manual-trigger.persist", component: "triggers", status: 503 },
+        { status: 503 },
       );
       return Response.json({ error: "database_unavailable" }, { status: 503 });
     }

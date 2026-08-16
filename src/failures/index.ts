@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Logger } from "pino";
 import { respondError, type Err } from "../contract/respond.js";
-import { logger as defaultLogger } from "../logger.js";
+import { errorForLog, logger as defaultLogger, redact } from "../logger.js";
 
 export type FailureKind =
   | "validation"
@@ -25,7 +25,9 @@ export interface FailureContext {
   requestId?: string;
   status?: number;
   organizationSlug?: string;
+  organizationId?: string;
   projectSlug?: string;
+  projectId?: string;
   daemonId?: string;
   executionId?: string;
   method?: string;
@@ -53,20 +55,32 @@ interface FailureMessages {
   internal?: string;
 }
 
-interface ReportOptions {
+export interface ReportOptions {
   logger?: Pick<Logger, "warn" | "error">;
   kind?: FailureKind;
   status?: number;
+  /** Boundary-known sensitive values to remove without ever adding them to the log record. */
+  scrubValues?: readonly string[];
+  /** Additional diagnostics. Sensitive subtrees and request metadata are redacted recursively. */
+  diagnostic?: Record<string, unknown>;
 }
 
 interface RequestFailureState {
   reported: boolean;
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 const requestFailureState = new AsyncLocalStorage<RequestFailureState>();
+const reportedErrors = new WeakMap<object, FailureReport>();
 
-export function runWithFailureTracking<T>(operation: () => T): T {
-  return requestFailureState.run({ reported: false }, operation);
+export function runWithFailureTracking<T>(
+  operation: () => T,
+  logger?: Pick<Logger, "warn" | "error">,
+): T {
+  return requestFailureState.run(
+    { reported: false, ...(logger === undefined ? {} : { logger }) },
+    operation,
+  );
 }
 
 export function failureWasReported(): boolean {
@@ -80,19 +94,36 @@ export function reportFailure(
 ): FailureReport {
   const activeRequest = requestFailureState.getStore();
   if (activeRequest !== undefined) activeRequest.reported = true;
+  if (typeof error === "object" && error !== null) {
+    const existing = reportedErrors.get(error);
+    if (existing !== undefined) return existing;
+  }
   const kind = options.kind ?? classifyFailure(error, options.status ?? context.status);
   const requestId = context.requestId ?? randomUUID();
   const record = {
-    err: asError(error),
+    err: errorForLog(
+      asError(error),
+      options.scrubValues === undefined ? {} : { scrubValues: options.scrubValues },
+    ),
     failureKind: kind,
     requestId,
     ...context,
     ...(options.status === undefined ? {} : { status: options.status }),
+    ...(options.diagnostic === undefined
+      ? {}
+      : {
+          diagnostic: redact(
+            options.diagnostic,
+            options.scrubValues === undefined ? {} : { scrubValues: options.scrubValues },
+          ),
+        }),
   };
-  const log = options.logger ?? defaultLogger;
+  const log = options.logger ?? activeRequest?.logger ?? defaultLogger;
   if (isExpected(kind)) log.warn(record, `${context.operation} failed`);
   else log.error(record, `${context.operation} failed`);
-  return { kind, requestId };
+  const report = { kind, requestId };
+  if (typeof error === "object" && error !== null) reportedErrors.set(error, report);
+  return report;
 }
 
 export function respondWithFailure(

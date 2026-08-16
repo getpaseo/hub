@@ -11,6 +11,7 @@ import {
   type EntitlementTemplate,
 } from "../entitlements/catalog.js";
 import type { ProvisioningEntitlement } from "../organizations/provisioning.js";
+import { reportFailure } from "../failures/index.js";
 import { logger } from "../logger.js";
 import { syncBillingCatalog } from "./catalog-sync.js";
 import type { BillingConfig } from "./config.js";
@@ -197,9 +198,11 @@ export class BillingRuntime {
     if (free !== undefined) {
       return { planId: free.id, granted: entitlementsSchema.parse(free.template) };
     }
-    logger.error(
-      "billing is configured but the catalog mirror has no active Free plan; falling back to the " +
-        "conservative free-tier floor until the Free plan syncs",
+    reportFailure(
+      Object.assign(new Error("Billing catalog has no active free plan"), {
+        code: "billing_free_plan_missing",
+      }),
+      { operation: "billing.entitlement.free.resolve", component: "billing", provider: "stripe" },
     );
     return { planId: null, granted: entitlementsSchema.parse(FREE_TIER_FALLBACK) };
   }
@@ -303,7 +306,18 @@ export class BillingRuntime {
     const payload = await request.text();
     const signatureHeader = request.headers.get("stripe-signature");
     if (signatureHeader === null) {
-      logger.warn("billing webhook: rejected request with no Stripe-Signature header");
+      reportFailure(
+        Object.assign(new Error("Stripe signature header missing"), {
+          code: "signature_header_missing",
+        }),
+        {
+          operation: "billing.webhook.verify",
+          component: "billing",
+          provider: "stripe",
+          status: 400,
+        },
+        { status: 400, kind: "authentication", scrubValues: [this.config.stripeWebhookSecret] },
+      );
       return new Response("missing signature", { status: 400 });
     }
     let event: StripeSDK.Event;
@@ -314,7 +328,20 @@ export class BillingRuntime {
         this.config.stripeWebhookSecret,
       );
     } catch (error) {
-      logger.warn({ err: error }, "billing webhook: rejected request with an invalid signature");
+      reportFailure(
+        error,
+        {
+          operation: "billing.webhook.verify",
+          component: "billing",
+          provider: "stripe",
+          status: 400,
+        },
+        {
+          status: 400,
+          kind: "authentication",
+          scrubValues: [this.config.stripeWebhookSecret, signatureHeader],
+        },
+      );
       return new Response("invalid signature", { status: 400 });
     }
     try {
@@ -324,9 +351,17 @@ export class BillingRuntime {
       if (SUBSCRIPTION_SYNC_EVENT_TYPES.has(event.type)) {
         const outcome = await this.reconcileSubscriptionEvent(event);
         if (outcome === "retry") {
-          logger.warn(
-            { eventType: event.type },
-            "billing webhook: subscription not reconcilable yet; returning 503 so Stripe retries",
+          reportFailure(
+            Object.assign(new Error("Stripe subscription is not reconcilable yet"), {
+              code: "upstreamUnavailable",
+            }),
+            {
+              operation: "billing.webhook.subscription.reconcile",
+              component: "billing",
+              provider: "stripe",
+              status: 503,
+            },
+            { status: 503, diagnostic: { eventType: event.type } },
           );
           return new Response("subscription not reconcilable yet", { status: 503 });
         }
@@ -334,9 +369,19 @@ export class BillingRuntime {
     } catch (error) {
       // Anything transient (a Stripe read, the catalog sync, the atomic write) returns non-2xx so
       // Stripe redelivers, rather than acknowledging a state we never reconciled.
-      logger.error(
-        { err: error, eventType: event.type },
-        "billing webhook: reconciliation failed; returning 503 so Stripe retries",
+      reportFailure(
+        error,
+        {
+          operation: "billing.webhook.reconcile",
+          component: "billing",
+          provider: "stripe",
+          status: 503,
+        },
+        {
+          status: 503,
+          scrubValues: [this.config.stripeWebhookSecret, signatureHeader],
+          diagnostic: { eventType: event.type },
+        },
       );
       return new Response("reconciliation failed", { status: 503 });
     }

@@ -87,6 +87,11 @@ interface AccountSetupFailureCommand {
   type: "fail-next-account-setup";
 }
 
+interface ProjectReadFailureCommand {
+  id: string;
+  type: "fail-next-project-read";
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
@@ -229,6 +234,18 @@ async function main(): Promise<void> {
       await database.close();
     },
   });
+  let failNextProjectRead = false;
+  const projectDashboard = runtime.projectDashboard;
+  if (projectDashboard !== null) {
+    const readProjectSnapshot = projectDashboard.projectSnapshot.bind(projectDashboard);
+    projectDashboard.projectSnapshot = async (...args) => {
+      if (failNextProjectRead) {
+        failNextProjectRead = false;
+        throw new Error("project read failed with formatless-project-secret-8ac72f");
+      }
+      return readProjectSnapshot(...args);
+    };
+  }
   const start = await loadBuiltStartServer();
   await start.startApplication(() => runtime);
   const server = createFetchServer(
@@ -247,6 +264,9 @@ async function main(): Promise<void> {
       billingCatalog,
       billingClient: billingFixtureClient,
       accountSetupFaults,
+      failNextProjectRead: () => {
+        failNextProjectRead = true;
+      },
     });
   });
   const stop = () => void shutdown(server, () => runtime.stop());
@@ -351,6 +371,7 @@ interface CommandFixtures {
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
   accountSetupFaults: BrowserAccountSetupFaults;
+  failNextProjectRead(): void;
 }
 
 async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promise<void> {
@@ -362,6 +383,11 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
   }
   if (isAccountSetupFailureCommand(message)) {
     fixtures.accountSetupFaults.failNext();
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isProjectReadFailureCommand(message)) {
+    fixtures.failNextProjectRead();
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -457,6 +483,15 @@ function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFail
     typeof value === "object" &&
     value !== null &&
     Reflect.get(value, "type") === "fail-next-account-setup" &&
+    typeof Reflect.get(value, "id") === "string"
+  );
+}
+
+function isProjectReadFailureCommand(value: unknown): value is ProjectReadFailureCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "fail-next-project-read" &&
     typeof Reflect.get(value, "id") === "string"
   );
 }
