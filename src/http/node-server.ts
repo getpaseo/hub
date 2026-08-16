@@ -3,6 +3,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { once } from "node:events";
 import { isIP } from "node:net";
 import { logger } from "../logger.js";
+import { failureWasReported, reportFailure, runWithFailureTracking } from "../failures/index.js";
 import { INTERNAL_CLIENT_ADDRESS_HEADER } from "./client-address.js";
 import { takeResponseLifecycle } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
@@ -40,7 +41,25 @@ async function forwardRequest(
   try {
     const clientAddress = resolveClientAddress(incoming, options.trustedClientIpHeader);
     const request = toRequest(incoming, clientAddress, options);
-    const response = await fetchHandler(request);
+    const tracked = await runWithFailureTracking(async () => {
+      const response = await fetchHandler(request);
+      return { response, failureReported: failureWasReported() };
+    });
+    const { response } = tracked;
+    let responseRequestId: string | undefined;
+    if (response.status >= 400 && !tracked.failureReported) {
+      responseRequestId = reportFailure(
+        new Error(`HTTP response completed with status ${response.status}`),
+        {
+          operation: "http.response",
+          component: "http",
+          method: request.method,
+          path: new URL(request.url).pathname,
+          status: response.status,
+        },
+        { status: response.status },
+      ).requestId;
+    }
     const lifecycle = takeResponseLifecycle(response);
     let responseForwarded = false;
     let lifecycleSettled = false;
@@ -74,6 +93,7 @@ async function forwardRequest(
     outgoing.statusCode = response.status;
     outgoing.statusMessage = response.statusText;
     for (const [name, value] of response.headers) outgoing.setHeader(name, value);
+    if (responseRequestId !== undefined) outgoing.setHeader("x-request-id", responseRequestId);
     const cookies = response.headers.getSetCookie();
     if (cookies.length > 0) outgoing.setHeader("set-cookie", cookies);
     if (response.body === null) {
@@ -90,9 +110,37 @@ async function forwardRequest(
     responseForwarded = true;
     outgoing.end();
   } catch (error) {
-    logger.error({ err: error }, "request failed");
+    const path = safeRequestPath(incoming.url);
+    const report = reportFailure(error, {
+      operation: "http.request",
+      component: "http",
+      method: incoming.method ?? "GET",
+      path,
+    });
     outgoing.statusCode = 500;
-    outgoing.end("Internal Server Error");
+    outgoing.setHeader("x-request-id", report.requestId);
+    if (path.startsWith("/api/")) {
+      outgoing.setHeader("content-type", "application/json; charset=utf-8");
+      outgoing.end(
+        JSON.stringify({
+          error: "internal_error",
+          message: "Hub couldn't complete this API request.",
+          requestId: report.requestId,
+        }),
+      );
+      return;
+    }
+    outgoing.setHeader("content-type", "text/plain; charset=utf-8");
+    outgoing.end(`Hub couldn't complete this request. Reference: ${report.requestId}.`);
+  }
+}
+
+function safeRequestPath(value: string | undefined): string {
+  if (value === undefined) return "/";
+  try {
+    return new URL(value, "http://localhost").pathname;
+  } catch {
+    return "<invalid-path>";
   }
 }
 

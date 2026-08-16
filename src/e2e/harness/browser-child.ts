@@ -526,6 +526,8 @@ function readScenario(): BrowserProviderScenario {
     value === "connected" ||
     value === "approval" ||
     value === "conflict" ||
+    value === "discord-verification-network" ||
+    value === "slack-permission-missing" ||
     value === "not-configured" ||
     value === "discord-only" ||
     value === "slack-only"
@@ -662,7 +664,7 @@ async function composeProviderApplications(input: {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
   const environment = await readProviderApplicationEnvironment(process.env);
   const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
-  const verifier = new BrowserProviderApplicationVerifier();
+  const verifier = new BrowserProviderApplicationVerifier(input.scenario);
   const inventory = createProviderApplicationInventory(input.databaseRuntime);
   const providerRuntime = new DynamicProviderRuntime({
     database: input.database,

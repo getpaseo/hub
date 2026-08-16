@@ -209,29 +209,25 @@ async function createOwnedApplicationRuntime(
       if (options.database === null || options.auth === null) {
         return Response.json({ error: "database_unavailable" }, { status: 503 });
       }
-      try {
-        const url = new URL(request.url);
-        const organizationSlug = url.searchParams.get("organizationSlug");
-        if (organizationSlug === null) {
-          return Response.json({ error: "organization_required" }, { status: 400 });
-        }
-        const { tenant } = await resolveRouteTenant(options.auth, options.database, request, {
-          organizationSlug,
-        });
-        const bindings = await options.database.organizationConnectionUsage(tenant.organization.id);
-        const statuses = Object.fromEntries(
-          [...connections.values()].map((connection) => [
-            connection.name,
-            connection.status(bindings),
-          ]),
-        );
-        return Response.json({
-          canManage: tenant.membership.role !== "member",
-          ...statuses,
-        });
-      } catch {
-        return Response.json({ error: "connection_status_unavailable" }, { status: 503 });
+      const url = new URL(request.url);
+      const organizationSlug = url.searchParams.get("organizationSlug");
+      if (organizationSlug === null) {
+        return Response.json({ error: "organization_required" }, { status: 400 });
       }
+      const { tenant } = await resolveRouteTenant(options.auth, options.database, request, {
+        organizationSlug,
+      });
+      const bindings = await options.database.organizationConnectionUsage(tenant.organization.id);
+      const statuses = Object.fromEntries(
+        [...connections.values()].map((connection) => [
+          connection.name,
+          connection.status(bindings),
+        ]),
+      );
+      return Response.json({
+        canManage: tenant.membership.role !== "member",
+        ...statuses,
+      });
     },
     connectionAction: (request, provider, action) => {
       if (options.database === null || options.auth === null) {

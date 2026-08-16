@@ -56,7 +56,7 @@ export function BillingPanel() {
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "We couldn't load billing for this organization."}
+            : "Hub did not receive the billing state. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );

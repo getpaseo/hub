@@ -41,6 +41,8 @@ export type BrowserProviderScenario =
   | "connected"
   | "approval"
   | "conflict"
+  | "discord-verification-network"
+  | "slack-permission-missing"
   | "not-configured"
   | "discord-only"
   | "slack-only";

@@ -373,7 +373,10 @@ function InvitationActions({
   const copy = useCallback((): void => {
     void navigator.clipboard.writeText(link).then(
       () => onCopyStatusChange("Invitation link copied."),
-      () => onCopyStatusChange("We couldn't copy the invitation link."),
+      () =>
+        onCopyStatusChange(
+          "Clipboard access was blocked. Open the invitation menu and copy the link manually.",
+        ),
     );
   }, [link, onCopyStatusChange]);
 

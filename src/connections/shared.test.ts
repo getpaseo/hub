@@ -32,7 +32,9 @@ describe("connection callback failures", () => {
     });
 
     const output = stream.chunks.join("");
-    assert.match(output, /connection callback unavailable/u);
+    assert.match(output, /connection\.callback\.authorization failed/u);
+    assert.match(output, /failureKind/u);
+    assert.match(output, /stack/u);
     assert.match(output, /github/u);
     assert.match(output, /authorization/u);
     assert.match(output, /github oauth exchange failed: 401/u);

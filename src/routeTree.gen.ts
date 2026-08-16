@@ -19,6 +19,7 @@ import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
+import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
 import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
@@ -99,6 +100,11 @@ const ApiReferenceRoute = ApiReferenceRouteImport.update({
 const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
   id: '/api/openapi.json',
   path: '/api/openapi.json',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSplatRoute = ApiSplatRouteImport.update({
+  id: '/api/$',
+  path: '/api/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ShellOperatorRoute = ShellOperatorRouteImport.update({
@@ -293,6 +299,7 @@ export interface FileRoutesByFullPath {
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -335,6 +342,7 @@ export interface FileRoutesByTo {
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -378,6 +386,7 @@ export interface FileRoutesById {
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -424,6 +433,7 @@ export interface FileRouteTypes {
     | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -466,6 +476,7 @@ export interface FileRouteTypes {
     | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -508,6 +519,7 @@ export interface FileRouteTypes {
     | '/_shell/apps'
     | '/_shell/cli-login'
     | '/_shell/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -550,6 +562,7 @@ export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
+  ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
@@ -642,6 +655,13 @@ declare module '@tanstack/react-router' {
       path: '/api/openapi.json'
       fullPath: '/api/openapi.json'
       preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/$': {
+      id: '/api/$'
+      path: '/api/$'
+      fullPath: '/api/$'
+      preLoaderRoute: typeof ApiSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_shell/operator': {
@@ -966,6 +986,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
+  ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,

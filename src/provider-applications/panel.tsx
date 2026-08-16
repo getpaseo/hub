@@ -63,7 +63,7 @@ function ProviderApplications({
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "We couldn't load your apps. Reload the page."}
+            : "Hub did not receive the app status. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );
@@ -208,11 +208,21 @@ const RETURN_MESSAGES: Readonly<Record<string, SectionReturn>> = {
   slack_bot_failed: {
     tone: "error",
     message:
-      "Slack completed the installation, but the app couldn't act in your workspace. Nothing was saved.",
+      "Slack didn't grant every required bot permission. Update the app scopes, then reinstall it. Nothing was saved.",
   },
   provider_not_configured: {
     tone: "error",
     message: "Set up the app before connecting it.",
+  },
+  connection_invalid: {
+    tone: "error",
+    message:
+      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
+  },
+  connection_conflict: {
+    tone: "error",
+    message:
+      "That provider account is already connected elsewhere. Review existing connections before starting again.",
   },
 };
 
@@ -231,9 +241,15 @@ function readAppReturn(): AppReturn | undefined {
     provider,
     outcome: RETURN_MESSAGES[result] ?? {
       tone: "error",
-      message: "The connection could not be completed.",
+      message: `${providerName(provider)} couldn't complete the connection. Start again from this Hub; if it repeats, check the app credentials and provider status.`,
     },
   };
+}
+
+function providerName(provider: Provider): string {
+  if (provider === "github") return "GitHub";
+  if (provider === "slack") return "Slack";
+  return "Discord";
 }
 
 /** Clear callback state after the router commits, so its initial URL cannot restore the query. */

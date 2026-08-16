@@ -568,5 +568,5 @@ function rawValue(form: FormData, name: string): string {
 }
 
 function unreachable(name: string): string {
-  return `We couldn't reach ${name}. Try again.`;
+  return `Hub did not receive a response while contacting ${name}. Check your browser connection and Hub availability, then submit again.`;
 }

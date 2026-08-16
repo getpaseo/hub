@@ -261,6 +261,12 @@ export class PaseoHub {
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
       await user.completeFirstRunJourney(account, () => application.failNextAccountSetup());
+      const logs = plainLogs(application.logs());
+      expect(logs).toContain("auth.setup_instance");
+      expect(logs).toMatch(/failureKind:\s*["']?internal/u);
+      expect(logs).toContain("account setup failed");
+      expect(logs).not.toContain(account.email);
+      expect(logs).not.toContain(account.password);
     } finally {
       await context.close();
     }
@@ -273,6 +279,7 @@ export class PaseoHub {
    */
   async openAppSetup(input: {
     account: Account;
+    providerScenario?: BrowserProviderScenario;
     environmentApps?: readonly ("github" | "slack" | "discord")[];
     https?: boolean;
     reverseProxy?: boolean;
@@ -282,6 +289,7 @@ export class PaseoHub {
       databaseProfile: "fresh",
       machineAuth: false,
       providerApplications: true,
+      ...(input.providerScenario === undefined ? {} : { providerScenario: input.providerScenario }),
       https: input.https === true,
       reverseProxy: input.reverseProxy === true,
       embedded: input.embedded === true,
@@ -812,6 +820,10 @@ export class PaseoHub {
     await this.requireUser(alias).expectBillingPageUnavailable();
   }
 
+  async returnToProjects(alias: string): Promise<void> {
+    await this.requireUser(alias).returnToProjects();
+  }
+
   async expectBillingWebhookUnavailable(): Promise<void> {
     const response = await this.requests.post(`${this.primary.origin}/api/billing/webhook`, {
       headers: { "content-type": "application/json" },
@@ -1330,8 +1342,8 @@ export class PaseoHub {
       await user.connectGitHub();
       await user.connectDiscord();
       await user.createAnotherOrganization("Conflict Orbit");
-      await user.expectGitHubConnectionUnavailable();
-      await user.expectDiscordConnectionUnavailable();
+      await user.expectGitHubConnectionConflict();
+      await user.expectDiscordConnectionConflict();
     } finally {
       await context.close();
     }
@@ -2593,7 +2605,9 @@ class HubUser {
     await armAccountSetupFailure();
     await this.page.keyboard.press("Enter");
     const alert = this.page.getByRole("alert");
-    await expect(alert).toHaveText("We couldn't create your account. Try again.");
+    await expect(alert).toContainText(
+      "Hub couldn't finish the first account setup. Reload the page to confirm whether this instance has already been claimed.",
+    );
     await expect(alert).toBeFocused();
     await expect(form.getByLabel("Email")).toHaveValue(account.email);
     await expect(form.getByLabel("Password")).toHaveValue(account.password);
@@ -2946,7 +2960,7 @@ class HubUser {
         this.page.getByRole("heading", { name: "Choose an organization" }),
       ).toBeVisible();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
     } finally {
       releaseCommand();
@@ -3045,7 +3059,7 @@ class HubUser {
         .getByRole("menuitem", { name: destinationOrganization, exact: true })
         .click();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(switcher).toContainText("Acme");
     } finally {
@@ -3065,7 +3079,7 @@ class HubUser {
       await form.getByLabel("Invitee email").fill(invitationEmail);
       await form.getByRole("button", { name: "Create invitation" }).click();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(this.invitationRow(invitationEmail)).toHaveCount(0);
       await expect(switcher).toContainText("Acme");
@@ -4229,24 +4243,24 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(forged.toString());
   }
 
-  async expectGitHubConnectionUnavailable(): Promise<void> {
+  async expectGitHubConnectionConflict(): Promise<void> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "That provider account is already connected to another organization. Disconnect it there before trying again.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("acme-inc");
   }
 
-  async expectDiscordConnectionUnavailable(): Promise<void> {
+  async expectDiscordConnectionConflict(): Promise<void> {
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "That provider account is already connected to another organization. Disconnect it there before trying again.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("Acme Guild");
@@ -4281,7 +4295,7 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
     );
   }
 
@@ -5356,6 +5370,10 @@ function readSocketData(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString();
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString();
   return Buffer.from(data).toString();
+}
+
+function plainLogs(value: string): string {
+  return value.replace(/\u001B\[[0-9;]*m/gu, "");
 }
 
 async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {

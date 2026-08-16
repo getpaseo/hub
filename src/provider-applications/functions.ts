@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import {
   ProviderApplicationError,
@@ -56,8 +57,15 @@ export const providerApplicationsOverview = createServerFn({ method: "GET" }).ha
       const capability = (await getApplication()).providerApplications;
       if (capability === null) throw new Error("unavailable");
       return respondOk(await capability.overview(getRequest()));
-    } catch {
-      return respondError({ message: "We couldn't load your apps. Reload the page." });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        { operation: "provider_application.overview", component: "provider_applications" },
+        {
+          fallback:
+            "Hub couldn't load your apps. Reload the page and use the reference if the problem continues.",
+        },
+      );
     }
   },
 );
@@ -77,7 +85,7 @@ export const verifyAndSaveProviderApplication = createServerFn({ method: "POST" 
         ),
       );
     } catch (error) {
-      return respondError({ message: saveFailure(data.provider, error) });
+      return saveFailure(data.provider, error);
     }
   });
 
@@ -95,35 +103,117 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
           data.surface,
         ),
       );
-    } catch {
-      return respondError({
-        message: `We couldn't open ${providerName(data.provider)}. Try again.`,
-      });
+    } catch (error) {
+      const name = providerName(data.provider);
+      return respondWithFailure(
+        error,
+        {
+          operation: "provider_application.begin_connection",
+          component: "provider_applications",
+          provider: data.provider,
+        },
+        {
+          fallback: `Hub couldn't start the ${name} connection. Reload the app status before starting it again.`,
+          forbidden: `You don't have permission to connect ${name}.`,
+          conflict: `${name} changed while this connection was starting. Reload the app status and start again.`,
+          network: `Hub couldn't connect to ${name}. Check this server's network, DNS, and TLS access to ${providerHost(data.provider)}, then start again.`,
+          timeout: `${name} did not respond before the connection timed out. Check provider status and start again.`,
+          rateLimited: `${name} rate limited Hub. Wait a few minutes before starting the connection again.`,
+          upstreamUnavailable: `${name} is unavailable right now. Check ${name}'s status page before starting the connection again.`,
+        },
+      );
     }
   });
 
-function saveFailure(provider: Provider, error: unknown): string {
-  if (error instanceof ProviderApplicationError) {
-    if (provider === "slack" && error.code === "httpsRequired") {
-      return `Slack requires a public HTTPS address. This Hub is at ${error.safeContext ?? "an HTTP address"}. Open Hub at its public HTTPS address to set up Slack.`;
-    }
-    if (error.code === "configurationConflict") {
-      return "Someone else changed this app. Reload and try again.";
-    }
-    if (error.code === "identityConflict") {
-      const identity = error.safeContext ?? providerName(provider);
-      return `This Hub is connected to the ${providerName(provider)} App ${identity}. Remove its connections before setting up a different App.`;
-    }
-    if (error.code === "unreachable")
-      return `We couldn't reach ${providerName(provider)}. Try again.`;
+function saveFailure(provider: Provider, error: unknown): ReturnType<typeof respondError> {
+  const name = providerName(provider);
+  const code = errorCode(error);
+  const operation = "provider_application.verify_and_save";
+  if (provider === "slack" && code === "httpsRequired") {
+    return respondWithFailure(
+      error,
+      { operation, component: "provider_applications", provider },
+      {
+        fallback: `Slack requires a public HTTPS address. This Hub is at ${errorContext(error) ?? "an HTTP address"}. Open Hub at its public HTTPS address to set up Slack.`,
+      },
+      { kind: "validation" },
+    );
   }
+  if (code === "managedByEnvironment") {
+    return respondWithFailure(
+      error,
+      { operation, component: "provider_applications", provider },
+      { fallback: `${name} is managed by this Hub's environment. Change its credentials there.` },
+      { kind: "conflict" },
+    );
+  }
+  if (code === "configurationConflict") {
+    return respondWithFailure(
+      error,
+      { operation, component: "provider_applications", provider },
+      {
+        fallback: `Someone else changed the ${name} app. Reload its current settings before saving again.`,
+      },
+      { kind: "conflict" },
+    );
+  }
+  if (code === "identityConflict") {
+    const identity = errorContext(error) ?? name;
+    return respondWithFailure(
+      error,
+      { operation, component: "provider_applications", provider },
+      {
+        fallback: `This Hub is connected to the ${name} App ${identity}. Remove its connections before setting up a different App.`,
+      },
+      { kind: "conflict" },
+    );
+  }
+  return respondWithFailure(
+    error,
+    { operation, component: "provider_applications", provider },
+    {
+      fallback: `Hub couldn't verify and save ${name}. Reload the app settings before saving again.`,
+      forbidden: `Only the instance operator can change the ${name} app.`,
+      credentialsRejected: credentialMessage(provider),
+      permissionMissing: `${name} accepted the credentials, but the app is missing a required permission. Review the setup guide and grant every listed permission before verifying again.`,
+      network: `Hub couldn't connect to ${name}. Check this server's network, DNS, and TLS access to ${providerHost(provider)}, then verify again.`,
+      timeout: `${name} did not respond before verification timed out. Check this server's connection to ${providerHost(provider)}, then verify again.`,
+      rateLimited: `${name} rate limited Hub. Wait a few minutes before verifying again.`,
+      upstreamUnavailable: `${name} is unavailable or returned an invalid response. Check ${name}'s status page before verifying again.`,
+      conflict: `The ${name} app changed while it was being saved. Reload its current settings before saving again.`,
+      validation: `The ${name} app settings are invalid. Review every required field before saving again.`,
+    },
+  );
+}
+
+function credentialMessage(provider: Provider): string {
   if (provider === "github") {
-    return "GitHub didn't accept these credentials. Check the App ID and private key, then try again.";
+    return "GitHub didn't accept these credentials. Check the App ID and private key, then verify again.";
   }
   if (provider === "discord") {
-    return "Discord didn't accept these credentials. Check the Application ID and bot token, then try again.";
+    return "Discord didn't accept these credentials. Check the Application ID and bot token, then verify again.";
   }
-  return "Slack didn't complete the installation. Nothing was saved. Try again.";
+  return "Slack didn't accept these app credentials. Check the App ID, client credentials, and signing secret before continuing.";
+}
+
+function providerHost(provider: Provider): string {
+  if (provider === "github") return "api.github.com";
+  if (provider === "slack") return "slack.com";
+  return "discord.com";
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error instanceof ProviderApplicationError) return error.code;
+  if (typeof error !== "object" || error === null) return undefined;
+  const code: unknown = Reflect.get(error, "code");
+  return typeof code === "string" ? code : undefined;
+}
+
+function errorContext(error: unknown): string | undefined {
+  if (error instanceof ProviderApplicationError) return error.safeContext;
+  if (typeof error !== "object" || error === null) return undefined;
+  const context: unknown = Reflect.get(error, "safeContext");
+  return typeof context === "string" ? context : undefined;
 }
 
 function providerName(provider: Provider): string {

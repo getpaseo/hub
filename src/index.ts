@@ -14,6 +14,7 @@ import {
 } from "./db/runtime/index.js";
 import type { Locks } from "./db/runtime/locks/index.js";
 import { logger } from "./logger.js";
+import { reportFailure } from "./failures/index.js";
 import { createFetchServer } from "./http/node-server.js";
 import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
@@ -126,10 +127,11 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       callbackOrigin: identity.appUrl,
     });
     for (const { provider, error } of activationFailures) {
-      logger.error(
-        { provider, errorType: error instanceof Error ? error.name : "UnknownError" },
-        "provider application could not be activated at startup",
-      );
+      reportFailure(error, {
+        operation: "provider_application.activate_at_startup",
+        component: "provider_applications",
+        provider,
+      });
     }
     const providerApplications = createProviderApplications({
       auth,
@@ -222,7 +224,16 @@ async function initializeDatabaseRuntime(
     logger.info(readyMessage);
     return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
   } catch (error) {
-    await bundle?.runtime.close().catch(() => undefined);
+    if (bundle !== undefined) {
+      try {
+        await bundle.runtime.close();
+      } catch (closeError) {
+        reportFailure(closeError, {
+          operation: "database.startup.cleanup",
+          component: "database",
+        });
+      }
+    }
     if (!(error instanceof DatabaseUnavailableError)) throw error;
     logger.error(
       { err: error },

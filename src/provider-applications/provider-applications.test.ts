@@ -177,7 +177,7 @@ describe("provider applications", () => {
         ...githubConfiguration,
         clientSecret: "rotated-secret",
       }),
-      (error: unknown) => error instanceof ProviderApplicationError && error.code === "unreachable",
+      (error: unknown) => error instanceof ProviderApplicationError && error.code === "internal",
     );
 
     assert.equal(fixture.runtime.active("github"), previous);
@@ -417,7 +417,7 @@ describe("provider applications", () => {
 
     await assert.rejects(
       fixture.applications.verifyAndSave(request("POST"), "slack", slackConfiguration),
-      (error: unknown) => error instanceof ProviderApplicationError && error.code === "unreachable",
+      (error: unknown) => error instanceof ProviderApplicationError && error.code === "internal",
     );
 
     assert.equal(fixture.runtime.latestCandidate("slack")?.closeCount, 1);

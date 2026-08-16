@@ -25,7 +25,7 @@ export function AccountApp() {
         message={
           account.data?.status === "error"
             ? account.data.error.message
-            : "We couldn't load your Paseo Hub account."
+            : "Hub did not receive your account state. Check your connection and reload the page."
         }
       />
     );

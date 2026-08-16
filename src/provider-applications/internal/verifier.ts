@@ -80,8 +80,10 @@ async function verifyGitHub(
   if (response.status === 401 || response.status === 403) {
     throw new ProviderVerificationError("credentialsRejected");
   }
-  if (!response.ok) throw new ProviderVerificationError("unreachable");
-  const parsed = githubIdentitySchema.safeParse(await safeJson(response));
+  rejectFailedResponse(response);
+  const body = await safeJson(response);
+  if (body === undefined) throw new ProviderVerificationError("invalidResponse", response.status);
+  const parsed = githubIdentitySchema.safeParse(body);
   if (!parsed.success || String(parsed.data.id) !== configuration.appId) {
     throw new ProviderVerificationError("credentialsRejected");
   }
@@ -107,8 +109,10 @@ async function verifyDiscord(
   if (response.status === 401 || response.status === 403) {
     throw new ProviderVerificationError("credentialsRejected");
   }
-  if (!response.ok) throw new ProviderVerificationError("unreachable");
-  const parsed = discordIdentitySchema.safeParse(await safeJson(response));
+  rejectFailedResponse(response);
+  const body = await safeJson(response);
+  if (body === undefined) throw new ProviderVerificationError("invalidResponse", response.status);
+  const parsed = discordIdentitySchema.safeParse(body);
   if (!parsed.success || parsed.data.id !== configuration.applicationId) {
     throw new ProviderVerificationError("credentialsRejected");
   }
@@ -127,9 +131,37 @@ async function fixedRequest(
 ): Promise<Response> {
   try {
     return await request(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  } catch {
-    throw new ProviderVerificationError("unreachable");
+  } catch (error) {
+    const timeout =
+      error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+    throw new ProviderVerificationError(timeout ? "timeout" : "network", undefined, {
+      cause: safeTransportCause(error),
+    });
   }
+}
+
+function safeTransportCause(error: unknown): Error {
+  if (!(error instanceof Error)) return new Error("provider transport failed");
+  const diagnostic = new Error("provider transport failed");
+  diagnostic.name = error.name;
+  const frames = error.stack?.split("\n").slice(1).join("\n");
+  if (frames !== undefined && frames.length > 0) {
+    diagnostic.stack = `${diagnostic.name}: ${diagnostic.message}\n${frames}`;
+  }
+  const code: unknown = Reflect.get(error, "code");
+  if (typeof code === "string" && /^[A-Z0-9_]+$/u.test(code)) {
+    Object.assign(diagnostic, { code });
+  }
+  return diagnostic;
+}
+
+function rejectFailedResponse(response: Response): void {
+  if (response.ok) return;
+  if (response.status === 429) throw new ProviderVerificationError("rateLimited", response.status);
+  if (response.status >= 500) {
+    throw new ProviderVerificationError("upstreamUnavailable", response.status);
+  }
+  throw new ProviderVerificationError("upstreamUnavailable", response.status);
 }
 
 async function safeJson(response: Response): Promise<unknown> {

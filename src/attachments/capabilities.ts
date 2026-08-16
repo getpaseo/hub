@@ -5,6 +5,7 @@ import type {
   Database,
   InsertAttachmentInput,
 } from "../db/types.js";
+import { reportFailure, type FailureKind } from "../failures/index.js";
 
 export type { AttachmentProvider } from "../db/types.js";
 
@@ -86,25 +87,63 @@ export function createAttachmentCapabilityRegistry(options: {
     },
 
     async handle(request, executionId, attachmentId) {
-      if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+      if (request.method !== "GET") {
+        return attachmentFailure(
+          new Error("attachment method is not allowed"),
+          executionId,
+          "validation",
+          405,
+          "Attachment links must be opened with GET.",
+        );
+      }
       const capability = readCapability(request, attachmentId, executionId, options, now);
-      if (capability === undefined) return new Response("Not Found", { status: 404 });
+      if (capability === undefined) {
+        return attachmentFailure(
+          new Error("attachment capability is invalid or expired"),
+          executionId,
+          "notFound",
+          404,
+          "Attachment unavailable or link expired. Request a new attachment link.",
+        );
+      }
 
       const execution = await options.database.findAgentExecutionById(executionId);
       if (
         execution === undefined ||
         (execution.status !== "spawning" && execution.status !== "running")
       ) {
-        return new Response("Not Found", { status: 404 });
+        return attachmentFailure(
+          new Error("attachment execution is not live"),
+          executionId,
+          "notFound",
+          404,
+          "Attachment unavailable or link expired. Request a new attachment link.",
+        );
       }
       const attachment = await options.database.findAttachmentForExecution(
         executionId,
         attachmentId,
       );
-      if (attachment === undefined) return new Response("Not Found", { status: 404 });
+      if (attachment === undefined) {
+        return attachmentFailure(
+          new Error("attachment record is unavailable"),
+          executionId,
+          "notFound",
+          404,
+          "Attachment unavailable or link expired. Request a new attachment link.",
+        );
+      }
 
       const resolver = options.resolvers[attachment.provider];
-      if (resolver === undefined) return new Response("Not Found", { status: 404 });
+      if (resolver === undefined) {
+        return attachmentFailure(
+          new Error("attachment provider resolver is unavailable"),
+          executionId,
+          "internal",
+          502,
+          "Hub cannot retrieve this attachment because its provider is unavailable.",
+        );
+      }
       let upstream: Response;
       try {
         upstream = await resolver({
@@ -113,10 +152,27 @@ export function createAttachmentCapabilityRegistry(options: {
           connectionId: attachment.connectionId,
           locator: attachment.locator,
         });
-      } catch {
-        return new Response("Attachment unavailable", { status: 502 });
+      } catch (error) {
+        return attachmentFailure(
+          error,
+          executionId,
+          "network",
+          502,
+          "Hub couldn't retrieve this attachment from its provider. Check the provider connection.",
+        );
       }
-      if (!upstream.ok) return new Response("Attachment unavailable", { status: 502 });
+      if (!upstream.ok) {
+        const limited = upstream.status === 429;
+        return attachmentFailure(
+          new Error(`attachment provider returned HTTP ${upstream.status}`),
+          executionId,
+          limited ? "rateLimited" : "upstreamUnavailable",
+          502,
+          limited
+            ? "The attachment provider rate limited Hub. Wait before requesting a new link."
+            : "The attachment provider couldn't return this file. Check the provider connection and request a new link.",
+        );
+      }
 
       const headers = new Headers();
       const upstreamIsEncoded = upstream.headers.has("content-encoding");
@@ -135,6 +191,24 @@ export function createAttachmentCapabilityRegistry(options: {
       return new Response(upstream.body, { status: 200, headers });
     },
   };
+}
+
+function attachmentFailure(
+  error: unknown,
+  executionId: string,
+  kind: FailureKind,
+  status: number,
+  message: string,
+): Response {
+  const report = reportFailure(
+    error,
+    { operation: "attachment.retrieve", component: "attachments", executionId, status },
+    { kind },
+  );
+  const correlated = ["network", "rateLimited", "upstreamUnavailable", "internal"].includes(kind);
+  return new Response(correlated ? `${message} Reference: ${report.requestId}.` : message, {
+    status,
+  });
 }
 
 function toReference(record: AttachmentRecord): AttachmentReference {

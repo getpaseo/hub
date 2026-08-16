@@ -16,6 +16,7 @@ import type {
 import { embeddedLocks } from "../locks/index.js";
 import type { EmbeddedLockLifecycle } from "../locks/index.js";
 import { acquireDataDirectoryLock, type DataDirectoryLock } from "./data-directory-lock.js";
+import { reportFailure } from "../../../failures/index.js";
 
 const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
 
@@ -29,7 +30,14 @@ export async function createEmbeddedRuntime(dataDirectory: string): Promise<Data
     const locks = embeddedLocks();
     return { runtime: new EmbeddedRuntime(client, locks, dataDirectoryLock), locks };
   } catch (error) {
-    await dataDirectoryLock.release().catch(() => undefined);
+    try {
+      await dataDirectoryLock.release();
+    } catch (releaseError) {
+      reportFailure(releaseError, {
+        operation: "database.embedded.startup_lock.release",
+        component: "database",
+      });
+    }
     throw error;
   }
 }

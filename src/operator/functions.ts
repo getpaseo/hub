@@ -1,9 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondOk, type Result } from "../contract/respond.js";
 import { entitlementOverridesSchema } from "../entitlements/catalog.js";
-import { logger } from "../logger.js";
+import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import type { OperatorConsole } from "./console.js";
 
@@ -38,8 +38,7 @@ export const operatorOrganizations = createServerFn({ method: "GET" }).handler(
     try {
       return respondOk(await (await requireConsole()).listOrganizations(getRequest()));
     } catch (error) {
-      logger.error({ err: error }, "operator organizations read failed");
-      return respondError({ message: operatorErrorMessage(error) });
+      return operatorFailure(error, "operator.organizations");
     }
   },
 );
@@ -50,8 +49,7 @@ export const operatorSnapshot = createServerFn({ method: "GET" })
     try {
       return respondOk(await (await requireConsole()).snapshot(getRequest(), data));
     } catch (error) {
-      logger.error({ err: error, data }, "operator snapshot read failed");
-      return respondError({ message: operatorErrorMessage(error) });
+      return operatorFailure(error, "operator.snapshot", data.organizationSlug);
     }
   });
 
@@ -66,8 +64,7 @@ export const operatorOverride = createServerFn({ method: "POST" })
         ).override(getRequest(), { organizationSlug }, { patch, reason }),
       );
     } catch (error) {
-      logger.error({ err: error, organizationSlug }, "operator override failed");
-      return respondError({ message: operatorErrorMessage(error) });
+      return operatorFailure(error, "operator.override", organizationSlug);
     }
   });
 
@@ -83,13 +80,12 @@ export const operatorClearOverride = createServerFn({ method: "POST" })
           ).clearOverride(getRequest(), { organizationSlug }, { key, reason }),
         );
       } catch (error) {
-        logger.error({ err: error, organizationSlug }, "operator clear override failed");
-        return respondError({ message: operatorErrorMessage(error) });
+        return operatorFailure(error, "operator.clear_override", organizationSlug);
       }
     },
   );
 
-function operatorErrorMessage(error: unknown): string {
+function operatorErrorMessage(error: unknown, operation: string): string {
   // OperatorConsole is constructed in the composition root, which the bundler places in a
   // different chunk than these server functions, so a thrown OperatorForbiddenError can carry a
   // different class identity here than the imported one — `instanceof` is unreliable across that
@@ -98,5 +94,27 @@ function operatorErrorMessage(error: unknown): string {
     if (error.name === "OperatorForbiddenError") return "You don't have operator access.";
     if (error.name === "OperatorOrganizationNotFoundError") return "Organization not found.";
   }
-  return "We couldn't complete that operator action.";
+  if (operation === "operator.organizations") {
+    return "Hub couldn't load the operator organization list. Reload the page.";
+  }
+  if (operation === "operator.snapshot") {
+    return "Hub couldn't load this organization's entitlement state. Reload the organization.";
+  }
+  if (operation === "operator.override") {
+    return "Hub couldn't save the entitlement override. Reload its current state before submitting again.";
+  }
+  return "Hub couldn't clear the entitlement override. Reload its current state before submitting again.";
+}
+
+function operatorFailure(error: unknown, operation: string, organizationSlug?: string) {
+  const message = operatorErrorMessage(error, operation);
+  return respondWithFailure(
+    error,
+    {
+      operation,
+      component: "operator",
+      ...(organizationSlug === undefined ? {} : { organizationSlug }),
+    },
+    { fallback: message, forbidden: message, notFound: message },
+  );
 }

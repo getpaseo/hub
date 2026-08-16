@@ -201,3 +201,24 @@ test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub
     await session.close();
   }
 });
+
+test("Discord network failure stays actionable and contained at phone width", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    embedded: true,
+    providerScenario: "discord-verification-network",
+  });
+  try {
+    const discord = session.surface.discord;
+    await discord.expand();
+    await discord.fillWorkingCredentials();
+    await discord.save();
+    await discord.expectFocusedError(
+      "Hub couldn't connect to Discord. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
+    );
+    await session.surface.expectNothingClipped();
+    await session.surface.shoot(SHOTS, "apps-19-discord-network-failed.mobile");
+  } finally {
+    await session.close();
+  }
+});

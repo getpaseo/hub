@@ -14,7 +14,7 @@ import {
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { BindSlackConnectionInput, Database, SlackConnectionRecord } from "../../db/types.js";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
@@ -269,9 +269,14 @@ function createSlackConnection(
       );
       if (disconnected.provider === "slack" && disconnected.botAccessToken !== undefined) {
         void client?.revoke(disconnected.botAccessToken).catch((error: unknown) => {
-          logger.warn(
-            { err: error, provider: "slack" },
-            "provider cleanup failed after disconnect",
+          reportFailure(
+            error,
+            {
+              operation: "connection.disconnect.cleanup",
+              component: "connections",
+              provider: "slack",
+            },
+            { kind: "internal" },
           );
         });
       }
@@ -312,7 +317,13 @@ async function completeAuthorization(
     });
   }
   if (state === null || code === null || client === undefined) {
-    return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
+    return connectionCallbackFailure({
+      error: new SlackCallbackError(),
+      provider: "slack",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute: "/",
+    });
   }
   let returnRoute = "/";
   let callbackOrigin = options.applicationBaseUrl;
@@ -347,6 +358,15 @@ async function completeAuthorization(
     return connectionResult(callbackOrigin, attempt.returnRoute, "slack_connected", "slack");
   } catch (error) {
     if (error instanceof SlackBotVerificationError) {
+      reportFailure(
+        error,
+        {
+          operation: "connection.callback.bot_verification",
+          component: "connections",
+          provider: "slack",
+        },
+        { kind: "permissionMissing" },
+      );
       return connectionResult(callbackOrigin, returnRoute, "slack_bot_failed", "slack");
     }
     return connectionCallbackFailure({
@@ -356,6 +376,13 @@ async function completeAuthorization(
       applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
+  }
+}
+
+class SlackCallbackError extends Error {
+  readonly code = "invalidInput";
+  constructor() {
+    super("invalid Slack callback");
   }
 }
 

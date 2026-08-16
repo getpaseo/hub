@@ -810,7 +810,13 @@ function connectionResultCopy(result: string): string {
     return "GitHub owner approval is required. Retry after approval.";
   }
   if (result === "provider_not_configured") return "The provider is not configured.";
-  return "The connection could not be completed.";
+  if (result === "connection_invalid") {
+    return "This connection link is invalid, expired, or already used. Restart the connection from this Hub.";
+  }
+  if (result === "connection_conflict") {
+    return "That provider account is already connected to another organization. Disconnect it there before trying again.";
+  }
+  return "The provider connection did not complete. Restart it from Connections; if it repeats, check the app credentials and provider status.";
 }
 
 function statusLabel(status: string): string {

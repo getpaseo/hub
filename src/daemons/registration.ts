@@ -6,6 +6,7 @@ import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database, DaemonRecord } from "../db/types.js";
 import type { ActiveDaemonRegistry, DaemonClock } from "./registry.js";
 import { slugify } from "../slug.js";
+import { reportFailure } from "../failures/index.js";
 
 const renameBody = z.object({ slug: z.string().trim().min(1).max(100) }).strict();
 const enrollmentBody = z
@@ -119,7 +120,7 @@ export async function enrollDaemon(
 ): Promise<Response> {
   const token = bearer(request.headers.get("authorization") ?? undefined);
   if (token === undefined) return Response.json({ error: "unauthorized" }, { status: 401 });
-  const input = enrollmentBody.safeParse(await request.json().catch(() => undefined));
+  const input = enrollmentBody.safeParse(await parsedJson(request, "daemon.enroll.parse"));
   if (!input.success) return Response.json({ error: "invalid enrollment" }, { status: 400 });
   const fallbackSlug = `daemon-${input.data.daemonId.slice(0, 8)}`;
   const daemon = await database.enrollDaemon({
@@ -182,10 +183,19 @@ async function parseRequest<TSchema extends z.ZodType>(
   request: Request,
   schema: TSchema,
 ): Promise<z.output<TSchema> | Response> {
-  const parsed = schema.safeParse(await request.json().catch(() => undefined));
+  const parsed = schema.safeParse(await parsedJson(request, "daemon.request.parse"));
   return parsed.success
     ? parsed.data
     : Response.json({ error: "invalid_request" }, { status: 400 });
+}
+
+async function parsedJson(request: Request, operation: string): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch (error) {
+    reportFailure(error, { operation, component: "daemons" }, { kind: "validation" });
+    return undefined;
+  }
 }
 
 function daemonSummary(daemon: DaemonRecord) {

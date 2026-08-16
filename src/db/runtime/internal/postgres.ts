@@ -1,5 +1,6 @@
 import { basename, join } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
@@ -55,7 +56,14 @@ class PostgresRuntime implements DatabaseRuntime {
         await connection.query("commit");
         return result;
       } catch (error) {
-        await connection.query("rollback").catch(() => undefined);
+        try {
+          await connection.query("rollback");
+        } catch (rollbackError) {
+          reportFailure(rollbackError, {
+            operation: "database.postgres.transaction.rollback",
+            component: "database",
+          });
+        }
         // The rollback value originated in this same generic transaction callback.
         // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
         if (error instanceof TransactionRollback) return error.result as T;

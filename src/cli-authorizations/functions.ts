@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondOk, type Result } from "../contract/respond.js";
+import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 
 const userCodeSchema = z.object({ userCode: z.string().min(1) });
@@ -25,11 +26,17 @@ export const inspectCliAuthorization = createServerFn({ method: "POST" })
         await getApplication()
       ).operations.handleCliAuthorizationInspect(operationRequest("inspect", data));
       if (!response.ok) {
-        return respondError({ message: "This CLI login request is unavailable or expired." });
+        return cliResponseFailure(
+          "cli_authorization.inspect",
+          response,
+          "This CLI login request is unavailable or expired.",
+        );
       }
       return respondOk(authorizationSchema.parse(await response.json()));
-    } catch {
-      return respondError({ message: "This CLI login request is unavailable or expired." });
+    } catch (error) {
+      return respondWithFailure(error, cliContext("cli_authorization.inspect"), {
+        fallback: "This CLI login request is unavailable or expired.",
+      });
     }
   });
 
@@ -41,18 +48,27 @@ export const decideCliAuthorization = createServerFn({ method: "POST" })
         await getApplication()
       ).operations.handleCliAuthorizationDecision(operationRequest("decision", data));
       if (response.status === 401 || response.status === 403) {
-        return respondError({
-          message: "An organization owner or admin must approve this CLI login.",
-        });
+        return cliResponseFailure(
+          "cli_authorization.decide",
+          response,
+          "An organization owner or admin must approve this CLI login.",
+        );
       }
       if (!response.ok) {
-        return respondError({ message: "We couldn't decide this CLI login request." });
+        return cliResponseFailure(
+          "cli_authorization.decide",
+          response,
+          "Hub couldn't record this CLI login decision. Confirm the request is still active before deciding again.",
+        );
       }
       return respondOk({
         decision: data.decision === "approve" ? ("approved" as const) : ("denied" as const),
       });
-    } catch {
-      return respondError({ message: "We couldn't decide this CLI login request." });
+    } catch (error) {
+      return respondWithFailure(error, cliContext("cli_authorization.decide"), {
+        fallback:
+          "Hub couldn't record this CLI login decision. Confirm the request is still active before deciding again.",
+      });
     }
   });
 
@@ -66,4 +82,24 @@ function operationRequest(path: "inspect" | "decision", body: unknown): Request 
     headers,
     body: JSON.stringify(body),
   });
+}
+
+function cliContext(operation: string) {
+  return { operation, component: "cli_authorizations" } as const;
+}
+
+function cliResponseFailure(operation: string, response: Response, message: string) {
+  return respondWithFailure(
+    new Error(`CLI authorization returned HTTP ${response.status}`),
+    { ...cliContext(operation), status: response.status },
+    {
+      fallback: message,
+      authentication: message,
+      forbidden: message,
+      notFound: message,
+      conflict: message,
+      validation: message,
+    },
+    { status: response.status },
+  );
 }

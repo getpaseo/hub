@@ -4,6 +4,7 @@ import type { GitHubConfigurationProvider } from "../../configuration/github-syn
 import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import type {
@@ -665,7 +666,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         retirement: undefined,
       };
       return restored;
-    } catch {
+    } catch (error) {
+      reportFailure(error, {
+        operation: "provider_runtime.restore_callback_snapshot",
+        component: "provider_runtime",
+        provider,
+      });
       return slot.active;
     }
   }
@@ -710,7 +716,16 @@ async function startSources(active: ActiveRegistration, handler: TriggerHandler)
     }
     active.sourcesStarted = true;
   } catch (error) {
-    await Promise.allSettled(started.toReversed().map((source) => source.stop()));
+    const cleanup = await Promise.allSettled(started.toReversed().map((source) => source.stop()));
+    for (const failure of cleanup) {
+      if (failure.status === "rejected") {
+        reportFailure(failure.reason, {
+          operation: "provider_runtime.start_sources.cleanup",
+          component: "provider_runtime",
+          provider: active.provider,
+        });
+      }
+    }
     throw error;
   }
 }
@@ -729,9 +744,10 @@ async function retire(provider: Provider, active: ActiveRegistration): Promise<v
   try {
     await stopSources(active);
   } catch (error) {
-    logger.warn(
-      { provider, errorType: error instanceof Error ? error.name : "UnknownError" },
-      "retired provider resources failed to close",
+    reportFailure(
+      error,
+      { operation: "provider_runtime.retire", component: "provider_runtime", provider },
+      { logger, kind: "internal" },
     );
   }
 }

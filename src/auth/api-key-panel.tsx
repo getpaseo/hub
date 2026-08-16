@@ -196,7 +196,11 @@ export function ApiKeys() {
   }
   if (snapshot.isPending) return <p aria-busy="true">Loading API keys…</p>;
   if (snapshot.isError || snapshot.data.status === "error") {
-    return <Alert variant="destructive">We couldn't load API keys.</Alert>;
+    return (
+      <Alert variant="destructive">
+        Hub did not receive the API-key list. Check your connection and reload the page.
+      </Alert>
+    );
   }
   const keys = [...snapshot.data.data.keys].sort((left, right) => {
     const revoked = Number(left.revokedAt !== null) - Number(right.revokedAt !== null);
@@ -208,11 +212,17 @@ export function ApiKeys() {
   const createResponseError =
     create.data?.status === "error" ? create.data.error.message : undefined;
   const error =
-    createResponseError ?? (create.isError ? "We couldn't create that API key." : undefined);
+    createResponseError ??
+    (create.isError
+      ? "Hub did not receive the API-key creation result. Check your connection and reload the key list; no secret can be recovered later."
+      : undefined);
   const revokeResponseError =
     revoke.data?.status === "error" ? revoke.data.error.message : undefined;
   const revokeError =
-    revokeResponseError ?? (revoke.isError ? "We couldn't revoke that API key." : undefined);
+    revokeResponseError ??
+    (revoke.isError
+      ? "Hub did not receive the API-key revocation result. Check your connection and reload the key list to confirm its status."
+      : undefined);
   return (
     <>
       <PageHeader title="API keys" description={`Machine access for ${account.organization.name}.`}>
@@ -405,7 +415,9 @@ function ApiKeyDialog({
       await navigator.clipboard.writeText(secret);
       setCopied("API key copied.");
     } catch {
-      setCopied("We couldn't copy the API key.");
+      setCopied(
+        "Clipboard access was blocked. Select the API key and copy it manually before closing this dialog.",
+      );
     }
   }, [secret]);
   const selectSecret = useCallback((event: FocusEvent<HTMLInputElement>) => {

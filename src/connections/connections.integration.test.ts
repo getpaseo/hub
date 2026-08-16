@@ -75,7 +75,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert(callbackResults.every((value): value is string => value !== null));
     assert.deepEqual(
       callbackResults.sort((left, right) => left.localeCompare(right)),
-      ["connection_unavailable", "github_connected"],
+      ["connection_invalid", "github_connected"],
     );
 
     const discordStart = await start(connections, "discord");
@@ -154,16 +154,13 @@ describe("provider connection facades PostgreSQL authority", () => {
     await pool.query(
       `update organization_connection_attempts set expires_at = now() - interval '1 second'`,
     );
-    assert.equal(
-      result(await setupCallback(connections, expired.state, 42)),
-      "connection_unavailable",
-    );
+    assert.equal(result(await setupCallback(connections, expired.state, 42)), "connection_invalid");
 
     const downgraded = await start(connections, "github");
     await pool.query(`update member set role = 'member' where organization_id = 'acme'`);
     assert.equal(
       result(await setupCallback(connections, downgraded.state, 42)),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       (await connectionAction(connections, request("/start", "POST"), "discord", "start")).status,
@@ -186,7 +183,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     const orbitUserState = await completeSetup(connections, orbit.state, 42);
     assert.equal(
       result(await githubCallback(connections, orbitUserState, "code")),
-      "connection_unavailable",
+      "connection_conflict",
     );
     assert.deepEqual(await resolution(connections, "github", "42"), {
       status: "active",
@@ -199,7 +196,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       await rejectGitHubCallbackAfter(database, pool, "signed-out", async () => {
         await pool.query(`delete from session where id = 'session-signed-out'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "expired-session", async () => {
@@ -207,19 +204,19 @@ describe("provider connection facades PostgreSQL authority", () => {
           `update session set expires_at = now() - interval '1 second' where id = 'session-expired-session'`,
         );
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "role-downgrade", async () => {
         await pool.query(`update member set role = 'member' where id = 'member-role-downgrade'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "membership-delete", async () => {
         await pool.query(`delete from member where id = 'member-membership-delete'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
 
     const connectionsCount = await pool.query<{ count: number }>(
@@ -248,7 +245,7 @@ describe("provider connection facades PostgreSQL authority", () => {
         },
         () => setupCallback(connections, attemptSetup.state, 42),
       ),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.deepEqual(await attemptAuthority(pool, attemptId), {
       phase: "github_setup",
@@ -274,7 +271,7 @@ describe("provider connection facades PostgreSQL authority", () => {
         },
         () => setupCallback(connections, sessionSetup.state, 42),
       ),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.deepEqual(await attemptAuthority(pool, sessionAttemptId), {
       phase: "github_setup",
@@ -400,7 +397,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     ]);
     assert.deepEqual(
       outcomes.map(result).sort((left, right) => String(left).localeCompare(String(right))),
-      ["connection_unavailable", "github_connected"],
+      ["connection_conflict", "github_connected"],
     );
     assert.equal(
       (

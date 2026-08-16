@@ -53,7 +53,9 @@ export function InstanceSetupEntry() {
   if (!accountRequested) return <Welcome onBegin={requestAccount} />;
   let message: string | undefined;
   if (claim.data?.status === "error") message = claim.data.error.message;
-  if (claim.isError) message = "We couldn't create your account. Try again.";
+  if (claim.isError)
+    message =
+      "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed.";
   return (
     <AccountSetupForm
       // Stay busy through the account refetch, so the form cannot be resubmitted in the moment

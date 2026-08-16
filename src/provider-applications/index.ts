@@ -2,6 +2,7 @@ import type { AccountAccessValue } from "../auth/organization-access.js";
 import type { BindSlackConnectionInput } from "../db/types.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
+import { reportFailure } from "../failures/index.js";
 
 export const PROVIDERS = ["github", "slack", "discord"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -194,7 +195,13 @@ export type ProviderApplicationErrorCode =
   | "invalidOrigin"
   | "invalidInput"
   | "credentialsRejected"
-  | "unreachable"
+  | "permissionMissing"
+  | "rateLimited"
+  | "network"
+  | "timeout"
+  | "upstreamUnavailable"
+  | "invalidResponse"
+  | "internal"
   | "identityConflict"
   | "configurationConflict"
   | "managedByEnvironment"
@@ -204,15 +211,27 @@ export class ProviderApplicationError extends Error {
   constructor(
     readonly code: ProviderApplicationErrorCode,
     readonly safeContext?: string,
+    options?: ErrorOptions,
   ) {
-    super(code);
+    super(code, options);
     this.name = "ProviderApplicationError";
   }
 }
 
 export class ProviderVerificationError extends Error {
-  constructor(readonly reason: "credentialsRejected" | "unreachable") {
-    super(reason);
+  constructor(
+    readonly reason:
+      | "credentialsRejected"
+      | "permissionMissing"
+      | "rateLimited"
+      | "network"
+      | "timeout"
+      | "upstreamUnavailable"
+      | "invalidResponse",
+    readonly safeStatus?: number,
+    options?: ErrorOptions,
+  ) {
+    super(reason, options);
     this.name = "ProviderVerificationError";
   }
 }
@@ -375,9 +394,10 @@ export function createProviderApplications(
           );
           await candidate.close();
           return result;
-        } catch {
-          await candidate?.close().catch(() => undefined);
-          throw new ProviderApplicationError("unreachable");
+        } catch (error) {
+          await closeCandidate(candidate, provider, "begin_connection");
+          if (error instanceof ProviderApplicationError) throw error;
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
       });
     },
@@ -398,8 +418,8 @@ async function requireOperator(
   let account: AccountAccessValue;
   try {
     account = await options.auth.resolveAccount(request);
-  } catch {
-    throw new ProviderApplicationError("forbidden");
+  } catch (error) {
+    throw new ProviderApplicationError("forbidden", undefined, { cause: error });
   }
   if (!account.isInstanceOperator) throw new ProviderApplicationError("forbidden");
   return account;
@@ -411,8 +431,8 @@ async function safeCallbackOrigin(
 ): Promise<string> {
   try {
     return await options.callbackOrigin(request);
-  } catch {
-    throw new ProviderApplicationError("invalidOrigin");
+  } catch (error) {
+    throw new ProviderApplicationError("invalidOrigin", undefined, { cause: error });
   }
 }
 
@@ -591,7 +611,7 @@ export async function activateProviderApplicationsAtStartup(options: {
         candidate.publish();
         candidate = undefined;
       } catch (error) {
-        await candidate?.close().catch(() => undefined);
+        await closeCandidate(candidate, provider, "activate_at_startup");
         throw error;
       }
     } catch (error) {
@@ -655,8 +675,8 @@ async function beginSlackConfiguration(
     },
   );
   if (candidate.beginConnection === undefined) {
-    await candidate.close().catch(() => undefined);
-    throw new ProviderApplicationError("unreachable");
+    await closeCandidate(candidate, "slack", "begin_configuration");
+    throw new ProviderApplicationError("internal");
   }
   try {
     const { url } = await options.beginCandidateConnection(
@@ -671,9 +691,9 @@ async function beginSlackConfiguration(
     await candidate.close();
     return { status: "continuing", provider: "slack", url };
   } catch (error) {
-    await candidate.close().catch(() => undefined);
+    await closeCandidate(candidate, "slack", "begin_configuration");
     if (error instanceof ProviderApplicationError) throw error;
-    throw new ProviderApplicationError("unreachable");
+    throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
 }
 
@@ -689,9 +709,9 @@ async function verifyAndActivateProvider(
     identity = await options.verifier.verify(provider, input);
   } catch (error) {
     if (error instanceof ProviderVerificationError) {
-      throw new ProviderApplicationError(error.reason);
+      throw new ProviderApplicationError(error.reason, undefined, { cause: error });
     }
-    throw new ProviderApplicationError("unreachable");
+    throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
   if (identity.provider !== provider) throw new ProviderApplicationError("credentialsRejected");
   const previous = await options.store.read(provider);
@@ -720,7 +740,7 @@ async function verifyAndActivateProvider(
     candidate = undefined;
     return { status: "verified", provider, identity, configurationVersion: saved.version };
   } catch (error) {
-    await candidate?.close().catch(() => undefined);
+    await closeCandidate(candidate, provider, "verify_and_save");
     if (error instanceof ProviderApplicationError) throw error;
     if (isIdentityConflict(error)) {
       throw new ProviderApplicationError("identityConflict", previous?.identity.name);
@@ -728,7 +748,7 @@ async function verifyAndActivateProvider(
     if (isConfigurationConflict(error)) {
       throw new ProviderApplicationError("configurationConflict");
     }
-    throw new ProviderApplicationError("unreachable");
+    throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
 }
 
@@ -777,7 +797,24 @@ async function completeSlackInstallation(
     candidate.publish();
     candidate = undefined;
   } catch (error) {
-    await candidate?.close().catch(() => undefined);
+    await closeCandidate(candidate, "slack", "complete_installation");
     throw error;
+  }
+}
+
+async function closeCandidate(
+  candidate: ProviderRuntimeCandidate | undefined,
+  provider: Provider,
+  parentOperation: string,
+): Promise<void> {
+  if (candidate === undefined) return;
+  try {
+    await candidate.close();
+  } catch (error) {
+    reportFailure(error, {
+      operation: `provider_application.${parentOperation}.cleanup`,
+      component: "provider_applications",
+      provider,
+    });
   }
 }

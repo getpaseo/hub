@@ -28,6 +28,7 @@ test("a self-hosted instance without STRIPE_SECRET_KEY has no billing surface", 
   await test.step("the billing settings page 404s", async () => {
     await hub.expectBillingPageUnavailable("owner");
     await page.screenshot({ path: `${SLICE_4_DIR}/02-billing-page-404.png`, fullPage: true });
+    await hub.returnToProjects("owner");
   });
 
   await test.step("the billing webhook endpoint 404s", async () => {

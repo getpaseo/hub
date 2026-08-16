@@ -87,6 +87,19 @@ test("GitHub is verified, installed, and reported honestly at each boundary", as
     await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
     await github.save();
     await github.expectFocusedError(/GitHub didn't accept these credentials/u);
+    await expect
+      .poll(() => session.application.logs())
+      .toContain("provider_application.verify_and_save");
+    const rejectionLogs = plainLogs(session.application.logs());
+    expect(rejectionLogs).toMatch(/provider:\s*["']?github/u);
+    expect(rejectionLogs).toMatch(/failureKind:\s*["']?credentialsRejected/u);
+    for (const secret of [
+      WORKING_CREDENTIALS.GitHub["Client secret"]!,
+      "wrong-key",
+      WORKING_CREDENTIALS.GitHub["Webhook secret"]!,
+    ]) {
+      expect(rejectionLogs).not.toContain(secret);
+    }
     await surface.accessible();
     await github.expectStatus("Not set up");
     expect(await github.value("App ID")).toBe("42");
@@ -171,6 +184,47 @@ test("Discord is verified and added to a server from its own section", async ({ 
   }
 });
 
+test("Discord network verification failure is actionable, logged, and secret-safe", async ({
+  hub,
+}) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    embedded: true,
+    providerScenario: "discord-verification-network",
+  });
+  const fakeClientSecret = "PRIVATE-DISCORD-CLIENT-SECRET-DO-NOT-LOG";
+  const fakeBotToken = "PRIVATE-DISCORD-BOT-TOKEN-DO-NOT-LOG";
+  try {
+    const discord = session.surface.discord;
+    await discord.expand();
+    await discord.fill({
+      "Application ID": "900",
+      "Client Secret": fakeClientSecret,
+      "Bot token": fakeBotToken,
+    });
+    await discord.save();
+
+    await discord.expectFocusedError(
+      "Hub couldn't connect to Discord. Check this server's network, DNS, and TLS access to discord.com, then verify again.",
+    );
+    await session.surface.shoot(SHOTS, "apps-19-discord-network-failed.desktop");
+    await expect
+      .poll(() => session.application.logs())
+      .toContain("provider_application.verify_and_save");
+    const logs = plainLogs(session.application.logs());
+    expect(logs).toMatch(/provider:\s*["']?discord/u);
+    expect(logs).toMatch(/failureKind:\s*["']?network/u);
+    expect(logs).toMatch(/err:/u);
+    expect(logs).toContain("ProviderVerificationError");
+    expect(logs).not.toContain(fakeClientSecret);
+    expect(logs).not.toContain(fakeBotToken);
+    expect(await discord.status().textContent()).not.toContain(fakeClientSecret);
+    expect(await discord.status().textContent()).not.toContain(fakeBotToken);
+  } finally {
+    await session.close();
+  }
+});
+
 test("Slack completes its HTTPS install before saving and activating the app", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
@@ -216,6 +270,47 @@ test("Slack completes its HTTPS install before saving and activating the app", a
     await session.close();
   }
 });
+
+test("Slack missing scopes are actionable, logged, and secret-safe", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    https: true,
+    providerScenario: "slack-permission-missing",
+  });
+  try {
+    const slack = session.surface.slack;
+    await slack.expand();
+    await slack.fillWorkingCredentials();
+    await slack.save();
+    await expect(
+      session.page.getByRole("heading", { name: "Install Paseo in Acme" }),
+    ).toBeVisible();
+    await session.page.getByRole("link", { name: "Accept installation" }).click();
+    await slack.expectFocusedError(
+      "Slack didn't grant every required bot permission. Update the app scopes, then reinstall it. Nothing was saved.",
+    );
+    await expect
+      .poll(() => session.application.logs())
+      .toContain("connection.callback.bot_verification");
+    const logs = plainLogs(session.application.logs());
+    expect(logs).toMatch(/provider:\s*["']?slack/u);
+    expect(logs).toMatch(/failureKind:\s*["']?permissionMissing/u);
+    expect(logs).toContain("SlackBotVerificationError");
+    for (const secret of [
+      WORKING_CREDENTIALS.Slack["Client Secret"]!,
+      WORKING_CREDENTIALS.Slack["Signing Secret"]!,
+      "xoxb-fixture",
+    ]) {
+      expect(logs).not.toContain(secret);
+    }
+  } finally {
+    await session.close();
+  }
+});
+
+function plainLogs(value: string): string {
+  return value.replace(/\u001B\[[0-9;]*m/gu, "");
+}
 
 test("Slack is genuinely blocked on plain HTTP", async ({ hub }) => {
   const session = await openSetup(hub);
@@ -423,7 +518,11 @@ test("a member has no Apps surface at all", async ({ hub }) => {
       await expect(member.page.getByRole("link", { name: "Apps", exact: true })).toHaveCount(0);
       await member.page.goto(`${session.origin}/apps`);
       // The route renders, the capability refuses: no credential status of any kind.
-      await expect(member.page.getByText("We couldn't load your apps.")).toBeVisible();
+      await expect(
+        member.page.getByText(
+          "Hub couldn't load your apps. Reload the page and use the reference if the problem continues.",
+        ),
+      ).toBeVisible();
       await expect(member.page.getByRole("form", { name: "Set up GitHub" })).toHaveCount(0);
       await expect(member.page.getByText("Not set up")).toHaveCount(0);
     } finally {

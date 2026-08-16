@@ -68,8 +68,57 @@ describe("provider application verification", () => {
       }),
       (error: unknown) =>
         error instanceof ProviderVerificationError &&
-        error.reason === "unreachable" &&
-        !error.message.includes("super-secret"),
+        error.reason === "network" &&
+        !error.message.includes("super-secret") &&
+        !(error.cause instanceof Error && error.cause.message.includes("super-secret")),
+    );
+  });
+
+  for (const [status, reason] of [
+    [429, "rateLimited"],
+    [503, "upstreamUnavailable"],
+  ] as const) {
+    it(`classifies Discord HTTP ${status} without reading its sensitive payload`, async () => {
+      let bodyRead = false;
+      const response = new Response(null, { status });
+      Object.defineProperty(response, "json", {
+        value: () => {
+          bodyRead = true;
+          return Promise.resolve({ payload: "PRIVATE-UPSTREAM-PAYLOAD" });
+        },
+      });
+      const verifier = createProviderApplicationVerifier({
+        fetch: () => Promise.resolve(response),
+      });
+      await assert.rejects(
+        verifier.verify("discord", {
+          provider: "discord",
+          applicationId: "100",
+          clientSecret: "PRIVATE-CLIENT-SECRET",
+          botToken: "PRIVATE-BOT-TOKEN",
+        }),
+        (error: unknown) =>
+          error instanceof ProviderVerificationError &&
+          error.reason === reason &&
+          error.safeStatus === status,
+      );
+      assert.equal(bodyRead, false);
+    });
+  }
+
+  it("classifies a successful response with invalid JSON separately", async () => {
+    const verifier = createProviderApplicationVerifier({
+      fetch: () => Promise.resolve(new Response("not-json", { status: 200 })),
+    });
+    await assert.rejects(
+      verifier.verify("discord", {
+        provider: "discord",
+        applicationId: "100",
+        clientSecret: "secret",
+        botToken: "token",
+      }),
+      (error: unknown) =>
+        error instanceof ProviderVerificationError && error.reason === "invalidResponse",
     );
   });
 });

@@ -1,8 +1,15 @@
 import pino from "pino";
 
-const SECRET_KEY_PATTERN = /(token|secret|password|auth|key|signature)/i;
+const SECRET_KEY_PATTERN =
+  /(?:^|[_-])(?:token|secret|password|auth|authorization|key|signature)(?:$|[_-])|(?:Token|Secret|Password|Auth|Authorization|Key|Signature)(?:Header|Value)?$/iu;
 const GITHUB_TOKEN_PATTERN = /\b(?:gho|ghp|ghu|ghs)_[A-Za-z0-9_]+\b|\bgithub_pat_[A-Za-z0-9_]+\b/g;
-const JWT_PATTERN = /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
+const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
+const DISCORD_TOKEN_PATTERN = /\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g;
+const SLACK_TOKEN_PATTERN = /\bxox[baprs]-[A-Za-z0-9-]+\b/g;
+const STRIPE_SECRET_PATTERN = /\b(?:sk_(?:live|test)|rk_(?:live|test)|whsec)_[A-Za-z0-9_]+\b/g;
+const AUTHORIZATION_PATTERN = /\b(?:Bearer|Basic|Bot)\s+[A-Za-z0-9._~+/=-]{16,}/gi;
+const PRIVATE_KEY_PATTERN =
+  /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g;
 const REDACTED = "[Redacted]";
 
 const PINO_REDACT_PATHS = [
@@ -34,6 +41,9 @@ export function createLogger(destination?: pino.DestinationStream): pino.Logger 
       log(object) {
         return redactObject(object);
       },
+    },
+    serializers: {
+      err: serializeError,
     },
   };
 
@@ -98,9 +108,24 @@ function redactObject(value: object): Record<string, unknown> {
 function redactString(value: string): string {
   let redacted = value.replace(GITHUB_TOKEN_PATTERN, REDACTED);
 
-  redacted = redacted.replace(JWT_PATTERN, (match) => (match.length > 100 ? REDACTED : match));
+  redacted = redacted.replace(JWT_PATTERN, REDACTED);
+  redacted = redacted.replace(DISCORD_TOKEN_PATTERN, REDACTED);
+  redacted = redacted.replace(SLACK_TOKEN_PATTERN, REDACTED);
+  redacted = redacted.replace(STRIPE_SECRET_PATTERN, REDACTED);
+  redacted = redacted.replace(AUTHORIZATION_PATTERN, REDACTED);
+  redacted = redacted.replace(PRIVATE_KEY_PATTERN, REDACTED);
 
   return redacted;
+}
+
+function serializeError(value: unknown): Record<string, unknown> {
+  if (!(value instanceof Error)) return { type: "NonError", message: "non-Error failure" };
+  return {
+    type: value.name,
+    message: redactString(value.message),
+    ...(value.stack === undefined ? {} : { stack: redactString(value.stack) }),
+    ...(value.cause === undefined ? {} : { cause: serializeError(value.cause) }),
+  };
 }
 
 export const logger = createLogger();

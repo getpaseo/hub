@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../../contract/respond.js";
-import { logger } from "../../logger.js";
+import { respondOk, type Result } from "../../contract/respond.js";
+import { respondWithFailure } from "../../failures/index.js";
 import { tenantRouteNotFoundMessage } from "../../projects/access.js";
 import {
   handleBillingCheckout,
@@ -36,8 +36,12 @@ export const billingOverview = createServerFn({ method: "GET" })
     try {
       return respondOk(await handleBillingOverview(getRequest(), data.organizationSlug));
     } catch (error) {
-      logger.error({ err: error, data }, "billing overview read failed");
-      return respondError({ message: billingOverviewErrorMessage(error) });
+      const message = billingOverviewErrorMessage(error);
+      return respondWithFailure(error, billingContext("billing.overview", data.organizationSlug), {
+        fallback: message,
+        notFound: message,
+        forbidden: message,
+      });
     }
   });
 
@@ -47,8 +51,12 @@ export const billingCheckout = createServerFn({ method: "POST" })
     try {
       return respondOk(await handleBillingCheckout(getRequest(), data));
     } catch (error) {
-      logger.error({ err: error, data }, "billing checkout failed");
-      return respondError({ message: billingActionErrorMessage(error) });
+      const message = billingActionErrorMessage(error);
+      return respondWithFailure(
+        error,
+        { ...billingContext("billing.checkout", data.organizationSlug), provider: "stripe" },
+        billingMessages(message),
+      );
     }
   });
 
@@ -58,8 +66,12 @@ export const billingPortal = createServerFn({ method: "POST" })
     try {
       return respondOk(await handleBillingPortal(getRequest(), data.organizationSlug));
     } catch (error) {
-      logger.error({ err: error, data }, "billing portal failed");
-      return respondError({ message: billingActionErrorMessage(error) });
+      const message = billingActionErrorMessage(error);
+      return respondWithFailure(
+        error,
+        { ...billingContext("billing.portal", data.organizationSlug), provider: "stripe" },
+        billingMessages(message),
+      );
     }
   });
 
@@ -77,5 +89,24 @@ export function billingActionErrorMessage(error: unknown): string {
   if (error instanceof Error && error.name === "BillingForbiddenError") {
     return "Only an organization owner or admin can change billing.";
   }
-  return "We couldn't reach billing. Please try again.";
+  return "Hub couldn't complete the billing action. Check Stripe availability and reload the current billing state before submitting again.";
+}
+
+function billingContext(operation: string, organizationSlug: string) {
+  return { operation, component: "billing", organizationSlug } as const;
+}
+
+function billingMessages(fallback: string) {
+  return {
+    fallback,
+    forbidden: fallback,
+    rateLimited:
+      "Stripe rate limited Hub. Wait a few minutes before submitting the billing action again.",
+    network:
+      "Hub couldn't connect to Stripe. Check this server's network, DNS, and TLS access to api.stripe.com before submitting again.",
+    timeout:
+      "Stripe did not respond before the billing request timed out. Check Stripe status before submitting again.",
+    upstreamUnavailable:
+      "Stripe is unavailable right now. Check Stripe status before submitting the billing action again.",
+  };
 }

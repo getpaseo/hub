@@ -1,6 +1,6 @@
 import type { AuthServer } from "../../auth/server.js";
 import type { Database, DiscordConnectionRecord } from "../../db/types.js";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
@@ -226,13 +226,14 @@ function createDiscordConnection(
       );
       if (disconnected.provider === "discord" && disconnected.guildId !== undefined) {
         void client?.leaveGuild(disconnected.guildId).catch((error: unknown) => {
-          logger.warn(
+          reportFailure(
+            error,
             {
+              operation: "connection.disconnect.cleanup",
+              component: "connections",
               provider: "discord",
-              action: "leave",
-              errorType: errorType(error),
             },
-            "provider cleanup failed after disconnect",
+            { kind: "internal" },
           );
         });
       }
@@ -273,7 +274,13 @@ async function completeAuthorization(
     });
   }
   if (state === null || code === null || client === undefined) {
-    return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
+    return connectionCallbackFailure({
+      error: new ProviderCallbackError("invalid_callback"),
+      provider: "discord",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute: "/",
+    });
   }
   let returnRoute = "/";
   let callbackOrigin = options.applicationBaseUrl;
@@ -293,12 +300,13 @@ async function completeAuthorization(
         phase: "discord_authorization",
         access,
       });
-      return connectionResult(
-        callbackOrigin,
-        attempt.returnRoute,
-        "connection_unavailable",
-        "discord",
-      );
+      return connectionCallbackFailure({
+        error: new ProviderCallbackError("Discord did not verify the selected server"),
+        provider: "discord",
+        phase: "authorization",
+        applicationBaseUrl: callbackOrigin,
+        returnRoute: attempt.returnRoute,
+      });
     }
     await bindDiscord(options.database, state, access, guild, options.configuration.clientId);
     return connectionResult(callbackOrigin, attempt.returnRoute, "discord_connected", "discord");
@@ -311,6 +319,10 @@ async function completeAuthorization(
       returnRoute,
     });
   }
+}
+
+class ProviderCallbackError extends Error {
+  readonly code = "invalidInput";
 }
 
 async function bindDiscord(
@@ -345,8 +357,4 @@ function discordStatus(configured: boolean, bindings: readonly DiscordConnection
   return bindings.length === 0
     ? { status: "disconnected" as const }
     : { status: "connected" as const };
-}
-
-function errorType(error: unknown): string {
-  return error instanceof Error ? error.name : "UnknownError";
 }

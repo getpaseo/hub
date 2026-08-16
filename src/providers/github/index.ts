@@ -361,7 +361,13 @@ async function completeSetup(
   const installationId = positiveInteger(url.searchParams.get("installation_id"));
   const action = url.searchParams.get("setup_action");
   if (state === null || client === undefined)
-    return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
+    return connectionCallbackFailure({
+      error: new GitHubCallbackError("invalid setup callback"),
+      provider: "github",
+      phase: "setup",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute: "/",
+    });
   let returnRoute = "/";
   let callbackOrigin = options.applicationBaseUrl;
   try {
@@ -387,12 +393,13 @@ async function completeSetup(
       );
     }
     if ((action !== "install" && action !== "update") || installationId === undefined) {
-      return connectionResult(
-        callbackOrigin,
-        attempt.returnRoute,
-        "connection_unavailable",
-        "github",
-      );
+      return connectionCallbackFailure({
+        error: new GitHubCallbackError("invalid setup result"),
+        provider: "github",
+        phase: "setup",
+        applicationBaseUrl: callbackOrigin,
+        returnRoute: attempt.returnRoute,
+      });
     }
     const nextState = newConnectionState();
     const verifier = newConnectionState();
@@ -442,7 +449,13 @@ async function completeAuthorization(
     });
   }
   if (state === null || code === null || client === undefined) {
-    return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
+    return connectionCallbackFailure({
+      error: new GitHubCallbackError("invalid authorization callback"),
+      provider: "github",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute: "/",
+    });
   }
   let returnRoute = "/";
   let callbackOrigin = options.applicationBaseUrl;
@@ -469,12 +482,13 @@ async function completeAuthorization(
         phase: "github_user_authorization",
         access,
       });
-      return connectionResult(
-        callbackOrigin,
-        attempt.returnRoute,
-        "connection_unavailable",
-        "github",
-      );
+      return connectionCallbackFailure({
+        error: new GitHubCallbackError("installation verification rejected"),
+        provider: "github",
+        phase: "authorization",
+        applicationBaseUrl: callbackOrigin,
+        returnRoute: attempt.returnRoute,
+      });
     }
     await bindGitHub(options.database, state, access, identity, options.configuration.appId);
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
@@ -487,6 +501,10 @@ async function completeAuthorization(
       returnRoute,
     });
   }
+}
+
+class GitHubCallbackError extends Error {
+  readonly code = "invalidInput";
 }
 
 async function bindGitHub(

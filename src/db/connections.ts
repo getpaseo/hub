@@ -2,7 +2,11 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Locks } from "./runtime/locks/index.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
 import { slugify } from "../slug.js";
-import { ConnectionAccessDeniedError, ConnectionConflictError } from "./errors.js";
+import {
+  ConnectionAccessDeniedError,
+  ConnectionAttemptUnavailableError,
+  ConnectionConflictError,
+} from "./errors.js";
 import * as schema from "./schema.js";
 import type {
   AdvanceGitHubConnectionAttemptInput,
@@ -572,7 +576,7 @@ async function lockAttempt(
     attempt.userId !== input.access.userId ||
     attempt.sessionId !== input.access.sessionId
   )
-    throw new Error("connection unavailable");
+    throw new ConnectionAttemptUnavailableError();
   return attempt;
 }
 

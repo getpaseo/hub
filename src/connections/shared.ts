@@ -9,7 +9,8 @@ import type {
   Database,
   TenantRouteAccess,
 } from "../db/types.js";
-import { logger, redact } from "../logger.js";
+import { logger } from "../logger.js";
+import { classifyFailure, reportFailure, type FailureKind } from "../failures/index.js";
 import { resolveRouteTenant } from "../projects/access.js";
 
 export const CONNECTION_ATTEMPT_LIFETIME_MINUTES = 10;
@@ -134,46 +135,64 @@ export function connectionCallbackFailure(input: {
   phase: string;
   applicationBaseUrl: string;
   returnRoute: string;
-  log?: Pick<Logger, "error">;
+  log?: Pick<Logger, "warn" | "error">;
 }): Response {
   const log = input.log ?? logger;
-  log.error(
+  const kind = classifyFailure(input.error);
+  reportFailure(
+    input.error,
     {
+      operation: `connection.callback.${input.phase}`,
+      component: "connections",
       provider: input.provider,
-      phase: input.phase,
-      errorType: input.error instanceof Error ? input.error.name : "UnknownError",
-      ...(input.error instanceof Error ? { errorMessage: redact(input.error.message) } : {}),
     },
-    "connection callback unavailable",
+    { logger: log, kind },
   );
   return connectionResult(
     input.applicationBaseUrl,
     input.returnRoute,
-    "connection_unavailable",
+    connectionCallbackResult(kind),
     input.provider,
   );
 }
 
 export function connectionActionFailure(
   error: unknown,
-  provider: string,
+  provider: "github" | "discord" | "slack",
   action: "start" | "disconnect",
 ): Response {
-  if (error instanceof ConnectionAccessDeniedError || error instanceof ProductRequestError) {
+  const accessDenied =
+    error instanceof ConnectionAccessDeniedError || error instanceof ProductRequestError;
+  const conflict = error instanceof ConnectionConflictError;
+  reportFailure(
+    error,
+    {
+      operation: `connection.${action}`,
+      component: "connections",
+      provider,
+    },
+    { kind: connectionActionKind(accessDenied, conflict) },
+  );
+  if (accessDenied) {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
-  if (error instanceof ConnectionConflictError) {
+  if (conflict) {
     return Response.json({ error: "already_connected" }, { status: 409 });
   }
-  logger.error(
-    {
-      provider,
-      action,
-      errorType: error instanceof Error ? error.name : "UnknownError",
-    },
-    "connection action unavailable",
-  );
   return Response.json({ error: "connection_unavailable" }, { status: 503 });
+}
+
+function connectionCallbackResult(kind: FailureKind): string {
+  if (kind === "validation" || kind === "authentication" || kind === "forbidden") {
+    return "connection_invalid";
+  }
+  if (kind === "conflict") return "connection_conflict";
+  return "connection_unavailable";
+}
+
+function connectionActionKind(accessDenied: boolean, conflict: boolean): FailureKind {
+  if (accessDenied) return "forbidden";
+  return conflict ? "conflict" : "internal";
 }
 
 export function positiveInteger(value: string | null): number | undefined {

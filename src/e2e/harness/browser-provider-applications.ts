@@ -65,6 +65,8 @@ export function fixtureEnvironmentIdentity(provider: Provider): ProviderApplicat
  * status ladder is driven by a real round trip through the provider-applications boundary.
  */
 export class BrowserProviderApplicationVerifier implements ProviderApplicationVerifier {
+  constructor(private readonly scenario: BrowserProviderScenario = "connected") {}
+
   verify(
     provider: Provider,
     configuration: ProviderApplicationConfiguration,
@@ -80,6 +82,9 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
         : Promise.reject(new ProviderVerificationError("credentialsRejected"));
     }
     if (configuration.provider === "discord") {
+      if (this.scenario === "discord-verification-network") {
+        return Promise.reject(new ProviderVerificationError("network"));
+      }
       const expected = FIXTURE_APP_CREDENTIALS.discord;
       return configuration.applicationId === expected.applicationId &&
         configuration.botToken === expected.botToken
@@ -164,7 +169,7 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
       ...shared,
       configuration,
       botClient: fixtures.slackBot,
-      connectionClient: new BrowserSlackConnections(input.callbackOrigin),
+      connectionClient: new BrowserSlackConnections(input.callbackOrigin, fixtures.scenario),
       ...(input.expectedConfigurationVersion === undefined
         ? {}
         : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
@@ -175,7 +180,10 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
 }
 
 class BrowserSlackConnections implements SlackConnectionClient {
-  constructor(private readonly publicBaseUrl: string) {}
+  constructor(
+    private readonly publicBaseUrl: string,
+    private readonly scenario: BrowserProviderScenario,
+  ) {}
 
   authorizationUrl(state: string): string {
     const url = new URL("/e2e/providers/slack/authorize", this.publicBaseUrl);
@@ -191,15 +199,18 @@ class BrowserSlackConnections implements SlackConnectionClient {
       teamName: "Acme",
       botUserId: "B1",
       botAccessToken: "xoxb-fixture",
-      scopes: [
-        "app_mentions:read",
-        "channels:history",
-        "chat:write",
-        "files:read",
-        "groups:history",
-        "reactions:write",
-        "users:read",
-      ],
+      scopes:
+        this.scenario === "slack-permission-missing"
+          ? ["chat:write"]
+          : [
+              "app_mentions:read",
+              "channels:history",
+              "chat:write",
+              "files:read",
+              "groups:history",
+              "reactions:write",
+              "users:read",
+            ],
     });
   }
 
