@@ -150,7 +150,12 @@ export class BrowserSlackSocketFixture {
         JSON.stringify({
           type: "hello",
           num_connections: this.sockets.clients.size,
-          connection_info: { app_id: FIXTURE_APP_CREDENTIALS.slack.appId },
+          connection_info: {
+            app_id:
+              this.scenario === "slack-app-identity-mismatch"
+                ? "browser-other-slack-app"
+                : FIXTURE_APP_CREDENTIALS.slack.appId,
+          },
         }),
       );
     });

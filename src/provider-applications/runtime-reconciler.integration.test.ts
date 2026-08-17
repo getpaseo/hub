@@ -264,6 +264,46 @@ describe("provider runtime reconciliation", () => {
     }
   });
 
+  it("persists an app identity action and clears it after corrected runtime health", async () => {
+    const fixture = await databaseFixture("PGlite");
+    try {
+      await fixture.bundle.runtime.migrate();
+      const stored = socketApplication(1);
+      await activate(fixture.bundle, stored);
+      let status: SlackDeliveryStatus = {
+        state: "actionNeeded",
+        reason: "appIdentityMismatch",
+        since: new Date(),
+      };
+      const runtime = recordingRuntime([1], () => status);
+      const reconciler = createProviderRuntimeReconciler({
+        database: fixture.bundle.runtime,
+        store: readOnlyStore(() => stored),
+        runtime: runtime.owner,
+        callbackOrigin: "https://hub.example.test",
+        instanceId: "hub-app-identity",
+        environmentManaged: false,
+        intervalMs: 5,
+      });
+      const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+
+      reconciler.start();
+      await eventually(async () => {
+        const delivery = await inventory.slackDeliveryStatus?.("A1", 1);
+        return delivery?.state === "actionNeeded" && delivery.reason === "appIdentityMismatch";
+      });
+      status = { state: "connected", since: new Date(), connectionCount: 1 };
+      await eventually(async () => {
+        const delivery = await inventory.slackDeliveryStatus?.("A1", 1);
+        return delivery?.state === "connected";
+      });
+
+      await reconciler.stop();
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it.each(["PGlite", "PostgreSQL"] as const)(
     "converges two instances and aggregates their Socket health in %s",
     async (engine) => {

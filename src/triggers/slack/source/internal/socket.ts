@@ -23,9 +23,17 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 3_000;
 const DEFAULT_HELLO_TIMEOUT_MS = 3_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 
+interface SocketCloseResult {
+  code: number;
+  reason: string;
+  error?: unknown;
+  failureOwner: boolean;
+}
+
 class SlackSocketProtocolError extends Error {
   constructor(
     message: string,
+    readonly reason: "invalidFrame" | "appIdentityMismatch",
     readonly frameBytes?: number,
   ) {
     super(message);
@@ -50,7 +58,7 @@ export type SlackDeliveryStatus =
     }
   | {
       state: "actionNeeded";
-      reason: "appTokenRejected" | "socketModeOff" | "connectionLimit";
+      reason: "appTokenRejected" | "appIdentityMismatch" | "socketModeOff" | "connectionLimit";
       since: Date;
     }
   | { state: "rateLimited"; teamId: string; since: Date }
@@ -96,7 +104,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let supervisor: Promise<void> | undefined;
   let retryWake: (() => void) | undefined;
   let refreshPromise: Promise<void> | undefined;
-  let replacementClose: Promise<string> | undefined;
+  let replacementClose: Promise<SocketCloseResult> | undefined;
   let readyPromise: Promise<void> = Promise.resolve();
   let resolveReady: (() => void) | undefined;
   let rejectReady: ((error: unknown) => void) | undefined;
@@ -105,6 +113,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let connectionFailureActive = false;
   let connectedStatus: Extract<SlackDeliveryStatus, { state: "connected" }> | undefined;
   let activeSocketUrl: string | undefined;
+  const ownedSocketFailures = new WeakSet<WebSocket>();
   const sensitiveValues = () => [
     options.appToken,
     ...(options.apiUrl === undefined ? [] : [options.apiUrl]),
@@ -123,14 +132,14 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       try {
         const connection = await connectOnce();
         attempt = 0;
-        let reason = await connection.closed;
-        while (reason === "replaced" && replacementClose !== undefined) {
+        let close = await connection.closed;
+        while (close.reason === "replaced" && replacementClose !== undefined) {
           const next = replacementClose;
           replacementClose = undefined;
-          reason = await next;
+          close = await next;
         }
         if (stopped) return;
-        if (reason === "link_disabled") {
+        if (close.reason === "link_disabled") {
           deliveryStatus = {
             state: "actionNeeded",
             reason: "socketModeOff",
@@ -149,14 +158,15 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
           );
           return;
         }
+        if (close.failureOwner) reportAbnormalClose(close);
       } catch (error) {
         if (stopped) return;
-        const terminal = classifyAuthentication(error);
-        reportConnectionFailure(error, terminal);
-        if (terminal) {
+        const action = connectionAction(error);
+        reportConnectionFailure(error, action);
+        if (action !== undefined) {
           deliveryStatus = {
             state: "actionNeeded",
-            reason: "appTokenRejected",
+            reason: action,
             since: now(),
           };
           settleReadiness(error);
@@ -186,7 +196,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     }
   };
 
-  const connectOnce = async (): Promise<{ closed: Promise<string> }> => {
+  const connectOnce = async (): Promise<{ closed: Promise<SocketCloseResult> }> => {
     const controller = new AbortController();
     connectionAttempts.add(controller);
     const timeout = setTimeout(
@@ -251,11 +261,12 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       rejectReady?.(error);
     });
 
-  const awaitSocket = (openedSocket: WebSocket): Promise<{ closed: Promise<string> }> =>
+  const awaitSocket = (openedSocket: WebSocket): Promise<{ closed: Promise<SocketCloseResult> }> =>
     new Promise((resolve, reject) => {
       let hello = false;
       let queue = Promise.resolve();
       let settled = false;
+      const closed = closeResult(openedSocket, claimSocketFailure);
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -281,6 +292,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               if (!hello) {
                 throw new SlackSocketProtocolError(
                   "Slack Socket Mode sent an invalid frame before hello",
+                  "invalidFrame",
                   byteLength,
                 );
               }
@@ -313,7 +325,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
                 "Slack Socket Mode connected",
               );
               settleReadiness();
-              resolve({ closed: closeResult(openedSocket) });
+              resolve({ closed });
             }
             return undefined;
           })
@@ -322,25 +334,25 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               rejectBeforeHello(error);
               return;
             }
-            reportFailure(
-              error,
-              {
-                operation: "slack.socket.handoff",
-                component: "triggers",
-                provider: "slack",
-              },
-              { scrubValues: sensitiveValues() },
-            );
-            openedSocket.close();
+            if (claimSocketFailure(openedSocket)) {
+              reportFailure(
+                error,
+                {
+                  operation: "slack.socket.handoff",
+                  component: "triggers",
+                  provider: "slack",
+                },
+                { scrubValues: sensitiveValues() },
+              );
+            }
+            openedSocket.close(1000, "handoff_failed");
           });
         queue = admitted;
         trackAdmission(admitted);
       });
-      openedSocket.once("error", (error) => {
-        if (!hello) rejectBeforeHello(error);
-      });
-      openedSocket.once("close", () => {
-        if (!hello) rejectBeforeHello(new Error("Slack Socket Mode closed before hello"));
+      void closed.then((result) => {
+        if (!hello) rejectBeforeHello(preHelloCloseError(result));
+        return undefined;
       });
     });
 
@@ -357,6 +369,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       if (!helloReceived) {
         throw new SlackSocketProtocolError(
           "Slack Socket Mode sent malformed JSON before hello",
+          "invalidFrame",
           Buffer.byteLength(frame),
         );
       }
@@ -365,9 +378,17 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     }
     if (!helloReceived) {
       const parsed = SlackSocketHelloSchema.safeParse(value);
-      if (!parsed.success || parsed.data.connection_info.app_id !== options.appId) {
+      if (!parsed.success) {
         throw new SlackSocketProtocolError(
-          "Slack Socket Mode hello did not identify the configured app",
+          "Slack Socket Mode sent an invalid hello",
+          "invalidFrame",
+          Buffer.byteLength(frame),
+        );
+      }
+      if (parsed.data.connection_info.app_id !== options.appId) {
+        throw new SlackSocketProtocolError(
+          "Slack Socket Mode connected to a different app than configured",
+          "appIdentityMismatch",
           Buffer.byteLength(frame),
         );
       }
@@ -383,7 +404,9 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     if (!envelope.success) {
       reportParseFailure(Buffer.byteLength(frame), options.appToken);
       const envelopeId = boundedEnvelopeId(value);
-      if (envelopeId !== undefined) await sendAck(target, envelopeId, options.appToken);
+      if (envelopeId !== undefined) {
+        await sendAck(target, envelopeId, options.appToken, claimSocketFailure);
+      }
       return undefined;
     }
     await handleEnvelope(envelope.data, target, admittedHandlers, Buffer.byteLength(frame));
@@ -413,7 +436,8 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
           },
           { kind: "rateLimited", scrubValues: sensitiveValues() },
         );
-        if (!transportClosed) await sendAck(target, envelope.envelope_id, options.appToken);
+        if (!transportClosed)
+          await sendAck(target, envelope.envelope_id, options.appToken, claimSocketFailure);
         return;
       }
       const signatureHash = createHash("sha256").update(envelope.envelope_id).digest("hex");
@@ -431,7 +455,12 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       }
     }
     if (!transportClosed) {
-      const acknowledged = await sendAck(target, envelope.envelope_id, options.appToken);
+      const acknowledged = await sendAck(
+        target,
+        envelope.envelope_id,
+        options.appToken,
+        claimSocketFailure,
+      );
       if (
         acknowledged &&
         deliveryStatus.state === "rateLimited" &&
@@ -475,7 +504,10 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       transportClosed = true;
       const closing = [...sockets];
       for (const openSocket of closing) openSocket.close(1000, "shutdown");
-      await Promise.race([Promise.all(closing.map(closeResult)), delay(shutdownTimeoutMs)]);
+      await Promise.race([
+        Promise.all(closing.map((openSocket) => closeResult(openSocket))),
+        delay(shutdownTimeoutMs),
+      ]);
       for (const openSocket of closing) {
         if (openSocket.readyState !== WebSocket.CLOSED) openSocket.terminate();
       }
@@ -495,7 +527,12 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     async retry() {
       if (stopped) return;
       retryWake?.();
-      if (supervisor === undefined || deliveryStatus.state === "actionNeeded") {
+      if (
+        supervisor === undefined ||
+        (deliveryStatus.state === "actionNeeded" &&
+          (deliveryStatus.reason === "socketModeOff" ||
+            deliveryStatus.reason === "connectionLimit"))
+      ) {
         supervisor = supervise();
       }
       await Promise.resolve();
@@ -520,21 +557,48 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     else rejectReady?.(error);
   }
 
-  function reportConnectionFailure(error: unknown, terminal: boolean): void {
+  function reportConnectionFailure(
+    error: unknown,
+    action: "appTokenRejected" | "appIdentityMismatch" | undefined,
+  ): void {
     if (connectionFailureActive) return;
     connectionFailureActive = true;
     reportFailure(
       error,
       {
-        operation: terminal ? "slack.socket.authenticate" : "slack.socket.connect",
+        operation: connectionOperation(action),
         component: "triggers",
         provider: "slack",
       },
       {
-        kind: connectionFailureKind(error, terminal),
+        kind: connectionFailureKind(error, action),
         scrubValues: sensitiveValues(),
       },
     );
+  }
+
+  function reportAbnormalClose(close: SocketCloseResult): void {
+    reportFailure(
+      Object.assign(new Error("Slack Socket Mode connection ended unexpectedly"), {
+        code: "socket_closed",
+      }),
+      {
+        operation: "slack.socket.disconnect",
+        component: "triggers",
+        provider: "slack",
+      },
+      {
+        kind: "network",
+        scrubValues: sensitiveValues(),
+        diagnostic: { closeCode: close.code, phase: "connected" },
+      },
+    );
+  }
+
+  function claimSocketFailure(socket: WebSocket): boolean {
+    if (ownedSocketFailures.has(socket)) return false;
+    ownedSocketFailures.add(socket);
+    return true;
   }
 
   function trackAdmission(admission: Promise<void>): void {
@@ -582,20 +646,57 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
 
 function connectionFailureKind(
   error: unknown,
-  terminal: boolean,
+  action: "appTokenRejected" | "appIdentityMismatch" | undefined,
 ): "authentication" | "validation" | "network" {
-  if (terminal) return "authentication";
+  if (action === "appTokenRejected") return "authentication";
+  if (action === "appIdentityMismatch") return "validation";
   if (error instanceof SlackSocketProtocolError) return "validation";
   return "network";
 }
 
-function closeResult(socket: WebSocket): Promise<string> {
+function connectionOperation(
+  action: "appTokenRejected" | "appIdentityMismatch" | undefined,
+): "slack.socket.authenticate" | "slack.socket.configure" | "slack.socket.connect" {
+  if (action === "appIdentityMismatch") return "slack.socket.configure";
+  if (action === "appTokenRejected") return "slack.socket.authenticate";
+  return "slack.socket.connect";
+}
+
+function closeResult(
+  socket: WebSocket,
+  claimFailure?: (socket: WebSocket) => boolean,
+): Promise<SocketCloseResult> {
   return new Promise((resolve) => {
-    socket.once("close", (_code, reason) => resolve(reason.toString()));
+    let socketError: unknown;
+    socket.once("error", (error) => {
+      socketError ??= error;
+    });
+    socket.once("close", (code, reason) => {
+      const abnormal = socketError !== undefined || code !== 1000;
+      resolve({
+        code,
+        reason: reason.toString(),
+        ...(socketError === undefined ? {} : { error: socketError }),
+        failureOwner: abnormal && claimFailure !== undefined && claimFailure(socket),
+      });
+    });
   });
 }
 
-async function sendAck(socket: WebSocket, envelopeId: string, appToken: string): Promise<boolean> {
+function preHelloCloseError(close: SocketCloseResult): Error {
+  return Object.assign(new Error("Slack Socket Mode connection ended before it was ready"), {
+    code: "socket_closed_before_hello",
+    closeCode: close.code,
+    cause: close.error,
+  });
+}
+
+async function sendAck(
+  socket: WebSocket,
+  envelopeId: string,
+  appToken: string,
+  claimFailure: (socket: WebSocket) => boolean,
+): Promise<boolean> {
   try {
     await new Promise<void>((resolve, reject) => {
       socket.send(slackSocketAck(envelopeId), (error) => {
@@ -608,22 +709,27 @@ async function sendAck(socket: WebSocket, envelopeId: string, appToken: string):
     });
     return true;
   } catch (error) {
-    reportFailure(
-      error,
-      {
-        operation: "slack.socket.ack",
-        component: "triggers",
-        provider: "slack",
-      },
-      { scrubValues: [appToken] },
-    );
-    socket.close();
+    if (claimFailure(socket)) {
+      reportFailure(
+        error,
+        {
+          operation: "slack.socket.ack",
+          component: "triggers",
+          provider: "slack",
+        },
+        { scrubValues: [appToken] },
+      );
+    }
+    socket.close(1000, "ack_failed");
     return false;
   }
 }
 
-function classifyAuthentication(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
+function connectionAction(error: unknown): "appTokenRejected" | "appIdentityMismatch" | undefined {
+  if (error instanceof SlackSocketProtocolError && error.reason === "appIdentityMismatch") {
+    return "appIdentityMismatch";
+  }
+  if (!(error instanceof Error)) return undefined;
   const slackError: unknown = Reflect.get(error, "slackError");
   return [
     "invalid_auth",
@@ -632,7 +738,9 @@ function classifyAuthentication(error: unknown): boolean {
     "missing_scope",
     "token_expired",
     "token_revoked",
-  ].includes(String(slackError));
+  ].includes(String(slackError))
+    ? "appTokenRejected"
+    : undefined;
 }
 
 function reportParseFailure(byteCount: number, appToken: string): void {

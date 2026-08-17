@@ -106,12 +106,27 @@ export class ProjectConfiguration {
     const unreachable = this.page.getByText("Hub did not receive the project action result", {
       exact: false,
     });
+    const previousActivation = (await activated.isVisible()) ? await activated.textContent() : null;
     await button.click();
-    // The mutation reported one of its three outcomes.
-    await expect(activated.or(refused).or(unreachable).first()).toBeVisible({
-      timeout: ACTIVATION_TIMEOUT_MS,
-    });
-    if (!(await activated.isVisible())) return;
+    // A previous success remains visible until the mutation settles. Wait for a genuinely new
+    // outcome instead of treating that stale revision message as this save's result.
+    await expect
+      .poll(
+        async () => {
+          if (await refused.isVisible()) return "refused";
+          if (await unreachable.isVisible()) return "unreachable";
+          if (
+            (await activated.isVisible()) &&
+            (await activated.textContent()) !== previousActivation
+          )
+            return "activated";
+          return "pending";
+        },
+        { timeout: ACTIVATION_TIMEOUT_MS },
+      )
+      .not.toBe("pending");
+    if (!(await activated.isVisible()) || (await activated.textContent()) === previousActivation)
+      return;
     // It activated, so the workbench is being replaced. Wait for the new one.
     await expect(this.page.getByRole("button", { name: "Edit", exact: true })).toBeVisible({
       timeout: ACTIVATION_TIMEOUT_MS,

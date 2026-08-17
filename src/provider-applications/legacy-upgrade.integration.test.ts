@@ -26,6 +26,7 @@ import {
 const roots: string[] = [];
 const migrations = readMigrationFiles({ migrationsFolder: join(process.cwd(), "drizzle") });
 const migrationsBeforeProviderApplications = migrations.slice(0, 36);
+const migrationsBeforeSocketMode = migrations.slice(0, 38);
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -246,17 +247,16 @@ async function databaseBeforeSocketMode(engine: "PGlite" | "PostgreSQL"): Promis
   bundle: DatabaseRuntimeBundle;
   close(): Promise<void>;
 }> {
-  const beforeSocketMode = migrations.slice(0, -1);
   if (engine === "PGlite") {
     const root = await mkdtemp(join(tmpdir(), "hub-slack-socket-upgrade-"));
     roots.push(root);
-    await applyPGliteMigrationsBeforeProviderApplications(root, beforeSocketMode);
+    await applyPGliteMigrationsBeforeProviderApplications(root, migrationsBeforeSocketMode);
     const bundle = await embeddedDatabaseRuntime(root);
     return { bundle, close: () => bundle.runtime.close() };
   }
   const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
   const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
-  await applyPostgresMigrationsBeforeProviderApplications(bundle, beforeSocketMode);
+  await applyPostgresMigrationsBeforeProviderApplications(bundle, migrationsBeforeSocketMode);
   return {
     bundle,
     close: async () => {

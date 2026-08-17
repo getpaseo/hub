@@ -51,6 +51,7 @@ export const BROWSER_PROVIDER_SCENARIOS = [
   "discord-rate-limited",
   "github-verification-internal",
   "slack-permission-missing",
+  "slack-app-identity-mismatch",
   "slack-startup-server-error",
   "not-configured",
   "discord-only",

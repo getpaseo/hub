@@ -113,9 +113,10 @@ export function createProviderApplicationInventory(
 
 function slackActionReason(
   reason: string | null,
-): "socketModeOff" | "connectionLimit" | "appTokenRejected" {
+): "socketModeOff" | "connectionLimit" | "appTokenRejected" | "appIdentityMismatch" {
   if (reason === "socket_mode_off") return "socketModeOff";
   if (reason === "connection_limit") return "connectionLimit";
+  if (reason === "app_identity_mismatch") return "appIdentityMismatch";
   return "appTokenRejected";
 }
 

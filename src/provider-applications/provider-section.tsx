@@ -265,7 +265,7 @@ export function ProviderSection({
     [bindWorkspace],
   );
 
-  const status = statusPresentation(view.status);
+  const status = statusPresentation(sectionStatus(guide, view));
   // Once anything is saved the instructions become reference material and move behind a
   // disclosure, so completed work is never buried under the manual that created it.
   const phase = sectionPhase(activeGuide, view, callbackOrigin, replacing);
@@ -339,6 +339,20 @@ export function ProviderSection({
  * knot of booleans is what stops "verified" and "replacing" from disagreeing about the layout.
  */
 type SectionPhase = "blocked" | "guiding" | "replacing" | "saved";
+
+function sectionStatus(
+  guide: ProviderGuide,
+  view: ProviderApplicationView,
+): ProviderApplicationView["status"] {
+  if (
+    guide.provider === "slack" &&
+    view.identifiers["transport"] === "socket" &&
+    view.deliveryStatus?.state === "actionNeeded"
+  ) {
+    return "actionNeeded";
+  }
+  return view.status;
+}
 
 function SlackTransportChoice({
   value,
@@ -474,7 +488,7 @@ function SectionBody({
             />
             {guide.provider === "slack" &&
             view.identifiers["transport"] === "socket" &&
-            view.deliveryStatus?.state === "actionNeeded" ? (
+            canRetrySlackDelivery(view.deliveryStatus) ? (
               <Button type="button" variant="outline" disabled={busy} onClick={onRetry}>
                 Retry
               </Button>
@@ -670,10 +684,20 @@ function slackSocketEventState(
   if (delivery?.state === "actionNeeded") {
     if (delivery.reason === "socketModeOff") return <>Turn on Socket Mode in Slack, then retry</>;
     if (delivery.reason === "connectionLimit") return <>Stop extra Hub servers or use Webhooks</>;
+    if (delivery.reason === "appIdentityMismatch") {
+      return <>Use the App ID and app-level token from the same Slack app</>;
+    }
     return <>Replace the app-level token</>;
   }
   if (delivery?.state === "rateLimited") return <>Slack is delaying some events</>;
   return undefined;
+}
+
+function canRetrySlackDelivery(delivery: ProviderApplicationView["deliveryStatus"]): boolean {
+  return (
+    delivery?.state === "actionNeeded" &&
+    (delivery.reason === "socketModeOff" || delivery.reason === "connectionLimit")
+  );
 }
 
 /**

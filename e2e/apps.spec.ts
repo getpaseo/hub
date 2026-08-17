@@ -583,6 +583,33 @@ test("Slack outage cannot hold the built Hub health endpoint", async ({ hub }) =
   }
 });
 
+test("Slack names a mismatched configured app without retry churn", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    providerScenario: "slack-app-identity-mismatch",
+    environmentApps: ["slack"],
+  });
+  try {
+    const slack = session.surface.slack;
+    await slack.expectStatus("Action needed");
+    await slack.expand();
+    await slack.expectSummary({
+      "App ID": "browser-slack-app",
+      Delivery: "Socket Mode",
+      Events: "Use the App ID and app-level token from the same Slack app",
+    });
+    await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+    await session.surface.shoot(SHOTS, "apps-07c-slack-app-mismatch.desktop");
+
+    await expect
+      .poll(() => recordsFor(session.application.logs(), "slack.socket.configure").length)
+      .toBe(1);
+    expect(session.application.logs()).not.toContain("xapp-browser-fixture");
+  } finally {
+    await session.close();
+  }
+});
+
 test("Slack webhook setup remains available over HTTPS", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,

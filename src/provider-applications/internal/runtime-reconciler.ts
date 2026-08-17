@@ -170,5 +170,6 @@ function observationReason(status: SlackDeliveryStatus): string | null {
   if (status.state !== "actionNeeded") return null;
   if (status.reason === "socketModeOff") return "socket_mode_off";
   if (status.reason === "connectionLimit") return "connection_limit";
+  if (status.reason === "appIdentityMismatch") return "app_identity_mismatch";
   return "app_token_rejected";
 }
