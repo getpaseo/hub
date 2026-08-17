@@ -364,8 +364,188 @@ describe("Slack Socket Mode source", () => {
     await runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream));
 
     assert.equal(slack.openRequestCount, 3);
-    assert.equal(stream.records().length, 1);
+    assert.deepEqual(
+      stream.records().map((record) => record["operation"]),
+      ["slack.socket.connect", "slack.socket.connect"],
+    );
     assert.equal(source.status().state, "connected");
+  });
+
+  const credentialErrors = [
+    "account_inactive",
+    "invalid_auth",
+    "missing_args",
+    "missing_scope",
+    "not_allowed_token_type",
+    "not_authed",
+    "token_expired",
+    "token_revoked",
+  ] as const;
+  const accessErrors = [
+    "access_denied",
+    "accesslimited",
+    "deprecated_endpoint",
+    "ekm_access_denied",
+    "enterprise_is_restricted",
+    "forbidden_team",
+    "insecure_request",
+    "invalid_arg_name",
+    "invalid_arguments",
+    "invalid_array_arg",
+    "invalid_charset",
+    "invalid_form_data",
+    "invalid_post_type",
+    "method_deprecated",
+    "missing_post_type",
+    "no_permission",
+    "request_timeout",
+    "team_access_not_granted",
+    "two_factor_setup_required",
+  ] as const;
+  const transientErrors = [
+    "fatal_error",
+    "internal_error",
+    "org_login_required",
+    "ratelimited",
+    "service_unavailable",
+    "team_added_to_org",
+    "future_unknown_error",
+  ] as const;
+
+  it.each([
+    ...credentialErrors.map((slackError) => [slackError, "appTokenRejected"] as const),
+    ...accessErrors.map((slackError) => [slackError, "appAccessDenied"] as const),
+  ])("stops documented permanent open error %s as %s", async (slackError, expectedReason) => {
+    const canary = `xapp-permanent-${slackError}-canary`;
+    const slack = await startSlackFixture({
+      openResponses: [{ status: 200, body: { ok: false, error: slackError, canary } }],
+    });
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = createSlackEventSource({
+      configuration: {
+        provider: "slack",
+        transport: "socket",
+        appId: "A123",
+        appToken: canary,
+      },
+      configurationVersion: 22,
+      socket: { apiUrl: slack.openUrl, random: () => 0, readinessTimeoutMs: 100 },
+      accept: () => Promise.reject(new Error("not reached")),
+    });
+    closers.push(() => source.source.stop());
+
+    await assert.rejects(
+      runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream)),
+    );
+
+    assert.equal(slack.openRequestCount, 1);
+    const status = source.status();
+    assert.equal(status.state, "actionNeeded");
+    assert.equal(status.state === "actionNeeded" ? status.reason : undefined, expectedReason);
+    assert.equal(stream.records().length, 1);
+    assert.equal(stream.text().includes(canary), false);
+  });
+
+  it.each(transientErrors)(
+    "retries documented transient open error %s without log spam",
+    async (slackError) => {
+      const canary = `xapp-transient-${slackError}-canary`;
+      const slack = await startSlackFixture({
+        openResponses: [
+          { status: 200, body: { ok: false, error: slackError, canary } },
+          { status: 200, body: { ok: false, error: slackError, canary } },
+        ],
+      });
+      closers.push(() => slack.close());
+      const stream = new FailureLogStream();
+      const source = createSlackEventSource({
+        configuration: {
+          provider: "slack",
+          transport: "socket",
+          appId: "A123",
+          appToken: canary,
+        },
+        configurationVersion: 23,
+        socket: { apiUrl: slack.openUrl, random: () => 0, readinessTimeoutMs: 500 },
+        accept: () => Promise.resolve({ status: "duplicate", receiptId: "unused" }),
+      });
+      closers.push(() => source.source.stop());
+
+      await runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream));
+
+      assert.equal(slack.openRequestCount, 3);
+      assert.equal(source.status().state, "connected");
+      assert.equal(stream.records().length, 1);
+      assert.equal(stream.text().includes(canary), false);
+    },
+  );
+
+  it("owns each material pre-hello failure transition and resets the episode after hello", async () => {
+    const canary = "xapp-failure-episode-canary";
+    const slack = await startSlackFixture({
+      openResponses: [
+        { status: 503, body: { ok: false, error: "service_unavailable", canary } },
+        { status: 503, body: { ok: false, error: "service_unavailable", canary } },
+        { status: 429, headers: { "retry-after": "0" }, body: { ok: false, error: "ratelimited" } },
+        undefined,
+        { status: 503, body: { ok: false, error: "service_unavailable", canary } },
+        undefined,
+      ],
+    });
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = createSlackEventSource({
+      configuration: { provider: "slack", transport: "socket", appId: "A123", appToken: canary },
+      configurationVersion: 24,
+      socket: { apiUrl: slack.openUrl, random: () => 0, readinessTimeoutMs: 500 },
+      accept: () => Promise.resolve({ status: "duplicate", receiptId: "unused" }),
+    });
+    closers.push(() => source.source.stop());
+    await runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream));
+    slack.terminateLatest();
+    await slack.secondConnected;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(
+      stream.records().map((record) => record["operation"]),
+      [
+        "slack.socket.connect",
+        "slack.socket.connect",
+        "slack.socket.disconnect",
+        "slack.socket.connect",
+      ],
+    );
+    assert.equal(stream.text().includes(canary), false);
+  });
+
+  it("gives a terminal failure after a transient failure its own structured owner", async () => {
+    const canary = "xapp-transient-terminal-canary";
+    const slack = await startSlackFixture({
+      openResponses: [
+        { status: 503, body: { ok: false, error: "service_unavailable", canary } },
+        { status: 200, body: { ok: false, error: "invalid_auth", canary } },
+      ],
+    });
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = createSlackEventSource({
+      configuration: { provider: "slack", transport: "socket", appId: "A123", appToken: canary },
+      configurationVersion: 25,
+      socket: { apiUrl: slack.openUrl, random: () => 0, readinessTimeoutMs: 500 },
+      accept: () => Promise.reject(new Error("not reached")),
+    });
+    closers.push(() => source.source.stop());
+
+    await assert.rejects(
+      runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream)),
+    );
+
+    assert.deepEqual(
+      stream.records().map((record) => record["operation"]),
+      ["slack.socket.connect", "slack.socket.authenticate"],
+    );
+    assert.equal(stream.text().includes(canary), false);
   });
 
   for (const reason of ["warning", "refresh_requested"] as const) {
@@ -587,7 +767,7 @@ describe("Slack Socket Mode source", () => {
     assert.equal(source.status().state, "connected");
   });
 
-  it("recovers delivery health after an acknowledged rate limit notice and successful event", async () => {
+  it("recovers one delayed workspace without hiding another workspace or transport health", async () => {
     const slack = await startSlackFixture();
     closers.push(() => slack.close());
     const stream = new FailureLogStream();
@@ -621,22 +801,44 @@ describe("Slack Socket Mode source", () => {
       payload: { type: "app_rate_limited", team_id: "T123", minute_rate_limited: 123 },
     });
     await slack.waitForAck();
-    assert.equal(source.status().state, "rateLimited");
+    let status = source.status();
+    assert.equal(status.state, "connected");
+    assert.deepEqual(status.state === "connected" ? status.delayedWorkspaces : undefined, [
+      {
+        teamId: "T123",
+        since: status.state === "connected" ? status.delayedWorkspaces?.[0]?.since : undefined,
+      },
+    ]);
+
+    slack.send({
+      type: "events_api",
+      envelope_id: "env-rate-limited-other",
+      payload: { type: "app_rate_limited", team_id: "T456", minute_rate_limited: 123 },
+    });
+    await waitUntil(() => slack.acks.length === 2);
 
     slack.send(mentionEnvelope("env-rate-limit-recovered", "E-rate-limit-recovered"));
-    await waitUntil(() => slack.acks.length === 2 && dispatches === 1);
+    await waitUntil(() => slack.acks.length === 3 && dispatches === 1);
 
-    assert.equal(source.status().state, "connected");
+    status = source.status();
+    assert.equal(status.state, "connected");
+    assert.deepEqual(
+      status.state === "connected"
+        ? status.delayedWorkspaces?.map((workspace) => workspace.teamId)
+        : undefined,
+      ["T456"],
+    );
     assert.deepEqual(slack.acks, [
       { envelope_id: "env-rate-limited" },
+      { envelope_id: "env-rate-limited-other" },
       { envelope_id: "env-rate-limit-recovered" },
     ]);
-    assertOneFailure(stream, {
-      operation: "slack.socket.event.rate_limited",
-      component: "triggers",
-      failureKind: "rateLimited",
-      canary: "xapp-rate-limit-recovery-canary",
-    });
+    assert.equal(
+      stream.records().filter((record) => record["operation"] === "slack.socket.event.rate_limited")
+        .length,
+      2,
+    );
+    assert.equal(stream.text().includes("xapp-rate-limit-recovery-canary"), false);
   });
 
   it("bounds initial readiness while a transient Slack outage keeps reconnecting", async () => {
@@ -1153,11 +1355,14 @@ async function startPreHelloFixture(
 
 async function startSlackFixture(
   options: {
-    openResponses?: readonly {
-      status: number;
-      body: unknown;
-      headers?: Readonly<Record<string, string>>;
-    }[];
+    openResponses?: readonly (
+      | {
+          status: number;
+          body: unknown;
+          headers?: Readonly<Record<string, string>>;
+        }
+      | undefined
+    )[];
     helloAppId?: string;
     ticket?: string;
   } = {},

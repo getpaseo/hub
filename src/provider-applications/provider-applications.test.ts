@@ -647,6 +647,7 @@ function createFixture(
             ? [
                 {
                   id: "connection",
+                  providerId: "connection",
                   name: "acme",
                   applicationId: "42",
                   status: options.connectionStatus ?? "connected",
@@ -698,6 +699,7 @@ function connectedInventory(applicationId: string) {
           ? [
               {
                 id: "connection",
+                providerId: "connection",
                 name: "acme",
                 applicationId,
                 status: "connected" as const,

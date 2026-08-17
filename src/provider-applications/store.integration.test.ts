@@ -187,6 +187,11 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
       ?.status,
     "actionNeeded",
   );
+  assert.equal(
+    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("slack"))[0]
+      ?.providerId,
+    "T1",
+  );
 
   await startAttempt("state-conflict", 1);
   await assert.rejects(() => complete("state-conflict", "T2", 99));

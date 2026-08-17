@@ -566,22 +566,26 @@ test("Slack Socket Mode admits one durable run across two Hub instances", async 
   }
 });
 
-test("Slack outage cannot hold the built Hub health endpoint", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    providerScenario: "slack-startup-server-error",
-    environmentApps: ["slack"],
+for (const providerScenario of ["slack-startup-server-error", "slack-startup-hung-body"] as const) {
+  test(`Slack outage ${providerScenario} cannot hold the built Hub health endpoint or shutdown`, async ({
+    hub,
+  }) => {
+    const session = await hub.openAppSetup({
+      account: OPERATOR,
+      providerScenario,
+      environmentApps: ["slack"],
+    });
+    try {
+      expect((await session.page.request.get(`${session.origin}/health`)).ok()).toBe(true);
+      await expect
+        .poll(() => recordsFor(session.application.logs(), "slack.socket.connect").length)
+        .toBe(1);
+      expect(session.application.logs()).not.toContain("xapp-browser-startup-outage-canary");
+    } finally {
+      await session.close();
+    }
   });
-  try {
-    expect((await session.page.request.get(`${session.origin}/health`)).ok()).toBe(true);
-    await expect
-      .poll(() => recordsFor(session.application.logs(), "slack.socket.connect").length)
-      .toBe(1);
-    expect(session.application.logs()).not.toContain("xapp-browser-startup-outage-canary");
-  } finally {
-    await session.close();
-  }
-});
+}
 
 test("Slack names a mismatched configured app without retry churn", async ({ hub }) => {
   const session = await hub.openAppSetup({
@@ -605,6 +609,54 @@ test("Slack names a mismatched configured app without retry churn", async ({ hub
       .poll(() => recordsFor(session.application.logs(), "slack.socket.configure").length)
       .toBe(1);
     expect(session.application.logs()).not.toContain("xapp-browser-fixture");
+  } finally {
+    await session.close();
+  }
+});
+
+test("Slack names permanent workspace access denial without reconnect churn", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    providerScenario: "slack-app-access-denied",
+    environmentApps: ["slack"],
+  });
+  try {
+    const slack = session.surface.slack;
+    await slack.expectStatus("Action needed");
+    await slack.expand();
+    await slack.expectSummary({
+      "App ID": "browser-slack-app",
+      Delivery: "Socket Mode",
+      Events: "Check that this Slack app can use Socket Mode in its workspace",
+    });
+    await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+    await expect
+      .poll(() => recordsFor(session.application.logs(), "slack.socket.configure").length)
+      .toBe(1);
+    expect(session.application.logs()).not.toContain("xapp-browser-fixture");
+  } finally {
+    await session.close();
+  }
+});
+
+test("Slack keeps transport connected while naming the delayed workspace", async ({ hub }) => {
+  const session = await hub.openAppSetup({
+    account: OPERATOR,
+    providerScenario: "slack-rate-limited-workspace",
+  });
+  try {
+    const slack = session.surface.slack;
+    await slack.expand();
+    await slack.fillWorkingCredentials();
+    await slack.save();
+    await slack.expectStatus("Connected");
+    await slack.expectSummary({
+      "App ID": "browser-slack-app",
+      Delivery: "Socket Mode",
+      Workspaces: "Acme",
+      Events: "Connected · Slack is delaying events for workspace Acme",
+    });
+    await session.surface.shoot(SHOTS, "apps-07d-slack-workspace-delayed.desktop");
   } finally {
     await session.close();
   }

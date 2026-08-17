@@ -51,7 +51,14 @@ describe("pre-provider-app connection upgrade", () => {
         ).connectedIdentities("slack");
         assert.deepEqual(
           connections.map(({ id: _id, ...connection }) => connection),
-          [{ name: "Legacy Slack", applicationId: "slack-app", status: "connected" }],
+          [
+            {
+              providerId: "legacy-team",
+              name: "Legacy Slack",
+              applicationId: "slack-app",
+              status: "connected",
+            },
+          ],
         );
         const binding = await fixture.bundle.runtime.query<{ team_id: string }>(
           "select team_id from slack_connections where provider_application_id = 'slack-app'",

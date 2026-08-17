@@ -42,6 +42,7 @@ export const PROVIDER_INSTANCE_STATES = [
 export const PROVIDER_INSTANCE_REASONS = [
   "app_token_rejected",
   "app_identity_mismatch",
+  "app_access_denied",
   "socket_mode_off",
   "connection_limit",
 ] as const;
@@ -1090,6 +1091,7 @@ export const runtimeProviderInstances = pgTable(
     configurationVersion: integer("configuration_version").notNull(),
     state: text().$type<(typeof PROVIDER_INSTANCE_STATES)[number]>().notNull(),
     reason: text().$type<(typeof PROVIDER_INSTANCE_REASONS)[number]>(),
+    delayedWorkspaces: jsonb("delayed_workspaces").notNull().default([]),
     observedAt: timestamp("observed_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -1105,7 +1107,7 @@ export const runtimeProviderInstances = pgTable(
     ),
     check(
       "runtime_provider_instances_reason_check",
-      sql`${table.reason} is null or ${table.reason} in ('app_token_rejected', 'app_identity_mismatch', 'socket_mode_off', 'connection_limit')`,
+      sql`${table.reason} is null or ${table.reason} in ('app_token_rejected', 'app_identity_mismatch', 'app_access_denied', 'socket_mode_off', 'connection_limit')`,
     ),
     check("runtime_provider_instances_version_check", sql`${table.configurationVersion} >= 0`),
   ],

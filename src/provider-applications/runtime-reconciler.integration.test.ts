@@ -210,59 +210,131 @@ describe("provider runtime reconciliation", () => {
     }
   });
 
-  it("recovers aggregated multi-instance observations after rate limiting clears", async () => {
-    const fixture = await databaseFixture("PGlite");
-    try {
-      await fixture.bundle.runtime.migrate();
-      const stored = socketApplication(1);
-      await activate(fixture.bundle, stored);
-      let firstStatus: SlackDeliveryStatus = {
-        state: "rateLimited" as const,
-        teamId: "T1",
-        since: new Date(),
-      };
-      const firstRuntime = recordingRuntime([1], () => firstStatus);
-      const secondRuntime = recordingRuntime([1]);
-      const first = createProviderRuntimeReconciler({
-        database: fixture.bundle.runtime,
-        store: readOnlyStore(() => stored),
-        runtime: firstRuntime.owner,
-        callbackOrigin: "https://hub.example.test",
-        instanceId: "hub-rate-limited",
-        environmentManaged: false,
-        intervalMs: 5,
-      });
-      const second = createProviderRuntimeReconciler({
-        database: fixture.bundle.runtime,
-        store: readOnlyStore(() => stored),
-        runtime: secondRuntime.owner,
-        callbackOrigin: "https://hub.example.test",
-        instanceId: "hub-connected",
-        environmentManaged: false,
-        intervalMs: 5,
-      });
+  it.each(["PGlite", "PostgreSQL"] as const)(
+    "keeps mixed-instance transport connected while workspace degradation recovers in %s",
+    async (engine) => {
+      const fixture = await databaseFixture(engine);
+      try {
+        await fixture.bundle.runtime.migrate();
+        const stored = socketApplication(1);
+        await activate(fixture.bundle, stored);
+        let firstStatus: SlackDeliveryStatus = {
+          state: "connected" as const,
+          since: new Date(),
+          connectionCount: 1,
+          delayedWorkspaces: [{ teamId: "T1", since: new Date() }],
+        };
+        const firstRuntime = recordingRuntime([1], () => firstStatus);
+        const secondRuntime = recordingRuntime([1]);
+        const first = createProviderRuntimeReconciler({
+          database: fixture.bundle.runtime,
+          store: readOnlyStore(() => stored),
+          runtime: firstRuntime.owner,
+          callbackOrigin: "https://hub.example.test",
+          instanceId: "hub-rate-limited",
+          environmentManaged: false,
+          intervalMs: 5,
+        });
+        const second = createProviderRuntimeReconciler({
+          database: fixture.bundle.runtime,
+          store: readOnlyStore(() => stored),
+          runtime: secondRuntime.owner,
+          callbackOrigin: "https://hub.example.test",
+          instanceId: "hub-connected",
+          environmentManaged: false,
+          intervalMs: 5,
+        });
 
-      first.start();
-      second.start();
-      const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
-      await eventually(async () => {
-        const observation = await fixture.bundle.runtime.query<{ state: string }>(
-          `select state from runtime_provider_instances
+        first.start();
+        second.start();
+        const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+        await eventually(async () => {
+          const observation = await fixture.bundle.runtime.query<{ state: string }>(
+            `select state from runtime_provider_instances
            where provider = 'slack' and instance_id = 'hub-rate-limited'`,
-        );
-        return observation.rows[0]?.state === "rate_limited";
-      });
-      firstStatus = { state: "connected", since: new Date(), connectionCount: 1 };
-      await eventually(async () => {
-        const status = await inventory.slackDeliveryStatus?.("A1", 1);
-        return status?.state === "connected" && status.connectionCount === 2;
-      });
+          );
+          return observation.rows[0]?.state === "connected";
+        });
+        await eventually(async () => {
+          const status = await inventory.slackDeliveryStatus?.("A1", 1);
+          return (
+            status?.state === "connected" &&
+            status.connectionCount === 2 &&
+            status.delayedWorkspaces?.[0]?.teamId === "T1"
+          );
+        });
+        firstStatus = { state: "connected", since: new Date(), connectionCount: 1 };
+        await eventually(async () => {
+          const status = await inventory.slackDeliveryStatus?.("A1", 1);
+          return status?.state === "connected" && status.connectionCount === 2;
+        });
 
-      await Promise.all([first.stop(), second.stop()]);
-    } finally {
-      await fixture.close();
-    }
-  });
+        await Promise.all([first.stop(), second.stop()]);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  it.each(["PGlite", "PostgreSQL"] as const)(
+    "isolates, expires, and recovers persisted workspace degradation in %s",
+    async (engine) => {
+      const fixture = await databaseFixture(engine);
+      try {
+        await fixture.bundle.runtime.migrate();
+        const delayedAt = new Date().toISOString();
+        await fixture.bundle.runtime.query(
+          `insert into runtime_provider_instances
+             (provider, instance_id, provider_application_id, configuration_version, state,
+              reason, delayed_workspaces, observed_at)
+           values
+             ('slack', 'hub-a-connected', 'A1', 1, 'connected', null, '[]'::jsonb, now()),
+             ('slack', 'hub-a-delayed', 'A1', 1, 'connected', null, $1::jsonb, now()),
+             ('slack', 'hub-b-delayed', 'A2', 1, 'connected', null, $2::jsonb, now())`,
+          [
+            JSON.stringify([{ teamId: "T1", since: delayedAt }]),
+            JSON.stringify([{ teamId: "T2", since: delayedAt }]),
+          ],
+        );
+        const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+
+        let first = await inventory.slackDeliveryStatus?.("A1", 1);
+        let second = await inventory.slackDeliveryStatus?.("A2", 1);
+        assert.equal(first?.state, "connected");
+        assert.equal(first?.state === "connected" ? first.connectionCount : undefined, 2);
+        assert.deepEqual(
+          first?.state === "connected"
+            ? first.delayedWorkspaces?.map((workspace) => workspace.teamId)
+            : undefined,
+          ["T1"],
+        );
+        assert.deepEqual(
+          second?.state === "connected"
+            ? second.delayedWorkspaces?.map((workspace) => workspace.teamId)
+            : undefined,
+          ["T2"],
+        );
+
+        await fixture.bundle.runtime.query(
+          `update runtime_provider_instances set delayed_workspaces = '[]'::jsonb
+           where instance_id = 'hub-a-delayed'`,
+        );
+        first = await inventory.slackDeliveryStatus?.("A1", 1);
+        assert.equal(first?.state === "connected" ? first.delayedWorkspaces : undefined, undefined);
+
+        await fixture.bundle.runtime.query(
+          `update runtime_provider_instances
+           set delayed_workspaces = $1::jsonb, observed_at = now() - interval '46 seconds'
+           where instance_id = 'hub-a-delayed'`,
+          [JSON.stringify([{ teamId: "T1", since: delayedAt }])],
+        );
+        first = await inventory.slackDeliveryStatus?.("A1", 1);
+        assert.equal(first?.state === "connected" ? first.delayedWorkspaces : undefined, undefined);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
 
   it("persists an app identity action and clears it after corrected runtime health", async () => {
     const fixture = await databaseFixture("PGlite");
@@ -298,6 +370,39 @@ describe("provider runtime reconciliation", () => {
         return delivery?.state === "connected";
       });
 
+      await reconciler.stop();
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("persists permanent Slack workspace access denial as an actionable observation", async () => {
+    const fixture = await databaseFixture("PGlite");
+    try {
+      await fixture.bundle.runtime.migrate();
+      const stored = socketApplication(1);
+      await activate(fixture.bundle, stored);
+      const runtime = recordingRuntime([1], () => ({
+        state: "actionNeeded",
+        reason: "appAccessDenied",
+        since: new Date(),
+      }));
+      const reconciler = createProviderRuntimeReconciler({
+        database: fixture.bundle.runtime,
+        store: readOnlyStore(() => stored),
+        runtime: runtime.owner,
+        callbackOrigin: "https://hub.example.test",
+        instanceId: "hub-app-access-denied",
+        environmentManaged: false,
+        intervalMs: 5,
+      });
+      const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+
+      reconciler.start();
+      await eventually(async () => {
+        const delivery = await inventory.slackDeliveryStatus?.("A1", 1);
+        return delivery?.state === "actionNeeded" && delivery.reason === "appAccessDenied";
+      });
       await reconciler.stop();
     } finally {
       await fixture.close();

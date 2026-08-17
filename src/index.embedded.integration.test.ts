@@ -66,7 +66,7 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
 });
 
-for (const scenario of ["server-error", "hung-open", "missing-hello"] as const) {
+for (const scenario of ["server-error", "hung-open", "hung-open-body", "missing-hello"] as const) {
   it(`exposes the production runtime after bounded Slack ${scenario} readiness failure`, async () => {
     const canary = `xapp-production-${scenario}-canary`;
     const slack = await startUnavailableSlack(scenario);
@@ -97,7 +97,12 @@ for (const scenario of ["server-error", "hung-open", "missing-hello"] as const) 
       failureKind: "network",
       canary,
     });
-    await stopProductionRuntime();
+    assert.equal(stream.text().includes("body-canary-never-finished"), false);
+    const stopped = await Promise.race([
+      stopProductionRuntime().then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 200)),
+    ]);
+    assert.equal(stopped, true);
     const requestsAtStop = slack.requestCount;
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(slack.requestCount, requestsAtStop);
@@ -242,7 +247,7 @@ function restoreEnvironment(name: string, value: string | undefined): void {
 }
 
 async function startUnavailableSlack(
-  scenario: "server-error" | "hung-open" | "missing-hello",
+  scenario: "server-error" | "hung-open" | "hung-open-body" | "missing-hello",
 ): Promise<{
   openUrl: string;
   readonly requestCount: number;
@@ -253,6 +258,11 @@ async function startUnavailableSlack(
     requestCount += 1;
     if (scenario === "hung-open") return;
     response.setHeader("content-type", "application/json");
+    if (scenario === "hung-open-body") {
+      response.writeHead(200);
+      response.write('{"ok":true,"url":"body-canary-never-finished');
+      return;
+    }
     if (scenario === "server-error") {
       response.writeHead(503);
       response.end(JSON.stringify({ ok: false, error: "temporarily_unavailable" }));

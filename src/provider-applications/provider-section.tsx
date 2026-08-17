@@ -672,6 +672,12 @@ function slackSocketEventState(
   delivery: ProviderApplicationView["deliveryStatus"],
 ): ReactNode | undefined {
   if (delivery?.state === "connected") {
+    if (delivery.delayedWorkspaces !== undefined) {
+      const workspaces = delivery.delayedWorkspaces
+        .map((workspace) => workspace.name ?? workspace.teamId)
+        .join(", ");
+      return <>Connected · Slack is delaying events for workspace {workspaces}</>;
+    }
     return delivery.connectionLimitReached === true ? (
       <>Connected · Stop extra Hub servers or switch to Webhooks</>
     ) : (
@@ -687,9 +693,11 @@ function slackSocketEventState(
     if (delivery.reason === "appIdentityMismatch") {
       return <>Use the App ID and app-level token from the same Slack app</>;
     }
+    if (delivery.reason === "appAccessDenied") {
+      return <>Check that this Slack app can use Socket Mode in its workspace</>;
+    }
     return <>Replace the app-level token</>;
   }
-  if (delivery?.state === "rateLimited") return <>Slack is delaying some events</>;
   return undefined;
 }
 

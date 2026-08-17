@@ -112,18 +112,27 @@ export function createProviderRuntimeReconciler(options: {
     if (status === undefined || status.state === "stopped") return;
     const state = observationState(status);
     const reason = observationReason(status);
+    const delayedWorkspaces = status.state === "connected" ? (status.delayedWorkspaces ?? []) : [];
     await options.database.query(
       `insert into runtime_provider_instances
          (provider, instance_id, provider_application_id, configuration_version, state, reason,
-          observed_at)
-       values ('slack', $1, $2, $3, $4, $5, now())
+          delayed_workspaces, observed_at)
+       values ('slack', $1, $2, $3, $4, $5, $6::jsonb, now())
        on conflict (provider, instance_id) do update set
          provider_application_id = excluded.provider_application_id,
          configuration_version = excluded.configuration_version,
          state = excluded.state,
          reason = excluded.reason,
+         delayed_workspaces = excluded.delayed_workspaces,
          observed_at = excluded.observed_at`,
-      [options.instanceId, published.identity.id, published.configurationVersion, state, reason],
+      [
+        options.instanceId,
+        published.identity.id,
+        published.configurationVersion,
+        state,
+        reason,
+        JSON.stringify(delayedWorkspaces),
+      ],
     );
     await options.database.query(
       `delete from runtime_provider_instances
@@ -159,7 +168,6 @@ export function createProviderRuntimeReconciler(options: {
 
 function observationState(status: SlackDeliveryStatus): string {
   if (status.state === "actionNeeded") return "action_needed";
-  if (status.state === "rateLimited") return "rate_limited";
   return status.state;
 }
 
@@ -171,5 +179,6 @@ function observationReason(status: SlackDeliveryStatus): string | null {
   if (status.reason === "socketModeOff") return "socket_mode_off";
   if (status.reason === "connectionLimit") return "connection_limit";
   if (status.reason === "appIdentityMismatch") return "app_identity_mismatch";
+  if (status.reason === "appAccessDenied") return "app_access_denied";
   return "app_token_rejected";
 }

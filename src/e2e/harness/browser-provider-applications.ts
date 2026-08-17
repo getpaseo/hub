@@ -78,6 +78,15 @@ export class BrowserSlackSocketFixture {
           response.end(JSON.stringify({ ok: false, error: "temporarily_unavailable" }));
           return;
         }
+        if (this.scenario === "slack-startup-hung-body") {
+          response.writeHead(200);
+          response.write('{"ok":true,"url":"browser-partial-body-canary');
+          return;
+        }
+        if (this.scenario === "slack-app-access-denied") {
+          response.end(JSON.stringify({ ok: false, error: "forbidden_team" }));
+          return;
+        }
         if (authorization !== `Bearer ${FIXTURE_SLACK_SOCKET_CREDENTIALS.appToken}`) {
           response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
           return;
@@ -158,6 +167,19 @@ export class BrowserSlackSocketFixture {
           },
         }),
       );
+      if (this.scenario === "slack-rate-limited-workspace") {
+        socket.send(
+          JSON.stringify({
+            type: "events_api",
+            envelope_id: "browser-rate-limited-workspace",
+            payload: {
+              type: "app_rate_limited",
+              team_id: "T-ACME",
+              minute_rate_limited: Math.floor(Date.now() / 60_000),
+            },
+          }),
+        );
+      }
     });
     server.listen(this.port, "127.0.0.1");
     await once(server, "listening");

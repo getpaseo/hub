@@ -156,6 +156,8 @@ export interface ProviderApplicationVerifier {
 
 export interface ConnectedProviderIdentity {
   id: string;
+  /** Provider-owned identifier used to correlate provider events with this connection. */
+  providerId: string;
   name: string;
   applicationId: string | null;
   status: "connected" | "actionNeeded";
@@ -382,13 +384,14 @@ export function createProviderApplications(
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
           const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
-          const deliveryStatus =
+          const observedDeliveryStatus =
             provider === "slack" && identity !== null && configurationVersion !== null
               ? ((await options.inventory.slackDeliveryStatus?.(
                   identity.id,
                   configurationVersion,
                 )) ?? options.runtime.slackDeliveryStatus?.())
               : undefined;
+          const deliveryStatus = nameDelayedSlackWorkspaces(observedDeliveryStatus, connections);
           const view: ProviderApplicationView = {
             provider,
             status,
@@ -631,6 +634,21 @@ export function createProviderApplications(
       }
       await options.runtime.retrySlackDelivery();
     },
+  };
+}
+
+function nameDelayedSlackWorkspaces(
+  status: SlackDeliveryStatus | undefined,
+  connections: readonly ConnectedProviderIdentity[],
+): SlackDeliveryStatus | undefined {
+  if (status?.state !== "connected" || status.delayedWorkspaces === undefined) return status;
+  const names = new Map(connections.map((connection) => [connection.providerId, connection.name]));
+  return {
+    ...status,
+    delayedWorkspaces: status.delayedWorkspaces.map((workspace) => {
+      const name = names.get(workspace.teamId);
+      return { ...workspace, ...(name === undefined ? {} : { name }) };
+    }),
   };
 }
 

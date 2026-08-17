@@ -370,10 +370,15 @@ function environmentAppVariables(
   }
   if (providers.includes("slack")) {
     variables["SLACK_APP_ID"] = "browser-slack-app";
-    if (scenario === "slack-startup-server-error" || scenario === "slack-app-identity-mismatch") {
+    if (
+      scenario === "slack-startup-server-error" ||
+      scenario === "slack-startup-hung-body" ||
+      scenario === "slack-app-identity-mismatch" ||
+      scenario === "slack-app-access-denied"
+    ) {
       variables["SLACK_TRANSPORT"] = "socket";
       variables["SLACK_APP_TOKEN"] =
-        scenario === "slack-startup-server-error"
+        scenario === "slack-startup-server-error" || scenario === "slack-startup-hung-body"
           ? "xapp-browser-startup-outage-canary"
           : "xapp-browser-fixture";
     } else {
