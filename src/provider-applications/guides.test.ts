@@ -12,13 +12,14 @@ import {
   identityLabel,
   isSecureOrigin,
   slackManifest,
+  SLACK_WEBHOOK_GUIDE,
   statusPresentation,
   type GuideStep,
 } from "./guides.js";
 
 const ORIGIN = "https://hub.example.com";
 const LOCAL = "http://127.0.0.1:6791";
-const manifestSchema = z.object({
+const webhookManifestSchema = z.object({
   oauth_config: z.object({
     redirect_urls: z.array(z.string()),
     scopes: z.object({ bot: z.array(z.string()) }),
@@ -31,7 +32,7 @@ function stepText(step: GuideStep): string {
 }
 
 test("the Slack manifest asks for exactly the scopes Hub checks installations against", () => {
-  const manifest = manifestSchema.parse(load(slackManifest(ORIGIN)));
+  const manifest = webhookManifestSchema.parse(load(slackManifest(ORIGIN, "webhook")));
   assert.deepEqual(manifest.oauth_config.scopes.bot, [...SLACK_REQUIRED_BOT_SCOPES]);
   assert.deepEqual(manifest.oauth_config.redirect_urls, [
     `${ORIGIN}/api/integrations/slack/callback`,
@@ -40,6 +41,13 @@ test("the Slack manifest asks for exactly the scopes Hub checks installations ag
     manifest.settings.event_subscriptions.request_url,
     `${ORIGIN}/api/integrations/slack/events`,
   );
+  const socket = z
+    .object({
+      oauth_config: z.object({ scopes: z.object({ bot: z.array(z.string()) }) }),
+      settings: z.object({ socket_mode_enabled: z.literal(true) }),
+    })
+    .parse(load(slackManifest(LOCAL, "socket")));
+  assert.deepEqual(socket.oauth_config.scopes.bot, [...SLACK_REQUIRED_BOT_SCOPES]);
 });
 
 test("generated URLs are built from the resolved callback origin", () => {
@@ -87,12 +95,13 @@ test("only Discord has no inbound events to wait for", () => {
   );
 });
 
-test("Slack has one action because its save is its install", () => {
+test("Socket Mode connects locally while Webhooks preserves OAuth", () => {
   const slack = guideFor("slack");
-  assert.equal(slack.savingContinues, true);
-  assert.equal(slack.actions.save, "Save and continue to Slack");
-  assert.equal(slack.actions.connect, "Add to a Slack workspace");
-  assert.equal(slack.verifiedMessage, undefined);
+  assert.equal(slack.savingContinues, false);
+  assert.equal(slack.actions.save, "Connect Slack");
+  assert.equal(slack.verifiedMessage, "Slack connected.");
+  assert.equal(SLACK_WEBHOOK_GUIDE.savingContinues, true);
+  assert.equal(SLACK_WEBHOOK_GUIDE.actions.save, "Save and continue to Slack");
   assert.equal(guideFor("github").actions.save, "Verify and save");
   assert.equal(guideFor("github").actions.connect, "Install on GitHub");
 });
@@ -116,14 +125,15 @@ test("identity lines name the app the operator created", () => {
   );
 });
 
-test("Slack alone treats plain HTTP as a hard gate", () => {
-  assert.equal(guideFor("slack").requiresHttps, true);
+test("only the Slack Webhook choice treats plain HTTP as a hard gate", () => {
+  assert.equal(guideFor("slack").requiresHttps, false);
+  assert.equal(SLACK_WEBHOOK_GUIDE.requiresHttps, true);
   assert.equal(guideFor("github").requiresHttps, false);
   assert.equal(guideFor("discord").requiresHttps, false);
   assert.equal(isSecureOrigin(LOCAL), false);
   assert.equal(isSecureOrigin(ORIGIN), true);
   assert.equal(
-    guideFor("slack").httpsRequirement(LOCAL),
+    SLACK_WEBHOOK_GUIDE.httpsRequirement(LOCAL),
     `Slack only works over HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Slack.`,
   );
 });
@@ -230,14 +240,12 @@ test("Discord's steps walk the portal in the order its pages appear", () => {
   );
 });
 
-test("Slack says once, not twice, that installing is what saves the app", () => {
-  const slack = guideFor("slack");
-  const steps = guideGroups(slack, ORIGIN)
+test("Socket Mode tells the operator where to install the app", () => {
+  const steps = guideGroups(guideFor("slack"), ORIGIN)
     .flatMap((group) => group.steps)
     .map(stepText);
   const mentions = steps.filter((text) => text.toLowerCase().includes("install"));
-  assert.deepEqual(mentions, [], "the install hint belongs under the button, once");
-  assert.equal(slack.saveHint, "Slack asks you to install the app before anything is saved.");
+  assert.equal(mentions.length, 1);
 });
 
 test("every field the boundary needs is asked for, in the portal's own words", () => {
@@ -254,6 +262,10 @@ test("every field the boundary needs is asked for, in the portal's own words", (
   );
   assert.deepEqual(
     guideFields(guideFor("slack"), ORIGIN).map((field) => field.label),
+    ["App-level token", "Bot token"],
+  );
+  assert.deepEqual(
+    guideFields(SLACK_WEBHOOK_GUIDE, ORIGIN).map((field) => field.label),
     ["App ID", "Client ID", "Client Secret", "Signing Secret"],
   );
 });
@@ -261,7 +273,7 @@ test("every field the boundary needs is asked for, in the portal's own words", (
 test("each provider names the panel the operator pastes into after that provider", () => {
   assert.deepEqual(
     PROVIDER_GUIDES.map((guide) => guide.formTitle),
-    ["Paste from GitHub", "Paste from Slack", "Paste from Discord"],
+    ["Paste from GitHub", "Connect Slack", "Paste from Discord"],
   );
 });
 
@@ -283,10 +295,9 @@ test("a connected app is summarised with labelled rows rather than loose sentenc
 
 test("environment-managed copy can name the exact variables the operator has to change", () => {
   assert.deepEqual(guideFor("slack").environmentVariables, [
+    "SLACK_TRANSPORT",
     "SLACK_APP_ID",
-    "SLACK_CLIENT_ID",
-    "SLACK_CLIENT_SECRET",
-    "SLACK_SIGNING_SECRET",
+    "SLACK_APP_TOKEN",
   ]);
   assert.deepEqual(guideFor("discord").environmentVariables, [
     "DISCORD_CLIENT_ID",
@@ -315,7 +326,6 @@ test("no guide leaks Paseo's internal vocabulary into operator-facing copy", () 
     "latch",
     "factory",
     "project",
-    "this hub",
     "app settings",
   ];
   const phrases: string[] = [];

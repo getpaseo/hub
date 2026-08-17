@@ -24,7 +24,7 @@ const OVERVIEW_KEY = ["provider-applications"] as const;
  */
 function useProviderApplicationsOverview() {
   const load = useServerFn(providerApplicationsOverview);
-  return useQuery({ queryKey: OVERVIEW_KEY, queryFn: () => load() });
+  return useQuery({ queryKey: OVERVIEW_KEY, queryFn: () => load(), refetchInterval: 1_000 });
 }
 
 function connectedProviderCount(overview: ProviderApplicationOverview): number {

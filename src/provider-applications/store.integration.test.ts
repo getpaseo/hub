@@ -132,6 +132,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
   );
   const configuration = {
     provider: "slack" as const,
+    transport: "webhook" as const,
     appId: "A1",
     clientId: "client",
     clientSecret: "secret",
@@ -234,4 +235,40 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     ).rows[0]?.consumed_at,
     null,
   );
+
+  const socket = await store.completeSlackSocketApplication({
+    configuration: {
+      provider: "slack",
+      transport: "socket",
+      appId: "A1",
+      appToken: "xapp-secret",
+    },
+    identity: { provider: "slack", id: "A1", name: "A1" },
+    expectedVersion: 1,
+    updatedByUserId: "operator",
+    organizationId: "org",
+    installation: {
+      appId: "A1",
+      teamId: "T2",
+      teamName: "Socket Workspace",
+      botUserId: "UBOT2",
+      botAccessToken: "xoxb-socket",
+      scopes: [
+        "app_mentions:read",
+        "channels:history",
+        "chat:write",
+        "files:read",
+        "groups:history",
+        "reactions:write",
+        "users:read",
+      ],
+    },
+  });
+  assert.equal(socket.version, 2);
+  assert.equal(socket.configuration.provider, "slack");
+  assert.equal(
+    socket.configuration.provider === "slack" ? socket.configuration.transport : undefined,
+    "socket",
+  );
+  assert.equal((await database.findSlackConnection("T2"))?.providerApplicationId, "A1");
 }

@@ -3,6 +3,8 @@ import type { Database } from "../../db/types.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
+import { startSlackSocketFixture } from "../../test-utils/slack-socket-fixture.js";
 import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import {
@@ -47,6 +49,78 @@ export const FIXTURE_APP_CREDENTIALS = {
     clientSecret: "browser-slack-client-secret",
   },
 } as const;
+
+export const FIXTURE_SLACK_SOCKET_CREDENTIALS = {
+  appToken: "xapp-browser-fixture",
+  botToken: "xoxb-browser-fixture",
+} as const;
+
+/** A provider-side HTTP + WebSocket fixture. Browser journeys cross the same wire boundaries as
+ * production; only Slack's side of the internet is local. */
+export class BrowserSlackSocketFixture {
+  private fixture: Awaited<ReturnType<typeof startSlackSocketFixture>> | undefined;
+
+  constructor(private readonly scenario: BrowserProviderScenario = "connected") {}
+
+  async start(): Promise<void> {
+    this.fixture = await startSlackSocketFixture([], {
+      appId: FIXTURE_APP_CREDENTIALS.slack.appId,
+      ...FIXTURE_SLACK_SOCKET_CREDENTIALS,
+      teamId: "T-ACME",
+      botId: "B-BROWSER",
+      botUserId: "B1",
+      ...(this.scenario === "slack-permission-missing" ? { scopes: ["chat:write"] } : {}),
+    });
+  }
+
+  get apiBaseUrl(): string {
+    if (this.fixture === undefined) throw new Error("Slack fixture is not running");
+    return this.fixture.apiBaseUrl;
+  }
+
+  verifier() {
+    return createSlackSocketInstallationVerifier({ apiBaseUrl: this.apiBaseUrl });
+  }
+
+  async deliverMention(eventId: string): Promise<void> {
+    if (this.fixture === undefined) throw new Error("Slack fixture is not running");
+    const envelopeId = `envelope-${eventId}`;
+    this.fixture.send({
+      type: "events_api",
+      envelope_id: envelopeId,
+      payload: {
+        type: "event_callback",
+        team_id: "T-ACME",
+        api_app_id: FIXTURE_APP_CREDENTIALS.slack.appId,
+        event_id: eventId,
+        event_time: 1_700_000_000,
+        event: {
+          type: "app_mention",
+          user: "U1",
+          channel: "C1",
+          text: "<@B1> socket delivery",
+          ts: "1700000000.000100",
+          event_ts: "1700000000.000100",
+        },
+      },
+    });
+    const deadline = Date.now() + 5_000;
+    while (
+      !this.fixture.acks.some(
+        (ack) =>
+          ack !== null && typeof ack === "object" && Reflect.get(ack, "envelope_id") === envelopeId,
+      )
+    ) {
+      if (Date.now() >= deadline)
+        throw new Error("Slack fixture did not receive an acknowledgement");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.fixture?.close();
+  }
+}
 
 export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicationIdentity>> = {
   github: { provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme-inc" },
@@ -142,6 +216,7 @@ export interface BrowserProviderApplicationFixtures {
   bot: BrowserDiscordBot;
   slackBot: BrowserSlackBot;
   githubConfiguration: BrowserGitHubConfiguration;
+  slackSocket: BrowserSlackSocketFixture;
 }
 
 /**
@@ -212,6 +287,7 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
         : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
       activateConfiguration: input.activateConfiguration,
       onVerifiedInstallation: input.onVerifiedSlackInstallation,
+      socket: { apiUrl: `${fixtures.slackSocket.apiBaseUrl}/apps.connections.open` },
     });
   };
 }

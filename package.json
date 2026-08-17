@@ -74,6 +74,7 @@
     "react-dom": "19.2.7",
     "stripe": "^18.5.0",
     "tailwind-merge": "3.4.0",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -101,8 +102,7 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vite": "7.3.6",
-    "vitest": "^3.2.4",
-    "ws": "^8.20.1"
+    "vitest": "^3.2.4"
   },
   "overrides": {
     "@types/chai": "5.0.1"

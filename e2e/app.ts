@@ -20,6 +20,7 @@ import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.j
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
 const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
+const slackSocketEvidenceSchema = z.object({ receipts: z.number(), runs: z.number() });
 
 export const test = base.extend<{
   hub: PaseoHub;
@@ -107,20 +108,23 @@ class BuiltApplications {
     const publicPort = reverseProxyPort ?? port;
     const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${publicPort}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
-    const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
-      cwd: process.cwd(),
-      env: applicationEnvironment({
-        ...(databaseUrl === undefined ? {} : { databaseUrl }),
-        ...(dataDirectory === undefined ? {} : { dataDirectory }),
-        origin,
-        ...(options.reverseProxy === true ? {} : { appUrl: origin }),
-        port,
-        machineKeyFile,
-        ...(options.https === true && tls !== undefined ? { tls } : {}),
-        ...options,
-      }),
-      stdio: ["pipe", "pipe", "pipe", "ipc"],
+    const childEnvironment = applicationEnvironment({
+      ...(databaseUrl === undefined ? {} : { databaseUrl }),
+      ...(dataDirectory === undefined ? {} : { dataDirectory }),
+      origin,
+      ...(options.reverseProxy === true ? {} : { appUrl: origin }),
+      port,
+      machineKeyFile,
+      ...(options.https === true && tls !== undefined ? { tls } : {}),
+      ...options,
     });
+    const spawnServer = () =>
+      spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
+        cwd: process.cwd(),
+        env: childEnvironment,
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
+      });
+    let server = spawnServer();
     const output: string[] = [];
     const proxy =
       reverseProxyPort === undefined || tls === undefined
@@ -148,6 +152,19 @@ class BuiltApplications {
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
       failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
+      prepareSlackSocketWorkflow: () => deliverCommand(server, { type: "slack-socket-prepare" }),
+      deliverSlackSocketMention: (eventId: string) =>
+        deliverCommand(server, { type: "slack-socket-deliver", eventId }),
+      slackSocketEvidence: async (eventId: string) =>
+        slackSocketEvidenceSchema.parse(
+          await deliverCommandForData(server, { type: "slack-socket-inspect", eventId }),
+        ),
+      restart: async () => {
+        await stopServer(server);
+        server = spawnServer();
+        application.server = server;
+        await serverReady(server, origin, output);
+      },
       reportedSeatQuantity: async (organizationId: string) => {
         const data = await deliverCommandForData(server, {
           type: "billing-inspect",
@@ -241,7 +258,7 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
     PASEO_E2E_MACHINE_KEY_FILE: input.machineKeyFile,
     PASEO_E2E_DATABASE_PROFILE: input.databaseProfile ?? "legacy",
     GITHUB_WEBHOOK_SECRET: "phase-zero-webhook-secret",
-    SLACK_SIGNING_SECRET: "phase-zero-slack-webhook-secret",
+    PASEO_E2E_SLACK_SIGNING_SECRET: "phase-zero-slack-webhook-secret",
     STRIPE_WEBHOOK_SECRET: "whsec_phase_zero_fixture_secret",
     PASEO_BROWSER_BILLING_SCENARIO: input.billing === true ? "configured" : "unconfigured",
     PASEO_BROWSER_PROVIDER_SCENARIO:
@@ -330,9 +347,11 @@ function environmentAppVariables(
     variables["DISCORD_BOT_TOKEN"] = "token";
   }
   if (providers.includes("slack")) {
+    variables["SLACK_TRANSPORT"] = "webhook";
     variables["SLACK_APP_ID"] = "browser-slack-app";
     variables["SLACK_CLIENT_ID"] = "browser-slack-client";
     variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
+    variables["SLACK_SIGNING_SECRET"] = "phase-zero-slack-webhook-secret";
   }
   return variables;
 }

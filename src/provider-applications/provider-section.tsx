@@ -26,6 +26,7 @@ import {
   guideGroups,
   guideUrl,
   isSecureOrigin,
+  SLACK_WEBHOOK_GUIDE,
   slackManifest,
   statusPresentation,
   type GuideGroup,
@@ -33,7 +34,12 @@ import {
   type ProviderGuide,
   type StepSegment,
 } from "./guides.js";
-import { beginProviderConnection, verifyAndSaveProviderApplication } from "./functions.js";
+import {
+  beginProviderConnection,
+  configureSlackSocketApplication,
+  retrySlackSocketDelivery,
+  verifyAndSaveProviderApplication,
+} from "./functions.js";
 import type {
   ProviderApplicationSaveResult,
   ProviderApplicationSurface,
@@ -52,7 +58,12 @@ interface Outcome {
 
 type SaveResponse = Result<ProviderApplicationSaveResult>;
 type ConnectResponse = Result<{ url: string }>;
+type VoidResponse = Result<void>;
+interface SaveMutationInput {
+  data: Record<string, unknown> & { provider: string; transport?: "socket" | "webhook" };
+}
 
+// eslint-disable-next-line complexity -- this component owns one provider card's complete workflow.
 export function ProviderSection({
   guide,
   view,
@@ -74,13 +85,17 @@ export function ProviderSection({
   returned: SectionReturn | undefined;
 }) {
   const queryClient = useQueryClient();
+  const savedSlackTransport = view.identifiers["transport"] === "webhook" ? "webhook" : "socket";
+  const [slackTransport, setSlackTransport] = useState<"socket" | "webhook">(savedSlackTransport);
+  const activeGuide =
+    guide.provider === "slack" && slackTransport === "webhook" ? SLACK_WEBHOOK_GUIDE : guide;
   const [replacing, setReplacing] = useState(false);
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
   const [outcome, setOutcome] = useState<Outcome | undefined>(returned);
   const result = useRef<HTMLDivElement>(null);
   const error = useRef<HTMLDivElement>(null);
   const replace = useRef<HTMLButtonElement>(null);
-  const fields = guideFields(guide, callbackOrigin);
+  const fields = guideFields(activeGuide, callbackOrigin);
   // Every transition the operator caused ends here: the section says what happened, and the
   // keyboard lands on it rather than on the document body a disabled form left behind.
   useEffect(() => {
@@ -88,14 +103,32 @@ export function ProviderSection({
     else if (outcome !== undefined) result.current?.focus();
   }, [outcome]);
   useEffect(() => {
-    if (replacing) document.getElementById(`${guide.provider}-${fields[0]?.name}`)?.focus();
+    if (replacing) document.getElementById(`${activeGuide.provider}-${fields[0]?.name}`)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the first field name is stable per guide
-  }, [guide, replacing]);
+  }, [activeGuide, replacing]);
+
+  const saveProvider = useServerFn(verifyAndSaveProviderApplication) as (
+    input: SaveMutationInput,
+  ) => Promise<SaveResponse>;
+  const saveSocket = useServerFn(configureSlackSocketApplication);
 
   const save = useMutation({
-    mutationFn: useServerFn(verifyAndSaveProviderApplication) as (
-      input: Parameters<typeof verifyAndSaveProviderApplication>[0],
-    ) => Promise<SaveResponse>,
+    mutationFn: (input: SaveMutationInput) => {
+      if (input.data.provider !== "slack" || input.data.transport !== "socket") {
+        return saveProvider(input);
+      }
+      const { appToken, botToken, expectedVersion } = input.data;
+      if (typeof appToken !== "string" || typeof botToken !== "string") {
+        return Promise.reject(new Error("invalid Slack Socket Mode form"));
+      }
+      return saveSocket({
+        data: {
+          appToken,
+          botToken,
+          ...(typeof expectedVersion === "number" ? { expectedVersion } : {}),
+        },
+      });
+    },
     onSuccess: async (response) => {
       if (response.status === "error") {
         setOutcome({ tone: "error", message: response.error.message });
@@ -108,10 +141,10 @@ export function ProviderSection({
         return;
       }
       setReplacing(false);
-      setOutcome({ tone: "success", message: guide.verifiedMessage ?? "" });
+      setOutcome({ tone: "success", message: activeGuide.verifiedMessage ?? "" });
       await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
     },
-    onError: () => setOutcome({ tone: "error", message: unreachable(guide.name) }),
+    onError: () => setOutcome({ tone: "error", message: unreachable(activeGuide.name) }),
   });
 
   const connect = useMutation({
@@ -127,8 +160,20 @@ export function ProviderSection({
     },
     onError: () => setOutcome({ tone: "error", message: unreachable(guide.name) }),
   });
+  const retryDelivery = useMutation({
+    mutationFn: useServerFn(retrySlackSocketDelivery) as (input: {}) => Promise<VoidResponse>,
+    onSuccess: async (response) => {
+      if (response.status === "error") {
+        setOutcome({ tone: "error", message: response.error.message });
+        return;
+      }
+      setOutcome({ tone: "success", message: "Slack is reconnecting." });
+      await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
+    },
+    onError: () => setOutcome({ tone: "error", message: unreachable("Slack") }),
+  });
 
-  const pending = save.isPending || connect.isPending;
+  const pending = save.isPending || connect.isPending || retryDelivery.isPending;
   // A save that resolved into a redirect keeps the section busy until the browser leaves, so the
   // form cannot be submitted twice in the gap.
   const leaving =
@@ -158,10 +203,16 @@ export function ProviderSection({
           ? {}
           : { expectedVersion: view.configurationVersion };
       save.mutate({
-        data: { provider: guide.provider, surface, ...expectedVersion, ...values },
-      } as Parameters<typeof verifyAndSaveProviderApplication>[0]);
+        data: {
+          provider: activeGuide.provider,
+          ...(activeGuide.transport === undefined ? {} : { transport: activeGuide.transport }),
+          surface,
+          ...expectedVersion,
+          ...values,
+        },
+      });
     },
-    [fields, guide, save, surface, view.configurationVersion],
+    [activeGuide, fields, save, surface, view.configurationVersion],
   );
 
   const startConnection = useCallback(() => {
@@ -171,13 +222,13 @@ export function ProviderSection({
   const status = statusPresentation(view.status);
   // Once anything is saved the instructions become reference material and move behind a
   // disclosure, so completed work is never buried under the manual that created it.
-  const phase = sectionPhase(guide, view, callbackOrigin, replacing);
+  const phase = sectionPhase(activeGuide, view, callbackOrigin, replacing);
 
   const form =
     phase === "guiding" || phase === "replacing" ? (
       <PasteForm
-        id={`${guide.provider}-application-form`}
-        guide={guide}
+        id={`${activeGuide.provider}-application-form`}
+        guide={activeGuide}
         origin={callbackOrigin}
         errors={errors}
         view={view}
@@ -203,13 +254,17 @@ export function ProviderSection({
       status={<StatusPill tone={status.tone}>{status.label}</StatusPill>}
     >
       <div className="grid gap-5">
-        {view.managedByEnvironment ? <EnvironmentNotice guide={guide} /> : null}
+        {view.managedByEnvironment ? <EnvironmentNotice guide={activeGuide} /> : null}
         {/* One node for the whole life of the section. A save moves the section from setup to
             saved, and focus that had just landed on a node the phase change unmounts is focus
             dropped on the floor. */}
-        <ResultRegion ref={result} errorRef={error} guide={guide} outcome={outcome} />
+        <ResultRegion ref={result} errorRef={error} guide={activeGuide} outcome={outcome} />
+        {guide.provider === "slack" &&
+        (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
+          <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
+        ) : null}
         <SectionBody
-          guide={guide}
+          guide={activeGuide}
           view={view}
           origin={callbackOrigin}
           phase={phase}
@@ -218,6 +273,7 @@ export function ProviderSection({
           connecting={connect.isPending || leaving}
           replaceRef={replace}
           onConnect={startConnection}
+          onRetry={() => retryDelivery.mutate({})}
           onReplace={() => {
             setErrors({});
             setOutcome(undefined);
@@ -234,6 +290,50 @@ export function ProviderSection({
  * knot of booleans is what stops "verified" and "replacing" from disagreeing about the layout.
  */
 type SectionPhase = "blocked" | "guiding" | "replacing" | "saved";
+
+function SlackTransportChoice({
+  value,
+  onChange,
+}: {
+  value: "socket" | "webhook";
+  onChange: (value: "socket" | "webhook") => void;
+}) {
+  return (
+    <fieldset className="grid gap-3">
+      <legend className="text-sm font-medium">How should Slack reach Hub?</legend>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {(
+          [
+            [
+              "socket",
+              "Socket Mode",
+              "Connect from this Hub to Slack. No public address or HTTPS needed.",
+            ],
+            ["webhook", "Webhooks", "Let Slack send events to a public HTTPS address."],
+          ] as const
+        ).map(([transport, label, description]) => (
+          <label
+            key={transport}
+            aria-label={label}
+            className="flex cursor-pointer gap-3 rounded-lg border p-4 has-checked:border-primary"
+          >
+            <input
+              type="radio"
+              name="slack-transport"
+              value={transport}
+              checked={value === transport}
+              onChange={() => onChange(transport)}
+            />
+            <span className="grid gap-1">
+              <span className="font-medium">{label}</span>
+              <span className="text-sm text-muted-foreground">{description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
 
 function sectionPhase(
   guide: ProviderGuide,
@@ -257,6 +357,7 @@ function SectionBody({
   connecting,
   replaceRef,
   onConnect,
+  onRetry,
   onReplace,
 }: {
   guide: ProviderGuide;
@@ -268,6 +369,7 @@ function SectionBody({
   connecting: boolean;
   replaceRef: React.RefObject<HTMLButtonElement | null>;
   onConnect: () => void;
+  onRetry: () => void;
   onReplace: () => void;
 }) {
   if (phase === "blocked") return <HttpsGate guide={guide} origin={origin} />;
@@ -296,6 +398,13 @@ function SectionBody({
               pending={connecting}
               onConnect={onConnect}
             />
+            {guide.provider === "slack" &&
+            view.identifiers["transport"] === "socket" &&
+            view.deliveryStatus?.state === "actionNeeded" ? (
+              <Button type="button" variant="outline" disabled={busy} onClick={onRetry}>
+                Retry
+              </Button>
+            ) : null}
             {view.managedByEnvironment ? null : (
               <Button
                 ref={replaceRef}
@@ -363,6 +472,12 @@ function summaryRows(
       rows.push({ label: "Application ID", value: identity.id });
     }
   }
+  if (guide.provider === "slack") {
+    rows.push({
+      label: "Delivery",
+      value: view.identifiers["transport"] === "webhook" ? "Webhooks" : "Socket Mode",
+    });
+  }
   rows.push({
     label: guide.summaryLabels.connections,
     value:
@@ -398,6 +513,10 @@ function eventState(
   view: ProviderApplicationView,
   origin: string,
 ): ReactNode {
+  if (guide.provider === "slack" && view.identifiers["transport"] === "socket") {
+    const socketState = slackSocketEventState(view.deliveryStatus);
+    if (socketState !== undefined) return socketState;
+  }
   if (guide.provider === "github" && !isSecureOrigin(origin)) {
     return <span className="text-muted-foreground">Needs a public HTTPS address</span>;
   }
@@ -413,6 +532,22 @@ function eventState(
       Last received <RelativeTime value={view.lastEventAt} />
     </>
   );
+}
+
+function slackSocketEventState(
+  delivery: ProviderApplicationView["deliveryStatus"],
+): ReactNode | undefined {
+  if (delivery?.state === "connected") return <>Connected</>;
+  if (delivery?.state === "connecting" || delivery?.state === "reconnecting") {
+    return <>Reconnecting</>;
+  }
+  if (delivery?.state !== "actionNeeded") return undefined;
+  const action = {
+    socketModeOff: "Turn on Socket Mode in Slack, then retry",
+    appIdentityMismatch: "Replace the app-level token with one from this Slack app",
+    appTokenRejected: "Replace the app-level token",
+  }[delivery.reason];
+  return action;
 }
 
 /**
@@ -523,7 +658,11 @@ function ConnectAction({
 }) {
   const label =
     view.connections.length > 0 ? guide.actions.connectAgain : (guide.actions.connect ?? undefined);
-  if (label === undefined) return null;
+  if (
+    label === undefined ||
+    (guide.provider === "slack" && view.identifiers["transport"] === "socket")
+  )
+    return null;
   return (
     <Button type="button" disabled={busy} onClick={onConnect}>
       {pending ? "Opening…" : label}
@@ -745,7 +884,11 @@ function StepBody({
       )}
       {step.manifest === true ? (
         <div className="mt-3">
-          <CopyBlock label="App manifest" value={slackManifest(origin)} action="Copy manifest" />
+          <CopyBlock
+            label="App manifest"
+            value={slackManifest(origin, guide.transport ?? "socket")}
+            action="Copy manifest"
+          />
         </div>
       ) : null}
     </>

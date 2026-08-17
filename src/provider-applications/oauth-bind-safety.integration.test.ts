@@ -366,6 +366,7 @@ function application(provider: Provider, suffix: string) {
   } else if (provider === "slack") {
     configuration = {
       provider,
+      transport: "webhook",
       appId: `slack-${suffix}`,
       clientId: `slack-client-${suffix}`,
       clientSecret: `slack-secret-${suffix}`,

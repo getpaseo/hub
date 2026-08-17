@@ -81,6 +81,7 @@ interface GuideGroupSource extends Omit<GuideGroup, "unavailable"> {
 
 export interface ProviderGuide {
   provider: Provider;
+  transport?: "socket" | "webhook";
   name: string;
   summary: string;
   portal: { label: string; href: string };
@@ -297,8 +298,9 @@ export const GITHUB_GUIDE: ProviderGuide = {
   receivesEvents: true,
 };
 
-export const SLACK_GUIDE: ProviderGuide = {
+export const SLACK_WEBHOOK_GUIDE: ProviderGuide = {
   provider: "slack",
+  transport: "webhook",
   name: "Slack",
   summary: "Reads mentions in your workspace and replies in the thread.",
   portal: { label: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
@@ -385,6 +387,71 @@ export const SLACK_GUIDE: ProviderGuide = {
   requiresHttps: true,
   httpsRequirement: (origin) =>
     `Slack only works over HTTPS, and Hub is at ${origin}. Reopen Hub at its public HTTPS address to set up Slack.`,
+  receivesEvents: true,
+};
+
+const slackStep = (value: string, manifest = false): GuideStep => ({
+  segments: [{ kind: "text", value }],
+  ...(manifest ? { manifest: true } : {}),
+});
+
+export const SLACK_GUIDE: ProviderGuide = {
+  provider: "slack",
+  transport: "socket",
+  name: "Slack",
+  summary: "Reads mentions in your workspace and replies in the thread.",
+  portal: { label: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
+  formTitle: "Connect Slack",
+  summaryLabels: { identity: "App ID", connections: "Workspaces" },
+  environmentVariables: ["SLACK_TRANSPORT", "SLACK_APP_ID", "SLACK_APP_TOKEN"],
+  groups: [
+    {
+      id: "app",
+      steps: [
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            {
+              kind: "link",
+              value: "Create a Slack app",
+              href: "https://api.slack.com/apps?new_app=1",
+            },
+            { kind: "text", value: ", choose From a manifest, select the workspace, and paste:" },
+          ],
+          manifest: true,
+        },
+        slackStep(
+          "Under Basic Information → App-Level Tokens, generate a token named Paseo with connections:write.",
+        ),
+        slackStep("Under OAuth & Permissions, install the app and copy the Bot User OAuth Token."),
+      ],
+      fields: [
+        {
+          name: "appToken",
+          label: "App-level token",
+          kind: "secret",
+          description: "Starts with xapp-.",
+          required: "Enter the App-level token.",
+        },
+        {
+          name: "botToken",
+          label: "Bot token",
+          kind: "secret",
+          description: "Starts with xoxb-.",
+          required: "Enter the Bot token.",
+        },
+      ],
+    },
+  ],
+  urls: [],
+  savingContinues: false,
+  actions: {
+    save: "Connect Slack",
+    savePending: "Checking Slack and connecting…",
+  },
+  verifiedMessage: "Slack connected.",
+  requiresHttps: false,
+  httpsRequirement: (origin) => `Slack can connect from ${origin}.`,
   receivesEvents: true,
 };
 
@@ -531,8 +598,14 @@ export function guideUrl(origin: string, path: string): string {
  * checks installations against, so a manifest the operator pastes can never ask for less than
  * Hub needs.
  */
-export function slackManifest(origin: string): string {
+export function slackManifest(origin: string, transport: "socket" | "webhook" = "socket"): string {
   const scopes = SLACK_REQUIRED_BOT_SCOPES.map((scope) => `      - ${scope}`).join("\n");
+  const webhook =
+    transport === "webhook"
+      ? `  redirect_urls:\n    - ${origin}/api/integrations/slack/callback\n`
+      : "";
+  const requestUrl =
+    transport === "webhook" ? `    request_url: ${origin}/api/integrations/slack/events\n` : "";
   return `display_information:
   name: Paseo
 features:
@@ -540,20 +613,17 @@ features:
     display_name: Paseo
     always_online: false
 oauth_config:
-  redirect_urls:
-    - ${origin}/api/integrations/slack/callback
-  scopes:
+${webhook}  scopes:
     bot:
 ${scopes}
 settings:
   event_subscriptions:
-    request_url: ${origin}/api/integrations/slack/events
-    bot_events:
+${requestUrl}    bot_events:
       - app_mention
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
-  socket_mode_enabled: false
+  socket_mode_enabled: ${transport === "socket" ? "true" : "false"}
   token_rotation_enabled: false
 `;
 }

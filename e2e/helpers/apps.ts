@@ -44,12 +44,17 @@ export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<s
       "Bot token": "token",
     },
     Slack: {
-      "App ID": "browser-slack-app",
-      "Client ID": "browser-slack-client",
-      "Client Secret": "browser-slack-client-secret",
-      "Signing Secret": "phase-zero-slack-webhook-secret",
+      "App-level token": "xapp-browser-fixture",
+      "Bot token": "xoxb-browser-fixture",
     },
   };
+
+export const SLACK_WEBHOOK_CREDENTIALS = {
+  "App ID": "browser-slack-app",
+  "Client ID": "browser-slack-client",
+  "Client Secret": "browser-slack-client-secret",
+  "Signing Secret": "phase-zero-slack-webhook-secret",
+} as const;
 
 /** The one GitHub value that only exists once the origin can receive deliveries. */
 export const GITHUB_EVENT_CREDENTIALS = { "Webhook secret": "phase-zero-webhook-secret" } as const;
@@ -184,9 +189,18 @@ export class AppSection {
   }
 
   async save(): Promise<void> {
-    await this.action(
-      this.provider === "Slack" ? "Save and continue to Slack" : "Verify and save",
-    ).click();
+    await this.body()
+      .getByRole("button", {
+        name:
+          this.provider === "Slack"
+            ? /^(?:Connect Slack|Save and continue to Slack)$/u
+            : "Verify and save",
+      })
+      .click();
+  }
+
+  async chooseSlackTransport(transport: "Socket Mode" | "Webhooks"): Promise<void> {
+    await this.body().getByRole("radio", { name: transport }).check();
   }
 
   /** Presses a copy control and reads back what actually reached the clipboard. */
@@ -404,8 +418,8 @@ export class AppSection {
     for (const label of Object.keys(WORKING_CREDENTIALS.Slack)) {
       await expect(this.form().getByLabel(label, { exact: true })).toBeEnabled();
     }
-    await expect(this.action("Save and continue to Slack")).toBeEnabled();
-    expect(await this.copiedManifest()).toContain(`${origin}/api/integrations/slack/callback`);
+    await expect(this.action("Connect Slack")).toBeEnabled();
+    expect(await this.copiedManifest()).toContain("socket_mode_enabled: true");
   }
 }
 

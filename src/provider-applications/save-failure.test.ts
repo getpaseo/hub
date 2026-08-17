@@ -80,6 +80,25 @@ describe("provider application failure copy", () => {
     assert.doesNotMatch(github, /Generate a new private key/u);
   });
 
+  it("names the exact Socket Mode token or permission to repair", () => {
+    assert.match(
+      messageFor("slack", new ProviderApplicationError("credentialsRejected", "appToken")),
+      /app-level token.*App-Level Tokens.*connections:write/u,
+    );
+    assert.match(
+      messageFor("slack", new ProviderApplicationError("credentialsRejected", "botToken")),
+      /bot token.*Reinstall/u,
+    );
+    assert.match(
+      messageFor("slack", new ProviderApplicationError("permissionMissing", "botToken")),
+      /Socket Mode manifest.*reinstall/u,
+    );
+    assert.match(
+      messageFor("slack", new ProviderApplicationError("credentialsRejected", "identityMismatch")),
+      /belong to different Slack apps/u,
+    );
+  });
+
   it("says nothing was saved for every way a save can fail", () => {
     const failures: readonly [Provider, unknown][] = [
       ["github", new ProviderApplicationError("credentialsRejected", "privateKey")],

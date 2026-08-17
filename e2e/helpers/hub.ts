@@ -50,6 +50,10 @@ export interface BuiltApplication {
   failNextAccountSetup(): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
   failNextProjectRead(): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
 }
 
 export interface BuiltApplicationOptions {
@@ -324,6 +328,10 @@ export class PaseoHub {
       providerApplicationVersion: (provider) =>
         providerApplicationVersion(application.databaseUrl, provider),
       seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
+      prepareSlackSocketWorkflow: () => application.prepareSlackSocketWorkflow(),
+      deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
+      slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
+      restart: () => application.restart(),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -4719,6 +4727,10 @@ export interface AppSetupSession {
   providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
   seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;
