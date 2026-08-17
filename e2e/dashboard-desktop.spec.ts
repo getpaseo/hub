@@ -20,7 +20,7 @@ test("locks authentication mode while a request is pending", async ({ hub }) => 
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
   await hub.signOut("owner");
-  await hub.proveAuthenticationPendingLocksMode("owner", owner, "Acme");
+  await hub.proveAuthenticationPendingLocksMode("owner", owner);
 });
 
 test("keeps authentication locked until the signed-in account installs", async ({ hub }) => {
