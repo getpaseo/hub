@@ -281,7 +281,7 @@ describe("provider runtime reconciliation", () => {
       assert.equal(transientAttempts.length, 3);
       assert.ok(transientAttempts[1]! - transientAttempts[0]! >= 150);
       assert.ok(transientAttempts[2]! - transientAttempts[1]! >= 350);
-      assert.equal(slack.activeCount("xapp-working"), 0);
+      await eventually(() => slack.activeCount("xapp-working") === 0);
       assert.equal(slack.activeCount("xapp-transient"), 1);
 
       stored = socketApplicationWithToken(4, "xapp-superseded");
@@ -292,7 +292,7 @@ describe("provider runtime reconciliation", () => {
       await activate(fixture.bundle, stored);
       await eventually(() => runtime.publishedApplication("slack")?.configurationVersion === 5);
       assert.ok(slack.requestTimes("xapp-new-version")[0]! - supersededAt < 150);
-      assert.equal(slack.activeCount("xapp-transient"), 0);
+      await eventually(() => slack.activeCount("xapp-transient") === 0);
       assert.equal(slack.activeCount("xapp-new-version"), 1);
     } finally {
       await reconciler?.stop();
