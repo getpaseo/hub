@@ -236,9 +236,20 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     },
     async stop() {
       try {
-        await Promise.all(activeSources.map(async (source) => source.stop()));
+        const stoppingSources = activeSources;
+        const stopResults = await Promise.allSettled(
+          stoppingSources.map(async (source) => source.stop()),
+        );
         activeSources = [];
-        await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+        const drainResults = await Promise.allSettled(
+          stoppingSources.map(async (source) => source.drain?.()),
+        );
+        const runtimeResults = await Promise.allSettled([
+          workflowEngine.stop(),
+          daemonModule?.lifecycle.stop(),
+          daemons?.stop(),
+        ]);
+        throwShutdownFailures([...stopResults, ...drainResults, ...runtimeResults]);
       } finally {
         await options.executionAuthority?.stop();
       }
@@ -288,6 +299,16 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         : handleManualTriggerRequest(request, manualSource, entrypoint),
   };
   return { hub, operations, publicApi, configurationForProject: storeForProject };
+}
+
+function throwShutdownFailures(results: readonly PromiseSettledResult<unknown>[]): void {
+  const failures: unknown[] = [];
+  for (const result of results) {
+    if (result.status === "rejected") failures.push(result.reason);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "multiple Hub resources failed to stop");
 }
 
 function createAppPublicOperations(

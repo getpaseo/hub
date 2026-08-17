@@ -26,6 +26,8 @@ export const SlackSocketEnvelopeSchema = z
   })
   .passthrough();
 
+export type SlackSocketEnvelope = z.infer<typeof SlackSocketEnvelopeSchema>;
+
 export const SlackSocketOpenResponseSchema = z
   .object({
     ok: z.boolean(),

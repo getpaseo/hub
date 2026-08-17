@@ -5,7 +5,6 @@ import type {
   ProviderApplicationStore,
   ProviderRuntimeCandidate,
   ProviderRuntimeOwner,
-  SlackProviderApplicationConfiguration,
 } from "../index.js";
 
 interface ActivationRow extends QueryRow {
@@ -20,14 +19,11 @@ export function createProviderRuntimeReconciler(options: {
   runtime: ProviderRuntimeOwner;
   callbackOrigin: string;
   instanceId: string;
-  initialSlackVersion: number;
   environmentManaged: boolean;
-  environmentSlack?: Extract<SlackProviderApplicationConfiguration, { transport: "socket" }>;
   intervalMs?: number;
 }): { start(): void; stop(): Promise<void> } {
   let stopped = true;
   let timer: NodeJS.Timeout | undefined;
-  let currentVersion = options.initialSlackVersion;
   let running = Promise.resolve();
   let failureActive = false;
   const intervalMs = options.intervalMs ?? 5_000;
@@ -41,9 +37,17 @@ export function createProviderRuntimeReconciler(options: {
   };
 
   const tick = async () => {
+    let reconciliationFailure: unknown;
     try {
-      if (!options.environmentManaged) await reconcileActivation();
+      if (!options.environmentManaged) {
+        try {
+          await reconcileActivation();
+        } catch (error) {
+          reconciliationFailure = error;
+        }
+      }
       await writeObservation();
+      if (reconciliationFailure !== undefined) throw reconciliationFailure;
       failureActive = false;
     } catch (error) {
       if (!failureActive) {
@@ -63,7 +67,13 @@ export function createProviderRuntimeReconciler(options: {
        from runtime_provider_activation where provider = 'slack'`,
     );
     const active = activation.rows[0];
-    if (active === undefined || active.configuration_version <= currentVersion) return;
+    const published = options.runtime.publishedApplication?.("slack");
+    if (
+      active === undefined ||
+      (published !== undefined && active.configuration_version <= published.configurationVersion)
+    ) {
+      return;
+    }
     const stored = await options.store.read("slack");
     if (
       stored === undefined ||
@@ -84,26 +94,16 @@ export function createProviderRuntimeReconciler(options: {
       await candidate.start();
       candidate.publish();
       candidate = undefined;
-      currentVersion = stored.version;
     } finally {
       await candidate?.close();
     }
   };
 
   const writeObservation = async () => {
-    const persisted = await options.store.read("slack");
-    const stored =
-      options.environmentSlack === undefined
-        ? persisted
-        : {
-            configuration: options.environmentSlack,
-            identity: options.runtime.identity?.("slack"),
-            version: 0,
-          };
+    const published = options.runtime.publishedApplication?.("slack");
     if (
-      stored?.configuration.provider !== "slack" ||
-      stored.configuration.transport !== "socket" ||
-      stored.identity === undefined
+      published?.configuration.provider !== "slack" ||
+      published.configuration.transport !== "socket"
     ) {
       await deleteObservation();
       return;
@@ -123,13 +123,13 @@ export function createProviderRuntimeReconciler(options: {
          state = excluded.state,
          reason = excluded.reason,
          observed_at = excluded.observed_at`,
-      [options.instanceId, stored.identity.id, stored.version, state, reason],
+      [options.instanceId, published.identity.id, published.configurationVersion, state, reason],
     );
     await options.database.query(
       `delete from runtime_provider_instances
        where provider = 'slack' and configuration_version <> $1
          and observed_at < now() - interval '45 seconds'`,
-      [stored.version],
+      [published.configurationVersion],
     );
   };
 

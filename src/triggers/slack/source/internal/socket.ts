@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
 import { reportFailure } from "../../../../failures/index.js";
 import { logger } from "../../../../logger.js";
-import type { TriggerHandler, TriggerSource } from "../../../index.js";
+import { admitTriggerHandler, type TriggerHandler, type TriggerSource } from "../../../index.js";
 import {
   intakeSlackEvent,
   SlackEventIntakeValidationError,
@@ -14,6 +14,7 @@ import {
   SlackSocketEnvelopeSchema,
   SlackSocketHelloSchema,
   SlackSocketOpenResponseSchema,
+  type SlackSocketEnvelope,
 } from "./socket-protocol.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
@@ -88,6 +89,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let deliveryStatus: SlackDeliveryStatus = { state: "stopped" };
   let stopped = true;
   let admitting = false;
+  let transportClosed = true;
   const sockets = new Set<WebSocket>();
   const connectionAttempts = new Set<AbortController>();
   const admissions = new Set<Promise<void>>();
@@ -101,6 +103,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let readinessTimer: NodeJS.Timeout | undefined;
   let readinessSettled = true;
   let connectionFailureActive = false;
+  let connectedStatus: Extract<SlackDeliveryStatus, { state: "connected" }> | undefined;
   let activeSocketUrl: string | undefined;
   const sensitiveValues = () => [
     options.appToken,
@@ -270,6 +273,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
 
       openedSocket.on("message", (data, binary) => {
         if (!admitting) return;
+        const admittedHandlers = new Set(Array.from(handlers, admitTriggerHandler));
         const admitted = queue
           .then(() => {
             const byteLength = rawDataByteLength(data);
@@ -283,7 +287,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               reportParseFailure(byteLength, options.appToken);
               return undefined;
             }
-            return handleFrame(rawDataText(data), openedSocket, hello);
+            return handleFrame(rawDataText(data), openedSocket, hello, admittedHandlers);
           })
           .then((result) => {
             if (result?.hello === true && !hello) {
@@ -291,12 +295,13 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               settled = true;
               clearTimeout(timer);
               connectionFailureActive = false;
-              deliveryStatus = {
+              connectedStatus = {
                 state: "connected",
                 since: now(),
                 connectionCount: result.connectionCount,
                 ...(result.connectionCount >= 10 ? { connectionLimitReached: true } : {}),
               };
+              deliveryStatus = connectedStatus;
               logger.info(
                 {
                   provider: "slack",
@@ -343,6 +348,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     frame: string,
     target: WebSocket,
     helloReceived: boolean,
+    admittedHandlers: ReadonlySet<TriggerHandler>,
   ): Promise<{ hello: true; connectionCount: number } | undefined> => {
     let value: unknown;
     try {
@@ -380,10 +386,21 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       if (envelopeId !== undefined) await sendAck(target, envelopeId, options.appToken);
       return undefined;
     }
-    if (envelope.data.type === "events_api") {
-      const payloadType = objectString(envelope.data.payload, "type");
+    await handleEnvelope(envelope.data, target, admittedHandlers, Buffer.byteLength(frame));
+    return undefined;
+  };
+
+  const handleEnvelope = async (
+    envelope: SlackSocketEnvelope,
+    target: WebSocket,
+    admittedHandlers: ReadonlySet<TriggerHandler>,
+    frameBytes: number,
+  ): Promise<void> => {
+    let deliveredTeamId: string | undefined;
+    if (envelope.type === "events_api") {
+      const payloadType = objectString(envelope.payload, "type");
       if (payloadType === "app_rate_limited") {
-        const teamId = objectString(envelope.data.payload, "team_id") ?? "workspace";
+        const teamId = objectString(envelope.payload, "team_id") ?? "workspace";
         deliveryStatus = { state: "rateLimited", teamId, since: now() };
         reportFailure(
           Object.assign(new Error("Slack is rate limiting Events API delivery"), {
@@ -396,19 +413,35 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
           },
           { kind: "rateLimited", scrubValues: sensitiveValues() },
         );
-        await sendAck(target, envelope.data.envelope_id, options.appToken);
-        return undefined;
+        if (!transportClosed) await sendAck(target, envelope.envelope_id, options.appToken);
+        return;
       }
-      const signatureHash = createHash("sha256").update(envelope.data.envelope_id).digest("hex");
+      const signatureHash = createHash("sha256").update(envelope.envelope_id).digest("hex");
       try {
-        await intakeSlackEvent(envelope.data.payload, signatureHash, handlers, options);
+        const intake = await intakeSlackEvent(
+          envelope.payload,
+          signatureHash,
+          admittedHandlers,
+          options,
+        );
+        if (intake.status === "accepted") deliveredTeamId = intake.teamId;
       } catch (error) {
         if (!(error instanceof SlackEventIntakeValidationError)) throw error;
-        reportParseFailure(Buffer.byteLength(frame), options.appToken);
+        reportParseFailure(frameBytes, options.appToken);
       }
     }
-    await sendAck(target, envelope.data.envelope_id, options.appToken);
-    return undefined;
+    if (!transportClosed) {
+      const acknowledged = await sendAck(target, envelope.envelope_id, options.appToken);
+      if (
+        acknowledged &&
+        deliveryStatus.state === "rateLimited" &&
+        deliveryStatus.teamId === deliveredTeamId &&
+        connectedStatus !== undefined
+      ) {
+        connectedStatus = { ...connectedStatus, since: now() };
+        deliveryStatus = connectedStatus;
+      }
+    }
   };
 
   return {
@@ -417,6 +450,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       if (!stopped) return readyPromise;
       stopped = false;
       admitting = true;
+      transportClosed = false;
       readinessSettled = false;
       readyPromise = new Promise<void>((resolve, reject) => {
         resolveReady = resolve;
@@ -438,6 +472,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       retryWake?.();
       await drainAdmissions();
       handlers.clear();
+      transportClosed = true;
       const closing = [...sockets];
       for (const openSocket of closing) openSocket.close(1000, "shutdown");
       await Promise.race([Promise.all(closing.map(closeResult)), delay(shutdownTimeoutMs)]);
@@ -451,6 +486,9 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         { provider: "slack", operation: "slack.socket.shutdown" },
         "Slack Socket Mode stopped",
       );
+    },
+    async drain() {
+      await Promise.allSettled(admissions);
     },
     ready: () => readyPromise,
     status: () => deliveryStatus,
@@ -557,7 +595,7 @@ function closeResult(socket: WebSocket): Promise<string> {
   });
 }
 
-async function sendAck(socket: WebSocket, envelopeId: string, appToken: string): Promise<void> {
+async function sendAck(socket: WebSocket, envelopeId: string, appToken: string): Promise<boolean> {
   try {
     await new Promise<void>((resolve, reject) => {
       socket.send(slackSocketAck(envelopeId), (error) => {
@@ -568,6 +606,7 @@ async function sendAck(socket: WebSocket, envelopeId: string, appToken: string):
         reject(error);
       });
     });
+    return true;
   } catch (error) {
     reportFailure(
       error,
@@ -579,6 +618,7 @@ async function sendAck(socket: WebSocket, envelopeId: string, appToken: string):
       { scrubValues: [appToken] },
     );
     socket.close();
+    return false;
   }
 }
 

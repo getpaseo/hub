@@ -36,6 +36,9 @@ interface Slot {
 
 interface ActiveRegistration {
   provider: Provider;
+  configuration: ProviderApplicationConfiguration;
+  identity: ProviderApplicationIdentity | undefined;
+  configurationVersion: number;
   snapshotId: string;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
@@ -105,6 +108,17 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
+  publishedApplication(provider: Provider) {
+    const active = this.slot(provider).active;
+    return active?.identity === undefined
+      ? undefined
+      : {
+          configuration: active.configuration,
+          identity: active.identity,
+          configurationVersion: active.configurationVersion,
+        };
+  }
+
   slackDeliveryStatus(): SlackDeliveryStatus {
     return (
       this.slot("slack").active?.registration.slackDelivery?.status() ?? {
@@ -145,6 +159,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const triggerResources = slot.triggerResources;
     const active: ActiveRegistration = {
       provider,
+      configuration,
+      identity,
+      configurationVersion,
       snapshotId: `${provider}:${configurationVersion}:${++this.nextSnapshot}`,
       registration,
       triggers:
@@ -201,7 +218,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       },
       close: () => {
         if (!published) active.resolvePublication(false);
-        return published ? Promise.resolve() : stopSources(active);
+        return published ? Promise.resolve() : closeUnpublished(active);
       },
     };
   }
@@ -288,6 +305,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           slot.active.acceptingEvents = false;
           await stopSources(slot.active);
         }
+      },
+      drain: async () => {
+        await Promise.all([...slot.retained.values()].map(drainSources));
       },
     };
     const connectionActions = Object.fromEntries(
@@ -692,6 +712,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       );
       const restored: ActiveRegistration = {
         provider,
+        configuration,
+        identity: slot.identity,
+        configurationVersion: snapshot.configurationVersion,
         snapshotId: `${provider}:${snapshot.configurationVersion}:callback`,
         registration,
         triggers: [],
@@ -749,17 +772,25 @@ async function startSources(active: ActiveRegistration, handler: TriggerHandler)
   // immediately so candidate.close() and application shutdown always stop it.
   active.sourcesStarted = true;
   for (const source of active.registration.sources) {
-    await source.start((trigger) =>
-      active.acceptingEvents
-        ? handler(trigger)
-        : active.publication.then((published) => {
-            if (!published || !active.acceptingEvents) {
-              throw new Error("provider candidate is not accepting events");
-            }
-            return handler(trigger);
-          }),
-    );
+    await source.start(runtimeHandler(active, handler));
   }
+}
+
+function runtimeHandler(active: ActiveRegistration, handler: TriggerHandler): TriggerHandler {
+  const unavailable = () => Promise.reject(new Error("provider candidate is not accepting events"));
+  const dispatch: TriggerHandler = (trigger) =>
+    active.acceptingEvents
+      ? handler(trigger)
+      : active.publication.then((published) =>
+          published && active.acceptingEvents ? handler(trigger) : unavailable(),
+        );
+  dispatch.admit = () => {
+    if (active.retiring) return unavailable;
+    const publication = active.publication;
+    return (trigger) =>
+      publication.then((published) => (published ? handler(trigger) : unavailable()));
+  };
+  return dispatch;
 }
 
 function publicationGate(): Pick<ActiveRegistration, "publication" | "resolvePublication"> {
@@ -786,9 +817,19 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
+async function drainSources(active: ActiveRegistration): Promise<void> {
+  await Promise.all(active.registration.sources.map(async (source) => source.drain?.()));
+}
+
+async function closeUnpublished(active: ActiveRegistration): Promise<void> {
+  await stopSources(active);
+  await drainSources(active);
+}
+
 async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
   try {
     await stopSources(active);
+    await drainSources(active);
   } catch (error) {
     reportFailure(
       error,

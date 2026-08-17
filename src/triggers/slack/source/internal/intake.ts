@@ -32,7 +32,7 @@ export class SlackEventIntakeValidationError extends Error {
 export async function intakeSlackEvent(
   payload: unknown,
   signatureHash: string,
-  handlers: ReadonlySet<TriggerHandler>,
+  admittedHandlers: ReadonlySet<TriggerHandler>,
   options: SlackEventIntakeOptions,
 ): Promise<SlackEventIntakeResult> {
   const callback = SlackEventCallbackSchema.safeParse(payload);
@@ -51,7 +51,7 @@ export async function intakeSlackEvent(
     source: "slack.mention",
     payload: normalizedEvent,
     receivedAt: new Date(normalizedEvent.eventTime * 1_000),
-    ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
+    ...(admittedHandlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
   logProviderEventIntake({
     provider: "slack",
@@ -62,7 +62,9 @@ export async function intakeSlackEvent(
   });
   const events = acceptance.status === "accepted" ? acceptance.events : [];
   await Promise.all(
-    events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
+    events.flatMap((acceptedEvent) =>
+      Array.from(admittedHandlers, (handler) => handler(acceptedEvent)),
+    ),
   );
   return { status: "accepted", eventId: normalizedEvent.id, teamId: normalizedEvent.teamId };
 }

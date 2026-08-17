@@ -153,7 +153,6 @@ async function createProductionRuntime(
         return begin(new Request(url, { method: "POST", headers: request.headers }));
       },
     });
-    const storedSlackVersion = (await providerStore.read("slack"))?.version ?? 0;
     let providerReconciler: ReturnType<typeof createProviderRuntimeReconciler> | undefined;
     const application = await createApplicationRuntime({
       database,
@@ -182,20 +181,13 @@ async function createProductionRuntime(
         provider,
       });
     }
-    const slackActivationFailed = activationFailures.some(({ provider }) => provider === "slack");
     providerReconciler = createProviderRuntimeReconciler({
       database: runtime,
       store: providerStore,
       runtime: providerRuntime,
       callbackOrigin: identity.appUrl,
       instanceId: randomBytes(16).toString("hex"),
-      initialSlackVersion:
-        providerEnvironment.slack === undefined && !slackActivationFailed ? storedSlackVersion : 0,
       environmentManaged: providerEnvironment.slack !== undefined,
-      ...(providerEnvironment.slack?.provider === "slack" &&
-      providerEnvironment.slack.transport === "socket"
-        ? { environmentSlack: providerEnvironment.slack }
-        : {}),
     });
     providerReconciler.start();
     return application;

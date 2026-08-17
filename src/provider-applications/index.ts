@@ -126,6 +126,13 @@ export interface ProviderRuntimeOwner {
     },
   ): Promise<ProviderRuntimeCandidate>;
   identity?(provider: Provider): ProviderApplicationIdentity | undefined;
+  publishedApplication?(provider: Provider):
+    | {
+        configuration: ProviderApplicationConfiguration;
+        identity: ProviderApplicationIdentity;
+        configurationVersion: number;
+      }
+    | undefined;
   slackDeliveryStatus?(): SlackDeliveryStatus;
   retrySlackDelivery?(): Promise<void>;
   onSlackInstallation?(

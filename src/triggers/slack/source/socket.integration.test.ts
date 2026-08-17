@@ -94,6 +94,94 @@ describe("Slack Socket Mode source", () => {
     assert.deepEqual(accepted, [1, 2]);
   });
 
+  it("finishes an old admitted event after cutover and leaves its retry for the new socket", async () => {
+    const slack = await startSlackFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let releaseAcceptance: (() => void) | undefined;
+    let markAcceptanceStarted: (() => void) | undefined;
+    const acceptanceGate = new Promise<void>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    const seen = new Set<string>();
+    let workflows = 0;
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: unusedAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) => {
+        if (configuration.provider !== "slack") throw new Error("expected Slack configuration");
+        const events = createSlackEventSource({
+          configuration,
+          configurationVersion,
+          socket: { apiUrl: slack.openUrl, shutdownTimeoutMs: 20 },
+          accept: async (input) => {
+            if (seen.has(input.deliveryId)) {
+              return { status: "duplicate", receiptId: "receipt-cutover-retry" };
+            }
+            seen.add(input.deliveryId);
+            markAcceptanceStarted?.();
+            await acceptanceGate;
+            return {
+              status: "accepted",
+              receiptId: "receipt-cutover-retry",
+              events: [acceptedEvent()],
+            };
+          },
+        });
+        return socketRegistration(events.source, () => events.status());
+      },
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack")!;
+    closers.push(() => stable.sources[0]!.stop());
+    await stable.sources[0]!.start(() => {
+      workflows += 1;
+      return Promise.resolve();
+    });
+    const configuration = {
+      provider: "slack" as const,
+      transport: "socket" as const,
+      appId: "A123",
+      appToken: "xapp-cutover-retry-canary",
+    };
+    const first = await runtime.prepare(
+      "slack",
+      configuration,
+      "https://hub.test",
+      { provider: "slack", id: "A123", name: "Paseo" },
+      1,
+    );
+    await runWithFailureTracking(() => first.start(), createLogger(stream));
+    first.publish();
+    slack.send(mentionEnvelope("env-cutover-retry", "E-cutover-retry"));
+    await acceptanceStarted;
+
+    const replacement = await runtime.prepare(
+      "slack",
+      configuration,
+      "https://hub.test",
+      { provider: "slack", id: "A123", name: "Paseo" },
+      2,
+    );
+    await runWithFailureTracking(() => replacement.start(), createLogger(stream));
+    replacement.publish();
+    await slack.firstClosed;
+    releaseAcceptance?.();
+    await waitUntil(() => workflows === 1);
+
+    slack.send(mentionEnvelope("env-cutover-retry", "E-cutover-retry"));
+    await slack.waitForAck();
+    assert.equal(workflows, 1);
+    assert.deepEqual(slack.acks, [{ envelope_id: "env-cutover-retry" }]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(stream.records(), []);
+  });
+
   it("opens with the app token and acknowledges only after durable handoff", async () => {
     const slack = await startSlackFixture();
     closers.push(() => slack.close());
@@ -431,6 +519,58 @@ describe("Slack Socket Mode source", () => {
     });
   });
 
+  it("recovers delivery health after an acknowledged rate limit notice and successful event", async () => {
+    const slack = await startSlackFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let dispatches = 0;
+    const countDispatch = () => {
+      dispatches += 1;
+      return Promise.resolve();
+    };
+    const source = createSlackEventSource({
+      configuration: {
+        provider: "slack",
+        transport: "socket",
+        appId: "A123",
+        appToken: "xapp-rate-limit-recovery-canary",
+      },
+      configurationVersion: 17,
+      socket: { apiUrl: slack.openUrl },
+      accept: (input) =>
+        Promise.resolve({
+          status: "accepted",
+          events: [{ ...acceptedEvent(), deliveryId: input.deliveryId }],
+          receiptId: `receipt-${input.deliveryId}`,
+        }),
+    });
+    closers.push(() => source.source.stop());
+    await runWithFailureTracking(() => source.source.start(countDispatch), createLogger(stream));
+
+    slack.send({
+      type: "events_api",
+      envelope_id: "env-rate-limited",
+      payload: { type: "app_rate_limited", team_id: "T123", minute_rate_limited: 123 },
+    });
+    await slack.waitForAck();
+    assert.equal(source.status().state, "rateLimited");
+
+    slack.send(mentionEnvelope("env-rate-limit-recovered", "E-rate-limit-recovered"));
+    await waitUntil(() => slack.acks.length === 2 && dispatches === 1);
+
+    assert.equal(source.status().state, "connected");
+    assert.deepEqual(slack.acks, [
+      { envelope_id: "env-rate-limited" },
+      { envelope_id: "env-rate-limit-recovered" },
+    ]);
+    assertOneFailure(stream, {
+      operation: "slack.socket.event.rate_limited",
+      component: "triggers",
+      failureKind: "rateLimited",
+      canary: "xapp-rate-limit-recovery-canary",
+    });
+  });
+
   it("bounds initial readiness while a transient Slack outage keeps reconnecting", async () => {
     const canary = "xapp-readiness-canary-51";
     const server = createServer((_request, response) => {
@@ -522,6 +662,54 @@ describe("Slack Socket Mode source", () => {
     releaseAcceptance?.();
     await stopping;
     assert.deepEqual(slack.acks, [{ envelope_id: "env-shutdown" }]);
+  });
+
+  it("retains the admitted dispatch obligation after bounded transport shutdown", async () => {
+    const slack = await startSlackFixture();
+    closers.push(() => slack.close());
+    let releaseAcceptance: (() => void) | undefined;
+    let markAcceptanceStarted: (() => void) | undefined;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      markAcceptanceStarted = resolve;
+    });
+    const acceptance = new Promise<void>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    let dispatches = 0;
+    const source = createSlackEventSource({
+      configuration: {
+        provider: "slack",
+        transport: "socket",
+        appId: "A123",
+        appToken: "xapp-long-admission-canary",
+      },
+      configurationVersion: 18,
+      socket: { apiUrl: slack.openUrl, shutdownTimeoutMs: 20 },
+      accept: async () => {
+        markAcceptanceStarted?.();
+        await acceptance;
+        return {
+          status: "accepted",
+          events: [acceptedEvent()],
+          receiptId: "receipt-long-admission",
+        };
+      },
+    });
+    closers.push(() => source.source.stop());
+    await source.source.start(() => {
+      dispatches += 1;
+      return Promise.resolve();
+    });
+    slack.send(mentionEnvelope("env-long-admission", "E-long-admission"));
+    await acceptanceStarted;
+
+    await source.source.stop();
+    assert.equal(dispatches, 0);
+    releaseAcceptance?.();
+    await source.source.drain?.();
+
+    assert.equal(dispatches, 1);
+    assert.deepEqual(slack.acks, []);
   });
 
   it("drains dispatch before shutdown returns and acknowledges", async () => {
