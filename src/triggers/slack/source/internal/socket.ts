@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
 import { reportFailure } from "../../../../failures/index.js";
+import { discardClientResponse } from "../../../../http/client-response.js";
 import { logger } from "../../../../logger.js";
 import { admitTriggerHandler, type TriggerHandler, type TriggerSource } from "../../../index.js";
 import {
@@ -237,7 +238,11 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       );
       const retryAfter = Number(response.headers.get("retry-after"));
       if (response.status === 429) {
-        await disposeOpenResponse(response, controller);
+        await discardClientResponse(
+          response,
+          controller,
+          new Error("Slack Socket Mode response body was discarded"),
+        );
         throw new SlackSocketOpenError(
           "ratelimited",
           response.status,
@@ -245,7 +250,11 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         );
       }
       if (!response.ok) {
-        await disposeOpenResponse(response, controller);
+        await discardClientResponse(
+          response,
+          controller,
+          new Error("Slack Socket Mode response body was discarded"),
+        );
         throw new SlackSocketOpenError(`http_${response.status}`, response.status);
       }
       const body: unknown = await response.json().catch((error: unknown) => {
@@ -694,19 +703,6 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       .finally(() => {
         refreshPromise = undefined;
       });
-  }
-}
-
-async function disposeOpenResponse(response: Response, controller: AbortController): Promise<void> {
-  if (response.body === null) return;
-  try {
-    await response.body.cancel();
-  } catch {
-    // Slack's status remains the material failure; the abort below owns transport cleanup.
-  } finally {
-    // A discarded body may be incomplete, so cancellation alone does not guarantee that the
-    // underlying HTTP connection is reusable or closed. Abort while connectOnce still owns it.
-    controller.abort(new Error("Slack Socket Mode response body was discarded"));
   }
 }
 
