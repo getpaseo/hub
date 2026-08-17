@@ -215,18 +215,13 @@ export function createProviderApplicationStore(
             throw error;
           }
           await transaction.query(
-            `insert into slack_connections
-               (organization_id, team_id, team_name, slug, bot_user_id, bot_access_token, scopes,
-                provider_application_id, connected_by_user_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             on conflict (team_id) do update set
-               team_name = excluded.team_name,
-               bot_user_id = excluded.bot_user_id,
-               bot_access_token = excluded.bot_access_token,
-               scopes = excluded.scopes,
+            `insert into slack_connections (organization_id, team_id, team_name, slug, bot_user_id,
+               bot_access_token, scopes, provider_application_id, connected_by_user_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (team_id) do update set
+               team_name = excluded.team_name, bot_user_id = excluded.bot_user_id,
+               bot_access_token = excluded.bot_access_token, scopes = excluded.scopes,
                provider_application_id = excluded.provider_application_id,
-               connected_by_user_id = excluded.connected_by_user_id,
-               updated_at = now()`,
+               connected_by_user_id = excluded.connected_by_user_id, updated_at = now()`,
             [
               input.organizationId,
               input.installation.teamId,
@@ -241,22 +236,17 @@ export function createProviderApplicationStore(
           );
           const saved = await transaction.query<ProviderConfigurationRow>(
             currentVersion === undefined
-              ? `insert into runtime_provider_configuration
-                   (provider, configuration, verified_external_identity, version, verified_at,
-                    updated_at, updated_by_user_id)
+              ? `insert into runtime_provider_configuration (provider, configuration,
+                   verified_external_identity, version, verified_at, updated_at, updated_by_user_id)
                  values ('slack', $1, $2, 1, now(), now(), $3)
-                 returning provider, configuration, verified_external_identity, version,
-                           verified_at, updated_at, updated_by_user_id`
-              : `update runtime_provider_configuration
-                 set configuration = $1,
-                     verified_external_identity = $2,
-                     version = version + 1,
-                     verified_at = now(),
-                     updated_at = now(),
-                     updated_by_user_id = $3
+                 returning provider, configuration, verified_external_identity, version, verified_at,
+                           updated_at, updated_by_user_id`
+              : `update runtime_provider_configuration set configuration = $1,
+                   verified_external_identity = $2, version = version + 1, verified_at = now(),
+                   updated_at = now(), updated_by_user_id = $3
                  where provider = 'slack'
-                 returning provider, configuration, verified_external_identity, version,
-                           verified_at, updated_at, updated_by_user_id`,
+                 returning provider, configuration, verified_external_identity, version, verified_at,
+                           updated_at, updated_by_user_id`,
             [
               JSON.stringify(input.configuration),
               JSON.stringify(input.identity),
@@ -268,57 +258,6 @@ export function createProviderApplicationStore(
           const parsed = parseRow(row);
           await writeProviderActivation(transaction, "slack", input.identity.id, parsed.version);
           return parsed;
-        }),
-      );
-    },
-    bindSlackSocketWorkspace(input) {
-      return locks.withLock("provider-configuration:slack", () =>
-        database.transaction(async (transaction) => {
-          await lockProviderActivation(locks, transaction, "slack");
-          await locks.withTxLock(transaction, JSON.stringify(["slack", input.installation.teamId]));
-          const active = await transaction.query<{ provider_application_id: string }>(
-            `select provider_application_id from runtime_provider_activation where provider = 'slack' for update`,
-          );
-          if (active.rows[0]?.provider_application_id !== input.appId) {
-            throw new ProviderConfigurationConflictError();
-          }
-          const existing = await transaction.query<{ organization_id: string }>(
-            `select organization_id from slack_connections where team_id = $1 for update`,
-            [input.installation.teamId],
-          );
-          if (
-            existing.rows[0] !== undefined &&
-            existing.rows[0].organization_id !== input.organizationId
-          ) {
-            const error = new Error("Slack workspace belongs to another organization");
-            error.name = "ProviderApplicationIdentityConflictError";
-            throw error;
-          }
-          await transaction.query(
-            `insert into slack_connections
-               (organization_id, team_id, team_name, slug, bot_user_id, bot_access_token, scopes,
-                provider_application_id, connected_by_user_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             on conflict (team_id) do update set
-               team_name = excluded.team_name,
-               bot_user_id = excluded.bot_user_id,
-               bot_access_token = excluded.bot_access_token,
-               scopes = excluded.scopes,
-               provider_application_id = excluded.provider_application_id,
-               connected_by_user_id = excluded.connected_by_user_id,
-               updated_at = now()`,
-            [
-              input.organizationId,
-              input.installation.teamId,
-              input.installation.teamName,
-              `slack-${input.installation.teamId.toLowerCase()}`,
-              input.installation.botUserId,
-              input.installation.botAccessToken,
-              JSON.stringify(input.installation.scopes),
-              input.appId,
-              input.connectedByUserId,
-            ],
-          );
         }),
       );
     },

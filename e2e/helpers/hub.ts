@@ -57,8 +57,6 @@ export interface BuiltApplication {
 }
 
 export interface BuiltApplicationOptions {
-  /** Reuse an existing PostgreSQL database to exercise concurrent Hub instances. */
-  databaseUrl?: string;
   browserAuth?: boolean;
   machineAuth?: boolean;
   databaseProfile?: "fresh" | "legacy";
@@ -154,9 +152,7 @@ export class PaseoHub {
   }
 
   async verifyHttpContractMatrix(): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "legacy",
-    });
+    const application = await this.startApplication({ databaseProfile: "legacy" });
     await this.verifyManualApplication(application);
     const webhook = await this.startApplication({ databaseProfile: "legacy" });
     await this.verifyWebhookApplication(webhook);
@@ -171,11 +167,7 @@ export class PaseoHub {
     await this.verifyExactContract(application, {
       name: "legacy deployment remains healthy without browser auth",
       request: { path: "/health", method: "GET" },
-      expected: {
-        status: 200,
-        body: '{"ok":true}',
-        headers: { "content-type": JSON_TYPE },
-      },
+      expected: { status: 200, body: '{"ok":true}', headers: { "content-type": JSON_TYPE } },
     });
     await this.verifyExactContract(application, {
       name: "browser auth closes independently",
@@ -340,13 +332,6 @@ export class PaseoHub {
       deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
       slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
       restart: () => application.restart(),
-      startSibling: () =>
-        this.startApplication({
-          databaseProfile: "fresh",
-          machineAuth: false,
-          providerApplications: true,
-          databaseUrl: application.databaseUrl,
-        }),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -468,10 +453,7 @@ export class PaseoHub {
         });
         return { status: result.status, body: await result.json() };
       }, application.origin);
-      expect(response).toEqual({
-        status: 403,
-        body: { error: "registration_closed" },
-      });
+      expect(response).toEqual({ status: 403, body: { error: "registration_closed" } });
     } finally {
       await context.close();
     }
@@ -504,10 +486,7 @@ export class PaseoHub {
         });
         return { status: result.status, body: await result.json() };
       }, application.origin);
-      expect(response).toEqual({
-        status: 403,
-        body: { error: "organization_creation_disabled" },
-      });
+      expect(response).toEqual({ status: 403, body: { error: "organization_creation_disabled" } });
     } finally {
       await context.close();
     }
@@ -684,12 +663,7 @@ export class PaseoHub {
         text: "<@UBOT> PRIVATE-EVENT-BODY",
         ts: "1700000000.000001",
         event_ts: "1700000000.000001",
-        files: [
-          {
-            id: "PRIVATE-EVENT-ATTACHMENT-ID",
-            name: "PRIVATE-EVENT-ATTACHMENT-NAME",
-          },
-        ],
+        files: [{ id: "PRIVATE-EVENT-ATTACHMENT-ID", name: "PRIVATE-EVENT-ATTACHMENT-NAME" }],
       },
     });
     const timestamp = String(Math.floor(Date.now() / 1_000));
@@ -892,10 +866,7 @@ export class PaseoHub {
    * leave the previously synced row untouched — the other two plans are unaffected throughout.
    */
   async proveStripePlanCatalogMirror(): Promise<string> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-      billing: true,
-    });
+    const application = await this.startApplication({ databaseProfile: "fresh", billing: true });
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
 
     await application.setBillingProduct({
@@ -1150,24 +1121,14 @@ export class PaseoHub {
 
   async expectConnectedProviders(
     alias: string,
-    expected: {
-      github: string;
-      installationId: string;
-      discord: string;
-      guildId: string;
-    },
+    expected: { github: string; installationId: string; discord: string; guildId: string },
   ): Promise<void> {
     await this.requireUser(alias).expectConnectedProviders(expected);
   }
 
   async expectMemberConnectedProviders(
     alias: string,
-    expected: {
-      github: string;
-      installationId: string;
-      discord: string;
-      guildId: string;
-    },
+    expected: { github: string; installationId: string; discord: string; guildId: string },
   ): Promise<void> {
     await this.requireUser(alias).expectMemberConnectedProviders(expected);
   }
@@ -1358,9 +1319,7 @@ export class PaseoHub {
   }
 
   async proveConnectionStateBoundaries(account: Account): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-    });
+    const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
@@ -1407,9 +1366,7 @@ export class PaseoHub {
     account: Account,
     replacement: Account,
   ): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-    });
+    const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
@@ -1437,9 +1394,7 @@ export class PaseoHub {
   }
 
   async proveProviderStartLocksAccountContext(account: Account): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-    });
+    const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
@@ -2164,11 +2119,7 @@ export class PaseoHub {
         },
         body: payload,
       },
-      expected: {
-        status: 200,
-        body: "OK",
-        headers: { "content-type": TEXT_TYPE },
-      },
+      expected: { status: 200, body: "OK", headers: { "content-type": TEXT_TYPE } },
     });
   }
 
@@ -2213,11 +2164,7 @@ export class PaseoHub {
     await this.verifyExactContract(application, {
       name: "missing asset",
       request: { path: "/assets/missing.css", method: "GET" },
-      expected: {
-        status: 404,
-        body: "Not Found",
-        headers: { "content-type": TEXT_TYPE },
-      },
+      expected: { status: 404, body: "Not Found", headers: { "content-type": TEXT_TYPE } },
     });
   }
 
@@ -2225,11 +2172,7 @@ export class PaseoHub {
     await this.verifyExactContract(application, {
       name: "signed-out session",
       request: { path: "/api/auth/get-session", method: "GET" },
-      expected: {
-        status: 200,
-        body: "null",
-        headers: { "content-type": JSON_TYPE },
-      },
+      expected: { status: 200, body: "null", headers: { "content-type": JSON_TYPE } },
     });
     const account = {
       name: "Contract Operator",
@@ -2244,22 +2187,13 @@ export class PaseoHub {
     expect(signUp.headers()["set-cookie"]).toContain("better-auth.session_token=");
     expect(await signUp.json()).toEqual({
       token: expect.any(String),
-      user: expect.objectContaining({
-        name: account.name,
-        email: account.email,
-      }),
+      user: expect.objectContaining({ name: account.name, email: account.email }),
     });
     const session = await this.requests.get(`${application.origin}/api/auth/get-session`);
     expect(session.status()).toBe(200);
     expect(await session.json()).toEqual({
-      session: expect.objectContaining({
-        token: expect.any(String),
-        userId: expect.any(String),
-      }),
-      user: expect.objectContaining({
-        name: account.name,
-        email: account.email,
-      }),
+      session: expect.objectContaining({ token: expect.any(String), userId: expect.any(String) }),
+      user: expect.objectContaining({ name: account.name, email: account.email }),
     });
     const rejected = await this.requests.post(`${application.origin}/api/auth/sign-in/email`, {
       headers: { origin: application.origin },
@@ -2274,10 +2208,7 @@ export class PaseoHub {
   }
 
   private async verifyOrganizationPostOriginBoundary(application: BuiltApplication): Promise<void> {
-    const sameOrigin = {
-      origin: application.origin,
-      "sec-fetch-site": "same-origin",
-    };
+    const sameOrigin = { origin: application.origin, "sec-fetch-site": "same-origin" };
     const post = (path: string, data: unknown, headers: Record<string, string> = sameOrigin) =>
       this.requests.post(`${application.origin}${path}`, { headers, data });
 
@@ -2292,18 +2223,12 @@ export class PaseoHub {
       {
         name: "missing origin",
         headers: {},
-        error: {
-          message: "Missing or null Origin",
-          code: "MISSING_OR_NULL_ORIGIN",
-        },
+        error: { message: "Missing or null Origin", code: "MISSING_OR_NULL_ORIGIN" },
       },
       {
         name: "null origin",
         headers: { origin: "null" },
-        error: {
-          message: "Missing or null Origin",
-          code: "MISSING_OR_NULL_ORIGIN",
-        },
+        error: { message: "Missing or null Origin", code: "MISSING_OR_NULL_ORIGIN" },
       },
       {
         name: "cross-site Fetch Metadata",
@@ -2372,11 +2297,7 @@ export class PaseoHub {
           headers: contract.headers,
           body: "{}",
         },
-        expected: {
-          status: 403,
-          body: contract.body,
-          headers: { "content-type": JSON_TYPE },
-        },
+        expected: { status: 403, body: contract.body, headers: { "content-type": JSON_TYPE } },
       });
     }
   }
@@ -2477,10 +2398,7 @@ export class PaseoHub {
     daemon: ContractDaemon,
   ): Promise<void> {
     const capability = await daemon.executionCapability(executionId);
-    const client = new McpClient({
-      name: "paseo-hub-browser-contract",
-      version: "1.0.0",
-    });
+    const client = new McpClient({ name: "paseo-hub-browser-contract", version: "1.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(capability.url), {
       requestInit: { headers: capability.headers },
     });
@@ -2489,10 +2407,7 @@ export class PaseoHub {
       // exact-optional `sessionId?: string`; the runtime class is the SDK's official transport.
       // @ts-expect-error upstream SDK exactOptionalPropertyTypes mismatch
       await client.connect(transport);
-      const result = await client.callTool({
-        name: "finish_execution",
-        arguments: {},
-      });
+      const result = await client.callTool({ name: "finish_execution", arguments: {} });
       expect(result.isError).toBeUndefined();
       expect(result.content).toEqual([{ type: "text", text: "Execution finished" }]);
     } finally {
@@ -2556,9 +2471,7 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
     await expectAccessible(this.page);
 
-    const change = this.page.getByRole("form", {
-      name: "Choose a new password",
-    });
+    const change = this.page.getByRole("form", { name: "Choose a new password" });
     await change.getByLabel("Current password").fill(account.password);
     await change
       .getByRole("textbox", { name: "New password", exact: true })
@@ -2628,9 +2541,7 @@ class HubUser {
   private async expectFirstRunWelcome(): Promise<void> {
     await this.page.setViewportSize({ width: 390, height: 844 });
     await this.page.goto(this.origin);
-    const welcome = this.page.getByRole("heading", {
-      name: "Welcome to Paseo Hub",
-    });
+    const welcome = this.page.getByRole("heading", { name: "Welcome to Paseo Hub" });
     await expect(welcome).toBeVisible();
     await expect(welcome).toBeFocused();
     await expect(this.page.getByRole("button", { name: "Set up Paseo Hub" })).toBeInViewport();
@@ -2668,9 +2579,7 @@ class HubUser {
   /** Leaving setup returns to the welcome card, and takes focus back with it. */
   private async expectFirstRunBackReturnsToWelcome(): Promise<void> {
     await this.page.getByRole("button", { name: "Back" }).click();
-    const welcome = this.page.getByRole("heading", {
-      name: "Welcome to Paseo Hub",
-    });
+    const welcome = this.page.getByRole("heading", { name: "Welcome to Paseo Hub" });
     await expect(welcome).toBeVisible();
     await expect(welcome).toBeFocused();
   }
@@ -2736,9 +2645,7 @@ class HubUser {
    */
   async expectSetupFormFallsBackToSignIn(account: Account): Promise<void> {
     await this.fillFirstRunSetupForm(account);
-    const signIn = this.page.getByRole("heading", {
-      name: "Sign in to Paseo Hub",
-    });
+    const signIn = this.page.getByRole("heading", { name: "Sign in to Paseo Hub" });
     await expect(signIn).toBeVisible();
     await expect(signIn).toBeFocused();
     await expect(this.page.getByRole("form", { name: "Sign in" })).toBeVisible();
@@ -2788,10 +2695,7 @@ class HubUser {
       this.page.evaluate(async (key) => {
         const response = await fetch(`${window.location.origin}/api/v1/daemons/enrollment-tokens`, {
           method: "POST",
-          headers: {
-            authorization: `Bearer ${key}`,
-            "content-type": "application/json",
-          },
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
           body: JSON.stringify({}),
         });
         return response.status;
@@ -2817,9 +2721,7 @@ class HubUser {
     await this.page.getByRole("menuitem", { name: "Revoke" }).click();
     const confirmation = this.page.getByRole("alertdialog");
     await expect(
-      confirmation.getByRole("heading", {
-        name: "Revoke Production deployer?",
-      }),
+      confirmation.getByRole("heading", { name: "Revoke Production deployer?" }),
     ).toBeVisible();
     await confirmation.getByRole("button", { name: "Revoke key" }).click();
     await expect(row).toContainText("Revoked");
@@ -2830,10 +2732,7 @@ class HubUser {
       this.page.evaluate(async (key) => {
         const response = await fetch(`${window.location.origin}/api/v1/daemons/enrollment-tokens`, {
           method: "POST",
-          headers: {
-            authorization: `Bearer ${key}`,
-            "content-type": "application/json",
-          },
+          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
           body: JSON.stringify({}),
         });
         return response.status;
@@ -3251,10 +3150,7 @@ class HubUser {
       const menu = this.page.getByRole("menu");
       await expect(menu).toBeVisible();
       await expect(
-        menu.getByRole("menuitem", {
-          name: destinationOrganization,
-          exact: true,
-        }),
+        menu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
       ).toBeDisabled();
       await expect(menu.getByRole("menuitem", { name: "Acme", exact: true })).toBeDisabled();
       await this.page.keyboard.press("Escape");
@@ -3557,10 +3453,7 @@ class HubUser {
       organizationMenu.getByRole("menuitem", { name: "Acme", exact: true }),
     ).toBeDisabled({ timeout: 1_000 });
     await expect(
-      organizationMenu.getByRole("menuitem", {
-        name: destinationOrganization,
-        exact: true,
-      }),
+      organizationMenu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
     ).toBeDisabled({ timeout: 1_000 });
     await this.page.keyboard.press("Escape");
     await expect(organizationMenu).toBeHidden();
@@ -3649,9 +3542,7 @@ class HubUser {
     await this.context.grantPermissions(["clipboard-read", "clipboard-write"], {
       origin: this.origin,
     });
-    const actions = this.invitationRow(email).getByRole("button", {
-      name: `Actions for ${email}`,
-    });
+    const actions = this.invitationRow(email).getByRole("button", { name: `Actions for ${email}` });
     await actions.click();
     await this.page.getByRole("menuitem", { name: "Copy link" }).click();
     await expect(this.page.getByRole("status")).toHaveText("Invitation link copied.");
@@ -3769,25 +3660,11 @@ class HubUser {
     await this.page.goto(this.origin);
     const identity = this.page.getByText(this.accountEmail, { exact: true });
     await expect(identity).toBeVisible();
-    const organization = this.page.getByRole("button", {
-      name: "Organization",
-    });
-    const projects = this.page.getByRole("link", {
-      name: "Projects",
-      exact: true,
-    });
-    const daemons = this.page.getByRole("link", {
-      name: "Daemons",
-      exact: true,
-    });
-    const connections = this.page.getByRole("link", {
-      name: "Connections",
-      exact: true,
-    });
-    const apiKeys = this.page.getByRole("link", {
-      name: "API keys",
-      exact: true,
-    });
+    const organization = this.page.getByRole("button", { name: "Organization" });
+    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
+    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
+    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
+    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
     const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
@@ -3829,25 +3706,11 @@ class HubUser {
   async createAdminInvitationWithKeyboard(email: string): Promise<void> {
     await this.openOrganizationSection("Team");
     await this.page.reload();
-    const organization = this.page.getByRole("button", {
-      name: "Organization",
-    });
-    const projects = this.page.getByRole("link", {
-      name: "Projects",
-      exact: true,
-    });
-    const daemons = this.page.getByRole("link", {
-      name: "Daemons",
-      exact: true,
-    });
-    const connections = this.page.getByRole("link", {
-      name: "Connections",
-      exact: true,
-    });
-    const apiKeys = this.page.getByRole("link", {
-      name: "API keys",
-      exact: true,
-    });
+    const organization = this.page.getByRole("button", { name: "Organization" });
+    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
+    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
+    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
+    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
     const team = this.page.getByRole("link", { name: "Team", exact: true });
     const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
@@ -3894,9 +3757,7 @@ class HubUser {
     await expect(role).toBeFocused();
     await expect(role).toHaveText("Admin");
     await this.page.keyboard.press("Tab");
-    const createInvitation = form.getByRole("button", {
-      name: "Create invitation",
-    });
+    const createInvitation = form.getByRole("button", { name: "Create invitation" });
     await expect(createInvitation).toBeFocused();
     await this.page.keyboard.press("Enter");
     await expect(form).toBeHidden();
@@ -3993,11 +3854,7 @@ class HubUser {
       .getByRole("link", { name: "Operator" })
       .click();
     await expect(
-      this.page.getByRole("heading", {
-        name: "Operator",
-        exact: true,
-        level: 1,
-      }),
+      this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
     ).toBeVisible();
     // The heading renders immediately, before the organization list has loaded — wait for the
     // real picker (a combobox) rather than its loading skeleton, so this fails if the list never
@@ -4006,15 +3863,15 @@ class HubUser {
   }
 
   private limitRow(table: Locator, resource: string): Locator {
-    return table.getByRole("row").filter({
-      has: this.page.getByRole("cell", { name: resource, exact: true }),
-    });
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: resource, exact: true }) });
   }
 
   private entitlementRow(table: Locator, entitlement: string): Locator {
-    return table.getByRole("row").filter({
-      has: this.page.getByRole("cell", { name: entitlement, exact: true }),
-    });
+    return table
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("cell", { name: entitlement, exact: true }) });
   }
 
   /** Navigate to the operator console and select one organization, leaving its entitlements table
@@ -4141,11 +3998,7 @@ class HubUser {
     // Choosing a plan redirects through the fixture checkout back to the billing page.
     await dialog.getByRole("button", { name: `Choose ${plan}`, exact: true }).click();
     await expect(
-      this.page.getByRole("heading", {
-        name: "Billing",
-        exact: true,
-        level: 1,
-      }),
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
   }
 
@@ -4158,11 +4011,7 @@ class HubUser {
     await this.openOrganizationSection("Billing");
     await this.page.reload();
     await expect(
-      this.page.getByRole("heading", {
-        name: "Billing",
-        exact: true,
-        level: 1,
-      }),
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
     // Scope to main: a plan name like "Team" also names a sidebar nav link.
     await expect(this.page.getByRole("main").getByText(plan, { exact: true })).toBeVisible();
@@ -4263,11 +4112,7 @@ class HubUser {
 
   private async expectConnectionContents(): Promise<void> {
     await expect(
-      this.page.getByRole("heading", {
-        name: "Connections",
-        exact: true,
-        level: 1,
-      }),
+      this.page.getByRole("heading", { name: "Connections", exact: true, level: 1 }),
     ).toBeVisible();
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await expect(this.page.getByText(/does not deploy a/u)).toHaveCount(0);
@@ -4332,16 +4177,10 @@ class HubUser {
       const organizationMenu = this.page.getByRole("menu");
       await expect(organizationMenu).toBeVisible();
       await expect(
-        organizationMenu.getByRole("menuitem", {
-          name: "Redirect Acme",
-          exact: true,
-        }),
+        organizationMenu.getByRole("menuitem", { name: "Redirect Acme", exact: true }),
       ).toBeDisabled();
       await expect(
-        organizationMenu.getByRole("menuitem", {
-          name: destinationOrganization,
-          exact: true,
-        }),
+        organizationMenu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
       ).toBeDisabled();
       await this.page.keyboard.press("Escape");
       await expect(organizationMenu).toBeHidden();
@@ -4562,10 +4401,7 @@ class HubUser {
       await expect(menu).toBeVisible();
       await expect(menu.getByRole("menuitem", { name: "Acme", exact: true })).toBeDisabled();
       await expect(
-        menu.getByRole("menuitem", {
-          name: destinationOrganization,
-          exact: true,
-        }),
+        menu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
       ).toBeDisabled();
       await this.page.keyboard.press("Escape");
       await expect(menu).toBeHidden();
@@ -4714,9 +4550,7 @@ class HubUser {
 
   private async expectMemberRemovalConfirmation(memberName: string): Promise<void> {
     const member = this.page.getByRole("row").filter({ hasText: memberName });
-    const actions = member.getByRole("button", {
-      name: `Actions for ${memberName}`,
-    });
+    const actions = member.getByRole("button", { name: `Actions for ${memberName}` });
     await actions.click();
     await this.page.getByRole("menuitem", { name: `Remove ${memberName}` }).click();
     const memberDialog = this.page.getByRole("alertdialog", {
@@ -4734,9 +4568,7 @@ class HubUser {
 
   private async expectInvitationCancellationConfirmation(invitationEmail: string): Promise<void> {
     const invitation = this.invitationRow(invitationEmail);
-    const actions = invitation.getByRole("button", {
-      name: `Actions for ${invitationEmail}`,
-    });
+    const actions = invitation.getByRole("button", { name: `Actions for ${invitationEmail}` });
     await actions.click();
     await this.page.getByRole("menuitem", { name: "Cancel invitation" }).click();
     const invitationDialog = this.page.getByRole("alertdialog", {
@@ -4780,9 +4612,7 @@ class HubUser {
       await expect(members.getByText(value, { exact: true })).toBeVisible();
     for (const value of expected.membersAbsent)
       await expect(members.getByText(value, { exact: true })).toHaveCount(0);
-    const invitations = this.page.getByRole("table", {
-      name: "Pending invitations",
-    });
+    const invitations = this.page.getByRole("table", { name: "Pending invitations" });
     if (expected.invitationsPresent === undefined && expected.invitationsAbsent === undefined) {
       await expect(invitations).toHaveCount(0);
     }
@@ -4855,9 +4685,7 @@ class HubUser {
   private async openOrganizationSection(
     name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Usage" | "Billing",
   ): Promise<void> {
-    const mobileSidebar = this.page.getByRole("button", {
-      name: "Toggle Sidebar",
-    });
+    const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
     if (await mobileSidebar.isVisible().catch(() => false)) {
       await this.navigation.openMobileOrganizationSection(name);
     } else {
@@ -4876,9 +4704,7 @@ class HubUser {
     return this.page
       .getByRole("table", { name: "Connections" })
       .getByRole("row")
-      .filter({
-        has: this.page.getByRole("cell", { name: provider, exact: true }),
-      });
+      .filter({ has: this.page.getByRole("cell", { name: provider, exact: true }) });
   }
 
   private async chooseOption(select: Locator, option: string): Promise<void> {
@@ -4905,7 +4731,6 @@ export interface AppSetupSession {
   deliverSlackSocketMention(eventId: string): Promise<void>;
   slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
   restart(): Promise<void>;
-  startSibling(): Promise<BuiltApplication>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;
@@ -5018,10 +4843,7 @@ class ContractDaemon {
 
   async enroll(token: string): Promise<void> {
     const response = await this.requests.post(`${this.application.origin}/api/daemons/enroll`, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       data: daemonEnrollment(this.daemonId, this.credential),
     });
     expect(response.status()).toBe(200);
@@ -5068,10 +4890,7 @@ class ContractDaemon {
       await promise;
     }
     return z
-      .object({
-        url: z.string().url(),
-        headers: z.record(z.string(), z.string()),
-      })
+      .object({ url: z.string().url(), headers: z.record(z.string(), z.string()) })
       .parse(this.executionCapabilities.get(executionId));
   }
 
@@ -5297,12 +5116,7 @@ function manualFailureContracts(machineKey: string): readonly HttpContract[] {
         "invalid_configuration_bundle",
         "Invalid configuration bundle",
         "Correct the canonical Hub bundle files and submit them again.",
-        [
-          {
-            path: [".paseo/hub.yml"],
-            message: "invalid YAML: line 2, column 1",
-          },
-        ],
+        [{ path: [".paseo/hub.yml"], message: "invalid YAML: line 2, column 1" }],
       ),
       PROBLEM_TYPE,
       {
@@ -5525,11 +5339,7 @@ function githubIssueCommentPayload(installationId: number, repo: string, actor: 
   return {
     action: "created",
     sender: { login: actor },
-    comment: {
-      id: installationId,
-      body: "@paseo run tenant dispatch",
-      user: { login: actor },
-    },
+    comment: { id: installationId, body: "@paseo run tenant dispatch", user: { login: actor } },
     issue: { number: installationId },
     repository: { id: installationId, full_name: repo },
     installation: { id: installationId },

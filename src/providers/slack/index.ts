@@ -54,18 +54,7 @@ export interface CreateSlackRegistrationOptions {
   connectionClient?: SlackConnectionClient;
   botClient?: SlackBotClient;
   fetch?: typeof fetch;
-  socket?: Pick<
-    SlackSocketSourceOptions,
-    | "apiUrl"
-    | "fetch"
-    | "webSocket"
-    | "now"
-    | "random"
-    | "readinessTimeoutMs"
-    | "connectTimeoutMs"
-    | "helloTimeoutMs"
-    | "shutdownTimeoutMs"
-  >;
+  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "random" | "timeoutMs">;
   configurationVersion?: number;
   expectedConfigurationVersion?: number;
   activateConfiguration?: boolean;
@@ -127,27 +116,14 @@ export function createSlackRegistration(
           });
   const events = createSlackEventSource({
     configuration: { provider: "slack", ...configuration },
-    configurationVersion: options.configurationVersion ?? 0,
     accept,
-    ...(database === null
-      ? {}
-      : {
-          recordWorkspaceDelivery: (teamId: string, delayed: boolean, providerObservedAt: Date) =>
-            database.recordSlackWorkspaceDelivery({
-              providerApplicationId: configuration.appId,
-              providerConfigurationVersion: options.configurationVersion ?? 0,
-              teamId,
-              delayed,
-              providerObservedAt,
-            }),
-        }),
     ...slackSocketOptions(options),
   });
   if (database === null) {
     return {
       connection: slackConnectionStatus(true),
       triggerProviders: [],
-      sources: [events.source],
+      sources: [events],
       outputs: [],
       requests:
         events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
@@ -195,7 +171,7 @@ export function createSlackRegistration(
           client: bot,
         }),
     ],
-    sources: [events.source],
+    sources: [events],
     outputs: [
       {
         type: "slack.reply",
@@ -206,27 +182,15 @@ export function createSlackRegistration(
     ],
     requests:
       events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
-    attachment: {
-      provider: "slack",
-      resolve: createSlackAttachmentResolver(bot),
-    },
-    slackDelivery: {
-      status: () => events.status(),
-      retry: () => events.retry(),
-    },
+    attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
+    slackDelivery: { status: () => events.status(), retry: () => events.retry() },
   };
 }
 
 function slackSocketOptions(
-  options: Pick<CreateSlackRegistrationOptions, "fetch" | "socket">,
+  options: Pick<CreateSlackRegistrationOptions, "socket">,
 ): Pick<Parameters<typeof createSlackEventSource>[0], "socket"> {
-  if (options.socket === undefined && options.fetch === undefined) return {};
-  return {
-    socket: {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-      ...options.socket,
-    },
-  };
+  return options.socket === undefined ? {} : { socket: options.socket };
 }
 
 async function findSlackBindingForOrganization(

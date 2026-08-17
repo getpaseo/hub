@@ -1,2 +1,0 @@
-ALTER TABLE "runtime_provider_instances" DROP CONSTRAINT "runtime_provider_instances_reason_check";--> statement-breakpoint
-ALTER TABLE "runtime_provider_instances" ADD CONSTRAINT "runtime_provider_instances_reason_check" CHECK ("runtime_provider_instances"."reason" is null or "runtime_provider_instances"."reason" in ('app_token_rejected', 'app_identity_mismatch', 'socket_mode_off', 'connection_limit'));

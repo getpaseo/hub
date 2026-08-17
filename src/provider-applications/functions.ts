@@ -56,7 +56,6 @@ const slackSocketSchema = z.object({
   botToken: z.string().trim().startsWith("xoxb-").min(6),
   expectedVersion: expectedVersionSchema,
 });
-const slackBotTokenSchema = z.object({ botToken: z.string().trim().startsWith("xoxb-").min(6) });
 
 export const providerApplicationsOverview = createServerFn({ method: "GET" }).handler(
   async (): Promise<Result<ProviderApplicationOverview>> => {
@@ -160,24 +159,6 @@ export const configureSlackSocketApplication = createServerFn({ method: "POST" }
     }
   });
 
-export const connectSlackSocketWorkspace = createServerFn({ method: "POST" })
-  .validator(slackBotTokenSchema)
-  .handler(async ({ data }): Promise<Result<void>> => {
-    try {
-      const capability = (await getApplication()).providerApplications;
-      if (capability === null) throw new Error("unavailable");
-      await capability.connectSlackSocketWorkspace(getRequest(), data);
-      return respondOk(undefined);
-    } catch (error) {
-      return providerApplicationSaveFailure(
-        "slack",
-        error,
-        [data.botToken],
-        "provider_application.connect_slack_workspace",
-      );
-    }
-  });
-
 export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(
   async (): Promise<Result<void>> => {
     try {
@@ -188,15 +169,9 @@ export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handl
     } catch (error) {
       return respondWithFailure(
         error,
+        { operation: "slack.socket.retry", component: "provider_applications", provider: "slack" },
         {
-          operation: "slack.socket.retry",
-          component: "provider_applications",
-          provider: "slack",
-        },
-        {
-          fallback: "Hub couldn't retry Slack. Try again.",
-          forbidden: "Only an instance operator can retry Slack.",
-          authentication: "Your session has expired. Sign in again, then retry.",
+          fallback: "Hub couldn't retry Slack. Sign in as the instance operator, then try again.",
         },
       );
     }

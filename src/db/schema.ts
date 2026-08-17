@@ -32,22 +32,6 @@ export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const CONNECTION_PROVIDERS = ["github", "slack", "discord"] as const;
-export const PROVIDER_INSTANCE_STATES = [
-  "connecting",
-  "reconnecting",
-  "connected",
-  "action_needed",
-  "rate_limited",
-] as const;
-export const PROVIDER_INSTANCE_REASONS = [
-  "app_token_rejected",
-  "app_identity_mismatch",
-  "workspace_access_denied",
-  "network_restricted",
-  "hub_configuration_invalid",
-  "socket_mode_off",
-  "connection_limit",
-] as const;
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -1081,58 +1065,6 @@ export const runtimeProviderActivations = pgTable(
       sql`${table.provider} in ('github', 'slack', 'discord')`,
     ),
     check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
-  ],
-);
-
-export const runtimeProviderInstances = pgTable(
-  "runtime_provider_instances",
-  {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
-    instanceId: text("instance_id").notNull(),
-    providerApplicationId: text("provider_application_id").notNull(),
-    configurationVersion: integer("configuration_version").notNull(),
-    state: text().$type<(typeof PROVIDER_INSTANCE_STATES)[number]>().notNull(),
-    reason: text().$type<(typeof PROVIDER_INSTANCE_REASONS)[number]>(),
-    delayedWorkspaces: jsonb("delayed_workspaces").notNull().default([]),
-    observedAt: timestamp("observed_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.provider, table.instanceId] }),
-    index("runtime_provider_instances_observed_at_idx").on(table.observedAt),
-    check(
-      "runtime_provider_instances_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord')`,
-    ),
-    check(
-      "runtime_provider_instances_state_check",
-      sql`${table.state} in ('connecting', 'reconnecting', 'connected', 'action_needed', 'rate_limited')`,
-    ),
-    check(
-      "runtime_provider_instances_reason_check",
-      sql`${table.reason} is null or ${table.reason} in ('app_token_rejected', 'app_identity_mismatch', 'workspace_access_denied', 'network_restricted', 'hub_configuration_invalid', 'socket_mode_off', 'connection_limit')`,
-    ),
-    check("runtime_provider_instances_version_check", sql`${table.configurationVersion} >= 0`),
-  ],
-);
-
-export const slackWorkspaceDeliveryObservations = pgTable(
-  "slack_workspace_delivery_observations",
-  {
-    providerApplicationId: text("provider_application_id").notNull(),
-    configurationVersion: integer("configuration_version").notNull(),
-    teamId: text("team_id").notNull(),
-    delayed: boolean().notNull(),
-    providerObservedAt: timestamp("provider_observed_at", { withTimezone: true }).notNull(),
-    observedAt: timestamp("observed_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.providerApplicationId, table.configurationVersion, table.teamId],
-    }),
-    check(
-      "slack_workspace_delivery_observations_version_check",
-      sql`${table.configurationVersion} >= 0`,
-    ),
   ],
 );
 

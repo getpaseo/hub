@@ -47,17 +47,13 @@ Embedded mode supports one Hub process per data directory. Docker Compose contin
 
 ## Run with Docker Compose
 
-You need Docker and Docker Compose. Providers that send HTTPS callbacks also need a public HTTPS URL;
-Slack Socket Mode does not.
+You need Docker, Docker Compose, and a public HTTPS URL when connecting external providers.
 
 ```sh
 git clone https://github.com/getpaseo/hub.git
 cd hub
 cp .env.example .env
 ```
-
-The copied template has no provider credentials, so provider onboarding stays in the browser.
-Advanced, transport-complete Slack environment examples remain commented in `.env.example`.
 
 Set these values in `.env`:
 

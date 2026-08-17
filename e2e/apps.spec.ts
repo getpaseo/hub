@@ -184,17 +184,11 @@ test("on HTTPS GitHub event triggers are set up beside repository access", async
 
     await github.action("Install on GitHub").click();
     await github.expectStatus("Connected");
-    await github.expectSummary({
-      Installations: "acme-inc",
-      Events: "Not set up",
-    });
+    await github.expectSummary({ Installations: "acme-inc", Events: "Not set up" });
 
     // Adding it turns event triggers on, and still claims nothing about deliveries.
     await github.action("Replace credentials").click();
-    await github.fill({
-      ...WORKING_CREDENTIALS.GitHub,
-      ...GITHUB_EVENT_CREDENTIALS,
-    });
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, ...GITHUB_EVENT_CREDENTIALS });
     await github.save();
     await github.expectStatus("Connected");
     await github.expectSummary({ Events: "Waiting for the first event" });
@@ -219,10 +213,7 @@ test("a rejected GitHub key names the key, and a wrong App ID names the mismatch
     const github = surface.github;
     await github.expand();
 
-    await github.fill({
-      ...WORKING_CREDENTIALS.GitHub,
-      "Private key": "wrong-key",
-    });
+    await github.fill({ ...WORKING_CREDENTIALS.GitHub, "Private key": "wrong-key" });
     await github.save();
     await github.expectFocusedError(
       "GitHub rejected the Private key for this App. Nothing was saved. Generate a new private key on the App's settings page, paste the whole .pem file, then verify again.",
@@ -324,10 +315,7 @@ test("Discord walks its portal in order and proves both secrets before saying Ve
     await surface.shoot(SHOTS, "apps-09-discord-expanded.desktop");
 
     // The Client Secret is verified too, so "Verified" means the connection flow can run.
-    await discord.fill({
-      ...WORKING_CREDENTIALS.Discord,
-      "Client Secret": "not-the-secret",
-    });
+    await discord.fill({ ...WORKING_CREDENTIALS.Discord, "Client Secret": "not-the-secret" });
     await discord.save();
     await discord.expectFocusedError(
       "Discord rejected the Client Secret. Nothing was saved. Open OAuth2, reset the Client Secret, copy it, then verify again.",
@@ -335,10 +323,7 @@ test("Discord walks its portal in order and proves both secrets before saying Ve
     await discord.expectStatus("Not set up");
 
     // A token from another application is not the same as a token Discord refused.
-    await discord.fill({
-      ...WORKING_CREDENTIALS.Discord,
-      "Application ID": "901",
-    });
+    await discord.fill({ ...WORKING_CREDENTIALS.Discord, "Application ID": "901" });
     await discord.save();
     await discord.expectFocusedError(
       "That bot token belongs to a different Discord application than the Application ID you entered. Nothing was saved. Copy both values from the same application, then verify again.",
@@ -526,173 +511,9 @@ test("Slack Socket Mode connects on plain HTTP with only two tokens", async ({ h
       receipts: 1,
       runs: 1,
     });
-    await slack.action("Connect another workspace").click();
-    const workspaceForm = page.getByRole("form", {
-      name: "Connect another Slack workspace",
-    });
-    await expect(workspaceForm.getByLabel("App-level token", { exact: true })).toHaveCount(0);
-    await workspaceForm.getByLabel("Bot token", { exact: true }).fill("xoxb-browser-fixture");
-    await workspaceForm.getByRole("button", { name: "Connect workspace" }).click();
-    await slack.expectFocusedResult("Slack workspace connected.");
     await slack.expectSetupStepsRetired();
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
     await surface.shoot(SHOTS, "apps-07-slack-connected.desktop");
-  } finally {
-    await session.close();
-  }
-});
-
-test("Slack Socket Mode admits one durable run across two Hub instances", async ({ hub }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR });
-  try {
-    await session.surface.slack.expand();
-    await session.surface.slack.fillWorkingCredentials();
-    await session.surface.slack.save();
-    await session.surface.slack.expectStatus("Connected");
-    await session.prepareSlackSocketWorkflow();
-    const sibling = await session.startSibling();
-
-    await Promise.all([
-      session.deliverSlackSocketMention("browser-socket-multi-instance"),
-      sibling.deliverSlackSocketMention("browser-socket-multi-instance"),
-    ]);
-
-    expect(await session.slackSocketEvidence("browser-socket-multi-instance")).toEqual({
-      receipts: 1,
-      runs: 1,
-    });
-  } finally {
-    await session.close();
-  }
-});
-
-for (const providerScenario of ["slack-startup-server-error", "slack-startup-hung-body"] as const) {
-  test(`Slack outage ${providerScenario} cannot hold the built Hub health endpoint or shutdown`, async ({
-    hub,
-  }) => {
-    const session = await hub.openAppSetup({
-      account: OPERATOR,
-      providerScenario,
-      environmentApps: ["slack"],
-    });
-    try {
-      expect((await session.page.request.get(`${session.origin}/health`)).ok()).toBe(true);
-      await expect
-        .poll(() => recordsFor(session.application.logs(), "slack.socket.connect").length)
-        .toBe(1);
-      expect(session.application.logs()).not.toContain("xapp-browser-startup-outage-canary");
-    } finally {
-      await session.close();
-    }
-  });
-}
-
-test("Slack names a mismatched configured app without retry churn", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    providerScenario: "slack-app-identity-mismatch",
-    environmentApps: ["slack"],
-  });
-  try {
-    const slack = session.surface.slack;
-    await slack.expectStatus("Action needed");
-    await slack.expand();
-    await slack.expectSummary({
-      "App ID": "browser-slack-app",
-      Delivery: "Socket Mode",
-      Events: "Use the App ID and app-level token from the same Slack app",
-    });
-    await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
-    await session.surface.shoot(SHOTS, "apps-07c-slack-app-mismatch.desktop");
-
-    await expect
-      .poll(() => recordsFor(session.application.logs(), "slack.socket.configure").length)
-      .toBe(1);
-    expect(session.application.logs()).not.toContain("xapp-browser-fixture");
-  } finally {
-    await session.close();
-  }
-});
-
-for (const failure of [
-  {
-    scenario: "slack-app-access-denied" as const,
-    action: "Allow this Slack app in the workspace or organization, then retry",
-    operation: "slack.socket.configure",
-    retry: true,
-  },
-  {
-    scenario: "slack-network-restricted" as const,
-    action: "Allow this Hub server's network to reach Slack, then retry",
-    operation: "slack.socket.connect",
-    retry: true,
-  },
-  {
-    scenario: "slack-token-rejected" as const,
-    action:
-      "Allow this Hub server's IP for the app-level token, then replace the token if Slack still rejects it",
-    operation: "slack.socket.authenticate",
-    retry: false,
-  },
-  {
-    scenario: "slack-hub-configuration-invalid" as const,
-    action: "Update Hub, then reconnect this Slack app",
-    operation: "slack.socket.configure",
-    retry: false,
-  },
-]) {
-  test(`Slack gives accurate action for ${failure.scenario} without reconnect churn`, async ({
-    hub,
-  }) => {
-    const session = await hub.openAppSetup({
-      account: OPERATOR,
-      providerScenario: failure.scenario,
-      environmentApps: ["slack"],
-    });
-    try {
-      const slack = session.surface.slack;
-      await slack.expectStatus("Action needed");
-      await slack.expand();
-      await slack.expectSummary({
-        "App ID": "browser-slack-app",
-        Delivery: "Socket Mode",
-        Events: failure.action,
-      });
-      await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(
-        failure.retry ? 1 : 0,
-      );
-      await session.surface.shoot(
-        SHOTS,
-        `apps-07e-${failure.scenario.replace("slack-", "")}.desktop`,
-      );
-      await expect
-        .poll(() => recordsFor(session.application.logs(), failure.operation).length)
-        .toBe(1);
-      expect(session.application.logs()).not.toContain("xapp-browser-fixture");
-    } finally {
-      await session.close();
-    }
-  });
-}
-
-test("Slack keeps transport connected while naming the delayed workspace", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    providerScenario: "slack-rate-limited-workspace",
-  });
-  try {
-    const slack = session.surface.slack;
-    await slack.expand();
-    await slack.fillWorkingCredentials();
-    await slack.save();
-    await slack.expectStatus("Connected");
-    await slack.expectSummary({
-      "App ID": "browser-slack-app",
-      Delivery: "Socket Mode",
-      Workspaces: "Acme",
-      Events: "Connected · Slack is delaying events for workspace Acme",
-    });
-    await session.surface.shoot(SHOTS, "apps-07d-slack-workspace-delayed.desktop");
   } finally {
     await session.close();
   }
@@ -714,10 +535,7 @@ test("Slack webhook setup remains available over HTTPS", async ({ hub }) => {
     ).toBeVisible();
     await session.page.getByRole("link", { name: "Accept installation" }).click();
     await slack.expectStatus("Connected");
-    await slack.expectSummary({
-      Delivery: "Webhooks",
-      Events: "Waiting for the first event",
-    });
+    await slack.expectSummary({ Delivery: "Webhooks", Events: "Waiting for the first event" });
     await session.surface.shoot(SHOTS, "apps-07b-slack-webhook-connected.desktop");
   } finally {
     await session.close();

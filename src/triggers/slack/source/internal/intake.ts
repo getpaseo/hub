@@ -17,31 +17,24 @@ export interface SlackEventIntakeOptions {
   }): Promise<ProviderEventAcceptance>;
 }
 
-export type SlackEventIntakeResult =
-  | { status: "ignored" }
-  | { status: "accepted"; eventId: string; teamId: string };
-
 export class SlackEventIntakeValidationError extends Error {
-  constructor(readonly reason: "invalid_callback" | "wrong_app") {
-    super(reason);
-    this.name = "SlackEventIntakeValidationError";
-  }
+  override name = "SlackEventIntakeValidationError";
 }
 
 /** Transport-blind durable handoff for Slack Events API callbacks. */
 export async function intakeSlackEvent(
   payload: unknown,
   signatureHash: string,
-  admittedHandlers: ReadonlySet<TriggerHandler>,
+  handlers: ReadonlySet<TriggerHandler>,
   options: SlackEventIntakeOptions,
-): Promise<SlackEventIntakeResult> {
+): Promise<void> {
   const callback = SlackEventCallbackSchema.safeParse(payload);
-  if (!callback.success) throw new SlackEventIntakeValidationError("invalid_callback");
+  if (!callback.success) throw new SlackEventIntakeValidationError();
   if (callback.data.api_app_id !== options.appId) {
-    throw new SlackEventIntakeValidationError("wrong_app");
+    throw new SlackEventIntakeValidationError();
   }
   const normalizedEvent = normalizeSlackEvent(callback.data);
-  if (normalizedEvent === undefined) return { status: "ignored" };
+  if (normalizedEvent === undefined) return;
 
   const deliveryId = `slack-${normalizedEvent.id}`;
   const acceptance = await options.accept({
@@ -51,7 +44,7 @@ export async function intakeSlackEvent(
     source: "slack.mention",
     payload: normalizedEvent,
     receivedAt: new Date(normalizedEvent.eventTime * 1_000),
-    ...(admittedHandlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
+    ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
   logProviderEventIntake({
     provider: "slack",
@@ -62,9 +55,6 @@ export async function intakeSlackEvent(
   });
   const events = acceptance.status === "accepted" ? acceptance.events : [];
   await Promise.all(
-    events.flatMap((acceptedEvent) =>
-      Array.from(admittedHandlers, (handler) => handler(acceptedEvent)),
-    ),
+    events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
   );
-  return { status: "accepted", eventId: normalizedEvent.id, teamId: normalizedEvent.teamId };
 }

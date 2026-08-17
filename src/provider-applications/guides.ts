@@ -390,6 +390,11 @@ export const SLACK_WEBHOOK_GUIDE: ProviderGuide = {
   receivesEvents: true,
 };
 
+const slackStep = (value: string, manifest = false): GuideStep => ({
+  segments: [{ kind: "text", value }],
+  ...(manifest ? { manifest: true } : {}),
+});
+
 export const SLACK_GUIDE: ProviderGuide = {
   provider: "slack",
   transport: "socket",
@@ -411,30 +416,14 @@ export const SLACK_GUIDE: ProviderGuide = {
               value: "Create a Slack app",
               href: "https://api.slack.com/apps?new_app=1",
             },
-            { kind: "text", value: ", choose " },
-            { kind: "term", value: "From a manifest" },
-            { kind: "text", value: ", select the workspace, and paste this manifest:" },
+            { kind: "text", value: ", choose From a manifest, select the workspace, and paste:" },
           ],
           manifest: true,
         },
-        {
-          segments: [
-            { kind: "text", value: "In " },
-            { kind: "term", value: "Basic Information → App-Level Tokens" },
-            { kind: "text", value: ", generate a token named Paseo with " },
-            { kind: "term", value: "connections:write" },
-            { kind: "text", value: "." },
-          ],
-        },
-        {
-          segments: [
-            { kind: "text", value: "In " },
-            { kind: "term", value: "OAuth & Permissions" },
-            { kind: "text", value: ", install the app and copy the " },
-            { kind: "term", value: "Bot User OAuth Token" },
-            { kind: "text", value: "." },
-          ],
-        },
+        slackStep(
+          "Under Basic Information → App-Level Tokens, generate a token named Paseo with connections:write.",
+        ),
+        slackStep("Under OAuth & Permissions, install the app and copy the Bot User OAuth Token."),
       ],
       fields: [
         {
@@ -459,8 +448,6 @@ export const SLACK_GUIDE: ProviderGuide = {
   actions: {
     save: "Connect Slack",
     savePending: "Checking Slack and connecting…",
-    connect: "Connect a workspace",
-    connectAgain: "Connect another workspace",
   },
   verifiedMessage: "Slack connected.",
   requiresHttps: false,

@@ -1,51 +1,23 @@
-import type { ProviderEventAcceptance } from "../../../db/types.js";
 import type { SlackProviderApplicationConfiguration } from "../../../provider-applications/index.js";
-import type { ProviderEventDropReasonCode } from "../../drop-reason.js";
 import type { TriggerSource } from "../../index.js";
 import { createSlackWebhookSource } from "../webhook.js";
+import type { SlackEventIntakeOptions } from "./internal/intake.js";
 import {
   createSlackSocketSource,
   type SlackDeliveryStatus,
   type SlackSocketSourceOptions,
 } from "./internal/socket.js";
 
-export interface SlackEventSource {
-  source: TriggerSource;
+export interface SlackEventSource extends TriggerSource {
   request?: (request: Request) => Promise<Response>;
-  ready(): Promise<void>;
   status(): SlackDeliveryStatus;
   retry(): Promise<void>;
 }
 
 export interface CreateSlackEventSourceOptions {
   configuration: SlackProviderApplicationConfiguration;
-  configurationVersion: number;
-  accept(input: {
-    teamId: string;
-    deliveryId: string;
-    signatureHash: string;
-    source: string;
-    payload: unknown;
-    receivedAt: Date;
-    dropReason?: ProviderEventDropReasonCode;
-  }): Promise<ProviderEventAcceptance>;
-  recordWorkspaceDelivery?(
-    teamId: string,
-    delayed: boolean,
-    providerObservedAt: Date,
-  ): Promise<void>;
-  socket?: Pick<
-    SlackSocketSourceOptions,
-    | "apiUrl"
-    | "fetch"
-    | "webSocket"
-    | "now"
-    | "random"
-    | "readinessTimeoutMs"
-    | "connectTimeoutMs"
-    | "helloTimeoutMs"
-    | "shutdownTimeoutMs"
-  >;
+  accept: SlackEventIntakeOptions["accept"];
+  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "random" | "timeoutMs">;
 }
 
 export function createSlackEventSource(options: CreateSlackEventSourceOptions): SlackEventSource {
@@ -56,9 +28,9 @@ export function createSlackEventSource(options: CreateSlackEventSourceOptions): 
       accept: (input) => options.accept(input),
     });
     return {
-      source: webhook,
+      start: (handler) => webhook.start(handler),
+      stop: () => webhook.stop(),
       request: (request) => webhook.handle(request),
-      ready: () => Promise.resolve(),
       status: () => ({ state: "stopped" }),
       retry: () => Promise.resolve(),
     };
@@ -66,22 +38,10 @@ export function createSlackEventSource(options: CreateSlackEventSourceOptions): 
   const socket = createSlackSocketSource({
     appId: options.configuration.appId,
     appToken: options.configuration.appToken,
-    configurationVersion: options.configurationVersion,
     accept: (input) => options.accept(input),
-    ...(options.recordWorkspaceDelivery === undefined
-      ? {}
-      : {
-          recordWorkspaceDelivery: (teamId, delayed, providerObservedAt) =>
-            options.recordWorkspaceDelivery!(teamId, delayed, providerObservedAt),
-        }),
     ...options.socket,
   });
-  return {
-    source: socket,
-    ready: () => socket.ready(),
-    status: () => socket.status(),
-    retry: () => socket.retry(),
-  };
+  return socket;
 }
 
 export type { SlackDeliveryStatus } from "./internal/socket.js";

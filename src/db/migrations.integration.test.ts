@@ -42,45 +42,6 @@ describe("database migration application", () => {
     await postgres.stop();
   }, 120_000);
 
-  it("upgrades persisted Slack access health into the precise durable observation model", async () => {
-    const url = await createHistoricalBaseline({
-      postgres,
-      prefix: "slack_delivery_observations",
-      through: "0040_windy_imperial_guard",
-    });
-    await poolQuery(
-      url,
-      `insert into runtime_provider_instances
-         (provider, instance_id, provider_application_id, configuration_version, state, reason,
-          delayed_workspaces, observed_at)
-       values ('slack', 'legacy-hub', 'A1', 3, 'action_needed', 'app_access_denied', '[]', now())`,
-    );
-
-    const database = await createDatabase(url);
-    await database.close();
-
-    assert.equal(
-      (
-        await poolQuery<{ reason: string }>(
-          url,
-          `select reason from runtime_provider_instances where instance_id = 'legacy-hub'`,
-        )
-      ).rows[0]?.reason,
-      "workspace_access_denied",
-    );
-    assert.equal(
-      (
-        await poolQuery<{ count: number }>(
-          url,
-          `select count(*)::integer as count from information_schema.columns
-           where table_name = 'slack_workspace_delivery_observations'
-             and column_name = 'provider_observed_at'`,
-        )
-      ).rows[0]?.count,
-      1,
-    );
-  }, 120_000);
-
   it("promotes unambiguous daemon names to slugs without inventing collision aliases", async () => {
     const url = await createHistoricalBaseline({
       postgres,
@@ -346,7 +307,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 42,
+      drizzleMigrations: 39,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,

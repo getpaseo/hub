@@ -10,69 +10,6 @@ import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
 
 describe("application runtime provider composition", () => {
-  it("keeps dependencies alive until work admitted before bounded transport shutdown settles", async () => {
-    let releaseAdmission: (() => void) | undefined;
-    let markDrainStarted: (() => void) | undefined;
-    const admissionGate = new Promise<void>((resolve) => {
-      releaseAdmission = resolve;
-    });
-    const drainStarted = new Promise<void>((resolve) => {
-      markDrainStarted = resolve;
-    });
-    let admittedWork = 0;
-    let dependencyClosed = false;
-    let lateDependencyAccess = false;
-    let transportStopped = false;
-    let admission = Promise.resolve();
-    const registration = fakeRegistration();
-    registration.sources = [
-      {
-        start: async () => {
-          admission = admissionGate.then(() => {
-            if (dependencyClosed) lateDependencyAccess = true;
-            admittedWork += 1;
-            return undefined;
-          });
-        },
-        stop: async () => {
-          transportStopped = true;
-        },
-        drain: async () => {
-          markDrainStarted?.();
-          await admission;
-        },
-      },
-    ];
-    const database = createMemoryDatabase();
-    const runtime = await createApplicationRuntime({
-      database,
-      auth: new RuntimeAuth(),
-      entitlements: entitlementsForTest(database),
-      billing: null,
-      registrations: [registration],
-      close: async () => {
-        dependencyClosed = true;
-      },
-    });
-
-    let shutdownFinished = false;
-    const shutdown = runtime.stop().then(() => {
-      shutdownFinished = true;
-      return undefined;
-    });
-    await drainStarted;
-    await new Promise((resolve) => setTimeout(resolve, 5_050));
-
-    assert.equal(transportStopped, true);
-    assert.equal(shutdownFinished, false);
-    assert.equal(dependencyClosed, false);
-    releaseAdmission?.();
-    await shutdown;
-    assert.equal(admittedWork, 1);
-    assert.equal(lateDependencyAccess, false);
-    assert.equal(dependencyClosed, true);
-  }, 10_000);
-
   it("collects a fake registration without a concrete-provider case", async () => {
     const events: string[] = [];
     const registration: ProviderRegistration = {

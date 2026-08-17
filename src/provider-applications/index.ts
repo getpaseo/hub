@@ -97,12 +97,6 @@ export interface ProviderApplicationStore {
     organizationId: string;
     installation: VerifiedSlackInstallation;
   }): Promise<StoredProviderApplication>;
-  bindSlackSocketWorkspace(input: {
-    appId: string;
-    organizationId: string;
-    connectedByUserId: string;
-    installation: VerifiedSlackInstallation;
-  }): Promise<void>;
 }
 
 export interface ProviderRuntimeCandidate {
@@ -126,15 +120,6 @@ export interface ProviderRuntimeOwner {
     },
   ): Promise<ProviderRuntimeCandidate>;
   identity?(provider: Provider): ProviderApplicationIdentity | undefined;
-  publishedApplication?(provider: Provider):
-    | {
-        configuration: ProviderApplicationConfiguration;
-        identity: ProviderApplicationIdentity;
-        configurationVersion: number;
-      }
-    | undefined;
-  slackDeliveryStatus?(): SlackDeliveryStatus;
-  retrySlackDelivery?(): Promise<void>;
   onSlackInstallation?(
     handler: (input: {
       configuration: unknown;
@@ -156,8 +141,6 @@ export interface ProviderApplicationVerifier {
 
 export interface ConnectedProviderIdentity {
   id: string;
-  /** Provider-owned identifier used to correlate provider events with this connection. */
-  providerId: string;
   name: string;
   applicationId: string | null;
   status: "connected" | "actionNeeded";
@@ -175,10 +158,6 @@ export interface ProviderApplicationInventory {
     identity: ProviderApplicationIdentity,
     configurationVersion: number,
   ): Promise<Date | null>;
-  slackDeliveryStatus?(
-    applicationId: string,
-    configurationVersion: number,
-  ): Promise<SlackDeliveryStatus | undefined>;
 }
 
 export type ProviderApplicationStatus =
@@ -335,7 +314,6 @@ export interface ProviderApplications {
     request: Request,
     input: { appToken: string; botToken: string; expectedVersion?: number },
   ): Promise<ProviderApplicationResult>;
-  connectSlackSocketWorkspace(request: Request, input: { botToken: string }): Promise<void>;
   retrySlackSocket(request: Request): Promise<void>;
 }
 
@@ -357,7 +335,7 @@ interface ProviderApplicationsOptions {
     begin: (request: Request) => Promise<{ url: string }>,
   ) => Promise<{ url: string }>;
   slackSocketVerifier?: SlackSocketInstallationVerifier;
-  retrySlackReconciliation?: () => void;
+  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }
 
 export function createProviderApplications(
@@ -385,14 +363,7 @@ export function createProviderApplications(
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
           const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
-          const observedDeliveryStatus =
-            provider === "slack" && identity !== null && configurationVersion !== null
-              ? ((await options.inventory.slackDeliveryStatus?.(
-                  identity.id,
-                  configurationVersion,
-                )) ?? options.runtime.slackDeliveryStatus?.())
-              : undefined;
-          const deliveryStatus = nameDelayedSlackWorkspaces(observedDeliveryStatus, connections);
+          const deliveryStatus = provider === "slack" ? options.slackDelivery?.status() : undefined;
           const view: ProviderApplicationView = {
             provider,
             status,
@@ -480,9 +451,7 @@ export function createProviderApplications(
         } catch (error) {
           await closeCandidate(candidate, provider, "begin_connection");
           if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, {
-            cause: error,
-          });
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
       });
     },
@@ -506,13 +475,9 @@ export function createProviderApplications(
           installation = await options.slackSocketVerifier!.verify(input.appToken, input.botToken);
         } catch (error) {
           if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, {
-              cause: error,
-            });
+            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
           }
-          throw new ProviderApplicationError("internal", undefined, {
-            cause: error,
-          });
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
         const configuration = {
           provider: "slack" as const,
@@ -525,11 +490,6 @@ export function createProviderApplications(
           id: installation.appId,
           name: installation.appId,
         };
-        const previous = await options.store.read("slack");
-        const connections = await options.inventory.connectedIdentities("slack");
-        if (identityConflictsWithConnections(identity, previous, connections)) {
-          throw new ProviderApplicationError("identityConflict", previous?.identity.name);
-        }
         let candidate: ProviderRuntimeCandidate | undefined;
         try {
           candidate = await options.runtime.prepare(
@@ -546,14 +506,7 @@ export function createProviderApplications(
             expectedVersion: input.expectedVersion,
             updatedByUserId: account.account.id,
             organizationId,
-            installation: {
-              appId: installation.appId,
-              teamId: installation.teamId,
-              teamName: installation.teamName,
-              botUserId: installation.botUserId,
-              botAccessToken: installation.botAccessToken,
-              scopes: installation.scopes,
-            },
+            installation,
           });
           candidate.publish();
           candidate = undefined;
@@ -569,88 +522,21 @@ export function createProviderApplications(
             throw new ProviderApplicationError("configurationConflict");
           }
           if (isIdentityConflict(error)) {
-            throw new ProviderApplicationError("identityConflict", previous?.identity.name);
-          }
-          if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, {
-            cause: error,
-          });
-        }
-      });
-    },
-    async connectSlackSocketWorkspace(request, input) {
-      rejectMutation(options, request);
-      const account = await requireOperator(options, request);
-      if (!input.botToken.startsWith("xoxb-") || options.slackSocketVerifier === undefined) {
-        throw new ProviderApplicationError("invalidInput");
-      }
-      return serialize(queues, "slack", async () => {
-        const stored = await options.store.read("slack");
-        const configuration = options.environment.slack ?? stored?.configuration;
-        if (configuration?.provider !== "slack" || configuration.transport !== "socket") {
-          throw new ProviderApplicationError("invalidInput");
-        }
-        const organizationId = account.session.activeOrganizationId;
-        if (organizationId === null) throw new ProviderApplicationError("invalidInput");
-        try {
-          const installation = await options.slackSocketVerifier!.verify(
-            configuration.appToken,
-            input.botToken,
-          );
-          if (installation.appId !== configuration.appId) {
-            throw new ProviderVerificationError("credentialsRejected", undefined, {
-              subject: "identityMismatch",
-            });
-          }
-          await options.store.bindSlackSocketWorkspace({
-            appId: configuration.appId,
-            organizationId,
-            connectedByUserId: account.account.id,
-            installation,
-          });
-        } catch (error) {
-          if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, {
-              cause: error,
-            });
-          }
-          if (isIdentityConflict(error)) {
             throw new ProviderApplicationError("identityConflict");
           }
-          if (isConfigurationConflict(error)) {
-            throw new ProviderApplicationError("configurationConflict");
-          }
           if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, {
-            cause: error,
-          });
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
       });
     },
     async retrySlackSocket(request) {
       rejectMutation(options, request);
       await requireOperator(options, request);
-      if (options.runtime.retrySlackDelivery === undefined) {
+      if (options.slackDelivery === undefined) {
         throw new ProviderApplicationError("invalidInput");
       }
-      await options.runtime.retrySlackDelivery();
-      options.retrySlackReconciliation?.();
+      await options.slackDelivery.retry();
     },
-  };
-}
-
-function nameDelayedSlackWorkspaces(
-  status: SlackDeliveryStatus | undefined,
-  connections: readonly ConnectedProviderIdentity[],
-): SlackDeliveryStatus | undefined {
-  if (status?.state !== "connected" || status.delayedWorkspaces === undefined) return status;
-  const names = new Map(connections.map((connection) => [connection.providerId, connection.name]));
-  return {
-    ...status,
-    delayedWorkspaces: status.delayedWorkspaces.map((workspace) => {
-      const name = names.get(workspace.teamId);
-      return { ...workspace, ...(name === undefined ? {} : { name }) };
-    }),
   };
 }
 
@@ -669,9 +555,7 @@ async function requireOperator(
   try {
     account = await options.auth.resolveAccount(request);
   } catch (error) {
-    throw new ProviderApplicationError("forbidden", undefined, {
-      cause: error,
-    });
+    throw new ProviderApplicationError("forbidden", undefined, { cause: error });
   }
   if (!account.isInstanceOperator) throw new ProviderApplicationError("forbidden");
   return account;
@@ -684,9 +568,7 @@ async function safeCallbackOrigin(
   try {
     return await options.callbackOrigin(request);
   } catch (error) {
-    throw new ProviderApplicationError("invalidOrigin", undefined, {
-      cause: error,
-    });
+    throw new ProviderApplicationError("invalidOrigin", undefined, { cause: error });
   }
 }
 
@@ -820,7 +702,6 @@ export function resolveCallbackOrigin(request: Request, explicitAppUrl?: string)
 }
 
 export { createProviderApplicationStore } from "./internal/store.js";
-export { createProviderRuntimeReconciler } from "./internal/runtime-reconciler.js";
 export { parseProviderApplicationConfiguration } from "./internal/store.js";
 export { readProviderApplicationEnvironment } from "./internal/environment.js";
 export { createProviderApplicationVerifier } from "./internal/verifier.js";
@@ -872,18 +753,14 @@ export async function activateProviderApplicationsAtStartup(options: {
           identity,
           configurationVersion,
         );
-        await startStartupCandidate(candidate, provider, configuration);
+        await candidate.start();
         if (
           claimLegacyConnections &&
           !(await options.inventory.claimLegacyConnections(provider, identity))
         ) {
           throw new ProviderApplicationError("identityConflict");
         }
-        await options.store.activate({
-          provider,
-          identity,
-          configurationVersion,
-        });
+        await options.store.activate({ provider, identity, configurationVersion });
         candidate.publish();
         candidate = undefined;
       } catch (error) {
@@ -897,32 +774,6 @@ export async function activateProviderApplicationsAtStartup(options: {
   return failures;
 }
 
-function allowsDegradedColdStartup(
-  provider: Provider,
-  configuration: ProviderApplicationConfiguration,
-): boolean {
-  return (
-    provider === "slack" &&
-    configuration.provider === "slack" &&
-    configuration.transport === "socket"
-  );
-}
-
-async function startStartupCandidate(
-  candidate: ProviderRuntimeCandidate,
-  provider: Provider,
-  configuration: ProviderApplicationConfiguration,
-): Promise<void> {
-  try {
-    await candidate.start();
-  } catch (error) {
-    // A cold-start Socket registration has no older runtime to protect. Its source owns and
-    // reports the bounded readiness failure, then keeps reconnecting in the background once
-    // published. Interactive replacement paths still reject and retain the working runtime.
-    if (!allowsDegradedColdStartup(provider, configuration)) throw error;
-  }
-}
-
 async function startupIdentity(
   provider: Provider,
   environmentConfiguration: ProviderApplicationConfiguration | undefined,
@@ -934,11 +785,7 @@ async function startupIdentity(
     return stored.identity;
   }
   if (provider === "slack" && environmentConfiguration.provider === "slack") {
-    return {
-      provider: "slack",
-      id: environmentConfiguration.appId,
-      name: "Slack app",
-    };
+    return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
   }
   return verifier.verify(provider, environmentConfiguration);
 }
@@ -1017,9 +864,7 @@ async function verifyAndActivateProvider(
     if (error instanceof ProviderVerificationError) {
       // The subject travels as safe context so the copy can name the field the provider
       // objected to instead of sending the operator back over all of them.
-      throw new ProviderApplicationError(error.reason, error.subject, {
-        cause: error,
-      });
+      throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
     }
     throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
@@ -1048,12 +893,7 @@ async function verifyAndActivateProvider(
     });
     candidate.publish();
     candidate = undefined;
-    return {
-      status: "verified",
-      provider,
-      identity,
-      configurationVersion: saved.version,
-    };
+    return { status: "verified", provider, identity, configurationVersion: saved.version };
   } catch (error) {
     await closeCandidate(candidate, provider, "verify_and_save");
     if (error instanceof ProviderApplicationError) throw error;

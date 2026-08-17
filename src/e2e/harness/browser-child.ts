@@ -52,12 +52,17 @@ import {
 } from "../../provider-applications/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
-import { reportFailure } from "../../failures/index.js";
 
 interface DiscordCommand {
   id: string;
   type: "discord";
   event: BrowserDiscordEvent;
+}
+
+interface SlackSocketCommand {
+  id: string;
+  type: "slack-socket-prepare" | "slack-socket-deliver" | "slack-socket-inspect";
+  eventId?: string;
 }
 
 interface GitHubConfigurationCommand {
@@ -94,12 +99,6 @@ interface AccountSetupFailureCommand {
 interface ProjectReadFailureCommand {
   id: string;
   type: "fail-next-project-read";
-}
-
-interface SlackSocketCommand {
-  id: string;
-  type: "slack-socket-prepare" | "slack-socket-deliver" | "slack-socket-inspect";
-  eventId?: string;
 }
 
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
@@ -155,10 +154,7 @@ async function main(): Promise<void> {
   );
   const bot = new BrowserDiscordBot(scenario);
   const slackBot = new BrowserSlackBot();
-  const slackSocket = new BrowserSlackSocketFixture(
-    scenario,
-    Number(requiredEnvironment("PASEO_E2E_SLACK_SOCKET_PORT")),
-  );
+  const slackSocket = new BrowserSlackSocketFixture(scenario);
   await slackSocket.start();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
@@ -207,9 +203,7 @@ async function main(): Promise<void> {
             bot,
             ...(scenario === "not-configured"
               ? {}
-              : {
-                  connectionClient: new BrowserDiscordConnections(publicBaseUrl, scenario),
-                }),
+              : { connectionClient: new BrowserDiscordConnections(publicBaseUrl, scenario) }),
           }),
           createSlackRegistration({
             database,
@@ -254,7 +248,6 @@ async function main(): Promise<void> {
       await database.close();
     },
   });
-  await providers.activateProviderApplications?.();
   let failNextProjectRead = false;
   const projectDashboard = runtime.projectDashboard;
   if (projectDashboard !== null) {
@@ -281,9 +274,9 @@ async function main(): Promise<void> {
   process.on("message", (message: unknown) => {
     void acceptCommand(message, {
       bot,
+      slackSocket,
       database,
       databaseRuntime,
-      slackSocket,
       githubConfiguration,
       billingCatalog,
       billingClient: billingFixtureClient,
@@ -307,10 +300,7 @@ async function createBrowserDatabase() {
   try {
     await bundle.runtime.migrate();
     process.stdout.write("database runtime ready: embedded\n");
-    return {
-      ...bundle,
-      database: createDatabase(bundle.runtime, bundle.locks),
-    };
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
   } catch (error) {
     await bundle.runtime.close().catch(() => undefined);
     throw error;
@@ -329,10 +319,7 @@ async function testServerOptions(): Promise<{
   if (keyPath === undefined || certPath === undefined) throw new Error("incomplete test TLS");
   return {
     ...trusted,
-    tls: {
-      key: await readFile(keyPath, "utf8"),
-      cert: await readFile(certPath, "utf8"),
-    },
+    tls: { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") },
   };
 }
 
@@ -408,9 +395,9 @@ async function seedMachineAuthTargetIfRequired(
 
 interface CommandFixtures {
   bot: BrowserDiscordBot;
+  slackSocket: BrowserSlackSocketFixture;
   database: Database;
   databaseRuntime: DatabaseRuntime;
-  slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
@@ -469,14 +456,10 @@ async function acceptSlackSocketCommand(
       process.send?.({ id: message.id, ok: true });
       return;
     }
-    const result = await fixtures.databaseRuntime.query<{
-      receipts: number;
-      runs: number;
-    }>(
+    const result = await fixtures.databaseRuntime.query<{ receipts: number; runs: number }>(
       `select count(distinct receipt.id)::integer receipts, count(run.id)::integer runs
-       from provider_event_receipts receipt
-       left join trigger_runs run on run.provider_event_receipt_id = receipt.id
-       where receipt.delivery_id = $1`,
+       from provider_event_receipts receipt left join trigger_runs run
+       on run.provider_event_receipt_id = receipt.id where receipt.delivery_id = $1`,
       [`slack-${message.eventId}`],
     );
     process.send?.({ id: message.id, ok: true, data: result.rows[0] });
@@ -491,31 +474,22 @@ async function acceptSlackSocketCommand(
 
 async function prepareSlackSocketWorkflow(
   database: Database,
-  databaseRuntime: DatabaseRuntime,
+  runtime: DatabaseRuntime,
 ): Promise<void> {
-  const target = await databaseRuntime.query<{
+  const target = await runtime.query<{
     project_id: string;
     user_id: string;
     connection_id: string;
   }>(
     `select project.id project_id, member.user_id, connection.id connection_id
-     from projects project
-     join member on member.organization_id = project.organization_id
-     join slack_connections connection
-       on connection.organization_id = project.organization_id and connection.team_id = 'T-ACME'
-     order by project.id, member.id limit 1`,
+     from projects project join member on member.organization_id = project.organization_id
+     join slack_connections connection on connection.organization_id = project.organization_id
+     where connection.team_id = 'T-ACME' order by project.id, member.id limit 1`,
   );
   const row = target.rows[0];
   if (row === undefined) throw new Error("Slack browser workflow target is unavailable");
-  const base = compileHubConfig({
-    environments: [
-      {
-        name: "runner",
-        kind: "daemon",
-        daemon: "browser-runner",
-        cwd: "/workspace",
-      },
-    ],
+  const compiled = compileHubConfig({
+    environments: [{ name: "runner", kind: "daemon", daemon: "browser-runner", cwd: "/workspace" }],
     triggers: [
       {
         name: "socket-mention",
@@ -536,13 +510,13 @@ async function prepareSlackSocketWorkflow(
     ],
   });
   const configuration = {
-    ...base,
-    environments: base.environments.map((environment) =>
+    ...compiled,
+    environments: compiled.environments.map((environment) =>
       environment.kind === "daemon"
         ? { ...environment, daemonId: "00000000-0000-4000-8000-000000000099" }
         : environment,
     ),
-    triggers: base.triggers.map((trigger) =>
+    triggers: compiled.triggers.map((trigger) =>
       Object.assign({}, trigger, {
         filters: { ...trigger.filters, connectionId: row.connection_id },
       }),
@@ -576,11 +550,7 @@ function acceptBillingCommand(
 ): boolean {
   if (isBillingProductCommand(message)) {
     if (billingCatalog === null) {
-      process.send?.({
-        id: message.id,
-        ok: false,
-        error: "billing is not configured",
-      });
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
       return true;
     }
     billingCatalog.setProduct(message.product);
@@ -589,11 +559,7 @@ function acceptBillingCommand(
   }
   if (isBillingCancelSubscriptionCommand(message)) {
     if (billingClient === null) {
-      process.send?.({
-        id: message.id,
-        ok: false,
-        error: "billing is not configured",
-      });
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
       return true;
     }
     // Stand in for the customer canceling in the Stripe portal: the subscription now reads
@@ -608,20 +574,14 @@ function acceptBillingCommand(
   }
   if (isBillingInspectCommand(message)) {
     if (billingClient === null) {
-      process.send?.({
-        id: message.id,
-        ok: false,
-        error: "billing is not configured",
-      });
+      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
       return true;
     }
     // The seat quantity Stripe was last told to bill — what the seat-quantity E2E asserts.
     process.send?.({
       id: message.id,
       ok: true,
-      data: {
-        reportedSeatQuantity: billingClient.reportedSeatQuantity(message.organizationId),
-      },
+      data: { reportedSeatQuantity: billingClient.reportedSeatQuantity(message.organizationId) },
     });
     return true;
   }
@@ -671,19 +631,6 @@ function isProjectReadFailureCommand(value: unknown): value is ProjectReadFailur
   );
 }
 
-function isSlackSocketCommand(value: unknown): value is SlackSocketCommand {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (Reflect.get(value, "type") === "slack-socket-prepare" ||
-      Reflect.get(value, "type") === "slack-socket-deliver" ||
-      Reflect.get(value, "type") === "slack-socket-inspect") &&
-    typeof Reflect.get(value, "id") === "string" &&
-    (Reflect.get(value, "eventId") === undefined ||
-      typeof Reflect.get(value, "eventId") === "string")
-  );
-}
-
 function isBillingProductCommand(value: unknown): value is BillingProductCommand {
   return (
     typeof value === "object" &&
@@ -723,6 +670,19 @@ function isDiscordCommand(value: unknown): value is DiscordCommand {
     Reflect.get(value, "type") === "discord" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "event") === "object"
+  );
+}
+
+function isSlackSocketCommand(value: unknown): value is SlackSocketCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ["slack-socket-prepare", "slack-socket-deliver", "slack-socket-inspect"].includes(
+      String(Reflect.get(value, "type")),
+    ) &&
+    typeof Reflect.get(value, "id") === "string" &&
+    (Reflect.get(value, "eventId") === undefined ||
+      typeof Reflect.get(value, "eventId") === "string")
   );
 }
 
@@ -823,16 +783,11 @@ async function providerRuntimeOptions(
 ): Promise<
   Pick<Parameters<typeof createApplicationRuntime>[0], "registrations"> & {
     providerApplications?: ProviderApplications;
-    activateProviderApplications?: () => Promise<void>;
   }
 > {
   const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
   if (apps !== null) {
-    return {
-      registrations: apps.registrations,
-      providerApplications: apps.capability,
-      activateProviderApplications: () => apps.activate(),
-    };
+    return { registrations: apps.registrations, providerApplications: apps.capability };
   }
   if (auth !== null) {
     await activateStaticProviderApplications(fixtures);
@@ -845,30 +800,17 @@ async function activateStaticProviderApplications(
 ): Promise<void> {
   const identities: ProviderApplicationIdentity[] = [];
   if (hasBrowserGitHub(input.scenario)) {
-    identities.push({
-      provider: "github",
-      id: "42",
-      name: "paseo",
-      ownerLogin: "acme-inc",
-    });
+    identities.push({ provider: "github", id: "42", name: "paseo", ownerLogin: "acme-inc" });
   }
   if (input.scenario !== "not-configured" && input.scenario !== "slack-only") {
     identities.push({ provider: "discord", id: "900", name: "Paseo" });
   }
   if (input.scenario === "slack-only") {
-    identities.push({
-      provider: "slack",
-      id: "browser-slack-app",
-      name: "Paseo",
-    });
+    identities.push({ provider: "slack", id: "browser-slack-app", name: "Paseo" });
   }
   const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
   for (const identity of identities) {
-    await store.activate({
-      provider: identity.provider,
-      identity,
-      configurationVersion: 0,
-    });
+    await store.activate({ provider: identity.provider, identity, configurationVersion: 0 });
   }
 }
 
@@ -891,7 +833,6 @@ async function composeProviderApplications(input: {
 }): Promise<{
   capability: ProviderApplications;
   registrations: readonly ProviderRegistration[];
-  activate(): Promise<void>;
 } | null> {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
   const environment = await readProviderApplicationEnvironment(process.env);
@@ -913,6 +854,17 @@ async function composeProviderApplications(input: {
       githubConfiguration: input.githubConfiguration,
     }),
   });
+  const failures = await activateProviderApplicationsAtStartup({
+    store,
+    environment,
+    runtime: providerRuntime,
+    verifier,
+    inventory,
+    callbackOrigin: input.publicBaseUrl,
+  });
+  if (failures[0] !== undefined) {
+    throw failures[0].error;
+  }
   const capability = createProviderApplications({
     auth: input.auth,
     store,
@@ -920,6 +872,10 @@ async function composeProviderApplications(input: {
     runtime: providerRuntime,
     verifier,
     slackSocketVerifier: input.slackSocket.verifier(),
+    slackDelivery: {
+      status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
+      retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+    },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
@@ -931,27 +887,7 @@ async function composeProviderApplications(input: {
       return begin(new Request(url, { method: "POST", headers: request.headers }));
     },
   });
-  return {
-    capability,
-    registrations: providerRuntime.registrations(),
-    async activate() {
-      const failures = await activateProviderApplicationsAtStartup({
-        store,
-        environment,
-        runtime: providerRuntime,
-        verifier,
-        inventory,
-        callbackOrigin: input.publicBaseUrl,
-      });
-      for (const { provider, error } of failures) {
-        reportFailure(error, {
-          operation: "provider_application.activate_at_startup",
-          component: "provider_applications",
-          provider,
-        });
-      }
-    },
-  };
+  return { capability, registrations: providerRuntime.registrations() };
 }
 
 main().catch((error: unknown) => {

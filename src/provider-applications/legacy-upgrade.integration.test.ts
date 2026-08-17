@@ -26,50 +26,38 @@ import {
 const roots: string[] = [];
 const migrations = readMigrationFiles({ migrationsFolder: join(process.cwd(), "drizzle") });
 const migrationsBeforeProviderApplications = migrations.slice(0, 36);
-const migrationsBeforeSocketMode = migrations.slice(0, 38);
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe("pre-provider-app connection upgrade", () => {
-  it.each(["PGlite", "PostgreSQL"] as const)(
-    "migrates a saved Slack webhook configuration without changing its binding in %s",
-    async (engine) => {
-      const fixture = await databaseBeforeSocketMode(engine);
-      try {
-        await seedLegacySlackApplication(fixture.bundle);
-        await fixture.bundle.runtime.migrate();
-        const saved = await createProviderApplicationStore(
-          fixture.bundle.runtime,
-          fixture.bundle.locks,
-        ).read("slack");
-        assert.deepEqual(saved?.configuration, ENVIRONMENT_APPLICATIONS.slack);
-        assert.equal(saved?.version, 4);
-        const connections = await createProviderApplicationInventory(
-          fixture.bundle.runtime,
-        ).connectedIdentities("slack");
-        assert.deepEqual(
-          connections.map(({ id: _id, ...connection }) => connection),
-          [
-            {
-              providerId: "legacy-team",
-              name: "Legacy Slack",
-              applicationId: "slack-app",
-              status: "connected",
-            },
-          ],
-        );
-        const binding = await fixture.bundle.runtime.query<{ team_id: string }>(
-          "select team_id from slack_connections where provider_application_id = 'slack-app'",
-        );
-        assert.equal(binding.rows[0]?.team_id, "legacy-team");
-      } finally {
-        await fixture.close();
-      }
-    },
-    120_000,
-  );
+  it("migrates a saved Slack webhook configuration without changing its binding in PGlite", async () => {
+    const fixture = await databaseBeforeSocketMode();
+    try {
+      await seedLegacySlackApplication(fixture.bundle);
+      await fixture.bundle.runtime.migrate();
+      const saved = await createProviderApplicationStore(
+        fixture.bundle.runtime,
+        fixture.bundle.locks,
+      ).read("slack");
+      assert.deepEqual(saved?.configuration, ENVIRONMENT_APPLICATIONS.slack);
+      assert.equal(saved?.version, 4);
+      const connections = await createProviderApplicationInventory(
+        fixture.bundle.runtime,
+      ).connectedIdentities("slack");
+      assert.deepEqual(
+        connections.map(({ id: _id, ...connection }) => connection),
+        [{ name: "Legacy Slack", applicationId: "slack-app", status: "connected" }],
+      );
+      const binding = await fixture.bundle.runtime.query<{ team_id: string }>(
+        "select team_id from slack_connections where provider_application_id = 'slack-app'",
+      );
+      assert.equal(binding.rows[0]?.team_id, "legacy-team");
+    } finally {
+      await fixture.close();
+    }
+  }, 120_000);
 
   it.each(["PGlite", "PostgreSQL"] as const)(
     "gives concurrent legacy identity claims one durable winner in %s",
@@ -250,27 +238,16 @@ async function applyPostgresMigrationsBeforeProviderApplications(
   });
 }
 
-async function databaseBeforeSocketMode(engine: "PGlite" | "PostgreSQL"): Promise<{
+async function databaseBeforeSocketMode(): Promise<{
   bundle: DatabaseRuntimeBundle;
   close(): Promise<void>;
 }> {
-  if (engine === "PGlite") {
-    const root = await mkdtemp(join(tmpdir(), "hub-slack-socket-upgrade-"));
-    roots.push(root);
-    await applyPGliteMigrationsBeforeProviderApplications(root, migrationsBeforeSocketMode);
-    const bundle = await embeddedDatabaseRuntime(root);
-    return { bundle, close: () => bundle.runtime.close() };
-  }
-  const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
-  const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
-  await applyPostgresMigrationsBeforeProviderApplications(bundle, migrationsBeforeSocketMode);
-  return {
-    bundle,
-    close: async () => {
-      await bundle.runtime.close();
-      await postgres.stop();
-    },
-  };
+  const beforeSocketMode = migrations.slice(0, -1);
+  const root = await mkdtemp(join(tmpdir(), "hub-slack-socket-upgrade-"));
+  roots.push(root);
+  await applyPGliteMigrationsBeforeProviderApplications(root, beforeSocketMode);
+  const bundle = await embeddedDatabaseRuntime(root);
+  return { bundle, close: () => bundle.runtime.close() };
 }
 
 async function seedLegacySlackApplication(bundle: DatabaseRuntimeBundle): Promise<void> {

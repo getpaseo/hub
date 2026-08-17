@@ -21,22 +21,13 @@ export interface TriggerDispatchOutcome {
   providerEventReceiptId: string;
 }
 
-export interface TriggerHandler {
-  (trigger: DurableProviderEvent): Promise<TriggerDispatchOutcome | void>;
-  /** Captures permission to finish one transport admission across runtime replacement. */
-  admit?(): TriggerHandler;
-}
-
-export function admitTriggerHandler(handler: TriggerHandler): TriggerHandler {
-  return handler.admit?.() ?? handler;
-}
+export type TriggerHandler = (
+  trigger: DurableProviderEvent,
+) => Promise<TriggerDispatchOutcome | void>;
 
 export interface TriggerSource {
   start(handler: TriggerHandler): Promise<void>;
-  /** Stops transport admission within its own deadline. */
   stop(): Promise<void>;
-  /** Settles work admitted before stop so dependent resources can close safely. */
-  drain?(): Promise<void>;
 }
 
 export type TriggerEventName = `${string}.${string}`;

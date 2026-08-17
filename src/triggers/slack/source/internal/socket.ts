@@ -1,831 +1,282 @@
 import { createHash } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
 import { reportFailure } from "../../../../failures/index.js";
-import { discardClientResponse } from "../../../../http/client-response.js";
 import { logger } from "../../../../logger.js";
-import { admitTriggerHandler, type TriggerHandler, type TriggerSource } from "../../../index.js";
+import type { TriggerHandler, TriggerSource } from "../../../index.js";
 import {
   intakeSlackEvent,
   SlackEventIntakeValidationError,
   type SlackEventIntakeOptions,
 } from "./intake.js";
 import {
+  openSlackSocket,
+  SlackSocketConnectionError,
+  type OpenSlackSocketResult,
+} from "./connection.js";
+import {
+  parseSlackSocketFrame,
+  slackSocketFrame,
   slackSocketAck,
   SlackSocketDisconnectSchema,
   SlackSocketEnvelopeSchema,
-  SlackSocketHelloSchema,
-  SlackSocketOpenResponseSchema,
-  type SlackSocketEnvelope,
 } from "./socket-protocol.js";
-import {
-  classifySlackOpenFailure,
-  slackActionPolicy,
-  type SlackActionReason,
-} from "../health-policy.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
-const DEFAULT_READINESS_TIMEOUT_MS = 5_000;
-const DEFAULT_CONNECT_TIMEOUT_MS = 3_000;
-const DEFAULT_HELLO_TIMEOUT_MS = 3_000;
-const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
-
-interface SocketCloseResult {
-  code: number;
-  reason: string;
-  error?: unknown;
-  failureOwner: boolean;
-}
-
-class SlackSocketProtocolError extends Error {
-  constructor(
-    message: string,
-    readonly reason: "invalidFrame" | "appIdentityMismatch",
-    readonly frameBytes?: number,
-  ) {
-    super(message);
-    this.name = "SlackSocketProtocolError";
-  }
-}
-
-class SlackSocketReadinessError extends Error {
-  constructor(cause?: unknown) {
-    super("Slack Socket Mode did not become ready before the startup deadline", { cause });
-    this.name = "SlackSocketReadinessError";
-  }
-}
-
-class SlackSocketOpenError extends Error {
-  constructor(
-    readonly slackError: string,
-    readonly status: number,
-    readonly retryAfter?: number,
-  ) {
-    super("Slack rejected Socket Mode authentication");
-    this.name = "SlackSocketOpenError";
-  }
-}
 
 export type SlackDeliveryStatus =
-  | { state: "connecting" | "reconnecting"; since: Date }
-  | {
-      state: "connected";
-      since: Date;
-      connectionCount: number;
-      connectionLimitReached?: boolean;
-      delayedWorkspaces?: readonly { teamId: string; name?: string; since: Date }[];
-    }
+  | { state: "connecting" | "reconnecting" | "connected" }
   | {
       state: "actionNeeded";
-      reason: SlackActionReason;
-      since: Date;
+      reason: "appTokenRejected" | "socketModeOff" | "appIdentityMismatch";
     }
   | { state: "stopped" };
 
 export interface SlackSocketSource extends TriggerSource {
-  ready(): Promise<void>;
   status(): SlackDeliveryStatus;
   retry(): Promise<void>;
 }
 
 export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
   appToken: string;
-  configurationVersion: number;
   apiUrl?: string;
-  fetch?: typeof fetch;
-  webSocket?: (url: string) => WebSocket;
-  now?: () => Date;
   random?: () => number;
-  readinessTimeoutMs?: number;
-  connectTimeoutMs?: number;
-  helloTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
-  recordWorkspaceDelivery?: (
-    teamId: string,
-    delayed: boolean,
-    providerObservedAt: Date,
-  ) => Promise<void>;
+  timeoutMs?: number;
 }
 
 export function createSlackSocketSource(options: SlackSocketSourceOptions): SlackSocketSource {
   const handlers = new Set<TriggerHandler>();
-  const request = options.fetch ?? fetch;
-  const connectWebSocket = options.webSocket ?? ((url: string) => new WebSocket(url));
-  const now = options.now ?? (() => new Date());
   const random = options.random ?? Math.random;
-  const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
-  const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-  const helloTimeoutMs = options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS;
-  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
-  let deliveryStatus: SlackDeliveryStatus = { state: "stopped" };
+  let status: SlackDeliveryStatus = { state: "stopped" };
   let stopped = true;
-  let admitting = false;
-  let transportClosed = true;
-  const sockets = new Set<WebSocket>();
-  const connectionAttempts = new Set<AbortController>();
-  const admissions = new Set<Promise<void>>();
+  let attempt = 0;
+  let controller: AbortController | undefined;
+  let current: OpenSlackSocketResult | undefined;
   let supervisor: Promise<void> | undefined;
-  let retryWake: (() => void) | undefined;
-  let refreshPromise: Promise<void> | undefined;
-  let replacementClose: Promise<SocketCloseResult> | undefined;
-  let readyPromise: Promise<void> = Promise.resolve();
-  let resolveReady: (() => void) | undefined;
-  let rejectReady: ((error: unknown) => void) | undefined;
-  let readinessTimer: NodeJS.Timeout | undefined;
-  let readinessSettled = true;
-  let connectionFailureEpisode: string | undefined;
-  let lastConnectionFailure: unknown;
-  let connectedStatus: Extract<SlackDeliveryStatus, { state: "connected" }> | undefined;
-  const delayedWorkspaces = new Map<string, Date>();
-  let activeSocketUrl: string | undefined;
-  const ownedSocketFailures = new WeakSet<WebSocket>();
-  const sensitiveValues = () => [
+  let wake: (() => void) | undefined;
+  let frames = Promise.resolve();
+  let failureOwned = false;
+  let expectedClose = false;
+  let terminalDisconnect: "socketModeOff" | undefined;
+  let transientReported = false;
+  let minimumDelay = 0;
+  const scrubValues = () => [
     options.appToken,
     ...(options.apiUrl === undefined ? [] : [options.apiUrl]),
-    ...(activeSocketUrl === undefined ? [] : [activeSocketUrl]),
   ];
 
-  const run = async (): Promise<void> => {
-    let attempt = 0;
-    let minimumDelay = 0;
+  const run = async () => {
     for (;;) {
       if (stopped) return;
-      deliveryStatus = {
-        state: attempt === 0 ? "connecting" : "reconnecting",
-        since: now(),
-      };
+      status = { state: attempt === 0 ? "connecting" : "reconnecting" };
+      controller = new AbortController();
       try {
-        const connection = await connectOnce();
+        const connection = await openSlackSocket({
+          appToken: options.appToken,
+          appId: options.appId,
+          signal: controller.signal,
+          ...(options.apiUrl === undefined ? {} : { apiUrl: options.apiUrl }),
+          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        });
+        current = connection;
+        failureOwned = false;
+        expectedClose = false;
+        terminalDisconnect = undefined;
+        transientReported = false;
         attempt = 0;
-        let close = await connection.closed;
-        while (close.reason === "replaced" && replacementClose !== undefined) {
-          const next = replacementClose;
-          replacementClose = undefined;
-          close = await next;
-        }
-        if (stopped) return;
-        if (close.reason === "link_disabled") {
-          deliveryStatus = {
-            state: "actionNeeded",
-            reason: "socketModeOff",
-            since: now(),
-          };
-          reportFailure(
-            Object.assign(new Error("Slack disabled Socket Mode for this app"), {
-              code: "socket_mode_off",
-            }),
-            {
-              operation: "slack.socket.disconnect",
-              component: "triggers",
-              provider: "slack",
-            },
-            { kind: "validation", scrubValues: sensitiveValues() },
-          );
-          return;
-        }
-        if (close.failureOwner) reportAbnormalClose(close);
-      } catch (error) {
-        if (stopped) return;
-        const action = connectionAction(error);
-        reportConnectionFailure(error, action);
-        if (action !== undefined) {
-          deliveryStatus = {
-            state: "actionNeeded",
-            reason: action,
-            since: now(),
-          };
-          settleReadiness(error);
-          return;
-        }
-        const retryAfter = Number(
-          error !== null && typeof error === "object" ? Reflect.get(error, "retryAfter") : 0,
+        status = { state: "connected" };
+        logger.info(
+          { provider: "slack", operation: "slack.socket.connect", appId: options.appId },
+          "Slack Socket Mode connected",
         );
-        minimumDelay = Number.isFinite(retryAfter) ? retryAfter * 1_000 : 0;
+        connection.socket.on("message", (data, binary) => {
+          frames = frames
+            .then(() => handleFrame(connection, data, binary))
+            .catch((error: unknown) => {
+              if (!failureOwned) {
+                failureOwned = true;
+                report(error, "slack.socket.handoff", "internal");
+              }
+              connection.socket.close();
+            });
+        });
+        const closed = await connection.closed;
+        current = undefined;
+        if (stopped) return;
+        if (terminalDisconnect !== undefined) {
+          status = { state: "actionNeeded", reason: terminalDisconnect };
+          if (!failureOwned)
+            report(new Error("Slack Socket Mode is off"), "slack.socket.disconnect", "validation");
+          return;
+        }
+        if (!expectedClose && !failureOwned) {
+          report(
+            Object.assign(new Error("Slack Socket Mode connection closed"), {
+              closeCode: closed,
+            }),
+            "slack.socket.connect",
+            "network",
+          );
+          transientReported = true;
+        }
+      } catch (error) {
+        if (stopped || controller.signal.aborted) return;
+        if (error instanceof SlackSocketConnectionError && error.reason !== "transient") {
+          status = { state: "actionNeeded", reason: error.reason };
+          report(error, "slack.socket.authenticate", "authentication");
+          return;
+        }
+        if (!transientReported) {
+          transientReported = true;
+          report(error, "slack.socket.connect", "network");
+        }
+        minimumDelay = error instanceof SlackSocketConnectionError ? error.retryAfterMs : 0;
       }
       attempt += 1;
-      const reconnectDelay = Math.max(
+      const delayMs = Math.max(
         minimumDelay,
         Math.floor(random() * Math.min(30_000, 1_000 * 2 ** (attempt - 1))),
       );
       minimumDelay = 0;
-      logger.info(
-        {
-          provider: "slack",
-          operation: "slack.socket.reconnect",
-          attempt,
-          delayMs: reconnectDelay,
-        },
-        "Slack Socket Mode reconnect scheduled",
-      );
-      await waitForRetry(reconnectDelay);
+      await waitForRetry(delayMs);
     }
   };
 
-  const connectOnce = async (): Promise<{ closed: Promise<SocketCloseResult> }> => {
-    const controller = new AbortController();
-    connectionAttempts.add(controller);
-    const timeout = setTimeout(
-      () => controller.abort(new Error("Slack Socket Mode connection request timed out")),
-      connectTimeoutMs,
-    );
-    try {
-      const response = await request(
-        options.apiUrl ?? "https://slack.com/api/apps.connections.open",
-        {
-          method: "POST",
-          headers: { authorization: `Bearer ${options.appToken}` },
-          signal: controller.signal,
-        },
-      );
-      const retryAfter = Number(response.headers.get("retry-after"));
-      if (response.status === 429) {
-        await discardClientResponse(
-          response,
-          controller,
-          new Error("Slack Socket Mode response body was discarded"),
-        );
-        throw new SlackSocketOpenError(
-          "ratelimited",
-          response.status,
-          Number.isFinite(retryAfter) ? retryAfter : undefined,
-        );
-      }
-      if (!response.ok) {
-        await discardClientResponse(
-          response,
-          controller,
-          new Error("Slack Socket Mode response body was discarded"),
-        );
-        throw new SlackSocketOpenError(`http_${response.status}`, response.status);
-      }
-      const body: unknown = await response.json().catch((error: unknown) => {
-        if (controller.signal.aborted) throw error;
-        return undefined;
-      });
-      const opened = SlackSocketOpenResponseSchema.safeParse(body);
-      if (!response.ok || !opened.success || !opened.data.ok || opened.data.url === undefined) {
-        throw new SlackSocketOpenError(
-          opened.success ? (opened.data.error ?? "invalid_response") : "invalid_response",
-          response.status,
-        );
-      }
-      const wsUrl = new URL(opened.data.url);
-      if (wsUrl.protocol !== "wss:" && wsUrl.protocol !== "ws:") {
-        throw new Error("Slack returned an invalid Socket Mode URL");
-      }
-      activeSocketUrl = wsUrl.toString();
-      if (stopped) throw new Error("Slack Socket Mode stopped during connection");
-      const openedSocket = connectWebSocket(wsUrl.toString());
-      sockets.add(openedSocket);
-      openedSocket.once("close", () => sockets.delete(openedSocket));
-      return awaitSocket(openedSocket);
-    } catch (error) {
-      if (controller.signal.aborted && !stopped && !(error instanceof SlackSocketOpenError)) {
-        throw controller.signal.reason instanceof Error ? controller.signal.reason : error;
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-      connectionAttempts.delete(controller);
-    }
-  };
-
-  const supervise = () =>
-    run().catch((error: unknown) => {
-      reportFailure(
-        error,
-        {
-          operation: "slack.socket.loop",
-          component: "triggers",
-          provider: "slack",
-        },
-        { scrubValues: sensitiveValues() },
-      );
-      rejectReady?.(error);
-    });
-
-  const awaitSocket = (openedSocket: WebSocket): Promise<{ closed: Promise<SocketCloseResult> }> =>
-    new Promise((resolve, reject) => {
-      let hello = false;
-      let queue = Promise.resolve();
-      let settled = false;
-      const closed = closeResult(openedSocket, claimSocketFailure);
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        openedSocket.terminate();
-        reject(new Error("Slack Socket Mode hello timed out"));
-      }, helloTimeoutMs);
-
-      const rejectBeforeHello = (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        openedSocket.close();
-        reject(error);
-      };
-
-      openedSocket.on("message", (data, binary) => {
-        if (!admitting) return;
-        const admittedHandlers = new Set(Array.from(handlers, admitTriggerHandler));
-        const admitted = queue
-          .then(() => {
-            const byteLength = rawDataByteLength(data);
-            if (binary || byteLength > MAX_FRAME_BYTES) {
-              if (!hello) {
-                throw new SlackSocketProtocolError(
-                  "Slack Socket Mode sent an invalid frame before hello",
-                  "invalidFrame",
-                  byteLength,
-                );
-              }
-              reportParseFailure(byteLength, options.appToken);
-              return undefined;
-            }
-            return handleFrame(rawDataText(data), openedSocket, hello, admittedHandlers);
-          })
-          .then((result) => {
-            if (result?.hello === true && !hello) {
-              hello = true;
-              settled = true;
-              clearTimeout(timer);
-              connectionFailureEpisode = undefined;
-              lastConnectionFailure = undefined;
-              delayedWorkspaces.clear();
-              connectedStatus = {
-                state: "connected",
-                since: now(),
-                connectionCount: result.connectionCount,
-                ...(result.connectionCount >= 10 ? { connectionLimitReached: true } : {}),
-              };
-              publishConnectedStatus();
-              logger.info(
-                {
-                  provider: "slack",
-                  operation: "slack.socket.connect",
-                  appId: options.appId,
-                  configurationVersion: options.configurationVersion,
-                  connectionCount: result.connectionCount,
-                },
-                "Slack Socket Mode connected",
-              );
-              settleReadiness();
-              resolve({ closed });
-            }
-            return undefined;
-          })
-          .catch((error: unknown) => {
-            if (!hello) {
-              rejectBeforeHello(error);
-              return;
-            }
-            if (claimSocketFailure(openedSocket)) {
-              reportFailure(
-                error,
-                {
-                  operation: "slack.socket.handoff",
-                  component: "triggers",
-                  provider: "slack",
-                },
-                { scrubValues: sensitiveValues() },
-              );
-            }
-            openedSocket.close(1000, "handoff_failed");
-          });
-        queue = admitted;
-        trackAdmission(admitted);
-      });
-      void closed.then((result) => {
-        if (!hello) rejectBeforeHello(preHelloCloseError(result));
-        return undefined;
-      });
-    });
-
-  const handleFrame = async (
-    frame: string,
-    target: WebSocket,
-    helloReceived: boolean,
-    admittedHandlers: ReadonlySet<TriggerHandler>,
-  ): Promise<{ hello: true; connectionCount: number } | undefined> => {
-    let value: unknown;
-    try {
-      value = JSON.parse(frame);
-    } catch {
-      if (!helloReceived) {
-        throw new SlackSocketProtocolError(
-          "Slack Socket Mode sent malformed JSON before hello",
-          "invalidFrame",
-          Buffer.byteLength(frame),
-        );
-      }
-      reportParseFailure(Buffer.byteLength(frame), options.appToken);
-      return undefined;
-    }
-    if (!helloReceived) {
-      const parsed = SlackSocketHelloSchema.safeParse(value);
-      if (!parsed.success) {
-        throw new SlackSocketProtocolError(
-          "Slack Socket Mode sent an invalid hello",
-          "invalidFrame",
-          Buffer.byteLength(frame),
-        );
-      }
-      if (parsed.data.connection_info.app_id !== options.appId) {
-        throw new SlackSocketProtocolError(
-          "Slack Socket Mode connected to a different app than configured",
-          "appIdentityMismatch",
-          Buffer.byteLength(frame),
-        );
-      }
-      return { hello: true, connectionCount: parsed.data.num_connections ?? 1 };
-    }
-    const disconnect = SlackSocketDisconnectSchema.safeParse(value);
-    if (disconnect.success) {
-      if (disconnect.data.reason === "link_disabled") target.close(1000, "link_disabled");
-      else refreshConnection(target, disconnect.data.reason);
-      return undefined;
-    }
-    const envelope = SlackSocketEnvelopeSchema.safeParse(value);
-    if (!envelope.success) {
-      reportParseFailure(Buffer.byteLength(frame), options.appToken);
-      const envelopeId = boundedEnvelopeId(value);
-      if (envelopeId !== undefined) {
-        await sendAck(target, envelopeId, options.appToken, claimSocketFailure);
-      }
-      return undefined;
-    }
-    await handleEnvelope(envelope.data, target, admittedHandlers, Buffer.byteLength(frame));
-    return undefined;
-  };
-
-  const handleEnvelope = async (
-    envelope: SlackSocketEnvelope,
-    target: WebSocket,
-    admittedHandlers: ReadonlySet<TriggerHandler>,
-    frameBytes: number,
-  ): Promise<void> => {
-    let deliveredTeamId: string | undefined;
-    if (envelope.type === "events_api") {
-      const payloadType = objectString(envelope.payload, "type");
-      if (payloadType === "app_rate_limited") {
-        const teamId = objectString(envelope.payload, "team_id") ?? "workspace";
-        await options.recordWorkspaceDelivery?.(
-          teamId,
-          true,
-          slackObservationTime(envelope.payload, "minute_rate_limited", now()),
-        );
-        if (!delayedWorkspaces.has(teamId)) {
-          delayedWorkspaces.set(teamId, now());
-          publishConnectedStatus();
-          reportFailure(
-            Object.assign(new Error("Slack is rate limiting Events API delivery"), {
-              code: "app_rate_limited",
-            }),
-            {
-              operation: "slack.socket.event.rate_limited",
-              component: "triggers",
-              provider: "slack",
-            },
-            { kind: "rateLimited", scrubValues: sensitiveValues() },
-          );
-        }
-        if (!transportClosed)
-          await sendAck(target, envelope.envelope_id, options.appToken, claimSocketFailure);
-        return;
-      }
-      const signatureHash = createHash("sha256").update(envelope.envelope_id).digest("hex");
-      try {
-        const intake = await intakeSlackEvent(
-          envelope.payload,
-          signatureHash,
-          admittedHandlers,
-          options,
-        );
-        if (intake.status === "accepted") deliveredTeamId = intake.teamId;
-      } catch (error) {
-        if (!(error instanceof SlackEventIntakeValidationError)) throw error;
-        reportParseFailure(frameBytes, options.appToken);
-      }
-    }
-    if (!transportClosed) {
-      const acknowledged = await sendAck(
-        target,
-        envelope.envelope_id,
-        options.appToken,
-        claimSocketFailure,
-      );
-      if (acknowledged && deliveredTeamId !== undefined) {
-        await options.recordWorkspaceDelivery?.(
-          deliveredTeamId,
-          false,
-          slackObservationTime(envelope.payload, "event_time", now()),
-        );
-        const recoveredLocally = delayedWorkspaces.delete(deliveredTeamId);
-        if (!recoveredLocally) return;
-        if (connectedStatus === undefined) return;
-        connectedStatus = { ...connectedStatus, since: now() };
-        publishConnectedStatus();
-      }
-    }
+  const startSupervisor = () => {
+    supervisor = run().catch((error: unknown) => report(error, "slack.socket.loop", "internal"));
   };
 
   return {
     async start(handler) {
       handlers.add(handler);
-      if (!stopped) return readyPromise;
+      if (!stopped) return;
       stopped = false;
-      admitting = true;
-      transportClosed = false;
-      readinessSettled = false;
-      readyPromise = new Promise<void>((resolve, reject) => {
-        resolveReady = resolve;
-        rejectReady = reject;
-      });
-      readinessTimer = setTimeout(
-        () => settleReadiness(new SlackSocketReadinessError(lastConnectionFailure)),
-        readinessTimeoutMs,
-      );
-      supervisor = supervise();
-      return readyPromise;
+      attempt = 0;
+      startSupervisor();
     },
     async stop() {
       if (stopped) return;
       stopped = true;
-      admitting = false;
-      if (readinessTimer !== undefined) clearTimeout(readinessTimer);
-      for (const controller of connectionAttempts) controller.abort();
-      retryWake?.();
-      await drainAdmissions();
-      handlers.clear();
-      transportClosed = true;
-      const closing = [...sockets];
-      for (const openSocket of closing) openSocket.close(1000, "shutdown");
-      await Promise.race([
-        Promise.all(closing.map((openSocket) => closeResult(openSocket))),
-        delay(shutdownTimeoutMs),
-      ]);
-      for (const openSocket of closing) {
-        if (openSocket.readyState !== WebSocket.CLOSED) openSocket.terminate();
-      }
-      await refreshPromise;
+      controller?.abort();
+      wake?.();
+      const connection = current;
+      if (connection !== undefined) await connection.close(250, "shutdown");
       await supervisor;
-      deliveryStatus = { state: "stopped" };
-      logger.info(
-        { provider: "slack", operation: "slack.socket.shutdown" },
-        "Slack Socket Mode stopped",
-      );
+      await frames;
+      handlers.clear();
+      status = { state: "stopped" };
     },
-    async drain() {
-      await Promise.allSettled(admissions);
-    },
-    ready: () => readyPromise,
-    status: () => deliveryStatus,
+    status: () => status,
     async retry() {
-      if (stopped) return;
-      retryWake?.();
-      if (
-        supervisor === undefined ||
-        (deliveryStatus.state === "actionNeeded" &&
-          slackActionPolicy(deliveryStatus.reason).canRetry)
-      ) {
-        supervisor = supervise();
+      if (!stopped && status.state !== "actionNeeded") {
+        wake?.();
+        return;
       }
-      await Promise.resolve();
+      if (stopped) return;
+      attempt = 0;
+      transientReported = false;
+      startSupervisor();
     },
   };
 
+  async function handleFrame(
+    connection: OpenSlackSocketResult,
+    data: RawData,
+    binary: boolean,
+  ): Promise<void> {
+    const frame = slackSocketFrame(data);
+    const bytes = frame.byteLength;
+    if (binary || bytes > MAX_FRAME_BYTES) {
+      reportInvalidFrame(bytes);
+      return;
+    }
+    const value = parseSlackSocketFrame(frame);
+    const disconnect = SlackSocketDisconnectSchema.safeParse(value);
+    if (disconnect.success) {
+      expectedClose = disconnect.data.reason !== "link_disabled";
+      if (!expectedClose) terminalDisconnect = "socketModeOff";
+      connection.socket.close(1000, disconnect.data.reason);
+      return;
+    }
+    const envelope = SlackSocketEnvelopeSchema.safeParse(value);
+    if (!envelope.success) {
+      reportInvalidFrame(bytes);
+      const envelopeId = boundedEnvelopeId(value);
+      if (envelopeId !== undefined) await sendAck(connection.socket, envelopeId);
+      return;
+    }
+    if (envelope.data.type === "events_api") {
+      if (objectString(envelope.data.payload, "type") === "app_rate_limited") {
+        logger.warn(
+          {
+            provider: "slack",
+            operation: "slack.socket.rate_limited",
+            teamId: objectString(envelope.data.payload, "team_id"),
+          },
+          "Slack is delaying events for a workspace",
+        );
+      } else {
+        const signatureHash = createHash("sha256").update(envelope.data.envelope_id).digest("hex");
+        try {
+          await intakeSlackEvent(envelope.data.payload, signatureHash, handlers, options);
+        } catch (error) {
+          if (!(error instanceof SlackEventIntakeValidationError)) throw error;
+          reportInvalidFrame(bytes);
+        }
+      }
+    }
+    if (!stopped) await sendAck(connection.socket, envelope.data.envelope_id);
+  }
+
+  async function sendAck(socket: WebSocket, envelopeId: string): Promise<void> {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.send(slackSocketAck(envelopeId), (error) => {
+          if (error != null) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    } catch (error) {
+      failureOwned = true;
+      report(error, "slack.socket.ack", "network");
+      socket.close();
+    }
+  }
+
   function waitForRetry(milliseconds: number): Promise<void> {
-    const scheduled = scheduledReconnect(milliseconds);
-    const manual = new Promise<void>((resolve) => {
-      retryWake = resolve;
-    });
-    return Promise.race([scheduled, manual]).finally(() => {
-      retryWake = undefined;
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, milliseconds);
+      timer.unref();
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    }).finally(() => {
+      wake = undefined;
     });
   }
 
-  function settleReadiness(error?: unknown): void {
-    if (readinessSettled) return;
-    readinessSettled = true;
-    if (readinessTimer !== undefined) clearTimeout(readinessTimer);
-    if (error === undefined) resolveReady?.();
-    else rejectReady?.(error);
-  }
-
-  function reportConnectionFailure(error: unknown, action: SlackActionReason | undefined): void {
-    const episode = connectionEpisode(error, action);
-    if (connectionFailureEpisode === episode) return;
-    connectionFailureEpisode = episode;
-    lastConnectionFailure = error;
+  function report(
+    error: unknown,
+    operation: string,
+    kind: "authentication" | "network" | "validation" | "internal",
+  ): void {
     reportFailure(
       error,
-      {
-        operation: connectionOperation(action),
-        component: "triggers",
-        provider: "slack",
-      },
-      {
-        kind: connectionFailureKind(error, action),
-        scrubValues: sensitiveValues(),
-      },
+      { operation, component: "triggers", provider: "slack" },
+      { kind, scrubValues: scrubValues() },
     );
   }
 
-  function reportAbnormalClose(close: SocketCloseResult): void {
-    reportFailure(
-      Object.assign(new Error("Slack Socket Mode connection ended unexpectedly"), {
-        code: "socket_closed",
-      }),
-      {
-        operation: "slack.socket.disconnect",
-        component: "triggers",
-        provider: "slack",
-      },
-      {
-        kind: "network",
-        scrubValues: sensitiveValues(),
-        diagnostic: { closeCode: close.code, phase: "connected" },
-      },
+  function reportInvalidFrame(byteCount: number): void {
+    report(
+      Object.assign(new Error("Slack sent an invalid event"), { frameBytes: byteCount }),
+      "slack.socket.envelope.parse",
+      "validation",
     );
   }
-
-  function publishConnectedStatus(): void {
-    if (connectedStatus === undefined) return;
-    const delayed = [...delayedWorkspaces].map(([teamId, since]) => ({ teamId, since }));
-    deliveryStatus = {
-      ...connectedStatus,
-      ...(delayed.length === 0 ? {} : { delayedWorkspaces: delayed }),
-    };
-  }
-
-  function claimSocketFailure(socket: WebSocket): boolean {
-    if (ownedSocketFailures.has(socket)) return false;
-    ownedSocketFailures.add(socket);
-    return true;
-  }
-
-  function trackAdmission(admission: Promise<void>): void {
-    admissions.add(admission);
-    void admission.finally(() => admissions.delete(admission));
-  }
-
-  async function drainAdmissions(): Promise<void> {
-    if (admissions.size === 0) return;
-    await Promise.race([
-      Promise.allSettled(admissions).then(() => undefined),
-      delay(shutdownTimeoutMs),
-    ]);
-  }
-
-  function refreshConnection(previous: WebSocket, reason: "warning" | "refresh_requested"): void {
-    if (stopped || refreshPromise !== undefined) return;
-    logger.info(
-      { provider: "slack", operation: "slack.socket.disconnect", reason },
-      "Slack Socket Mode connection refresh requested",
-    );
-    refreshPromise = connectOnce()
-      .then((connection) => {
-        replacementClose = connection.closed;
-        previous.close(1000, "replaced");
-        return undefined;
-      })
-      .catch((error: unknown) => {
-        if (stopped) return;
-        reportFailure(
-          error,
-          {
-            operation: "slack.socket.connect",
-            component: "triggers",
-            provider: "slack",
-          },
-          { kind: "network", scrubValues: sensitiveValues() },
-        );
-      })
-      .finally(() => {
-        refreshPromise = undefined;
-      });
-  }
-}
-
-function connectionFailureKind(
-  error: unknown,
-  action: SlackActionReason | undefined,
-): "authentication" | "validation" | "network" {
-  if (action !== undefined) return slackActionPolicy(action).failureKind;
-  if (error instanceof SlackSocketProtocolError) return "validation";
-  return "network";
-}
-
-function connectionOperation(
-  action: SlackActionReason | undefined,
-): "slack.socket.authenticate" | "slack.socket.configure" | "slack.socket.connect" {
-  return action === undefined ? "slack.socket.connect" : slackActionPolicy(action).operation;
-}
-
-function closeResult(
-  socket: WebSocket,
-  claimFailure?: (socket: WebSocket) => boolean,
-): Promise<SocketCloseResult> {
-  return new Promise((resolve) => {
-    let socketError: unknown;
-    socket.once("error", (error) => {
-      socketError ??= error;
-    });
-    socket.once("close", (code, reason) => {
-      const abnormal = socketError !== undefined || code !== 1000;
-      resolve({
-        code,
-        reason: reason.toString(),
-        ...(socketError === undefined ? {} : { error: socketError }),
-        failureOwner: abnormal && claimFailure !== undefined && claimFailure(socket),
-      });
-    });
-  });
-}
-
-function preHelloCloseError(close: SocketCloseResult): Error {
-  return Object.assign(new Error("Slack Socket Mode connection ended before it was ready"), {
-    code: "socket_closed_before_hello",
-    closeCode: close.code,
-    cause: close.error,
-  });
-}
-
-async function sendAck(
-  socket: WebSocket,
-  envelopeId: string,
-  appToken: string,
-  claimFailure: (socket: WebSocket) => boolean,
-): Promise<boolean> {
-  try {
-    await new Promise<void>((resolve, reject) => {
-      socket.send(slackSocketAck(envelopeId), (error) => {
-        if (error == null) {
-          resolve();
-          return;
-        }
-        reject(error);
-      });
-    });
-    return true;
-  } catch (error) {
-    if (claimFailure(socket)) {
-      reportFailure(
-        error,
-        {
-          operation: "slack.socket.ack",
-          component: "triggers",
-          provider: "slack",
-        },
-        { scrubValues: [appToken] },
-      );
-    }
-    socket.close(1000, "ack_failed");
-    return false;
-  }
-}
-
-function connectionAction(error: unknown): SlackActionReason | undefined {
-  if (error instanceof SlackSocketProtocolError && error.reason === "appIdentityMismatch") {
-    return "appIdentityMismatch";
-  }
-  if (!(error instanceof SlackSocketOpenError)) return undefined;
-  return classifyOpenFailure(error.slackError);
-}
-
-/** Slack's documented apps.connections.open errors, classified once at the response boundary.
- * Unknown errors stay retryable because Slack explicitly reserves them for outages and other
- * unexpected processing failures. */
-function classifyOpenFailure(slackError: string): SlackActionReason | undefined {
-  return classifySlackOpenFailure(slackError);
-}
-
-function connectionEpisode(error: unknown, action: SlackActionReason | undefined): string {
-  if (error instanceof SlackSocketOpenError) {
-    return `open:${error.status}:${error.slackError}:${action ?? "transient"}`;
-  }
-  if (error instanceof SlackSocketProtocolError) return `protocol:${error.reason}`;
-  if (error instanceof Error)
-    return `error:${error.name}:${error.message}:${action ?? "transient"}`;
-  return `unknown:${typeof error}:${action ?? "transient"}`;
-}
-
-function reportParseFailure(byteCount: number, appToken: string): void {
-  reportFailure(
-    Object.assign(new Error("Slack Socket Mode envelope was invalid"), {
-      frameBytes: byteCount,
-    }),
-    {
-      operation: "slack.socket.envelope.parse",
-      component: "triggers",
-      provider: "slack",
-    },
-    { kind: "validation", scrubValues: [appToken] },
-  );
-}
-
-function rawDataByteLength(data: RawData): number {
-  if (Array.isArray(data)) return data.reduce((total, part) => total + part.byteLength, 0);
-  return data.byteLength;
 }
 
 function boundedEnvelopeId(value: unknown): string | undefined {
@@ -837,27 +288,4 @@ function objectString(value: unknown, key: string): string | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const candidate: unknown = Reflect.get(value, key);
   return typeof candidate === "string" ? candidate : undefined;
-}
-
-function slackObservationTime(value: unknown, key: string, fallback: Date): Date {
-  if (value === null || typeof value !== "object") return fallback;
-  const seconds: unknown = Reflect.get(value, key);
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return fallback;
-  return new Date(seconds * 1_000);
-}
-
-function rawDataText(data: RawData): string {
-  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
-  return data.toString("utf8");
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function scheduledReconnect(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds).unref();
-  });
 }

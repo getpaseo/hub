@@ -4,17 +4,14 @@ import type { GitHubConfigurationProvider } from "../../configuration/github-syn
 import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
-import { hasFailureReport, reportFailure } from "../../failures/index.js";
+import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import type {
   ProviderRegistration,
   TriggerProviderResources,
 } from "../../providers/registration.js";
-import {
-  createSlackRegistration,
-  type CreateSlackRegistrationOptions,
-} from "../../providers/slack/index.js";
+import { createSlackRegistration } from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
 import type {
   Provider,
@@ -36,9 +33,6 @@ interface Slot {
 
 interface ActiveRegistration {
   provider: Provider;
-  configuration: ProviderApplicationConfiguration;
-  identity: ProviderApplicationIdentity | undefined;
-  configurationVersion: number;
   snapshotId: string;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
@@ -48,26 +42,11 @@ interface ActiveRegistration {
   longLeases: Set<string>;
   retiring: boolean;
   retirement: Promise<void> | undefined;
-  publication: Promise<boolean>;
-  resolvePublication(published: boolean): void;
 }
 
 interface RuntimeSnapshotMarker {
   snapshotId: string;
   leaseId: string;
-}
-
-/** @package Candidate startup classification owned by the composed runtime, which is the first
- * boundary that can see both the source failure and its resulting public delivery status. */
-export class ProviderRuntimeCandidateStartError extends Error {
-  constructor(
-    readonly disposition: "retryAfterBackoff" | "retryAfterConfigurationChange",
-    readonly failureAlreadyOwned: boolean,
-    cause: unknown,
-  ) {
-    super("Provider runtime candidate did not become ready", { cause });
-    this.name = "ProviderRuntimeCandidateStartError";
-  }
 }
 
 const RUNTIME_SNAPSHOT_KEY = "__paseoProviderRuntimeSnapshot";
@@ -81,7 +60,6 @@ interface DynamicProviderRuntimeOptions {
   auth: AuthServer;
   applicationBaseUrl: string;
   fetch?: typeof fetch;
-  slackSocket?: CreateSlackRegistrationOptions["socket"];
   registrationFactory?: (input: {
     provider: Provider;
     configuration: ProviderApplicationConfiguration;
@@ -121,27 +99,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
-  publishedApplication(provider: Provider) {
-    const active = this.slot(provider).active;
-    return active?.identity === undefined
-      ? undefined
-      : {
-          configuration: active.configuration,
-          identity: active.identity,
-          configurationVersion: active.configurationVersion,
-        };
-  }
-
-  slackDeliveryStatus(): SlackDeliveryStatus {
-    return (
-      this.slot("slack").active?.registration.slackDelivery?.status() ?? {
-        state: "stopped",
-      }
-    );
-  }
-
-  retrySlackDelivery(): Promise<void> {
-    return this.slot("slack").active?.registration.slackDelivery?.retry() ?? Promise.resolve();
+  slackDelivery(): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
+    return this.slot("slack").active?.registration.slackDelivery;
   }
 
   onSlackInstallation(
@@ -172,9 +131,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const triggerResources = slot.triggerResources;
     const active: ActiveRegistration = {
       provider,
-      configuration,
-      identity,
-      configurationVersion,
       snapshotId: `${provider}:${configurationVersion}:${++this.nextSnapshot}`,
       registration,
       triggers:
@@ -189,31 +145,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       longLeases: new Set(),
       retiring: false,
       retirement: undefined,
-      ...publicationGate(),
     };
     let published = false;
     return {
       start: async () => {
         if (slot.handler === undefined) return;
-        try {
-          await startSources(active, slot.handler);
-        } catch (error) {
-          if (
-            provider !== "slack" ||
-            configuration.provider !== "slack" ||
-            configuration.transport !== "socket"
-          ) {
-            throw error;
-          }
-          const status = registration.slackDelivery?.status();
-          throw new ProviderRuntimeCandidateStartError(
-            status?.state === "actionNeeded"
-              ? "retryAfterConfigurationChange"
-              : "retryAfterBackoff",
-            status?.state === "actionNeeded" || hasFailureReport(error),
-            error,
-          );
-        }
+        await startSources(active, slot.handler);
       },
       beginConnection: async (request) => {
         const response = await registration.connection.actions["start"]?.(request);
@@ -233,7 +170,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         slot.retained.set(active.snapshotId, active);
         slot.identity = identity;
         active.acceptingEvents = true;
-        active.resolvePublication(true);
         published = true;
         if (previous !== undefined) {
           previous.retiring = true;
@@ -247,10 +183,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           void this.retireWhenDrained(provider, slot, previous);
         }
       },
-      close: () => {
-        if (!published) active.resolvePublication(false);
-        return published ? Promise.resolve() : closeUnpublished(active);
-      },
+      close: () => (published ? Promise.resolve() : stopSources(active)),
     };
   }
 
@@ -295,12 +228,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       return createSlackRegistration({
         ...shared,
         configuration,
-        ...(this.options.slackSocket === undefined ? {} : { socket: this.options.slackSocket }),
         ...(activation?.expectedConfigurationVersion === undefined
           ? {}
-          : {
-              expectedConfigurationVersion: activation.expectedConfigurationVersion,
-            }),
+          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
         activateConfiguration: activation?.activateConfiguration ?? false,
         onVerifiedInstallation: (input) => {
           if (this.slackInstallationHandler === undefined) {
@@ -336,9 +266,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           slot.active.acceptingEvents = false;
           await stopSources(slot.active);
         }
-      },
-      drain: async () => {
-        await Promise.all([...slot.retained.values()].map(drainSources));
       },
     };
     const connectionActions = Object.fromEntries(
@@ -454,10 +381,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                     throw new Error(`${provider} output unavailable`);
                   }
                   return this.withLease(active, () =>
-                    output.execute({
-                      ...input,
-                      outputContext: unmarkContext(input.outputContext),
-                    }),
+                    output.execute({ ...input, outputContext: unmarkContext(input.outputContext) }),
                   );
                 },
               },
@@ -743,9 +667,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       );
       const restored: ActiveRegistration = {
         provider,
-        configuration,
-        identity: slot.identity,
-        configurationVersion: snapshot.configurationVersion,
         snapshotId: `${provider}:${snapshot.configurationVersion}:callback`,
         registration,
         triggers: [],
@@ -755,9 +676,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         longLeases: new Set(),
         retiring: false,
         retirement: undefined,
-        ...publicationGate(),
       };
-      restored.resolvePublication(true);
       return restored;
     } catch (error) {
       reportFailure(error, {
@@ -799,43 +718,30 @@ function eventNames(provider: Provider): TriggerProvider["eventNames"] {
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
   if (active.sourcesStarted) return;
-  // A source can acquire its background resource before readiness rejects. Own that partial start
-  // immediately so candidate.close() and application shutdown always stop it.
-  active.sourcesStarted = true;
-  for (const source of active.registration.sources) {
-    await source.start(runtimeHandler(active, handler));
+  const started: TriggerSource[] = [];
+  try {
+    for (const source of active.registration.sources) {
+      await source.start((trigger) =>
+        active.acceptingEvents
+          ? handler(trigger)
+          : Promise.reject(new Error("provider source was retired")),
+      );
+      started.push(source);
+    }
+    active.sourcesStarted = true;
+  } catch (error) {
+    const cleanup = await Promise.allSettled(started.toReversed().map((source) => source.stop()));
+    for (const failure of cleanup) {
+      if (failure.status === "rejected") {
+        reportFailure(failure.reason, {
+          operation: "provider_runtime.start_sources.cleanup",
+          component: "provider_runtime",
+          provider: active.provider,
+        });
+      }
+    }
+    throw error;
   }
-}
-
-function runtimeHandler(active: ActiveRegistration, handler: TriggerHandler): TriggerHandler {
-  const unavailable = () => Promise.reject(new Error("provider candidate is not accepting events"));
-  const dispatch: TriggerHandler = (trigger) =>
-    active.acceptingEvents
-      ? handler(trigger)
-      : active.publication.then((published) =>
-          published && active.acceptingEvents ? handler(trigger) : unavailable(),
-        );
-  dispatch.admit = () => {
-    if (active.retiring) return unavailable;
-    const publication = active.publication;
-    return (trigger) =>
-      publication.then((published) => (published ? handler(trigger) : unavailable()));
-  };
-  return dispatch;
-}
-
-function publicationGate(): Pick<ActiveRegistration, "publication" | "resolvePublication"> {
-  let resolvePublication: ((published: boolean) => void) | undefined;
-  const publication = new Promise<boolean>((resolve) => {
-    resolvePublication = resolve;
-  });
-  return {
-    publication,
-    resolvePublication(published) {
-      resolvePublication?.(published);
-      resolvePublication = undefined;
-    },
-  };
 }
 
 async function stopSources(active: ActiveRegistration): Promise<void> {
@@ -848,27 +754,13 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
-async function drainSources(active: ActiveRegistration): Promise<void> {
-  await Promise.all(active.registration.sources.map(async (source) => source.drain?.()));
-}
-
-async function closeUnpublished(active: ActiveRegistration): Promise<void> {
-  await stopSources(active);
-  await drainSources(active);
-}
-
 async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
   try {
     await stopSources(active);
-    await drainSources(active);
   } catch (error) {
     reportFailure(
       error,
-      {
-        operation: "provider_runtime.retire",
-        component: "provider_runtime",
-        provider,
-      },
+      { operation: "provider_runtime.retire", component: "provider_runtime", provider },
       { logger, kind: "internal" },
     );
   }

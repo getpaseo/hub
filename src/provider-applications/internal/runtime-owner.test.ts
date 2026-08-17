@@ -62,7 +62,7 @@ describe("dynamic provider runtime", () => {
     second.publish();
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Inbound delivery stops at publication; leased outputs stay alive until their execution ends.
+    // Inbound delivery retires immediately; the old execution keeps its leased trigger/output.
     assert.deepEqual(stopped, ["A1"]);
 
     await trigger.onAgentExecutionCompleted?.(oldMatch!.triggerContext, oldMatch!.outputContext, {
@@ -405,7 +405,7 @@ describe("dynamic provider runtime", () => {
     assert.deepEqual(await response.json(), { callbackFor: "old" });
   });
 
-  it("admits source events only from the atomically published registration", async () => {
+  it("rejects unpublished and retired source events so the provider retries them", async () => {
     const sourceHandlers = new Map<string, TriggerHandler>();
     const accepted: string[] = [];
     const runtime = new DynamicProviderRuntime({
@@ -440,9 +440,8 @@ describe("dynamic provider runtime", () => {
       1,
     );
     await first.start();
-    const beforeFirst = sourceHandlers.get("one")!(durableEvent("before-first-publish"));
+    await assert.rejects(sourceHandlers.get("one")!(durableEvent("before-first-publish")));
     first.publish();
-    await beforeFirst;
     await sourceHandlers.get("one")!(durableEvent("first-active"));
     const second = await runtime.prepare(
       "slack",
@@ -452,18 +451,12 @@ describe("dynamic provider runtime", () => {
       2,
     );
     await second.start();
-    const beforeSecond = sourceHandlers.get("two")!(durableEvent("before-second-publish"));
+    await assert.rejects(sourceHandlers.get("two")!(durableEvent("before-second-publish")));
     second.publish();
-    await beforeSecond;
-    await assert.rejects(() => sourceHandlers.get("one")!(durableEvent("retired")));
+    await assert.rejects(sourceHandlers.get("one")!(durableEvent("retired")));
     await sourceHandlers.get("two")!(durableEvent("second-active"));
 
-    assert.deepEqual(accepted, [
-      "before-first-publish",
-      "first-active",
-      "before-second-publish",
-      "second-active",
-    ]);
+    assert.deepEqual(accepted, ["first-active", "second-active"]);
   });
 });
 

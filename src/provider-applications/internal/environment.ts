@@ -64,44 +64,43 @@ function slackEnvironment(
   );
   if (!supplied) return undefined;
 
+  const socketComplete =
+    appId !== undefined &&
+    appToken !== undefined &&
+    clientId === undefined &&
+    clientSecret === undefined &&
+    signingSecret === undefined;
+  if (transport === "socket" && socketComplete) {
+    return { provider: "slack", transport, appId, appToken };
+  }
   if (transport === "socket") {
-    if (
-      appId !== undefined &&
-      appToken !== undefined &&
-      clientId === undefined &&
-      clientSecret === undefined &&
-      signingSecret === undefined
-    ) {
-      return { provider: "slack", transport, appId, appToken };
-    }
     throw new Error(
       "Slack environment configuration for Socket Mode requires exactly SLACK_TRANSPORT=socket, SLACK_APP_ID, and SLACK_APP_TOKEN.",
     );
   }
 
-  if (transport === "webhook" || transport === undefined) {
-    if (
-      appId !== undefined &&
-      appToken === undefined &&
-      clientId !== undefined &&
-      clientSecret !== undefined &&
-      signingSecret !== undefined
-    ) {
-      return {
-        provider: "slack",
-        transport: "webhook",
-        appId,
-        clientId,
-        clientSecret,
-        signingSecret,
-      };
-    }
-    throw new Error(
-      "Slack environment configuration for Webhooks requires SLACK_APP_ID, SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_SIGNING_SECRET.",
-    );
+  if (transport !== undefined && transport !== "webhook") {
+    throw new Error("Slack environment configuration has an unknown SLACK_TRANSPORT value.");
   }
-
-  throw new Error("Slack environment configuration has an unknown SLACK_TRANSPORT value.");
+  if (
+    appId !== undefined &&
+    appToken === undefined &&
+    clientId !== undefined &&
+    clientSecret !== undefined &&
+    signingSecret !== undefined
+  ) {
+    return {
+      provider: "slack",
+      transport: "webhook",
+      appId,
+      clientId,
+      clientSecret,
+      signingSecret,
+    };
+  }
+  throw new Error(
+    "Slack environment configuration for Webhooks requires SLACK_APP_ID, SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, and SLACK_SIGNING_SECRET.",
+  );
 }
 
 function discordEnvironment(
