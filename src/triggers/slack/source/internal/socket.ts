@@ -16,6 +16,11 @@ import {
   SlackSocketOpenResponseSchema,
   type SlackSocketEnvelope,
 } from "./socket-protocol.js";
+import {
+  classifySlackOpenFailure,
+  slackActionPolicy,
+  type SlackActionReason,
+} from "../health-policy.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
 const DEFAULT_READINESS_TIMEOUT_MS = 5_000;
@@ -48,13 +53,6 @@ class SlackSocketReadinessError extends Error {
   }
 }
 
-type SlackSocketActionReason =
-  | "appTokenRejected"
-  | "appAccessDenied"
-  | "appIdentityMismatch"
-  | "socketModeOff"
-  | "connectionLimit";
-
 class SlackSocketOpenError extends Error {
   constructor(
     readonly slackError: string,
@@ -77,7 +75,7 @@ export type SlackDeliveryStatus =
     }
   | {
       state: "actionNeeded";
-      reason: SlackSocketActionReason;
+      reason: SlackActionReason;
       since: Date;
     }
   | { state: "stopped" };
@@ -100,6 +98,11 @@ export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
   connectTimeoutMs?: number;
   helloTimeoutMs?: number;
   shutdownTimeoutMs?: number;
+  recordWorkspaceDelivery?: (
+    teamId: string,
+    delayed: boolean,
+    providerObservedAt: Date,
+  ) => Promise<void>;
 }
 
 export function createSlackSocketSource(options: SlackSocketSourceOptions): SlackSocketSource {
@@ -449,6 +452,11 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       const payloadType = objectString(envelope.payload, "type");
       if (payloadType === "app_rate_limited") {
         const teamId = objectString(envelope.payload, "team_id") ?? "workspace";
+        await options.recordWorkspaceDelivery?.(
+          teamId,
+          true,
+          slackObservationTime(envelope.payload, "minute_rate_limited", now()),
+        );
         if (!delayedWorkspaces.has(teamId)) {
           delayedWorkspaces.set(teamId, now());
           publishConnectedStatus();
@@ -489,12 +497,15 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         options.appToken,
         claimSocketFailure,
       );
-      if (
-        acknowledged &&
-        deliveredTeamId !== undefined &&
-        delayedWorkspaces.delete(deliveredTeamId) &&
-        connectedStatus !== undefined
-      ) {
+      if (acknowledged && deliveredTeamId !== undefined) {
+        await options.recordWorkspaceDelivery?.(
+          deliveredTeamId,
+          false,
+          slackObservationTime(envelope.payload, "event_time", now()),
+        );
+        const recoveredLocally = delayedWorkspaces.delete(deliveredTeamId);
+        if (!recoveredLocally) return;
+        if (connectedStatus === undefined) return;
         connectedStatus = { ...connectedStatus, since: now() };
         publishConnectedStatus();
       }
@@ -558,8 +569,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       if (
         supervisor === undefined ||
         (deliveryStatus.state === "actionNeeded" &&
-          (deliveryStatus.reason === "socketModeOff" ||
-            deliveryStatus.reason === "connectionLimit"))
+          slackActionPolicy(deliveryStatus.reason).canRetry)
       ) {
         supervisor = supervise();
       }
@@ -585,10 +595,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     else rejectReady?.(error);
   }
 
-  function reportConnectionFailure(
-    error: unknown,
-    action: SlackSocketActionReason | undefined,
-  ): void {
+  function reportConnectionFailure(error: unknown, action: SlackActionReason | undefined): void {
     const episode = connectionEpisode(error, action);
     if (connectionFailureEpisode === episode) return;
     connectionFailureEpisode = episode;
@@ -684,22 +691,17 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
 
 function connectionFailureKind(
   error: unknown,
-  action: SlackSocketActionReason | undefined,
+  action: SlackActionReason | undefined,
 ): "authentication" | "validation" | "network" {
-  if (action === "appTokenRejected") return "authentication";
-  if (action === "appIdentityMismatch" || action === "appAccessDenied") return "validation";
+  if (action !== undefined) return slackActionPolicy(action).failureKind;
   if (error instanceof SlackSocketProtocolError) return "validation";
   return "network";
 }
 
 function connectionOperation(
-  action: SlackSocketActionReason | undefined,
+  action: SlackActionReason | undefined,
 ): "slack.socket.authenticate" | "slack.socket.configure" | "slack.socket.connect" {
-  if (action === "appIdentityMismatch" || action === "appAccessDenied") {
-    return "slack.socket.configure";
-  }
-  if (action === "appTokenRejected") return "slack.socket.authenticate";
-  return "slack.socket.connect";
+  return action === undefined ? "slack.socket.connect" : slackActionPolicy(action).operation;
 }
 
 function closeResult(
@@ -765,7 +767,7 @@ async function sendAck(
   }
 }
 
-function connectionAction(error: unknown): SlackSocketActionReason | undefined {
+function connectionAction(error: unknown): SlackActionReason | undefined {
   if (error instanceof SlackSocketProtocolError && error.reason === "appIdentityMismatch") {
     return "appIdentityMismatch";
   }
@@ -776,46 +778,11 @@ function connectionAction(error: unknown): SlackSocketActionReason | undefined {
 /** Slack's documented apps.connections.open errors, classified once at the response boundary.
  * Unknown errors stay retryable because Slack explicitly reserves them for outages and other
  * unexpected processing failures. */
-function classifyOpenFailure(slackError: string): SlackSocketActionReason | undefined {
-  if (OPEN_CREDENTIAL_ERRORS.has(slackError)) return "appTokenRejected";
-  if (OPEN_ACCESS_ERRORS.has(slackError)) return "appAccessDenied";
-  return undefined;
+function classifyOpenFailure(slackError: string): SlackActionReason | undefined {
+  return classifySlackOpenFailure(slackError);
 }
 
-const OPEN_CREDENTIAL_ERRORS: ReadonlySet<string> = new Set([
-  "account_inactive",
-  "invalid_auth",
-  "missing_args",
-  "missing_scope",
-  "not_allowed_token_type",
-  "not_authed",
-  "token_expired",
-  "token_revoked",
-]);
-
-const OPEN_ACCESS_ERRORS: ReadonlySet<string> = new Set([
-  "access_denied",
-  "accesslimited",
-  "deprecated_endpoint",
-  "ekm_access_denied",
-  "enterprise_is_restricted",
-  "forbidden_team",
-  "insecure_request",
-  "invalid_arg_name",
-  "invalid_arguments",
-  "invalid_array_arg",
-  "invalid_charset",
-  "invalid_form_data",
-  "invalid_post_type",
-  "method_deprecated",
-  "missing_post_type",
-  "no_permission",
-  "request_timeout",
-  "team_access_not_granted",
-  "two_factor_setup_required",
-]);
-
-function connectionEpisode(error: unknown, action: SlackSocketActionReason | undefined): string {
+function connectionEpisode(error: unknown, action: SlackActionReason | undefined): string {
   if (error instanceof SlackSocketOpenError) {
     return `open:${error.status}:${error.slackError}:${action ?? "transient"}`;
   }
@@ -853,6 +820,13 @@ function objectString(value: unknown, key: string): string | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const candidate: unknown = Reflect.get(value, key);
   return typeof candidate === "string" ? candidate : undefined;
+}
+
+function slackObservationTime(value: unknown, key: string, fallback: Date): Date {
+  if (value === null || typeof value !== "object") return fallback;
+  const seconds: unknown = Reflect.get(value, key);
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return fallback;
+  return new Date(seconds * 1_000);
 }
 
 function rawDataText(data: RawData): string {

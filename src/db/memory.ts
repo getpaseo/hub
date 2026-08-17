@@ -1024,6 +1024,8 @@ class MemoryDatabase implements Database {
     );
   }
 
+  async recordSlackWorkspaceDelivery(): Promise<void> {}
+
   async persistManualEvent(input: PersistManualEventInput) {
     const existing = this.findReceiptId(
       input.organizationId,

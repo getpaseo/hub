@@ -374,7 +374,10 @@ function environmentAppVariables(
       scenario === "slack-startup-server-error" ||
       scenario === "slack-startup-hung-body" ||
       scenario === "slack-app-identity-mismatch" ||
-      scenario === "slack-app-access-denied"
+      scenario === "slack-app-access-denied" ||
+      scenario === "slack-network-restricted" ||
+      scenario === "slack-token-rejected" ||
+      scenario === "slack-hub-configuration-invalid"
     ) {
       variables["SLACK_TRANSPORT"] = "socket";
       variables["SLACK_APP_TOKEN"] =

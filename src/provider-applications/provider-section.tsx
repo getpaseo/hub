@@ -21,6 +21,7 @@ import { Skeleton } from "../components/ui/skeleton.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import type { Result } from "../contract/respond.js";
 import { cn } from "../lib/utils.js";
+import { slackActionPolicy } from "../triggers/slack/source/health-policy.js";
 import {
   guideFields,
   guideGroups,
@@ -688,24 +689,13 @@ function slackSocketEventState(
     return <>Reconnecting</>;
   }
   if (delivery?.state === "actionNeeded") {
-    if (delivery.reason === "socketModeOff") return <>Turn on Socket Mode in Slack, then retry</>;
-    if (delivery.reason === "connectionLimit") return <>Stop extra Hub servers or use Webhooks</>;
-    if (delivery.reason === "appIdentityMismatch") {
-      return <>Use the App ID and app-level token from the same Slack app</>;
-    }
-    if (delivery.reason === "appAccessDenied") {
-      return <>Check that this Slack app can use Socket Mode in its workspace</>;
-    }
-    return <>Replace the app-level token</>;
+    return slackActionPolicy(delivery.reason).operatorAction;
   }
   return undefined;
 }
 
 function canRetrySlackDelivery(delivery: ProviderApplicationView["deliveryStatus"]): boolean {
-  return (
-    delivery?.state === "actionNeeded" &&
-    (delivery.reason === "socketModeOff" || delivery.reason === "connectionLimit")
-  );
+  return delivery?.state === "actionNeeded" && slackActionPolicy(delivery.reason).canRetry;
 }
 
 /**

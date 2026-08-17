@@ -87,6 +87,18 @@ export class BrowserSlackSocketFixture {
           response.end(JSON.stringify({ ok: false, error: "forbidden_team" }));
           return;
         }
+        if (this.scenario === "slack-network-restricted") {
+          response.end(JSON.stringify({ ok: false, error: "accesslimited" }));
+          return;
+        }
+        if (this.scenario === "slack-token-rejected") {
+          response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
+          return;
+        }
+        if (this.scenario === "slack-hub-configuration-invalid") {
+          response.end(JSON.stringify({ ok: false, error: "invalid_arguments" }));
+          return;
+        }
         if (authorization !== `Bearer ${FIXTURE_SLACK_SOCKET_CREDENTIALS.appToken}`) {
           response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
           return;
@@ -175,7 +187,7 @@ export class BrowserSlackSocketFixture {
             payload: {
               type: "app_rate_limited",
               team_id: "T-ACME",
-              minute_rate_limited: Math.floor(Date.now() / 60_000),
+              minute_rate_limited: Math.floor(Date.now() / 1_000),
             },
           }),
         );

@@ -29,6 +29,11 @@ export interface CreateSlackEventSourceOptions {
     receivedAt: Date;
     dropReason?: ProviderEventDropReasonCode;
   }): Promise<ProviderEventAcceptance>;
+  recordWorkspaceDelivery?(
+    teamId: string,
+    delayed: boolean,
+    providerObservedAt: Date,
+  ): Promise<void>;
   socket?: Pick<
     SlackSocketSourceOptions,
     | "apiUrl"
@@ -63,6 +68,12 @@ export function createSlackEventSource(options: CreateSlackEventSourceOptions): 
     appToken: options.configuration.appToken,
     configurationVersion: options.configurationVersion,
     accept: (input) => options.accept(input),
+    ...(options.recordWorkspaceDelivery === undefined
+      ? {}
+      : {
+          recordWorkspaceDelivery: (teamId, delayed, providerObservedAt) =>
+            options.recordWorkspaceDelivery!(teamId, delayed, providerObservedAt),
+        }),
     ...options.socket,
   });
   return {

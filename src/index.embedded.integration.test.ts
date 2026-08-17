@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, it } from "vitest";
@@ -10,6 +10,7 @@ import { createLogger } from "./logger.js";
 import { assertOneFailure, FailureLogStream } from "./test-utils/failure-logs.js";
 import { createServer, type Server } from "node:http";
 import { WebSocketServer } from "ws";
+import { parse } from "dotenv";
 
 const ENVIRONMENT_NAMES = [
   "DATABASE_URL",
@@ -64,6 +65,23 @@ it("opens first-run setup when nothing is configured and no data exists", async 
 
   assert.equal(state.status, 200);
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+});
+
+it("starts the documented Docker quickstart from the shipped environment template", async () => {
+  const template = parse(await readFile(join(originalDirectory, ".env.example")));
+  const previous = new Map(Object.keys(template).map((name) => [name, process.env[name]]));
+  try {
+    for (const [name, value] of Object.entries(template)) process.env[name] = value;
+    process.env["PASEO_HUB_DATA_DIR"] = join(root, "quickstart-database");
+
+    const runtime = await startProductionRuntime({ environmentSource: "process-only" });
+    const state = await runtime.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
+
+    assert.equal(state.status, 200);
+    assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+  } finally {
+    for (const [name, value] of previous) restoreEnvironment(name, value);
+  }
 });
 
 for (const scenario of ["server-error", "hung-open", "hung-open-body", "missing-hello"] as const) {

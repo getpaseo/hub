@@ -374,20 +374,22 @@ describe("Slack Socket Mode source", () => {
   const credentialErrors = [
     "account_inactive",
     "invalid_auth",
-    "missing_args",
     "missing_scope",
     "not_allowed_token_type",
-    "not_authed",
     "token_expired",
     "token_revoked",
   ] as const;
-  const accessErrors = [
+  const networkErrors = ["accesslimited"] as const;
+  const policyErrors = [
     "access_denied",
-    "accesslimited",
-    "deprecated_endpoint",
     "ekm_access_denied",
     "enterprise_is_restricted",
     "forbidden_team",
+    "team_access_not_granted",
+    "two_factor_setup_required",
+  ] as const;
+  const requestErrors = [
+    "deprecated_endpoint",
     "insecure_request",
     "invalid_arg_name",
     "invalid_arguments",
@@ -396,11 +398,10 @@ describe("Slack Socket Mode source", () => {
     "invalid_form_data",
     "invalid_post_type",
     "method_deprecated",
+    "missing_args",
     "missing_post_type",
-    "no_permission",
+    "not_authed",
     "request_timeout",
-    "team_access_not_granted",
-    "two_factor_setup_required",
   ] as const;
   const transientErrors = [
     "fatal_error",
@@ -414,7 +415,10 @@ describe("Slack Socket Mode source", () => {
 
   it.each([
     ...credentialErrors.map((slackError) => [slackError, "appTokenRejected"] as const),
-    ...accessErrors.map((slackError) => [slackError, "appAccessDenied"] as const),
+    ["no_permission", "appTokenRejected"] as const,
+    ...networkErrors.map((slackError) => [slackError, "networkRestricted"] as const),
+    ...policyErrors.map((slackError) => [slackError, "workspaceAccessDenied"] as const),
+    ...requestErrors.map((slackError) => [slackError, "hubConfigurationInvalid"] as const),
   ])("stops documented permanent open error %s as %s", async (slackError, expectedReason) => {
     const canary = `xapp-permanent-${slackError}-canary`;
     const slack = await startSlackFixture({

@@ -42,7 +42,9 @@ export const PROVIDER_INSTANCE_STATES = [
 export const PROVIDER_INSTANCE_REASONS = [
   "app_token_rejected",
   "app_identity_mismatch",
-  "app_access_denied",
+  "workspace_access_denied",
+  "network_restricted",
+  "hub_configuration_invalid",
   "socket_mode_off",
   "connection_limit",
 ] as const;
@@ -1107,9 +1109,30 @@ export const runtimeProviderInstances = pgTable(
     ),
     check(
       "runtime_provider_instances_reason_check",
-      sql`${table.reason} is null or ${table.reason} in ('app_token_rejected', 'app_identity_mismatch', 'app_access_denied', 'socket_mode_off', 'connection_limit')`,
+      sql`${table.reason} is null or ${table.reason} in ('app_token_rejected', 'app_identity_mismatch', 'workspace_access_denied', 'network_restricted', 'hub_configuration_invalid', 'socket_mode_off', 'connection_limit')`,
     ),
     check("runtime_provider_instances_version_check", sql`${table.configurationVersion} >= 0`),
+  ],
+);
+
+export const slackWorkspaceDeliveryObservations = pgTable(
+  "slack_workspace_delivery_observations",
+  {
+    providerApplicationId: text("provider_application_id").notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
+    teamId: text("team_id").notNull(),
+    delayed: boolean().notNull(),
+    providerObservedAt: timestamp("provider_observed_at", { withTimezone: true }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.providerApplicationId, table.configurationVersion, table.teamId],
+    }),
+    check(
+      "slack_workspace_delivery_observations_version_check",
+      sql`${table.configurationVersion} >= 0`,
+    ),
   ],
 );
 

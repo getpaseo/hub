@@ -1,6 +1,8 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import { reportFailure } from "../../failures/index.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import { slackActionPolicy } from "../../triggers/slack/source/health-policy.js";
+import { PROVIDER_OBSERVATION_LIFETIME_SECONDS } from "./observation-lifetime.js";
 import type {
   ProviderApplicationStore,
   ProviderRuntimeCandidate,
@@ -112,7 +114,6 @@ export function createProviderRuntimeReconciler(options: {
     if (status === undefined || status.state === "stopped") return;
     const state = observationState(status);
     const reason = observationReason(status);
-    const delayedWorkspaces = status.state === "connected" ? (status.delayedWorkspaces ?? []) : [];
     await options.database.query(
       `insert into runtime_provider_instances
          (provider, instance_id, provider_application_id, configuration_version, state, reason,
@@ -131,14 +132,14 @@ export function createProviderRuntimeReconciler(options: {
         published.configurationVersion,
         state,
         reason,
-        JSON.stringify(delayedWorkspaces),
+        "[]",
       ],
     );
     await options.database.query(
       `delete from runtime_provider_instances
        where provider = 'slack' and configuration_version <> $1
-         and observed_at < now() - interval '45 seconds'`,
-      [published.configurationVersion],
+         and observed_at < now() - ($2 * interval '1 second')`,
+      [published.configurationVersion, PROVIDER_OBSERVATION_LIFETIME_SECONDS],
     );
   };
 
@@ -176,9 +177,5 @@ function observationReason(status: SlackDeliveryStatus): string | null {
     return "connection_limit";
   }
   if (status.state !== "actionNeeded") return null;
-  if (status.reason === "socketModeOff") return "socket_mode_off";
-  if (status.reason === "connectionLimit") return "connection_limit";
-  if (status.reason === "appIdentityMismatch") return "app_identity_mismatch";
-  if (status.reason === "appAccessDenied") return "app_access_denied";
-  return "app_token_rejected";
+  return slackActionPolicy(status.reason).persistenceReason;
 }

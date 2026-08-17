@@ -129,6 +129,18 @@ export function createSlackRegistration(
     configuration: { provider: "slack", ...configuration },
     configurationVersion: options.configurationVersion ?? 0,
     accept,
+    ...(database === null
+      ? {}
+      : {
+          recordWorkspaceDelivery: (teamId: string, delayed: boolean, providerObservedAt: Date) =>
+            database.recordSlackWorkspaceDelivery({
+              providerApplicationId: configuration.appId,
+              providerConfigurationVersion: options.configurationVersion ?? 0,
+              teamId,
+              delayed,
+              providerObservedAt,
+            }),
+        }),
     ...slackSocketOptions(options),
   });
   if (database === null) {

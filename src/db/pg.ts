@@ -64,6 +64,7 @@ import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
   AcceptSlackEventInput,
+  RecordSlackWorkspaceDeliveryInput,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -143,6 +144,33 @@ class PgDatabase implements Database {
 
   acceptSlackEvent(input: AcceptSlackEventInput) {
     return this.triggerAcceptance.acceptSlack(input);
+  }
+
+  async recordSlackWorkspaceDelivery(input: RecordSlackWorkspaceDeliveryInput): Promise<void> {
+    // Slack event timestamps describe when events happened, not when Slack delivered them. Database
+    // observation time orders cross-instance delivery evidence; an acknowledged delivery observed
+    // after a rate-limit notice therefore recovers the workspace even when the event itself is older.
+    await this.pool.query(
+      `insert into slack_workspace_delivery_observations
+         (provider_application_id, configuration_version, team_id, delayed, provider_observed_at,
+          observed_at)
+       values ($1, $2, $3, $4, $5, clock_timestamp())
+       on conflict (provider_application_id, configuration_version, team_id) do update set
+         delayed = excluded.delayed,
+         provider_observed_at = excluded.provider_observed_at,
+         observed_at = clock_timestamp()
+       where excluded.observed_at > slack_workspace_delivery_observations.observed_at
+          or (excluded.observed_at = slack_workspace_delivery_observations.observed_at
+              and slack_workspace_delivery_observations.delayed = true
+              and excluded.delayed = false)`,
+      [
+        input.providerApplicationId,
+        input.providerConfigurationVersion,
+        input.teamId,
+        input.delayed,
+        input.providerObservedAt,
+      ],
+    );
   }
 
   persistManualEvent(input: PersistManualEventInput) {

@@ -614,30 +614,66 @@ test("Slack names a mismatched configured app without retry churn", async ({ hub
   }
 });
 
-test("Slack names permanent workspace access denial without reconnect churn", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: OPERATOR,
-    providerScenario: "slack-app-access-denied",
-    environmentApps: ["slack"],
-  });
-  try {
-    const slack = session.surface.slack;
-    await slack.expectStatus("Action needed");
-    await slack.expand();
-    await slack.expectSummary({
-      "App ID": "browser-slack-app",
-      Delivery: "Socket Mode",
-      Events: "Check that this Slack app can use Socket Mode in its workspace",
+for (const failure of [
+  {
+    scenario: "slack-app-access-denied" as const,
+    action: "Allow this Slack app in the workspace or organization, then retry",
+    operation: "slack.socket.configure",
+    retry: true,
+  },
+  {
+    scenario: "slack-network-restricted" as const,
+    action: "Allow this Hub server's network to reach Slack, then retry",
+    operation: "slack.socket.connect",
+    retry: true,
+  },
+  {
+    scenario: "slack-token-rejected" as const,
+    action:
+      "Allow this Hub server's IP for the app-level token, then replace the token if Slack still rejects it",
+    operation: "slack.socket.authenticate",
+    retry: false,
+  },
+  {
+    scenario: "slack-hub-configuration-invalid" as const,
+    action: "Update Hub, then reconnect this Slack app",
+    operation: "slack.socket.configure",
+    retry: false,
+  },
+]) {
+  test(`Slack gives accurate action for ${failure.scenario} without reconnect churn`, async ({
+    hub,
+  }) => {
+    const session = await hub.openAppSetup({
+      account: OPERATOR,
+      providerScenario: failure.scenario,
+      environmentApps: ["slack"],
     });
-    await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
-    await expect
-      .poll(() => recordsFor(session.application.logs(), "slack.socket.configure").length)
-      .toBe(1);
-    expect(session.application.logs()).not.toContain("xapp-browser-fixture");
-  } finally {
-    await session.close();
-  }
-});
+    try {
+      const slack = session.surface.slack;
+      await slack.expectStatus("Action needed");
+      await slack.expand();
+      await slack.expectSummary({
+        "App ID": "browser-slack-app",
+        Delivery: "Socket Mode",
+        Events: failure.action,
+      });
+      await expect(slack.body().getByRole("button", { name: "Retry", exact: true })).toHaveCount(
+        failure.retry ? 1 : 0,
+      );
+      await session.surface.shoot(
+        SHOTS,
+        `apps-07e-${failure.scenario.replace("slack-", "")}.desktop`,
+      );
+      await expect
+        .poll(() => recordsFor(session.application.logs(), failure.operation).length)
+        .toBe(1);
+      expect(session.application.logs()).not.toContain("xapp-browser-fixture");
+    } finally {
+      await session.close();
+    }
+  });
+}
 
 test("Slack keeps transport connected while naming the delayed workspace", async ({ hub }) => {
   const session = await hub.openAppSetup({

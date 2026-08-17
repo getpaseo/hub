@@ -538,6 +538,14 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
   teamId: string;
 }
 
+export interface RecordSlackWorkspaceDeliveryInput {
+  providerApplicationId: string;
+  providerConfigurationVersion: number;
+  teamId: string;
+  delayed: boolean;
+  providerObservedAt: Date;
+}
+
 export interface PersistManualEventInput extends InsertProviderEventInput {
   organizationId: string;
   projectId: string;
@@ -1104,6 +1112,7 @@ export interface Database {
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
+  recordSlackWorkspaceDelivery(input: RecordSlackWorkspaceDeliveryInput): Promise<void>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,

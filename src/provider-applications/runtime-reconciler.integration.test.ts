@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type RawData } from "ws";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createDatabase } from "../db/pg.js";
 import {
   embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
@@ -23,6 +24,7 @@ import { createProviderApplicationInventory } from "./internal/inventory.js";
 import { createProviderRuntimeReconciler } from "./internal/runtime-reconciler.js";
 import { DynamicProviderRuntime } from "./internal/runtime-owner.js";
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
+import { createSlackEventSource } from "../triggers/slack/source/index.js";
 import type { TriggerSource } from "../triggers/index.js";
 
 const roots: string[] = [];
@@ -211,130 +213,182 @@ describe("provider runtime reconciliation", () => {
   });
 
   it.each(["PGlite", "PostgreSQL"] as const)(
-    "keeps mixed-instance transport connected while workspace degradation recovers in %s",
+    "orders shared workspace degradation and recovery independently of instance expiry in %s",
     async (engine) => {
       const fixture = await databaseFixture(engine);
       try {
         await fixture.bundle.runtime.migrate();
-        const stored = socketApplication(1);
-        await activate(fixture.bundle, stored);
-        let firstStatus: SlackDeliveryStatus = {
-          state: "connected" as const,
-          since: new Date(),
-          connectionCount: 1,
-          delayedWorkspaces: [{ teamId: "T1", since: new Date() }],
-        };
-        const firstRuntime = recordingRuntime([1], () => firstStatus);
-        const secondRuntime = recordingRuntime([1]);
-        const first = createProviderRuntimeReconciler({
-          database: fixture.bundle.runtime,
-          store: readOnlyStore(() => stored),
-          runtime: firstRuntime.owner,
-          callbackOrigin: "https://hub.example.test",
-          instanceId: "hub-rate-limited",
-          environmentManaged: false,
-          intervalMs: 5,
-        });
-        const second = createProviderRuntimeReconciler({
-          database: fixture.bundle.runtime,
-          store: readOnlyStore(() => stored),
-          runtime: secondRuntime.owner,
-          callbackOrigin: "https://hub.example.test",
-          instanceId: "hub-connected",
-          environmentManaged: false,
-          intervalMs: 5,
-        });
-
-        first.start();
-        second.start();
-        const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
-        await eventually(async () => {
-          const observation = await fixture.bundle.runtime.query<{ state: string }>(
-            `select state from runtime_provider_instances
-           where provider = 'slack' and instance_id = 'hub-rate-limited'`,
-          );
-          return observation.rows[0]?.state === "connected";
-        });
-        await eventually(async () => {
-          const status = await inventory.slackDeliveryStatus?.("A1", 1);
-          return (
-            status?.state === "connected" &&
-            status.connectionCount === 2 &&
-            status.delayedWorkspaces?.[0]?.teamId === "T1"
-          );
-        });
-        firstStatus = { state: "connected", since: new Date(), connectionCount: 1 };
-        await eventually(async () => {
-          const status = await inventory.slackDeliveryStatus?.("A1", 1);
-          return status?.state === "connected" && status.connectionCount === 2;
-        });
-
-        await Promise.all([first.stop(), second.stop()]);
-      } finally {
-        await fixture.close();
-      }
-    },
-  );
-
-  it.each(["PGlite", "PostgreSQL"] as const)(
-    "isolates, expires, and recovers persisted workspace degradation in %s",
-    async (engine) => {
-      const fixture = await databaseFixture(engine);
-      try {
-        await fixture.bundle.runtime.migrate();
-        const delayedAt = new Date().toISOString();
+        const database = createDatabase(fixture.bundle.runtime, fixture.bundle.locks);
         await fixture.bundle.runtime.query(
           `insert into runtime_provider_instances
              (provider, instance_id, provider_application_id, configuration_version, state,
               reason, delayed_workspaces, observed_at)
            values
              ('slack', 'hub-a-connected', 'A1', 1, 'connected', null, '[]'::jsonb, now()),
-             ('slack', 'hub-a-delayed', 'A1', 1, 'connected', null, $1::jsonb, now()),
-             ('slack', 'hub-b-delayed', 'A2', 1, 'connected', null, $2::jsonb, now())`,
-          [
-            JSON.stringify([{ teamId: "T1", since: delayedAt }]),
-            JSON.stringify([{ teamId: "T2", since: delayedAt }]),
-          ],
+             ('slack', 'hub-a-stale', 'A1', 1, 'connected', null, '[]'::jsonb,
+                now() - interval '46 seconds'),
+             ('slack', 'hub-b-connected', 'A2', 1, 'connected', null, '[]'::jsonb, now())`,
         );
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A1",
+          providerConfigurationVersion: 1,
+          teamId: "T1",
+          delayed: true,
+          providerObservedAt: new Date("2026-01-01T00:00:00Z"),
+        });
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A1",
+          providerConfigurationVersion: 1,
+          teamId: "T2",
+          delayed: true,
+          providerObservedAt: new Date("2026-01-01T00:00:01Z"),
+        });
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A2",
+          providerConfigurationVersion: 1,
+          teamId: "T9",
+          delayed: true,
+          providerObservedAt: new Date("2026-01-01T00:00:03Z"),
+        });
         const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
 
         let first = await inventory.slackDeliveryStatus?.("A1", 1);
-        let second = await inventory.slackDeliveryStatus?.("A2", 1);
+        const second = await inventory.slackDeliveryStatus?.("A2", 1);
         assert.equal(first?.state, "connected");
-        assert.equal(first?.state === "connected" ? first.connectionCount : undefined, 2);
-        assert.deepEqual(
-          first?.state === "connected"
-            ? first.delayedWorkspaces?.map((workspace) => workspace.teamId)
-            : undefined,
-          ["T1"],
-        );
-        assert.deepEqual(
-          second?.state === "connected"
-            ? second.delayedWorkspaces?.map((workspace) => workspace.teamId)
-            : undefined,
-          ["T2"],
-        );
+        assert.equal(first?.state === "connected" ? first.connectionCount : undefined, 1);
+        assert.deepEqual(delayedTeamIds(first), ["T1", "T2"]);
+        assert.deepEqual(delayedTeamIds(second), ["T9"]);
 
-        await fixture.bundle.runtime.query(
-          `update runtime_provider_instances set delayed_workspaces = '[]'::jsonb
-           where instance_id = 'hub-a-delayed'`,
-        );
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A1",
+          providerConfigurationVersion: 1,
+          teamId: "T1",
+          delayed: false,
+          providerObservedAt: new Date("2026-01-01T00:00:03Z"),
+        });
         first = await inventory.slackDeliveryStatus?.("A1", 1);
-        assert.equal(first?.state === "connected" ? first.delayedWorkspaces : undefined, undefined);
-
-        await fixture.bundle.runtime.query(
-          `update runtime_provider_instances
-           set delayed_workspaces = $1::jsonb, observed_at = now() - interval '46 seconds'
-           where instance_id = 'hub-a-delayed'`,
-          [JSON.stringify([{ teamId: "T1", since: delayedAt }])],
-        );
+        assert.deepEqual(delayedTeamIds(first), ["T2"]);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A1",
+          providerConfigurationVersion: 1,
+          teamId: "T1",
+          delayed: true,
+          providerObservedAt: new Date("2026-01-01T00:00:03Z"),
+        });
         first = await inventory.slackDeliveryStatus?.("A1", 1);
-        assert.equal(first?.state === "connected" ? first.delayedWorkspaces : undefined, undefined);
+        assert.deepEqual(delayedTeamIds(first), ["T1", "T2"]);
+        await database.recordSlackWorkspaceDelivery({
+          providerApplicationId: "A1",
+          providerConfigurationVersion: 1,
+          teamId: "T1",
+          delayed: false,
+          providerObservedAt: new Date("2025-01-01T00:00:00Z"),
+        });
+        first = await inventory.slackDeliveryStatus?.("A1", 1);
+        assert.deepEqual(delayedTeamIds(first), ["T2"]);
       } finally {
         await fixture.close();
       }
     },
   );
+
+  it("shares acknowledged workspace recovery across two real PostgreSQL runtimes and WebSockets", async () => {
+    const fixture = await databaseFixture("PostgreSQL");
+    const secondBundle = await fixture.connect!();
+    const slack = await countingSlackFixture();
+    let firstSource: ReturnType<typeof createSlackEventSource> | undefined;
+    let secondSource: ReturnType<typeof createSlackEventSource> | undefined;
+    let dispatches = 0;
+    try {
+      await fixture.bundle.runtime.migrate();
+      const firstDatabase = createDatabase(fixture.bundle.runtime, fixture.bundle.locks);
+      const secondDatabase = createDatabase(secondBundle.runtime, secondBundle.locks);
+      await fixture.bundle.runtime.query(
+        `insert into runtime_provider_instances
+           (provider, instance_id, provider_application_id, configuration_version, state,
+            reason, delayed_workspaces, observed_at)
+         values
+           ('slack', 'hub-real-a', 'A1', 1, 'connected', null, '[]'::jsonb, now()),
+           ('slack', 'hub-real-b', 'A1', 1, 'connected', null, '[]'::jsonb, now())`,
+      );
+      const source = (database: typeof firstDatabase) =>
+        createSlackEventSource({
+          configuration: {
+            provider: "slack",
+            transport: "socket",
+            appId: "A1",
+            appToken: "xapp-shared-observation-canary",
+          },
+          configurationVersion: 1,
+          socket: { apiUrl: slack.openUrl },
+          recordWorkspaceDelivery: (teamId, delayed, providerObservedAt) =>
+            database.recordSlackWorkspaceDelivery({
+              providerApplicationId: "A1",
+              providerConfigurationVersion: 1,
+              teamId,
+              delayed,
+              providerObservedAt,
+            }),
+          accept: (input) =>
+            Promise.resolve({
+              status: "accepted" as const,
+              receiptId: `receipt-${input.deliveryId}`,
+              events: [
+                {
+                  providerEventReceiptId: `receipt-${input.deliveryId}`,
+                  organizationId: "org",
+                  projectId: "project",
+                  configurationRevisionId: "revision",
+                  deliveryId: input.deliveryId,
+                  source: "slack.mention",
+                  payload: input.payload,
+                  receivedAt: input.receivedAt,
+                  connectionId: null,
+                  resourceId: input.teamId,
+                },
+              ],
+            }),
+        });
+      firstSource = source(firstDatabase);
+      secondSource = source(secondDatabase);
+      await Promise.all([
+        firstSource.source.start(() => {
+          dispatches += 1;
+          return Promise.resolve();
+        }),
+        secondSource.source.start(() => {
+          dispatches += 1;
+          return Promise.resolve();
+        }),
+      ]);
+      await slack.waitForConnections(2);
+
+      slack.send(0, rateLimitedEnvelope("limited-t1", "T1"));
+      slack.send(0, rateLimitedEnvelope("limited-t2", "T2"));
+      await slack.waitForAck("limited-t1");
+      await slack.waitForAck("limited-t2");
+      slack.send(1, mentionEnvelope("recovered-t1", "event-t1", "T1"));
+      await slack.waitForAck("recovered-t1");
+      assert.equal(dispatches, 1);
+
+      const status = await createProviderApplicationInventory(
+        secondBundle.runtime,
+      ).slackDeliveryStatus?.("A1", 1);
+      assert.deepEqual(
+        status?.state === "connected"
+          ? status.delayedWorkspaces?.map((workspace) => workspace.teamId)
+          : undefined,
+        ["T2"],
+      );
+    } finally {
+      await firstSource?.source.stop();
+      await secondSource?.source.stop();
+      await slack.close();
+      await secondBundle.runtime.close();
+      await fixture.close();
+    }
+  });
 
   it("persists an app identity action and clears it after corrected runtime health", async () => {
     const fixture = await databaseFixture("PGlite");
@@ -384,7 +438,7 @@ describe("provider runtime reconciliation", () => {
       await activate(fixture.bundle, stored);
       const runtime = recordingRuntime([1], () => ({
         state: "actionNeeded",
-        reason: "appAccessDenied",
+        reason: "workspaceAccessDenied",
         since: new Date(),
       }));
       const reconciler = createProviderRuntimeReconciler({
@@ -401,7 +455,7 @@ describe("provider runtime reconciliation", () => {
       reconciler.start();
       await eventually(async () => {
         const delivery = await inventory.slackDeliveryStatus?.("A1", 1);
-        return delivery?.state === "actionNeeded" && delivery.reason === "appAccessDenied";
+        return delivery?.state === "actionNeeded" && delivery.reason === "workspaceAccessDenied";
       });
       await reconciler.stop();
     } finally {
@@ -548,6 +602,9 @@ function operatorAuth(): AuthServer {
 async function countingSlackFixture(): Promise<{
   openUrl: string;
   connectionCount(): number;
+  waitForConnections(count: number): Promise<void>;
+  send(index: number, payload: unknown): void;
+  waitForAck(envelopeId: string): Promise<void>;
   close(): Promise<void>;
 }> {
   const server = createServer((_request, response) => {
@@ -556,6 +613,8 @@ async function countingSlackFixture(): Promise<{
   });
   const sockets = new WebSocketServer({ noServer: true });
   let opened = 0;
+  const clients: import("ws").WebSocket[] = [];
+  const acknowledgements = new Set<string>();
   server.on("upgrade", (request, socket, head) => {
     sockets.handleUpgrade(request, socket, head, (webSocket) => {
       sockets.emit("connection", webSocket);
@@ -563,6 +622,14 @@ async function countingSlackFixture(): Promise<{
   });
   sockets.on("connection", (socket) => {
     opened += 1;
+    clients.push(socket);
+    socket.on("message", (data) => {
+      const value: unknown = JSON.parse(socketFrameText(data));
+      if (value !== null && typeof value === "object") {
+        const envelopeId: unknown = Reflect.get(value, "envelope_id");
+        if (typeof envelopeId === "string") acknowledgements.add(envelopeId);
+      }
+    });
     socket.send(
       JSON.stringify({ type: "hello", connection_info: { app_id: "A1" }, num_connections: 1 }),
     );
@@ -571,6 +638,13 @@ async function countingSlackFixture(): Promise<{
   return {
     openUrl: `http://127.0.0.1:${serverPort(server)}/api/apps.connections.open`,
     connectionCount: () => opened,
+    waitForConnections: (count) => eventually(() => clients.length >= count),
+    send(index, payload) {
+      const client = clients[index];
+      if (client === undefined) throw new Error(`Slack connection ${index} is unavailable`);
+      client.send(JSON.stringify(payload));
+    },
+    waitForAck: (envelopeId) => eventually(() => acknowledgements.has(envelopeId)),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
@@ -656,8 +730,14 @@ async function eventually(check: () => boolean | Promise<boolean>): Promise<void
   assert.fail("condition was not met before timeout");
 }
 
+function delayedTeamIds(status: SlackDeliveryStatus | undefined): string[] | undefined {
+  if (status?.state !== "connected") return undefined;
+  return status.delayedWorkspaces?.map((workspace) => workspace.teamId);
+}
+
 async function databaseFixture(engine: "PGlite" | "PostgreSQL"): Promise<{
   bundle: DatabaseRuntimeBundle;
+  connect?: () => Promise<DatabaseRuntimeBundle>;
   close(): Promise<void>;
 }> {
   if (engine === "PGlite") {
@@ -670,9 +750,46 @@ async function databaseFixture(engine: "PGlite" | "PostgreSQL"): Promise<{
   const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
   return {
     bundle,
+    connect: () => postgresDatabaseRuntime(postgres.getConnectionUri()),
     close: async () => {
       await bundle.runtime.close();
       await postgres.stop();
     },
   };
+}
+
+function rateLimitedEnvelope(envelopeId: string, teamId: string): unknown {
+  return {
+    type: "events_api",
+    envelope_id: envelopeId,
+    payload: { type: "app_rate_limited", team_id: teamId, minute_rate_limited: 1_700_000_000 },
+  };
+}
+
+function mentionEnvelope(envelopeId: string, eventId: string, teamId: string): unknown {
+  return {
+    type: "events_api",
+    envelope_id: envelopeId,
+    payload: {
+      type: "event_callback",
+      team_id: teamId,
+      api_app_id: "A1",
+      event_id: eventId,
+      event_time: 1_699_999_000,
+      event: {
+        type: "app_mention",
+        user: "U1",
+        channel: "C1",
+        text: "<@UBOT> hello",
+        ts: "1700000000.001",
+        event_ts: "1700000000.001",
+      },
+    },
+  };
+}
+
+function socketFrameText(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  return data.toString("utf8");
 }

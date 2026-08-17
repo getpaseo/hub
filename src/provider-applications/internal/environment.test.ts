@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { parse } from "dotenv";
 import { describe, it } from "vitest";
 import { readProviderApplicationEnvironment } from "./environment.js";
 
 describe("Slack provider environment", () => {
+  it("leaves Slack browser-managed when the shipped Docker environment template is copied", async () => {
+    const template = parse(await readFile(resolve(process.cwd(), ".env.example")));
+
+    assert.equal((await readProviderApplicationEnvironment(template)).slack, undefined);
+  });
+
   it("accepts the explicit Socket Mode group", async () => {
     assert.deepEqual(
       (

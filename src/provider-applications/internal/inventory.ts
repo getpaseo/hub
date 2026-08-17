@@ -1,8 +1,9 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
-import { z } from "zod";
 import { hasRequiredSlackScopes } from "../../providers/slack/client.js";
 import type { Provider, ProviderApplicationInventory } from "../index.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import { slackActionReasonFromPersistence } from "../../triggers/slack/source/health-policy.js";
+import { PROVIDER_OBSERVATION_LIFETIME_SECONDS } from "./observation-lifetime.js";
 
 interface ConnectionIdentityRow extends QueryRow {
   id: string;
@@ -12,11 +13,6 @@ interface ConnectionIdentityRow extends QueryRow {
   action_needed: boolean;
   scopes: unknown;
 }
-
-const DelayedWorkspaceObservationSchema = z.object({
-  teamId: z.string(),
-  since: z.string(),
-});
 
 /** @package */
 export function createProviderApplicationInventory(
@@ -74,17 +70,16 @@ export function createProviderApplicationInventory(
       const result = await database.query<{
         state: string;
         reason: string | null;
-        delayed_workspaces: unknown;
         observed_at: Date | string;
       }>(
-        `select state, reason, delayed_workspaces, observed_at
+        `select state, reason, observed_at
          from runtime_provider_instances
          where provider = 'slack'
            and provider_application_id = $1
            and configuration_version = $2
-           and observed_at > now() - interval '45 seconds'
+           and observed_at > now() - ($3 * interval '1 second')
          order by observed_at desc`,
-        [applicationId, configurationVersion],
+        [applicationId, configurationVersion, PROVIDER_OBSERVATION_LIFETIME_SECONDS],
       );
       if (result.rows.length === 0) return undefined;
       const observedAt = new Date(result.rows[0]!.observed_at);
@@ -93,7 +88,7 @@ export function createProviderApplicationInventory(
         const delayedWorkspaces = await nameDelayedWorkspaces(
           database,
           applicationId,
-          aggregateDelayedWorkspaces(result.rows),
+          configurationVersion,
         );
         return {
           state: "connected",
@@ -107,7 +102,7 @@ export function createProviderApplicationInventory(
       }
       const action = result.rows.find((row) => row.state === "action_needed");
       if (action !== undefined) {
-        const reason = slackActionReason(action.reason);
+        const reason = slackActionReasonFromPersistence(action.reason) ?? "appTokenRejected";
         return { state: "actionNeeded", reason, since: observedAt } satisfies SlackDeliveryStatus;
       }
       return { state: "reconnecting", since: observedAt };
@@ -122,56 +117,34 @@ export function createProviderApplicationInventory(
   };
 }
 
-function slackActionReason(
-  reason: string | null,
-):
-  | "socketModeOff"
-  | "connectionLimit"
-  | "appTokenRejected"
-  | "appIdentityMismatch"
-  | "appAccessDenied" {
-  if (reason === "socket_mode_off") return "socketModeOff";
-  if (reason === "connection_limit") return "connectionLimit";
-  if (reason === "app_identity_mismatch") return "appIdentityMismatch";
-  if (reason === "app_access_denied") return "appAccessDenied";
-  return "appTokenRejected";
-}
-
-function aggregateDelayedWorkspaces(
-  rows: readonly { delayed_workspaces: unknown }[],
-): { teamId: string; since: Date }[] {
-  const workspaces = new Map<string, Date>();
-  for (const row of rows) {
-    if (!Array.isArray(row.delayed_workspaces)) continue;
-    for (const value of row.delayed_workspaces) {
-      const parsed = DelayedWorkspaceObservationSchema.safeParse(value);
-      if (!parsed.success) continue;
-      const { teamId, since: sinceValue } = parsed.data;
-      const since = new Date(sinceValue);
-      if (!Number.isFinite(since.getTime())) continue;
-      const previous = workspaces.get(teamId);
-      if (previous === undefined || previous < since) workspaces.set(teamId, since);
-    }
-  }
-  return [...workspaces]
-    .map(([teamId, since]) => ({ teamId, since }))
-    .sort((left, right) => left.teamId.localeCompare(right.teamId));
-}
-
 async function nameDelayedWorkspaces(
   database: DatabaseRuntime,
   applicationId: string,
-  workspaces: readonly { teamId: string; since: Date }[],
+  configurationVersion: number,
 ): Promise<{ teamId: string; name?: string; since: Date }[]> {
-  if (workspaces.length === 0) return [];
-  const result = await database.query<{ team_id: string; team_name: string }>(
-    `select team_id, team_name from slack_connections where provider_application_id = $1`,
-    [applicationId],
+  const result = await database.query<{
+    team_id: string;
+    observed_at: Date | string;
+    team_name: string | null;
+  }>(
+    `select observation.team_id, observation.observed_at, connection.team_name
+     from slack_workspace_delivery_observations observation
+     left join slack_connections connection
+       on connection.provider_application_id = observation.provider_application_id
+      and connection.team_id = observation.team_id
+     where observation.provider_application_id = $1
+       and observation.configuration_version = $2
+       and observation.delayed = true
+     order by observation.team_id`,
+    [applicationId, configurationVersion],
   );
-  const names = new Map(result.rows.map((row) => [row.team_id, row.team_name]));
-  return workspaces.map((workspace) => {
-    const name = names.get(workspace.teamId);
-    return { ...workspace, ...(name === undefined ? {} : { name }) };
+  return result.rows.map((row) => {
+    const workspace: { teamId: string; since: Date; name?: string } = {
+      teamId: row.team_id,
+      since: new Date(row.observed_at),
+    };
+    if (row.team_name !== null) workspace.name = row.team_name;
+    return workspace;
   });
 }
 
