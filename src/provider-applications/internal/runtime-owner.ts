@@ -11,7 +11,10 @@ import type {
   ProviderRegistration,
   TriggerProviderResources,
 } from "../../providers/registration.js";
-import { createSlackRegistration } from "../../providers/slack/index.js";
+import {
+  createSlackRegistration,
+  type CreateSlackRegistrationOptions,
+} from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
 import type {
   Provider,
@@ -62,6 +65,7 @@ interface DynamicProviderRuntimeOptions {
   auth: AuthServer;
   applicationBaseUrl: string;
   fetch?: typeof fetch;
+  slackSocket?: CreateSlackRegistrationOptions["socket"];
   registrationFactory?: (input: {
     provider: Provider;
     configuration: ProviderApplicationConfiguration;
@@ -102,7 +106,11 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 
   slackDeliveryStatus(): SlackDeliveryStatus {
-    return this.slot("slack").active?.registration.slackDelivery?.status() ?? { state: "stopped" };
+    return (
+      this.slot("slack").active?.registration.slackDelivery?.status() ?? {
+        state: "stopped",
+      }
+    );
   }
 
   retrySlackDelivery(): Promise<void> {
@@ -239,9 +247,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       return createSlackRegistration({
         ...shared,
         configuration,
+        ...(this.options.slackSocket === undefined ? {} : { socket: this.options.slackSocket }),
         ...(activation?.expectedConfigurationVersion === undefined
           ? {}
-          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
+          : {
+              expectedConfigurationVersion: activation.expectedConfigurationVersion,
+            }),
         activateConfiguration: activation?.activateConfiguration ?? false,
         onVerifiedInstallation: (input) => {
           if (this.slackInstallationHandler === undefined) {
@@ -392,7 +403,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                     throw new Error(`${provider} output unavailable`);
                   }
                   return this.withLease(active, () =>
-                    output.execute({ ...input, outputContext: unmarkContext(input.outputContext) }),
+                    output.execute({
+                      ...input,
+                      outputContext: unmarkContext(input.outputContext),
+                    }),
                   );
                 },
               },
@@ -731,34 +745,20 @@ function eventNames(provider: Provider): TriggerProvider["eventNames"] {
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
   if (active.sourcesStarted) return;
-  const started: TriggerSource[] = [];
-  try {
-    for (const source of active.registration.sources) {
-      await source.start((trigger) =>
-        active.acceptingEvents
-          ? handler(trigger)
-          : active.publication.then((published) => {
-              if (!published || !active.acceptingEvents) {
-                throw new Error("provider candidate is not accepting events");
-              }
-              return handler(trigger);
-            }),
-      );
-      started.push(source);
-    }
-    active.sourcesStarted = true;
-  } catch (error) {
-    const cleanup = await Promise.allSettled(started.toReversed().map((source) => source.stop()));
-    for (const failure of cleanup) {
-      if (failure.status === "rejected") {
-        reportFailure(failure.reason, {
-          operation: "provider_runtime.start_sources.cleanup",
-          component: "provider_runtime",
-          provider: active.provider,
-        });
-      }
-    }
-    throw error;
+  // A source can acquire its background resource before readiness rejects. Own that partial start
+  // immediately so candidate.close() and application shutdown always stop it.
+  active.sourcesStarted = true;
+  for (const source of active.registration.sources) {
+    await source.start((trigger) =>
+      active.acceptingEvents
+        ? handler(trigger)
+        : active.publication.then((published) => {
+            if (!published || !active.acceptingEvents) {
+              throw new Error("provider candidate is not accepting events");
+            }
+            return handler(trigger);
+          }),
+    );
   }
 }
 
@@ -792,7 +792,11 @@ async function retire(provider: Provider, active: ActiveRegistration): Promise<v
   } catch (error) {
     reportFailure(
       error,
-      { operation: "provider_runtime.retire", component: "provider_runtime", provider },
+      {
+        operation: "provider_runtime.retire",
+        component: "provider_runtime",
+        provider,
+      },
       { logger, kind: "internal" },
     );
   }

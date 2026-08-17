@@ -46,16 +46,21 @@ import {
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
+import type { CreateSlackRegistrationOptions } from "./providers/slack/index.js";
 
 export interface ProductionRuntimeOptions {
   environmentSource: RuntimeEnvironmentSource;
+  /** Local provider fixture seam used by production-composition integration tests. */
+  slackSocket?: CreateSlackRegistrationOptions["socket"];
 }
 
 export function startProductionRuntime(
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
+  options: ProductionRuntimeOptions = {
+    environmentSource: "process-and-dotenv",
+  },
 ): Promise<ApplicationRuntime> {
   loadRuntimeEnvironment(options.environmentSource);
-  return startApplication(createProductionRuntime);
+  return startApplication(() => createProductionRuntime(options));
 }
 
 export async function stopProductionRuntime(): Promise<void> {
@@ -66,7 +71,9 @@ export async function handleDaemonUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
+  options: ProductionRuntimeOptions = {
+    environmentSource: "process-and-dotenv",
+  },
 ): Promise<void> {
   const runtime = await startProductionRuntime(options);
   if (runtime.hub.handleUpgrade === null) {
@@ -76,7 +83,9 @@ export async function handleDaemonUpgrade(
   await runtime.hub.handleUpgrade(request, socket, head);
 }
 
-async function createProductionRuntime(): Promise<ApplicationRuntime> {
+async function createProductionRuntime(
+  options: ProductionRuntimeOptions,
+): Promise<ApplicationRuntime> {
   const resources = new CompositionResources();
   try {
     const config = loadRuntimeConfig();
@@ -124,6 +133,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       database,
       auth,
       applicationBaseUrl: identity.appUrl,
+      ...(options.slackSocket === undefined ? {} : { slackSocket: options.slackSocket }),
     });
     const providerApplications = createProviderApplications({
       auth,
@@ -250,7 +260,10 @@ async function initializeDatabaseRuntime(
     bundle = await createRuntime();
     await bundle.runtime.migrate();
     logger.info(readyMessage);
-    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+    return {
+      ...bundle,
+      database: createDatabase(bundle.runtime, bundle.locks),
+    };
   } catch (error) {
     if (bundle !== undefined) {
       try {
@@ -262,7 +275,10 @@ async function initializeDatabaseRuntime(
         });
       }
     }
-    reportFailure(error, { operation: "database.startup", component: "database" });
+    reportFailure(error, {
+      operation: "database.startup",
+      component: "database",
+    });
     throw error;
   }
 }
@@ -414,7 +430,10 @@ function readPort(): number {
 
 if (isCommandLineEntrypoint(import.meta.url)) {
   main().catch((error: unknown) => {
-    reportFailure(error, { operation: "server.startup.fatal", component: "server" });
+    reportFailure(error, {
+      operation: "server.startup.fatal",
+      component: "server",
+    });
     process.exit(1);
   });
 }

@@ -61,7 +61,10 @@ type SaveResponse = Result<ProviderApplicationSaveResult>;
 type ConnectResponse = Result<{ url: string }>;
 type VoidResponse = Result<void>;
 interface SaveMutationInput {
-  data: Record<string, unknown> & { provider: string; transport?: "socket" | "webhook" };
+  data: Record<string, unknown> & {
+    provider: string;
+    transport?: "socket" | "webhook";
+  };
 }
 
 // eslint-disable-next-line complexity -- this component owns one provider card's complete workflow.
@@ -143,8 +146,13 @@ export function ProviderSection({
         return;
       }
       setReplacing(false);
-      setOutcome({ tone: "success", message: activeGuide.verifiedMessage ?? "" });
-      await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
+      setOutcome({
+        tone: "success",
+        message: activeGuide.verifiedMessage ?? "",
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["provider-applications"],
+      });
     },
     onError: () => setOutcome({ tone: "error", message: unreachable(activeGuide.name) }),
   });
@@ -173,7 +181,9 @@ export function ProviderSection({
       }
       setConnectingWorkspace(false);
       setOutcome({ tone: "success", message: "Slack workspace connected." });
-      await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["provider-applications"],
+      });
     },
     onError: () => setOutcome({ tone: "error", message: unreachable("Slack") }),
   });
@@ -185,7 +195,9 @@ export function ProviderSection({
         return;
       }
       setOutcome({ tone: "success", message: "Slack is reconnecting." });
-      await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["provider-applications"],
+      });
     },
     onError: () => setOutcome({ tone: "error", message: unreachable("Slack") }),
   });
@@ -238,7 +250,9 @@ export function ProviderSection({
       setConnectingWorkspace(true);
       return;
     }
-    connect.mutate({ data: { provider: guide.provider, organizationId, surface } });
+    connect.mutate({
+      data: { provider: guide.provider, organizationId, surface },
+    });
   }, [connect, guide.provider, organizationId, savedSlackTransport, surface]);
 
   const submitWorkspace = useCallback(
@@ -566,10 +580,22 @@ function summaryRows(
     const value = identity.provider === "slack" ? identity.id : identity.name;
     rows.push({ label: guide.summaryLabels.identity, value });
     if (guide.summaryLabels.owner !== undefined && identity.provider === "github") {
-      rows.push({ label: guide.summaryLabels.owner, value: identity.ownerLogin });
+      rows.push({
+        label: guide.summaryLabels.owner,
+        value: identity.ownerLogin,
+      });
     }
     if (identity.provider === "discord") {
       rows.push({ label: "Application ID", value: identity.id });
+    }
+  }
+  if (view.provider === "slack") {
+    const transport = view.identifiers["transport"];
+    if (transport !== undefined) {
+      rows.push({
+        label: "Delivery",
+        value: transport === "socket" ? "Socket Mode" : "Webhooks",
+      });
     }
   }
   rows.push({

@@ -8,6 +8,8 @@ import { startProductionRuntime, stopProductionRuntime } from "./index.js";
 import { runWithFailureTracking } from "./failures/index.js";
 import { createLogger } from "./logger.js";
 import { assertOneFailure, FailureLogStream } from "./test-utils/failure-logs.js";
+import { createServer, type Server } from "node:http";
+import { WebSocketServer } from "ws";
 
 const ENVIRONMENT_NAMES = [
   "DATABASE_URL",
@@ -19,6 +21,9 @@ const ENVIRONMENT_NAMES = [
   "PASEO_BOOTSTRAP_ORGANIZATION",
   "PASEO_BOOTSTRAP_OWNER_EMAIL",
   "PASEO_BOOTSTRAP_OWNER_PASSWORD",
+  "SLACK_TRANSPORT",
+  "SLACK_APP_ID",
+  "SLACK_APP_TOKEN",
 ] as const;
 
 const APP_URL = "http://localhost:3000";
@@ -61,6 +66,45 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
 });
 
+for (const scenario of ["server-error", "hung-open", "missing-hello"] as const) {
+  it(`exposes the production runtime after bounded Slack ${scenario} readiness failure`, async () => {
+    const canary = `xapp-production-${scenario}-canary`;
+    const slack = await startUnavailableSlack(scenario);
+    process.env["SLACK_TRANSPORT"] = "socket";
+    process.env["SLACK_APP_ID"] = "A-PRODUCTION";
+    process.env["SLACK_APP_TOKEN"] = canary;
+    const stream = new FailureLogStream();
+
+    const runtime = await runWithFailureTracking(
+      () =>
+        startProductionRuntime({
+          environmentSource: "process-only",
+          slackSocket: {
+            apiUrl: slack.openUrl,
+            readinessTimeoutMs: 80,
+            connectTimeoutMs: 30,
+            helloTimeoutMs: 30,
+            random: () => 0,
+          },
+        }),
+      createLogger(stream),
+    );
+
+    assert.notEqual(runtime.providerApplications, null);
+    assertOneFailure(stream, {
+      operation: "slack.socket.connect",
+      component: "triggers",
+      failureKind: "network",
+      canary,
+    });
+    await stopProductionRuntime();
+    const requestsAtStop = slack.requestCount;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(slack.requestCount, requestsAtStop);
+    await slack.close();
+  });
+}
+
 it("logs an embedded database startup failure exactly once", async () => {
   const canary = "database-startup-secret-1d42";
   const stream = new FailureLogStream();
@@ -102,7 +146,10 @@ it("keeps an interactive claim across a restart and then shows ordinary sign-in"
   // still signs the operator in without a temporary-password gate.
   const restarted = await startProductionRuntime();
   const state = await restarted.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
-  assert.deepEqual(await state.json(), { status: "signedOut", registration: "invite_only" });
+  assert.deepEqual(await state.json(), {
+    status: "signedOut",
+    registration: "invite_only",
+  });
   await restarted.signInEmail!(
     { email: operator.email, password: operator.password },
     new Headers({ origin: APP_URL }),
@@ -192,4 +239,66 @@ function restoreEnvironment(name: string, value: string | undefined): void {
   } else {
     process.env[name] = value;
   }
+}
+
+async function startUnavailableSlack(
+  scenario: "server-error" | "hung-open" | "missing-hello",
+): Promise<{
+  openUrl: string;
+  readonly requestCount: number;
+  close(): Promise<void>;
+}> {
+  let requestCount = 0;
+  const server = createServer((_request, response) => {
+    requestCount += 1;
+    if (scenario === "hung-open") return;
+    response.setHeader("content-type", "application/json");
+    if (scenario === "server-error") {
+      response.writeHead(503);
+      response.end(JSON.stringify({ ok: false, error: "temporarily_unavailable" }));
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        url: `ws://127.0.0.1:${serverPort(server)}/socket`,
+      }),
+    );
+  });
+  const webSockets = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (request, socket, head) => {
+    webSockets.handleUpgrade(request, socket, head, (client) =>
+      webSockets.emit("connection", client),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return {
+    openUrl: `http://127.0.0.1:${serverPort(server)}/api/apps.connections.open`,
+    get requestCount() {
+      return requestCount;
+    },
+    async close() {
+      for (const socket of webSockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error !== undefined) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    },
+  };
+}
+
+function serverPort(server: Server): number {
+  const address = server.address();
+  assert(address !== null && typeof address === "object");
+  return address.port;
 }

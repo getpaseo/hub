@@ -54,7 +54,18 @@ export interface CreateSlackRegistrationOptions {
   connectionClient?: SlackConnectionClient;
   botClient?: SlackBotClient;
   fetch?: typeof fetch;
-  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "fetch" | "webSocket" | "now" | "random">;
+  socket?: Pick<
+    SlackSocketSourceOptions,
+    | "apiUrl"
+    | "fetch"
+    | "webSocket"
+    | "now"
+    | "random"
+    | "readinessTimeoutMs"
+    | "connectTimeoutMs"
+    | "helloTimeoutMs"
+    | "shutdownTimeoutMs"
+  >;
   configurationVersion?: number;
   expectedConfigurationVersion?: number;
   activateConfiguration?: boolean;
@@ -183,8 +194,14 @@ export function createSlackRegistration(
     ],
     requests:
       events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
-    attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
-    slackDelivery: { status: () => events.status(), retry: () => events.retry() },
+    attachment: {
+      provider: "slack",
+      resolve: createSlackAttachmentResolver(bot),
+    },
+    slackDelivery: {
+      status: () => events.status(),
+      retry: () => events.retry(),
+    },
   };
 }
 

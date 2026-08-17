@@ -469,7 +469,9 @@ export function createProviderApplications(
         } catch (error) {
           await closeCandidate(candidate, provider, "begin_connection");
           if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
+          throw new ProviderApplicationError("internal", undefined, {
+            cause: error,
+          });
         }
       });
     },
@@ -493,9 +495,13 @@ export function createProviderApplications(
           installation = await options.slackSocketVerifier!.verify(input.appToken, input.botToken);
         } catch (error) {
           if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
+            throw new ProviderApplicationError(error.reason, error.subject, {
+              cause: error,
+            });
           }
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
+          throw new ProviderApplicationError("internal", undefined, {
+            cause: error,
+          });
         }
         const configuration = {
           provider: "slack" as const,
@@ -555,7 +561,9 @@ export function createProviderApplications(
             throw new ProviderApplicationError("identityConflict", previous?.identity.name);
           }
           if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
+          throw new ProviderApplicationError("internal", undefined, {
+            cause: error,
+          });
         }
       });
     },
@@ -591,7 +599,9 @@ export function createProviderApplications(
           });
         } catch (error) {
           if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
+            throw new ProviderApplicationError(error.reason, error.subject, {
+              cause: error,
+            });
           }
           if (isIdentityConflict(error)) {
             throw new ProviderApplicationError("identityConflict");
@@ -600,7 +610,9 @@ export function createProviderApplications(
             throw new ProviderApplicationError("configurationConflict");
           }
           if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
+          throw new ProviderApplicationError("internal", undefined, {
+            cause: error,
+          });
         }
       });
     },
@@ -630,7 +642,9 @@ async function requireOperator(
   try {
     account = await options.auth.resolveAccount(request);
   } catch (error) {
-    throw new ProviderApplicationError("forbidden", undefined, { cause: error });
+    throw new ProviderApplicationError("forbidden", undefined, {
+      cause: error,
+    });
   }
   if (!account.isInstanceOperator) throw new ProviderApplicationError("forbidden");
   return account;
@@ -643,7 +657,9 @@ async function safeCallbackOrigin(
   try {
     return await options.callbackOrigin(request);
   } catch (error) {
-    throw new ProviderApplicationError("invalidOrigin", undefined, { cause: error });
+    throw new ProviderApplicationError("invalidOrigin", undefined, {
+      cause: error,
+    });
   }
 }
 
@@ -829,14 +845,18 @@ export async function activateProviderApplicationsAtStartup(options: {
           identity,
           configurationVersion,
         );
-        await candidate.start();
+        await startStartupCandidate(candidate, provider, configuration);
         if (
           claimLegacyConnections &&
           !(await options.inventory.claimLegacyConnections(provider, identity))
         ) {
           throw new ProviderApplicationError("identityConflict");
         }
-        await options.store.activate({ provider, identity, configurationVersion });
+        await options.store.activate({
+          provider,
+          identity,
+          configurationVersion,
+        });
         candidate.publish();
         candidate = undefined;
       } catch (error) {
@@ -850,6 +870,32 @@ export async function activateProviderApplicationsAtStartup(options: {
   return failures;
 }
 
+function allowsDegradedColdStartup(
+  provider: Provider,
+  configuration: ProviderApplicationConfiguration,
+): boolean {
+  return (
+    provider === "slack" &&
+    configuration.provider === "slack" &&
+    configuration.transport === "socket"
+  );
+}
+
+async function startStartupCandidate(
+  candidate: ProviderRuntimeCandidate,
+  provider: Provider,
+  configuration: ProviderApplicationConfiguration,
+): Promise<void> {
+  try {
+    await candidate.start();
+  } catch (error) {
+    // A cold-start Socket registration has no older runtime to protect. Its source owns and
+    // reports the bounded readiness failure, then keeps reconnecting in the background once
+    // published. Interactive replacement paths still reject and retain the working runtime.
+    if (!allowsDegradedColdStartup(provider, configuration)) throw error;
+  }
+}
+
 async function startupIdentity(
   provider: Provider,
   environmentConfiguration: ProviderApplicationConfiguration | undefined,
@@ -861,7 +907,11 @@ async function startupIdentity(
     return stored.identity;
   }
   if (provider === "slack" && environmentConfiguration.provider === "slack") {
-    return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
+    return {
+      provider: "slack",
+      id: environmentConfiguration.appId,
+      name: "Slack app",
+    };
   }
   return verifier.verify(provider, environmentConfiguration);
 }
@@ -940,7 +990,9 @@ async function verifyAndActivateProvider(
     if (error instanceof ProviderVerificationError) {
       // The subject travels as safe context so the copy can name the field the provider
       // objected to instead of sending the operator back over all of them.
-      throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
+      throw new ProviderApplicationError(error.reason, error.subject, {
+        cause: error,
+      });
     }
     throw new ProviderApplicationError("internal", undefined, { cause: error });
   }
@@ -969,7 +1021,12 @@ async function verifyAndActivateProvider(
     });
     candidate.publish();
     candidate = undefined;
-    return { status: "verified", provider, identity, configurationVersion: saved.version };
+    return {
+      status: "verified",
+      provider,
+      identity,
+      configurationVersion: saved.version,
+    };
   } catch (error) {
     await closeCandidate(candidate, provider, "verify_and_save");
     if (error instanceof ProviderApplicationError) throw error;

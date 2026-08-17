@@ -19,7 +19,9 @@ import type { BrowserProviderScenario } from "../src/e2e/harness/browser-provide
 import type { FixtureBillingProduct } from "../src/e2e/harness/browser-billing.js";
 import { ProjectExternalFacts } from "./helpers/projects/external.js";
 
-const billingInspectSchema = z.object({ reportedSeatQuantity: z.number().nullable() });
+const billingInspectSchema = z.object({
+  reportedSeatQuantity: z.number().nullable(),
+});
 
 export const test = base.extend<{
   hub: PaseoHub;
@@ -91,36 +93,43 @@ class BuiltApplications {
 
   async start(options: BuiltApplicationOptions = {}): Promise<BuiltApplication> {
     const postgres =
-      options.embedded === true
+      options.embedded === true || options.databaseUrl !== undefined
         ? undefined
         : await new PostgreSqlContainer("postgres:17-alpine").withStartupTimeout(30_000).start();
     const dataDirectory =
-      options.embedded === true ? await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-")) : undefined;
-    const databaseUrl = postgres?.getConnectionUri();
-    if (databaseUrl !== undefined) {
+      options.embedded === true && options.databaseUrl === undefined
+        ? await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-"))
+        : undefined;
+    const databaseUrl = options.databaseUrl ?? postgres?.getConnectionUri();
+    if (postgres !== undefined && databaseUrl !== undefined) {
       await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
     }
     const port = await availablePort();
+    const slackFixturePort = await availablePort();
     const reverseProxyPort = options.reverseProxy === true ? await availablePort() : undefined;
     const tls =
       options.https === true || options.reverseProxy === true ? await createTestTls() : undefined;
     const publicPort = reverseProxyPort ?? port;
     const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${publicPort}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
-    const server = spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
-      cwd: process.cwd(),
-      env: applicationEnvironment({
-        ...(databaseUrl === undefined ? {} : { databaseUrl }),
-        ...(dataDirectory === undefined ? {} : { dataDirectory }),
-        origin,
-        ...(options.reverseProxy === true ? {} : { appUrl: origin }),
-        port,
-        machineKeyFile,
-        ...(options.https === true && tls !== undefined ? { tls } : {}),
-        ...options,
-      }),
-      stdio: ["pipe", "pipe", "pipe", "ipc"],
+    const childEnvironment = applicationEnvironment({
+      ...(databaseUrl === undefined ? {} : { databaseUrl }),
+      ...(dataDirectory === undefined ? {} : { dataDirectory }),
+      origin,
+      ...(options.reverseProxy === true ? {} : { appUrl: origin }),
+      port,
+      slackFixturePort,
+      machineKeyFile,
+      ...(options.https === true && tls !== undefined ? { tls } : {}),
+      ...options,
     });
+    const spawnServer = () =>
+      spawn(process.execPath, ["dist/e2e/harness/browser-child.js"], {
+        cwd: process.cwd(),
+        env: childEnvironment,
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
+      });
+    let server = spawnServer();
     const output: string[] = [];
     const proxy =
       reverseProxyPort === undefined || tls === undefined
@@ -145,9 +154,28 @@ class BuiltApplications {
       setBillingProduct: (product: FixtureBillingProduct) =>
         deliverCommand(server, { type: "billing-product", product }),
       cancelSubscription: (organizationId: string) =>
-        deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
+        deliverCommand(server, {
+          type: "billing-cancel-subscription",
+          organizationId,
+        }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
       failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
+      prepareSlackSocketWorkflow: () => deliverCommand(server, { type: "slack-socket-prepare" }),
+      deliverSlackSocketMention: (eventId: string) =>
+        deliverCommand(server, { type: "slack-socket-deliver", eventId }),
+      slackSocketEvidence: async (eventId: string) =>
+        slackSocketEvidenceSchema.parse(
+          await deliverCommandForData(server, {
+            type: "slack-socket-inspect",
+            eventId,
+          }),
+        ),
+      restart: async () => {
+        await stopServer(server);
+        server = spawnServer();
+        application.server = server;
+        await serverReady(server, origin, output);
+      },
       reportedSeatQuantity: async (organizationId: string) => {
         const data = await deliverCommandForData(server, {
           type: "billing-inspect",
@@ -192,6 +220,11 @@ class BuiltApplications {
   }
 }
 
+const slackSocketEvidenceSchema = z.object({
+  receipts: z.number(),
+  runs: z.number(),
+});
+
 interface RunningApplication extends BuiltApplication {
   postgres?: StartedPostgreSqlContainer;
   dataDirectory?: string;
@@ -206,6 +239,7 @@ interface ApplicationEnvironmentInput {
   origin: string;
   appUrl?: string;
   port: number;
+  slackFixturePort: number;
   registrationMode?: BuiltApplicationOptions["registrationMode"];
   organizationCreation?: BuiltApplicationOptions["organizationCreation"];
   browserAuth?: boolean;
@@ -228,6 +262,7 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(input.port),
+    PASEO_E2E_SLACK_SOCKET_PORT: String(input.slackFixturePort),
     PASEO_HUB_BIND: "127.0.0.1",
     PASEO_REGISTRATION_MODE:
       input.registrationMode ?? (input.bootstrap === undefined ? "open" : "invite_only"),
@@ -257,8 +292,11 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
       : {}),
     ...(input.tls === undefined
       ? {}
-      : { PASEO_E2E_TLS_KEY: input.tls.key, PASEO_E2E_TLS_CERT: input.tls.cert }),
-    ...environmentAppVariables(input.environmentApps ?? []),
+      : {
+          PASEO_E2E_TLS_KEY: input.tls.key,
+          PASEO_E2E_TLS_CERT: input.tls.cert,
+        }),
+    ...environmentAppVariables(input.environmentApps ?? [], input.providerScenario),
     ...(input.bootstrap === undefined
       ? {}
       : {
@@ -315,6 +353,7 @@ async function createTestTls(): Promise<TestTls> {
  */
 function environmentAppVariables(
   providers: readonly ("github" | "slack" | "discord")[],
+  scenario?: BrowserProviderScenario,
 ): NodeJS.ProcessEnv {
   const variables: NodeJS.ProcessEnv = {};
   if (providers.includes("github")) {
@@ -330,11 +369,16 @@ function environmentAppVariables(
     variables["DISCORD_BOT_TOKEN"] = "token";
   }
   if (providers.includes("slack")) {
-    variables["SLACK_TRANSPORT"] = "webhook";
     variables["SLACK_APP_ID"] = "browser-slack-app";
-    variables["SLACK_CLIENT_ID"] = "browser-slack-client";
-    variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
-    variables["SLACK_SIGNING_SECRET"] = "phase-zero-slack-webhook-secret";
+    if (scenario === "slack-startup-server-error") {
+      variables["SLACK_TRANSPORT"] = "socket";
+      variables["SLACK_APP_TOKEN"] = "xapp-browser-startup-outage-canary";
+    } else {
+      variables["SLACK_TRANSPORT"] = "webhook";
+      variables["SLACK_CLIENT_ID"] = "browser-slack-client";
+      variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
+      variables["SLACK_SIGNING_SECRET"] = "phase-zero-slack-webhook-secret";
+    }
   }
   return variables;
 }
@@ -443,17 +487,30 @@ async function healthReady(origin: string): Promise<boolean> {
 
 async function stopServer(server: ChildProcess): Promise<void> {
   if (server.exitCode !== null) return;
-  server.kill("SIGTERM");
-  await Promise.race([
-    new Promise<void>((resolve) => server.once("exit", () => resolve())),
-    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+  const pid = server.pid;
+  if (pid === undefined) return;
+  const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
+  process.kill(pid, "SIGTERM");
+  const graceful = await Promise.race([
+    exited.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
   ]);
-  if (server.exitCode === null) server.kill("SIGKILL");
+  if (graceful) return;
+  process.kill(pid, "SIGKILL");
+  await Promise.race([
+    exited,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error("built application did not stop")), 5_000),
+    ),
+  ]);
 }
 
 async function startReverseProxy(port: number, targetPort: number, tls: TestTls): Promise<Server> {
   const proxy = createHttpsServer(
-    { key: await readFile(tls.key, "utf8"), cert: await readFile(tls.cert, "utf8") },
+    {
+      key: await readFile(tls.key, "utf8"),
+      cert: await readFile(tls.cert, "utf8"),
+    },
     (incoming, outgoing) => {
       const upstream = httpRequest(
         {

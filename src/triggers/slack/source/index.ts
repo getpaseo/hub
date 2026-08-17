@@ -29,7 +29,18 @@ export interface CreateSlackEventSourceOptions {
     receivedAt: Date;
     dropReason?: ProviderEventDropReasonCode;
   }): Promise<ProviderEventAcceptance>;
-  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "fetch" | "webSocket" | "now" | "random">;
+  socket?: Pick<
+    SlackSocketSourceOptions,
+    | "apiUrl"
+    | "fetch"
+    | "webSocket"
+    | "now"
+    | "random"
+    | "readinessTimeoutMs"
+    | "connectTimeoutMs"
+    | "helloTimeoutMs"
+    | "shutdownTimeoutMs"
+  >;
 }
 
 export function createSlackEventSource(options: CreateSlackEventSourceOptions): SlackEventSource {

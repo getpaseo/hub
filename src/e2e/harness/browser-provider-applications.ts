@@ -58,10 +58,14 @@ export const FIXTURE_SLACK_SOCKET_CREDENTIALS = {
  * production; only Slack's side of the internet is local. */
 export class BrowserSlackSocketFixture {
   private readonly sockets = new WebSocketServer({ noServer: true });
+  private readonly acknowledgements = new Map<string, () => void>();
   private server: Server | undefined;
   apiBaseUrl = "";
 
-  constructor(private readonly scenario: BrowserProviderScenario = "connected") {}
+  constructor(
+    private readonly scenario: BrowserProviderScenario = "connected",
+    private readonly port = 0,
+  ) {}
 
   async start(): Promise<void> {
     const server = createServer((request, response) => {
@@ -69,12 +73,20 @@ export class BrowserSlackSocketFixture {
       const url = new URL(request.url ?? "/", this.apiBaseUrl);
       response.setHeader("content-type", "application/json");
       if (url.pathname === "/api/apps.connections.open") {
+        if (this.scenario === "slack-startup-server-error") {
+          response.statusCode = 503;
+          response.end(JSON.stringify({ ok: false, error: "temporarily_unavailable" }));
+          return;
+        }
         if (authorization !== `Bearer ${FIXTURE_SLACK_SOCKET_CREDENTIALS.appToken}`) {
           response.end(JSON.stringify({ ok: false, error: "invalid_auth" }));
           return;
         }
         response.end(
-          JSON.stringify({ ok: true, url: `${this.apiBaseUrl.replace("http", "ws")}/socket` }),
+          JSON.stringify({
+            ok: true,
+            url: `${this.apiBaseUrl.replace("http", "ws")}/socket`,
+          }),
         );
         return;
       }
@@ -104,7 +116,11 @@ export class BrowserSlackSocketFixture {
         response.end(
           JSON.stringify({
             ok: true,
-            bot: { id: "B-BROWSER", app_id: FIXTURE_APP_CREDENTIALS.slack.appId, user_id: "B1" },
+            bot: {
+              id: "B-BROWSER",
+              app_id: FIXTURE_APP_CREDENTIALS.slack.appId,
+              user_id: "B1",
+            },
           }),
         );
         return;
@@ -122,6 +138,14 @@ export class BrowserSlackSocketFixture {
       });
     });
     this.sockets.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const value: unknown = JSON.parse(slackFrameText(data));
+        if (value === null || typeof value !== "object") return;
+        const envelopeId: unknown = Reflect.get(value, "envelope_id");
+        if (typeof envelopeId !== "string") return;
+        this.acknowledgements.get(envelopeId)?.();
+        this.acknowledgements.delete(envelopeId);
+      });
       socket.send(
         JSON.stringify({
           type: "hello",
@@ -130,7 +154,7 @@ export class BrowserSlackSocketFixture {
         }),
       );
     });
-    server.listen(0, "127.0.0.1");
+    server.listen(this.port, "127.0.0.1");
     await once(server, "listening");
     const address = server.address();
     if (address === null || typeof address === "string")
@@ -140,7 +164,52 @@ export class BrowserSlackSocketFixture {
   }
 
   verifier() {
-    return createSlackSocketInstallationVerifier({ apiBaseUrl: `${this.apiBaseUrl}/api` });
+    return createSlackSocketInstallationVerifier({
+      apiBaseUrl: `${this.apiBaseUrl}/api`,
+    });
+  }
+
+  async deliverMention(eventId: string): Promise<void> {
+    const connectedDeadline = Date.now() + 5_000;
+    while (this.sockets.clients.size === 0 && Date.now() < connectedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (this.sockets.clients.size === 0)
+      throw new Error("Slack fixture has no connected Hub instance");
+    const envelopeId = `envelope-${eventId}`;
+    const acknowledged = new Promise<void>((resolve) => {
+      this.acknowledgements.set(envelopeId, resolve);
+    });
+    const payload = JSON.stringify({
+      type: "events_api",
+      envelope_id: envelopeId,
+      accepts_response_payload: false,
+      payload: {
+        type: "event_callback",
+        team_id: "T-ACME",
+        api_app_id: FIXTURE_APP_CREDENTIALS.slack.appId,
+        event_id: eventId,
+        event_time: Math.floor(Date.now() / 1_000),
+        event: {
+          type: "app_mention",
+          user: "U1",
+          channel: "C1",
+          text: "<@B1> socket delivery",
+          ts: "1700000000.000100",
+          event_ts: "1700000000.000100",
+        },
+      },
+    });
+    for (const socket of this.sockets.clients) socket.send(payload);
+    await Promise.race([
+      acknowledged,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(
+          () => reject(new Error("Slack fixture did not receive an acknowledgement")),
+          5_000,
+        ),
+      ),
+    ]);
   }
 
   async close(): Promise<void> {
@@ -149,6 +218,12 @@ export class BrowserSlackSocketFixture {
     if (this.server === undefined) return;
     await closeServer(this.server);
   }
+}
+
+function slackFrameText(data: import("ws").RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  return data.toString("utf8");
 }
 
 function closeServer(server: Server): Promise<void> {
@@ -164,7 +239,12 @@ function closeServer(server: Server): Promise<void> {
 }
 
 export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicationIdentity>> = {
-  github: { provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme-inc" },
+  github: {
+    provider: "github",
+    id: "42",
+    name: "Paseo Hub",
+    ownerLogin: "acme-inc",
+  },
   discord: { provider: "discord", id: "900", name: "Paseo" },
   slack: { provider: "slack", id: "browser-slack-app", name: "Paseo" },
 };
@@ -196,7 +276,9 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
       const expected = FIXTURE_APP_CREDENTIALS.github;
       if (configuration.privateKey !== expected.privateKey) {
         return Promise.reject(
-          new ProviderVerificationError("credentialsRejected", 401, { subject: "privateKey" }),
+          new ProviderVerificationError("credentialsRejected", 401, {
+            subject: "privateKey",
+          }),
         );
       }
       // The key authenticated an App; the App ID names which one. A mismatch is its own answer.
@@ -224,7 +306,9 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
       const expected = FIXTURE_APP_CREDENTIALS.discord;
       if (configuration.botToken !== expected.botToken) {
         return Promise.reject(
-          new ProviderVerificationError("credentialsRejected", 401, { subject: "botToken" }),
+          new ProviderVerificationError("credentialsRejected", 401, {
+            subject: "botToken",
+          }),
         );
       }
       if (configuration.applicationId !== expected.applicationId) {
@@ -239,7 +323,9 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
       return this.scenario === "discord-client-secret-rejected" ||
         configuration.clientSecret !== expected.clientSecret
         ? Promise.reject(
-            new ProviderVerificationError("credentialsRejected", 401, { subject: "clientSecret" }),
+            new ProviderVerificationError("credentialsRejected", 401, {
+              subject: "clientSecret",
+            }),
           )
         : Promise.resolve(FIXTURE_APP_IDENTITIES.discord);
     }
@@ -328,7 +414,9 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
         : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
       activateConfiguration: input.activateConfiguration,
       onVerifiedInstallation: input.onVerifiedSlackInstallation,
-      socket: { apiUrl: `${fixtures.slackSocket.apiBaseUrl}/api/apps.connections.open` },
+      socket: {
+        apiUrl: `${fixtures.slackSocket.apiBaseUrl}/api/apps.connections.open`,
+      },
     });
   };
 }

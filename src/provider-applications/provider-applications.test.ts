@@ -30,6 +30,12 @@ const slackConfiguration: ProviderApplicationConfiguration = {
   clientSecret: "client-secret",
   signingSecret: "signing-secret",
 };
+const slackSocketConfiguration: ProviderApplicationConfiguration = {
+  provider: "slack",
+  transport: "socket",
+  appId: "A1",
+  appToken: "xapp-startup-test",
+};
 
 describe("provider applications", () => {
   it("reveals no provider state to a signed-in non-operator", async () => {
@@ -91,11 +97,19 @@ describe("provider applications", () => {
   });
 
   it("shows Action needed when canonical connection health reports a legacy partial grant", async () => {
-    const fixture = createFixture({ connected: true, connectionStatus: "actionNeeded" });
+    const fixture = createFixture({
+      connected: true,
+      connectionStatus: "actionNeeded",
+    });
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Paseo", ownerLogin: "acme" },
+      identity: {
+        provider: "github",
+        id: "42",
+        name: "Paseo",
+        ownerLogin: "acme",
+      },
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
@@ -190,7 +204,12 @@ describe("provider applications", () => {
     fixture.store.values.set("github", {
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Paseo", ownerLogin: "acme" },
+      identity: {
+        provider: "github",
+        id: "42",
+        name: "Paseo",
+        ownerLogin: "acme",
+      },
       version: 1,
       verifiedAt: new Date("2026-08-14T10:00:00Z"),
       updatedAt: new Date("2026-08-14T10:00:00Z"),
@@ -220,11 +239,18 @@ describe("provider applications", () => {
       appSlug: "environment-app",
       clientId: "environment-client",
     };
-    const fixture = createFixture({ environment: { github: environmentConfiguration } });
+    const fixture = createFixture({
+      environment: { github: environmentConfiguration },
+    });
     fixture.store.values.set("github", {
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: {
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      },
       version: 3,
       verifiedAt: new Date(),
       updatedAt: new Date(),
@@ -257,17 +283,33 @@ describe("provider applications", () => {
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: {
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      },
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
       store: fixture.store,
-      environment: { github: { ...githubConfiguration, appId: "84", clientSecret: "rotated" } },
+      environment: {
+        github: {
+          ...githubConfiguration,
+          appId: "84",
+          clientSecret: "rotated",
+        },
+      },
       runtime: fixture.runtime,
       verifier: {
         verify: () =>
-          Promise.resolve({ provider: "github", id: "84", name: "Other", ownerLogin: "acme" }),
+          Promise.resolve({
+            provider: "github",
+            id: "84",
+            name: "Other",
+            ownerLogin: "acme",
+          }),
       },
       inventory: connectedInventory("42"),
       callbackOrigin: "https://hub.test",
@@ -282,17 +324,29 @@ describe("provider applications", () => {
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: {
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      },
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
       store: fixture.store,
-      environment: { github: { ...githubConfiguration, clientSecret: "rotated" } },
+      environment: {
+        github: { ...githubConfiguration, clientSecret: "rotated" },
+      },
       runtime: fixture.runtime,
       verifier: {
         verify: () =>
-          Promise.resolve({ provider: "github", id: "42", name: "Stored", ownerLogin: "acme" }),
+          Promise.resolve({
+            provider: "github",
+            id: "42",
+            name: "Stored",
+            ownerLogin: "acme",
+          }),
       },
       inventory: connectedInventory("42"),
       callbackOrigin: "https://hub.test",
@@ -300,6 +354,31 @@ describe("provider applications", () => {
 
     assert.deepEqual(failures, []);
     assert.equal(fixture.runtime.active("github")?.configurationId, "42");
+  });
+
+  it("publishes a saved Socket runtime in reconnecting state when cold-start readiness fails", async () => {
+    const fixture = createFixture();
+    await fixture.store.save({
+      provider: "slack",
+      configuration: slackSocketConfiguration,
+      identity: { provider: "slack", id: "A1", name: "Slack app" },
+      expectedVersion: undefined,
+      updatedByUserId: "operator",
+    });
+    fixture.runtime.failNextStart("slack");
+
+    const failures = await activateProviderApplicationsAtStartup({
+      store: fixture.store,
+      environment: {},
+      runtime: fixture.runtime,
+      verifier: { verify: () => Promise.reject(new Error("unused")) },
+      inventory: connectedInventory("A1"),
+      callbackOrigin: "https://hub.test",
+    });
+
+    assert.deepEqual(failures, []);
+    assert.equal(fixture.runtime.active("slack")?.configurationId, "A1");
+    assert.equal(fixture.runtime.latestCandidate("slack")?.closeCount, 0);
   });
 
   it("persists and activates Slack only after the verified OAuth installation", async () => {
@@ -406,7 +485,10 @@ describe("provider applications", () => {
 
   it("keeps the prior Slack store and runtime when the atomic bind transition fails", async () => {
     const fixture = createFixture();
-    const oldConfiguration = { ...slackConfiguration, clientSecret: "old-secret" };
+    const oldConfiguration = {
+      ...slackConfiguration,
+      clientSecret: "old-secret",
+    };
     await fixture.store.save({
       provider: "slack",
       configuration: oldConfiguration,
@@ -530,7 +612,11 @@ function createFixture(
       resolveAccount: () =>
         Promise.resolve({
           session: { id: "session", activeOrganizationId: "org" },
-          account: { id: "operator", name: "Operator", email: "operator@hub.test" },
+          account: {
+            id: "operator",
+            name: "Operator",
+            email: "operator@hub.test",
+          },
           isInstanceOperator: options.operator ?? true,
         } satisfies AccountAccessValue),
       rejectCookieMutation: () =>
