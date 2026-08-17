@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { afterEach, describe, it, vi } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { runWithFailureTracking } from "../../../failures/index.js";
@@ -370,6 +371,88 @@ describe("Slack Socket Mode source", () => {
     );
     assert.equal(source.status().state, "connected");
   });
+
+  it("cancels unfinished rate-limit bodies before retrying and closes every request on stop", async () => {
+    const canary = "unfinished-429-body-canary";
+    const fixture = await unfinishedOpenResponseFixture(
+      Array.from({ length: 20 }, () => 429),
+      canary,
+    );
+    closers.push(() => fixture.close());
+    const stream = new FailureLogStream();
+    const source = createSlackEventSource({
+      configuration: {
+        provider: "slack",
+        transport: "socket",
+        appId: "A123",
+        appToken: "xapp-unfinished-429-canary",
+      },
+      configurationVersion: 30,
+      socket: {
+        apiUrl: fixture.openUrl,
+        connectTimeoutMs: 1_000,
+        readinessTimeoutMs: 500,
+        random: () => 0,
+      },
+      accept: () => Promise.resolve({ status: "duplicate", receiptId: "unused" }),
+    });
+
+    await runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream));
+    assert.equal(fixture.requestCount(), 21);
+    assert.ok(
+      fixture.peakConnectionCount() <= 3,
+      `peak connections: ${fixture.peakConnectionCount()}`,
+    );
+    assertOneFailure(stream, {
+      operation: "slack.socket.connect",
+      component: "triggers",
+      failureKind: "network",
+      level: 50,
+      canary,
+    });
+    await waitUntil(() => fixture.unfinishedConnectionCount() === 0);
+
+    const stoppedAt = Date.now();
+    await source.source.stop();
+    assert.ok(Date.now() - stoppedAt < 500);
+    assert.equal(fixture.unfinishedConnectionCount(), 0);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stream.records().length, 1);
+  });
+
+  it.each([400, 401, 403, 500, 503])(
+    "disposes an unfinished HTTP %s body without parsing it before retrying",
+    async (status) => {
+      const canary = `unfinished-${status}-body-canary`;
+      const fixture = await unfinishedOpenResponseFixture([status], canary);
+      closers.push(() => fixture.close());
+      const stream = new FailureLogStream();
+      const source = createSlackEventSource({
+        configuration: {
+          provider: "slack",
+          transport: "socket",
+          appId: "A123",
+          appToken: `xapp-unfinished-${status}-canary`,
+        },
+        configurationVersion: 31,
+        socket: {
+          apiUrl: fixture.openUrl,
+          connectTimeoutMs: 1_000,
+          readinessTimeoutMs: 500,
+          random: () => 0,
+        },
+        accept: () => Promise.resolve({ status: "duplicate", receiptId: "unused" }),
+      });
+      closers.push(() => source.source.stop());
+
+      await runWithFailureTracking(() => source.source.start(ignoreEvent), createLogger(stream));
+
+      assert.equal(fixture.requestCount(), 2);
+      assert.equal(source.status().state, "connected");
+      assert.equal(stream.records().length, 1);
+      assert.equal(stream.text().includes(canary), false);
+    },
+  );
 
   const credentialErrors = [
     "account_inactive",
@@ -1519,4 +1602,77 @@ function closeServer(server: Server): Promise<void> {
       resolve();
     });
   });
+}
+
+async function unfinishedOpenResponseFixture(
+  statuses: readonly number[],
+  bodyCanary: string,
+): Promise<{
+  openUrl: string;
+  requestCount(): number;
+  connectionCount(): number;
+  unfinishedConnectionCount(): number;
+  peakConnectionCount(): number;
+  close(): Promise<void>;
+}> {
+  let requests = 0;
+  let peakConnections = 0;
+  const connections = new Set<Socket>();
+  const unfinishedConnections = new Set<Socket>();
+  const webSockets = new WebSocketServer({ noServer: true });
+  const server = createServer((_request, response) => {
+    const status = statuses[requests];
+    requests += 1;
+    if (status !== undefined) {
+      const responseSocket = response.socket;
+      if (responseSocket !== null) {
+        unfinishedConnections.add(responseSocket);
+        responseSocket.once("close", () => unfinishedConnections.delete(responseSocket));
+      }
+      response.writeHead(status, {
+        "content-type": "application/json",
+        "content-length": "4096",
+        "retry-after": "0",
+      });
+      response.write(`{"private_detail":"${bodyCanary}`);
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port(server)}/socket?ticket=secret` }),
+    );
+  });
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    peakConnections = Math.max(peakConnections, connections.size);
+    socket.once("close", () => connections.delete(socket));
+  });
+  server.on("upgrade", (request, socket, head) => {
+    webSockets.handleUpgrade(request, socket, head, (client) =>
+      webSockets.emit("connection", client),
+    );
+  });
+  webSockets.on("connection", (client) => {
+    client.send(
+      JSON.stringify({
+        type: "hello",
+        connection_info: { app_id: "A123" },
+        num_connections: 1,
+      }),
+    );
+  });
+  await listen(server);
+  return {
+    openUrl: `http://127.0.0.1:${port(server)}/api/apps.connections.open`,
+    requestCount: () => requests,
+    connectionCount: () => connections.size,
+    unfinishedConnectionCount: () => unfinishedConnections.size,
+    peakConnectionCount: () => peakConnections,
+    close: async () => {
+      for (const client of webSockets.clients) client.terminate();
+      for (const connection of connections) connection.destroy();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await closeServer(server);
+    },
+  };
 }

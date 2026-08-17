@@ -47,8 +47,8 @@ class SlackSocketProtocolError extends Error {
 }
 
 class SlackSocketReadinessError extends Error {
-  constructor() {
-    super("Slack Socket Mode did not become ready before the startup deadline");
+  constructor(cause?: unknown) {
+    super("Slack Socket Mode did not become ready before the startup deadline", { cause });
     this.name = "SlackSocketReadinessError";
   }
 }
@@ -132,6 +132,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let readinessTimer: NodeJS.Timeout | undefined;
   let readinessSettled = true;
   let connectionFailureEpisode: string | undefined;
+  let lastConnectionFailure: unknown;
   let connectedStatus: Extract<SlackDeliveryStatus, { state: "connected" }> | undefined;
   const delayedWorkspaces = new Map<string, Date>();
   let activeSocketUrl: string | undefined;
@@ -236,11 +237,16 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       );
       const retryAfter = Number(response.headers.get("retry-after"));
       if (response.status === 429) {
+        await disposeOpenResponse(response, controller);
         throw new SlackSocketOpenError(
           "ratelimited",
           response.status,
           Number.isFinite(retryAfter) ? retryAfter : undefined,
         );
+      }
+      if (!response.ok) {
+        await disposeOpenResponse(response, controller);
+        throw new SlackSocketOpenError(`http_${response.status}`, response.status);
       }
       const body: unknown = await response.json().catch((error: unknown) => {
         if (controller.signal.aborted) throw error;
@@ -264,7 +270,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       openedSocket.once("close", () => sockets.delete(openedSocket));
       return awaitSocket(openedSocket);
     } catch (error) {
-      if (controller.signal.aborted && !stopped) {
+      if (controller.signal.aborted && !stopped && !(error instanceof SlackSocketOpenError)) {
         throw controller.signal.reason instanceof Error ? controller.signal.reason : error;
       }
       throw error;
@@ -334,6 +340,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               settled = true;
               clearTimeout(timer);
               connectionFailureEpisode = undefined;
+              lastConnectionFailure = undefined;
               delayedWorkspaces.clear();
               connectedStatus = {
                 state: "connected",
@@ -525,7 +532,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         rejectReady = reject;
       });
       readinessTimer = setTimeout(
-        () => settleReadiness(new SlackSocketReadinessError()),
+        () => settleReadiness(new SlackSocketReadinessError(lastConnectionFailure)),
         readinessTimeoutMs,
       );
       supervisor = supervise();
@@ -599,6 +606,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     const episode = connectionEpisode(error, action);
     if (connectionFailureEpisode === episode) return;
     connectionFailureEpisode = episode;
+    lastConnectionFailure = error;
     reportFailure(
       error,
       {
@@ -686,6 +694,19 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       .finally(() => {
         refreshPromise = undefined;
       });
+  }
+}
+
+async function disposeOpenResponse(response: Response, controller: AbortController): Promise<void> {
+  if (response.body === null) return;
+  try {
+    await response.body.cancel();
+  } catch {
+    // Slack's status remains the material failure; the abort below owns transport cleanup.
+  } finally {
+    // A discarded body may be incomplete, so cancellation alone does not guarantee that the
+    // underlying HTTP connection is reusable or closed. Abort while connectOnce still owns it.
+    controller.abort(new Error("Slack Socket Mode response body was discarded"));
   }
 }
 

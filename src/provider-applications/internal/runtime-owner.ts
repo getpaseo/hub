@@ -4,7 +4,7 @@ import type { GitHubConfigurationProvider } from "../../configuration/github-syn
 import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
-import { reportFailure } from "../../failures/index.js";
+import { hasFailureReport, reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import type {
@@ -55,6 +55,19 @@ interface ActiveRegistration {
 interface RuntimeSnapshotMarker {
   snapshotId: string;
   leaseId: string;
+}
+
+/** @package Candidate startup classification owned by the composed runtime, which is the first
+ * boundary that can see both the source failure and its resulting public delivery status. */
+export class ProviderRuntimeCandidateStartError extends Error {
+  constructor(
+    readonly disposition: "retryAfterBackoff" | "retryAfterConfigurationChange",
+    readonly failureAlreadyOwned: boolean,
+    cause: unknown,
+  ) {
+    super("Provider runtime candidate did not become ready", { cause });
+    this.name = "ProviderRuntimeCandidateStartError";
+  }
 }
 
 const RUNTIME_SNAPSHOT_KEY = "__paseoProviderRuntimeSnapshot";
@@ -182,7 +195,25 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return {
       start: async () => {
         if (slot.handler === undefined) return;
-        await startSources(active, slot.handler);
+        try {
+          await startSources(active, slot.handler);
+        } catch (error) {
+          if (
+            provider !== "slack" ||
+            configuration.provider !== "slack" ||
+            configuration.transport !== "socket"
+          ) {
+            throw error;
+          }
+          const status = registration.slackDelivery?.status();
+          throw new ProviderRuntimeCandidateStartError(
+            status?.state === "actionNeeded"
+              ? "retryAfterConfigurationChange"
+              : "retryAfterBackoff",
+            status?.state === "actionNeeded" || hasFailureReport(error),
+            error,
+          );
+        }
       },
       beginConnection: async (request) => {
         const response = await registration.connection.actions["start"]?.(request);

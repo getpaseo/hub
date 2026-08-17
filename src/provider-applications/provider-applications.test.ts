@@ -60,6 +60,15 @@ describe("provider applications", () => {
     assert.equal(fixture.runtime.prepareCount("github"), 0);
   });
 
+  it("retries both the published Slack transport and a blocked desired replacement", async () => {
+    const fixture = createFixture();
+
+    await fixture.applications.retrySlackSocket(request("POST"));
+
+    assert.equal(fixture.runtime.slackRetryCount, 1);
+    assert.equal(fixture.reconciliationRetryCount, 1);
+  });
+
   it("keeps secrets write-only in every overview projection", async () => {
     const fixture = createFixture();
     await fixture.applications.verifyAndSave(request("POST"), "github", githubConfiguration);
@@ -601,6 +610,7 @@ function createFixture(
   const store = new MemoryStore();
   const runtime = new BlockingRuntime();
   const returnRoutes: string[] = [];
+  let reconciliationRetryCount = 0;
   let verificationIdentity: ProviderApplicationIdentity = {
     provider: "github",
     id: "42",
@@ -640,6 +650,9 @@ function createFixture(
           scopes: ["app_mentions:read", "chat:write"],
         }),
     },
+    retrySlackReconciliation: () => {
+      reconciliationRetryCount += 1;
+    },
     inventory: {
       connectedIdentities: (provider) =>
         Promise.resolve(
@@ -673,6 +686,9 @@ function createFixture(
     store,
     runtime,
     returnRoutes,
+    get reconciliationRetryCount() {
+      return reconciliationRetryCount;
+    },
     get verificationIdentity() {
       return verificationIdentity;
     },
@@ -799,6 +815,12 @@ class BlockingRuntime implements ProviderRuntimeOwner {
   private slackInstallationHandler:
     | Parameters<NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>>[0]
     | undefined;
+  slackRetryCount = 0;
+
+  retrySlackDelivery() {
+    this.slackRetryCount += 1;
+    return Promise.resolve();
+  }
 
   onSlackInstallation(
     handler: Parameters<NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>>[0],

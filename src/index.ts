@@ -135,6 +135,7 @@ async function createProductionRuntime(
       applicationBaseUrl: identity.appUrl,
       ...(options.slackSocket === undefined ? {} : { slackSocket: options.slackSocket }),
     });
+    let retrySlackReconciliation: () => void = () => undefined;
     const providerApplications = createProviderApplications({
       auth,
       store: providerStore,
@@ -152,6 +153,7 @@ async function createProductionRuntime(
         url.searchParams.set("returnRoute", returnRoute);
         return begin(new Request(url, { method: "POST", headers: request.headers }));
       },
+      retrySlackReconciliation: () => retrySlackReconciliation(),
     });
     let providerReconciler: ReturnType<typeof createProviderRuntimeReconciler> | undefined;
     const application = await createApplicationRuntime({
@@ -189,6 +191,7 @@ async function createProductionRuntime(
       instanceId: randomBytes(16).toString("hex"),
       environmentManaged: providerEnvironment.slack !== undefined,
     });
+    retrySlackReconciliation = () => providerReconciler?.retry();
     providerReconciler.start();
     return application;
   } catch (error) {

@@ -87,6 +87,17 @@ export function failureWasReported(): boolean {
   return requestFailureState.getStore()?.reported === true;
 }
 
+export function hasFailureReport(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    if (reportedErrors.has(current)) return true;
+    seen.add(current);
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export function reportFailure(
   error: unknown,
   context: FailureContext,

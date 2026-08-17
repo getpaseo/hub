@@ -357,6 +357,7 @@ interface ProviderApplicationsOptions {
     begin: (request: Request) => Promise<{ url: string }>,
   ) => Promise<{ url: string }>;
   slackSocketVerifier?: SlackSocketInstallationVerifier;
+  retrySlackReconciliation?: () => void;
 }
 
 export function createProviderApplications(
@@ -633,6 +634,7 @@ export function createProviderApplications(
         throw new ProviderApplicationError("invalidInput");
       }
       await options.runtime.retrySlackDelivery();
+      options.retrySlackReconciliation?.();
     },
   };
 }

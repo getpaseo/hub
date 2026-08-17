@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
 import { WebSocketServer, type RawData } from "ws";
+import { runWithFailureTracking } from "../failures/index.js";
+import { createLogger } from "../logger.js";
+import { FailureLogStream } from "../test-utils/failure-logs.js";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { createDatabase } from "../db/pg.js";
@@ -208,6 +211,94 @@ describe("provider runtime reconciliation", () => {
       assert.deepEqual(runtime.published, [1]);
       await reconciler.stop();
     } finally {
+      await fixture.close();
+    }
+  });
+
+  it("owns remote Socket replacement attempts by desired version across real HTTP and WebSockets", async () => {
+    const fixture = await databaseFixture("PGlite");
+    const slack = await versionedSlackFixture({
+      "xapp-terminal": ["invalid_auth"],
+      "xapp-transient": ["service_unavailable", "service_unavailable"],
+      "xapp-superseded": ["service_unavailable"],
+    });
+    const stream = new FailureLogStream();
+    let reconciler: ReturnType<typeof createProviderRuntimeReconciler> | undefined;
+    let stableSource: TriggerSource | undefined;
+    try {
+      await fixture.bundle.runtime.migrate();
+      let stored = socketApplicationWithToken(2, "xapp-terminal");
+      await activate(fixture.bundle, stored);
+      const runtime = new DynamicProviderRuntime({
+        database: createMemoryDatabase(),
+        auth: operatorAuth(),
+        applicationBaseUrl: "https://hub.example.test",
+        slackSocket: {
+          apiUrl: slack.openUrl,
+          readinessTimeoutMs: 20,
+          connectTimeoutMs: 100,
+          random: () => 1,
+        },
+      });
+      stableSource = runtime
+        .registrations()
+        .find((registration) => registration.connection.name === "slack")!.sources[0]!;
+      await stableSource.start(() => Promise.resolve());
+      const initial = await runtime.prepare(
+        "slack",
+        socketApplicationWithToken(1, "xapp-working").configuration,
+        "https://hub.example.test",
+        { provider: "slack", id: "A1", name: "Paseo" },
+        1,
+      );
+      await initial.start();
+      initial.publish();
+      await slack.waitForActive("xapp-working", 1);
+
+      reconciler = createProviderRuntimeReconciler({
+        database: fixture.bundle.runtime,
+        store: readOnlyStore(() => stored),
+        runtime,
+        callbackOrigin: "https://hub.example.test",
+        instanceId: "hub-version-owned-attempts",
+        environmentManaged: false,
+        intervalMs: 5,
+        retryBaseMs: 200,
+      });
+
+      runWithFailureTracking(() => reconciler!.start(), createLogger(stream));
+      await eventually(() => slack.requestCount("xapp-terminal") === 1);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.equal(slack.requestCount("xapp-terminal"), 1);
+      assert.equal(runtime.publishedApplication("slack")?.configurationVersion, 1);
+      assert.equal(slack.activeCount("xapp-working"), 1);
+      assert.equal(stream.records().length, 1);
+
+      stored = socketApplicationWithToken(3, "xapp-transient");
+      await activate(fixture.bundle, stored);
+      await eventually(() => runtime.publishedApplication("slack")?.configurationVersion === 3);
+      const transientAttempts = slack.requestTimes("xapp-transient");
+      assert.equal(transientAttempts.length, 3);
+      assert.ok(transientAttempts[1]! - transientAttempts[0]! >= 150);
+      assert.ok(transientAttempts[2]! - transientAttempts[1]! >= 350);
+      assert.equal(slack.activeCount("xapp-working"), 0);
+      assert.equal(slack.activeCount("xapp-transient"), 1);
+
+      stored = socketApplicationWithToken(4, "xapp-superseded");
+      await activate(fixture.bundle, stored);
+      await eventually(() => slack.requestCount("xapp-superseded") === 1);
+      const supersededAt = Date.now();
+      stored = socketApplicationWithToken(5, "xapp-new-version");
+      await activate(fixture.bundle, stored);
+      await eventually(() => runtime.publishedApplication("slack")?.configurationVersion === 5);
+      assert.ok(slack.requestTimes("xapp-new-version")[0]! - supersededAt < 150);
+      assert.equal(slack.activeCount("xapp-transient"), 0);
+      assert.equal(slack.activeCount("xapp-new-version"), 1);
+    } finally {
+      await reconciler?.stop();
+      await stableSource?.stop();
+      await stableSource?.drain?.();
+      await slack.close();
       await fixture.close();
     }
   });
@@ -545,6 +636,19 @@ function socketApplication(version: number): StoredProviderApplication {
   };
 }
 
+function socketApplicationWithToken(version: number, appToken: string): StoredProviderApplication {
+  const application = socketApplication(version);
+  return {
+    ...application,
+    configuration: {
+      provider: "slack",
+      transport: "socket",
+      appId: "A1",
+      appToken,
+    },
+  };
+}
+
 function readOnlyStore(
   read: () => StoredProviderApplication,
 ): Pick<ProviderApplicationStore, "read"> {
@@ -645,6 +749,82 @@ async function countingSlackFixture(): Promise<{
       client.send(JSON.stringify(payload));
     },
     waitForAck: (envelopeId) => eventually(() => acknowledgements.has(envelopeId)),
+    close: async () => {
+      for (const socket of sockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => {
+          if (error !== undefined) {
+            reject(error);
+            return;
+          }
+          resolve();
+        }),
+      );
+    },
+  };
+}
+
+async function versionedSlackFixture(
+  failures: Readonly<Record<string, readonly string[]>>,
+): Promise<{
+  openUrl: string;
+  requestCount(token: string): number;
+  requestTimes(token: string): readonly number[];
+  activeCount(token: string): number;
+  waitForActive(token: string, count: number): Promise<void>;
+  close(): Promise<void>;
+}> {
+  const attempts = new Map<string, number>();
+  const times = new Map<string, number[]>();
+  const active = new Map<string, Set<import("ws").WebSocket>>();
+  const socketTokens = new WeakMap<import("ws").WebSocket, string>();
+  const server = createServer((request, response) => {
+    const authorization = request.headers.authorization ?? "";
+    const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : authorization;
+    const attempt = attempts.get(token) ?? 0;
+    attempts.set(token, attempt + 1);
+    const tokenTimes = times.get(token) ?? [];
+    tokenTimes.push(Date.now());
+    times.set(token, tokenTimes);
+    const failure = failures[token]?.[attempt];
+    response.setHeader("content-type", "application/json");
+    if (failure !== undefined) {
+      response.end(JSON.stringify({ ok: false, error: failure }));
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        url: `ws://127.0.0.1:${serverPort(server)}/socket?token=${encodeURIComponent(token)}`,
+      }),
+    );
+  });
+  const sockets = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (request, socket, head) => {
+    sockets.handleUpgrade(request, socket, head, (webSocket) => {
+      const token = new URL(request.url ?? "/", "http://fixture").searchParams.get("token") ?? "";
+      socketTokens.set(webSocket, token);
+      sockets.emit("connection", webSocket, request);
+    });
+  });
+  sockets.on("connection", (socket) => {
+    const token = socketTokens.get(socket) ?? "";
+    const tokenSockets = active.get(token) ?? new Set<import("ws").WebSocket>();
+    tokenSockets.add(socket);
+    active.set(token, tokenSockets);
+    socket.once("close", () => tokenSockets.delete(socket));
+    socket.send(
+      JSON.stringify({ type: "hello", connection_info: { app_id: "A1" }, num_connections: 1 }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    openUrl: `http://127.0.0.1:${serverPort(server)}/api/apps.connections.open`,
+    requestCount: (token) => attempts.get(token) ?? 0,
+    requestTimes: (token) => times.get(token) ?? [],
+    activeCount: (token) => active.get(token)?.size ?? 0,
+    waitForActive: (token, count) => eventually(() => (active.get(token)?.size ?? 0) === count),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));

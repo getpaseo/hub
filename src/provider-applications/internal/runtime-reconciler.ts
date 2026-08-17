@@ -3,6 +3,7 @@ import { reportFailure } from "../../failures/index.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { slackActionPolicy } from "../../triggers/slack/source/health-policy.js";
 import { PROVIDER_OBSERVATION_LIFETIME_SECONDS } from "./observation-lifetime.js";
+import { ProviderRuntimeCandidateStartError } from "./runtime-owner.js";
 import type {
   ProviderApplicationStore,
   ProviderRuntimeCandidate,
@@ -14,6 +15,13 @@ interface ActivationRow extends QueryRow {
   configuration_version: number;
 }
 
+interface DesiredVersionAttempt {
+  key: string;
+  failures: number;
+  retryAt: number;
+  terminal: boolean;
+}
+
 /** @package */
 export function createProviderRuntimeReconciler(options: {
   database: DatabaseRuntime;
@@ -23,12 +31,17 @@ export function createProviderRuntimeReconciler(options: {
   instanceId: string;
   environmentManaged: boolean;
   intervalMs?: number;
-}): { start(): void; stop(): Promise<void> } {
+  retryBaseMs?: number;
+  now?: () => number;
+}): { start(): void; retry(): void; stop(): Promise<void> } {
   let stopped = true;
   let timer: NodeJS.Timeout | undefined;
   let running = Promise.resolve();
   let failureActive = false;
+  let desiredAttempt: DesiredVersionAttempt | undefined;
   const intervalMs = options.intervalMs ?? 5_000;
+  const retryBaseMs = options.retryBaseMs ?? 1_000;
+  const now = options.now ?? Date.now;
 
   const schedule = () => {
     if (stopped) return;
@@ -74,6 +87,7 @@ export function createProviderRuntimeReconciler(options: {
       active === undefined ||
       (published !== undefined && active.configuration_version <= published.configurationVersion)
     ) {
+      desiredAttempt = undefined;
       return;
     }
     const stored = await options.store.read("slack");
@@ -84,6 +98,12 @@ export function createProviderRuntimeReconciler(options: {
     ) {
       return;
     }
+    const attemptKey = `${stored.identity.id}:${stored.version}`;
+    if (desiredAttempt?.key !== attemptKey) {
+      desiredAttempt = { key: attemptKey, failures: 0, retryAt: 0, terminal: false };
+    }
+    const attempt = desiredAttempt;
+    if (attempt.terminal || attempt.retryAt > now()) return;
     let candidate: ProviderRuntimeCandidate | undefined;
     try {
       candidate = await options.runtime.prepare(
@@ -96,6 +116,21 @@ export function createProviderRuntimeReconciler(options: {
       await candidate.start();
       candidate.publish();
       candidate = undefined;
+      desiredAttempt = undefined;
+    } catch (error) {
+      attempt.failures += 1;
+      if (
+        error instanceof ProviderRuntimeCandidateStartError &&
+        error.disposition === "retryAfterConfigurationChange"
+      ) {
+        attempt.terminal = true;
+      } else {
+        attempt.retryAt = now() + Math.min(30_000, retryBaseMs * 2 ** (attempt.failures - 1));
+      }
+      if (error instanceof ProviderRuntimeCandidateStartError && error.failureAlreadyOwned) {
+        return;
+      }
+      throw error;
     } finally {
       await candidate?.close();
     }
@@ -156,6 +191,9 @@ export function createProviderRuntimeReconciler(options: {
       if (!stopped) return;
       stopped = false;
       running = tick().finally(schedule);
+    },
+    retry() {
+      desiredAttempt = undefined;
     },
     async stop() {
       if (stopped) return;
