@@ -16,6 +16,7 @@ import {
   readDiscordPromptBody,
 } from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
+import { reactionPhase, type ReactionPhase } from "../reactions.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage, NormalizedDiscordMessageEvent } from "./events.js";
 
@@ -85,8 +86,6 @@ export interface DiscordOutputContext {
   threadId: string | null;
   messageId: string;
 }
-
-type DiscordReactionPhase = "accepted" | "started";
 
 export function createDiscordTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -210,12 +209,12 @@ export function createDiscordTriggerProvider(options: {
       };
     },
     async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
-      if (discordReactionPhase(reactionState) !== undefined) return reactionState;
+      if (reactionPhase(reactionState) !== undefined) return reactionState;
       await reactSafely(options.bot, triggerContext.target, "eyes");
       return { phase: "accepted" };
     },
     async onAgentExecutionStarted(triggerContext, _outputContext, reactionState) {
-      if (discordReactionPhase(reactionState) === "started") return reactionState;
+      if (reactionPhase(reactionState) === "started") return reactionState;
       await deleteReactionSafely(options.bot, triggerContext.target, "eyes");
       await reactSafely(options.bot, triggerContext.target, "hourglass");
       return { phase: "started" };
@@ -284,9 +283,9 @@ async function deleteReactionForPhase(
   bot: DiscordBotClient,
   target: DiscordOutputContext,
   reactionState: TriggerProviderReactionState | undefined,
-  fallbackPhase?: DiscordReactionPhase,
+  fallbackPhase?: ReactionPhase,
 ): Promise<void> {
-  const phase = discordReactionPhase(reactionState) ?? fallbackPhase;
+  const phase = reactionPhase(reactionState) ?? fallbackPhase;
   if (phase === "accepted") {
     await deleteReactionSafely(bot, target, "eyes");
     return;
@@ -297,16 +296,6 @@ async function deleteReactionForPhase(
   }
   await deleteReactionSafely(bot, target, "eyes");
   await deleteReactionSafely(bot, target, "hourglass");
-}
-
-function discordReactionPhase(
-  reactionState: TriggerProviderReactionState | undefined,
-): DiscordReactionPhase | undefined {
-  if (typeof reactionState !== "object" || reactionState === null || Array.isArray(reactionState)) {
-    return undefined;
-  }
-  const phase = reactionState["phase"];
-  return phase === "accepted" || phase === "started" ? phase : undefined;
 }
 
 function buildDiscordMergeData(
