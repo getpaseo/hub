@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertNever } from "../exhaustive.js";
 import { reportFailure } from "../failures/index.js";
 import {
   IssueCommentPayloadSchema,
@@ -13,9 +14,10 @@ import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
 import { classifyGitHubEvent } from "../triggers/github/classification.js";
+import type { ConnectionProvider } from "../db/types.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: ConnectionProvider | "manual";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -31,12 +33,40 @@ const ManualTriggerPayloadSchema = z
  * everywhere else treats a trigger as an opaque id.
  */
 export function summarizeTrigger(source: string, payload: unknown): TriggerSummary {
-  const [provider] = source.split(".");
-  if (provider === "github") return summarizeGitHub(payload);
-  if (provider === "slack") return summarizeSlack(payload);
-  if (provider === "discord") return summarizeDiscord(payload);
-  if (provider === "linear") return summarizeLinear(payload);
-  return summarizeManual(payload);
+  const provider = providerForSource(source);
+  // A manual run, and anything whose prefix names no provider, has no payload shape to read.
+  if (provider === undefined) return summarizeManual(payload);
+  switch (provider) {
+    case "github":
+      return summarizeGitHub(payload);
+    case "slack":
+      return summarizeSlack(payload);
+    case "discord":
+      return summarizeDiscord(payload);
+    case "linear":
+      return summarizeLinear(payload);
+    default:
+      return assertNever(provider, "summarizeTrigger");
+  }
+}
+
+/**
+ * Keyed by every connection provider, so a provider added to `ConnectionProvider` without a
+ * summarizer here fails to compile. Without it the event falls through to `summarizeManual` and
+ * a thing a person did on Slack or Discord is reported as a manual run.
+ */
+const PROVIDERS_BY_SOURCE_PREFIX: ReadonlyMap<string, ConnectionProvider> = new Map(
+  Object.entries({
+    github: "github",
+    slack: "slack",
+    discord: "discord",
+    linear: "linear",
+  } satisfies Record<ConnectionProvider, ConnectionProvider>),
+);
+
+function providerForSource(source: string): ConnectionProvider | undefined {
+  const [prefix] = source.split(".");
+  return prefix === undefined ? undefined : PROVIDERS_BY_SOURCE_PREFIX.get(prefix);
 }
 
 interface GitHubHeadline {

@@ -1,4 +1,9 @@
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type {
+  AgentExecutionStatus,
+  CONNECTION_PROVIDERS,
+  MachineSource,
+  MachineStatus,
+} from "./schema.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
@@ -354,7 +359,13 @@ export interface PendingProjectTriggerMigration {
   revision: ProjectConfigurationRevisionRecord;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
+/**
+ * Derived from the schema constant rather than spelled out again, so a provider added to
+ * CONNECTION_PROVIDERS reaches every exhaustive switch and `satisfies Record<...>` map that
+ * keys off this type. Two independent spellings would let the array grow while the dispatch
+ * sites kept compiling.
+ */
+export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
 
 export type ConnectionAttemptPhase =
   | "github_setup"

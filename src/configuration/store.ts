@@ -1,4 +1,5 @@
 import { dump } from "js-yaml";
+import { assertNever } from "../exhaustive.js";
 import { z } from "zod";
 import {
   compiledConfigurationHash,
@@ -691,14 +692,21 @@ async function compileTriggers(
   return { triggers: compiled, routes, issues };
 }
 
+/**
+ * Keyed by every connection provider, so widening `ConnectionProvider` fails to compile here
+ * rather than silently classifying a new provider's events as belonging to no provider at all.
+ */
+const PROVIDERS_BY_EVENT_PREFIX: ReadonlyMap<string, ConnectionProvider> = new Map(
+  Object.entries({
+    github: "github",
+    slack: "slack",
+    discord: "discord",
+    linear: "linear",
+  } satisfies Record<ConnectionProvider, ConnectionProvider>),
+);
+
 function providerForEvent(eventName: string): ConnectionProvider | undefined {
-  const provider = eventName.slice(0, eventName.indexOf("."));
-  return provider === "github" ||
-    provider === "slack" ||
-    provider === "discord" ||
-    provider === "linear"
-    ? provider
-    : undefined;
+  return PROVIDERS_BY_EVENT_PREFIX.get(eventName.slice(0, eventName.indexOf(".")));
 }
 
 function readAuthoredResource(
@@ -706,11 +714,9 @@ function readAuthoredResource(
   filters: CompiledTrigger["filters"] | undefined,
 ): string | undefined {
   if (filters === undefined) return undefined;
-  let value: string | undefined;
-  if (provider === "github") value = filters.repo;
-  else if (provider === "slack") value = filters.workspace;
-  else if (provider === "discord") value = filters.guild;
-  else value = filters.project;
+  // Reads the same provider→filter-key mapping the authoring errors quote, rather than keeping a
+  // second copy of it that can drift.
+  const value = filters[resourceField(provider)];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
@@ -732,36 +738,42 @@ async function resolveResource(
   resource: string,
   allowedConnectionIds: ReadonlySet<string>,
 ): Promise<{ connectionId: string; resourceId: string } | undefined> {
-  if (provider === "github") {
-    const repositories = (await database.listGitHubRepositories(organizationId)).filter(
-      (repository) =>
-        repository.fullName === resource && allowedConnectionIds.has(repository.connectionId),
-    );
-    if (repositories.length !== 1) return undefined;
-    const repository = repositories[0]!;
-    return { connectionId: repository.connectionId, resourceId: String(repository.repositoryId) };
+  switch (provider) {
+    case "github": {
+      const repositories = (await database.listGitHubRepositories(organizationId)).filter(
+        (repository) =>
+          repository.fullName === resource && allowedConnectionIds.has(repository.connectionId),
+      );
+      if (repositories.length !== 1) return undefined;
+      const repository = repositories[0]!;
+      return { connectionId: repository.connectionId, resourceId: String(repository.repositoryId) };
+    }
+    case "slack": {
+      const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
+        ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+      );
+      return connection === undefined
+        ? undefined
+        : { connectionId: connection.id, resourceId: connection.teamId };
+    }
+    case "discord": {
+      const connection = (await database.organizationConnectionUsage(organizationId)).discord.find(
+        ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+      );
+      return connection === undefined
+        ? undefined
+        : { connectionId: connection.id, resourceId: connection.guildId };
+    }
+    case "linear": {
+      const connections = (
+        await database.organizationConnectionUsage(organizationId)
+      ).linear.filter(({ id }) => allowedConnectionIds.has(id));
+      if (connections.length !== 1) return undefined;
+      return { connectionId: connections[0]!.id, resourceId: resource };
+    }
+    default:
+      return assertNever(provider, "resolveResource");
   }
-  if (provider === "slack") {
-    const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
-      ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
-    );
-    return connection === undefined
-      ? undefined
-      : { connectionId: connection.id, resourceId: connection.teamId };
-  }
-  if (provider === "linear") {
-    const connections = (await database.organizationConnectionUsage(organizationId)).linear.filter(
-      ({ id }) => allowedConnectionIds.has(id),
-    );
-    if (connections.length !== 1) return undefined;
-    return { connectionId: connections[0]!.id, resourceId: resource };
-  }
-  const connection = (await database.organizationConnectionUsage(organizationId)).discord.find(
-    ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
-  );
-  return connection === undefined
-    ? undefined
-    : { connectionId: connection.id, resourceId: connection.guildId };
 }
 
 function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (string | number)[] {
@@ -769,15 +781,33 @@ function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (s
 }
 
 function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
-  if (provider === "github") return "repo";
-  if (provider === "slack") return "workspace";
-  return provider === "discord" ? "guild" : "project";
+  switch (provider) {
+    case "github":
+      return "repo";
+    case "slack":
+      return "workspace";
+    case "discord":
+      return "guild";
+    case "linear":
+      return "project";
+    default:
+      return assertNever(provider, "resourceField");
+  }
 }
 
 function providerLabel(provider: ConnectionProvider): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "slack") return "Slack";
-  return provider === "discord" ? "Discord" : "Linear";
+  switch (provider) {
+    case "github":
+      return "GitHub";
+    case "slack":
+      return "Slack";
+    case "discord":
+      return "Discord";
+    case "linear":
+      return "Linear";
+    default:
+      return assertNever(provider, "providerLabel");
+  }
 }
 
 function resourceLabel(provider: ConnectionProvider): string {

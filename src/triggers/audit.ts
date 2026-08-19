@@ -1,11 +1,11 @@
 import type { Logger } from "pino";
-import type { ProviderEventAcceptance } from "../db/types.js";
+import type { ConnectionProvider, ProviderEventAcceptance } from "../db/types.js";
 import { logger } from "../logger.js";
 
 type EventAuditLogger = Pick<Logger, "info">;
 
 export function logProviderEventIntake(input: {
-  provider: "github" | "slack" | "discord" | "linear";
+  provider: ConnectionProvider;
   source: string;
   deliveryId: string;
   acceptance: ProviderEventAcceptance;
