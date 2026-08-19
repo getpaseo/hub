@@ -10,8 +10,13 @@ import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import { logProviderEventIntake } from "../audit.js";
+import {
+  createWebhookHandlerRegistry,
+  dispatchWebhookEvents,
+  MAX_WEBHOOK_BYTES,
+  parseWebhookJsonBody,
+} from "../webhook-shared.js";
 
-const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_HEADER_LENGTH = 128;
 
 export interface WebhookSourceOptions {
@@ -63,7 +68,7 @@ export function createWebhookSource(
   secret: string | undefined,
   options: WebhookSourceOptions,
 ): WebhookEndpoint {
-  const handlers = new Set<TriggerHandler>();
+  const registry = createWebhookHandlerRegistry();
 
   async function handle(request: Request): Promise<Response> {
     if (secret === undefined) {
@@ -74,7 +79,7 @@ export function createWebhookSource(
     if (verified instanceof Response) return verified;
 
     try {
-      return await handleVerifiedWebhook(verified, options, handlers);
+      return await handleVerifiedWebhook(verified, options, registry.handlers);
     } catch (error) {
       reportFailure(
         error,
@@ -96,15 +101,7 @@ export function createWebhookSource(
     }
   }
 
-  return {
-    handle,
-    async start(nextHandler: TriggerHandler): Promise<void> {
-      handlers.add(nextHandler);
-    },
-    async stop(): Promise<void> {
-      handlers.clear();
-    },
-  };
+  return { handle, start: registry.start, stop: registry.stop };
 }
 
 async function handleVerifiedWebhook(
@@ -174,7 +171,7 @@ async function handleVerifiedWebhook(
 
   if (acceptance.status !== "accepted") return new Response("OK", { status: 200 });
 
-  return dispatchWebhook(handlers, acceptance.events);
+  return dispatchWebhookEvents(handlers, acceptance.events);
 }
 
 async function verifyWebhookRequest(
@@ -212,20 +209,15 @@ async function verifyWebhookRequest(
     return new Response("Bad Request", { status: 400 });
   }
 
-  let rawJson: unknown;
+  const parsed = parseWebhookJsonBody({
+    body: captured,
+    operation: "github.webhook.parse",
+    provider: "github",
+    scrubValues: [secret, signature],
+  });
+  if (parsed instanceof Response) return parsed;
 
-  try {
-    rawJson = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured));
-  } catch (error) {
-    reportFailure(
-      error,
-      { operation: "github.webhook.parse", component: "triggers", provider: "github", status: 400 },
-      { status: 400, scrubValues: [secret, signature] },
-    );
-    return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
-  }
-
-  const parsedBody = WebhookPayloadSchema.safeParse(rawJson);
+  const parsedBody = WebhookPayloadSchema.safeParse(parsed.payload);
 
   if (!parsedBody.success) {
     reportGitHubRejection("invalid_payload", 400, secret, signature);
@@ -289,17 +281,6 @@ async function handleLifecycle(
     },
     "provider lifecycle event applied",
   );
-  return new Response("OK", { status: 200 });
-}
-
-async function dispatchWebhook(
-  handlers: Set<TriggerHandler>,
-  triggers: readonly Parameters<TriggerHandler>[0][],
-): Promise<Response> {
-  await Promise.all(
-    triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
-  );
-
   return new Response("OK", { status: 200 });
 }
 

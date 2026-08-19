@@ -5,10 +5,15 @@ import { logger } from "../../logger.js";
 import { logProviderEventIntake } from "../audit.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
+import {
+  createWebhookHandlerRegistry,
+  dispatchWebhookEvents,
+  MAX_WEBHOOK_BYTES,
+  parseWebhookJsonBody,
+} from "../webhook-shared.js";
 import { eventIssueId, eventProjectId, normalizeLinearEvent } from "./events.js";
 import type { LinearIssueDetails } from "../../providers/linear/client.js";
 
-const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_TIMESTAMP_SKEW_MS = 60_000;
 
 export interface LinearWebhookSourceOptions {
@@ -46,19 +51,15 @@ interface VerifiedLinearRequest {
 export function createLinearWebhookSource(
   options: LinearWebhookSourceOptions,
 ): LinearWebhookEndpoint {
-  const handlers = new Set<TriggerHandler>();
+  const registry = createWebhookHandlerRegistry();
   return {
     async handle(request) {
       const verified = await verifyLinearRequest(request, options);
       if (verified instanceof Response) return verified;
-      return handoffLinearEvent(verified, handlers, options);
+      return handoffLinearEvent(verified, registry.handlers, options);
     },
-    async start(handler) {
-      handlers.add(handler);
-    },
-    async stop() {
-      handlers.clear();
-    },
+    start: registry.start,
+    stop: registry.stop,
   };
 }
 
@@ -82,13 +83,14 @@ async function verifyLinearRequest(
     logger.warn("rejecting Linear event because signature verification failed");
     return new Response("Unauthorized", { status: 401 });
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-  } catch {
-    logger.warn("rejecting Linear event because payload is invalid JSON");
-    return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
-  }
+  const parsed = parseWebhookJsonBody({
+    body,
+    operation: "linear.webhook.parse",
+    provider: "linear",
+    scrubValues: [options.signingSecret, signature],
+  });
+  if (parsed instanceof Response) return parsed;
+  const payload = parsed.payload;
   const receivedAt = new Date(options.now?.() ?? Date.now());
   if (!verifyLinearWebhookTimestamp(payload, receivedAt.getTime())) {
     logger.warn("rejecting Linear event because its signed webhook timestamp is stale or invalid");
@@ -173,11 +175,7 @@ async function acceptAndDispatchLinearEvent(
     resourceId: projectId,
     acceptance,
   });
-  const events = acceptance.status === "accepted" ? acceptance.events : [];
-  await Promise.all(
-    events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
-  );
-  return new Response("OK", { status: 200 });
+  return dispatchWebhookEvents(handlers, acceptance.status === "accepted" ? acceptance.events : []);
 }
 
 function linearEventSource(
