@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/hub",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Self-hosted automation for Paseo daemons",
   "homepage": "https://paseo.sh/docs/hub",
   "license": "Apache-2.0",

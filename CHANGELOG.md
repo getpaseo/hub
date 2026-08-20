@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-08-20
+
+### Fixed
+
+- Production startup ignores `.env` files, so zero-configuration launches use embedded storage even when run from a directory containing unrelated database settings.
+
 ## 0.5.0 - 2026-08-20
 
 ### Added
