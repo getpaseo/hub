@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -17,9 +17,10 @@ import type {
   TransactionHandle,
 } from "../index.js";
 import { postgresLocks } from "../locks/index.js";
+import { runtimeFile } from "../../../runtime-files.js";
 
 const QUERY_DEADLINE_MS = 3_000;
-const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
+const MIGRATIONS_FOLDER = runtimeFile("drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
 
 export async function createPostgresRuntime(

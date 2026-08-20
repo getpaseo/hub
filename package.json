@@ -1,7 +1,6 @@
 {
-  "name": "paseo-hub",
-  "version": "0.4.0",
-  "private": true,
+  "name": "@getpaseo/hub",
+  "version": "0.5.0",
   "description": "Self-hosted automation for Paseo daemons",
   "homepage": "https://paseo.sh/docs/hub",
   "license": "Apache-2.0",
@@ -9,10 +8,24 @@
     "type": "git",
     "url": "git+https://github.com/getpaseo/hub.git"
   },
+  "bin": {
+    "paseo-hub": "bin/paseo-hub.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    ".output",
+    "drizzle"
+  ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite dev --port 3000",
     "build": "npm run build:node && npm run build:start",
+    "prepack": "npm run build",
+    "release:check": "npm run test:release && npm run typecheck && npm run lint && npm run format:check && npm run build && npm pack --dry-run",
     "build:node": "tsgo -p tsconfig.json",
     "build:start": "vite build",
     "typecheck": "npm run typecheck:node && npm run typecheck:start && npm run typecheck:e2e",

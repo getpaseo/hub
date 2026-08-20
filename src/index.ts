@@ -394,9 +394,11 @@ function readPort(): number {
   return port;
 }
 
-if (isCommandLineEntrypoint(import.meta.url)) {
+export function runHubCommandLine(): void {
   main().catch((error: unknown) => {
     reportFailure(error, { operation: "server.startup.fatal", component: "server" });
     process.exit(1);
   });
 }
+
+if (isCommandLineEntrypoint(import.meta.url)) runHubCommandLine();

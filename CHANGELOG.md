@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-08-20
+
+### Added
+
+- A zero-configuration local start with an embedded PGlite database, generated durable authentication secret, and first-run operator account setup.
+- Browser-guided GitHub, Slack, and Discord app onboarding.
+- Slack Socket Mode for local bots that do not have a public URL.
+- A published `@getpaseo/hub` package that runs with `npx @getpaseo/hub`.
+
+### Changed
+
+- Embedded Hub data now lives under `$XDG_DATA_HOME/paseo-hub`, falling back to `~/.local/share/paseo-hub`.
+- Configuration deployment can create or restore its implicit target project.
+
+### Fixed
+
+- Slack username allowlists resolve consistently during provider setup.
+
 ## 0.4.0 - 2026-08-12
 
 ### Added

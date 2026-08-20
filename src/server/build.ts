@@ -1,9 +1,9 @@
 import type { IncomingMessage } from "node:http";
-import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { ApplicationRuntime } from "./runtime.js";
+import { runtimeFile } from "../runtime-files.js";
 
 export interface BuiltStartServer {
   default: { fetch(request: Request): Promise<Response> };
@@ -29,7 +29,7 @@ const BuiltStartServerSchema = z.custom<BuiltStartServer>((value) => {
 });
 
 export async function loadBuiltStartServer(
-  path = join(process.cwd(), ".output/server/start-server.js"),
+  path = runtimeFile(".output", "server", "start-server.js"),
 ): Promise<BuiltStartServer> {
   const imported: unknown = await import(pathToFileURL(path).href);
   return BuiltStartServerSchema.parse(imported);
