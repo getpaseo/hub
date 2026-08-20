@@ -12,6 +12,7 @@ import { assertOneFailure, FailureLogStream } from "./test-utils/failure-logs.js
 const ENVIRONMENT_NAMES = [
   "DATABASE_URL",
   "PASEO_HUB_DATA_DIR",
+  "XDG_DATA_HOME",
   "PASEO_HUB_AUTH_SECRET",
   "PASEO_HUB_APP_URL",
   "PASEO_REGISTRATION_MODE",
@@ -167,6 +168,23 @@ it("selects embedded storage without DATABASE_URL and preserves it across restar
     runtime_configurations: 1,
     auth_secret: firstSecret,
   });
+});
+
+it("selects the XDG data directory when no explicit data directory is configured", async () => {
+  const dataHome = join(root, "xdg-data");
+  delete process.env["PASEO_HUB_DATA_DIR"];
+  process.env["XDG_DATA_HOME"] = dataHome;
+
+  await startProductionRuntime();
+  await stopProductionRuntime();
+
+  const bundle = await embeddedDatabaseRuntime(join(dataHome, "paseo-hub"));
+  const result = await bundle.runtime.query<{ runtime_configurations: number }>(
+    `select count(*)::integer as runtime_configurations from runtime_configuration`,
+  );
+  await bundle.runtime.close();
+
+  assert.deepEqual(result.rows, [{ runtime_configurations: 1 }]);
 });
 
 async function storedAuthSecret(): Promise<string> {
