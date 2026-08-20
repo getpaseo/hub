@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>. Hub stores the embedded database and its generated authentication secret in `.dev/paseo-hub` and keeps both across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
+Open <http://localhost:3000>. Hub stores the embedded database and its generated authentication secret under `$XDG_DATA_HOME/paseo-hub`, falling back to `~/.local/share/paseo-hub`, and keeps both across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
 
 ```sh
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/paseo_hub npm run dev

@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
-import { join, resolve as resolvePath } from "node:path";
 import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
@@ -45,6 +44,7 @@ import {
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
+import { resolveHubDataDirectory } from "./data-directory.js";
 
 export interface ProductionRuntimeOptions {
   environmentSource: RuntimeEnvironmentSource;
@@ -216,9 +216,7 @@ async function createDatabaseHandle(): Promise<DatabaseRuntimeBundle & { databas
     );
   }
 
-  const dataDirectory = resolvePath(
-    process.env["PASEO_HUB_DATA_DIR"] ?? join(process.cwd(), ".dev", "paseo-hub"),
-  );
+  const dataDirectory = resolveHubDataDirectory();
   return initializeDatabaseRuntime(
     () => embeddedDatabaseRuntime(dataDirectory),
     `database runtime ready: embedded (${dataDirectory})`,
