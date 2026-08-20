@@ -62,6 +62,22 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
 });
 
+it("ignores dotenv files during production startup", async () => {
+  delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
+  await writeFile(
+    join(root, ".env"),
+    "DATABASE_URL=postgres://dotenv-must-not-load.invalid/paseo_hub\n",
+  );
+
+  const runtime = await startProductionRuntime();
+  const state = await runtime.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
+
+  assert.equal(state.status, 200);
+  assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+});
+
 it("logs an embedded database startup failure exactly once", async () => {
   const canary = "database-startup-secret-1d42";
   const stream = new FailureLogStream();
@@ -70,10 +86,7 @@ it("logs an embedded database startup failure exactly once", async () => {
   process.env["PASEO_HUB_DATA_DIR"] = blockedPath;
 
   await assert.rejects(() =>
-    runWithFailureTracking(
-      () => startProductionRuntime({ environmentSource: "process-only" }),
-      createLogger(stream),
-    ),
+    runWithFailureTracking(() => startProductionRuntime(), createLogger(stream)),
   );
 
   assertOneFailure(stream, {

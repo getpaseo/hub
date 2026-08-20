@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
+import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
@@ -31,8 +32,6 @@ import { composeEntitlements, type ComposedEntitlements } from "./auth/entitleme
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
-import { loadRuntimeEnvironment, type RuntimeEnvironmentSource } from "./runtime-environment.js";
-import { isCommandLineEntrypoint } from "./command-line.js";
 import {
   DynamicProviderRuntime,
   activateProviderApplicationsAtStartup,
@@ -46,14 +45,7 @@ import {
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
 
-export interface ProductionRuntimeOptions {
-  environmentSource: RuntimeEnvironmentSource;
-}
-
-export function startProductionRuntime(
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
-): Promise<ApplicationRuntime> {
-  loadRuntimeEnvironment(options.environmentSource);
+export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
 }
 
@@ -65,9 +57,8 @@ export async function handleDaemonUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
 ): Promise<void> {
-  const runtime = await startProductionRuntime(options);
+  const runtime = await startProductionRuntime();
   if (runtime.hub.handleUpgrade === null) {
     socket.destroy();
     return;
@@ -401,4 +392,4 @@ export function runHubCommandLine(): void {
   });
 }
 
-if (isCommandLineEntrypoint(import.meta.url)) runHubCommandLine();
+if (process.argv[1] === fileURLToPath(import.meta.url)) runHubCommandLine();
