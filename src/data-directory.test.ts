@@ -30,7 +30,7 @@ describe("Hub data directory", () => {
     }
   });
 
-  it("keeps PASEO_HUB_DATA_DIR as the explicit absolute or working-directory-relative override", () => {
+  it("keeps every defined PASEO_HUB_DATA_DIR as an explicit override", () => {
     const explicitDirectory = resolve("fixtures", "explicit-data");
     const workingDirectory = resolve("fixtures", "work");
     assert.equal(
@@ -54,6 +54,17 @@ describe("Hub data directory", () => {
         workingDirectory,
       }),
       join(workingDirectory, "var", "paseo-hub"),
+    );
+    assert.equal(
+      resolveHubDataDirectory({
+        environment: {
+          PASEO_HUB_DATA_DIR: "",
+          XDG_DATA_HOME: resolve("fixtures", "xdg-data"),
+        },
+        homeDirectory: resolve("fixtures", "home"),
+        workingDirectory,
+      }),
+      workingDirectory,
     );
   });
 });

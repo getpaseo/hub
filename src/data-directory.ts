@@ -13,7 +13,7 @@ interface HubDataDirectoryOptions {
 export function resolveHubDataDirectory(options: HubDataDirectoryOptions = {}): string {
   const environment = options.environment ?? process.env;
   const workingDirectory = options.workingDirectory ?? process.cwd();
-  const override = nonEmpty(environment["PASEO_HUB_DATA_DIR"]);
+  const override = environment["PASEO_HUB_DATA_DIR"];
   if (override !== undefined) return resolve(workingDirectory, override);
 
   const configuredDataHome = nonEmpty(environment["XDG_DATA_HOME"]);
