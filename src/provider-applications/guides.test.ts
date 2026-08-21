@@ -205,7 +205,14 @@ test("GitHub renders permissions as a mapping and events as a list, never as pro
   ]);
   assert.deepEqual(
     steps.flatMap((step) => step.events ?? []),
-    ["Issue comment", "Issues", "Pull request review", "Pull request review comment", "Push"],
+    [
+      "Issue comment",
+      "Issues",
+      "Pull requests",
+      "Pull request review",
+      "Pull request review comment",
+      "Push",
+    ],
   );
   const prose = steps.map(stepText).join(" ");
   assert.ok(

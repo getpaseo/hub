@@ -170,6 +170,7 @@ test("on HTTPS GitHub event triggers are set up beside repository access", async
     expect(await github.subscribedEvents()).toEqual([
       "Issue comment",
       "Issues",
+      "Pull requests",
       "Pull request review",
       "Pull request review comment",
       "Push",

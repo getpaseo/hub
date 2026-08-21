@@ -50,6 +50,33 @@ describe("summarizeTrigger", () => {
     });
   });
 
+  it("summarizes a created pull request with its number and title", () => {
+    const summary = summarizeTrigger("github.pull_request_created", {
+      id: "1",
+      type: "pull_request",
+      repo: "acme/widgets",
+      repositoryId: 1,
+      installationId: 1,
+      createdAt: new Date().toISOString(),
+      payload: {
+        action: "opened",
+        pull_request: {
+          number: 42,
+          title: "Ship semantic events",
+          html_url: "https://github.com/acme/widgets/pull/42",
+        },
+        sender: { login: "alice" },
+      },
+    });
+
+    assert.deepEqual(summary, {
+      provider: "github",
+      headline: "Pull request #42 created: Ship semantic events",
+      actor: "alice",
+      externalUrl: "https://github.com/acme/widgets/pull/42",
+    });
+  });
+
   it("falls back to a generic headline when a valid envelope carries a malformed event payload", () => {
     const summary = summarizeTrigger("github.push", {
       id: "1",

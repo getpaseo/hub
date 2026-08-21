@@ -73,6 +73,36 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.equal(wrongActor, "trigger_filters_rejected");
   });
 
+  it("routes a semantic trigger from the legacy GitHub webhook source", async () => {
+    const configuration = githubConfiguration();
+    const trigger = configuration.triggers[0]!;
+    configuration.triggers = [
+      {
+        ...trigger,
+        on: "github.issue_created",
+      },
+    ];
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      ...createEvent(),
+      type: "issues",
+      payload: {
+        action: "opened",
+        issue: {
+          number: 211,
+          title: "smoke",
+          body: "issue body @paseo",
+          user: { login: "issue-author" },
+        },
+        sender: { login: "boudra" },
+      },
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    assert.equal(typeof matches === "string" ? 0 : matches.length, 1);
+  });
+
   it("exposes safe issue and pull-request item context without the raw webhook", async () => {
     const { project, revision, store } = await activeConfiguration();
     const provider = createProvider(store, new TestReactions());

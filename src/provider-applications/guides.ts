@@ -260,6 +260,7 @@ export const GITHUB_GUIDE: ProviderGuide = {
           events: [
             "Issue comment",
             "Issues",
+            "Pull requests",
             "Pull request review",
             "Pull request review comment",
             "Push",

@@ -16,16 +16,12 @@ import {
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import {
   IssueCommentPayloadSchema,
-  IssuesPayloadSchema,
   NormalizedGitHubEventSchema,
-  PullRequestPayloadSchema,
-  PullRequestReviewPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import { z } from "zod";
+import { classifyGitHubEvent, GITHUB_TRIGGER_EVENT_NAMES } from "./classification.js";
 
-const SafeRecordSchema = z.record(z.string(), z.unknown());
 export interface GitHubReactionClient {
   createReaction(input: {
     installationId: number;
@@ -132,13 +128,7 @@ export function createGitHubTriggerProvider(options: {
 }): TriggerProvider<"github", GitHubTriggerContext> {
   return {
     name: "github",
-    eventNames: [
-      "github.issue_comment",
-      "github.issues",
-      "github.pull_request_review",
-      "github.pull_request_review_comment",
-      "github.push",
-    ],
+    eventNames: GITHUB_TRIGGER_EVENT_NAMES,
     async match(externalTrigger) {
       const event = NormalizedGitHubEventSchema.parse(externalTrigger.payload);
       const stored = await options
@@ -146,7 +136,9 @@ export function createGitHubTriggerProvider(options: {
         .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return "configuration_unavailable";
       if (
-        !stored.configuration.triggers.some((candidate) => candidate.on === externalTrigger.source)
+        !stored.configuration.triggers.some((candidate) =>
+          [externalTrigger.source, classifyGitHubEvent(event).semanticEvent].includes(candidate.on),
+        )
       )
         return "no_trigger_for_source";
       const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
@@ -235,51 +227,9 @@ function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {
       event_name: event.type,
       repository: { full_name: event.repo },
       received_at: event.createdAt,
-      item: readGitHubContextItem(event),
+      item: classifyGitHubEvent(event).item,
     },
   };
-}
-
-function readGitHubContextItem(event: NormalizedGitHubEvent): GitHubContextItem | null {
-  if (event.type === "issue_comment") {
-    const issue = IssueCommentPayloadSchema.parse(event.payload).issue;
-    return issue === undefined
-      ? null
-      : githubItem(issue.pull_request === undefined ? "issue" : "pull_request", issue);
-  }
-  if (event.type === "issues") {
-    const issue = IssuesPayloadSchema.parse(event.payload).issue;
-    return issue === undefined ? null : githubItem("issue", issue);
-  }
-  if (event.type === "pull_request_review") {
-    const pullRequest = PullRequestReviewPayloadSchema.parse(event.payload).pull_request;
-    return pullRequest === undefined ? null : githubItem("pull_request", pullRequest);
-  }
-  if (event.type === "pull_request_review_comment") {
-    const pullRequest = PullRequestReviewCommentPayloadSchema.parse(event.payload).pull_request;
-    return pullRequest === undefined ? null : githubItem("pull_request", pullRequest);
-  }
-  const pullRequest = PullRequestPayloadSchema.safeParse(event.payload);
-  if (!pullRequest.success || pullRequest.data.pull_request === undefined) return null;
-  return githubItem("pull_request", pullRequest.data.pull_request);
-}
-
-function githubItem(type: GitHubContextItem["type"], item: unknown): GitHubContextItem {
-  const record = asRecord(item);
-  const user = asRecord(record["user"]);
-  return {
-    type,
-    number: typeof record["number"] === "number" ? record["number"] : null,
-    title: typeof record["title"] === "string" ? record["title"] : null,
-    body: typeof record["body"] === "string" ? record["body"] : null,
-    url: typeof record["html_url"] === "string" ? record["html_url"] : null,
-    author: typeof user["login"] === "string" ? { login: user["login"] } : null,
-  };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  const parsed = SafeRecordSchema.safeParse(value);
-  return parsed.success ? parsed.data : {};
 }
 
 async function reactToLifecycle(

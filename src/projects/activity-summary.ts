@@ -11,6 +11,7 @@ import {
 } from "../auth/github-events.js";
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
+import { classifyGitHubEvent } from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
   provider: "github" | "slack" | "discord" | "manual";
@@ -55,6 +56,18 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
     return { provider: "github", headline: "GitHub event", actor: null, externalUrl: null };
   }
   const externalUrl = readGitHubTriggerUrl(event.data.payload) ?? null;
+  const classified = classifyGitHubEvent(event.data);
+  if (classified.semanticEvent === "github.pull_request_created") {
+    return {
+      provider: "github",
+      headline:
+        classified.item?.number === null || classified.item === null
+          ? "Pull request created"
+          : `Pull request #${String(classified.item.number)} created${classified.item.title === null ? "" : `: ${classified.item.title}`}`,
+      actor: classified.actor.length === 0 ? null : classified.actor,
+      externalUrl,
+    };
+  }
   const { headline, actor } = summarizeGitHubEvent(event.data.type, event.data.payload);
   return { provider: "github", headline, actor, externalUrl };
 }
