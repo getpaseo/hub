@@ -264,6 +264,14 @@ export const GITHUB_GUIDE: ProviderGuide = {
             "Push",
           ],
         },
+        {
+          segments: [
+            { kind: "text", value: "If a workflow uses a GitHub team allowlist, under " },
+            { kind: "term", value: "Organization permissions" },
+            { kind: "text", value: ", grant:" },
+          ],
+          permissions: [{ name: "Members", access: "Read-only" }],
+        },
       ],
       fields: [
         {
