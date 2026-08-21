@@ -3,32 +3,36 @@ import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { matchTriggers } from "./match.js";
+import type { GitHubTeamMembershipClient } from "./team-membership.js";
 
 describe("GitHub trigger matching", () => {
-  it("matches the compiled one-step trigger by repository, text, and actor", () => {
+  it("matches the compiled one-step trigger by repository, text, and actor", async () => {
     const config = configFor({ repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] });
-    const matches = matchTriggers(config, createEvent());
+    const matches = await matchTriggers(config, createEvent(), { teamMemberships: denyTeams });
 
     assert.equal(matches.length, 1);
     assert.equal(matches[0]?.trigger.name, "github-comment");
   });
 
-  it("matches pattern-less comments while preserving the provider allowlist", () => {
+  it("matches pattern-less comments while preserving the provider allowlist", async () => {
     const config = configFor({ repo: "boudra/faro", from_users: ["boudra"] });
     assert.equal(
-      matchTriggers(
-        config,
-        createEvent({
-          payload: {
-            comment: { id: 123, body: "please explain", user: { login: "boudra" } },
-            sender: { login: "boudra" },
-          },
-        }),
+      (
+        await matchTriggers(
+          config,
+          createEvent({
+            payload: {
+              comment: { id: 123, body: "please explain", user: { login: "boudra" } },
+              sender: { login: "boudra" },
+            },
+          }),
+          { teamMemberships: denyTeams },
+        )
       ).length,
       1,
     );
     assert.deepEqual(
-      matchTriggers(
+      await matchTriggers(
         config,
         createEvent({
           payload: {
@@ -36,28 +40,37 @@ describe("GitHub trigger matching", () => {
             sender: { login: "stranger" },
           },
         }),
+        { teamMemberships: denyTeams },
       ),
       [],
     );
   });
 
-  it("keeps repository and pattern filters literal", () => {
+  it("keeps repository and pattern filters literal", async () => {
     const config = configFor({ repo: "boudra/faro", pattern: "@paseo", from_users: ["boudra"] });
     assert.equal(
-      matchTriggers(
-        config,
-        createEvent({
-          payload: {
-            comment: { id: 123, body: "@paseo please explain", user: { login: "boudra" } },
-            sender: { login: "boudra" },
-          },
-        }),
+      (
+        await matchTriggers(
+          config,
+          createEvent({
+            payload: {
+              comment: { id: 123, body: "@paseo please explain", user: { login: "boudra" } },
+              sender: { login: "boudra" },
+            },
+          }),
+          { teamMemberships: denyTeams },
+        )
       ).length,
       1,
     );
-    assert.deepEqual(matchTriggers(config, createEvent({ repo: "elsewhere/repo" })), []);
     assert.deepEqual(
-      matchTriggers(
+      await matchTriggers(config, createEvent({ repo: "elsewhere/repo" }), {
+        teamMemberships: denyTeams,
+      }),
+      [],
+    );
+    assert.deepEqual(
+      await matchTriggers(
         config,
         createEvent({
           payload: {
@@ -65,12 +78,13 @@ describe("GitHub trigger matching", () => {
             sender: { login: "boudra" },
           },
         }),
+        { teamMemberships: denyTeams },
       ),
       [],
     );
   });
 
-  it("applies the same security filters to pull-request review comments", () => {
+  it("applies the same security filters to pull-request review comments", async () => {
     const config = compileHubConfig({
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
@@ -101,9 +115,70 @@ describe("GitHub trigger matching", () => {
         pull_request: { head: { ref: "topic" } },
       },
     };
-    assert.equal(matchTriggers(config, event).length, 1);
+    assert.equal((await matchTriggers(config, event, { teamMemberships: denyTeams })).length, 1);
+  });
+
+  it("allows an active GitHub team member and fails closed when membership is unavailable", async () => {
+    const config = configFor({
+      repo: "boudra/faro",
+      contains: "@paseo",
+      from_teams: ["boudra/maintainers"],
+    });
+    const activeTeams = new TestTeamMemberships(true);
+
+    assert.equal(
+      (
+        await matchTriggers(config, createEvent(), {
+          teamMemberships: activeTeams,
+        })
+      ).length,
+      1,
+    );
+    assert.deepEqual(activeTeams.checks, [
+      {
+        installationId: 42,
+        organization: "boudra",
+        teamSlug: "maintainers",
+        username: "boudra",
+      },
+    ]);
+    assert.deepEqual(
+      await matchTriggers(config, createEvent(), { teamMemberships: denyTeams }),
+      [],
+    );
+  });
+
+  it("treats user and team allowlists as alternatives", async () => {
+    const config = configFor({
+      repo: "boudra/faro",
+      contains: "@paseo",
+      from_users: ["boudra"],
+      from_teams: ["boudra/maintainers"],
+    });
+    const memberships = new TestTeamMemberships(false);
+
+    assert.equal(
+      (await matchTriggers(config, createEvent(), { teamMemberships: memberships })).length,
+      1,
+    );
+    assert.deepEqual(memberships.checks, []);
   });
 });
+
+const denyTeams: GitHubTeamMembershipClient = {
+  isActiveMember: async () => false,
+};
+
+class TestTeamMemberships implements GitHubTeamMembershipClient {
+  readonly checks: Array<Parameters<GitHubTeamMembershipClient["isActiveMember"]>[0]> = [];
+
+  constructor(private readonly active: boolean) {}
+
+  async isActiveMember(input: Parameters<GitHubTeamMembershipClient["isActiveMember"]>[0]) {
+    this.checks.push(input);
+    return this.active;
+  }
+}
 
 function configFor(filters: Record<string, unknown>) {
   return compileHubConfig({
