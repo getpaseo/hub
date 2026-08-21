@@ -33,6 +33,10 @@ export function createDatabasePublicOperationRepository(
         })),
         discord: connections.discord.map(({ slug, guildName }) => ({ slug, guildName })),
         slack: connections.slack.map(({ slug, teamName }) => ({ slug, teamName })),
+        linear: connections.linear.map(({ slug, linearOrganizationName }) => ({
+          slug,
+          organizationName: linearOrganizationName,
+        })),
       };
     },
     async findActiveProject(organizationId, projectSlug) {

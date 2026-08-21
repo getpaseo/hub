@@ -167,6 +167,12 @@ const ENVIRONMENT_APPLICATIONS = {
     clientSecret: "discord-secret",
     botToken: "discord-token",
   },
+  linear: {
+    provider: "linear",
+    clientId: "linear-client",
+    clientSecret: "linear-secret",
+    webhookSecret: "linear-webhook-secret",
+  },
 } satisfies Record<Provider, ProviderApplicationConfiguration>;
 
 async function legacyDatabase(engine: "PGlite" | "PostgreSQL"): Promise<{
@@ -317,6 +323,9 @@ function identity(configuration: ProviderApplicationConfiguration): ProviderAppl
   }
   if (configuration.provider === "slack") {
     return { provider: "slack", id: configuration.appId, name: "Slack app" };
+  }
+  if (configuration.provider === "linear") {
+    return { provider: "linear", id: configuration.clientId, name: "Linear app" };
   }
   return { provider: "discord", id: configuration.applicationId, name: "Discord app" };
 }

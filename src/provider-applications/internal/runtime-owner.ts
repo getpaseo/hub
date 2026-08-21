@@ -7,6 +7,7 @@ import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { createLinearRegistration } from "../../providers/linear/index.js";
 import type {
   ProviderRegistration,
   TriggerProviderResources,
@@ -54,6 +55,9 @@ const RUNTIME_SNAPSHOT_KEY = "__paseoProviderRuntimeSnapshot";
 type SlackInstallationHandler = Parameters<
   NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>
 >[0];
+type LinearInstallationHandler = Parameters<
+  NonNullable<ProviderRuntimeOwner["onLinearInstallation"]>
+>[0];
 
 interface DynamicProviderRuntimeOptions {
   database: Database;
@@ -68,6 +72,7 @@ interface DynamicProviderRuntimeOptions {
     expectedConfigurationVersion: number | undefined;
     activateConfiguration: boolean;
     onVerifiedSlackInstallation: SlackInstallationHandler;
+    onVerifiedLinearInstallation: LinearInstallationHandler;
   }) => ProviderRegistration;
 }
 
@@ -77,22 +82,29 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     ["github", emptySlot()],
     ["slack", emptySlot()],
     ["discord", emptySlot()],
+    ["linear", emptySlot()],
   ]);
   private readonly stable = new Map<Provider, ProviderRegistration>();
   private slackInstallationHandler: SlackInstallationHandler | undefined;
+  private linearInstallationHandler: LinearInstallationHandler | undefined;
   private nextSnapshot = 0;
   private nextLease = 0;
   private readonly executionSnapshots = new Map<string, RuntimeSnapshotMarker>();
   private readonly githubAuthoritySnapshots = new Map<string, RuntimeSnapshotMarker>();
 
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
-    for (const provider of ["github", "slack", "discord"] as const) {
+    for (const provider of ["github", "slack", "discord", "linear"] as const) {
       this.stable.set(provider, this.stableRegistration(provider));
     }
   }
 
   registrations(): readonly ProviderRegistration[] {
-    return [this.stable.get("github")!, this.stable.get("discord")!, this.stable.get("slack")!];
+    return [
+      this.stable.get("github")!,
+      this.stable.get("discord")!,
+      this.stable.get("slack")!,
+      this.stable.get("linear")!,
+    ];
   }
 
   identity(provider: Provider): ProviderApplicationIdentity | undefined {
@@ -107,6 +119,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     handler: NonNullable<DynamicProviderRuntime["slackInstallationHandler"]>,
   ): void {
     this.slackInstallationHandler = handler;
+  }
+
+  onLinearInstallation(
+    handler: NonNullable<DynamicProviderRuntime["linearInstallationHandler"]>,
+  ): void {
+    this.linearInstallationHandler = handler;
   }
 
   async prepare(
@@ -198,20 +216,15 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     },
   ): ProviderRegistration {
     if (this.options.registrationFactory !== undefined) {
-      return this.options.registrationFactory({
-        provider,
-        configuration,
-        callbackOrigin,
-        configurationVersion,
-        expectedConfigurationVersion: activation?.expectedConfigurationVersion,
-        activateConfiguration: activation?.activateConfiguration ?? false,
-        onVerifiedSlackInstallation: (input) => {
-          if (this.slackInstallationHandler === undefined) {
-            throw new Error("Slack installation handler unavailable");
-          }
-          return this.slackInstallationHandler(input);
-        },
-      });
+      return this.options.registrationFactory(
+        this.customRegistrationInput(
+          provider,
+          configuration,
+          callbackOrigin,
+          configurationVersion,
+          activation,
+        ),
+      );
     }
     const shared = {
       database: this.options.database,
@@ -232,12 +245,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           ? {}
           : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
         activateConfiguration: activation?.activateConfiguration ?? false,
-        onVerifiedInstallation: (input) => {
-          if (this.slackInstallationHandler === undefined) {
-            throw new Error("Slack installation handler unavailable");
-          }
-          return this.slackInstallationHandler(input);
-        },
+        onVerifiedInstallation: (input) => this.handleSlackInstallation(input),
       });
     }
     if (provider === "discord" && configuration.provider === "discord") {
@@ -250,7 +258,56 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       });
     }
+    if (provider === "linear" && configuration.provider === "linear") {
+      return createLinearRegistration({
+        ...shared,
+        configuration,
+        ...(activation?.expectedConfigurationVersion === undefined
+          ? {}
+          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
+        activateConfiguration: activation?.activateConfiguration ?? false,
+        onVerifiedInstallation: (input) => this.handleLinearInstallation(input),
+      });
+    }
     throw new Error("provider configuration mismatch");
+  }
+
+  private customRegistrationInput(
+    provider: Provider,
+    configuration: ProviderApplicationConfiguration,
+    callbackOrigin: string,
+    configurationVersion: number,
+    activation:
+      | {
+          expectedConfigurationVersion: number | undefined;
+          activateConfiguration: boolean;
+        }
+      | undefined,
+  ): Parameters<NonNullable<DynamicProviderRuntimeOptions["registrationFactory"]>>[0] {
+    return {
+      provider,
+      configuration,
+      callbackOrigin,
+      configurationVersion,
+      expectedConfigurationVersion: activation?.expectedConfigurationVersion,
+      activateConfiguration: activation?.activateConfiguration ?? false,
+      onVerifiedSlackInstallation: (input) => this.handleSlackInstallation(input),
+      onVerifiedLinearInstallation: (input) => this.handleLinearInstallation(input),
+    };
+  }
+
+  private handleSlackInstallation(input: Parameters<SlackInstallationHandler>[0]): Promise<void> {
+    if (this.slackInstallationHandler === undefined) {
+      throw new Error("Slack installation handler unavailable");
+    }
+    return this.slackInstallationHandler(input);
+  }
+
+  private handleLinearInstallation(input: Parameters<LinearInstallationHandler>[0]): Promise<void> {
+    if (this.linearInstallationHandler === undefined) {
+      throw new Error("Linear installation handler unavailable");
+    }
+    return this.linearInstallationHandler(input);
   }
 
   private stableRegistration(provider: Provider): ProviderRegistration {
@@ -391,7 +448,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           ? []
           : [
               {
-                name: provider === "github" ? "webhook" : "slack.events",
+                name: provider === "github" ? "webhook" : `${provider}.events`,
                 handle: (request) => {
                   const active = slot.active;
                   const handler = active?.registration.requests[0];
@@ -707,6 +764,7 @@ function actionNames(provider: Provider): readonly string[] {
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
+  if (provider === "linear") return ["linear.issue", "linear.comment"];
   return [
     "github.issue_comment",
     "github.issues",
