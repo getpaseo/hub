@@ -868,7 +868,8 @@ test("an exit that never reaches Hub says so, keeps the work, and retries in pla
     // The same screen retries, without reloading or retyping.
     await page.unroute("**/_serverFn/**");
     await surface.exitFailure().getByRole("button", { name: "Try again", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await surface.daemonHandoff.expectWaiting();
+    await surface.daemonHandoff.leave("Do this later");
 
     // A request that never left the browser is nobody's failure to record on the server.
     expect(recordsFor(session.application.logs(), "auth.complete_app_setup")).toHaveLength(0);

@@ -25,6 +25,7 @@ const scopedRenameSchema = organizationScopeSchema.extend(renameSchema.shape);
 const scopedDaemonIdSchema = organizationScopeSchema.extend(daemonIdSchema.shape);
 
 export type BrowserDaemon = z.infer<typeof daemonSchema>;
+export type BrowserDaemonList = z.infer<typeof daemonListSchema>;
 export interface DaemonCommand {
   state: "complete" | "sessionExpired" | "organizationRequired";
 }

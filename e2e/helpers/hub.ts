@@ -332,6 +332,7 @@ export class PaseoHub {
       deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
       slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
       restart: () => application.restart(),
+      connectDaemon: () => this.enrollOperatorDaemon(application),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -2298,6 +2299,25 @@ export class PaseoHub {
     }
   }
 
+  /**
+   * What `paseo hub login` leaves behind on the operator's own machine: a daemon enrolled into
+   * their organization and holding a live connection. The enrollment token is written straight
+   * to the database because the CLI's own path through it is the Paseo repository's to prove.
+   */
+  private async enrollOperatorDaemon(application: BuiltApplication): Promise<string> {
+    const enrollmentToken = randomUUID();
+    await this.queryDatabase(
+      application.databaseUrl,
+      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
+       select $1, $2, id, now() + interval '10 minutes' from organization`,
+      [randomUUID(), createHash("sha256").update(enrollmentToken).digest("base64url")],
+    );
+    const daemon = new ContractDaemon(application, this.requests);
+    await daemon.enroll(enrollmentToken);
+    await daemon.connect();
+    return daemon.slug;
+  }
+
   private async issueEnrollmentToken(
     application: BuiltApplication,
     headers: Record<string, string> = machineHeaders(application.machineKey),
@@ -2485,6 +2505,10 @@ class HubUser {
    */
   async skipAppSetup(): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    // Apps are followed by the daemon handoff. A journey that is not about either walks through
+    // both, exactly as the operator can.
+    await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
   }
 
@@ -4722,6 +4746,8 @@ export interface AppSetupSession {
   deliverSlackSocketMention(eventId: string): Promise<void>;
   slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
   restart(): Promise<void>;
+  /** Enrolls and connects a daemon into the operator's organization; answers with its slug. */
+  connectDaemon(): Promise<string>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;
