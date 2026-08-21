@@ -4,6 +4,7 @@ import type {
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
   ListConfigurationResourcesResult,
+  ListSetupResourcesResult,
   ListProjectsResult,
   PublicOperations,
   ValidateConfigurationResult,
@@ -16,12 +17,14 @@ import {
   InstalledConfigurationSchema,
   ProjectListSchema,
   ConfigurationResourcesSchema,
+  SetupResourcesSchema,
   ValidatedConfigurationSchema,
 } from "./contracts.js";
 
 export type PublicOperationId =
   | "listProjects"
   | "listConfigurationResources"
+  | "listSetupResources"
   | "validateConfiguration"
   | "installConfiguration"
   | "dispatchManualRun"
@@ -38,12 +41,14 @@ export interface PublicOperationDefinition {
     | typeof ValidatedConfigurationSchema
     | typeof ProjectListSchema
     | typeof ConfigurationResourcesSchema
+    | typeof SetupResourcesSchema
     | typeof DispatchedManualRunSchema
     | typeof EnrollmentTokenSchema;
   successStatus: 200 | 201;
   resultMapping:
     | "projects"
     | "configuration-resources"
+    | "setup-resources"
     | "validation"
     | "configuration"
     | "manual-run"
@@ -59,6 +64,7 @@ export interface PublicOperationDefinition {
   ): Promise<
     | ListProjectsResult
     | ListConfigurationResourcesResult
+    | ListSetupResourcesResult
     | ValidateConfigurationResult
     | InstallConfigurationResult
     | DispatchManualRunResult
@@ -107,6 +113,27 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
       503: "Hub authentication or storage is unavailable.",
     },
     invoke: (operations, authorization) => operations.listConfigurationResources(authorization),
+  },
+  {
+    id: "listSetupResources",
+    method: "get",
+    path: "/api/v1/setup-resources",
+    scope: "configuration:validate",
+    successSchema: SetupResourcesSchema,
+    successStatus: 200,
+    resultMapping: "setup-resources",
+    summary: "List setup resources",
+    description:
+      "Lists provider-native identifiers and labels needed to author starter workflow filters.",
+    tag: "Configurations",
+    responses: {
+      200: "The organization's setup resources.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:validate.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization) => operations.listSetupResources(authorization),
   },
   {
     id: "validateConfiguration",
