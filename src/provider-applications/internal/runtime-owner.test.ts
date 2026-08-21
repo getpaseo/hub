@@ -14,6 +14,47 @@ import type {
 import { DynamicProviderRuntime } from "./runtime-owner.js";
 
 describe("dynamic provider runtime", () => {
+  it.each([
+    "github.issue_created",
+    "github.pull_request_created",
+    "github.issue_comment_created",
+    "github.pull_request_comment_created",
+    "github.issue_label_added",
+    "github.pull_request_label_added",
+  ] as const)("publishes %s through the activated GitHub runtime registry", async (eventName) => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        downstreamRegistration(providerConfigurationId(configuration), [], []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "github")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+
+    const candidate = await runtime.prepare(
+      "github",
+      providerConfiguration("github", "A1"),
+      "https://hub.test",
+      providerIdentity("github", "A1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+
+    assert.ok(trigger.eventNames.includes(eventName));
+  });
+
   it("publishes a started replacement, retires old resources, and retains in-flight snapshots", async () => {
     const started: string[] = [];
     const stopped: string[] = [];

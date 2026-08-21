@@ -22,6 +22,7 @@ import type {
 } from "../index.js";
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import { GITHUB_TRIGGER_EVENT_NAMES } from "../../triggers/github/classification.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -707,13 +708,7 @@ function actionNames(provider: Provider): readonly string[] {
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
-  return [
-    "github.issue_comment",
-    "github.issues",
-    "github.pull_request_review",
-    "github.pull_request_review_comment",
-    "github.push",
-  ];
+  return GITHUB_TRIGGER_EVENT_NAMES;
 }
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {

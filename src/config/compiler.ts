@@ -84,6 +84,8 @@ const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    label: z.string().min(1).optional(),
+    labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),
     guild: z.string().min(1).optional(),
     workspace: z.string().min(1).optional(),

@@ -5,6 +5,176 @@ import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { matchTriggers } from "./match.js";
 
 describe("GitHub trigger matching", () => {
+  it.each([
+    ["actions", ["opened"]],
+    ["item_types", ["issue"]],
+    ["labels", []],
+  ])("does not accept the unsupported or empty %s filter", (key, value) => {
+    assert.throws(() => configFor({ from_users: ["boudra"], [key]: value }));
+  });
+
+  it.each([
+    {
+      acceptance: "1: issue_created accepts only opened issues",
+      on: "github.issue_created",
+      event: eventFor("issues", { action: "opened", issue: issue() }),
+      expected: 1,
+    },
+    {
+      acceptance: "1: issue_created rejects non-opened issues",
+      on: "github.issue_created",
+      event: eventFor("issues", { action: "closed", issue: issue() }),
+      expected: 0,
+    },
+    {
+      acceptance: "2: pull_request_created accepts only opened pull requests",
+      on: "github.pull_request_created",
+      event: eventFor("pull_request", { action: "opened", pull_request: pullRequest() }),
+      expected: 1,
+    },
+    {
+      acceptance: "2: pull_request_created rejects non-opened pull requests",
+      on: "github.pull_request_created",
+      event: eventFor("pull_request", { action: "closed", pull_request: pullRequest() }),
+      expected: 0,
+    },
+    {
+      acceptance: "3: created issue comments are separate from pull-request comments",
+      on: "github.issue_comment_created",
+      event: eventFor("issue_comment", { action: "created", issue: issue(), comment: comment() }),
+      expected: 1,
+    },
+    {
+      acceptance: "3: created pull-request comments are separate from issue comments",
+      on: "github.pull_request_comment_created",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: { ...issue(), pull_request: {} },
+        comment: comment(),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "3: semantic comments reject actions other than created",
+      on: "github.issue_comment_created",
+      event: eventFor("issue_comment", { action: "edited", issue: issue(), comment: comment() }),
+      expected: 0,
+    },
+    {
+      acceptance: "4: issue label_added matches its changed label case-insensitively",
+      on: "github.issue_label_added",
+      filters: { label: "READY-FOR-AGENT" },
+      event: eventFor("issues", {
+        action: "labeled",
+        issue: issue(),
+        label: { name: "ready-for-agent" },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "4: pull-request label_added matches its changed label",
+      on: "github.pull_request_label_added",
+      filters: { label: "ready-for-agent" },
+      event: eventFor("pull_request", {
+        action: "labeled",
+        pull_request: pullRequest(),
+        label: { name: "ready-for-agent" },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "5: labels requires every current issue label",
+      on: "github.issue_created",
+      filters: { labels: ["bug", "BACKEND"] },
+      event: eventFor("issues", {
+        action: "opened",
+        issue: issue({ labels: [{ name: "Bug" }, { name: "backend" }] }),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "5: labels rejects a missing current pull-request label",
+      on: "github.pull_request_created",
+      filters: { labels: ["bug", "backend"] },
+      event: eventFor("pull_request", {
+        action: "opened",
+        pull_request: pullRequest({ labels: [{ name: "bug" }] }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "5: labels applies to issue comments",
+      on: "github.issue_comment_created",
+      filters: { labels: ["bug", "backend"] },
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue({ labels: [{ name: "bug" }, { name: "backend" }] }),
+        comment: comment(),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "6: repository, connection, sender, content, and label filters compose with AND",
+      on: "github.issue_label_added",
+      filters: {
+        repo: "boudra/faro",
+        connection: "github-main",
+        contains: "body",
+        from_users: ["boudra"],
+        label: "ready-for-agent",
+        labels: ["bug"],
+      },
+      connectionId: "11111111-1111-4111-8111-111111111111",
+      event: eventFor("issues", {
+        action: "labeled",
+        issue: issue({ body: "body", labels: [{ name: "bug" }] }),
+        label: { name: "ready-for-agent" },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "6: any failed composed filter rejects",
+      on: "github.issue_label_added",
+      filters: { contains: "different", label: "ready-for-agent" },
+      event: eventFor("issues", {
+        action: "labeled",
+        issue: issue({ body: "body" }),
+        label: { name: "ready-for-agent" },
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "7: legacy issues retains its action-agnostic behavior",
+      on: "github.issues",
+      event: eventFor("issues", { action: "closed", issue: issue() }),
+      expected: 1,
+    },
+    {
+      acceptance: "7: legacy issue_comment retains its action-agnostic behavior",
+      on: "github.issue_comment",
+      event: eventFor("issue_comment", { action: "edited", issue: issue(), comment: comment() }),
+      expected: 1,
+    },
+  ])("$acceptance", ({ on, filters, event, expected, connectionId }) => {
+    const config = configFor({
+      from_users: ["boudra"],
+      ...filters,
+      ...(connectionId === undefined ? {} : { connection: "github-main" }),
+    });
+    const trigger = config.triggers[0]!;
+    const configured = {
+      ...config,
+      triggers: [
+        {
+          ...trigger,
+          on,
+          filters: { ...trigger.filters, ...(connectionId === undefined ? {} : { connectionId }) },
+        },
+      ],
+    };
+    assert.equal(matchTriggers(configured, event, connectionId).length, expected);
+  });
+
   it("matches the compiled one-step trigger by repository, text, and actor", () => {
     const config = configFor({ repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] });
     const matches = matchTriggers(config, createEvent());
@@ -127,6 +297,29 @@ function configFor(filters: Record<string, unknown>) {
       },
     ],
   });
+}
+
+function issue(overrides: Record<string, unknown> = {}) {
+  return { number: 12, title: "Title", body: "body", user: { login: "author" }, ...overrides };
+}
+
+function pullRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    number: 12,
+    title: "Title",
+    body: "body",
+    user: { login: "author" },
+    head: { ref: "topic" },
+    ...overrides,
+  };
+}
+
+function comment() {
+  return { id: 123, body: "comment body", user: { login: "boudra" } };
+}
+
+function eventFor(type: string, payload: Record<string, unknown>): NormalizedGitHubEvent {
+  return { ...createEvent(), type, payload: { ...payload, sender: { login: "boudra" } } };
 }
 
 function createEvent(
