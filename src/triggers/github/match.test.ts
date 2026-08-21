@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import { matchTriggers } from "./match.js";
+import { matchTriggers, readGitHubInvocationMessage } from "./match.js";
 
 describe("GitHub trigger matching", () => {
   it.each([
@@ -175,6 +175,72 @@ describe("GitHub trigger matching", () => {
     assert.equal(matchTriggers(configured, event, connectionId).length, expected);
   });
 
+  it.each([
+    {
+      name: "issues",
+      event: eventFor("issues", {
+        action: "closed",
+        issue: issue({ title: "Issue title", body: "Issue body" }),
+      }),
+      text: "Issue title\nIssue body",
+      anotherAction: "reopened",
+    },
+    {
+      name: "issue comments",
+      event: eventFor("issue_comment", {
+        action: "edited",
+        issue: issue(),
+        comment: comment({ body: "Issue comment" }),
+      }),
+      text: "Issue comment",
+      anotherAction: "deleted",
+    },
+    {
+      name: "pull-request reviews",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest(),
+        review: { body: "Review body", user: { login: "reviewer" } },
+      }),
+      text: "Review body",
+      anotherAction: "edited",
+    },
+    {
+      name: "pull-request review comments",
+      event: eventFor("pull_request_review_comment", {
+        action: "created",
+        pull_request: pullRequest(),
+        comment: comment({ body: "Review comment" }),
+      }),
+      text: "Review comment",
+      anotherAction: "deleted",
+    },
+  ])(
+    "keeps legacy $name actor, text, and action-agnostic matching",
+    ({ event, text, anotherAction }) => {
+      const config = configFor({ contains: text, from_users: ["boudra"] });
+      const trigger = config.triggers[0]!;
+      const configured = { ...config, triggers: [{ ...trigger, on: `github.${event.type}` }] };
+
+      assert.equal(readGitHubInvocationMessage(event), text);
+      assert.equal(matchTriggers(configured, event).length, 1);
+      assert.equal(
+        matchTriggers(configured, {
+          ...event,
+          payload: { ...event.payload, sender: { login: "someone-else" } },
+        }).length,
+        0,
+      );
+      assert.equal(
+        matchTriggers(configured, {
+          ...event,
+          payload: { ...event.payload, action: anotherAction },
+        }).length,
+        1,
+      );
+    },
+  );
+
   it("matches the compiled one-step trigger by repository, text, and actor", () => {
     const config = configFor({ repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] });
     const matches = matchTriggers(config, createEvent());
@@ -314,8 +380,8 @@ function pullRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function comment() {
-  return { id: 123, body: "comment body", user: { login: "boudra" } };
+function comment(overrides: Record<string, unknown> = {}) {
+  return { id: 123, body: "comment body", user: { login: "boudra" }, ...overrides };
 }
 
 function eventFor(type: string, payload: Record<string, unknown>): NormalizedGitHubEvent {

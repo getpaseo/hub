@@ -15,6 +15,11 @@ import { DynamicProviderRuntime } from "./runtime-owner.js";
 
 describe("dynamic provider runtime", () => {
   it.each([
+    "github.issues",
+    "github.issue_comment",
+    "github.pull_request_review",
+    "github.pull_request_review_comment",
+    "github.push",
     "github.issue_created",
     "github.pull_request_created",
     "github.issue_comment_created",
