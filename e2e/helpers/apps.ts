@@ -489,7 +489,7 @@ export class AppSetupSurface {
     await this.daemonHandoff.expectWaiting();
   }
 
-  /** All the way out: app setup, past the daemon handoff, onto the dashboard. */
+  /** All the way out: app setup, past the daemon handoff, into the default project. */
   async leave(label: "Finish" | "Do this later"): Promise<void> {
     await this.reachDaemonHandoff(label);
     await this.daemonHandoff.leave("Do this later");

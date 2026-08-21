@@ -1,4 +1,6 @@
+/* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express a server-resolved organization slug */
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { TriangleAlert } from "lucide-react";
 import { useCallback } from "react";
@@ -22,6 +24,15 @@ const HOSTED_HUB_ORIGIN = "https://hub.paseo.sh";
 /** The exact command to paste into a terminal on the machine that will run the agents. */
 export function daemonLoginCommand(origin: string): string {
   return origin === HOSTED_HUB_ORIGIN ? "paseo hub login" : `paseo hub login ${origin}`;
+}
+
+/**
+ * Where both ways out of the handoff land: the project every organization is provisioned with
+ * (`provisionOrganization` in src/organizations/provisioning.ts names it). Onboarding ends inside
+ * the operator's project, not on a list asking them to pick the only entry it has.
+ */
+export function defaultProjectRoute(organizationSlug: string): string {
+  return `/o/${organizationSlug}/projects/default/overview`;
 }
 
 /**
@@ -84,6 +95,18 @@ export function DaemonHandoffEntry({
   });
   const refetch = snapshot.refetch;
   const retry = useCallback(() => void refetch(), [refetch]);
+  const navigate = useNavigate();
+  /**
+   * Connecting and skipping end the same way: inside the default project. The route has to be
+   * committed before the phase is dropped — dropping it first would render the dashboard at
+   * whatever URL onboarding happens to be standing on, and flash the project list on the way.
+   */
+  const leave = useCallback(() => {
+    void (async () => {
+      await navigate({ to: defaultProjectRoute(organizationSlug) as never });
+      onContinue();
+    })();
+  }, [navigate, onContinue, organizationSlug]);
   return (
     <DaemonHandoffView
       link={daemonLink(snapshot)}
@@ -91,7 +114,7 @@ export function DaemonHandoffEntry({
       // Only a click in app setup reaches this step, so there is no server render to guard.
       command={daemonLoginCommand(window.location.origin)}
       onRetry={retry}
-      onContinue={onContinue}
+      onContinue={leave}
     />
   );
 }

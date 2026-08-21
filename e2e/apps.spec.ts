@@ -63,7 +63,6 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
     await surface.leave("Do this later");
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await expect(
       page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
@@ -72,7 +71,7 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
     // Business as usual once the transition completes: reloading never returns here.
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
   } finally {
     await session.close();
   }

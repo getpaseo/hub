@@ -40,8 +40,13 @@ export class DaemonHandoffSurface {
     expect(results.violations).toEqual([]);
   }
 
+  /**
+   * Both ways out land in the project instance setup already provisioned. Onboarding never hands
+   * the operator a list with one entry on it and asks them to pick.
+   */
   async leave(label: "Continue" | "Do this later"): Promise<void> {
     await this.page.getByRole("button", { name: label, exact: true }).click();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects\/default\/overview$/u);
+    await expect(this.page.getByRole("heading", { name: "Overview" })).toBeVisible();
   }
 }

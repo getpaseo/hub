@@ -151,6 +151,8 @@ class BuiltApplications {
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
+      issueDaemonEnrollment: (verifier: string) =>
+        deliverCommand(server, { type: "daemon-enrollment-token", verifier }),
       failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),
       prepareSlackSocketWorkflow: () => deliverCommand(server, { type: "slack-socket-prepare" }),
       deliverSlackSocketMention: (eventId: string) =>

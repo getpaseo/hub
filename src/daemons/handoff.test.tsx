@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "vitest";
-import { daemonLink, daemonLoginCommand, DaemonHandoffView, type DaemonLink } from "./handoff.js";
+import {
+  daemonLink,
+  daemonLoginCommand,
+  DaemonHandoffView,
+  defaultProjectRoute,
+  type DaemonLink,
+} from "./handoff.js";
 import type { BrowserDaemon, BrowserDaemonList } from "./functions.js";
 
 const NOOP = (): void => {};
@@ -47,6 +53,15 @@ describe("the daemon login command", () => {
     assert.equal(
       daemonLoginCommand("https://hub.paseo.sh.example.com"),
       "paseo hub login https://hub.paseo.sh.example.com",
+    );
+  });
+});
+
+describe("where onboarding ends", () => {
+  it("addresses the project every organization is provisioned with", () => {
+    assert.equal(
+      defaultProjectRoute("paseo-hub-1a2b3c4d"),
+      "/o/paseo-hub-1a2b3c4d/projects/default/overview",
     );
   });
 });

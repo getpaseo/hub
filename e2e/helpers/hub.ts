@@ -48,6 +48,8 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  /** Records a daemon enrollment token for this instance's organization. */
+  issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
   failNextProjectRead(): Promise<void>;
   prepareSlackSocketWorkflow(): Promise<void>;
@@ -2306,11 +2308,8 @@ export class PaseoHub {
    */
   private async enrollOperatorDaemon(application: BuiltApplication): Promise<string> {
     const enrollmentToken = randomUUID();
-    await this.queryDatabase(
-      application.databaseUrl,
-      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
-       select $1, $2, id, now() + interval '10 minutes' from organization`,
-      [randomUUID(), createHash("sha256").update(enrollmentToken).digest("base64url")],
+    await application.issueDaemonEnrollment(
+      createHash("sha256").update(enrollmentToken).digest("base64url"),
     );
     const daemon = new ContractDaemon(application, this.requests);
     await daemon.enroll(enrollmentToken);
@@ -2495,7 +2494,6 @@ class HubUser {
     await change.getByLabel("Confirm new password").fill(replacementPassword);
     await change.getByRole("button", { name: "Save password" }).click();
     await this.skipAppSetup();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(organizationName);
   }
 
@@ -2507,9 +2505,10 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
     // Apps are followed by the daemon handoff. A journey that is not about either walks through
-    // both, exactly as the operator can.
+    // both, exactly as the operator can, and lands in the default project the way they do.
     await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Overview" })).toBeVisible();
   }
 
   async completeFirstRunJourney(
@@ -2534,8 +2533,9 @@ class HubUser {
     await this.page.keyboard.press("Tab");
     await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
 
-    // Setup provisioned a working organization, not just a row: its default project opens.
-    await this.navigation.openProject("Default");
+    // Setup provisioned a working organization, not just a row: onboarding ended inside its
+    // default project, and that project renders.
+    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Default", "Overview");
     await this.returnToProjects();
     // The instance operator surface is the proof that this account owns the instance, not just
     // its organization: the console refuses anyone without the flag, server-side.
@@ -2654,7 +2654,6 @@ class HubUser {
    * the journey asserts it once it is back at desktop width. */
   private async expectFirstRunDashboard(): Promise<void> {
     await this.skipAppSetup();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 

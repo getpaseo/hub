@@ -101,6 +101,16 @@ interface ProjectReadFailureCommand {
   type: "fail-next-project-read";
 }
 
+/**
+ * What `paseo hub connect` redeems. The child issues it because it is the process that owns the
+ * database, so a journey can enroll a daemon on an embedded instance with no PostgreSQL at all.
+ */
+interface DaemonEnrollmentCommand {
+  id: string;
+  type: "daemon-enrollment-token";
+  verifier: string;
+}
+
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
 // identically to a real one. STRIPE_WEBHOOK_SECRET must match what e2e/helpers/hub.ts signs
 // webhook payloads with — see WEBHOOK_SECRET there and GITHUB_WEBHOOK_SECRET for precedent.
@@ -422,6 +432,10 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
     process.send?.({ id: message.id, ok: true });
     return;
   }
+  if (isDaemonEnrollmentCommand(message)) {
+    await acceptDaemonEnrollmentCommand(message, fixtures);
+    return;
+  }
   if (isSlackSocketCommand(message)) {
     await acceptSlackSocketCommand(message, fixtures);
     return;
@@ -430,6 +444,26 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
   if (!isDiscordCommand(message)) return;
   try {
     await bot.deliver(message.event);
+    process.send?.({ id: message.id, ok: true });
+  } catch (error) {
+    process.send?.({
+      id: message.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function acceptDaemonEnrollmentCommand(
+  message: DaemonEnrollmentCommand,
+  fixtures: CommandFixtures,
+): Promise<void> {
+  try {
+    await fixtures.databaseRuntime.query(
+      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
+       select gen_random_uuid(), $1, id, now() + interval '10 minutes' from organization`,
+      [message.verifier],
+    );
     process.send?.({ id: message.id, ok: true });
   } catch (error) {
     process.send?.({
@@ -619,6 +653,16 @@ function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFail
     value !== null &&
     Reflect.get(value, "type") === "fail-next-account-setup" &&
     typeof Reflect.get(value, "id") === "string"
+  );
+}
+
+function isDaemonEnrollmentCommand(value: unknown): value is DaemonEnrollmentCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "daemon-enrollment-token" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "verifier") === "string"
   );
 }
 
