@@ -191,6 +191,7 @@ describe("HTTP failure ownership", () => {
     const operations: PublicOperations = {
       listProjects: failOperation,
       listConfigurationResources: failOperation,
+      listSetupResources: failOperation,
       validateConfiguration: failOperation,
       installConfiguration: failOperation,
       dispatchManualRun: failOperation,

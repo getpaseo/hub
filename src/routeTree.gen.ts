@@ -38,6 +38,7 @@ import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/int
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
+import { Route as ShellProjectsProjectSlugActivityRouteImport } from './routes/_shell/projects/$projectSlug/activity'
 import { Route as ShellOOrganizationSlugUsageRouteImport } from './routes/_shell/o/$organizationSlug/usage'
 import { Route as ShellOOrganizationSlugTeamRouteImport } from './routes/_shell/o/$organizationSlug/team'
 import { Route as ShellOOrganizationSlugProjectsRouteImport } from './routes/_shell/o/$organizationSlug/projects'
@@ -205,6 +206,12 @@ const AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute =
     path: '/agent-executions/$executionId/attachments/$attachmentId',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ShellProjectsProjectSlugActivityRoute =
+  ShellProjectsProjectSlugActivityRouteImport.update({
+    id: '/projects/$projectSlug/activity',
+    path: '/projects/$projectSlug/activity',
+    getParentRoute: () => ShellRoute,
+  } as any)
 const ShellOOrganizationSlugUsageRoute =
   ShellOOrganizationSlugUsageRouteImport.update({
     id: '/o/$organizationSlug/usage',
@@ -321,6 +328,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -364,6 +372,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -409,6 +418,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/_shell/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/_shell/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/_shell/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -455,6 +465,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/projects'
     | '/o/$organizationSlug/team'
     | '/o/$organizationSlug/usage'
+    | '/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -498,6 +509,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/team'
     | '/o/$organizationSlug/usage'
+    | '/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -542,6 +554,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/projects'
     | '/_shell/o/$organizationSlug/team'
     | '/_shell/o/$organizationSlug/usage'
+    | '/_shell/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -790,6 +803,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_shell/projects/$projectSlug/activity': {
+      id: '/_shell/projects/$projectSlug/activity'
+      path: '/projects/$projectSlug/activity'
+      fullPath: '/projects/$projectSlug/activity'
+      preLoaderRoute: typeof ShellProjectsProjectSlugActivityRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/o/$organizationSlug/usage': {
       id: '/_shell/o/$organizationSlug/usage'
       path: '/o/$organizationSlug/usage'
@@ -948,6 +968,7 @@ interface ShellRouteChildren {
   ShellOOrganizationSlugProjectsRoute: typeof ShellOOrganizationSlugProjectsRouteWithChildren
   ShellOOrganizationSlugTeamRoute: typeof ShellOOrganizationSlugTeamRoute
   ShellOOrganizationSlugUsageRoute: typeof ShellOOrganizationSlugUsageRoute
+  ShellProjectsProjectSlugActivityRoute: typeof ShellProjectsProjectSlugActivityRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
@@ -964,6 +985,7 @@ const ShellRouteChildren: ShellRouteChildren = {
     ShellOOrganizationSlugProjectsRouteWithChildren,
   ShellOOrganizationSlugTeamRoute: ShellOOrganizationSlugTeamRoute,
   ShellOOrganizationSlugUsageRoute: ShellOOrganizationSlugUsageRoute,
+  ShellProjectsProjectSlugActivityRoute: ShellProjectsProjectSlugActivityRoute,
 }
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)

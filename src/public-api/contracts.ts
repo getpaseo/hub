@@ -214,6 +214,24 @@ export const ConfigurationResourcesSchema = z
   .strict()
   .openapi("ConfigurationResources");
 
+export const SetupResourcesSchema = z
+  .object({
+    github: z.array(
+      z
+        .object({
+          slug: z.string(),
+          accountLogin: z.string(),
+          accountType: z.string(),
+          repositories: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    discord: z.array(z.object({ guildId: z.string(), guildName: z.string() }).strict()),
+    slack: z.array(z.object({ teamId: z.string(), teamName: z.string() }).strict()),
+  })
+  .strict()
+  .openapi("SetupResources");
+
 export const DispatchManualRunRequestSchema = z
   .object({
     projectSlug: z.string().trim().min(1).max(100),
