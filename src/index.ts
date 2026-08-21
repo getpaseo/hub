@@ -301,8 +301,10 @@ async function main(): Promise<void> {
       handle: () => build.handleDaemonUpgrade(request, socket, head),
     });
   });
+  const appUrl =
+    nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]) ?? `http://localhost:${port}`;
   server.listen(port, config.bind, () => {
-    logger.info({ bind: config.bind, port }, "server started");
+    logger.info(`server started, available at: ${appUrl}`);
   });
 
   const stop = async () => {
