@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 - 2026-08-21
+
+### Added
+
+- Explicit GitHub triggers for created issues, pull requests, issue comments, pull request comments, and labels added to issues or pull requests.
+- Case-insensitive GitHub label filters for the label changed by an event and the labels currently present on an issue or pull request.
+
+### Changed
+
+- GitHub App onboarding now includes pull request events. Existing GitHub trigger names remain compatible with their previous behavior.
+
 ## 0.5.1 - 2026-08-20
 
 ### Fixed
