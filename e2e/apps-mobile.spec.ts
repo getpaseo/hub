@@ -25,9 +25,6 @@ test("a phone operator can skip app setup and reach their dashboard", async ({ h
   try {
     await session.surface.leave("Do this later");
     await expect(
-      session.page.getByRole("heading", { name: "Projects", exact: true }),
-    ).toBeVisible();
-    await expect(
       session.page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
         .getByText("Paseo Hub", { exact: true }),

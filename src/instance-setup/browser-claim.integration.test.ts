@@ -30,7 +30,7 @@ const accountStateSchema = z
   .object({
     status: z.string(),
     account: z.object({ email: z.string() }).optional(),
-    organization: z.object({ name: z.string() }).optional(),
+    organization: z.object({ name: z.string(), slug: z.string() }).optional(),
     isInstanceOperator: z.boolean().optional(),
     registration: z.string().optional(),
   })
@@ -77,6 +77,9 @@ describe("first-run claim at the browser boundary", () => {
       const cookie = await signIn(instance.auth, operator.email, operator.password);
       const appSetup = await readAccountState(instance.auth, cookie);
       assert.equal(appSetup.status, "appSetupRequired");
+      // App setup already resolves the organization the daemon handoff has to address, and it is
+      // the same one the dashboard opens on — the handoff never re-resolves it.
+      assert.match(appSetup.organization?.slug ?? "", /^paseo-hub-[0-9a-f]{8}$/u);
       await instance.auth.completeAppOnboarding!(
         new Request(`${ORIGIN}/`, {
           method: "POST",
@@ -87,6 +90,7 @@ describe("first-run claim at the browser boundary", () => {
       assert.equal(active.status, "active");
       assert.equal(active.account?.email, operator.email);
       assert.equal(active.organization?.name, "Paseo Hub");
+      assert.equal(active.organization?.slug, appSetup.organization?.slug);
       assert.equal(active.isInstanceOperator, true);
 
       const storedNames = await instance.database.query<{

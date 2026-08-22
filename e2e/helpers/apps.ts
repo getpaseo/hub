@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { DaemonHandoffSurface } from "./daemon-handoff.js";
 
 export type AppProvider = "GitHub" | "Slack" | "Discord";
 
@@ -431,11 +432,14 @@ export class AppSetupSurface {
   readonly github: AppSection;
   readonly slack: AppSection;
   readonly discord: AppSection;
+  /** Where the way out leads on first run, before the dashboard. */
+  readonly daemonHandoff: DaemonHandoffSurface;
 
   constructor(private readonly page: Page) {
     this.github = new AppSection(page, "GitHub");
     this.slack = new AppSection(page, "Slack");
     this.discord = new AppSection(page, "Discord");
+    this.daemonHandoff = new DaemonHandoffSurface(page);
   }
 
   sections(): readonly AppSection[] {
@@ -479,9 +483,16 @@ export class AppSetupSurface {
     return this.page.getByRole("button", { name: label, exact: true });
   }
 
-  async leave(label: "Finish" | "Do this later"): Promise<void> {
+  /** Leaves app setup and stops on the daemon handoff, which is where the way out now leads. */
+  async reachDaemonHandoff(label: "Finish" | "Do this later"): Promise<void> {
     await this.wayOut(label).click();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await this.daemonHandoff.expectWaiting();
+  }
+
+  /** All the way out: app setup, past the daemon handoff, into the default project. */
+  async leave(label: "Finish" | "Do this later"): Promise<void> {
+    await this.reachDaemonHandoff(label);
+    await this.daemonHandoff.leave("Do this later");
   }
 
   async expectStatuses(expected: Readonly<Record<AppProvider, AppStatus>>): Promise<void> {
