@@ -339,7 +339,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(classifierLaunch.cwd, "/workspace/hub");
     assert.equal(
       classifierLaunch.prompt,
-      "Choose one configured repository environment and one complete named agent configuration.\n\ninvestigate the routing failure",
+      "Choose one configured repository environment and one complete named agent configuration.\n\n<@UBOT> investigate the routing failure",
     );
     assert.deepEqual(
       (await hub.listExecutionTools(classifier.id)).map(({ name }) => name),
@@ -366,7 +366,7 @@ describe("daemon enrollment and execution", () => {
     const workerLaunch = hub.createdAgentLaunch();
     assert.equal(workerLaunch.provider, "codex");
     assert.equal(workerLaunch.cwd, "/workspace/paseo");
-    assert.equal(workerLaunch.prompt, "investigate the routing failure");
+    assert.equal(workerLaunch.prompt, "<@UBOT> investigate the routing failure");
     assert.equal(workerLaunch.thinkingOptionId, "xhigh");
     assert.deepEqual(workerLaunch.providerOptions, {
       sandbox_workspace_write: {

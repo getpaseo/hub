@@ -572,7 +572,9 @@ describe("durable multi-step workflow engine", () => {
     await engine.processAvailable();
 
     assert.deepEqual(dispatches, ["unknown"]);
-    assert.deepEqual(prompts, ["Committed partial for request / hub\nInline request / hub"]);
+    assert.deepEqual(prompts, [
+      "Committed partial for repo=hub request / hub\nInline repo=hub request / hub",
+    ]);
   });
 
   it("skips classification for deterministic input and launches only the matching branch", async () => {

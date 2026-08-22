@@ -242,7 +242,7 @@ async function databaseBeforeSocketMode(): Promise<{
   bundle: DatabaseRuntimeBundle;
   close(): Promise<void>;
 }> {
-  const beforeSocketMode = migrations.slice(0, -1);
+  const beforeSocketMode = migrations.slice(0, 38);
   const root = await mkdtemp(join(tmpdir(), "hub-slack-socket-upgrade-"));
   roots.push(root);
   await applyPGliteMigrationsBeforeProviderApplications(root, beforeSocketMode);

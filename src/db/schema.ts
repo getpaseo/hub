@@ -269,7 +269,6 @@ export const triggerRuns = pgTable(
     configuredTriggerName: text("configured_trigger_name").notNull(),
     outcome: text().$type<"accepted" | "rejected">().notNull().default("accepted"),
     status: text().$type<"running" | "succeeded" | "failed" | "timed_out" | "rejected">().notNull(),
-    rawPrompt: text("raw_prompt").notNull(),
     prompt: text().notNull(),
     inputs: jsonb().notNull().default({}),
     values: jsonb().notNull().default({}),

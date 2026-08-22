@@ -61,8 +61,7 @@ describe("Slack Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "<@UBOT> repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "<@UBOT> repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
   });
@@ -87,8 +86,28 @@ describe("Slack Phase 1 trigger provider", () => {
     )[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.prompt, "<@UBOT> run repo=hub investigate");
     assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
+  it("preserves the complete message when the mention is last", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const prompt = "Do the whole thing first <@UBOT>";
+
+    const match = (await provider.match(external(project.id, revision.id, { content: prompt })))[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, prompt);
   });
 
   it("uses exact input filters to select one configured trigger", async () => {

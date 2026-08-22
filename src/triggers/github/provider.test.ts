@@ -28,8 +28,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "@paseo repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "@paseo repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
   });
@@ -51,10 +50,22 @@ describe("GitHub Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "please @paseo repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "please @paseo repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
+  });
+
+  it("preserves the complete comment when the marker is last", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const prompt = "Do the whole thing first @paseo";
+
+    const match = (
+      await provider.match(external(project.id, revision.id, createEvent({ body: prompt })))
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, prompt);
   });
 
   it("matches a literal one-step prompt only after the security filters pass", async () => {
