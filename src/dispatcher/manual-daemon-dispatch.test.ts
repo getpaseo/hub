@@ -152,7 +152,6 @@ function matchingProvider(configuration: CompiledHubConfig, revisionId: string):
           hubConfig: configuration,
           invocation: {
             status: "accepted",
-            rawMessage: "run",
             prompt: "run",
             inputs: {},
           },

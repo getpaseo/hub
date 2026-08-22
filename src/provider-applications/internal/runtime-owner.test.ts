@@ -593,7 +593,7 @@ function fakeRegistration(
           triggerContext: { id },
           outputContext: { id },
           hubConfig: {},
-          invocation: { status: "accepted", rawMessage: "", prompt: "", inputs: {} },
+          invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
     onAgentExecutionCompleted: () => {
@@ -644,7 +644,7 @@ function downstreamRegistration(
           triggerContext: { id },
           outputContext: { provider: "slack", id },
           hubConfig: {},
-          invocation: { status: "accepted", rawMessage: "", prompt: "", inputs: {} },
+          invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
     materializeLaunch: () => {

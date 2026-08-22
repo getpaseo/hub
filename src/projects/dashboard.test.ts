@@ -50,7 +50,6 @@ describe("project dashboard activity read models", () => {
       configurationRevisionId: revision.id,
       providerEventReceiptId: receipt.event.providerEventReceiptId,
       configuredTriggerName: "dashboard-run",
-      rawPrompt: "run",
       prompt: "run",
       inputs: {},
       triggerContext,

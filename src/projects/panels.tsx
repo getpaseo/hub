@@ -465,11 +465,8 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
       <div className="grid gap-6">
         <Section title="Invocation">
           <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
-            <DetailField label="Raw message">
-              <pre className="whitespace-pre-wrap text-sm">{activity.rawMessage}</pre>
-            </DetailField>
-            <DetailField label="Clean prompt">
-              <pre className="whitespace-pre-wrap text-sm">{activity.cleanPrompt}</pre>
+            <DetailField label="Prompt">
+              <pre className="whitespace-pre-wrap text-sm">{activity.prompt}</pre>
             </DetailField>
             <DetailField label="Typed inputs">
               <JsonValue value={activity.inputs} />

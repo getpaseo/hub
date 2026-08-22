@@ -600,7 +600,6 @@ interface TriggerRunEvidence {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values: unknown;
@@ -673,7 +672,6 @@ export interface CreateAcceptedTriggerRunInput {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values?: unknown;
@@ -691,7 +689,6 @@ export interface CreateRejectedTriggerRunInput {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values?: unknown;

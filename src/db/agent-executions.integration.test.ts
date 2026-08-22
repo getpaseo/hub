@@ -91,8 +91,7 @@ describe("agent execution PostgreSQL repository", () => {
         configurationRevisionId: fixture.execution.configurationRevisionId,
         providerEventReceiptId: receipt.event.providerEventReceiptId,
         configuredTriggerName: "one-step",
-        rawPrompt: "@Paseo repo=hub investigate",
-        prompt: "investigate",
+        prompt: "@Paseo repo=hub investigate",
         inputs: { repo: "hub" },
         triggerContext: baseIntent.triggerContext,
         outputContext: baseIntent.outputContext,
@@ -112,8 +111,7 @@ describe("agent execution PostgreSQL repository", () => {
         )[0],
         {
           ...created.run,
-          rawPrompt: "@Paseo repo=hub investigate",
-          prompt: "investigate",
+          prompt: "@Paseo repo=hub investigate",
           inputs: { repo: "hub" },
         },
       );
@@ -645,8 +643,7 @@ describe("agent execution PostgreSQL repository", () => {
           configurationRevisionId: fixture.execution.configurationRevisionId,
           providerEventReceiptId: trigger.event.providerEventReceiptId,
           configuredTriggerName: "one-step",
-          rawPrompt: "raw",
-          prompt: "prompt",
+          prompt: "raw",
           inputs: {},
           triggerContext: { provider: "test" },
           outputContext: { provider: "test" },
@@ -694,8 +691,7 @@ describe("agent execution PostgreSQL repository", () => {
           configurationRevisionId: fixture.execution.configurationRevisionId,
           providerEventReceiptId: trigger.event.providerEventReceiptId,
           configuredTriggerName: "one-step",
-          rawPrompt: "raw",
-          prompt: "prompt",
+          prompt: "raw",
           inputs: {},
           triggerContext: { provider: "test" },
           outputContext: { provider: "test" },
@@ -983,8 +979,7 @@ describe("agent execution PostgreSQL repository", () => {
         hubConfig: {},
         invocation: {
           status: "rejected" as const,
-          rawMessage: "repo=unknown investigate",
-          prompt: "investigate",
+          prompt: "repo=unknown investigate",
           inputs: {},
           reason: "input repo must be one of the declared choices",
           rejection: {
@@ -1109,7 +1104,6 @@ describe("agent execution PostgreSQL repository", () => {
         configurationRevisionId: revisionId,
         providerEventReceiptId: receipt.event.providerEventReceiptId,
         configuredTriggerName: "shared-trigger",
-        rawPrompt: "run",
         prompt: "run",
         inputs: {},
         triggerContext: {},
@@ -1173,8 +1167,7 @@ describe("agent execution PostgreSQL repository", () => {
         configurationRevisionId: revisionId,
         providerEventReceiptId: receipt.event.providerEventReceiptId,
         configuredTriggerName: "shared-rejected-trigger",
-        rawPrompt: "repo=unknown",
-        prompt: "",
+        prompt: "repo=unknown",
         inputs: {},
         triggerContext: {},
         outputContext: {},
@@ -1325,7 +1318,6 @@ function phaseOneMatch(
     hubConfig: workflowConfiguration(triggerName, stepId),
     invocation: {
       status: "accepted",
-      rawMessage: "run",
       prompt: "run",
       inputs: {},
     },
@@ -1358,7 +1350,6 @@ function postgresDeadlineEngine(
               hubConfig: configuration,
               invocation: {
                 status: "accepted",
-                rawMessage: "run",
                 prompt: "run",
                 inputs: {},
               },
@@ -1384,8 +1375,7 @@ function restartMatch(configurationRevisionId: string): TriggerProviderMatch {
     hubConfig: configuration,
     invocation: {
       status: "accepted",
-      rawMessage: "repo=hub work",
-      prompt: "work",
+      prompt: "repo=hub work",
       inputs: { repo: "hub" },
     },
   };

@@ -18,12 +18,10 @@ export async function openProjectRun(page: Page, triggerName: string) {
 
 export async function expectRunDetail(
   page: Page,
-  input: { rawMessage: string; cleanPrompt: string; failureReason?: string },
+  input: { prompt: string; failureReason?: string },
 ) {
-  await expect(page.getByText("Raw message", { exact: true })).toBeVisible();
-  await expect(page.getByText(input.rawMessage, { exact: true })).toBeVisible();
-  await expect(page.getByText("Clean prompt", { exact: true })).toBeVisible();
-  await expect(page.getByText(input.cleanPrompt, { exact: true })).toBeVisible();
+  await expect(page.getByText("Prompt", { exact: true })).toBeVisible();
+  await expect(page.getByText(input.prompt, { exact: true })).toBeVisible();
   await expect(page.getByText("Typed inputs", { exact: true })).toBeVisible();
   await expect(page.getByText("Composed routing values", { exact: true })).toBeVisible();
   if (input.failureReason !== undefined) {

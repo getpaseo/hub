@@ -560,11 +560,11 @@ export class PaseoHub {
        ), activity as (
          insert into trigger_runs
            (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-            configured_trigger_name, status, raw_prompt, prompt, inputs, "values",
+            configured_trigger_name, status, prompt, inputs, "values",
             trigger_context, output_context, deadline_at, deadline_kind, outcome,
             created_at, completed_at)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-                'Browser history', 'succeeded', 'Browser history', 'Browser history',
+                'Browser history', 'succeeded', 'Browser history',
                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
                 clock_timestamp(), 'whole_run', 'accepted', clock_timestamp(), clock_timestamp()
          from revision
