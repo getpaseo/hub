@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.0 - 2026-08-21
+
+### Added
+
+- Explicit GitHub triggers for created issues, pull requests, issue comments, pull request comments, and labels added to issues or pull requests.
+- Case-insensitive GitHub label filters for the label changed by an event and the labels currently present on an issue or pull request.
+
+### Changed
+
+- GitHub App onboarding now includes pull request events. Existing GitHub trigger names remain compatible with their previous behavior.
+
+## 0.5.1 - 2026-08-20
+
+### Fixed
+
+- Production startup ignores `.env` files, so zero-configuration launches use embedded storage even when run from a directory containing unrelated database settings.
+
+## 0.5.0 - 2026-08-20
+
+### Added
+
+- A zero-configuration local start with an embedded PGlite database, generated durable authentication secret, and first-run operator account setup.
+- Browser-guided GitHub, Slack, and Discord app onboarding.
+- Slack Socket Mode for local bots that do not have a public URL.
+- A published `@getpaseo/hub` package that runs with `npx @getpaseo/hub`.
+
+### Changed
+
+- Embedded Hub data now lives under `$XDG_DATA_HOME/paseo-hub`, falling back to `~/.local/share/paseo-hub`.
+- Configuration deployment can create or restore its implicit target project.
+
+### Fixed
+
+- Slack username allowlists resolve consistently during provider setup.
+
 ## 0.4.0 - 2026-08-12
 
 ### Added

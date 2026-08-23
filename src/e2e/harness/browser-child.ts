@@ -36,6 +36,7 @@ import {
 import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 import {
   BrowserProviderApplicationVerifier,
+  BrowserSlackSocketFixture,
   browserRegistrationFactory,
 } from "./browser-provider-applications.js";
 import {
@@ -50,11 +51,18 @@ import {
   type ProviderApplicationIdentity,
 } from "../../provider-applications/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
+import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
 
 interface DiscordCommand {
   id: string;
   type: "discord";
   event: BrowserDiscordEvent;
+}
+
+interface SlackSocketCommand {
+  id: string;
+  type: "slack-socket-prepare" | "slack-socket-deliver" | "slack-socket-inspect";
+  eventId?: string;
 }
 
 interface GitHubConfigurationCommand {
@@ -91,6 +99,16 @@ interface AccountSetupFailureCommand {
 interface ProjectReadFailureCommand {
   id: string;
   type: "fail-next-project-read";
+}
+
+/**
+ * What `paseo hub connect` redeems. The child issues it because it is the process that owns the
+ * database, so a journey can enroll a daemon on an embedded instance with no PostgreSQL at all.
+ */
+interface DaemonEnrollmentCommand {
+  id: string;
+  type: "daemon-enrollment-token";
+  verifier: string;
 }
 
 // Fixture-only: signature verification is local HMAC, so any well-formed secret works
@@ -146,6 +164,8 @@ async function main(): Promise<void> {
   );
   const bot = new BrowserDiscordBot(scenario);
   const slackBot = new BrowserSlackBot();
+  const slackSocket = new BrowserSlackSocketFixture(scenario);
+  await slackSocket.start();
   const githubConfiguration = new BrowserGitHubConfiguration();
   const githubConfigured = hasBrowserGitHub(scenario);
   const slackConfigured = scenario === "slack-only";
@@ -202,10 +222,11 @@ async function main(): Promise<void> {
             publicBaseUrl,
             configuration: slackConfigured
               ? {
+                  transport: "webhook",
                   appId: "browser-slack-app",
                   clientId: "browser-slack-client",
                   clientSecret: "browser-slack-client-secret",
-                  signingSecret: requiredEnvironment("SLACK_SIGNING_SECRET"),
+                  signingSecret: requiredEnvironment("PASEO_E2E_SLACK_SIGNING_SECRET"),
                 }
               : null,
             ...(slackConfigured ? { botClient: slackBot } : {}),
@@ -219,6 +240,7 @@ async function main(): Promise<void> {
     scenario,
     bot,
     slackBot,
+    slackSocket,
     githubConfiguration,
   });
   const runtime = await createApplicationRuntime({
@@ -232,6 +254,7 @@ async function main(): Promise<void> {
     async close() {
       await auth?.close();
       await entitlements.close();
+      await slackSocket.close();
       await database.close();
     },
   });
@@ -261,6 +284,9 @@ async function main(): Promise<void> {
   process.on("message", (message: unknown) => {
     void acceptCommand(message, {
       bot,
+      slackSocket,
+      database,
+      databaseRuntime,
       githubConfiguration,
       billingCatalog,
       billingClient: billingFixtureClient,
@@ -379,6 +405,9 @@ async function seedMachineAuthTargetIfRequired(
 
 interface CommandFixtures {
   bot: BrowserDiscordBot;
+  slackSocket: BrowserSlackSocketFixture;
+  database: Database;
+  databaseRuntime: DatabaseRuntime;
   githubConfiguration: BrowserGitHubConfiguration;
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
@@ -403,6 +432,14 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
     process.send?.({ id: message.id, ok: true });
     return;
   }
+  if (isDaemonEnrollmentCommand(message)) {
+    await acceptDaemonEnrollmentCommand(message, fixtures);
+    return;
+  }
+  if (isSlackSocketCommand(message)) {
+    await acceptSlackSocketCommand(message, fixtures);
+    return;
+  }
   if (acceptBillingCommand(message, billingCatalog, billingClient)) return;
   if (!isDiscordCommand(message)) return;
   try {
@@ -415,6 +452,126 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function acceptDaemonEnrollmentCommand(
+  message: DaemonEnrollmentCommand,
+  fixtures: CommandFixtures,
+): Promise<void> {
+  try {
+    await fixtures.databaseRuntime.query(
+      `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
+       select gen_random_uuid(), $1, id, now() + interval '10 minutes' from organization`,
+      [message.verifier],
+    );
+    process.send?.({ id: message.id, ok: true });
+  } catch (error) {
+    process.send?.({
+      id: message.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function acceptSlackSocketCommand(
+  message: SlackSocketCommand,
+  fixtures: CommandFixtures,
+): Promise<void> {
+  try {
+    if (message.type === "slack-socket-prepare") {
+      await prepareSlackSocketWorkflow(fixtures.database, fixtures.databaseRuntime);
+      process.send?.({ id: message.id, ok: true });
+      return;
+    }
+    if (message.eventId === undefined) throw new Error("Slack event ID is required");
+    if (message.type === "slack-socket-deliver") {
+      await fixtures.slackSocket.deliverMention(message.eventId);
+      process.send?.({ id: message.id, ok: true });
+      return;
+    }
+    const result = await fixtures.databaseRuntime.query<{ receipts: number; runs: number }>(
+      `select count(distinct receipt.id)::integer receipts, count(run.id)::integer runs
+       from provider_event_receipts receipt left join trigger_runs run
+       on run.provider_event_receipt_id = receipt.id where receipt.delivery_id = $1`,
+      [`slack-${message.eventId}`],
+    );
+    process.send?.({ id: message.id, ok: true, data: result.rows[0] });
+  } catch (error) {
+    process.send?.({
+      id: message.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function prepareSlackSocketWorkflow(
+  database: Database,
+  runtime: DatabaseRuntime,
+): Promise<void> {
+  const target = await runtime.query<{
+    project_id: string;
+    user_id: string;
+    connection_id: string;
+  }>(
+    `select project.id project_id, member.user_id, connection.id connection_id
+     from projects project join member on member.organization_id = project.organization_id
+     join slack_connections connection on connection.organization_id = project.organization_id
+     where connection.team_id = 'T-ACME' order by project.id, member.id limit 1`,
+  );
+  const row = target.rows[0];
+  if (row === undefined) throw new Error("Slack browser workflow target is unavailable");
+  const compiled = compileHubConfig({
+    environments: [{ name: "runner", kind: "daemon", daemon: "browser-runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "socket-mention",
+        on: "slack.mention",
+        max_runtime: "5m",
+        filters: { workspace: "T-ACME", channels: ["C1"], from_users: ["U1"] },
+        steps: [
+          {
+            id: "handle",
+            environment: "runner",
+            max_runtime: "2m",
+            idle_timeout: "30s",
+            agent: { provider: "test" },
+            prompt: [{ text: "Handle the Socket Mode mention." }],
+          },
+        ],
+      },
+    ],
+  });
+  const configuration = {
+    ...compiled,
+    environments: compiled.environments.map((environment) =>
+      environment.kind === "daemon"
+        ? { ...environment, daemonId: "00000000-0000-4000-8000-000000000099" }
+        : environment,
+    ),
+    triggers: compiled.triggers.map((trigger) =>
+      Object.assign({}, trigger, {
+        filters: { ...trigger.filters, connectionId: row.connection_id },
+      }),
+    ),
+  };
+  const revision = await database.insertProjectConfigurationRevision({
+    projectId: row.project_id,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "browser-socket-fixture" },
+    normalizedConfiguration: configuration,
+    contentHash: compiledConfigurationHash(configuration),
+    createdByUserId: row.user_id,
+  });
+  await database.activateProjectConfigurationRevision(row.project_id, revision.id, [
+    {
+      provider: "slack",
+      connectionId: row.connection_id,
+      resourceId: null,
+      triggerName: "socket-mention",
+    },
+  ]);
 }
 
 /** Handle the fixture billing IPC commands (product edit, cancel, seat inspection). Returns true
@@ -499,6 +656,16 @@ function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFail
   );
 }
 
+function isDaemonEnrollmentCommand(value: unknown): value is DaemonEnrollmentCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "daemon-enrollment-token" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "verifier") === "string"
+  );
+}
+
 function isProjectReadFailureCommand(value: unknown): value is ProjectReadFailureCommand {
   return (
     typeof value === "object" &&
@@ -547,6 +714,19 @@ function isDiscordCommand(value: unknown): value is DiscordCommand {
     Reflect.get(value, "type") === "discord" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "event") === "object"
+  );
+}
+
+function isSlackSocketCommand(value: unknown): value is SlackSocketCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ["slack-socket-prepare", "slack-socket-deliver", "slack-socket-inspect"].includes(
+      String(Reflect.get(value, "type")),
+    ) &&
+    typeof Reflect.get(value, "id") === "string" &&
+    (Reflect.get(value, "eventId") === undefined ||
+      typeof Reflect.get(value, "eventId") === "string")
   );
 }
 
@@ -692,6 +872,7 @@ async function composeProviderApplications(input: {
   scenario: BrowserProviderScenario;
   bot: BrowserDiscordBot;
   slackBot: BrowserSlackBot;
+  slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
 }): Promise<{
   capability: ProviderApplications;
@@ -713,6 +894,7 @@ async function composeProviderApplications(input: {
       scenario: input.scenario,
       bot: input.bot,
       slackBot: input.slackBot,
+      slackSocket: input.slackSocket,
       githubConfiguration: input.githubConfiguration,
     }),
   });
@@ -733,6 +915,11 @@ async function composeProviderApplications(input: {
     environment,
     runtime: providerRuntime,
     verifier,
+    slackSocketVerifier: input.slackSocket.verifier(),
+    slackDelivery: {
+      status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
+      retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+    },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {

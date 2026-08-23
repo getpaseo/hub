@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
-import { join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
@@ -32,8 +32,6 @@ import { composeEntitlements, type ComposedEntitlements } from "./auth/entitleme
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
-import { loadRuntimeEnvironment, type RuntimeEnvironmentSource } from "./runtime-environment.js";
-import { isCommandLineEntrypoint } from "./command-line.js";
 import {
   DynamicProviderRuntime,
   activateProviderApplicationsAtStartup,
@@ -44,15 +42,10 @@ import {
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
+import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
+import { resolveHubDataDirectory } from "./data-directory.js";
 
-export interface ProductionRuntimeOptions {
-  environmentSource: RuntimeEnvironmentSource;
-}
-
-export function startProductionRuntime(
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
-): Promise<ApplicationRuntime> {
-  loadRuntimeEnvironment(options.environmentSource);
+export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
 }
 
@@ -64,9 +57,8 @@ export async function handleDaemonUpgrade(
   request: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-  options: ProductionRuntimeOptions = { environmentSource: "process-and-dotenv" },
 ): Promise<void> {
-  const runtime = await startProductionRuntime(options);
+  const runtime = await startProductionRuntime();
   if (runtime.hub.handleUpgrade === null) {
     socket.destroy();
     return;
@@ -123,6 +115,39 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       auth,
       applicationBaseUrl: identity.appUrl,
     });
+    const providerApplications = createProviderApplications({
+      auth,
+      store: providerStore,
+      environment: providerEnvironment,
+      runtime: providerRuntime,
+      verifier: providerVerifier,
+      slackSocketVerifier: createSlackSocketInstallationVerifier(),
+      slackDelivery: {
+        status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
+        retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+      },
+      inventory: providerInventory,
+      callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
+      beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
+        const organizationSlug = await providerInventory.organizationSlug(organizationId);
+        if (organizationSlug === undefined) throw new Error("organization unavailable");
+        const url = new URL(request.url);
+        url.searchParams.set("organizationSlug", organizationSlug);
+        url.searchParams.set("returnRoute", returnRoute);
+        return begin(new Request(url, { method: "POST", headers: request.headers }));
+      },
+    });
+    const application = await createApplicationRuntime({
+      database,
+      auth,
+      entitlements: entitlements.service,
+      billing,
+      registrations: providerRuntime.registrations(),
+      providerApplications,
+      publicBaseUrl: identity.appUrl,
+      completionTokenSecret: identity.authSecret,
+      close: () => resources.close(),
+    });
     const activationFailures = await activateProviderApplicationsAtStartup({
       store: providerStore,
       environment: providerEnvironment,
@@ -138,34 +163,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
         provider,
       });
     }
-    const providerApplications = createProviderApplications({
-      auth,
-      store: providerStore,
-      environment: providerEnvironment,
-      runtime: providerRuntime,
-      verifier: providerVerifier,
-      inventory: providerInventory,
-      callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
-      beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
-        const organizationSlug = await providerInventory.organizationSlug(organizationId);
-        if (organizationSlug === undefined) throw new Error("organization unavailable");
-        const url = new URL(request.url);
-        url.searchParams.set("organizationSlug", organizationSlug);
-        url.searchParams.set("returnRoute", returnRoute);
-        return begin(new Request(url, { method: "POST", headers: request.headers }));
-      },
-    });
-    return await createApplicationRuntime({
-      database,
-      auth,
-      entitlements: entitlements.service,
-      billing,
-      registrations: providerRuntime.registrations(),
-      providerApplications,
-      publicBaseUrl: identity.appUrl,
-      completionTokenSecret: identity.authSecret,
-      close: () => resources.close(),
-    });
+    return application;
   } catch (error) {
     await resources.close();
     throw error;
@@ -209,9 +207,7 @@ async function createDatabaseHandle(): Promise<DatabaseRuntimeBundle & { databas
     );
   }
 
-  const dataDirectory = resolvePath(
-    process.env["PASEO_HUB_DATA_DIR"] ?? join(process.cwd(), ".dev", "paseo-hub"),
-  );
+  const dataDirectory = resolveHubDataDirectory();
   return initializeDatabaseRuntime(
     () => embeddedDatabaseRuntime(dataDirectory),
     `database runtime ready: embedded (${dataDirectory})`,
@@ -305,8 +301,10 @@ async function main(): Promise<void> {
       handle: () => build.handleDaemonUpgrade(request, socket, head),
     });
   });
+  const appUrl =
+    nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]) ?? `http://localhost:${port}`;
   server.listen(port, config.bind, () => {
-    logger.info({ bind: config.bind, port }, "server started");
+    logger.info(`server started, available at: ${appUrl}`);
   });
 
   const stop = async () => {
@@ -389,9 +387,11 @@ function readPort(): number {
   return port;
 }
 
-if (isCommandLineEntrypoint(import.meta.url)) {
+export function runHubCommandLine(): void {
   main().catch((error: unknown) => {
     reportFailure(error, { operation: "server.startup.fatal", component: "server" });
     process.exit(1);
   });
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) runHubCommandLine();

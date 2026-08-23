@@ -324,7 +324,6 @@ async function runTwoStepWorkflow<
     configurationRevisionId: revision.id,
     providerEventReceiptId: randomUUID(),
     configuredTriggerName: "multi",
-    rawPrompt: "run",
     prompt: "run",
     inputs: {},
     triggerContext: input.triggerContext,

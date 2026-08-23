@@ -130,13 +130,17 @@ describe("GitHub webhook", () => {
       repositoryId: number;
       deliveryId: string;
     }> = [];
+    const acceptedDeliveries: Array<{ source: string; deliveryId: string }> = [];
     const endpoint = createWebhookSource(SECRET, {
       ...webhookOptions(),
-      accept: async () => ({
-        status: "dropped" as const,
-        receiptId: "receipt-config-only",
-        reason: "no_project_route",
-      }),
+      accept: async (input) => {
+        acceptedDeliveries.push({ source: input.source, deliveryId: input.deliveryId });
+        return {
+          status: "dropped" as const,
+          receiptId: "receipt-config-only",
+          reason: "no_project_route",
+        };
+      },
       synchronizePush: async (input) => {
         synchronized.push({
           installationId: input.installationId,
@@ -161,6 +165,9 @@ describe("GitHub webhook", () => {
     );
     assert.deepEqual(synchronized, [
       { installationId: 42, repositoryId: 9001, deliveryId: "config-only-push" },
+    ]);
+    assert.deepEqual(acceptedDeliveries, [
+      { source: "github.push", deliveryId: "config-only-push" },
     ]);
   });
 

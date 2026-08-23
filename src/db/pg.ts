@@ -468,8 +468,8 @@ class PgDatabase implements Database {
           `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, '{}'::jsonb, $10, $11, $12, null, null, $13)
+            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
           [
@@ -479,7 +479,6 @@ class PgDatabase implements Database {
             input.configurationRevisionId,
             input.providerEventReceiptId,
             input.configuredTriggerName,
-            input.rawPrompt,
             input.prompt,
             input.inputs,
             input.triggerContext,
@@ -535,9 +534,9 @@ class PgDatabase implements Database {
           `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
+            prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'rejected', 'rejected',
-                 $7, $8, $9, '{}'::jsonb, $10, $11, null, $13, $12, $12)
+                 $7, $8, '{}'::jsonb, $9, $10, null, $12, $11, $11)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
           [
@@ -547,7 +546,6 @@ class PgDatabase implements Database {
             input.configurationRevisionId,
             input.providerEventReceiptId,
             input.configuredTriggerName,
-            input.rawPrompt,
             input.prompt,
             input.inputs,
             input.triggerContext,
@@ -3898,7 +3896,6 @@ interface TriggerRunRow extends QueryRow {
   configured_trigger_name: string;
   outcome: TriggerRunRecord["outcome"];
   status: TriggerRunRecord["status"];
-  raw_prompt: string;
   prompt: string;
   inputs: unknown;
   values: unknown;
@@ -3975,7 +3972,6 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     configurationRevisionId: row.configuration_revision_id,
     providerEventReceiptId: row.provider_event_receipt_id,
     configuredTriggerName: row.configured_trigger_name,
-    rawPrompt: row.raw_prompt,
     prompt: row.prompt,
     inputs: parseInvocationInputs(row.inputs),
     values: row.values,

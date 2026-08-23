@@ -365,7 +365,13 @@ describe("Slack registration", () => {
 });
 
 function slackConfiguration() {
-  return { appId: "A1", clientId: "client", clientSecret: "secret", signingSecret: "signing" };
+  return {
+    transport: "webhook" as const,
+    appId: "A1",
+    clientId: "client",
+    clientSecret: "secret",
+    signingSecret: "signing",
+  };
 }
 
 function callbackDatabase() {

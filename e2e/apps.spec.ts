@@ -1,6 +1,10 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
-import { GITHUB_EVENT_CREDENTIALS, WORKING_CREDENTIALS } from "./helpers/apps.js";
+import {
+  GITHUB_EVENT_CREDENTIALS,
+  SLACK_WEBHOOK_CREDENTIALS,
+  WORKING_CREDENTIALS,
+} from "./helpers/apps.js";
 import { expectOneFailure, recordsFor, stripAnsi } from "./helpers/logs.js";
 import { SHOTS, type AppSetupSession } from "./helpers/app-evidence.js";
 import type { PaseoHub } from "./helpers/hub.js";
@@ -59,7 +63,6 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
     await surface.leave("Do this later");
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await expect(
       page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
@@ -68,7 +71,7 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
     // Business as usual once the transition completes: reloading never returns here.
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
   } finally {
     await session.close();
   }
@@ -166,6 +169,7 @@ test("on HTTPS GitHub event triggers are set up beside repository access", async
     expect(await github.subscribedEvents()).toEqual([
       "Issue comment",
       "Issues",
+      "Pull requests",
       "Pull request review",
       "Pull request review comment",
       "Push",
@@ -453,17 +457,17 @@ test("Discord disallowed intents explains the exact portal setting and logs one 
   }
 });
 
-test("Slack completes its HTTPS install before saving and activating the app", async ({ hub }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR, https: true });
+test("Slack Socket Mode connects on plain HTTP with only two tokens", async ({ hub }) => {
+  const session = await hub.openAppSetup({ account: OPERATOR, embedded: true });
   try {
     const { surface, page } = session;
     const slack = surface.slack;
     await slack.expand();
 
-    // The manifest asks for the exact callback origin and grant Hub checks.
+    // The default journey has no public-ingress or OAuth fields.
     const manifest = await slack.copiedManifest();
-    expect(manifest).toContain(`${session.origin}/api/integrations/slack/callback`);
-    expect(manifest).toContain(`${session.origin}/api/integrations/slack/events`);
+    expect(manifest).toContain("socket_mode_enabled: true");
+    expect(manifest).not.toContain("redirect_urls");
     for (const scope of [
       "app_mentions:read",
       "channels:history",
@@ -475,31 +479,39 @@ test("Slack completes its HTTPS install before saving and activating the app", a
     ]) {
       expect(manifest).toContain(`- ${scope}`);
     }
-    // Installing is what saves the app. It is said once, under the button.
-    const steps = (await slack.stepOrder()).join(" ").toLowerCase();
-    expect(steps).not.toContain("install");
-    await expect(
-      slack.form().getByText("Slack asks you to install the app before anything is saved."),
-    ).toBeVisible();
-
     await slack.expectSideBySideLayout();
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-06-slack-expanded.desktop");
 
     await slack.fillWorkingCredentials();
     await slack.save();
-    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
-    await page.getByRole("link", { name: "Accept installation" }).click();
     await slack.expectExpanded();
     await slack.expectFocusedResult("Slack connected.");
     await slack.expectStatus("Connected");
     await slack.expectSummary({
-      "App ID": WORKING_CREDENTIALS.Slack["App ID"]!,
+      "App ID": "browser-slack-app",
+      Delivery: "Socket Mode",
       Workspaces: "Acme",
-      Events: "Waiting for the first event",
+      Events: "Connected",
+    });
+    await session.prepareSlackSocketWorkflow();
+    await session.deliverSlackSocketMention("browser-socket-before-restart");
+    await session.deliverSlackSocketMention("browser-socket-before-restart");
+    expect(await session.slackSocketEvidence("browser-socket-before-restart")).toEqual({
+      receipts: 1,
+      runs: 1,
+    });
+
+    await session.restart();
+    await page.reload();
+    await slack.expectStatus("Connected");
+    await slack.expand();
+    await session.deliverSlackSocketMention("browser-socket-after-restart");
+    expect(await session.slackSocketEvidence("browser-socket-after-restart")).toEqual({
+      receipts: 1,
+      runs: 1,
     });
     await slack.expectSetupStepsRetired();
-    expect(await session.providerApplicationVersion("slack")).toBe(1);
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
     await surface.shoot(SHOTS, "apps-07-slack-connected.desktop");
   } finally {
@@ -507,63 +519,50 @@ test("Slack completes its HTTPS install before saving and activating the app", a
   }
 });
 
-test("Slack missing scopes are actionable, logged, and secret-safe", async ({ hub }) => {
+test("Slack webhook setup remains available over HTTPS", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
     https: true,
-    providerScenario: "slack-permission-missing",
   });
   try {
     const slack = session.surface.slack;
     await slack.expand();
-    await slack.fillWorkingCredentials();
+    await slack.chooseSlackTransport("Webhooks");
+    await slack.fill(SLACK_WEBHOOK_CREDENTIALS);
     await slack.save();
     await expect(
       session.page.getByRole("heading", { name: "Install Paseo in Acme" }),
     ).toBeVisible();
     await session.page.getByRole("link", { name: "Accept installation" }).click();
-    await slack.expectFocusedError(
-      "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
-    );
-    await session.surface.shoot(SHOTS, "apps-21-slack-missing-scopes.desktop");
-
-    await expect
-      .poll(() => session.application.logs())
-      .toContain("connection.callback.bot_verification");
-    const records = recordsFor(session.application.logs(), "connection.callback.bot_verification");
-    expect(records.length).toBeGreaterThan(0);
-    expect(records[0]?.failureKind).toBe("permissionMissing");
-    expect(records[0]?.provider).toBe("slack");
-    const text = stripAnsi(session.application.logs());
-    expect(text).toContain("SlackBotVerificationError");
-    for (const secret of [
-      WORKING_CREDENTIALS.Slack["Client Secret"]!,
-      WORKING_CREDENTIALS.Slack["Signing Secret"]!,
-      "xoxb-fixture",
-    ]) {
-      expect(text).not.toContain(secret);
-    }
+    await slack.expectStatus("Connected");
+    await slack.expectSummary({ Delivery: "Webhooks", Events: "Waiting for the first event" });
+    await session.surface.shoot(SHOTS, "apps-07b-slack-webhook-connected.desktop");
   } finally {
     await session.close();
   }
 });
 
-test("Slack is genuinely blocked on plain HTTP", async ({ hub }) => {
+test("Slack Socket Mode rejects a bad app token without saving or leaking it", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
     const slack = session.surface.slack;
     await slack.expand();
-    await slack.expectHttpsBlocked(session.origin);
+    await slack.fill({
+      "App-level token": "xapp-private-bad-token",
+      "Bot token": "xoxb-browser-fixture",
+    });
+    await slack.save();
+    await slack.expectFocusedError(/app-level token/u);
+    await slack.expectStatus("Not set up");
+    expect(stripAnsi(session.application.logs())).not.toContain("xapp-private-bad-token");
     await session.surface.accessible();
-    await session.surface.shoot(SHOTS, "apps-08-slack-https-required.desktop");
+    await session.surface.shoot(SHOTS, "apps-08-slack-token-rejected.desktop");
   } finally {
     await session.close();
   }
 });
 
-test("Slack setup uses the exact built zero-env PGlite workspace proxy journey", async ({
-  hub,
-}) => {
+test("Slack webhooks use the exact built zero-env PGlite HTTPS proxy journey", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
     reverseProxy: true,
@@ -574,8 +573,8 @@ test("Slack setup uses the exact built zero-env PGlite workspace proxy journey",
     expect(origin).toMatch(/^https:\/\//u);
     expect(application.logs()).toContain("database runtime ready: embedded");
     await surface.slack.expand();
-    await surface.slack.expectSlackSetupActionable(origin);
-    await surface.slack.fillWorkingCredentials();
+    await surface.slack.chooseSlackTransport("Webhooks");
+    await surface.slack.fill(SLACK_WEBHOOK_CREDENTIALS);
     await surface.slack.save();
     await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
     await page.getByRole("link", { name: "Accept installation" }).click();
@@ -801,8 +800,6 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
     await surface.slack.expand();
     await surface.slack.fillWorkingCredentials();
     await surface.slack.save();
-    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
-    await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
 
     await surface.discord.expand();
@@ -870,7 +867,8 @@ test("an exit that never reaches Hub says so, keeps the work, and retries in pla
     // The same screen retries, without reloading or retyping.
     await page.unroute("**/_serverFn/**");
     await surface.exitFailure().getByRole("button", { name: "Try again", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await surface.daemonHandoff.expectWaiting();
+    await surface.daemonHandoff.leave("Do this later");
 
     // A request that never left the browser is nobody's failure to record on the server.
     expect(recordsFor(session.application.logs(), "auth.complete_app_setup")).toHaveLength(0);

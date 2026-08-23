@@ -227,7 +227,6 @@ async function workflowExecution(database = createMemoryDatabase(), deliveryId =
     configurationRevisionId: revision.id,
     providerEventReceiptId: persisted.event.providerEventReceiptId,
     configuredTriggerName: "attachment-run",
-    rawPrompt: "inspect",
     prompt: "inspect",
     inputs: {},
     triggerContext: {},

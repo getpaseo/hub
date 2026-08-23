@@ -24,7 +24,7 @@ const OVERVIEW_KEY = ["provider-applications"] as const;
  */
 function useProviderApplicationsOverview() {
   const load = useServerFn(providerApplicationsOverview);
-  return useQuery({ queryKey: OVERVIEW_KEY, queryFn: () => load() });
+  return useQuery({ queryKey: OVERVIEW_KEY, queryFn: () => load(), refetchInterval: 1_000 });
 }
 
 function connectedProviderCount(overview: ProviderApplicationOverview): number {
@@ -110,8 +110,18 @@ function OverviewLoading() {
 /**
  * First run. The operator has an account and an organization and nothing else; the dashboard
  * would introduce projects before there is any reason to explain them.
+ *
+ * Leaving is a server fact — app onboarding is complete the moment the request succeeds, so a CLI
+ * authorization opened in another tab is no longer sent back here. Where the operator goes next
+ * is the journey's decision, not this surface's: `onLeft` is called once the server agrees.
  */
-export function AppSetupEntry({ organizationId }: { organizationId: string }) {
+export function AppSetupEntry({
+  organizationId,
+  onLeft,
+}: {
+  organizationId: string;
+  onLeft: () => void;
+}) {
   const queryClient = useQueryClient();
   const overview = useProviderApplicationsOverview();
   const connected = overview.data?.status === "ok" ? connectedProviderCount(overview.data.data) : 0;
@@ -122,7 +132,9 @@ export function AppSetupEntry({ organizationId }: { organizationId: string }) {
       input: Parameters<typeof completeAppSetup>[0],
     ) => Promise<Result<Record<string, never>>>,
     onSuccess: async (response) => {
-      if (response.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+      if (response.status !== "ok") return;
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
+      onLeft();
     },
   });
   const done = useCallback(() => finish.mutate({}), [finish]);

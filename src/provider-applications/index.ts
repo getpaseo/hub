@@ -1,5 +1,7 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import type { BindSlackConnectionInput } from "../db/types.js";
+import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
+import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
 import { reportFailure } from "../failures/index.js";
@@ -19,14 +21,23 @@ export interface GitHubProviderApplicationConfiguration {
   expectedVersion?: number;
 }
 
-export interface SlackProviderApplicationConfiguration {
-  provider: "slack";
-  appId: string;
-  clientId: string;
-  clientSecret: string;
-  signingSecret: string;
-  expectedVersion?: number;
-}
+export type SlackProviderApplicationConfiguration =
+  | {
+      provider: "slack";
+      transport: "socket";
+      appId: string;
+      appToken: string;
+      expectedVersion?: number;
+    }
+  | {
+      provider: "slack";
+      transport: "webhook";
+      appId: string;
+      clientId: string;
+      clientSecret: string;
+      signingSecret: string;
+      expectedVersion?: number;
+    };
 
 export interface DiscordProviderApplicationConfiguration {
   provider: "discord";
@@ -78,6 +89,14 @@ export interface ProviderApplicationStore {
     updatedByUserId: string;
     binding: BindSlackConnectionInput;
   }): Promise<void>;
+  completeSlackSocketApplication(input: {
+    configuration: Extract<SlackProviderApplicationConfiguration, { transport: "socket" }>;
+    identity: Extract<ProviderApplicationIdentity, { provider: "slack" }>;
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+    organizationId: string;
+    installation: VerifiedSlackInstallation;
+  }): Promise<StoredProviderApplication>;
 }
 
 export interface ProviderRuntimeCandidate {
@@ -164,6 +183,7 @@ export interface ProviderApplicationView {
   lastEventAt: string | null;
   replaceable: boolean;
   configurationVersion: number | null;
+  deliveryStatus?: SlackDeliveryStatus;
 }
 
 export interface ProviderApplicationOverview {
@@ -232,6 +252,7 @@ export class ProviderApplicationError extends Error {
  * typo that is not there.
  */
 export type ProviderVerificationSubject =
+  | "appToken"
   | "botToken"
   | "clientSecret"
   | "privateKey"
@@ -289,6 +310,11 @@ export interface ProviderApplications {
     organizationId: string,
     surface?: ProviderApplicationSurface,
   ): Promise<{ url: string }>;
+  configureSlackSocket(
+    request: Request,
+    input: { appToken: string; botToken: string; expectedVersion?: number },
+  ): Promise<ProviderApplicationResult>;
+  retrySlackSocket(request: Request): Promise<void>;
 }
 
 interface ProviderApplicationsOptions {
@@ -308,6 +334,8 @@ interface ProviderApplicationsOptions {
     returnRoute: string,
     begin: (request: Request) => Promise<{ url: string }>,
   ) => Promise<{ url: string }>;
+  slackSocketVerifier?: SlackSocketInstallationVerifier;
+  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }
 
 export function createProviderApplications(
@@ -326,6 +354,7 @@ export function createProviderApplications(
         (await options.store.readAll()).map((value) => [value.provider, value]),
       );
       const entries = await Promise.all(
+        // eslint-disable-next-line complexity -- this is the single projection of provider state.
         PROVIDERS.map(async (provider) => {
           const environment = options.environment[provider];
           const persisted = stored.get(provider);
@@ -334,6 +363,7 @@ export function createProviderApplications(
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
           const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
+          const deliveryStatus = provider === "slack" ? options.slackDelivery?.status() : undefined;
           const view: ProviderApplicationView = {
             provider,
             status,
@@ -350,6 +380,7 @@ export function createProviderApplications(
                   )?.toISOString() ?? null),
             replaceable: connections.length === 0,
             configurationVersion,
+            ...(deliveryStatus === undefined ? {} : { deliveryStatus }),
           };
           return [provider, view] as const;
         }),
@@ -423,6 +454,88 @@ export function createProviderApplications(
           throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
       });
+    },
+    async configureSlackSocket(request, input) {
+      rejectMutation(options, request);
+      const account = await requireOperator(options, request);
+      if (options.environment.slack !== undefined) {
+        throw new ProviderApplicationError("managedByEnvironment");
+      }
+      if (options.slackSocketVerifier === undefined) {
+        throw new ProviderApplicationError("internal");
+      }
+      return serialize(queues, "slack", async () => {
+        if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
+          throw new ProviderApplicationError("invalidInput");
+        }
+        const organizationId = account.session.activeOrganizationId;
+        if (organizationId === null) throw new ProviderApplicationError("invalidInput");
+        let installation: Awaited<ReturnType<SlackSocketInstallationVerifier["verify"]>>;
+        try {
+          installation = await options.slackSocketVerifier!.verify(input.appToken, input.botToken);
+        } catch (error) {
+          if (error instanceof ProviderVerificationError) {
+            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
+          }
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
+        }
+        const configuration = {
+          provider: "slack" as const,
+          transport: "socket" as const,
+          appId: installation.appId,
+          appToken: input.appToken,
+        };
+        const identity = {
+          provider: "slack" as const,
+          id: installation.appId,
+          name: installation.appId,
+        };
+        let candidate: ProviderRuntimeCandidate | undefined;
+        try {
+          candidate = await options.runtime.prepare(
+            "slack",
+            configuration,
+            await safeCallbackOrigin(options, request),
+            identity,
+            (input.expectedVersion ?? 0) + 1,
+          );
+          await candidate.start();
+          const saved = await options.store.completeSlackSocketApplication({
+            configuration,
+            identity,
+            expectedVersion: input.expectedVersion,
+            updatedByUserId: account.account.id,
+            organizationId,
+            installation,
+          });
+          candidate.publish();
+          candidate = undefined;
+          return {
+            status: "verified",
+            provider: "slack",
+            identity,
+            configurationVersion: saved.version,
+          };
+        } catch (error) {
+          await closeCandidate(candidate, "slack", "configure_socket");
+          if (isConfigurationConflict(error)) {
+            throw new ProviderApplicationError("configurationConflict");
+          }
+          if (isIdentityConflict(error)) {
+            throw new ProviderApplicationError("identityConflict");
+          }
+          if (error instanceof ProviderApplicationError) throw error;
+          throw new ProviderApplicationError("internal", undefined, { cause: error });
+        }
+      });
+    },
+    async retrySlackSocket(request) {
+      rejectMutation(options, request);
+      await requireOperator(options, request);
+      if (options.slackDelivery === undefined) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      await options.slackDelivery.retry();
     },
   };
 }
@@ -510,7 +623,13 @@ function publicIdentifiers(
         clientId: configuration.clientId,
       };
     case "slack":
-      return { appId: configuration.appId, clientId: configuration.clientId };
+      return configuration.transport === "webhook"
+        ? {
+            appId: configuration.appId,
+            transport: configuration.transport,
+            clientId: configuration.clientId,
+          }
+        : { appId: configuration.appId, transport: configuration.transport };
     case "discord":
       return { applicationId: configuration.applicationId };
   }

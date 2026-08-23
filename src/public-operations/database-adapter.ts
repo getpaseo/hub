@@ -14,9 +14,8 @@ export function createDatabasePublicOperationRepository(
         .map(({ id, name, slug }) => ({ id, name, slug }));
     },
     async listConfigurationResources(organizationId) {
-      const [connections, repositories, daemons] = await Promise.all([
-        database.organizationConnectionUsage(organizationId),
-        database.listGitHubRepositories(organizationId),
+      const [{ connections, repositories }, daemons] = await Promise.all([
+        providerResources(database, organizationId),
         database.listDaemonsForOrganization(organizationId),
       ]);
       return {
@@ -33,6 +32,21 @@ export function createDatabasePublicOperationRepository(
         })),
         discord: connections.discord.map(({ slug, guildName }) => ({ slug, guildName })),
         slack: connections.slack.map(({ slug, teamName }) => ({ slug, teamName })),
+      };
+    },
+    async listSetupResources(organizationId) {
+      const { connections, repositories } = await providerResources(database, organizationId);
+      return {
+        github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
+          slug,
+          accountLogin,
+          accountType,
+          repositories: repositories
+            .filter(({ connectionId }) => connectionId === id)
+            .map(({ fullName }) => fullName),
+        })),
+        discord: connections.discord.map(({ guildId, guildName }) => ({ guildId, guildName })),
+        slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
       };
     },
     async findActiveProject(organizationId, projectSlug) {
@@ -61,4 +75,12 @@ export function createDatabasePublicOperationRepository(
       return issued ? "issued" : "credential_revoked";
     },
   };
+}
+
+async function providerResources(database: Database, organizationId: string) {
+  const [connections, repositories] = await Promise.all([
+    database.organizationConnectionUsage(organizationId),
+    database.listGitHubRepositories(organizationId),
+  ]);
+  return { connections, repositories };
 }

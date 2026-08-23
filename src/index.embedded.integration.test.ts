@@ -12,6 +12,7 @@ import { assertOneFailure, FailureLogStream } from "./test-utils/failure-logs.js
 const ENVIRONMENT_NAMES = [
   "DATABASE_URL",
   "PASEO_HUB_DATA_DIR",
+  "XDG_DATA_HOME",
   "PASEO_HUB_AUTH_SECRET",
   "PASEO_HUB_APP_URL",
   "PASEO_REGISTRATION_MODE",
@@ -61,6 +62,22 @@ it("opens first-run setup when nothing is configured and no data exists", async 
   assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
 });
 
+it("ignores dotenv files during production startup", async () => {
+  delete process.env["PASEO_BOOTSTRAP_ORGANIZATION"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_EMAIL"];
+  delete process.env["PASEO_BOOTSTRAP_OWNER_PASSWORD"];
+  await writeFile(
+    join(root, ".env"),
+    "DATABASE_URL=postgres://dotenv-must-not-load.invalid/paseo_hub\n",
+  );
+
+  const runtime = await startProductionRuntime();
+  const state = await runtime.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
+
+  assert.equal(state.status, 200);
+  assert.deepEqual(await state.json(), { status: "instanceSetupRequired" });
+});
+
 it("logs an embedded database startup failure exactly once", async () => {
   const canary = "database-startup-secret-1d42";
   const stream = new FailureLogStream();
@@ -69,10 +86,7 @@ it("logs an embedded database startup failure exactly once", async () => {
   process.env["PASEO_HUB_DATA_DIR"] = blockedPath;
 
   await assert.rejects(() =>
-    runWithFailureTracking(
-      () => startProductionRuntime({ environmentSource: "process-only" }),
-      createLogger(stream),
-    ),
+    runWithFailureTracking(() => startProductionRuntime(), createLogger(stream)),
   );
 
   assertOneFailure(stream, {
@@ -167,6 +181,23 @@ it("selects embedded storage without DATABASE_URL and preserves it across restar
     runtime_configurations: 1,
     auth_secret: firstSecret,
   });
+});
+
+it("selects the XDG data directory when no explicit data directory is configured", async () => {
+  const dataHome = join(root, "xdg-data");
+  delete process.env["PASEO_HUB_DATA_DIR"];
+  process.env["XDG_DATA_HOME"] = dataHome;
+
+  await startProductionRuntime();
+  await stopProductionRuntime();
+
+  const bundle = await embeddedDatabaseRuntime(join(dataHome, "paseo-hub"));
+  const result = await bundle.runtime.query<{ runtime_configurations: number }>(
+    `select count(*)::integer as runtime_configurations from runtime_configuration`,
+  );
+  await bundle.runtime.close();
+
+  assert.deepEqual(result.rows, [{ runtime_configurations: 1 }]);
 });
 
 async function storedAuthSecret(): Promise<string> {

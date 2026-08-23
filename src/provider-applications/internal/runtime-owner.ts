@@ -21,6 +21,8 @@ import type {
   ProviderRuntimeOwner,
 } from "../index.js";
 import { parseProviderApplicationConfiguration } from "./store.js";
+import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import { GITHUB_TRIGGER_EVENT_NAMES } from "../../triggers/github/classification.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -98,6 +100,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
+  slackDelivery(): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
+    return this.slot("slack").active?.registration.slackDelivery;
+  }
+
   onSlackInstallation(
     handler: NonNullable<DynamicProviderRuntime["slackInstallationHandler"]>,
   ): void {
@@ -168,6 +174,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         published = true;
         if (previous !== undefined) {
           previous.retiring = true;
+          void stopSources(previous).catch((error: unknown) => {
+            reportFailure(error, {
+              operation: "provider_runtime.retire_inbound",
+              component: "provider_runtime",
+              provider,
+            });
+          });
           void this.retireWhenDrained(provider, slot, previous);
         }
       },
@@ -695,13 +708,7 @@ function actionNames(provider: Provider): readonly string[] {
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
-  return [
-    "github.issue_comment",
-    "github.issues",
-    "github.pull_request_review",
-    "github.pull_request_review_comment",
-    "github.push",
-  ];
+  return GITHUB_TRIGGER_EVENT_NAMES;
 }
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
@@ -710,7 +717,9 @@ async function startSources(active: ActiveRegistration, handler: TriggerHandler)
   try {
     for (const source of active.registration.sources) {
       await source.start((trigger) =>
-        active.acceptingEvents ? handler(trigger) : Promise.resolve(),
+        active.acceptingEvents
+          ? handler(trigger)
+          : Promise.reject(new Error("provider source was retired")),
       );
       started.push(source);
     }

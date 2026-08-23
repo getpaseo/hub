@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { DaemonHandoffSurface } from "./daemon-handoff.js";
 
 export type AppProvider = "GitHub" | "Slack" | "Discord";
 
@@ -44,12 +45,17 @@ export const WORKING_CREDENTIALS: Readonly<Record<AppProvider, Readonly<Record<s
       "Bot token": "token",
     },
     Slack: {
-      "App ID": "browser-slack-app",
-      "Client ID": "browser-slack-client",
-      "Client Secret": "browser-slack-client-secret",
-      "Signing Secret": "phase-zero-slack-webhook-secret",
+      "App-level token": "xapp-browser-fixture",
+      "Bot token": "xoxb-browser-fixture",
     },
   };
+
+export const SLACK_WEBHOOK_CREDENTIALS = {
+  "App ID": "browser-slack-app",
+  "Client ID": "browser-slack-client",
+  "Client Secret": "browser-slack-client-secret",
+  "Signing Secret": "phase-zero-slack-webhook-secret",
+} as const;
 
 /** The one GitHub value that only exists once the origin can receive deliveries. */
 export const GITHUB_EVENT_CREDENTIALS = { "Webhook secret": "phase-zero-webhook-secret" } as const;
@@ -184,9 +190,18 @@ export class AppSection {
   }
 
   async save(): Promise<void> {
-    await this.action(
-      this.provider === "Slack" ? "Save and continue to Slack" : "Verify and save",
-    ).click();
+    await this.body()
+      .getByRole("button", {
+        name:
+          this.provider === "Slack"
+            ? /^(?:Connect Slack|Save and continue to Slack)$/u
+            : "Verify and save",
+      })
+      .click();
+  }
+
+  async chooseSlackTransport(transport: "Socket Mode" | "Webhooks"): Promise<void> {
+    await this.body().getByRole("radio", { name: transport }).check();
   }
 
   /** Presses a copy control and reads back what actually reached the clipboard. */
@@ -404,8 +419,8 @@ export class AppSection {
     for (const label of Object.keys(WORKING_CREDENTIALS.Slack)) {
       await expect(this.form().getByLabel(label, { exact: true })).toBeEnabled();
     }
-    await expect(this.action("Save and continue to Slack")).toBeEnabled();
-    expect(await this.copiedManifest()).toContain(`${origin}/api/integrations/slack/callback`);
+    await expect(this.action("Connect Slack")).toBeEnabled();
+    expect(await this.copiedManifest()).toContain("socket_mode_enabled: true");
   }
 }
 
@@ -417,11 +432,14 @@ export class AppSetupSurface {
   readonly github: AppSection;
   readonly slack: AppSection;
   readonly discord: AppSection;
+  /** Where the way out leads on first run, before the dashboard. */
+  readonly daemonHandoff: DaemonHandoffSurface;
 
   constructor(private readonly page: Page) {
     this.github = new AppSection(page, "GitHub");
     this.slack = new AppSection(page, "Slack");
     this.discord = new AppSection(page, "Discord");
+    this.daemonHandoff = new DaemonHandoffSurface(page);
   }
 
   sections(): readonly AppSection[] {
@@ -465,9 +483,16 @@ export class AppSetupSurface {
     return this.page.getByRole("button", { name: label, exact: true });
   }
 
-  async leave(label: "Finish" | "Do this later"): Promise<void> {
+  /** Leaves app setup and stops on the daemon handoff, which is where the way out now leads. */
+  async reachDaemonHandoff(label: "Finish" | "Do this later"): Promise<void> {
     await this.wayOut(label).click();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await this.daemonHandoff.expectWaiting();
+  }
+
+  /** All the way out: app setup, past the daemon handoff, into the default project. */
+  async leave(label: "Finish" | "Do this later"): Promise<void> {
+    await this.reachDaemonHandoff(label);
+    await this.daemonHandoff.leave("Do this later");
   }
 
   async expectStatuses(expected: Readonly<Record<AppProvider, AppStatus>>): Promise<void> {

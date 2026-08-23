@@ -12,6 +12,7 @@ import { DatabaseUnavailableError } from "../db/errors.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import {
   ConfigurationResourcesSchema,
+  SetupResourcesSchema,
   createPublicApi,
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
@@ -156,6 +157,29 @@ describe("public API interface", () => {
         )
       ).json(),
     );
+    assert.deepEqual(
+      SetupResourcesSchema.parse(
+        await (
+          await successApi.handle(
+            new Request("https://hub.test/api/v1/setup-resources", {
+              headers: { authorization: "Bearer valid" },
+            }),
+          )
+        ).json(),
+      ),
+      {
+        github: [
+          {
+            slug: "github-connection",
+            accountLogin: "octocat",
+            accountType: "User",
+            repositories: ["octocat/starter"],
+          },
+        ],
+        discord: [{ guildId: "123456789", guildName: "Paseo Guild" }],
+        slack: [{ teamId: "T01234567", teamName: "Paseo Workspace" }],
+      },
+    );
     ValidatedConfigurationSchema.parse(
       await (await successApi.handle(installRequest("/api/v1/configurations/validate"))).json(),
     );
@@ -265,6 +289,7 @@ describe("generated public OpenAPI", () => {
       "/api/v1/daemons/enrollment-tokens",
       "/api/v1/manual-runs",
       "/api/v1/projects",
+      "/api/v1/setup-resources",
     ]);
     const expectations = {
       "/api/v1/configurations/install": [
@@ -279,6 +304,7 @@ describe("generated public OpenAPI", () => {
         "configuration:validate",
         ["200", "401", "403", "500", "503"],
       ],
+      "/api/v1/setup-resources": ["configuration:validate", ["200", "401", "403", "500", "503"]],
       "/api/v1/projects": ["projects:read", ["200", "401", "403", "500", "503"]],
       "/api/v1/manual-runs": [
         "runs:dispatch",
@@ -288,7 +314,9 @@ describe("generated public OpenAPI", () => {
     } as const;
     for (const [path, [scope, statuses]] of Object.entries(expectations)) {
       const operation =
-        path === "/api/v1/projects" || path === "/api/v1/configuration-resources"
+        path === "/api/v1/projects" ||
+        path === "/api/v1/configuration-resources" ||
+        path === "/api/v1/setup-resources"
           ? publicOpenApiDocument.paths?.[path]?.get
           : publicOpenApiDocument.paths?.[path]?.post;
       assert.ok(operation?.operationId);
@@ -397,6 +425,20 @@ function successfulOperations(): PublicOperations {
         github: [],
         discord: [],
         slack: [],
+      }),
+    listSetupResources: () =>
+      Promise.resolve({
+        status: "listed",
+        github: [
+          {
+            slug: "github-connection",
+            accountLogin: "octocat",
+            accountType: "User",
+            repositories: ["octocat/starter"],
+          },
+        ],
+        discord: [{ guildId: "123456789", guildName: "Paseo Guild" }],
+        slack: [{ teamId: "T01234567", teamName: "Paseo Workspace" }],
       }),
     validateConfiguration: () =>
       Promise.resolve({

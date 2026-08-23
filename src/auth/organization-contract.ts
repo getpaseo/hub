@@ -62,7 +62,9 @@ export const accountStateSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("appSetupRequired"),
     account: accountSchema,
-    organization: z.object({ id: z.string(), name: z.string(), slug: z.string().optional() }),
+    // The same resolved membership the active state carries, slug included: the daemon handoff
+    // that follows app setup addresses the organization by slug.
+    organization: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
     memberships: z.array(membershipSchema),
     capabilities: organizationCapabilitiesSchema,
   }),

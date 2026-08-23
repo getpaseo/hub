@@ -48,8 +48,14 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  /** Records a daemon enrollment token for this instance's organization. */
+  issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
   failNextProjectRead(): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
 }
 
 export interface BuiltApplicationOptions {
@@ -324,6 +330,11 @@ export class PaseoHub {
       providerApplicationVersion: (provider) =>
         providerApplicationVersion(application.databaseUrl, provider),
       seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
+      prepareSlackSocketWorkflow: () => application.prepareSlackSocketWorkflow(),
+      deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
+      slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
+      restart: () => application.restart(),
+      connectDaemon: () => this.enrollOperatorDaemon(application),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -492,12 +503,8 @@ export class PaseoHub {
     await this.requireUser(alias).expectDesktopSidebarAndOrganizationMenu();
   }
 
-  async proveAuthenticationPendingLocksMode(
-    alias: string,
-    account: Account,
-    organization: string,
-  ): Promise<void> {
-    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account, organization);
+  async proveAuthenticationPendingLocksMode(alias: string, account: Account): Promise<void> {
+    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account);
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -553,11 +560,11 @@ export class PaseoHub {
        ), activity as (
          insert into trigger_runs
            (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-            configured_trigger_name, status, raw_prompt, prompt, inputs, "values",
+            configured_trigger_name, status, prompt, inputs, "values",
             trigger_context, output_context, deadline_at, deadline_kind, outcome,
             created_at, completed_at)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-                'Browser history', 'succeeded', 'Browser history', 'Browser history',
+                'Browser history', 'succeeded', 'Browser history',
                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
                 clock_timestamp(), 'whole_run', 'accepted', clock_timestamp(), clock_timestamp()
          from revision
@@ -2294,6 +2301,22 @@ export class PaseoHub {
     }
   }
 
+  /**
+   * What `paseo hub login` leaves behind on the operator's own machine: a daemon enrolled into
+   * their organization and holding a live connection. The enrollment token is written straight
+   * to the database because the CLI's own path through it is the Paseo repository's to prove.
+   */
+  private async enrollOperatorDaemon(application: BuiltApplication): Promise<string> {
+    const enrollmentToken = randomUUID();
+    await application.issueDaemonEnrollment(
+      createHash("sha256").update(enrollmentToken).digest("base64url"),
+    );
+    const daemon = new ContractDaemon(application, this.requests);
+    await daemon.enroll(enrollmentToken);
+    await daemon.connect();
+    return daemon.slug;
+  }
+
   private async issueEnrollmentToken(
     application: BuiltApplication,
     headers: Record<string, string> = machineHeaders(application.machineKey),
@@ -2471,7 +2494,6 @@ class HubUser {
     await change.getByLabel("Confirm new password").fill(replacementPassword);
     await change.getByRole("button", { name: "Save password" }).click();
     await this.skipAppSetup();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(organizationName);
   }
 
@@ -2482,6 +2504,11 @@ class HubUser {
   async skipAppSetup(): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    // Apps are followed by the daemon handoff. A journey that is not about either walks through
+    // both, exactly as the operator can, and lands in the default project the way they do.
+    await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Overview" })).toBeVisible();
   }
 
   async completeFirstRunJourney(
@@ -2506,8 +2533,9 @@ class HubUser {
     await this.page.keyboard.press("Tab");
     await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
 
-    // Setup provisioned a working organization, not just a row: its default project opens.
-    await this.navigation.openProject("Default");
+    // Setup provisioned a working organization, not just a row: onboarding ended inside its
+    // default project, and that project renders.
+    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Default", "Overview");
     await this.returnToProjects();
     // The instance operator surface is the proof that this account owns the instance, not just
     // its organization: the console refuses anyone without the flag, server-side.
@@ -2626,7 +2654,6 @@ class HubUser {
    * the journey asserts it once it is back at desktop width. */
   private async expectFirstRunDashboard(): Promise<void> {
     await this.skipAppSetup();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 
@@ -2773,7 +2800,7 @@ class HubUser {
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
-  async proveAuthenticationPendingLocksMode(account: Account, organization: string): Promise<void> {
+  async proveAuthenticationPendingLocksMode(account: Account): Promise<void> {
     const serverFunctions = "**/_serverFn/**";
     let authRequests = 0;
     let responseCompleted = () => {};
@@ -2823,11 +2850,6 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(
-      this.page
-        .getByRole("heading", { name: "Choose an organization" })
-        .or(this.page.locator("header").first().getByText(organization, { exact: true })),
-    ).toBeVisible();
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -4719,6 +4741,12 @@ export interface AppSetupSession {
   providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
   seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
+  /** Enrolls and connects a daemon into the operator's organization; answers with its slug. */
+  connectDaemon(): Promise<string>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;

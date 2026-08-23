@@ -14,6 +14,52 @@ import type {
 import { DynamicProviderRuntime } from "./runtime-owner.js";
 
 describe("dynamic provider runtime", () => {
+  it.each([
+    "github.issues",
+    "github.issue_comment",
+    "github.pull_request_review",
+    "github.pull_request_review_comment",
+    "github.push",
+    "github.issue_created",
+    "github.pull_request_created",
+    "github.issue_comment_created",
+    "github.pull_request_comment_created",
+    "github.issue_label_added",
+    "github.pull_request_label_added",
+  ] as const)("publishes %s through the activated GitHub runtime registry", async (eventName) => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        downstreamRegistration(providerConfigurationId(configuration), [], []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "github")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+
+    const candidate = await runtime.prepare(
+      "github",
+      providerConfiguration("github", "A1"),
+      "https://hub.test",
+      providerIdentity("github", "A1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+
+    assert.ok(trigger.eventNames.includes(eventName));
+  });
+
   it("publishes a started replacement, retires old resources, and retains in-flight snapshots", async () => {
     const started: string[] = [];
     const stopped: string[] = [];
@@ -62,8 +108,8 @@ describe("dynamic provider runtime", () => {
     second.publish();
     await new Promise((resolve) => setImmediate(resolve));
 
-    // The old source is retired only after the execution that matched against it is terminal.
-    assert.deepEqual(stopped, []);
+    // Inbound delivery retires immediately; the old execution keeps its leased trigger/output.
+    assert.deepEqual(stopped, ["A1"]);
 
     await trigger.onAgentExecutionCompleted?.(oldMatch!.triggerContext, oldMatch!.outputContext, {
       status: "succeeded",
@@ -145,7 +191,7 @@ describe("dynamic provider runtime", () => {
     });
 
     assert.deepEqual(used, ["launch:A1", "reply:A1", "attachment:A1"]);
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(stopped, ["A1"]);
@@ -218,7 +264,7 @@ describe("dynamic provider runtime", () => {
     await second.start();
     second.publish();
 
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     releaseConfiguration?.();
     await pendingConfiguration;
     await stable.integration!.resolve("project", "github", "token", {
@@ -239,10 +285,10 @@ describe("dynamic provider runtime", () => {
       "integration:A1",
       "authority-mint:A1",
     ]);
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(stopped, []);
+    assert.deepEqual(stopped, ["A1"]);
     await stable.integration!.githubAuthority!.revoke(authority.token);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(used.at(-1), "authority-revoke:A1");
@@ -405,7 +451,7 @@ describe("dynamic provider runtime", () => {
     assert.deepEqual(await response.json(), { callbackFor: "old" });
   });
 
-  it("admits source events only from the atomically published registration", async () => {
+  it("rejects unpublished and retired source events so the provider retries them", async () => {
     const sourceHandlers = new Map<string, TriggerHandler>();
     const accepted: string[] = [];
     const runtime = new DynamicProviderRuntime({
@@ -440,7 +486,7 @@ describe("dynamic provider runtime", () => {
       1,
     );
     await first.start();
-    await sourceHandlers.get("one")!(durableEvent("before-first-publish"));
+    await assert.rejects(sourceHandlers.get("one")!(durableEvent("before-first-publish")));
     first.publish();
     await sourceHandlers.get("one")!(durableEvent("first-active"));
     const second = await runtime.prepare(
@@ -451,9 +497,9 @@ describe("dynamic provider runtime", () => {
       2,
     );
     await second.start();
-    await sourceHandlers.get("two")!(durableEvent("before-second-publish"));
+    await assert.rejects(sourceHandlers.get("two")!(durableEvent("before-second-publish")));
     second.publish();
-    await sourceHandlers.get("one")!(durableEvent("retired"));
+    await assert.rejects(sourceHandlers.get("one")!(durableEvent("retired")));
     await sourceHandlers.get("two")!(durableEvent("second-active"));
 
     assert.deepEqual(accepted, ["first-active", "second-active"]);
@@ -517,6 +563,7 @@ function connectionRegistration(
 function slackConfiguration(appId: string): SlackProviderApplicationConfiguration {
   return {
     provider: "slack",
+    transport: "webhook",
     appId,
     clientId: "client",
     clientSecret: "secret",
@@ -546,7 +593,7 @@ function fakeRegistration(
           triggerContext: { id },
           outputContext: { id },
           hubConfig: {},
-          invocation: { status: "accepted", rawMessage: "", prompt: "", inputs: {} },
+          invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
     onAgentExecutionCompleted: () => {
@@ -597,7 +644,7 @@ function downstreamRegistration(
           triggerContext: { id },
           outputContext: { provider: "slack", id },
           hubConfig: {},
-          invocation: { status: "accepted", rawMessage: "", prompt: "", inputs: {} },
+          invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
     materializeLaunch: () => {

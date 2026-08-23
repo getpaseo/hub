@@ -25,9 +25,6 @@ test("a phone operator can skip app setup and reach their dashboard", async ({ h
   try {
     await session.surface.leave("Do this later");
     await expect(
-      session.page.getByRole("heading", { name: "Projects", exact: true }),
-    ).toBeVisible();
-    await expect(
       session.page
         .getByRole("navigation", { name: "Breadcrumb", exact: true })
         .getByText("Paseo Hub", { exact: true }),
@@ -103,8 +100,6 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await surface.shoot(SHOTS, "apps-06-slack-expanded.mobile");
     await surface.slack.fillWorkingCredentials();
     await surface.slack.save();
-    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
-    await page.getByRole("link", { name: "Accept installation" }).click();
     await surface.slack.expectStatus("Connected");
     await surface.slack.expectSummary({ Workspaces: "Acme" });
     await surface.expectNothingClipped();
@@ -137,14 +132,14 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
   }
 });
 
-test("Slack and Discord read correctly on a phone", async ({ hub }) => {
+test("Slack Socket Mode and Discord read correctly on a phone", async ({ hub }) => {
   const session = await hub.openAppSetup({ account: OPERATOR });
   try {
     const { surface } = session;
     await surface.slack.expand();
-    await surface.slack.expectHttpsBlocked(session.origin);
+    await surface.slack.expectSlackSetupActionable(session.origin);
     await surface.expectNothingClipped();
-    await surface.shoot(SHOTS, "apps-08-slack-https-required.mobile");
+    await surface.shoot(SHOTS, "apps-08-slack-socket-local.mobile");
     await surface.slack.collapse();
 
     await surface.discord.expand();

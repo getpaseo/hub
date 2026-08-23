@@ -6,18 +6,17 @@ import {
   startProductionRuntime as startHubProductionRuntime,
   stopProductionRuntime,
 } from "./index.js";
-import { readHubCommandLine } from "./command-line.js";
 import { hasApplication, startApplication } from "./server/runtime.js";
 export { startApplication } from "./server/runtime.js";
 
 const startFetch = createStartHandler(defaultStreamHandler);
 
 export function startProductionRuntime() {
-  return startHubProductionRuntime(readHubCommandLine());
+  return startHubProductionRuntime();
 }
 
 export function handleDaemonUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
-  return handleProductionDaemonUpgrade(request, socket, head, readHubCommandLine());
+  return handleProductionDaemonUpgrade(request, socket, head);
 }
 
 export { stopProductionRuntime };

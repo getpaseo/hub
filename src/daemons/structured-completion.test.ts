@@ -55,7 +55,6 @@ describe("structured daemon completion", () => {
       configurationRevisionId: "revision-1",
       providerEventReceiptId: "trigger-1",
       configuredTriggerName: "route",
-      rawPrompt: "investigate",
       prompt: "investigate",
       inputs: {},
       triggerContext: intent.triggerContext,

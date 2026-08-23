@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/pglite";
@@ -17,8 +17,9 @@ import { embeddedLocks } from "../locks/index.js";
 import type { EmbeddedLockLifecycle } from "../locks/index.js";
 import { acquireDataDirectoryLock, type DataDirectoryLock } from "./data-directory-lock.js";
 import { reportFailure } from "../../../failures/index.js";
+import { runtimeFile } from "../../../runtime-files.js";
 
-const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
+const MIGRATIONS_FOLDER = runtimeFile("drizzle");
 
 export async function createEmbeddedRuntime(dataDirectory: string): Promise<DatabaseRuntimeBundle> {
   const resolvedDataDirectory = resolve(dataDirectory);

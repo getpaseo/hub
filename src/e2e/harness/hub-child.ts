@@ -186,7 +186,6 @@ async function main(): Promise<void> {
               hubConfig: compiledConfiguration,
               invocation: {
                 status: "accepted",
-                rawMessage: "Deploy mcp-capability for phase-five-operator",
                 prompt: "Deploy mcp-capability for phase-five-operator",
                 inputs: {},
               },

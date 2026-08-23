@@ -29,8 +29,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "@paseo repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "@paseo repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
   });
@@ -52,10 +51,22 @@ describe("GitHub Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "please @paseo repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "please @paseo repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
+  });
+
+  it("preserves the complete comment when the marker is last", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const prompt = "Do the whole thing first @paseo";
+
+    const match = (
+      await provider.match(external(project.id, revision.id, createEvent({ body: prompt })))
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, prompt);
   });
 
   it("matches a literal one-step prompt only after the security filters pass", async () => {
@@ -116,6 +127,36 @@ describe("GitHub Phase 1 trigger provider", () => {
       new TestTeamMemberships(false),
     ).match(external(project.id, revision.id, createEvent({ actor: "maintainer" })));
     assert.equal(denied, "trigger_filters_rejected");
+  });
+
+  it("routes a semantic trigger from the legacy GitHub webhook source", async () => {
+    const configuration = githubConfiguration();
+    const trigger = configuration.triggers[0]!;
+    configuration.triggers = [
+      {
+        ...trigger,
+        on: "github.issue_created",
+      },
+    ];
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      ...createEvent(),
+      type: "issues",
+      payload: {
+        action: "opened",
+        issue: {
+          number: 211,
+          title: "smoke",
+          body: "issue body @paseo",
+          user: { login: "issue-author" },
+        },
+        sender: { login: "boudra" },
+      },
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    assert.equal(typeof matches === "string" ? 0 : matches.length, 1);
   });
 
   it("exposes safe issue and pull-request item context without the raw webhook", async () => {
