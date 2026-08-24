@@ -359,7 +359,23 @@ function headersBrowserOrigin(headers: Headers, fallback: string): string {
   ) {
     throw new Error("invalid trusted request origin");
   }
-  return url.origin;
+  const trustedOrigin = url.origin;
+  // The trusted origin header is derived from the direct origin connection,
+  // which is plain HTTP behind a TLS-terminating reverse proxy (Cloudflare
+  // Tunnel, nginx SSL pass-through, ...) even though the browser talks HTTPS.
+  // An explicitly configured HTTPS app URL (the fallback passed by the auth
+  // boundary) is authoritative: prefer it over a scheme-downgraded http:
+  // trusted origin for the same host so a proxy cannot reject every
+  // cookie-mutating action with a spurious origin mismatch.
+  const configured = new URL(fallback);
+  if (
+    configured.protocol === "https:" &&
+    url.protocol === "http:" &&
+    configured.host === url.host
+  ) {
+    return fallback;
+  }
+  return trustedOrigin;
 }
 
 function requireBrowserOrigin(headers: Headers, browserOrigin: string): void {
