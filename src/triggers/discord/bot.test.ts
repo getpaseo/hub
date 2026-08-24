@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import type { Client } from "discord.js";
+import { DiscordAPIError, RESTJSONErrorCodes, type Client } from "discord.js";
 import { describe, it } from "vitest";
 import { createDiscordBotClient } from "./bot.js";
 
@@ -195,16 +195,58 @@ describe("Discord bot client", () => {
     );
     assert.deepEqual(channel.sentPayloads, []);
   });
+
+  it("treats reactions to a deleted message as already converged", async () => {
+    const missingMessage = new DiscordAPIError(
+      { code: RESTJSONErrorCodes.UnknownMessage, message: "Unknown Message" },
+      RESTJSONErrorCodes.UnknownMessage,
+      404,
+      "PUT",
+      "https://discord.test/channels/200/messages/300/reactions/%E2%9C%85/@me",
+      { body: null, files: [] },
+    );
+    const channel = new FakeSendableChannel({ messageFetchError: missingMessage });
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(channel, undefined, { deleteReactionError: missingMessage }),
+    });
+
+    await bot.createReaction({ channelId: "200", messageId: "300", emoji: "✅" });
+    await bot.deleteOwnReaction({ channelId: "200", messageId: "300", emoji: "⏳" });
+  });
+
+  it("preserves other reaction failures for retry", async () => {
+    const unavailable = new Error("Discord unavailable");
+    const channel = new FakeSendableChannel({ messageFetchError: unavailable });
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(channel, undefined, { deleteReactionError: unavailable }),
+    });
+
+    await assert.rejects(
+      bot.createReaction({ channelId: "200", messageId: "300", emoji: "✅" }),
+      (error: unknown) => error === unavailable,
+    );
+    await assert.rejects(
+      bot.deleteOwnReaction({ channelId: "200", messageId: "300", emoji: "⏳" }),
+      (error: unknown) => error === unavailable,
+    );
+  });
 });
 
 class FakeSendableChannel {
   readonly sentPayloads: unknown[] = [];
   readonly messages: { fetch: (messageId: string) => Promise<FakeMessage> };
 
-  constructor(readonly options: { message?: FakeMessage } = {}) {
+  constructor(readonly options: { message?: FakeMessage; messageFetchError?: Error } = {}) {
     this.messages = {
       fetch: async (messageId: string) => {
         assert.equal(messageId, "300");
+        if (this.options.messageFetchError !== undefined) {
+          throw this.options.messageFetchError;
+        }
         if (this.options.message === undefined) {
           throw new Error("message unavailable");
         }
@@ -257,7 +299,11 @@ class FakeMessage {
   }
 }
 
-function createFakeClient(channel: FakeSendableChannel, thread?: FakeSendableChannel): Client {
+function createFakeClient(
+  channel: FakeSendableChannel,
+  thread?: FakeSendableChannel,
+  options: { deleteReactionError?: Error } = {},
+): Client {
   const fakeClient = {
     on() {
       return fakeClient;
@@ -275,7 +321,9 @@ function createFakeClient(channel: FakeSendableChannel, thread?: FakeSendableCha
       },
     },
     rest: {
-      async delete(): Promise<void> {},
+      async delete(): Promise<void> {
+        if (options.deleteReactionError !== undefined) throw options.deleteReactionError;
+      },
     },
     async login(): Promise<string> {
       return "logged-in";
