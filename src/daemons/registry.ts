@@ -93,6 +93,15 @@ export class ActiveDaemonRegistry {
     this.active.set(daemon.id, active);
     previous?.socket.close(4001, "replaced");
     socket.on("message", (data) => this.receive(active, readText(data)));
+    socket.on("error", (error) => {
+      // A peer that sends a malformed control frame (e.g. an invalid close
+      // status code) makes the `ws` receiver emit `error` on this socket.
+      // Node's EventEmitter rethrows unlistened `error` events as an
+      // uncaught exception, which without this listener kills the whole
+      // Hub process over one bad daemon connection. Report and let the
+      // subsequent `close` event drive the normal offline-presence cleanup.
+      this.report(error, "daemon.socket.error", daemon.id, "network");
+    });
     socket.on("close", () => {
       if (this.active.get(daemon.id)?.generation === active.generation) {
         this.active.delete(daemon.id);

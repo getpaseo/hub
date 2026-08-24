@@ -29,6 +29,11 @@ interface PendingRequest<T> {
   request: z.infer<typeof SessionRequestSchema>["message"];
 }
 
+/** Shape of the internal fields `ws` leaves untyped but always populates. */
+interface WebSocketInternals {
+  _socket: { write(data: Buffer): void };
+}
+
 export class DaemonRegistryHarness {
   private readonly presence = new DaemonPresence();
   private readonly registry: ActiveDaemonRegistry;
@@ -178,6 +183,10 @@ export class DaemonRegistryHarness {
 
   sendRaw(value: string): void {
     this.currentSocket().sendRaw(value);
+  }
+
+  sendInvalidClose(code: number): void {
+    this.currentSocket().sendInvalidClose(code);
   }
 
   waitUntilCurrentClosed(): Promise<void> {
@@ -371,6 +380,27 @@ class RegistrySocket {
 
   sendRaw(value: string): void {
     this.socket.send(value);
+  }
+
+  /**
+   * Writes a raw WebSocket close control frame directly onto the
+   * underlying TCP socket, bypassing `ws`'s own `close()` validation so a
+   * status code the protocol forbids on the wire (e.g. 1006, reserved for
+   * abnormal closure and never legally sent) reaches the server's
+   * `Receiver`, reproducing WS_ERR_INVALID_CLOSE_CODE.
+   */
+  sendInvalidClose(code: number): void {
+    // `ws` does not type its internal `_socket`, but every `ws` WebSocket
+    // instance exposes the underlying net.Socket at runtime once open.
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `ws` leaves `_socket` untyped
+    const internals = this.socket as unknown as WebSocketInternals;
+    const tcpSocket = internals._socket;
+    const mask = Buffer.alloc(4);
+    const payload = Buffer.alloc(2);
+    payload.writeUInt16BE(code, 0);
+    const maskedPayload = Buffer.alloc(2);
+    for (let i = 0; i < 2; i += 1) maskedPayload[i] = payload[i]! ^ mask[i]!;
+    tcpSocket.write(Buffer.concat([Buffer.from([0x88, 0x82]), mask, maskedPayload]));
   }
 
   close(): void {
