@@ -17,16 +17,11 @@ describe("dynamic provider runtime", () => {
   it.each([
     "github.issues",
     "github.issue_comment",
+    "github.pull_request",
     "github.pull_request_review",
     "github.pull_request_review_comment",
     "github.push",
-    "github.issue_created",
-    "github.pull_request_created",
-    "github.issue_comment_created",
-    "github.pull_request_comment_created",
-    "github.issue_label_added",
-    "github.pull_request_label_added",
-  ] as const)("publishes %s through the activated GitHub runtime registry", async (eventName) => {
+  ] as const)("publishes raw source %s through the activated GitHub runtime", async (eventName) => {
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
       auth: testAuth(),

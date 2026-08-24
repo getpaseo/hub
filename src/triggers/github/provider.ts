@@ -20,7 +20,7 @@ import {
   PullRequestReviewCommentPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import { classifyGitHubEvent, GITHUB_TRIGGER_EVENT_NAMES } from "./classification.js";
+import { classifyGitHubEvent, GITHUB_TRIGGER_SOURCE_NAMES } from "./classification.js";
 
 export interface GitHubReactionClient {
   createReaction(input: {
@@ -128,7 +128,7 @@ export function createGitHubTriggerProvider(options: {
 }): TriggerProvider<"github", GitHubTriggerContext> {
   return {
     name: "github",
-    eventNames: GITHUB_TRIGGER_EVENT_NAMES,
+    eventNames: GITHUB_TRIGGER_SOURCE_NAMES,
     async match(externalTrigger) {
       const event = NormalizedGitHubEventSchema.parse(externalTrigger.payload);
       const stored = await options
