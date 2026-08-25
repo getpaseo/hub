@@ -1254,8 +1254,7 @@ describe("daemon enrollment and execution", () => {
 
     await assert.rejects(
       hub.dispatch(),
-      (error: unknown) =>
-        error instanceof DaemonDispatchFailure && error.reason === "daemon_unreachable",
+      (error: unknown) => error instanceof DaemonDispatchFailure && error.reason === "internal",
     );
 
     const execution = await hub.acceptanceExecution();
@@ -1263,7 +1262,7 @@ describe("daemon enrollment and execution", () => {
       { status: execution.status, result: execution.result },
       {
         status: "failed",
-        result: { status: "failed", reason: "daemon_unreachable" },
+        result: { status: "failed", reason: "internal" },
       },
     );
     await hub.drainWorkflowOutbox();
