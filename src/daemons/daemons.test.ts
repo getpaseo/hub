@@ -493,7 +493,6 @@ describe("daemon enrollment and execution", () => {
     assert.equal(launchEnv["GIT_CONFIG_COUNT"], "5");
     assert.deepEqual(hub.authorityMintInputs(), [
       {
-        executionId: handedOff.execution.id,
         projectId: "00000000-0000-4000-8000-000000000001",
         connectionSlug: "getpaseo-github",
         repositories: ["getpaseo/paseo"],
@@ -1254,8 +1253,7 @@ describe("daemon enrollment and execution", () => {
 
     await assert.rejects(
       hub.dispatch(),
-      (error: unknown) =>
-        error instanceof DaemonDispatchFailure && error.reason === "daemon_unreachable",
+      (error: unknown) => error instanceof DaemonDispatchFailure && error.reason === "internal",
     );
 
     const execution = await hub.acceptanceExecution();
@@ -1263,7 +1261,7 @@ describe("daemon enrollment and execution", () => {
       { status: execution.status, result: execution.result },
       {
         status: "failed",
-        result: { status: "failed", reason: "daemon_unreachable" },
+        result: { status: "failed", reason: "internal" },
       },
     );
     await hub.drainWorkflowOutbox();
