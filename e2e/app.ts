@@ -1,11 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:net";
+import { createServer, type Server as NetServer } from "node:net";
 import { request as httpRequest } from "node:http";
 import { createServer as createHttpsServer, get as httpsGet, type Server } from "node:https";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
 import { promisify } from "node:util";
 import { test as base } from "@playwright/test";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -101,8 +101,10 @@ class BuiltApplications {
     if (databaseUrl !== undefined) {
       await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
     }
-    const port = await availablePort();
-    const reverseProxyPort = options.reverseProxy === true ? await availablePort() : undefined;
+    const portLease = await reservePort();
+    const reverseProxyPortLease = options.reverseProxy === true ? await reservePort() : undefined;
+    const port = portLease.port;
+    const reverseProxyPort = reverseProxyPortLease?.port;
     const tls =
       options.https === true || options.reverseProxy === true ? await createTestTls() : undefined;
     const publicPort = reverseProxyPort ?? port;
@@ -136,6 +138,10 @@ class BuiltApplications {
       machineKey: "",
       ...(postgres === undefined ? {} : { postgres }),
       ...(dataDirectory === undefined ? {} : { dataDirectory }),
+      portLeases: [
+        portLease,
+        ...(reverseProxyPortLease === undefined ? [] : [reverseProxyPortLease]),
+      ],
       server,
       ...(proxy === undefined ? {} : { proxy }),
       ...(tls === undefined ? {} : { tlsRoot: tls.root }),
@@ -193,6 +199,7 @@ class BuiltApplications {
       applications.map(async (application) => {
         await stopServer(application.server);
         await stopProxy(application.proxy);
+        await Promise.all(application.portLeases.map((lease) => lease.release()));
         await application.postgres?.stop();
         if (application.dataDirectory !== undefined) {
           await rm(application.dataDirectory, { recursive: true, force: true });
@@ -214,6 +221,7 @@ class BuiltApplications {
 interface RunningApplication extends BuiltApplication {
   postgres?: StartedPostgreSqlContainer;
   dataDirectory?: string;
+  portLeases: readonly PortLease[];
   server: ChildProcess;
   tlsRoot?: string;
   proxy?: Server;
@@ -516,22 +524,49 @@ async function stopProxy(proxy: Server | undefined): Promise<void> {
   });
 }
 
-async function availablePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("failed to allocate port");
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error !== undefined) {
-        reject(error);
-        return;
-      }
-      resolve();
+interface PortLease {
+  port: number;
+  release(): Promise<void>;
+}
+
+const PORT_LEASE_DIRECTORY = join(process.cwd(), "test-results", "port-leases");
+
+async function reservePort(): Promise<PortLease> {
+  await mkdir(PORT_LEASE_DIRECTORY, { recursive: true });
+  while (true) {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
     });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      await closeServer(server);
+      throw new Error("failed to allocate port");
+    }
+    const leasePath = join(PORT_LEASE_DIRECTORY, String(address.port));
+    try {
+      const lease = await open(leasePath, "wx");
+      await lease.close();
+    } catch (error) {
+      await closeServer(server);
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    await closeServer(server);
+    return {
+      port: address.port,
+      release: async () => {
+        await unlink(leasePath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      },
+    };
+  }
+}
+
+async function closeServer(server: NetServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error === undefined ? resolve() : reject(error)));
   });
-  return address.port;
 }
