@@ -1,4 +1,5 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
+import { hasRequiredLinearScopes } from "../../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../../providers/slack/client.js";
 import type { Provider, ProviderApplicationInventory } from "../index.js";
 
@@ -24,7 +25,9 @@ export function createProviderApplicationInventory(
         status:
           row.action_needed ||
           (provider === "slack" &&
-            (!Array.isArray(row.scopes) || !hasRequiredSlackScopes(row.scopes)))
+            (!Array.isArray(row.scopes) || !hasRequiredSlackScopes(row.scopes))) ||
+          (provider === "linear" &&
+            (!Array.isArray(row.scopes) || !hasRequiredLinearScopes(row.scopes)))
             ? "actionNeeded"
             : "connected",
       }));

@@ -112,6 +112,58 @@ describe("Linear connection client", () => {
     assert.match(requests[0]?.body ?? "", /commentCreate/u);
   });
 
+  it("keeps granted scopes when Linear omits them from a refresh response", async () => {
+    const updates: unknown[] = [];
+    const connection: LinearConnectionRecord = {
+      id: "connection-1",
+      organizationId: "hub-org",
+      slug: "acme-linear",
+      providerApplicationId: "linear-app",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Acme",
+      appUserId: "app-user",
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      accessTokenExpiresAt: new Date(1_700_000_000_000),
+      scopes: ["comments:create", "read"],
+    };
+    const request: typeof fetch = async (url) => {
+      if (readableUrl(url).endsWith("/oauth/token")) {
+        return json({ access_token: "fresh-token", expires_in: 3600 });
+      }
+      return json({ data: { commentCreate: { success: true } } });
+    };
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      updateTokens: async (update) => {
+        updates.push(update);
+      },
+      connectionClient: createLinearConnectionClient({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        publicBaseUrl: "https://hub.test",
+        fetch: request,
+        now: () => new Date(1_700_000_010_000),
+      }),
+      fetch: request,
+      now: () => new Date(1_700_000_010_000),
+    });
+
+    await api.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      body: "Done",
+    });
+
+    assert.deepEqual(updates, [
+      {
+        connectionId: "connection-1",
+        accessToken: "fresh-token",
+        accessTokenExpiresAt: new Date(1_700_003_610_000),
+      },
+    ]);
+  });
+
   it("requires read access and the narrow comment-creation scope", () => {
     assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
     assert.equal(hasRequiredLinearScopes(["read"]), false);

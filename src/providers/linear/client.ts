@@ -162,7 +162,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes,
+        scopes: token.scopes ?? [],
       };
     },
     async refresh(refreshToken) {
@@ -181,7 +181,7 @@ export function createLinearConnectionClient(options: {
         ...(token.accessTokenExpiresAt === undefined
           ? {}
           : { accessTokenExpiresAt: token.accessTokenExpiresAt }),
-        scopes: token.scopes,
+        ...(token.scopes === undefined ? {} : { scopes: token.scopes }),
       };
     },
     async revoke(accessToken) {
@@ -283,7 +283,7 @@ async function exchangeToken(
   accessToken: string;
   refreshToken?: string;
   accessTokenExpiresAt?: Date;
-  scopes: string[];
+  scopes?: string[];
 }> {
   const response = await request("https://api.linear.app/oauth/token", {
     method: "POST",
@@ -302,7 +302,7 @@ async function exchangeToken(
     ...(token.expires_in === undefined
       ? {}
       : { accessTokenExpiresAt: new Date(now().getTime() + token.expires_in * 1_000) }),
-    scopes: parseLinearScopes(token.scope),
+    ...(token.scope === undefined ? {} : { scopes: parseLinearScopes(token.scope) }),
   };
 }
 
