@@ -384,6 +384,40 @@ describe("provider applications", () => {
     assert.notEqual(fixture.runtime.active("linear"), undefined);
   });
 
+  it("requires HTTPS before starting a Linear configuration", async () => {
+    const fixture = createFixture();
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(
+        request("POST", "http://hub.test"),
+        "linear",
+        linearConfiguration,
+      ),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError &&
+        error.code === "httpsRequired" &&
+        error.safeContext === "http://hub.test",
+    );
+
+    assert.equal(fixture.store.reads, 0);
+    assert.equal(fixture.runtime.prepareCount("linear"), 0);
+  });
+
+  it("requires HTTPS before starting an environment-managed Linear connection", async () => {
+    const fixture = createFixture({ environment: { linear: linearConfiguration } });
+
+    await assert.rejects(
+      fixture.applications.beginConnection(request("POST", "http://hub.test"), "linear", "org"),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError &&
+        error.code === "httpsRequired" &&
+        error.safeContext === "http://hub.test",
+    );
+
+    assert.equal(fixture.store.reads, 0);
+    assert.equal(fixture.runtime.prepareCount("linear"), 0);
+  });
+
   it("verifies and atomically publishes Socket Mode with its first workspace", async () => {
     const fixture = createFixture();
 
@@ -525,13 +559,13 @@ describe("provider applications", () => {
   });
 });
 
-function request(method = "GET") {
-  return new Request("https://hub.test/apps", {
+function request(method = "GET", origin = "https://hub.test") {
+  return new Request(`${origin}/apps`, {
     method,
     headers: {
       cookie: "session=operator",
-      origin: "https://hub.test",
-      "x-paseo-trusted-request-origin": "https://hub.test",
+      origin,
+      "x-paseo-trusted-request-origin": origin,
     },
   });
 }

@@ -93,8 +93,6 @@ const AuthoredTriggerFilterSchema = z
     project: z.string().min(1).optional(),
     /** Linear workflow-state IDs which are eligible for this trigger. */
     states: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear label IDs which must all be present on the issue. */
-    labels: z.array(z.string().min(1)).min(1).optional(),
     /** Linear label IDs which make an issue ineligible. */
     exclude_labels: z.array(z.string().min(1)).min(1).optional(),
     /** Linear user IDs which may be assigned to the issue. */

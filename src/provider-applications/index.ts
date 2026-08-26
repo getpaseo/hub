@@ -467,6 +467,7 @@ export function createProviderApplications(
       rejectMutation(options, request);
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
+      if (provider === "linear") requireHttpsOrigin(callbackOrigin);
       return serialize(queues, provider, async () => {
         const stored = await options.store.read(provider);
         const configuration = options.environment[provider] ?? stored?.configuration;
@@ -851,6 +852,12 @@ function parseHttpOrigin(value: string): string {
   return url.origin;
 }
 
+function requireHttpsOrigin(callbackOrigin: string): void {
+  if (!callbackOrigin.startsWith("https://")) {
+    throw new ProviderApplicationError("httpsRequired", callbackOrigin);
+  }
+}
+
 async function beginSlackConfiguration(
   options: ProviderApplicationsOptions,
   request: Request,
@@ -859,9 +866,7 @@ async function beginSlackConfiguration(
   input: SlackProviderApplicationConfiguration,
   returnRoute: string,
 ): Promise<ProviderApplicationContinuation> {
-  if (!callbackOrigin.startsWith("https://")) {
-    throw new ProviderApplicationError("httpsRequired", callbackOrigin);
-  }
+  requireHttpsOrigin(callbackOrigin);
   const previous = await options.store.read("slack");
   if (previous?.version !== input.expectedVersion) {
     throw new ProviderApplicationError("configurationConflict");
@@ -917,6 +922,7 @@ async function beginLinearConfiguration(
   input: LinearProviderApplicationConfiguration,
   returnRoute: string,
 ): Promise<ProviderApplicationContinuation> {
+  requireHttpsOrigin(callbackOrigin);
   const previous = await options.store.read("linear");
   if (previous?.version !== input.expectedVersion) {
     throw new ProviderApplicationError("configurationConflict");

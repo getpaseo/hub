@@ -103,7 +103,7 @@ export interface ProviderGuide {
   };
   saveHint?: string;
   verifiedMessage?: string;
-  /** Slack cannot be set up at all without HTTPS; GitHub only loses inbound events. */
+  /** Some providers cannot be set up without HTTPS; GitHub only loses inbound events. */
   requiresHttps: boolean;
   httpsRequirement: (origin: string) => string;
   /** Discord never posts to Hub, so it has no event line to wait on. */

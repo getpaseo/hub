@@ -25,7 +25,7 @@ export function providerApplicationSaveFailure(
       error,
       report,
       {
-        fallback: `Slack only works over HTTPS, and Hub is at ${errorContext(error) ?? "an HTTP address"}. Nothing was saved. Reopen Hub at its public HTTPS address to set up Slack.`,
+        fallback: `${name} only works over HTTPS, and Hub is at ${errorContext(error) ?? "an HTTP address"}. Nothing was saved. Reopen Hub at its public HTTPS address to set up ${name}.`,
       },
       { kind: "validation", scrubValues },
     );
