@@ -541,7 +541,7 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.equal(context.slack.thread.messages.length, 1);
   });
 
-  it("caps Slack history traversal and retains the newest 50 messages oldest first", async () => {
+  it("caps Slack history traversal while retaining the root and newest 49 messages", async () => {
     const maximumPageCount = 10;
     const messagesPerPage = 100;
     let requests = 0;
@@ -597,7 +597,7 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.equal(context.slack.thread.status, "incomplete");
     assert.deepEqual(
       context.slack.thread.messages.map((message) => message.content),
-      Array.from({ length: 50 }, (_, index) => `reply-${951 + index}`),
+      ["reply-1", ...Array.from({ length: 49 }, (_, index) => `reply-${952 + index}`)],
     );
   });
 

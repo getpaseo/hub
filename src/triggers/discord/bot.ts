@@ -102,6 +102,12 @@ type DiscordSendableChannel = TextBasedChannel & {
   send: (...args: unknown[]) => Promise<unknown>;
 };
 
+type DiscordReadableThread = TextBasedChannel & {
+  fetchStarterMessage(): Promise<Message | null>;
+};
+
+const DISCORD_THREAD_CONTEXT_LIMIT = 50;
+
 export interface CreateDiscordBotClientOptions {
   token: string;
   clientId?: string;
@@ -240,11 +246,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       if (channel === null || !isThreadChannel(channel)) {
         throw new Error(`discord channel is not a readable thread: ${input.channelId}`);
       }
-      const page = await channel.messages.fetch({ before: beforeMessageId, limit: 50 });
-      return Array.from(page.values())
-        .filter((message) => message.id !== beforeMessageId)
+      const [starter, page] = await Promise.all([
+        channel.fetchStarterMessage(),
+        channel.messages.fetch({ before: beforeMessageId, limit: DISCORD_THREAD_CONTEXT_LIMIT }),
+      ]);
+      if (starter === null) throw new Error("Discord thread starter unavailable");
+      const replies = Array.from(page.values())
+        .filter((message) => message.id !== beforeMessageId && message.id !== starter.id)
         .map(normalizeContextMessage)
-        .sort(compareThreadMessages);
+        .sort(compareThreadMessages)
+        .slice(-(DISCORD_THREAD_CONTEXT_LIMIT - 1));
+      return [normalizeContextMessage(starter), ...replies];
     },
     onMessageCreate(handler) {
       handlers.add(handler);
@@ -327,8 +339,13 @@ function isTextChannel(channel: GuildBasedChannel | TextBasedChannel): channel i
 
 function isThreadChannel(
   channel: GuildBasedChannel | TextBasedChannel,
-): channel is TextBasedChannel & { isThread(): boolean } {
-  return isTextChannel(channel) && typeof channel.isThread === "function" && channel.isThread();
+): channel is DiscordReadableThread {
+  return (
+    isTextChannel(channel) &&
+    typeof channel.isThread === "function" &&
+    channel.isThread() &&
+    typeof Reflect.get(channel, "fetchStarterMessage") === "function"
+  );
 }
 
 function isSendableChannel(
