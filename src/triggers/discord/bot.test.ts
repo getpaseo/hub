@@ -177,6 +177,45 @@ describe("Discord bot client", () => {
     ]);
   });
 
+  it("keeps the thread starter ahead of the latest replies in context", async () => {
+    const starter = contextMessage("200", "100", "root request", 0);
+    const replies = Array.from({ length: 50 }, (_, index) =>
+      contextMessage(String(250 + index), "207", `reply-${index + 1}`, index + 1),
+    );
+    const thread = new FakeReadableThread(starter, replies);
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(new FakeSendableChannel(), thread),
+    });
+
+    const messages = await bot.readThreadMessages({
+      channelId: "207",
+      beforeMessageId: "300",
+    });
+
+    assert.equal(messages.length, 50);
+    assert.deepEqual(
+      messages.map((message) => message.content),
+      ["root request", ...replies.slice(1).map((message) => message.content)],
+    );
+    assert.deepEqual(thread.historyRequests, [{ before: "300", limit: 50 }]);
+    assert.equal(thread.starterReads, 1);
+  });
+
+  it("rejects thread context when Discord cannot provide its starter", async () => {
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(new FakeSendableChannel(), new FakeReadableThread(null, [])),
+    });
+
+    await assert.rejects(
+      () => bot.readThreadMessages({ channelId: "207", beforeMessageId: "300" }),
+      /thread starter unavailable/u,
+    );
+  });
+
   it("rejects invalid snowflakes before calling Discord", async () => {
     const channel = new FakeSendableChannel();
     const bot = createDiscordBotClient({
@@ -264,6 +303,58 @@ class FakeSendableChannel {
   }
 }
 
+class FakeReadableThread {
+  readonly historyRequests: unknown[] = [];
+  starterReads = 0;
+  readonly messages = {
+    fetch: (request: unknown) => {
+      this.historyRequests.push(request);
+      return Promise.resolve(new Map(this.replies.map((message) => [message.id, message])));
+    },
+  };
+
+  constructor(
+    private readonly starter: FakeContextMessage | null,
+    private readonly replies: FakeContextMessage[],
+  ) {}
+
+  isThread(): boolean {
+    return true;
+  }
+
+  fetchStarterMessage(): Promise<FakeContextMessage | null> {
+    this.starterReads += 1;
+    return Promise.resolve(this.starter);
+  }
+}
+
+interface FakeContextMessage {
+  id: string;
+  channelId: string;
+  content: string;
+  author: { id: string; username: string; bot: boolean };
+  createdAt: Date;
+  attachments: Map<string, never>;
+  reference: null;
+}
+
+function contextMessage(
+  id: string,
+  channelId: string,
+  content: string,
+  seconds: number,
+): FakeContextMessage {
+  return {
+    id,
+    channelId,
+    content,
+    author: { id: "400", username: "maintainer", bot: false },
+    createdAt: new Date(1_700_000_000_000 + seconds * 1_000),
+    attachments: new Map<string, never>(),
+    reference: null,
+  };
+}
+
 class FakeGatewayClient extends EventEmitter {
   constructor(
     private readonly closeCode: number,
@@ -301,7 +392,7 @@ class FakeMessage {
 
 function createFakeClient(
   channel: FakeSendableChannel,
-  thread?: FakeSendableChannel,
+  thread?: FakeSendableChannel | FakeReadableThread,
   options: { deleteReactionError?: Error } = {},
 ): Client {
   const fakeClient = {
@@ -309,7 +400,7 @@ function createFakeClient(
       return fakeClient;
     },
     channels: {
-      async fetch(channelId: string): Promise<FakeSendableChannel> {
+      async fetch(channelId: string): Promise<FakeSendableChannel | FakeReadableThread> {
         if (channelId === "207" && thread !== undefined) {
           return thread;
         }
