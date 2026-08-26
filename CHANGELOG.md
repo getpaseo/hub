@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.0 - 2026-08-25
+
+### Added
+
+- Pull-request-created and pull-request-label-added workflows now receive GitHub webhook deliveries.
+- GitHub issue and pull-request triggers now react on the item with `eyes` when accepted, then `+1` on success or `-1` on failure.
+
+### Fixed
+
+- Workflows triggered by Discord, Slack, GitHub, or manual input can use capabilities owned by another provider without losing valid authority.
+- Workflow preparation failures retain their actual safe reason instead of being reported as `daemon_unreachable`.
+- Deleting a Discord trigger message no longer leaves Hub retrying an impossible terminal reaction.
+
+## 0.7.0 - 2026-08-23
+
+### Added
+
+- A post-app onboarding step that gives operators the exact `paseo hub login` command, watches for their daemon to connect, and lands them in the Default project.
+- An authenticated setup-resources API for guided clients to discover usable GitHub repositories, Slack workspaces, and Discord servers.
+
+### Changed
+
+- Textual triggers now preserve the complete message as `${{ paseo.prompt }}` while exposing parsed typed inputs separately.
+- Startup logs print the complete browser URL for the running Hub.
+
+### Fixed
+
+- Legacy project Activity URLs redirect to the active organization's canonical Activity page.
+- Trigger prompts no longer lose mentions, typed-input headers, surrounding whitespace, or text before a suffix mention.
+
 ## 0.6.0 - 2026-08-21
 
 ### Added

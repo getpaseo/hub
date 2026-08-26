@@ -1,6 +1,8 @@
 import {
   Client,
+  DiscordAPIError,
   GatewayIntentBits,
+  RESTJSONErrorCodes,
   type GuildBasedChannel,
   type Message,
   type TextBasedChannel,
@@ -190,17 +192,23 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       return DiscordSnowflakeSchema.parse(id);
     },
     async createReaction(input) {
-      const message = await fetchMessage(
-        client,
-        DiscordSnowflakeSchema.parse(input.channelId),
-        DiscordSnowflakeSchema.parse(input.messageId),
-      );
-      await message.react(input.emoji);
+      await ignoreDeletedMessage(async () => {
+        const message = await fetchMessage(
+          client,
+          DiscordSnowflakeSchema.parse(input.channelId),
+          DiscordSnowflakeSchema.parse(input.messageId),
+        );
+        await message.react(input.emoji);
+      });
     },
     async deleteOwnReaction(input) {
       const channelId = DiscordSnowflakeSchema.parse(input.channelId);
       const messageId = DiscordSnowflakeSchema.parse(input.messageId);
-      await client.rest.delete(Routes.channelMessageOwnReaction(channelId, messageId, input.emoji));
+      await ignoreDeletedMessage(async () => {
+        await client.rest.delete(
+          Routes.channelMessageOwnReaction(channelId, messageId, input.emoji),
+        );
+      });
     },
     async sendChannelMessage(input) {
       const channelId = DiscordSnowflakeSchema.parse(input.threadId ?? input.channelId);
@@ -249,6 +257,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       return () => guildDeleteHandlers.delete(handler);
     },
   };
+}
+
+async function ignoreDeletedMessage(operation: () => Promise<void>): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMessage) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function resolveReplyDestination(

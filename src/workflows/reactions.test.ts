@@ -71,8 +71,8 @@ describe("workflow-owned provider reactions", () => {
     assert.deepEqual(fixture.triggerContext, original);
     assert.deepEqual(result.visible(), ["+1"]);
     assert.deepEqual(result.calls(), {
-      created: ["eyes", "rocket", "+1"],
-      deleted: [1, 2],
+      created: ["eyes", "+1"],
+      deleted: [1],
     });
   });
 
@@ -81,10 +81,10 @@ describe("workflow-owned provider reactions", () => {
 
     assert.deepEqual(result.visible(), ["+1"]);
     assert.deepEqual(result.calls(), {
-      created: ["eyes", "rocket", "+1"],
-      deleted: [1, 2],
+      created: ["eyes", "+1"],
+      deleted: [1],
     });
-    assert.deepEqual(result.run.reactionState, { reactionId: 3 });
+    assert.deepEqual(result.run.reactionState, { reactionId: 2 });
     assert.equal(result.run.status, "succeeded");
   });
 
@@ -124,10 +124,10 @@ describe("workflow-owned provider reactions", () => {
 
       assert.deepEqual(result.visible(), ["-1"]);
       assert.deepEqual(result.calls(), {
-        created: ["eyes", "rocket", "-1"],
-        deleted: [1, 2],
+        created: ["eyes", "-1"],
+        deleted: [1],
       });
-      assert.deepEqual(result.run.reactionState, { reactionId: 3 });
+      assert.deepEqual(result.run.reactionState, { reactionId: 2 });
     },
   );
 });
