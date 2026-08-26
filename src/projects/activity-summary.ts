@@ -68,6 +68,17 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
       externalUrl,
     };
   }
+  if (classified.semanticEvent === "github.pull_request_updated") {
+    return {
+      provider: "github",
+      headline:
+        classified.item?.number === null || classified.item === null
+          ? "Pull request updated"
+          : `Pull request #${String(classified.item.number)} updated${classified.item.title === null ? "" : `: ${classified.item.title}`}`,
+      actor: classified.actor.length === 0 ? null : classified.actor,
+      externalUrl,
+    };
+  }
   const { headline, actor } = summarizeGitHubEvent(event.data.type, event.data.payload);
   return { provider: "github", headline, actor, externalUrl };
 }

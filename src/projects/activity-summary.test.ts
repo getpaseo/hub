@@ -77,6 +77,33 @@ describe("summarizeTrigger", () => {
     });
   });
 
+  it("summarizes a pull request head update", () => {
+    const summary = summarizeTrigger("github.pull_request_updated", {
+      id: "1",
+      type: "pull_request",
+      repo: "acme/widgets",
+      repositoryId: 1,
+      installationId: 1,
+      createdAt: new Date().toISOString(),
+      payload: {
+        action: "synchronize",
+        pull_request: {
+          number: 42,
+          title: "Address review feedback",
+          html_url: "https://github.com/acme/widgets/pull/42",
+        },
+        sender: { login: "alice" },
+      },
+    });
+
+    assert.deepEqual(summary, {
+      provider: "github",
+      headline: "Pull request #42 updated: Address review feedback",
+      actor: "alice",
+      externalUrl: "https://github.com/acme/widgets/pull/42",
+    });
+  });
+
   it("falls back to a generic headline when a valid envelope carries a malformed event payload", () => {
     const summary = summarizeTrigger("github.push", {
       id: "1",
