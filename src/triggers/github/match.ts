@@ -43,50 +43,86 @@ export function readGitHubMention(
   return candidate !== undefined && message.includes(candidate) ? candidate : undefined;
 }
 
-export async function matchTriggers(
+export function matchTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  connectionId?: string | null,
+): MatchedTriggerEvent[];
+export function matchTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,
   options: GitHubTriggerMatchOptions,
-): Promise<MatchedTriggerEvent[]> {
+): Promise<MatchedTriggerEvent[]>;
+export function matchTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  input?: string | null | GitHubTriggerMatchOptions,
+): MatchedTriggerEvent[] | Promise<MatchedTriggerEvent[]> {
   const classified = classifyGitHubEvent(event);
   const eventNames = new Set([`github.${event.type}`, classified.semanticEvent]);
+
+  if (typeof input !== "object" || input === null) {
+    return matchTriggersWithoutTeams(config, event, classified, eventNames, input);
+  }
+  return matchTriggersWithTeams(config, event, classified, eventNames, input);
+}
+
+function matchTriggersWithoutTeams(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  eventNames: ReadonlySet<string | undefined>,
+  connectionId: string | null | undefined,
+): MatchedTriggerEvent[] {
   const matches: MatchedTriggerEvent[] = [];
-  const membershipChecks = new Map<string, Promise<boolean>>();
 
   for (const trigger of config.triggers) {
     if (
       !eventNames.has(trigger.on) ||
-      !(await matchesFilter(classified, trigger.filters, event, options, membershipChecks))
+      !matchesStaticFilter(classified, trigger.filters, event, connectionId) ||
+      !matchesUserFilter(trigger.filters, classified.actor)
     ) {
       continue;
     }
-
     matches.push({ event, trigger });
   }
 
   return matches;
 }
 
-async function matchesFilter(
-  classified: ReturnType<typeof classifyGitHubEvent>,
-  filter: TriggerFilter | undefined,
+async function matchTriggersWithTeams(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  eventNames: ReadonlySet<string | undefined>,
   options: GitHubTriggerMatchOptions,
-  membershipChecks: Map<string, Promise<boolean>>,
-): Promise<boolean> {
-  if (!matchesStaticFilter(classified, filter, event, options.connectionId)) return false;
-  if (filter === undefined) return false;
+): Promise<MatchedTriggerEvent[]> {
+  const matches: MatchedTriggerEvent[] = [];
+  const membershipChecks = new Map<string, Promise<boolean>>();
 
-  if (filter.from_users?.includes(classified.actor) === true) return true;
-  if (classified.actor.length === 0 || filter.from_teams === undefined) return false;
+  for (const trigger of config.triggers) {
+    if (!eventNames.has(trigger.on)) continue;
+    if (!matchesStaticFilter(classified, trigger.filters, event, options.connectionId)) continue;
+    if (matchesUserFilter(trigger.filters, classified.actor)) {
+      matches.push({ event, trigger });
+      continue;
+    }
+    if (trigger.filters === undefined || classified.actor.length === 0) continue;
+    if (
+      !(await matchesTeamFilter(
+        event,
+        classified.actor,
+        trigger.filters.from_teams,
+        options.teamMemberships,
+        membershipChecks,
+      ))
+    ) {
+      continue;
+    }
+    matches.push({ event, trigger });
+  }
 
-  return matchesTeamFilter(
-    event,
-    classified.actor,
-    filter.from_teams,
-    options.teamMemberships,
-    membershipChecks,
-  );
+  return matches;
 }
 
 function matchesStaticFilter(
@@ -96,42 +132,70 @@ function matchesStaticFilter(
   connectionId: string | null | undefined,
 ): boolean {
   if (filter === undefined) return false;
-  if (!hasActorAllowlist(filter)) return false;
-  if (filter.connectionId !== undefined && filter.connectionId !== connectionId) return false;
+  return (
+    hasIdentityAllowlist(filter) &&
+    matchesConnection(filter, connectionId) &&
+    matchesRepository(filter, event) &&
+    matchesText(filter, classified.text) &&
+    matchesLabels(filter, classified)
+  );
+}
 
+function hasIdentityAllowlist(filter: TriggerFilter): boolean {
+  return (filter.from_users?.length ?? 0) > 0 || (filter.from_teams?.length ?? 0) > 0;
+}
+
+function matchesConnection(
+  filter: TriggerFilter,
+  connectionId: string | null | undefined,
+): boolean {
+  return filter.connectionId === undefined || filter.connectionId === connectionId;
+}
+
+function matchesRepository(filter: TriggerFilter, event: NormalizedGitHubEvent): boolean {
   const repo = filter["repo"];
   if (typeof repo === "string" && repo !== event.repo) return false;
 
   const resourceId = filter["resourceId"];
-  if (typeof resourceId === "string" && resourceId !== String(event.repositoryId)) return false;
+  return typeof resourceId !== "string" || resourceId === String(event.repositoryId);
+}
 
+function matchesText(filter: TriggerFilter, text: string): boolean {
   const pattern = readStringFilter(filter, "pattern");
-  if (pattern !== undefined && !classified.text.startsWith(pattern)) return false;
+  if (pattern !== undefined && !text.startsWith(pattern)) return false;
 
   const contains = readStringFilter(filter, "contains");
-  if (contains !== undefined && !classified.text.includes(contains)) return false;
+  return contains === undefined || text.includes(contains);
+}
 
+function matchesLabels(
+  filter: TriggerFilter,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+): boolean {
   const label = readStringFilter(filter, "label");
   if (label !== undefined && !sameLabel(label, classified.changedLabel)) return false;
 
-  const labels = filter.labels;
-  return !(
-    labels !== undefined &&
-    !labels.every((labelName) => classified.labels.some((current) => sameLabel(labelName, current)))
+  return (
+    filter.labels === undefined ||
+    filter.labels.every((labelName) =>
+      classified.labels.some((current) => sameLabel(labelName, current)),
+    )
   );
 }
 
-function hasActorAllowlist(filter: TriggerFilter): boolean {
-  return (filter.from_users?.length ?? 0) > 0 || (filter.from_teams?.length ?? 0) > 0;
+function matchesUserFilter(filter: TriggerFilter | undefined, actor: string): boolean {
+  return filter?.from_users?.includes(actor) === true;
 }
 
 async function matchesTeamFilter(
   event: NormalizedGitHubEvent,
   actor: string,
-  references: readonly string[],
+  references: readonly string[] | undefined,
   teamMemberships: GitHubTeamMembershipClient,
   membershipChecks: Map<string, Promise<boolean>>,
 ): Promise<boolean> {
+  if (references === undefined) return false;
+
   for (const reference of references) {
     const team = parseTeamReference(reference);
     if (team === undefined) continue;
@@ -164,6 +228,13 @@ function readStringFilter(
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function sameLabel(expected: string, actual: string | undefined): boolean {
+  return (
+    actual !== undefined &&
+    expected.localeCompare(actual, undefined, { sensitivity: "accent" }) === 0
+  );
+}
+
 function parseTeamReference(value: string): { organization: string; slug: string } | undefined {
   const parts = value.split("/");
   const organization = parts.length === 2 ? parts[0] : undefined;
@@ -177,11 +248,4 @@ function parseTeamReference(value: string): { organization: string; slug: string
     return undefined;
   }
   return { organization, slug };
-}
-
-function sameLabel(expected: string, actual: string | undefined): boolean {
-  return (
-    actual !== undefined &&
-    expected.localeCompare(actual, undefined, { sensitivity: "accent" }) === 0
-  );
 }

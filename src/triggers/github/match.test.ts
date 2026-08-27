@@ -377,7 +377,7 @@ describe("GitHub trigger matching", () => {
     assert.equal((await matchTriggers(config, event, { teamMemberships: denyTeams })).length, 1);
   });
 
-  it("allows an active GitHub team member and fails closed when membership is unavailable", async () => {
+  it("allows active GitHub team members and fails closed when membership is unavailable", async () => {
     const config = configFor({
       repo: "boudra/faro",
       contains: "@paseo",
@@ -386,11 +386,7 @@ describe("GitHub trigger matching", () => {
     const activeTeams = new TestTeamMemberships(true);
 
     assert.equal(
-      (
-        await matchTriggers(config, createEvent(), {
-          teamMemberships: activeTeams,
-        })
-      ).length,
+      (await matchTriggers(config, createEvent(), { teamMemberships: activeTeams })).length,
       1,
     );
     assert.deepEqual(activeTeams.checks, [
@@ -407,7 +403,30 @@ describe("GitHub trigger matching", () => {
     );
   });
 
-  it("treats user and team allowlists as alternatives", async () => {
+  it("applies team authorization to semantic GitHub triggers", async () => {
+    const base = configFor({
+      from_teams: ["boudra/maintainers"],
+      label: "ready-for-agent",
+    });
+    const trigger = base.triggers[0]!;
+    const config = {
+      ...base,
+      triggers: [{ ...trigger, on: "github.issue_label_added" }],
+    };
+    const event = eventFor("issues", {
+      action: "labeled",
+      issue: issue({ labels: [{ name: "ready-for-agent" }] }),
+      label: { name: "ready-for-agent" },
+    });
+
+    assert.equal(
+      (await matchTriggers(config, event, { teamMemberships: new TestTeamMemberships(true) }))
+        .length,
+      1,
+    );
+  });
+
+  it("treats direct-user and team allowlists as alternatives", async () => {
     const config = configFor({
       repo: "boudra/faro",
       contains: "@paseo",
