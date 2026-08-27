@@ -306,6 +306,177 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it.each([
+    {
+      acceptance: "allows an exact PR comment from an approved PR author",
+      on: "github.pull_request_comment_created",
+      filters: { exact: "@paseo assurance start" },
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: { login: "unicornz-code" } }),
+          pull_request: {},
+        },
+        comment: comment({ body: "@paseo assurance start" }),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "rejects a PR comment whose exact invocation has a suffix",
+      on: "github.pull_request_comment_created",
+      filters: { exact: "@paseo assurance start" },
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: { login: "unicornz-code" } }),
+          pull_request: {},
+        },
+        comment: comment({ body: "@paseo assurance start now" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects a PR comment whose exact invocation has a prefix",
+      on: "github.pull_request_comment_created",
+      filters: { exact: "@paseo assurance start" },
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: { login: "unicornz-code" } }),
+          pull_request: {},
+        },
+        comment: comment({ body: "please @paseo assurance start" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects a PR comment from a denied PR author",
+      on: "github.pull_request_comment_created",
+      filters: {},
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: { login: "someone-else" } }),
+          pull_request: {},
+        },
+        comment: comment(),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects a PR comment with a missing PR author",
+      on: "github.pull_request_comment_created",
+      filters: {},
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: undefined }),
+          pull_request: {},
+        },
+        comment: comment(),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects a bot-authored PR when the bot is omitted from the author allowlist",
+      on: "github.pull_request_comment_created",
+      filters: {},
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: {
+          ...issue({ user: { login: "clever-unicorn-paseo-hub[bot]" } }),
+          pull_request: {},
+        },
+        comment: comment(),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "allows a PR label event from an approved PR author",
+      on: "github.pull_request_label_added",
+      filters: { label: "assurance" },
+      event: eventFor("pull_request", {
+        action: "labeled",
+        pull_request: pullRequest({ user: { login: "cleverunicorn" } }),
+        label: { name: "assurance" },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "rejects a PR label event from a denied PR author",
+      on: "github.pull_request_label_added",
+      filters: { label: "assurance" },
+      event: eventFor("pull_request", {
+        action: "labeled",
+        pull_request: pullRequest({ user: { login: "someone-else" } }),
+        label: { name: "assurance" },
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects a PR label event with a missing PR author",
+      on: "github.pull_request_label_added",
+      filters: { label: "assurance" },
+      event: eventFor("pull_request", {
+        action: "labeled",
+        pull_request: pullRequest({ user: undefined }),
+        label: { name: "assurance" },
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "rejects an issue even when its author is approved",
+      on: "github.issue_comment_created",
+      filters: {},
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue({ user: { login: "unicornz-code" } }),
+        comment: comment(),
+      }),
+      expected: 0,
+    },
+  ])("$acceptance", ({ on, filters, event, expected }) => {
+    const config = configFor({
+      from_users: ["boudra"],
+      pr_authors: ["unicornz-code", "cleverunicorn"],
+      ...filters,
+    });
+    const trigger = config.triggers[0]!;
+    const configured = { ...config, triggers: [{ ...trigger, on }] };
+
+    assert.equal(matchTriggers(configured, event).length, expected);
+  });
+
+  it("keeps PR authors independent from the event actor allowlist", () => {
+    const bot = "clever-unicorn-paseo-hub[bot]";
+    const config = configFor({
+      exact: "@paseo assurance continue",
+      from_users: ["unicornz-code", "cleverunicorn", bot],
+      pr_authors: ["unicornz-code", "cleverunicorn"],
+    });
+    const trigger = config.triggers[0]!;
+    const configured = {
+      ...config,
+      triggers: [{ ...trigger, on: "github.pull_request_comment_created" }],
+    };
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: {
+        ...issue({ user: { login: "unicornz-code" } }),
+        pull_request: {},
+      },
+      comment: comment({ body: "@paseo assurance continue", user: { login: bot } }),
+    });
+
+    assert.equal(
+      matchTriggers(configured, {
+        ...event,
+        payload: { ...event.payload, sender: { login: bot } },
+      }).length,
+      1,
+    );
+  });
+
   it("applies the same security filters to pull-request review comments", () => {
     const config = compileHubConfig({
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],

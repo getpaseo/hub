@@ -163,6 +163,61 @@ describe("workflow compiler", () => {
     assert.throws(() => compileHubConfig(raw), /unrecognized key.*toolPolicy/iu);
   });
 
+  it("accepts exact PR-author filters and keeps authored and compiled filters strict", () => {
+    const trigger = configuration().triggers[0]!;
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...trigger,
+          filters: {
+            exact: "@paseo assurance start",
+            from_users: ["unicornz-code"],
+            pr_authors: ["unicornz-code", "cleverunicorn"],
+          },
+        },
+      ],
+    });
+
+    assert.deepEqual(compiled.triggers[0]?.filters, {
+      exact: "@paseo assurance start",
+      from_users: ["unicornz-code"],
+      pr_authors: ["unicornz-code", "cleverunicorn"],
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+
+    for (const filters of [
+      { exact: 42, from_users: ["unicornz-code"] },
+      { from_users: ["unicornz-code"], pr_authors: [] },
+      { from_users: ["unicornz-code"], pr_authors: [""] },
+      {
+        exact: "@paseo assurance start",
+        from_users: ["unicornz-code"],
+        pr_author: ["unicornz-code"],
+      },
+    ]) {
+      assert.throws(() =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [{ ...trigger, filters }],
+        }),
+      );
+    }
+
+    const compiledTrigger = compiled.triggers[0];
+    assert.throws(() =>
+      parseCompiledHubConfig({
+        ...compiled,
+        triggers: [
+          {
+            ...compiledTrigger,
+            filters: { ...compiledTrigger.filters, pr_author: ["unicornz-code"] },
+          },
+        ],
+      }),
+    );
+  });
+
   it("compiles the complete multi-step contract and freezes it", () => {
     const compiled = compileHubConfig({
       ...configuration(),

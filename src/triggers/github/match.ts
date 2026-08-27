@@ -3,7 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import { classifyGitHubEvent } from "./classification.js";
+import { classifyGitHubEvent, type GitHubClassifiedEvent } from "./classification.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
@@ -61,7 +61,7 @@ export function matchTriggers(
 }
 
 function matchesFilter(
-  classified: ReturnType<typeof classifyGitHubEvent>,
+  classified: GitHubClassifiedEvent,
   filter: TriggerFilter | undefined,
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
@@ -85,6 +85,10 @@ function matchesFilter(
 
   const resourceId = filter["resourceId"];
   if (typeof resourceId === "string" && resourceId !== String(event.repositoryId)) {
+    return false;
+  }
+
+  if (!matchesExactAndPrAuthor(classified, filter)) {
     return false;
   }
 
@@ -116,6 +120,24 @@ function matchesFilter(
   }
 
   return true;
+}
+
+function matchesExactAndPrAuthor(
+  classified: GitHubClassifiedEvent,
+  filter: TriggerFilter,
+): boolean {
+  const exact = filter.exact;
+  if (exact !== undefined && classified.text !== exact) {
+    return false;
+  }
+
+  const prAuthors = filter.pr_authors;
+  return (
+    prAuthors === undefined ||
+    (classified.item?.type === "pull_request" &&
+      classified.item.author !== null &&
+      prAuthors.includes(classified.item.author.login))
+  );
 }
 
 function readStringFilter(

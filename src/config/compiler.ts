@@ -84,6 +84,7 @@ const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    exact: z.string().optional(),
     label: z.string().min(1).optional(),
     labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),
@@ -91,6 +92,7 @@ const AuthoredTriggerFilterSchema = z
     workspace: z.string().min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    pr_authors: z.array(z.string().min(1)).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
     connection: z
       .string()
@@ -245,9 +247,10 @@ export interface CompiledStep {
 export type CompiledSteps = readonly CompiledStep[];
 
 export type CompiledTriggerFilter = Readonly<
-  Omit<AuthoredTriggerFilter, "channels" | "from_users"> & {
+  Omit<AuthoredTriggerFilter, "channels" | "from_users" | "pr_authors"> & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
+    pr_authors?: readonly string[] | undefined;
     inputs?: Readonly<Record<string, JsonPrimitive>> | undefined;
     connectionId?: string | undefined;
     resourceId?: string | undefined;
