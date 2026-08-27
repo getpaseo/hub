@@ -3,7 +3,10 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
+import type { Logger } from "pino";
 import type { Database, DaemonRecord } from "../db/types.js";
+import { reportFailure, type FailureKind } from "../failures/index.js";
+import { logger as defaultLogger } from "../logger.js";
 import {
   HubExecutionAgentCreateRequestSchema,
   HubExecutionAgentCreateResponseSchema,
@@ -72,6 +75,7 @@ export class ActiveDaemonRegistry {
   constructor(
     private readonly database: Pick<Database, "setDaemonPresence">,
     private readonly clock: DaemonClock = systemDaemonClock,
+    private readonly failureLogger: Pick<Logger, "warn" | "error"> = defaultLogger,
   ) {}
 
   accept(daemon: DaemonRecord, socket: WebSocket): void {
@@ -97,11 +101,15 @@ export class ActiveDaemonRegistry {
         this.offlinePresenceWrites.add(write);
         void write.then(
           () => this.offlinePresenceWrites.delete(write),
-          () => undefined,
+          (error: unknown) => {
+            this.report(error, "daemon.presence.offline", daemon.id);
+          },
         );
       }
     });
-    for (const handler of this.connectedHandlers) void handler(daemon);
+    for (const handler of this.connectedHandlers) {
+      this.observeHandler(() => handler(daemon), "daemon.connected.handler", daemon.id);
+    }
   }
 
   onConnected(handler: DaemonConnectedHandler): () => void {
@@ -252,7 +260,14 @@ export class ActiveDaemonRegistry {
   private receive(active: ActiveSocket, raw: string): void {
     if (this.active.get(active.daemon.id)?.generation !== active.generation) return;
     const receivedAt = this.clock.nowDate().toISOString();
-    const value: unknown = JSON.parse(raw);
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch (error) {
+      this.report(error, "daemon.websocket.message.parse", active.daemon.id, "validation");
+      active.socket.close(4400, "invalid daemon message");
+      return;
+    }
     const envelope = HubExecutionOutboundSchema.safeParse(value);
     if (!envelope.success) return;
     const message = envelope.data.message;
@@ -272,7 +287,7 @@ export class ActiveDaemonRegistry {
         agent: update.data.payload.agent,
         timestamp: receivedAt,
       } as const;
-      for (const subscriber of this.subscribersFor(active.daemon.id)) void subscriber(event);
+      this.notifySubscribers(active.daemon.id, event);
       return;
     }
     const stream = HubExecutionAgentStreamSchema.safeParse(message);
@@ -284,7 +299,50 @@ export class ActiveDaemonRegistry {
       event: stream.data.payload.event,
       timestamp: receivedAt,
     } as const;
-    for (const subscriber of this.subscribersFor(active.daemon.id)) void subscriber(event);
+    this.notifySubscribers(active.daemon.id, event);
+  }
+
+  private notifySubscribers(daemonId: string, event: Parameters<DaemonEventHandler>[0]): void {
+    for (const subscriber of this.subscribersFor(daemonId)) {
+      this.observeHandler(
+        () => subscriber(event),
+        "daemon.event.subscriber",
+        daemonId,
+        undefined,
+        event.executionId,
+      );
+    }
+  }
+
+  private observeHandler(
+    handler: () => void | Promise<void>,
+    operation: string,
+    daemonId: string,
+    kind?: FailureKind,
+    executionId?: string,
+  ): void {
+    void Promise.resolve()
+      .then(handler)
+      .catch((error: unknown) => this.report(error, operation, daemonId, kind, executionId));
+  }
+
+  private report(
+    error: unknown,
+    operation: string,
+    daemonId: string,
+    kind?: FailureKind,
+    executionId?: string,
+  ): void {
+    reportFailure(
+      error,
+      {
+        operation,
+        component: "daemons",
+        daemonId,
+        ...(executionId === undefined ? {} : { executionId }),
+      },
+      { logger: this.failureLogger, ...(kind === undefined ? {} : { kind }) },
+    );
   }
 
   private receiveAgentValidation(

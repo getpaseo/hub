@@ -14,6 +14,7 @@ import type { AgentExecutionStatus } from "../db/schema.js";
 import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../config/compiler.js";
 import type { CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
 import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
@@ -42,6 +43,7 @@ import {
   type ExpressionContext,
 } from "./expression.js";
 import type { WorktreeTarget } from "../config/index.js";
+import type { Logger } from "pino";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
@@ -77,10 +79,11 @@ export interface DurableWorkflowEngineOptions {
   onWorkflowRunAccepted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
   onWorkflowRunStarted?: (run: AcceptedTriggerRunRecord) => Promise<JsonValue | null | void>;
   onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<JsonValue | null | void>;
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 export class DurableWorkflowEngine {
-  private readonly logger = defaultLogger;
+  private readonly logger: Pick<Logger, "warn" | "error">;
   private readonly leaseMs: number;
   private readonly workerIntervalMs: number;
   private readonly now: () => Date;
@@ -91,6 +94,7 @@ export class DurableWorkflowEngine {
   private stopped = false;
 
   constructor(private readonly options: DurableWorkflowEngineOptions) {
+    this.logger = options.logger ?? defaultLogger;
     this.leaseMs = options.leaseMs ?? DEFAULT_WAKEUP_LEASE_MS;
     this.workerIntervalMs = options.workerIntervalMs ?? DEFAULT_WORKER_INTERVAL_MS;
     this.now = options.now ?? (() => new Date());
@@ -106,7 +110,7 @@ export class DurableWorkflowEngine {
 
   private startProcessing(): void {
     void this.processAvailable().catch((error: unknown) => {
-      this.logger.error({ err: error }, "durable workflow worker recovery failed");
+      this.report(error, "workflow.worker.recover");
     });
   }
 
@@ -155,7 +159,6 @@ export class DurableWorkflowEngine {
             configurationRevisionId,
             providerEventReceiptId: trigger.providerEventReceiptId,
             configuredTriggerName: match.triggerName,
-            rawPrompt: match.invocation.rawMessage,
             prompt: match.invocation.prompt,
             inputs: match.invocation.inputs,
             triggerContext: match.triggerContext,
@@ -186,7 +189,6 @@ export class DurableWorkflowEngine {
           configurationRevisionId,
           providerEventReceiptId: trigger.providerEventReceiptId,
           configuredTriggerName: acceptedMatch.triggerName,
-          rawPrompt: acceptedMatch.invocation.rawMessage,
           prompt: acceptedMatch.invocation.prompt,
           inputs: acceptedMatch.invocation.inputs,
           triggerContext: acceptedMatch.triggerContext,
@@ -231,10 +233,7 @@ export class DurableWorkflowEngine {
       try {
         await this.processWakeup(wakeup);
       } catch (error) {
-        this.logger.error(
-          { err: error, triggerRunId: wakeup.triggerRunId },
-          "durable workflow wakeup processing failed",
-        );
+        this.report(error, "workflow.wakeup.process", { triggerRunId: wakeup.triggerRunId });
       }
     }
   }
@@ -253,10 +252,7 @@ export class DurableWorkflowEngine {
     } catch (error) {
       const reason =
         error instanceof Error ? error.message : "workflow_condition_evaluation_failed";
-      this.logger.error(
-        { err: error, triggerRunId: run.id, stepId: step.id },
-        "workflow condition evaluation failed",
-      );
+      this.report(error, "workflow.condition.evaluate", { triggerRunId: run.id, stepId: step.id });
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
@@ -268,10 +264,7 @@ export class DurableWorkflowEngine {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
-      this.logger.error(
-        { err: error, triggerRunId: run.id, stepId: step.id },
-        "workflow value evaluation failed",
-      );
+      this.report(error, "workflow.values.evaluate", { triggerRunId: run.id, stepId: step.id });
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
@@ -523,10 +516,10 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       if (!(error instanceof ExpressionEvaluationError)) throw error;
-      this.logger.error(
-        { err: error, triggerRunId: run.id, stepId: step.id },
-        "workflow launch expression evaluation failed",
-      );
+      this.report(error, "workflow.launch-expression.evaluate", {
+        triggerRunId: run.id,
+        stepId: step.id,
+      });
       const failed = await database.failWorkflowRun(run.id, "failed", error.message, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return undefined;
@@ -562,10 +555,11 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "trigger_context_unavailable";
-      this.logger.error(
-        { err: error, triggerRunId: run.id, stepId: step.id, executionId },
-        "trigger context materialization failed",
-      );
+      this.report(error, "workflow.context.materialize", {
+        triggerRunId: run.id,
+        stepId: step.id,
+        executionId,
+      });
       const failed = await this.options.database!.failWorkflowRun(
         run.id,
         "failed",
@@ -627,10 +621,10 @@ export class DurableWorkflowEngine {
     } catch (error) {
       const reason =
         error instanceof Error ? error.message : "required output capability unavailable";
-      this.logger.error(
-        { err: error, triggerRunId: run.id, stepId: step.id },
-        "workflow launch intent validation failed",
-      );
+      this.report(error, "workflow.launch-intent.validate", {
+        triggerRunId: run.id,
+        stepId: step.id,
+      });
       const failed = await database.failWorkflowRun(run.id, "failed", reason, step.id);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return true;
@@ -651,10 +645,7 @@ export class DurableWorkflowEngine {
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workflow_value_evaluation_failed";
-      this.logger.error(
-        { err: error, triggerRunId: run.id },
-        "final workflow value evaluation failed",
-      );
+      this.report(error, "workflow.final-values.evaluate", { triggerRunId: run.id });
       const failed = await database.failWorkflowRun(run.id, "failed", reason);
       if (failed?.transitioned === true) await this.notifyWorkflowRunTerminal(failed.run);
       return;
@@ -693,7 +684,7 @@ export class DurableWorkflowEngine {
         result === undefined ? run.reactionState : result,
       );
     } catch (error: unknown) {
-      this.logger.error({ err: error, triggerRunId: run.id }, "workflow accepted reaction failed");
+      this.report(error, "workflow.reaction.accepted", { triggerRunId: run.id });
     }
   }
 
@@ -707,7 +698,7 @@ export class DurableWorkflowEngine {
         result === undefined ? run.reactionState : result,
       );
     } catch (error: unknown) {
-      this.logger.error({ err: error, triggerRunId: run.id }, "workflow started reaction failed");
+      this.report(error, "workflow.reaction.started", { triggerRunId: run.id });
     }
   }
 
@@ -717,7 +708,7 @@ export class DurableWorkflowEngine {
     if (this.terminalNotificationProcessing !== undefined) return;
     this.terminalNotificationProcessing = this.recoverRequestedWorkflowRunTerminalNotifications()
       .catch((error: unknown) => {
-        this.logger.error({ err: error }, "workflow terminal notification recovery failed");
+        this.report(error, "workflow.notification.terminal.recover");
       })
       .finally(() => {
         this.terminalNotificationProcessing = undefined;
@@ -753,10 +744,7 @@ export class DurableWorkflowEngine {
           deliveredReactionState,
         );
       } catch (error) {
-        this.logger.error(
-          { err: error, triggerRunId: run.id },
-          "workflow terminal notification failed",
-        );
+        this.report(error, "workflow.notification.terminal.deliver", { triggerRunId: run.id });
       }
     }
   }
@@ -772,6 +760,14 @@ export class DurableWorkflowEngine {
       execution.status,
       execution.result,
       execution.status === "failed" ? readFailureReason(execution.result) : undefined,
+    );
+  }
+
+  private report(error: unknown, operation: string, diagnostic?: Record<string, unknown>): void {
+    reportFailure(
+      error,
+      { operation, component: "workflows" },
+      { logger: this.logger, ...(diagnostic === undefined ? {} : { diagnostic }) },
     );
   }
 

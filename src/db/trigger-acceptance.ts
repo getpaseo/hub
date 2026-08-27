@@ -457,6 +457,8 @@ async function claimProviderReceipt(
       resourceId: input.resourceId,
       deliveryId: input.input.deliveryId,
       signatureHash: input.input.signatureHash ?? null,
+      providerApplicationId: input.input.providerApplicationId ?? null,
+      providerConfigurationVersion: input.input.providerConfigurationVersion ?? null,
       source: input.input.source,
       repo: input.input.repo ?? null,
       payload: input.input.payload,

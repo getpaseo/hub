@@ -3,7 +3,8 @@ import { z } from "zod";
 import { ACCOUNT_MUTATION_KEY } from "./tenant-mutation.js";
 
 export { ACCOUNT_MUTATION_KEY };
-export const ACCOUNT_MUTATION_FAILURE = "We couldn't update your account. Try again.";
+export const ACCOUNT_MUTATION_FAILURE =
+  "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.";
 
 const failedResultSchema = z.object({
   status: z.literal("error"),

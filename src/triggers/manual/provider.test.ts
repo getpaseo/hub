@@ -53,8 +53,7 @@ describe("manual invocation provider", () => {
     assert.ok(match && typeof match !== "string");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
   });

@@ -3,8 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ChevronRight } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
+import { useActiveAccount } from "../auth/active-account.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { EmptyState } from "../components/app/empty-state.js";
@@ -60,7 +61,7 @@ export function ProjectsPanel() {
   const queryClient = useQueryClient();
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useOrganizationSnapshot();
-  const [connectionResult] = useState(consumeConnectionResult);
+  const [connectionResult] = useConnectionResult();
   const [creating, setCreating] = useState(false);
   const create = useProjectCommand(createProject, queryClient, scope);
   if (!snapshot.ok) return snapshot.element;
@@ -188,6 +189,7 @@ function monogram(name: string) {
 
 export function OrganizationConnectionsPanel() {
   const tenant = useRouteTenant();
+  const { isInstanceOperator } = useActiveAccount();
   const queryClient = useQueryClient();
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useOrganizationSnapshot();
@@ -196,7 +198,7 @@ export function OrganizationConnectionsPanel() {
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
     queryFn: () => loadStatus({ data: scope }),
   });
-  const [result, setResult] = useState(consumeConnectionResult);
+  const [result, setResult] = useConnectionResult();
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -333,7 +335,7 @@ export function OrganizationConnectionsPanel() {
                   {providerLabel(provider)}
                 </span>
                 {status.data[provider].status === "notConfigured" ? (
-                  <StatusPill tone="neutral">Not configured</StatusPill>
+                  <UnconfiguredProvider provider={provider} operator={isInstanceOperator} />
                 ) : (
                   <Button
                     disabled={busy}
@@ -463,11 +465,8 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
       <div className="grid gap-6">
         <Section title="Invocation">
           <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
-            <DetailField label="Raw message">
-              <pre className="whitespace-pre-wrap text-sm">{activity.rawMessage}</pre>
-            </DetailField>
-            <DetailField label="Clean prompt">
-              <pre className="whitespace-pre-wrap text-sm">{activity.cleanPrompt}</pre>
+            <DetailField label="Prompt">
+              <pre className="whitespace-pre-wrap text-sm">{activity.prompt}</pre>
             </DetailField>
             <DetailField label="Typed inputs">
               <JsonValue value={activity.inputs} />
@@ -753,21 +752,48 @@ function connectionRows(data: OrganizationSnapshot) {
     })),
   ];
 }
+/**
+ * An operator can do something about an app that is not set up, so they get the way to do it.
+ * A member cannot, and learns nothing about instance credentials either way.
+ */
+function UnconfiguredProvider({
+  provider,
+  operator,
+}: {
+  provider: "github" | "discord" | "slack";
+  operator: boolean;
+}) {
+  if (!operator) return <StatusPill tone="neutral">Not configured</StatusPill>;
+  return (
+    <Link className="text-sm text-link hover:underline" to={"/apps" as never}>
+      Set up the {providerLabel(provider)} app
+    </Link>
+  );
+}
+
 function providerLabel(provider: "github" | "discord" | "slack") {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
   return "Slack";
 }
 
-function consumeConnectionResult(): string | undefined {
+function useConnectionResult() {
+  const state = useState(readConnectionResult);
+  useEffect(stripConnectionResult, []);
+  return state;
+}
+
+function readConnectionResult(): string | undefined {
   if (typeof window === "undefined") return undefined;
+  return new URL(window.location.href).searchParams.get("result") ?? undefined;
+}
+
+function stripConnectionResult(): void {
   const url = new URL(window.location.href);
-  const result = url.searchParams.get("result") ?? undefined;
-  if (url.searchParams.has("result")) {
-    url.searchParams.delete("result");
-    window.history.replaceState(window.history.state, "", url);
-  }
-  return result;
+  if (!url.searchParams.has("app") && !url.searchParams.has("result")) return;
+  url.searchParams.delete("app");
+  url.searchParams.delete("result");
+  window.history.replaceState(window.history.state, "", url);
 }
 
 function connectionResultCopy(result: string): string {
@@ -781,7 +807,13 @@ function connectionResultCopy(result: string): string {
     return "GitHub owner approval is required. Retry after approval.";
   }
   if (result === "provider_not_configured") return "The provider is not configured.";
-  return "The connection could not be completed.";
+  if (result === "connection_invalid") {
+    return "This connection link is invalid, expired, or already used. Restart the connection from this Hub.";
+  }
+  if (result === "connection_conflict") {
+    return "That provider account is already connected to another organization. Disconnect it there before trying again.";
+  }
+  return "The provider connection did not complete. Restart it from Connections; if it repeats, check the app credentials and provider status.";
 }
 
 function statusLabel(status: string): string {

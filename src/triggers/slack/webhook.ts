@@ -1,16 +1,12 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { ProviderEventAcceptance } from "../../db/types.js";
+import { reportFailure } from "../../failures/index.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
-import { logger } from "../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
-import { logProviderEventIntake } from "../audit.js";
-import {
-  normalizeSlackEvent,
-  SlackEventCallbackSchema,
-  SlackUrlVerificationSchema,
-} from "./events.js";
+import { intakeSlackEvent, SlackEventIntakeValidationError } from "./source/internal/intake.js";
+import { SlackUrlVerificationSchema } from "./events.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_TIMESTAMP_SKEW_SECONDS = 5 * 60;
@@ -65,22 +61,26 @@ async function verifySlackRequest(
   const signature = request.headers.get("x-slack-signature");
   const timestamp = request.headers.get("x-slack-request-timestamp");
   if (signature === null || timestamp === null) {
-    logger.warn("rejecting Slack event because signature headers are missing");
+    reportSlackRejection("signature_headers_missing", 401, options.signingSecret);
     return new Response("Unauthorized", { status: 401 });
   }
 
   const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
   if (body instanceof Response) return body;
   if (!verifySlackSignature(options.signingSecret, timestamp, body, signature, options.now?.())) {
-    logger.warn("rejecting Slack event because signature verification failed");
+    reportSlackRejection("signature_verification_failed", 401, options.signingSecret, signature);
     return new Response("Unauthorized", { status: 401 });
   }
 
   let payload: unknown;
   try {
     payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-  } catch {
-    logger.warn("rejecting Slack event because payload is invalid JSON");
+  } catch (error) {
+    reportFailure(
+      error,
+      { operation: "slack.webhook.parse", component: "triggers", provider: "slack", status: 400 },
+      { status: 400, scrubValues: [options.signingSecret] },
+    );
     return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
   }
 
@@ -94,61 +94,59 @@ async function handleVerifiedSlackRequest(
 ): Promise<Response> {
   const envelopeType = SlackEnvelopeTypeSchema.safeParse(verified.payload);
   if (!envelopeType.success) {
-    logger.warn("rejecting Slack event because its envelope is invalid");
+    reportSlackRejection("invalid_envelope", 400, options.signingSecret);
     return new Response("Bad Request", { status: 400 });
   }
 
   if (envelopeType.data.type === "url_verification") {
     const challenge = SlackUrlVerificationSchema.safeParse(verified.payload);
     if (!challenge.success || !matchesConfiguredApp(challenge.data.api_app_id, options.appId)) {
-      logger.warn("rejecting Slack URL verification because its app or payload is invalid");
+      reportSlackRejection("invalid_url_verification", 400, options.signingSecret);
       return new Response("Bad Request", { status: 400 });
     }
     return Response.json({ challenge: challenge.data.challenge });
   }
 
   if (envelopeType.data.type !== "event_callback") {
-    logger.info({ envelopeType: envelopeType.data.type }, "ignoring unsupported Slack envelope");
     return new Response("OK", { status: 200 });
   }
-  const callback = SlackEventCallbackSchema.safeParse(verified.payload);
-  if (!callback.success || callback.data.api_app_id !== options.appId) {
-    logger.warn("rejecting Slack event because its app or callback payload is invalid");
-    return new Response("Bad Request", { status: 400 });
-  }
-  const normalizedEvent = normalizeSlackEvent(callback.data);
-  if (normalizedEvent === undefined) {
-    logger.info({ eventId: callback.data.event_id }, "ignoring unsupported Slack event");
-    return new Response("OK", { status: 200 });
-  }
-
-  const deliveryId = `slack-${normalizedEvent.id}`;
   try {
-    const acceptance = await options.accept({
-      teamId: normalizedEvent.teamId,
-      deliveryId,
-      signatureHash: verified.signatureHash,
-      source: "slack.mention",
-      payload: normalizedEvent,
-      receivedAt: new Date(normalizedEvent.eventTime * 1_000),
-      ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
-    });
-    logProviderEventIntake({
-      provider: "slack",
-      source: "slack.mention",
-      deliveryId,
-      resourceId: normalizedEvent.teamId,
-      acceptance,
-    });
-    const events = acceptance.status === "accepted" ? acceptance.events : [];
-    await Promise.all(
-      events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
-    );
+    await intakeSlackEvent(verified.payload, verified.signatureHash, handlers, options);
     return new Response("OK", { status: 200 });
   } catch (error) {
-    logger.error({ err: error, deliveryId }, "Slack event handoff failed");
+    if (error instanceof SlackEventIntakeValidationError) {
+      reportSlackRejection("invalid_callback", 400, options.signingSecret);
+      return new Response("Bad Request", { status: 400 });
+    }
+    reportFailure(
+      error,
+      {
+        operation: "slack.webhook.handoff",
+        component: "triggers",
+        provider: "slack",
+        status: 503,
+      },
+      { status: 503, scrubValues: [options.signingSecret] },
+    );
     return Response.json({ error: "event_handoff_unavailable" }, { status: 503 });
   }
+}
+
+function reportSlackRejection(
+  reason: string,
+  status: number,
+  signingSecret: string,
+  signature?: string,
+): void {
+  reportFailure(
+    Object.assign(new Error("Slack webhook request rejected"), { code: reason }),
+    { operation: "slack.webhook.verify", component: "triggers", provider: "slack", status },
+    {
+      status,
+      kind: status === 401 ? "authentication" : "validation",
+      scrubValues: [signingSecret, ...(signature === undefined ? [] : [signature])],
+    },
+  );
 }
 
 function matchesConfiguredApp(requestAppId: string | undefined, configuredAppId: string): boolean {

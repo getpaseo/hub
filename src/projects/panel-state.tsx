@@ -101,7 +101,7 @@ export function CommandError({
       <AlertDescription>
         {failed.data?.status === "error"
           ? failed.data.error.message
-          : "We couldn't complete that action."}
+          : "Hub did not receive the project action result. Check your connection and reload the current project state."}
       </AlertDescription>
     </Alert>
   );

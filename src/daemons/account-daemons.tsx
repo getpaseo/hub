@@ -98,9 +98,9 @@ export function DaemonsPanel({
         if (result.status === "error") return result.error.message;
         return result.data.state === "complete"
           ? undefined
-          : "We couldn't rename that daemon in the current organization.";
+          : "The daemon is no longer available in the current organization. Reload the daemon list.";
       } catch {
-        return "We couldn't rename that daemon.";
+        return "Hub did not receive the daemon rename result. Check your connection and reload its current name.";
       }
     },
     [organizationSlug, rename],
@@ -117,7 +117,7 @@ export function DaemonsPanel({
         <AlertDescription>
           {snapshot.data?.status === "error"
             ? snapshot.data.error.message
-            : "We couldn't load this organization's daemons."}
+            : "Hub did not receive the daemon list. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );
@@ -125,7 +125,9 @@ export function DaemonsPanel({
   const daemons = snapshot.data.data;
   const failure = [revoke.data].find((result) => result?.status === "error");
   let message = failure?.status === "error" ? failure.error.message : undefined;
-  if (revoke.isError) message = "We couldn't update that daemon.";
+  if (revoke.isError)
+    message =
+      "Hub did not receive the daemon revocation result. Check your connection and reload its current status.";
   const busy = rename.isPending || revoke.isPending;
   return (
     <>

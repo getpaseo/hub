@@ -3,7 +3,7 @@ import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import {
   type TriggerProvider,
   type TriggerProviderMatch,
@@ -453,14 +453,12 @@ async function reactSafely(
       emoji: discordEmoji,
     });
   } catch (error) {
-    logger.warn(
+    reportFailure(
+      error,
+      { operation: "discord.reaction.add", component: "triggers", provider: "discord" },
       {
-        err: error,
-        channelId: event.channelId,
-        messageId: event.messageId,
-        emoji: discordEmoji,
+        diagnostic: { channelId: event.channelId, messageId: event.messageId, emoji: discordEmoji },
       },
-      "discord reaction failed",
     );
   }
 }
@@ -491,14 +489,12 @@ async function deleteReactionSafely(
       emoji: discordEmoji,
     });
   } catch (error) {
-    logger.warn(
+    reportFailure(
+      error,
+      { operation: "discord.reaction.cleanup", component: "triggers", provider: "discord" },
       {
-        err: error,
-        channelId: event.channelId,
-        messageId: event.messageId,
-        emoji: discordEmoji,
+        diagnostic: { channelId: event.channelId, messageId: event.messageId, emoji: discordEmoji },
       },
-      "discord reaction cleanup failed",
     );
   }
 }

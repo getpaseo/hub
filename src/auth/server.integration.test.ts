@@ -227,6 +227,20 @@ describe("account and organization boundary", () => {
     assert.deepEqual(await withoutOrganization.teamMutationStatuses(), [403, 403, 403, 403]);
   });
 
+  it("validates cookie mutations against the adapter's trusted request origin", async () => {
+    const hub = await startAccounts(postgres);
+    const request = new Request("http://internal:3000/apps", {
+      method: "POST",
+      headers: {
+        cookie: "session=operator",
+        origin: "https://hub.example.test",
+        "x-paseo-trusted-request-origin": "https://hub.example.test",
+      },
+    });
+
+    assert.equal(hub.cookieMutationRejection(request), undefined);
+  });
+
   it("serializes concurrent last-owner role and removal attempts", async () => {
     const hub = await startAccounts(postgres);
     const alice = await hub.signUp("Alice", "alice@example.com");
@@ -395,6 +409,10 @@ class PaseoAccounts {
 
   signedOut(): AccountBrowser {
     return new AccountBrowser(this.auth, this.resources, "signed-out@example.com", "unused");
+  }
+
+  cookieMutationRejection(request: Request): Response | undefined {
+    return this.auth.rejectCookieMutation(request);
   }
 
   async createThreePersonTeam() {

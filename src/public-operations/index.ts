@@ -44,6 +44,16 @@ export function createPublicOperations(
         return storageUnavailableOrThrow(error);
       }
     },
+    async listSetupResources(authorization) {
+      try {
+        return {
+          status: "listed",
+          ...(await repository.listSetupResources(authorization.organizationId)),
+        };
+      } catch (error) {
+        return storageUnavailableOrThrow(error);
+      }
+    },
     async validateConfiguration(authorization, input) {
       try {
         const resolved = await resolveConfigurationDeployment(

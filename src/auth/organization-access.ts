@@ -7,12 +7,13 @@ import type {
 } from "../db/runtime/index.js";
 import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import type { InstanceSetup } from "../instance-setup/index.js";
+import type { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import type {
   OrganizationResourceReader,
   OrganizationResources,
@@ -92,6 +93,7 @@ interface OrganizationAccessOptions {
   policy: InstanceAuthPolicy;
   /** Decides whether a signed-out visitor sees the first-run welcome or ordinary sign-in. */
   instanceSetup: InstanceSetup;
+  appOnboarding: InstanceAppOnboarding;
   apiKeys: OrganizationApiKeys;
   cliCredentials: OrganizationCliCredentials;
   entitlements: EntitlementsService;
@@ -191,7 +193,11 @@ export class OrganizationAccess {
     } catch (error) {
       if (error instanceof ProductRequestError) return error.response();
       if (error instanceof EntitlementDenied) return entitlementDenialResponse(error.payload());
-      logger.error({ err: error }, "account organization request failed");
+      reportFailure(error, {
+        operation: "auth.organization.request",
+        component: "auth",
+        status: 500,
+      });
       return Response.json({ error: "request_failed" }, { status: 500 });
     }
   }
@@ -266,6 +272,16 @@ export class OrganizationAccess {
         ...(invitationId !== null && invitation === undefined
           ? { invitationUnavailable: true }
           : {}),
+      });
+    }
+
+    if (resolvedSession.isInstanceOperator && !(await this.options.appOnboarding.isComplete())) {
+      return Response.json({
+        status: "appSetupRequired",
+        account,
+        memberships: membershipSummaries(memberships),
+        organization: access.organization,
+        capabilities: access.capabilities,
       });
     }
 
@@ -678,9 +694,14 @@ export class OrganizationAccess {
     try {
       await this.options.onMembershipChanged?.(organizationId);
     } catch (error) {
-      logger.warn(
-        { err: error, organizationId },
-        "seat-usage notification after membership change failed",
+      reportFailure(
+        error,
+        {
+          operation: "billing.seat-usage.notify",
+          component: "billing",
+          organizationId,
+        },
+        { kind: "upstreamUnavailable" },
       );
     }
   }

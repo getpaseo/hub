@@ -16,12 +16,11 @@ const requiredInputs = {
 describe("provider-neutral message invocation parser", () => {
   it.each([
     {
-      name: "removes the mention boundary and leading whitespace",
+      name: "parses after the mention without changing the prompt",
       message: "  @Paseo   repo=hub investigate",
       mention: "@Paseo",
       expected: {
-        rawMessage: "  @Paseo   repo=hub investigate",
-        prompt: "investigate",
+        prompt: "  @Paseo   repo=hub investigate",
         inputs: { repo: "hub", agent: "codex" },
       },
     },
@@ -29,7 +28,6 @@ describe("provider-neutral message invocation parser", () => {
       name: "accepts zero inputs",
       message: "investigate the failed sync",
       expected: {
-        rawMessage: "investigate the failed sync",
         prompt: "investigate the failed sync",
         inputs: { agent: "codex" },
       },
@@ -38,8 +36,7 @@ describe("provider-neutral message invocation parser", () => {
       name: "accepts multiple consecutive inputs",
       message: "repo=hub agent=opus investigate",
       expected: {
-        rawMessage: "repo=hub agent=opus investigate",
-        prompt: "investigate",
+        prompt: "repo=hub agent=opus investigate",
         inputs: { repo: "hub", agent: "opus" },
       },
     },
@@ -47,8 +44,7 @@ describe("provider-neutral message invocation parser", () => {
       name: "preserves whitespace in the prompt remainder",
       message: "repo=hub   investigate   the sync  ",
       expected: {
-        rawMessage: "repo=hub   investigate   the sync  ",
-        prompt: "investigate   the sync  ",
+        prompt: "repo=hub   investigate   the sync  ",
         inputs: { repo: "hub", agent: "codex" },
       },
     },
@@ -57,7 +53,6 @@ describe("provider-neutral message invocation parser", () => {
       message: "@PaseoBot repo=hub investigate",
       mention: "@Paseo",
       expected: {
-        rawMessage: "@PaseoBot repo=hub investigate",
         prompt: "@PaseoBot repo=hub investigate",
         inputs: { agent: "codex" },
       },
@@ -67,7 +62,6 @@ describe("provider-neutral message invocation parser", () => {
       message: "request @Paseo repo=hub investigate",
       mention: "@Paseo",
       expected: {
-        rawMessage: "request @Paseo repo=hub investigate",
         prompt: "request @Paseo repo=hub investigate",
         inputs: { agent: "codex" },
       },
@@ -76,7 +70,6 @@ describe("provider-neutral message invocation parser", () => {
       name: "stops at an undeclared key and preserves the entire remainder",
       message: "unknown=value repo=hub investigate",
       expected: {
-        rawMessage: "unknown=value repo=hub investigate",
         prompt: "unknown=value repo=hub investigate",
         inputs: { agent: "codex" },
       },
@@ -92,32 +85,41 @@ describe("provider-neutral message invocation parser", () => {
     {
       name: "invalid choice",
       message: "repo=unknown investigate",
-      expectedPrompt: "investigate",
+      expectedPrompt: "repo=unknown investigate",
       reason: /repo.*choice/iu,
     },
     {
       name: "duplicate key",
       message: "repo=hub repo=paseo investigate",
-      expectedPrompt: "investigate",
+      expectedPrompt: "repo=hub repo=paseo investigate",
       reason: /duplicate.*repo/iu,
     },
-  ])("strips the $name control token from the clean prompt", (example) => {
+  ])("preserves the complete prompt after a $name control-token rejection", (example) => {
     const result = parseInvocation(example.message, inputs);
     assert.equal(result.status, "rejected");
     if (result.status === "rejected") {
       assert.equal(result.prompt, example.expectedPrompt);
       assert.match(result.reason, example.reason);
-      assert.equal(result.rawMessage, example.message);
       assert.equal(typeof result.rejection.code, "string");
     }
   });
 
   it.each([
-    ["required", "repo=hub investigate", "investigate", /required input.*dry/iu],
-    ["invalid choice", "repo=other investigate", "investigate", /repo.*choice/iu],
-    ["invalid number", "count=not-a-number investigate", "investigate", /count.*number/iu],
-    ["invalid boolean", "dry=sometimes investigate", "investigate", /dry.*boolean/iu],
-    ["duplicate key", "repo=hub repo=paseo investigate", "investigate", /duplicate.*repo/iu],
+    ["required", "repo=hub investigate", "repo=hub investigate", /required input.*dry/iu],
+    ["invalid choice", "repo=other investigate", "repo=other investigate", /repo.*choice/iu],
+    [
+      "invalid number",
+      "count=not-a-number investigate",
+      "count=not-a-number investigate",
+      /count.*number/iu,
+    ],
+    ["invalid boolean", "dry=sometimes investigate", "dry=sometimes investigate", /dry.*boolean/iu],
+    [
+      "duplicate key",
+      "repo=hub repo=paseo investigate",
+      "repo=hub repo=paseo investigate",
+      /duplicate.*repo/iu,
+    ],
   ] as const)("rejects %s values before execution", (_name, message, expectedPrompt, error) => {
     const result = parseInvocation(
       message,
@@ -133,7 +135,6 @@ describe("provider-neutral message invocation parser", () => {
   it("does not implement a delimiter grammar", () => {
     assert.deepEqual(parseInvocation("-- repo=hub investigate", inputs), {
       status: "accepted",
-      rawMessage: "-- repo=hub investigate",
       prompt: "-- repo=hub investigate",
       inputs: { agent: "codex" },
     });

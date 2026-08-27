@@ -1,9 +1,9 @@
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
-import { logger } from "../../../logger.js";
 import * as schema from "../../schema.js";
 import { DatabaseUnavailableError, toDatabaseError } from "../../errors.js";
 import { TransactionRollback } from "../index.js";
@@ -17,9 +17,10 @@ import type {
   TransactionHandle,
 } from "../index.js";
 import { postgresLocks } from "../locks/index.js";
+import { runtimeFile } from "../../../runtime-files.js";
 
 const QUERY_DEADLINE_MS = 3_000;
-const MIGRATIONS_FOLDER = join(process.cwd(), "drizzle");
+const MIGRATIONS_FOLDER = runtimeFile("drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
 
 export async function createPostgresRuntime(
@@ -55,7 +56,14 @@ class PostgresRuntime implements DatabaseRuntime {
         await connection.query("commit");
         return result;
       } catch (error) {
-        await connection.query("rollback").catch(() => undefined);
+        try {
+          await connection.query("rollback");
+        } catch (rollbackError) {
+          reportFailure(rollbackError, {
+            operation: "database.postgres.transaction.rollback",
+            component: "database",
+          });
+        }
         // The rollback value originated in this same generic transaction callback.
         // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
         if (error instanceof TransactionRollback) return error.result as T;
@@ -138,7 +146,9 @@ export function createPool(connectionString: string): Pool {
     statement_timeout: QUERY_DEADLINE_MS,
   };
   const pool = new Pool(config);
-  pool.on("error", (error) => logger.error({ err: error }, "PostgreSQL pool client error"));
+  pool.on("error", (error) =>
+    reportFailure(error, { operation: "database.postgres.pool", component: "database" }),
+  );
   return pool;
 }
 

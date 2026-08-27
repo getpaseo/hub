@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import jwt from "jsonwebtoken";
 import { Octokit } from "octokit";
 import { z } from "zod";
@@ -48,16 +47,15 @@ export interface GitHubAuth {
 }
 
 interface CreateGitHubAuthOptions {
-  appId?: string;
-  privateKey?: string;
+  appId: string;
+  privateKey: string;
   fetch?: typeof fetch;
   now?: () => number;
 }
 
-export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubAuth {
+export function createGitHubAuth(options: CreateGitHubAuthOptions): GitHubAuth {
   const installationTokenCache = new Map<number, InstallationTokenCacheEntry>();
   const appBotIdentityCache = new Map<string, Promise<GitHubAppBotIdentity>>();
-  let cachedPrivateKey: string | null = null;
   const now = options.now ?? Date.now;
 
   async function getInstallation(installationId: number): Promise<GitHubInstallation | undefined> {
@@ -191,8 +189,8 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
   }
 
   async function createAppJwt(): Promise<string> {
-    const appId = options.appId ?? getAppId();
-    const privateKey = await getPrivateKey();
+    const appId = options.appId;
+    const privateKey = options.privateKey;
     const nowSeconds = Math.floor(now() / 1000);
 
     return jwt.sign(
@@ -206,23 +204,6 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions = {}): GitHubA
         algorithm: "RS256",
       },
     );
-  }
-
-  async function getPrivateKey(): Promise<string> {
-    if (cachedPrivateKey !== null) {
-      return cachedPrivateKey;
-    }
-
-    const inlineKey = options.privateKey ?? process.env["GITHUB_APP_PRIVATE_KEY"];
-
-    if (inlineKey !== undefined && inlineKey.length > 0) {
-      cachedPrivateKey = inlineKey;
-      return cachedPrivateKey;
-    }
-
-    cachedPrivateKey = await readFile(getPrivateKeyPath(), "utf8");
-
-    return cachedPrivateKey;
   }
 
   return {
@@ -268,24 +249,4 @@ function repositoryName(repository: string, accountLogin: string): string {
 function hasHttpStatus(error: unknown, status: number): boolean {
   if (error === null || typeof error !== "object") return false;
   return Reflect.get(error, "status") === status;
-}
-
-function getAppId(): string {
-  const appId = process.env["GITHUB_APP_ID"];
-
-  if (appId === undefined || appId.length === 0) {
-    throw new Error("GITHUB_APP_ID is required");
-  }
-
-  return appId;
-}
-
-function getPrivateKeyPath(): string {
-  const privateKeyPath = process.env["GITHUB_APP_PRIVATE_KEY_PATH"];
-
-  if (privateKeyPath === undefined || privateKeyPath.length === 0) {
-    throw new Error("GITHUB_APP_PRIVATE_KEY_PATH is required");
-  }
-
-  return privateKeyPath;
 }

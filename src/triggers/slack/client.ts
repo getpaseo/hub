@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
@@ -39,6 +39,7 @@ const SlackUserInfoSchema = SlackApiResponseSchema.extend({
 });
 const SLACK_API_TIMEOUT_MS = 10_000;
 const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
+const SLACK_THREAD_CONTEXT_LIMIT = 50;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -178,7 +179,8 @@ export function createSlackBotClient(options: {
     beforeTs: string;
   }): Promise<SlackThreadReadResult> {
     let cursor: string | undefined;
-    let selected: SlackThreadMessage[] = [];
+    let root: SlackThreadMessage | undefined;
+    let selectedReplies: SlackThreadMessage[] = [];
     const seenCursors = new Set<string>();
     let complete = true;
     let pagesRead = 0;
@@ -197,24 +199,25 @@ export function createSlackBotClient(options: {
         );
         if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
       } catch (error) {
-        if (selected.length === 0) throw error;
-        logger.warn(
-          {
-            err: error,
-            teamId: input.teamId,
-            channelId: input.channelId,
-            threadTs: input.threadTs,
-            pagesRead,
-          },
-          "Slack thread history hydration incomplete",
+        if (root === undefined && selectedReplies.length === 0) throw error;
+        reportFailure(
+          error,
+          { operation: "slack.thread.history.page", component: "providers", provider: "slack" },
+          { diagnostic: { teamId: input.teamId, channelId: input.channelId, pagesRead } },
         );
         complete = false;
         break;
       }
-      selected = [...selected, ...(result.messages ?? []).map(normalizeThreadMessage)]
-        .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0)
+      const page = (result.messages ?? [])
+        .map(normalizeThreadMessage)
+        .filter((message) => compareSlackTs(message.ts, input.beforeTs) < 0);
+      root ??= page.find((message) => message.ts === input.threadTs);
+      selectedReplies = [
+        ...selectedReplies,
+        ...page.filter((message) => message.ts !== input.threadTs),
+      ]
         .sort((left, right) => compareSlackTs(right.ts, left.ts))
-        .slice(0, 50);
+        .slice(0, SLACK_THREAD_CONTEXT_LIMIT - 1);
       pagesRead += 1;
       const next = result.response_metadata?.next_cursor;
       cursor = next === undefined || next.length === 0 ? undefined : next;
@@ -230,8 +233,9 @@ export function createSlackBotClient(options: {
       }
     }
 
+    if (root === undefined) throw new Error("Slack thread root unavailable");
     return {
-      messages: selected.sort((left, right) => compareSlackTs(left.ts, right.ts)),
+      messages: [root, ...selectedReplies.sort((left, right) => compareSlackTs(left.ts, right.ts))],
       complete,
     };
   }

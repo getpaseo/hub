@@ -41,6 +41,11 @@ describe("provider connection facades PostgreSQL authority", () => {
     database = await createDatabase(postgres.getConnectionUri());
     pool = await createPostgresPool(postgres.getConnectionUri());
     await seedAccount(pool, "acme", "owner");
+    await pool.query(
+      `insert into runtime_provider_activation
+         (provider, provider_application_id, configuration_version)
+       values ('github', '42', 0), ('discord', '900', 0)`,
+    );
     auth = new ConnectionAuth(accessFor("acme", "owner"));
     github = new TestGitHub();
     discord = new TestDiscord();
@@ -70,7 +75,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert(callbackResults.every((value): value is string => value !== null));
     assert.deepEqual(
       callbackResults.sort((left, right) => left.localeCompare(right)),
-      ["connection_unavailable", "github_connected"],
+      ["connection_invalid", "github_connected"],
     );
 
     const discordStart = await start(connections, "discord");
@@ -119,21 +124,43 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.deepEqual(discord.leftGuilds, ["9001"]);
   });
 
+  it("returns provider-specific cancellation results from the attempt's trusted origin", async () => {
+    const githubStart = await start(connections, "github");
+    const githubState = await completeSetup(connections, githubStart.state, 42);
+    const githubCancelled = await connectionAction(
+      connections,
+      request(`/api/integrations/github/callback?state=${githubState}&error=access_denied`),
+      "github",
+      "callback",
+    );
+    assert.equal(result(githubCancelled), "github_cancelled");
+
+    const discordStart = await start(connections, "discord");
+    const discordCancelled = await connectionAction(
+      connections,
+      request(`/api/integrations/discord/callback?state=${discordStart.state}&error=access_denied`),
+      "discord",
+      "callback",
+    );
+    assert.equal(result(discordCancelled), "discord_cancelled");
+    assert.deepEqual(await resolutions(connections), {
+      github: { status: "unbound" },
+      discord: { status: "unbound" },
+    });
+  });
+
   it("fails closed for role changes, expiry, active-organization changes, and cross-tenant conflicts", async () => {
     const expired = await start(connections, "github");
     await pool.query(
       `update organization_connection_attempts set expires_at = now() - interval '1 second'`,
     );
-    assert.equal(
-      result(await setupCallback(connections, expired.state, 42)),
-      "connection_unavailable",
-    );
+    assert.equal(result(await setupCallback(connections, expired.state, 42)), "connection_invalid");
 
     const downgraded = await start(connections, "github");
     await pool.query(`update member set role = 'member' where organization_id = 'acme'`);
     assert.equal(
       result(await setupCallback(connections, downgraded.state, 42)),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       (await connectionAction(connections, request("/start", "POST"), "discord", "start")).status,
@@ -156,7 +183,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     const orbitUserState = await completeSetup(connections, orbit.state, 42);
     assert.equal(
       result(await githubCallback(connections, orbitUserState, "code")),
-      "connection_unavailable",
+      "connection_conflict",
     );
     assert.deepEqual(await resolution(connections, "github", "42"), {
       status: "active",
@@ -169,7 +196,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       await rejectGitHubCallbackAfter(database, pool, "signed-out", async () => {
         await pool.query(`delete from session where id = 'session-signed-out'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "expired-session", async () => {
@@ -177,19 +204,19 @@ describe("provider connection facades PostgreSQL authority", () => {
           `update session set expires_at = now() - interval '1 second' where id = 'session-expired-session'`,
         );
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "role-downgrade", async () => {
         await pool.query(`update member set role = 'member' where id = 'member-role-downgrade'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.equal(
       await rejectGitHubCallbackAfter(database, pool, "membership-delete", async () => {
         await pool.query(`delete from member where id = 'member-membership-delete'`);
       }),
-      "connection_unavailable",
+      "connection_invalid",
     );
 
     const connectionsCount = await pool.query<{ count: number }>(
@@ -218,7 +245,7 @@ describe("provider connection facades PostgreSQL authority", () => {
         },
         () => setupCallback(connections, attemptSetup.state, 42),
       ),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.deepEqual(await attemptAuthority(pool, attemptId), {
       phase: "github_setup",
@@ -244,7 +271,7 @@ describe("provider connection facades PostgreSQL authority", () => {
         },
         () => setupCallback(connections, sessionSetup.state, 42),
       ),
-      "connection_unavailable",
+      "connection_invalid",
     );
     assert.deepEqual(await attemptAuthority(pool, sessionAttemptId), {
       phase: "github_setup",
@@ -370,7 +397,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     ]);
     assert.deepEqual(
       outcomes.map(result).sort((left, right) => String(left).localeCompare(String(right))),
-      ["connection_unavailable", "github_connected"],
+      ["connection_conflict", "github_connected"],
     );
     assert.equal(
       (
@@ -948,10 +975,12 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
         applicationBaseUrl: "https://hub.example.test",
         publicBaseUrl: "https://hub.example.test",
         configuration: {
+          appId: "42",
           appSlug: "paseo",
           clientId: "client",
           clientSecret: "secret",
           webhookSecret: TEST_WEBHOOK_SECRET,
+          privateKey: "test-private-key",
         },
         connectionClient: options.github,
       }),

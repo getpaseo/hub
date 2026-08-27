@@ -4,7 +4,7 @@ import type {
   AttachmentCapabilityRegistry,
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import {
   type TriggerProvider,
   type TriggerProviderMatch,
@@ -199,13 +199,15 @@ export function createSlackTriggerProvider(options: {
           beforeTs: locator.before.ts,
         });
       } catch (error) {
-        logger.warn(
+        reportFailure(
+          error,
+          { operation: "slack.thread.hydrate", component: "triggers", provider: "slack" },
           {
-            err: error,
-            teamId: launch.triggerContext.event.slack.team.id,
-            channelId: locator.channel.id,
+            diagnostic: {
+              teamId: launch.triggerContext.event.slack.team.id,
+              channelId: locator.channel.id,
+            },
           },
-          "Slack thread context hydration failed",
         );
         return { slack: { thread: { status: "unavailable", messages: [] } } };
       }
@@ -278,9 +280,10 @@ async function enrichSlackAuthor(
     });
     return username === undefined ? event : { ...event, author: { ...event.author, username } };
   } catch (error) {
-    logger.warn(
-      { err: error, teamId: event.teamId, userId: event.author.id },
-      "Slack author username lookup failed",
+    reportFailure(
+      error,
+      { operation: "slack.user.lookup", component: "triggers", provider: "slack" },
+      { diagnostic: { teamId: event.teamId, userId: event.author.id } },
     );
     return event;
   }
@@ -456,7 +459,11 @@ async function addReactionSafely(
       name,
     });
   } catch (error) {
-    logger.warn({ err: error, teamId: event.teamId, name }, "Slack reaction failed");
+    reportFailure(
+      error,
+      { operation: "slack.reaction.add", component: "triggers", provider: "slack" },
+      { diagnostic: { teamId: event.teamId, reaction: name } },
+    );
   }
 }
 
@@ -474,6 +481,10 @@ async function removeReactionSafely(
       name,
     });
   } catch (error) {
-    logger.warn({ err: error, teamId: event.teamId, name }, "Slack reaction cleanup failed");
+    reportFailure(
+      error,
+      { operation: "slack.reaction.cleanup", component: "triggers", provider: "slack" },
+      { diagnostic: { teamId: event.teamId, reaction: name } },
+    );
   }
 }

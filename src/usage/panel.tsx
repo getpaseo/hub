@@ -56,7 +56,7 @@ export function OrganizationUsagePanel() {
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "We couldn't load this organization's usage."}
+            : "Hub did not receive the usage snapshot. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );

@@ -1,15 +1,60 @@
 import {
   Client,
+  DiscordAPIError,
   GatewayIntentBits,
+  RESTJSONErrorCodes,
   type GuildBasedChannel,
   type Message,
   type TextBasedChannel,
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
-import { logger } from "../../logger.js";
+import { reportFailure } from "../../failures/index.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import { NormalizedDiscordContextMessageSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage } from "./events.js";
+
+type DiscordGatewayFailure =
+  | "authenticationFailed"
+  | "invalidShard"
+  | "shardingRequired"
+  | "invalidApiVersion"
+  | "invalidIntents"
+  | "disallowedIntents";
+
+type DiscordGatewayFailureCode = "credentialsRejected" | "permissionMissing" | "internal";
+
+const UNRECOVERABLE_GATEWAY_FAILURES = new Map<
+  number,
+  { failure: DiscordGatewayFailure; code: DiscordGatewayFailureCode }
+>([
+  [4004, { failure: "authenticationFailed", code: "credentialsRejected" }],
+  [4010, { failure: "invalidShard", code: "internal" }],
+  [4011, { failure: "shardingRequired", code: "internal" }],
+  [4012, { failure: "invalidApiVersion", code: "internal" }],
+  [4013, { failure: "invalidIntents", code: "internal" }],
+  [4014, { failure: "disallowedIntents", code: "permissionMissing" }],
+]);
+
+class DiscordGatewayError extends Error {
+  override readonly name = "DiscordGatewayError";
+
+  constructor(
+    readonly gatewayCloseCode: number,
+    readonly gatewayFailure: DiscordGatewayFailure,
+    readonly code: DiscordGatewayFailureCode,
+    options?: ErrorOptions,
+  ) {
+    super("Discord gateway rejected the connection", options);
+  }
+}
+
+function discordGatewayError(closeCode: number, cause: unknown): DiscordGatewayError | undefined {
+  const classification = UNRECOVERABLE_GATEWAY_FAILURES.get(closeCode);
+  if (classification === undefined) return undefined;
+  return new DiscordGatewayError(closeCode, classification.failure, classification.code, {
+    cause,
+  });
+}
 
 export interface DiscordReactionInput {
   channelId: string;
@@ -57,6 +102,12 @@ type DiscordSendableChannel = TextBasedChannel & {
   send: (...args: unknown[]) => Promise<unknown>;
 };
 
+type DiscordReadableThread = TextBasedChannel & {
+  fetchStarterMessage(): Promise<Message | null>;
+};
+
+const DISCORD_THREAD_CONTEXT_LIMIT = 50;
+
 export interface CreateDiscordBotClientOptions {
   token: string;
   clientId?: string;
@@ -81,14 +132,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
   client.on("messageCreate", (message: Message) => {
     void Promise.all(Array.from(handlers, (handler) => handler(message))).catch(
       (error: unknown) => {
-        logger.error(
+        reportFailure(
+          error,
+          { operation: "discord.event.handoff", component: "triggers", provider: "discord" },
           {
-            err: error,
-            deliveryId: `discord-${message.id}`,
-            guildId: message.guildId,
-            channelId: message.channelId,
+            scrubValues: [options.token],
+            diagnostic: {
+              deliveryId: `discord-${message.id}`,
+              guildId: message.guildId,
+              channelId: message.channelId,
+            },
           },
-          "Discord event handoff failed",
         );
       },
     );
@@ -99,7 +153,13 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       Array.from(guildDeleteHandlers, (handler) =>
         handler({ id: guildId, unavailable: !guild.available }),
       ),
-    ).catch((error: unknown) => logger.error({ err: error }, "discord guildDelete handler failed"));
+    ).catch((error: unknown) =>
+      reportFailure(
+        error,
+        { operation: "discord.guild-delete.handoff", component: "triggers", provider: "discord" },
+        { scrubValues: [options.token], diagnostic: { guildId } },
+      ),
+    );
   });
 
   return {
@@ -107,8 +167,21 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       if (started) {
         return;
       }
-      await client.login(options.token);
-      started = true;
+      let gatewayCloseCode: number | undefined;
+      const observeGatewayClose = (event: { code: number }) => {
+        gatewayCloseCode = event.code;
+      };
+      client.on("shardDisconnect", observeGatewayClose);
+      try {
+        await client.login(options.token);
+        started = true;
+      } catch (error) {
+        const classified =
+          gatewayCloseCode === undefined ? undefined : discordGatewayError(gatewayCloseCode, error);
+        throw classified ?? error;
+      } finally {
+        client.off("shardDisconnect", observeGatewayClose);
+      }
     },
     async stop() {
       if (!started) {
@@ -125,17 +198,23 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       return DiscordSnowflakeSchema.parse(id);
     },
     async createReaction(input) {
-      const message = await fetchMessage(
-        client,
-        DiscordSnowflakeSchema.parse(input.channelId),
-        DiscordSnowflakeSchema.parse(input.messageId),
-      );
-      await message.react(input.emoji);
+      await ignoreDeletedMessage(async () => {
+        const message = await fetchMessage(
+          client,
+          DiscordSnowflakeSchema.parse(input.channelId),
+          DiscordSnowflakeSchema.parse(input.messageId),
+        );
+        await message.react(input.emoji);
+      });
     },
     async deleteOwnReaction(input) {
       const channelId = DiscordSnowflakeSchema.parse(input.channelId);
       const messageId = DiscordSnowflakeSchema.parse(input.messageId);
-      await client.rest.delete(Routes.channelMessageOwnReaction(channelId, messageId, input.emoji));
+      await ignoreDeletedMessage(async () => {
+        await client.rest.delete(
+          Routes.channelMessageOwnReaction(channelId, messageId, input.emoji),
+        );
+      });
     },
     async sendChannelMessage(input) {
       const channelId = DiscordSnowflakeSchema.parse(input.threadId ?? input.channelId);
@@ -167,11 +246,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       if (channel === null || !isThreadChannel(channel)) {
         throw new Error(`discord channel is not a readable thread: ${input.channelId}`);
       }
-      const page = await channel.messages.fetch({ before: beforeMessageId, limit: 50 });
-      return Array.from(page.values())
-        .filter((message) => message.id !== beforeMessageId)
+      const [starter, page] = await Promise.all([
+        channel.fetchStarterMessage(),
+        channel.messages.fetch({ before: beforeMessageId, limit: DISCORD_THREAD_CONTEXT_LIMIT }),
+      ]);
+      if (starter === null) throw new Error("Discord thread starter unavailable");
+      const replies = Array.from(page.values())
+        .filter((message) => message.id !== beforeMessageId && message.id !== starter.id)
         .map(normalizeContextMessage)
-        .sort(compareThreadMessages);
+        .sort(compareThreadMessages)
+        .slice(-(DISCORD_THREAD_CONTEXT_LIMIT - 1));
+      return [normalizeContextMessage(starter), ...replies];
     },
     onMessageCreate(handler) {
       handlers.add(handler);
@@ -184,6 +269,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
       return () => guildDeleteHandlers.delete(handler);
     },
   };
+}
+
+async function ignoreDeletedMessage(operation: () => Promise<void>): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMessage) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function resolveReplyDestination(
@@ -243,8 +339,13 @@ function isTextChannel(channel: GuildBasedChannel | TextBasedChannel): channel i
 
 function isThreadChannel(
   channel: GuildBasedChannel | TextBasedChannel,
-): channel is TextBasedChannel & { isThread(): boolean } {
-  return isTextChannel(channel) && typeof channel.isThread === "function" && channel.isThread();
+): channel is DiscordReadableThread {
+  return (
+    isTextChannel(channel) &&
+    typeof channel.isThread === "function" &&
+    channel.isThread() &&
+    typeof Reflect.get(channel, "fetchStarterMessage") === "function"
+  );
 }
 
 function isSendableChannel(

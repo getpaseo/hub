@@ -56,6 +56,7 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
   ConnectionStartAuthority,
   ConnectionProvider,
   ReadConnectionAttemptInput,
@@ -467,8 +468,8 @@ class PgDatabase implements Database {
           `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, $9, '{}'::jsonb, $10, $11, $12, null, null, $13)
+            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
           [
@@ -478,7 +479,6 @@ class PgDatabase implements Database {
             input.configurationRevisionId,
             input.providerEventReceiptId,
             input.configuredTriggerName,
-            input.rawPrompt,
             input.prompt,
             input.inputs,
             input.triggerContext,
@@ -534,9 +534,9 @@ class PgDatabase implements Database {
           `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            raw_prompt, prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
+            prompt, inputs, values, trigger_context, output_context, deadline_at, rejection, created_at, completed_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'rejected', 'rejected',
-                 $7, $8, $9, '{}'::jsonb, $10, $11, null, $13, $12, $12)
+                 $7, $8, '{}'::jsonb, $9, $10, null, $12, $11, $11)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
           [
@@ -546,7 +546,6 @@ class PgDatabase implements Database {
             input.configurationRevisionId,
             input.providerEventReceiptId,
             input.configuredTriggerName,
-            input.rawPrompt,
             input.prompt,
             input.inputs,
             input.triggerContext,
@@ -1931,7 +1930,8 @@ class PgDatabase implements Database {
     const rows = await query<ProjectActivityRunListRow>(
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
-              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.delivery_id, receipts.signature_hash, receipts.provider_application_id,
+              receipts.provider_configuration_version, receipts.source, receipts.repo,
               receipts.received_at, receipts.dropped_reason
        from trigger_runs runs
        join provider_event_receipts receipts
@@ -1949,7 +1949,8 @@ class PgDatabase implements Database {
     const rows = await query<ProjectActivityRunRow>(
       this.pool,
       `select runs.*, receipts.provider, receipts.connection_id, receipts.resource_id,
-              receipts.delivery_id, receipts.signature_hash, receipts.source, receipts.repo,
+              receipts.delivery_id, receipts.signature_hash, receipts.provider_application_id,
+              receipts.provider_configuration_version, receipts.source, receipts.repo,
               receipts.payload, receipts.received_at, receipts.dropped_reason,
               receipts.accepted_routes
        from trigger_runs runs
@@ -3361,12 +3362,13 @@ class PgDatabase implements Database {
       account_login: string;
       account_type: string;
       status: "active" | "suspended";
+      provider_application_id: string | null;
     }>(
       this.pool,
       `select connection.id, connection.organization_id, connection.slug,
               connection.installation_id,
               connection.account_id, connection.account_login, connection.account_type,
-              connection.status
+              connection.status, connection.provider_application_id
        from github_connections connection
        where connection.organization_id = $1
        order by connection.account_login, connection.id`,
@@ -3379,9 +3381,10 @@ class PgDatabase implements Database {
         slug: string;
         guild_id: string;
         guild_name: string;
+        provider_application_id: string | null;
       }>(
         this.pool,
-        `select id, organization_id, slug, guild_id, guild_name
+        `select id, organization_id, slug, guild_id, guild_name, provider_application_id
          from discord_connections where organization_id = $1
          order by guild_name, id`,
         [organizationId],
@@ -3395,9 +3398,11 @@ class PgDatabase implements Database {
         bot_user_id: string;
         bot_access_token: string;
         scopes: unknown;
+        provider_application_id: string | null;
       }>(
         this.pool,
-        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes
+        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes,
+                provider_application_id
          from slack_connections where organization_id = $1
          order by team_name, id`,
         [organizationId],
@@ -3413,6 +3418,7 @@ class PgDatabase implements Database {
         accountLogin: row.account_login,
         accountType: row.account_type,
         status: row.status,
+        providerApplicationId: row.provider_application_id,
       })),
       discord: discord.rows.map((row) => ({
         id: row.id,
@@ -3420,6 +3426,7 @@ class PgDatabase implements Database {
         slug: row.slug,
         guildId: row.guild_id,
         guildName: row.guild_name,
+        providerApplicationId: row.provider_application_id,
       })),
       slack: slack.rows.map((row) => ({
         id: row.id,
@@ -3430,6 +3437,7 @@ class PgDatabase implements Database {
         botUserId: row.bot_user_id,
         botAccessToken: row.bot_access_token,
         scopes: stringArray(row.scopes),
+        providerApplicationId: row.provider_application_id,
       })),
     };
   }
@@ -3606,6 +3614,10 @@ class PgDatabase implements Database {
     return this.connections.startAttempt(input);
   }
 
+  findConnectionAttemptConfiguration(stateVerifier: string) {
+    return this.connections.findAttemptConfiguration(stateVerifier);
+  }
+
   readConnectionAttempt(input: ReadConnectionAttemptInput) {
     return this.connections.readAttempt(input);
   }
@@ -3628,6 +3640,10 @@ class PgDatabase implements Database {
 
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void> {
     return this.connections.bindSlack(input);
+  }
+
+  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void> {
+    return this.connections.completeSlackProviderApplication(input);
   }
 
   disconnectConnection(
@@ -3861,6 +3877,8 @@ export interface ProviderEventReceiptRow extends QueryRow {
   resource_id: string | null;
   delivery_id: string;
   signature_hash: string | null;
+  provider_application_id: string | null;
+  provider_configuration_version: number | null;
   source: string;
   repo: string | null;
   payload: unknown;
@@ -3878,7 +3896,6 @@ interface TriggerRunRow extends QueryRow {
   configured_trigger_name: string;
   outcome: TriggerRunRecord["outcome"];
   status: TriggerRunRecord["status"];
-  raw_prompt: string;
   prompt: string;
   inputs: unknown;
   values: unknown;
@@ -3902,6 +3919,8 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   resource_id: string | null;
   delivery_id: string;
   signature_hash: string | null;
+  provider_application_id: string | null;
+  provider_configuration_version: number | null;
   source: string;
   repo: string | null;
   payload: unknown;
@@ -3953,7 +3972,6 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     configurationRevisionId: row.configuration_revision_id,
     providerEventReceiptId: row.provider_event_receipt_id,
     configuredTriggerName: row.configured_trigger_name,
-    rawPrompt: row.raw_prompt,
     prompt: row.prompt,
     inputs: parseInvocationInputs(row.inputs),
     values: row.values,

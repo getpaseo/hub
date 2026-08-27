@@ -19,6 +19,8 @@ export interface ProviderEventReceiptRecord {
   resourceId: string | null;
   deliveryId: string;
   signatureHash: string | null;
+  providerApplicationId: string | null;
+  providerConfigurationVersion: number | null;
   source: string;
   repo: string | null;
   payload: unknown;
@@ -348,8 +350,22 @@ export interface ConnectionAttemptRecord {
   sessionId: string;
   candidateExternalId: string | null;
   pkceVerifier: string | null;
+  configurationVersion: number;
+  providerApplicationId: string | null;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
   expiresAt: Date;
   consumedAt: Date | null;
+}
+
+export interface ConnectionAttemptConfigurationSnapshot {
+  configurationVersion: number;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
 }
 
 export interface GitHubConnectionRecord {
@@ -361,6 +377,7 @@ export interface GitHubConnectionRecord {
   accountLogin: string;
   accountType: string;
   status: "active" | "suspended";
+  providerApplicationId: string | null;
 }
 
 export interface DiscordConnectionRecord {
@@ -369,6 +386,7 @@ export interface DiscordConnectionRecord {
   slug: string;
   guildId: string;
   guildName: string;
+  providerApplicationId: string | null;
 }
 
 export interface SlackConnectionRecord {
@@ -380,6 +398,7 @@ export interface SlackConnectionRecord {
   botUserId: string;
   botAccessToken: string;
   scopes: string[];
+  providerApplicationId: string | null;
 }
 
 export interface StartConnectionAttemptInput {
@@ -387,6 +406,12 @@ export interface StartConnectionAttemptInput {
   stateVerifier: string;
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
+  configurationVersion: number;
+  providerApplicationId: string;
+  callbackOrigin: string;
+  configurationSnapshot: unknown;
+  expectedConfigurationVersion: number | null;
+  activateConfiguration: boolean;
 }
 
 export interface ReadConnectionAttemptInput {
@@ -402,6 +427,7 @@ export interface AdvanceGitHubConnectionAttemptInput extends ReadConnectionAttem
 }
 
 export interface BindGitHubConnectionInput extends ReadConnectionAttemptInput {
+  providerApplicationId: string;
   installationId: number;
   accountId: string;
   accountLogin: string;
@@ -410,16 +436,27 @@ export interface BindGitHubConnectionInput extends ReadConnectionAttemptInput {
 }
 
 export interface BindDiscordConnectionInput extends ReadConnectionAttemptInput {
+  providerApplicationId: string;
   guildId: string;
   guildName: string;
 }
 
 export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
+  providerApplicationId: string;
   teamId: string;
   teamName: string;
   botUserId: string;
   botAccessToken: string;
   scopes: string[];
+}
+
+export interface CompleteSlackProviderApplicationInput extends BindSlackConnectionInput {
+  providerConfiguration: {
+    configuration: unknown;
+    identity: { id: string };
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+  };
 }
 
 export type DisconnectConnectionResult =
@@ -433,7 +470,7 @@ export type DisconnectConnectionResult =
 
 export type GitHubLifecycleIdentity = Omit<
   GitHubConnectionRecord,
-  "id" | "organizationId" | "installationId" | "slug"
+  "id" | "organizationId" | "installationId" | "slug" | "providerApplicationId"
 >;
 
 export interface InsertProviderEventInput {
@@ -479,6 +516,8 @@ export type ProviderEventAcceptance =
 export interface ProviderEventEvidence {
   deliveryId: string;
   signatureHash?: string | null;
+  providerApplicationId?: string | null;
+  providerConfigurationVersion?: number | null;
   source: string;
   repo?: string | null;
   payload: unknown;
@@ -561,7 +600,6 @@ interface TriggerRunEvidence {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values: unknown;
@@ -634,7 +672,6 @@ export interface CreateAcceptedTriggerRunInput {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values?: unknown;
@@ -652,7 +689,6 @@ export interface CreateRejectedTriggerRunInput {
   configurationRevisionId: string;
   providerEventReceiptId: string;
   configuredTriggerName: string;
-  rawPrompt: string;
   prompt: string;
   inputs: unknown;
   values?: unknown;
@@ -1345,12 +1381,16 @@ export interface Database {
   ): Promise<ProviderEventReceiptSummary[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
+  findConnectionAttemptConfiguration(
+    stateVerifier: string,
+  ): Promise<ConnectionAttemptConfigurationSnapshot | undefined>;
   readConnectionAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord>;
   consumeConnectionAttempt(input: ReadConnectionAttemptInput): Promise<void>;
   advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void>;
   bindGitHubConnection(input: BindGitHubConnectionInput): Promise<void>;
   bindDiscordConnection(input: BindDiscordConnectionInput): Promise<void>;
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
+  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
   disconnectConnection(
     provider: ConnectionProvider,
     connectionId: string,

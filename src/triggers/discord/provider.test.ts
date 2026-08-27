@@ -29,8 +29,7 @@ describe("Discord Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.deepEqual(match.invocation, {
       status: "accepted",
-      rawMessage: "<@900> repo=hub agent=opus investigate",
-      prompt: "investigate",
+      prompt: "<@900> repo=hub agent=opus investigate",
       inputs: { repo: "hub", agent: "opus" },
     });
   });
@@ -49,8 +48,34 @@ describe("Discord Phase 1 trigger provider", () => {
     )[0];
 
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
-    assert.equal(match.invocation.prompt, "investigate");
+    assert.equal(match.invocation.prompt, "<@900> run repo=hub investigate");
     assert.equal(match.invocation.inputs["repo"], "hub");
+  });
+
+  it("preserves the complete message when the mention is last", async () => {
+    const base = discordConfiguration();
+    const configuration = {
+      ...base,
+      triggers: [
+        {
+          ...base.triggers[0]!,
+          filters: { guild: "100", from_users: ["400"] },
+        },
+      ],
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+    const prompt = "Do the whole thing first <@900>";
+
+    const match = (
+      await provider.match(external(project.id, revision.id, event({ content: prompt })))
+    )[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, prompt);
   });
 
   it("matches a literal one-step prompt and keeps the mention allowlist fail-closed", async () => {
@@ -98,6 +123,7 @@ describe("Discord Phase 1 trigger provider", () => {
       slug: "secondary",
       guildId: "100",
       guildName: "Secondary",
+      providerApplicationId: "discord-app",
     };
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [connection] });
@@ -489,7 +515,7 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 });
 
-async function activeConfiguration(rawConfiguration = discordConfiguration()) {
+async function activeConfiguration(rawConfiguration: unknown = discordConfiguration()) {
   return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
 }
 

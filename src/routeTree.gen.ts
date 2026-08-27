@@ -19,8 +19,10 @@ import { Route as TestSmokeRouteImport } from './routes/test/smoke'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
+import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
+import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -36,6 +38,7 @@ import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/int
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
+import { Route as ShellProjectsProjectSlugActivityRouteImport } from './routes/_shell/projects/$projectSlug/activity'
 import { Route as ShellOOrganizationSlugUsageRouteImport } from './routes/_shell/o/$organizationSlug/usage'
 import { Route as ShellOOrganizationSlugTeamRouteImport } from './routes/_shell/o/$organizationSlug/team'
 import { Route as ShellOOrganizationSlugProjectsRouteImport } from './routes/_shell/o/$organizationSlug/projects'
@@ -100,6 +103,11 @@ const ApiOpenapiDotjsonRoute = ApiOpenapiDotjsonRouteImport.update({
   path: '/api/openapi.json',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSplatRoute = ApiSplatRouteImport.update({
+  id: '/api/$',
+  path: '/api/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellOperatorRoute = ShellOperatorRouteImport.update({
   id: '/operator',
   path: '/operator',
@@ -108,6 +116,11 @@ const ShellOperatorRoute = ShellOperatorRouteImport.update({
 const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
   id: '/cli-login',
   path: '/cli-login',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellAppsRoute = ShellAppsRouteImport.update({
+  id: '/apps',
+  path: '/apps',
   getParentRoute: () => ShellRoute,
 } as any)
 const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
@@ -192,6 +205,12 @@ const AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute =
     id: '/agent-executions/$executionId/attachments/$attachmentId',
     path: '/agent-executions/$executionId/attachments/$attachmentId',
     getParentRoute: () => rootRouteImport,
+  } as any)
+const ShellProjectsProjectSlugActivityRoute =
+  ShellProjectsProjectSlugActivityRouteImport.update({
+    id: '/projects/$projectSlug/activity',
+    path: '/projects/$projectSlug/activity',
+    getParentRoute: () => ShellRoute,
   } as any)
 const ShellOOrganizationSlugUsageRoute =
   ShellOOrganizationSlugUsageRouteImport.update({
@@ -284,8 +303,10 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -307,6 +328,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -325,8 +347,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -348,6 +372,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -367,8 +392,10 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/operator': typeof ShellOperatorRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
@@ -391,6 +418,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/projects': typeof ShellOOrganizationSlugProjectsRouteWithChildren
   '/_shell/o/$organizationSlug/team': typeof ShellOOrganizationSlugTeamRoute
   '/_shell/o/$organizationSlug/usage': typeof ShellOOrganizationSlugUsageRoute
+  '/_shell/projects/$projectSlug/activity': typeof ShellProjectsProjectSlugActivityRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -412,8 +440,10 @@ export interface FileRouteTypes {
     | '/'
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -435,6 +465,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/projects'
     | '/o/$organizationSlug/team'
     | '/o/$organizationSlug/usage'
+    | '/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -453,8 +484,10 @@ export interface FileRouteTypes {
   to:
     | '/health'
     | '/webhook'
+    | '/apps'
     | '/cli-login'
     | '/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -476,6 +509,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/team'
     | '/o/$organizationSlug/usage'
+    | '/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -494,8 +528,10 @@ export interface FileRouteTypes {
     | '/_shell'
     | '/health'
     | '/webhook'
+    | '/_shell/apps'
     | '/_shell/cli-login'
     | '/_shell/operator'
+    | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
@@ -518,6 +554,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/projects'
     | '/_shell/o/$organizationSlug/team'
     | '/_shell/o/$organizationSlug/usage'
+    | '/_shell/projects/$projectSlug/activity'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -538,6 +575,7 @@ export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
+  ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
@@ -632,6 +670,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiOpenapiDotjsonRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/$': {
+      id: '/api/$'
+      path: '/api/$'
+      fullPath: '/api/$'
+      preLoaderRoute: typeof ApiSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/operator': {
       id: '/_shell/operator'
       path: '/operator'
@@ -644,6 +689,13 @@ declare module '@tanstack/react-router' {
       path: '/cli-login'
       fullPath: '/cli-login'
       preLoaderRoute: typeof ShellCliLoginRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/apps': {
+      id: '/_shell/apps'
+      path: '/apps'
+      fullPath: '/apps'
+      preLoaderRoute: typeof ShellAppsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/api/v1/cli-authorizations': {
@@ -750,6 +802,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/agent-executions/$executionId/attachments/$attachmentId'
       preLoaderRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_shell/projects/$projectSlug/activity': {
+      id: '/_shell/projects/$projectSlug/activity'
+      path: '/projects/$projectSlug/activity'
+      fullPath: '/projects/$projectSlug/activity'
+      preLoaderRoute: typeof ShellProjectsProjectSlugActivityRouteImport
+      parentRoute: typeof ShellRoute
     }
     '/_shell/o/$organizationSlug/usage': {
       id: '/_shell/o/$organizationSlug/usage'
@@ -898,6 +957,7 @@ const ShellOOrganizationSlugProjectsRouteWithChildren =
   )
 
 interface ShellRouteChildren {
+  ShellAppsRoute: typeof ShellAppsRoute
   ShellCliLoginRoute: typeof ShellCliLoginRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellIndexRoute: typeof ShellIndexRoute
@@ -908,9 +968,11 @@ interface ShellRouteChildren {
   ShellOOrganizationSlugProjectsRoute: typeof ShellOOrganizationSlugProjectsRouteWithChildren
   ShellOOrganizationSlugTeamRoute: typeof ShellOOrganizationSlugTeamRoute
   ShellOOrganizationSlugUsageRoute: typeof ShellOOrganizationSlugUsageRoute
+  ShellProjectsProjectSlugActivityRoute: typeof ShellProjectsProjectSlugActivityRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellAppsRoute: ShellAppsRoute,
   ShellCliLoginRoute: ShellCliLoginRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellIndexRoute: ShellIndexRoute,
@@ -923,6 +985,7 @@ const ShellRouteChildren: ShellRouteChildren = {
     ShellOOrganizationSlugProjectsRouteWithChildren,
   ShellOOrganizationSlugTeamRoute: ShellOOrganizationSlugTeamRoute,
   ShellOOrganizationSlugUsageRoute: ShellOOrganizationSlugUsageRoute,
+  ShellProjectsProjectSlugActivityRoute: ShellProjectsProjectSlugActivityRoute,
 }
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
@@ -945,6 +1008,7 @@ const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
+  ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,

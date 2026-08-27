@@ -15,7 +15,7 @@
 > [!WARNING]
 > Paseo Hub is in early development. Expect breaking changes and data loss. [Join the Paseo Discord](https://discord.gg/jz8T2uahpH) to learn more about the project.
 
-Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Connect the services where work arrives, describe environments and agents in `.paseo/hub.yml`, define triggers under `.paseo/workflows/`, and run them on the machines where your development environments already live.
+Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Connect the services where work arrives and run agents on the machines where your development environments already live.
 
 - **Your machines:** Hub dispatches to Paseo daemons on your laptop, devbox, or build server.
 - **Your configuration:** Keep triggers, environments, permissions, and prompts in version control.
@@ -28,6 +28,26 @@ Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Con
  Discord ┘                 └─ build server
 ```
 
+## Quick start
+
+You need Node.js and [Paseo installed and running](https://paseo.sh/docs).
+
+```sh
+npx @getpaseo/hub
+```
+
+Open the local URL printed by Hub. Create the operator account, then follow the browser setup to connect GitHub, Slack, or Discord. Slack Socket Mode works without a public URL.
+
+From the repository where agents should work, run:
+
+```sh
+paseo hub init
+```
+
+Choose the local Hub URL when prompted. The guided setup connects your daemon, uses the default project created during onboarding, detects the selected app connection, writes a safe starter workflow, validates it, and offers to deploy it.
+
+See the [Hub documentation](https://paseo.sh/docs/hub) for PostgreSQL, Docker, public URLs, environment-managed configuration, and production deployment.
+
 ## Develop locally
 
 You need Node.js and npm. A fresh checkout runs with an embedded database and no external services:
@@ -37,7 +57,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>. Hub stores the embedded database and its generated authentication secret in `.dev/paseo-hub` and keeps both across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
+Open <http://localhost:3000>. Hub stores the embedded database and its generated authentication secret under `$XDG_DATA_HOME/paseo-hub`, falling back to `~/.local/share/paseo-hub`, and keeps both across restarts. Set `PASEO_HUB_DATA_DIR` to use a different directory, or set `DATABASE_URL` to use PostgreSQL instead:
 
 ```sh
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/paseo_hub npm run dev
@@ -83,7 +103,7 @@ paseo hub connect https://hub.example.com
 
 The image is published as `ghcr.io/getpaseo/hub:latest`.
 
-See the [Hub documentation](https://paseo.sh/docs/hub) for provider setup, workflow configuration, Docker, and Fly deployment.
+See the [self-hosting guide](https://paseo.sh/docs/hub/self-hosting) for production deployment details.
 
 ## Provider options and Hub tools
 

@@ -6,9 +6,9 @@ import {
   MAX_PROMPT_PARTIAL_COUNT,
   MAX_PROMPT_PARTIAL_PATH_LENGTH,
 } from "../config/prompt-partial-limits.js";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
+import { respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
-import { logger } from "../logger.js";
+import { respondWithFailure } from "../failures/index.js";
 import { projectSlugSchema } from "../project-slug.js";
 import { isTenantRouteNotFoundError } from "./access.js";
 import { ProjectCommandError, projectCommandErrorCode } from "./command-error.js";
@@ -142,8 +142,12 @@ async function read<T>(
   try {
     return respondOk(await operation(await requireDashboard()));
   } catch (error) {
-    logger.error({ err: error, scope }, "project dashboard read failed");
-    return respondError({ message: unavailableMessage(error, scope.projectSlug !== undefined) });
+    const message = readUnavailableMessage(error, scope.projectSlug !== undefined);
+    return respondWithFailure(error, projectFailureContext("project.read", scope), {
+      fallback: message,
+      notFound: message,
+      forbidden: message,
+    });
   }
 }
 
@@ -165,10 +169,27 @@ async function commandResult<T>(
     return respondOk(await operation(await requireDashboard()));
   } catch (error) {
     const forbidden = commandForbiddenMessage(error);
-    if (forbidden !== undefined) return respondError({ message: forbidden });
-    logger.error({ err: error, scope }, "project dashboard command failed");
-    return respondError({ message: unavailableMessage(error, scope.projectSlug !== undefined) });
+    const message = forbidden ?? unavailableMessage(error, scope.projectSlug !== undefined);
+    return respondWithFailure(error, projectFailureContext("project.command", scope), {
+      fallback: message,
+      notFound: message,
+      forbidden: message,
+      conflict: message,
+      validation: message,
+    });
   }
+}
+
+function projectFailureContext(
+  operation: string,
+  scope: { organizationSlug: string; projectSlug?: string | undefined },
+) {
+  return {
+    operation,
+    component: "projects",
+    organizationSlug: scope.organizationSlug,
+    ...(scope.projectSlug === undefined ? {} : { projectSlug: scope.projectSlug }),
+  } as const;
 }
 
 async function requireDashboard(): Promise<ProjectDashboard> {
@@ -184,8 +205,17 @@ export function unavailableMessage(error: unknown, projectScoped: boolean): stri
     return projectScoped ? "Project unavailable." : "Organization unavailable.";
   }
   return projectScoped
-    ? "We couldn't update this project."
-    : "We couldn't update this organization.";
+    ? "Hub couldn't update this project. Reload its current state before submitting again."
+    : "Hub couldn't update this organization. Reload its current state before submitting again.";
+}
+
+export function readUnavailableMessage(error: unknown, projectScoped: boolean): string {
+  if (isTenantRouteNotFoundError(error)) {
+    return projectScoped ? "Project unavailable." : "Organization unavailable.";
+  }
+  return projectScoped
+    ? "Hub couldn't load this project's configuration. Reload the page to try again."
+    : "Hub couldn't load this organization. Reload the page to try again.";
 }
 
 export function commandForbiddenMessage(error: unknown): string | undefined {

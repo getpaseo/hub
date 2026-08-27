@@ -81,8 +81,7 @@ test("shows invalid typed manual input in Activity without creating an execution
   await expect(activity).toContainText("rejected");
   await openProjectRun(page, "deploy");
   await expectRunDetail(page, {
-    rawMessage: "repo=unknown investigate",
-    cleanPrompt: "investigate",
+    prompt: "repo=unknown investigate",
     failureReason: "declared choices",
   });
 });

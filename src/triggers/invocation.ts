@@ -86,13 +86,11 @@ export function formatInvocationRejection(rejection: InvocationRejection): strin
 export type InvocationParseResult =
   | {
       status: "accepted";
-      rawMessage: string;
       prompt: string;
       inputs: InvocationInputs;
     }
   | {
       status: "rejected";
-      rawMessage: string;
       prompt: string;
       inputs: InvocationInputs;
       reason: string;
@@ -100,28 +98,27 @@ export type InvocationParseResult =
     };
 
 export function parseInvocation(
-  rawMessage: string,
+  prompt: string,
   definitions: InvocationInputDefinitions,
   mention?: string,
-  normalizedMessage = rawMessage,
+  parserMessage = prompt,
 ): InvocationParseResult {
-  const promptAfterMention = removeMention(normalizedMessage, mention);
+  const promptAfterMention = removeMention(parserMessage, mention);
   const inputs: Record<string, JsonPrimitive> = {};
   const consumed = consumeDeclaredHeaders(promptAfterMention, definitions, inputs);
-  const prompt = consumed.prompt;
 
   if (consumed.reason !== undefined) {
-    return rejected(rawMessage, prompt, inputs, consumed.reason.message, consumed.reason.rejection);
+    return rejected(prompt, inputs, consumed.reason.message, consumed.reason.rejection);
   }
 
   const defaults = applyDefaults(definitions, inputs);
   if (defaults !== undefined) {
-    return rejected(rawMessage, prompt, inputs, defaults.message, defaults.rejection);
+    return rejected(prompt, inputs, defaults.message, defaults.rejection);
   }
 
   const required = findMissingRequiredInput(definitions, inputs);
   if (required !== undefined) {
-    return rejected(rawMessage, prompt, inputs, `required input ${required} is missing`, {
+    return rejected(prompt, inputs, `required input ${required} is missing`, {
       code: "missing_required",
       inputName: required,
     });
@@ -129,7 +126,6 @@ export function parseInvocation(
 
   return {
     status: "accepted",
-    rawMessage,
     prompt,
     inputs: freezeInputs(inputs),
   };
@@ -147,7 +143,7 @@ function consumeDeclaredHeaders(
   message: string,
   definitions: InvocationInputDefinitions,
   inputs: Record<string, JsonPrimitive>,
-): { prompt: string; reason?: { message: string; rejection: InvocationRejection } } {
+): { reason?: { message: string; rejection: InvocationRejection } } {
   let offset = 0;
   while (offset < message.length) {
     const token = readNextToken(message, offset);
@@ -156,7 +152,6 @@ function consumeDeclaredHeaders(
     if (definition === undefined) break;
     if (Object.hasOwn(inputs, token.name)) {
       return {
-        prompt: message.slice(token.end),
         reason: {
           message: `duplicate input ${token.name}`,
           rejection: { code: "duplicate_input", inputName: token.name },
@@ -167,14 +162,13 @@ function consumeDeclaredHeaders(
     offset = token.end;
     if (!value.ok) {
       return {
-        prompt: message.slice(offset),
         reason: { message: value.reason, rejection: value.rejection },
       };
     }
     inputs[token.name] = value.value;
   }
 
-  return { prompt: message.slice(offset) };
+  return {};
 }
 
 function applyDefaults(
@@ -280,8 +274,8 @@ function readNextToken(
   };
 }
 
-function removeMention(rawMessage: string, mention: string | undefined): string {
-  const message = rawMessage.trimStart();
+function removeMention(parserMessage: string, mention: string | undefined): string {
+  const message = parserMessage.trimStart();
   if (mention === undefined || !message.startsWith(mention)) return message;
   const boundary = message.at(mention.length);
   if (boundary !== undefined && !/\s/u.test(boundary)) return message;
@@ -299,7 +293,6 @@ function freezeInputs(inputs: Record<string, JsonPrimitive>): InvocationInputs {
 }
 
 function rejected(
-  rawMessage: string,
   prompt: string,
   inputs: Record<string, JsonPrimitive>,
   reason: string,
@@ -307,7 +300,6 @@ function rejected(
 ): InvocationParseResult {
   return {
     status: "rejected",
-    rawMessage,
     prompt,
     inputs: freezeInputs(inputs),
     reason,

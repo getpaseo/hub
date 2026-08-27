@@ -14,6 +14,7 @@ import { createAuthServer, type AuthServer } from "../auth/server.js";
 import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import { RegistrationAdmissionError } from "../auth/registration-admission.js";
 import type { InitialOperator } from "./index.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 
 const ORIGIN = "http://localhost:3000";
 
@@ -21,17 +22,15 @@ const ORIGIN = "http://localhost:3000";
 const POOL_SIZE = 10;
 
 const operator: InitialOperator = {
-  name: "Browser Operator",
   email: "browser.operator@example.test",
   password: "browser-operator-password",
-  organizationName: "Browser Organization",
 };
 
 const accountStateSchema = z
   .object({
     status: z.string(),
     account: z.object({ email: z.string() }).optional(),
-    organization: z.object({ name: z.string() }).optional(),
+    organization: z.object({ name: z.string(), slug: z.string() }).optional(),
     isInstanceOperator: z.boolean().optional(),
     registration: z.string().optional(),
   })
@@ -53,7 +52,14 @@ describe("first-run claim at the browser boundary", () => {
     try {
       assert.equal((await readAccountState(instance.auth)).status, "instanceSetupRequired");
 
-      const claim = await instance.auth.claimInstance!(operator, browserHeaders());
+      const claim = await instance.auth.claimInstance!(
+        {
+          ...operator,
+          name: "Client-controlled operator",
+          organizationName: "Client-controlled organization",
+        } as InitialOperator & { name: string; organizationName: string },
+        browserHeaders(),
+      );
       assert.deepEqual(claim, { status: "claimed" });
 
       // The claim itself established the browser session — nothing signed in afterwards.
@@ -66,14 +72,39 @@ describe("first-run claim at the browser boundary", () => {
       assert.equal(signedOut.status, "signedOut");
       assert.equal(signedOut.registration, "invite_only");
 
-      // The chosen password is final: signing in with it lands on the dashboard rather than the
-      // temporary-password gate that environment bootstrap requires.
+      // The chosen password is final, but the first operator must explicitly finish or skip app
+      // setup before the durable account state becomes active.
       const cookie = await signIn(instance.auth, operator.email, operator.password);
+      const appSetup = await readAccountState(instance.auth, cookie);
+      assert.equal(appSetup.status, "appSetupRequired");
+      // App setup already resolves the organization the daemon handoff has to address, and it is
+      // the same one the dashboard opens on — the handoff never re-resolves it.
+      assert.match(appSetup.organization?.slug ?? "", /^paseo-hub-[0-9a-f]{8}$/u);
+      await instance.auth.completeAppOnboarding!(
+        new Request(`${ORIGIN}/`, {
+          method: "POST",
+          headers: { cookie, origin: ORIGIN },
+        }),
+      );
       const active = await readAccountState(instance.auth, cookie);
       assert.equal(active.status, "active");
       assert.equal(active.account?.email, operator.email);
-      assert.equal(active.organization?.name, operator.organizationName);
+      assert.equal(active.organization?.name, "Paseo Hub");
+      assert.equal(active.organization?.slug, appSetup.organization?.slug);
       assert.equal(active.isInstanceOperator, true);
+
+      const storedNames = await instance.database.query<{
+        account_name: string;
+        organization_name: string;
+      }>(
+        `select "user".name as account_name, organization.name as organization_name
+         from instance_bootstrap
+         join "user" on "user".id = instance_bootstrap.owner_user_id
+         join organization on organization.id = instance_bootstrap.organization_id`,
+      );
+      assert.deepEqual(storedNames.rows, [
+        { account_name: "browser.operator", organization_name: "Paseo Hub" },
+      ]);
     } finally {
       await instance.close();
     }
@@ -175,6 +206,24 @@ describe("first-run claim at the browser boundary", () => {
 
       assert.equal(await countUsers(instance), 0);
       assert.equal((await readAccountState(instance.auth)).status, "instanceSetupRequired");
+    } finally {
+      await instance.close();
+    }
+  }, 120_000);
+
+  it("claims through the adapter's trusted reverse-proxy origin", async () => {
+    const instance = await startInstance(postgres, "browser_claim_proxy_origin");
+    try {
+      const externalOrigin = "https://hub.example.test";
+      const headers = new Headers({ origin: externalOrigin });
+      headers.set(TRUSTED_REQUEST_ORIGIN_HEADER, externalOrigin);
+
+      assert.deepEqual(await instance.auth.claimInstance!(operator, headers), {
+        status: "claimed",
+      });
+      assert.deepEqual(await sessionsPerOperator(instance), [
+        { email: operator.email, sessions: 1 },
+      ]);
     } finally {
       await instance.close();
     }

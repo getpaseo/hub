@@ -49,6 +49,7 @@ describe("attachment capability boundary", () => {
       {
         organizationId: "org-1",
         connectionId: "connection-1",
+        executionId: fixture.executionId,
         locator: { fileId: "F1" },
       },
     ]);
@@ -226,7 +227,6 @@ async function workflowExecution(database = createMemoryDatabase(), deliveryId =
     configurationRevisionId: revision.id,
     providerEventReceiptId: persisted.event.providerEventReceiptId,
     configuredTriggerName: "attachment-run",
-    rawPrompt: "inspect",
     prompt: "inspect",
     inputs: {},
     triggerContext: {},

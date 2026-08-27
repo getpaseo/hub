@@ -10,7 +10,14 @@ describe("Slack connection client", () => {
       clientId: "client-1",
       clientSecret: "secret-1",
       publicBaseUrl: "https://hub.test",
-      fetch: async (_input, init) => {
+      fetch: async (input, init) => {
+        let inputUrl: string;
+        if (typeof input === "string") inputUrl = input;
+        else if (input instanceof URL) inputUrl = input.href;
+        else inputUrl = input.url;
+        if (inputUrl.endsWith("/auth.test")) {
+          return Response.json({ ok: true, team_id: "T1", user_id: "UBOT" });
+        }
         if (init?.body instanceof URLSearchParams) exchangeBody = init.body;
         return Response.json({
           ok: true,
@@ -35,7 +42,9 @@ describe("Slack connection client", () => {
       authorization.searchParams.get("redirect_uri"),
       "https://hub.test/api/integrations/slack/callback",
     );
-    assert.deepEqual(await client.exchangeCode("code-1"), {
+    const installation = await client.exchangeCode("code-1");
+    assert.deepEqual(installation, {
+      appId: "A1",
       teamId: "T1",
       teamName: "Acme",
       botUserId: "UBOT",
@@ -50,6 +59,7 @@ describe("Slack connection client", () => {
         "users:read",
       ],
     });
+    await client.verifyInstallation(installation);
     assert.equal(exchangeBody?.get("client_secret"), "secret-1");
     assert.equal(
       exchangeBody?.get("redirect_uri"),
@@ -75,5 +85,27 @@ describe("Slack connection client", () => {
         ),
     });
     await assert.rejects(() => client.exchangeCode("code-1"), /invalid installation/u);
+  });
+
+  it("rejects a bot token that does not act as the installed bot", async () => {
+    const client = createSlackConnectionClient({
+      appId: "A1",
+      clientId: "client-1",
+      clientSecret: "secret-1",
+      publicBaseUrl: "https://hub.test",
+      fetch: () => Promise.resolve(Response.json({ ok: true, team_id: "T2", user_id: "UBOT" })),
+    });
+    await assert.rejects(
+      () =>
+        client.verifyInstallation({
+          appId: "A1",
+          teamId: "T1",
+          teamName: "Acme",
+          botUserId: "UBOT",
+          botAccessToken: "xoxb-token",
+          scopes: [],
+        }),
+      /verification failed/u,
+    );
   });
 });

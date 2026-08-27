@@ -27,6 +27,7 @@ import type {
   ProjectActivityRunRecord,
   ProviderEventReceiptSummary,
 } from "../db/types.js";
+import { reportFailure } from "../failures/index.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
 import {
@@ -262,6 +263,15 @@ export class ProjectDashboard {
       await store.activate(revision.id);
     } catch (error) {
       if (!(error instanceof ConfigurationActivationValidationError)) throw error;
+      reportFailure(
+        error,
+        {
+          operation: "project.configuration.activate",
+          component: "projects",
+          projectId: tenant.project.id,
+        },
+        { kind: "validation" },
+      );
       return {
         outcome: "invalid",
         revision: { id: revision.id, version: revision.version },
@@ -363,6 +373,11 @@ async function authorManualConfiguration(
     return { success: true };
   } catch (error) {
     if (error instanceof HubBundleError) {
+      reportFailure(
+        error,
+        { operation: "project.configuration.validate", component: "projects" },
+        { kind: "validation" },
+      );
       return { success: false, validationErrors: promptPartialValidationErrors(error.issues) };
     }
     throw error;
@@ -475,8 +490,7 @@ function activityRunView(activity: ProjectActivityRunRecord) {
     receivedAt: receipt.receivedAt.toISOString(),
     rawPayload: jsonValue(receipt.payload),
     configuredTriggerName: run.configuredTriggerName,
-    rawMessage: run.rawPrompt,
-    cleanPrompt: run.prompt,
+    prompt: run.prompt,
     inputs: jsonValue(run.inputs),
     values: jsonValue(run.values),
     triggerContext: jsonValue(run.triggerContext),
@@ -530,8 +544,7 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
     repo: receipt.repo,
     receivedAt: receipt.receivedAt.toISOString(),
     configuredTriggerName: run.configuredTriggerName,
-    rawMessage: run.rawPrompt,
-    cleanPrompt: run.prompt,
+    prompt: run.prompt,
     inputs: jsonValue(run.inputs),
     values: jsonValue(run.values),
     outputContext: jsonValue(run.outputContext),
@@ -580,8 +593,7 @@ function unroutedEventView(receipt: ProviderEventReceiptSummary) {
     repo: receipt.repo,
     receivedAt: receipt.receivedAt.toISOString(),
     configuredTriggerName: null,
-    rawMessage: null,
-    cleanPrompt: null,
+    prompt: null,
     inputs: {},
     values: {},
     triggerContext: {},

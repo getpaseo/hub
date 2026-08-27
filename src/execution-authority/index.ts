@@ -5,7 +5,8 @@ import {
 } from "../config/connection-template.js";
 import type { ConnectionResolver } from "../config/connections.js";
 import type { GitHubAuthorityRegistration } from "../providers/registration.js";
-import { logger } from "../logger.js";
+import { reportFailure, type FailureContext, type ReportOptions } from "../failures/index.js";
+import type { Logger } from "pino";
 
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
@@ -67,6 +68,7 @@ export interface CreateExecutionAuthorityOptions {
   githubAuthority?: GitHubAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
   isExecutionActive: (executionId: string) => Promise<boolean>;
+  logger?: Pick<Logger, "warn" | "error">;
 }
 
 interface TokenLease {
@@ -104,6 +106,13 @@ export function createExecutionAuthority(
   let stopped = false;
   let stopPromise: Promise<ExecutionAuthorityStopResult> | undefined;
 
+  const report = (error: unknown, context: FailureContext, reportOptions: ReportOptions = {}) => {
+    reportFailure(error, context, {
+      ...reportOptions,
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    });
+  };
+
   async function materialize(
     input: ExecutionAuthorityMaterialization,
   ): Promise<MaterializedExecutionAuthority> {
@@ -125,7 +134,10 @@ export function createExecutionAuthority(
       const env = await materializeEnvironment(input, context, tokenRevocations);
       if (input.github !== undefined) {
         if (options.githubAuthority === undefined) {
-          throw new Error("GitHub step authority is unavailable");
+          throw authorityError(
+            "github_authority_unavailable",
+            "GitHub step authority is unavailable",
+          );
         }
         const repositories = repositoriesForAuthority(input.github, input.triggerContext);
         const authority = await options.githubAuthority.mint({
@@ -284,14 +296,11 @@ export function createExecutionAuthority(
       deleteEmptyState(states, executionId, state);
     })()
       .catch((error: unknown) => {
-        logger.warn(
-          {
-            executionId,
-            phase: "terminal-cleanup",
-            errorType: error instanceof Error ? error.name : "unknown",
-          },
-          "execution authority detached terminal cleanup failed",
-        );
+        report(error, {
+          operation: "execution-authority.terminal.cleanup",
+          component: "execution-authority",
+          executionId,
+        });
       })
       .finally(() => {
         if (terminalCleanups.get(executionId) === cleanup) {
@@ -352,9 +361,18 @@ export function createExecutionAuthority(
       cancelGrace();
       const residualExposures = outcome === "clean" ? [] : collectResidualExposures(activeStates);
       if (residualExposures.length > 0) {
-        logger.warn(
-          { shutdownGraceMs: SHUTDOWN_GRACE_MS, residualExposures },
-          "execution authority shutdown grace elapsed with residual credential exposure",
+        report(
+          Object.assign(new Error("Execution authority shutdown grace elapsed"), {
+            code: "shutdown_timeout",
+          }),
+          { operation: "execution-authority.shutdown", component: "execution-authority" },
+          {
+            kind: "timeout",
+            diagnostic: {
+              shutdownGraceMs: SHUTDOWN_GRACE_MS,
+              residualExposureCount: residualExposures.length,
+            },
+          },
         );
       }
       return { residualExposures };
@@ -419,14 +437,19 @@ export function createExecutionAuthority(
         ));
       if (now >= retryUntil) {
         removeLease(states, executionId, state, lease);
-        logger.warn(
+        report(
+          Object.assign(new Error("Execution authority revocation retry window elapsed"), {
+            code: "revocation_retry_exhausted",
+          }),
           {
+            operation: "execution-authority.token.revoke",
+            component: "execution-authority",
             executionId,
-            reason,
-            attempts: lease.revocationAttempts,
-            outcome: "upstream_expired_or_retry_window_elapsed",
           },
-          "execution authority token lease closed after failed revocation",
+          {
+            kind: "upstreamUnavailable",
+            diagnostic: { reason, attempts: lease.revocationAttempts },
+          },
         );
         return;
       }
@@ -528,15 +551,14 @@ export function createExecutionAuthority(
       await Promise.race([Promise.resolve().then(revoke), timeout]);
       return true;
     } catch (error) {
-      logger.warn(
+      report(
+        error,
         {
+          operation: "execution-authority.token.revoke",
+          component: "execution-authority",
           executionId,
-          phase: "revoke",
-          reason: details.reason,
-          attempt: details.attempt,
-          errorType: error instanceof Error ? error.name : "unknown",
         },
-        "execution authority token revocation failed",
+        { kind: "upstreamUnavailable", diagnostic: details },
       );
       return false;
     } finally {
@@ -563,7 +585,8 @@ function repositoriesForAuthority(
   ) {
     return [triggerContext.target.repository];
   }
-  throw new Error(
+  throw authorityError(
+    "github_authority_scope_invalid",
     "github.repositories is required for this trigger source; Hub cannot safely expand authority to all installation repositories",
   );
 }
@@ -593,11 +616,18 @@ function githubEnvironment(
 }
 
 function terminalExecutionError(executionId: string): Error {
-  return new Error(`cannot materialize terminal execution ${executionId}`);
+  return authorityError(
+    "execution_terminal",
+    `cannot materialize terminal execution ${executionId}`,
+  );
 }
 
 function authorityStoppedError(): Error {
-  return new Error("execution authority is stopped");
+  return authorityError("execution_authority_stopped", "execution authority is stopped");
+}
+
+function authorityError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
 }
 
 function removeLease(

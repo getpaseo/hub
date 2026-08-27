@@ -1,7 +1,6 @@
 {
-  "name": "paseo-hub",
-  "version": "0.4.0",
-  "private": true,
+  "name": "@getpaseo/hub",
+  "version": "0.8.0",
   "description": "Self-hosted automation for Paseo daemons",
   "homepage": "https://paseo.sh/docs/hub",
   "license": "Apache-2.0",
@@ -9,10 +8,24 @@
     "type": "git",
     "url": "git+https://github.com/getpaseo/hub.git"
   },
+  "bin": {
+    "paseo-hub": "bin/paseo-hub.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    ".output",
+    "drizzle"
+  ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite dev --port 3000",
     "build": "npm run build:node && npm run build:start",
+    "prepack": "npm run build",
+    "release:check": "npm run test:release && npm run typecheck && npm run lint && npm run format:check && npm run build && npm pack --dry-run",
     "build:node": "tsgo -p tsconfig.json",
     "build:start": "vite build",
     "typecheck": "npm run typecheck:node && npm run typecheck:start && npm run typecheck:e2e",
@@ -20,7 +33,8 @@
     "typecheck:start": "tsgo --noEmit -p tsconfig.start.json",
     "typecheck:e2e": "tsgo --noEmit -p tsconfig.e2e.json",
     "start": "node dist/index.js",
-    "test": "npm run test:release && vitest run",
+    "test": "npm run test:scripts && vitest run",
+    "test:scripts": "node --test scripts/release-metadata.node-test.mjs scripts/paseo-workspace.node-test.mjs",
     "test:release": "node --test scripts/release-metadata.node-test.mjs",
     "test:e2e:hub:source": "RUN_HUB_E2E=1 vitest run src/e2e/hub-foundation.e2e.test.ts src/e2e/hub-attachments.e2e.test.ts --bail=1",
     "test:e2e:hub:real-agent": "RUN_HUB_REAL_AGENT_E2E=1 vitest run src/e2e/hub-real-agent.e2e.test.ts --bail=1",
@@ -73,6 +87,7 @@
     "react-dom": "19.2.7",
     "stripe": "^18.5.0",
     "tailwind-merge": "3.4.0",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -100,8 +115,7 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vite": "7.3.6",
-    "vitest": "^3.2.4",
-    "ws": "^8.20.1"
+    "vitest": "^3.2.4"
   },
   "overrides": {
     "@types/chai": "5.0.1"

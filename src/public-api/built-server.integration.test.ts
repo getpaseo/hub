@@ -19,6 +19,7 @@ import {
   CliAuthorizationPollSchema,
   CliAuthorizationSchema,
   ConfigurationResourcesSchema,
+  SetupResourcesSchema,
   InstalledConfigurationSchema,
   ProblemSchema,
   ProjectListSchema,
@@ -53,6 +54,24 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
         ('member-b', 'organization-b', 'user-b', 'owner');
       insert into session (id, token, user_id, active_organization_id, expires_at) values
         ('session-a', 'session-token-a', 'user-a', 'organization-a', now() + interval '1 day');
+      insert into github_connections
+        (id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
+      values
+        ('10000000-0000-4000-8000-000000000001', 'organization-a', 101, 'github-a', 'account-a', 'octocat-a', 'User', 'active'),
+        ('10000000-0000-4000-8000-000000000002', 'organization-b', 102, 'github-b', 'account-b', 'octocat-b', 'Organization', 'active');
+      insert into github_repositories
+        (organization_id, connection_id, repository_id, full_name, default_branch)
+      values
+        ('organization-a', '10000000-0000-4000-8000-000000000001', 1001, 'octocat-a/starter', 'main'),
+        ('organization-b', '10000000-0000-4000-8000-000000000002', 1002, 'octocat-b/starter', 'main');
+      insert into discord_connections (organization_id, guild_id, slug, guild_name) values
+        ('organization-a', 'guild-a', 'discord-a', 'Discord A'),
+        ('organization-b', 'guild-b', 'discord-b', 'Discord B');
+      insert into slack_connections
+        (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+      values
+        ('organization-a', 'team-a', 'slack-a', 'Slack A', 'bot-a', 'token-a', '[]'::jsonb),
+        ('organization-b', 'team-b', 'slack-b', 'Slack B', 'bot-b', 'token-b', '[]'::jsonb);
     `);
     await client.close();
     for (const [organizationId, userId] of [
@@ -193,20 +212,61 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       );
       const resources = await get("/api/v1/configuration-resources", secrets[organizationId]);
       assert.equal(resources.status, 200);
-      assert.equal(ConfigurationResourcesSchema.parse(await resources.json()).daemons.length, 1);
+      const configurationResources = ConfigurationResourcesSchema.parse(await resources.json());
+      assert.equal(configurationResources.daemons.length, 1);
+      assert.deepEqual(configurationResources.github, [
+        {
+          slug: `github-${organizationId.at(-1)}`,
+          accountLogin: `octocat-${organizationId.at(-1)}`,
+          accountType: organizationId === "organization-a" ? "User" : "Organization",
+          repositories: [`octocat-${organizationId.at(-1)}/starter`],
+        },
+      ]);
+      assert.deepEqual(configurationResources.discord, [
+        {
+          slug: `discord-${organizationId.at(-1)}`,
+          guildName: `Discord ${organizationId.at(-1)?.toUpperCase()}`,
+        },
+      ]);
+      assert.deepEqual(configurationResources.slack, [
+        {
+          slug: `slack-${organizationId.at(-1)}`,
+          teamName: `Slack ${organizationId.at(-1)?.toUpperCase()}`,
+        },
+      ]);
+      const setupResources = await get("/api/v1/setup-resources", secrets[organizationId]);
+      assert.equal(setupResources.status, 200);
+      assert.deepEqual(SetupResourcesSchema.parse(await setupResources.json()), {
+        github: [
+          {
+            slug: `github-${organizationId.at(-1)}`,
+            accountLogin: `octocat-${organizationId.at(-1)}`,
+            accountType: organizationId === "organization-a" ? "User" : "Organization",
+            repositories: [`octocat-${organizationId.at(-1)}/starter`],
+          },
+        ],
+        discord: [
+          {
+            guildId: `guild-${organizationId.at(-1)}`,
+            guildName: `Discord ${organizationId.at(-1)?.toUpperCase()}`,
+          },
+        ],
+        slack: [
+          {
+            teamId: `team-${organizationId.at(-1)}`,
+            teamName: `Slack ${organizationId.at(-1)?.toUpperCase()}`,
+          },
+        ],
+      });
       const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
         projectSlug: "same-project",
-        files: configurationBundleFixture(
-          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
-        ),
+        files: configurationBundleFixture(validPublicApiConfiguration()),
       });
-      assert.equal(validation.status, 200);
+      assert.equal(validation.status, 200, await validation.clone().text());
       ValidatedConfigurationSchema.parse(await validation.json());
       const install = await post("/api/v1/configurations/install", secrets[organizationId], {
         projectSlug: "same-project",
-        files: configurationBundleFixture(
-          `environments:\n  - name: runner\n    kind: docker\n    image: paseo/valid\ntriggers: []`,
-        ),
+        files: configurationBundleFixture(validPublicApiConfiguration()),
       });
       assert.equal(install.status, 201);
       const installed = InstalledConfigurationSchema.parse(await install.json());
@@ -457,3 +517,24 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     });
   }
 });
+
+function validPublicApiConfiguration(): string {
+  return [
+    "environments:",
+    "  - name: runner",
+    "    kind: daemon",
+    `    daemon: ${TEST_DAEMON_SLUG}`,
+    "    cwd: /repo",
+    "triggers:",
+    "  - name: configured",
+    "    on: manual.run",
+    "    max_runtime: 1h",
+    "    steps:",
+    "      - id: work",
+    "        environment: runner",
+    "        max_runtime: 10m",
+    "        idle_timeout: 1m",
+    "        agent: { provider: test }",
+    '        prompt: [{ text: "Run the configured work" }]',
+  ].join("\n");
+}

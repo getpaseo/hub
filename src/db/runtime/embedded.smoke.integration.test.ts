@@ -101,7 +101,6 @@ it("runs the bootstrap, credential lock, and lease claim flows on embedded stora
       configurationRevisionId: revision.id,
       providerEventReceiptId: receipt.event.providerEventReceiptId,
       configuredTriggerName: "embedded-smoke",
-      rawPrompt: "embedded smoke",
       prompt: "embedded smoke",
       inputs: {},
       triggerContext: {},

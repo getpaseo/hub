@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     entitlements: entitlements.service,
     baseURL: requiredEnvironment("PASEO_HUB_APP_URL"),
     secret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
-    policy: readInstanceAuthPolicy(),
+    policy: readInstanceAuthPolicy(process.env),
   });
   await auth.initialize?.();
   const createdApiKey = await auth.apiKeys?.create(
@@ -186,7 +186,6 @@ async function main(): Promise<void> {
               hubConfig: compiledConfiguration,
               invocation: {
                 status: "accepted",
-                rawMessage: "Deploy mcp-capability for phase-five-operator",
                 prompt: "Deploy mcp-capability for phase-five-operator",
                 inputs: {},
               },
@@ -211,6 +210,7 @@ async function main(): Promise<void> {
     projectDashboard: null,
     usageDashboard: null,
     operatorConsole: null,
+    providerApplications: null,
     testTriggerRoutes: true,
     auth: (request) => auth.handle(request),
     browserAccount: (request) => auth.browserAccount!(request),

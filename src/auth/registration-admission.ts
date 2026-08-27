@@ -3,6 +3,7 @@ import type { Locks } from "../db/runtime/locks/index.js";
 import { z } from "zod";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
 import { normalizeEmail } from "./instance-policy.js";
+import { reportFailure } from "../failures/index.js";
 
 const signupEmailBody = z.object({ email: z.string().email() }).passthrough();
 const INVITATION_LOCK_PREFIX = "paseo:invitation:";
@@ -26,12 +27,17 @@ export class RegistrationAdmission {
     if (contentType !== "application/json") {
       return Response.json({ error: "invalid_signup" }, { status: 400 });
     }
-    const body = signupEmailBody.safeParse(
-      await request
-        .clone()
-        .json()
-        .catch(() => undefined),
-    );
+    let requestBody: unknown;
+    try {
+      requestBody = await request.clone().json();
+    } catch (error) {
+      reportFailure(
+        error,
+        { operation: "auth.signup.parse", component: "auth" },
+        { kind: "validation" },
+      );
+    }
+    const body = signupEmailBody.safeParse(requestBody);
     if (!body.success) return Response.json({ error: "invalid_signup" }, { status: 400 });
     const invitationId =
       new URL(request.url).searchParams.get("invitation") ??

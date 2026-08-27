@@ -104,7 +104,7 @@ function OrganizationPicker({
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "We couldn't load organizations."}
+            : "Hub did not receive the organization list. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );
@@ -142,7 +142,7 @@ function OperatorOrganization({ slug }: { slug: string }) {
         <AlertDescription>
           {query.data?.status === "error"
             ? query.data.error.message
-            : "We couldn't load this organization's entitlements."}
+            : "Hub did not receive this organization's entitlements. Check your connection and reload the page."}
         </AlertDescription>
       </Alert>
     );

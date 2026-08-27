@@ -26,6 +26,7 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
   ConnectionStartAuthority,
   ConnectionProvider,
   ReadConnectionAttemptInput,
@@ -226,7 +227,6 @@ class MemoryDatabase implements Database {
       configuredTriggerName: input.configuredTriggerName,
       outcome: "accepted",
       status: "running",
-      rawPrompt: input.rawPrompt,
       prompt: input.prompt,
       inputs: freezeEvidence(input.inputs),
       values: freezeEvidence(input.values ?? {}),
@@ -299,7 +299,6 @@ class MemoryDatabase implements Database {
       configuredTriggerName: input.configuredTriggerName,
       outcome: "rejected",
       status: "rejected",
-      rawPrompt: input.rawPrompt,
       prompt: input.prompt,
       inputs: freezeEvidence(input.inputs),
       values: freezeEvidence(input.values ?? {}),
@@ -2607,6 +2606,10 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  findConnectionAttemptConfiguration() {
+    return Promise.resolve(undefined);
+  }
+
   readConnectionAttempt(_input: ReadConnectionAttemptInput) {
     return connectionPersistenceUnavailable();
   }
@@ -2628,6 +2631,10 @@ class MemoryDatabase implements Database {
   }
 
   bindSlackConnection(_input: BindSlackConnectionInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
+  completeSlackProviderApplication(_input: CompleteSlackProviderApplicationInput): Promise<void> {
     return connectionPersistenceUnavailable();
   }
 
@@ -2805,6 +2812,8 @@ class MemoryDatabase implements Database {
     input: {
       deliveryId: string;
       signatureHash?: string | null;
+      providerApplicationId?: string | null;
+      providerConfigurationVersion?: number | null;
       source: string;
       repo?: string | null;
       payload: unknown;
@@ -2820,6 +2829,8 @@ class MemoryDatabase implements Database {
       resourceId: input.resourceId,
       deliveryId: input.input.deliveryId,
       signatureHash: input.input.signatureHash ?? null,
+      providerApplicationId: input.input.providerApplicationId ?? null,
+      providerConfigurationVersion: input.input.providerConfigurationVersion ?? null,
       source: input.input.source,
       repo: input.input.repo ?? null,
       payload: input.input.payload,

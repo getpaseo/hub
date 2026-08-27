@@ -14,6 +14,7 @@ const primary: DiscordConnectionRecord = {
   guildId: "100",
   slug: "discord-primary",
   guildName: "Primary guild",
+  providerApplicationId: "discord-app",
 };
 
 const secondary: DiscordConnectionRecord = {

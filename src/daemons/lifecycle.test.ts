@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type {
   DaemonExecutionControlOptions,
@@ -7,10 +7,17 @@ import type {
   DaemonEvent,
   DaemonConnection,
 } from "./protocol.js";
-import { createDaemonDispatchLifecycle, type DaemonDispatchLifecycle } from "./lifecycle.js";
+import {
+  createDaemonDispatchLifecycle,
+  DaemonDispatchFailure,
+  type DaemonDispatchLifecycle,
+} from "./lifecycle.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import type { DaemonRecord } from "../db/types.js";
+import { createLogger, serializeError } from "../logger.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
@@ -18,6 +25,56 @@ const EXECUTION_ID = "00000000-0000-4000-8000-000000000001";
 const ACKNOWLEDGED_AT = new Date("2026-01-01T00:00:01.000Z");
 
 describe("durable Hub action acknowledgement state", () => {
+  it("keeps the classified dispatch code in redacted error logs", () => {
+    const diagnostic = serializeError(
+      new DaemonDispatchFailure("github_authority_unavailable", {
+        cause: Object.assign(new Error("credential detail must not be logged"), {
+          code: "github_authority_unavailable",
+        }),
+      }),
+    );
+
+    assert.equal(diagnostic["code"], "github_authority_unavailable");
+    const cause = diagnostic["cause"];
+    assert.ok(typeof cause === "object" && cause !== null);
+    assert.equal(Reflect.get(cause, "code"), "github_authority_unavailable");
+    assert.equal(JSON.stringify(diagnostic).includes("credential detail"), false);
+  });
+
+  it("logs a daemon execution recovery failure exactly once", async () => {
+    const canary = "daemon-lifecycle-secret-4c09";
+    const database = createMemoryDatabase();
+    const daemon = daemonRecord();
+    const executionId = "00000000-0000-4000-8000-0000000000f1";
+    await database.insertAgentExecution({
+      id: executionId,
+      organizationId: "organization-lifecycle-log",
+      projectId: "project-lifecycle-log",
+      machineId: null,
+      daemonId: daemon.id,
+      triggerContext: {},
+      outputContext: {},
+      configurationRevisionId: "revision-lifecycle-log",
+    });
+    vi.spyOn(database, "findAgentExecutionById").mockRejectedValueOnce(new Error(canary));
+    const stream = new FailureLogStream();
+    const lifecycle = createDaemonDispatchLifecycle({
+      database,
+      connectionForDaemon: () => new AcknowledgementConnection(),
+      publicBaseUrl: "http://hub.test",
+      test: { logger: createLogger(stream) },
+    });
+
+    await lifecycle.recoverDaemon(daemon);
+
+    assertOneFailure(stream, {
+      operation: "daemon.execution.recover",
+      component: "daemons",
+      canary,
+    });
+    await lifecycle.stop();
+  });
+
   it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
     const database = createMemoryDatabase();
     let failureHooks = 0;
@@ -41,8 +98,7 @@ describe("durable Hub action acknowledgement state", () => {
         configurationRevisionId: "revision-workflow-terminal",
         providerEventReceiptId: "receipt-workflow-terminal",
         configuredTriggerName: "terminal",
-        rawPrompt: "raw",
-        prompt: "prompt",
+        prompt: "raw",
         inputs: {},
         triggerContext: { provider: "test" },
         outputContext: { provider: "test" },
@@ -247,6 +303,27 @@ function toolCall(
       item: { type: "tool_call", callId, name, status },
     },
   } as DaemonEvent;
+}
+
+function daemonRecord(): DaemonRecord {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  return {
+    id: DAEMON_ID,
+    slug: "daemon-lifecycle",
+    machineId: "machine-lifecycle",
+    serverId: "server-lifecycle",
+    daemonPublicKey: "public-key",
+    credentialVerifier: "verifier",
+    scopes: ["hub.execution.*"],
+    registeredByApiKeyId: null,
+    registeredByCliCredentialId: null,
+    status: "active",
+    presence: "connected",
+    connectedAt: now,
+    disconnectedAt: null,
+    lastSeenAt: now,
+    createdAt: now,
+  };
 }
 
 function turnCompleted(): DaemonEvent {

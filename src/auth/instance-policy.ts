@@ -47,7 +47,7 @@ export function defaultInstanceAuthPolicy(): InstanceAuthPolicy {
 }
 
 export function readInstanceAuthPolicy(
-  environment: Record<string, string | undefined> = process.env,
+  environment: Record<string, string | undefined>,
 ): InstanceAuthPolicy {
   const registrationMode = parsePolicyValue(
     "PASEO_REGISTRATION_MODE",

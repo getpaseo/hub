@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondError, respondOk, type Result } from "../contract/respond.js";
-import { logger } from "../logger.js";
+import { respondOk, type Result } from "../contract/respond.js";
+import { respondWithFailure } from "../failures/index.js";
 import { tenantRouteNotFoundMessage } from "../projects/access.js";
 import { getApplication } from "../server/runtime.js";
 import type { UsageDashboard } from "./dashboard.js";
@@ -19,8 +19,16 @@ export const usageSnapshot = createServerFn({ method: "GET" })
       if (dashboard === null) throw new Error("usage dashboard unavailable");
       return respondOk(await dashboard.snapshot(getRequest(), data));
     } catch (error) {
-      logger.error({ err: error, data }, "usage snapshot read failed");
-      return respondError({ message: usageSnapshotErrorMessage(error) });
+      const message = usageSnapshotErrorMessage(error);
+      return respondWithFailure(
+        error,
+        {
+          operation: "usage.snapshot",
+          component: "usage",
+          organizationSlug: data.organizationSlug,
+        },
+        { fallback: message, notFound: message, forbidden: message },
+      );
     }
   });
 

@@ -180,7 +180,22 @@ describe("instance bootstrap and first-login boundary", () => {
     const active = await auth.browserAccount!(
       new Request("http://localhost:3000/api/auth/paseo/state", { headers: { cookie: signedIn } }),
     );
-    assert.equal(z.object({ status: z.string() }).parse(await active.json()).status, "active");
+    assert.equal(
+      z.object({ status: z.string() }).parse(await active.json()).status,
+      "appSetupRequired",
+    );
+    await auth.completeAppOnboarding!(
+      new Request("http://localhost:3000/api/auth/paseo/complete-app-setup", {
+        method: "POST",
+        headers: { cookie: signedIn, origin: "http://localhost:3000" },
+      }),
+    );
+    const completed = await auth.browserAccount!(
+      new Request("http://localhost:3000/api/auth/paseo/state", {
+        headers: { cookie: signedIn },
+      }),
+    );
+    assert.equal(z.object({ status: z.string() }).parse(await completed.json()).status, "active");
     await auth.close();
     await entitlements.close();
     await database.close();

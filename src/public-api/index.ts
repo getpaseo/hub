@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { isDatabaseUnavailableError } from "../db/errors.js";
-import { logger } from "../logger.js";
+import { reportFailure } from "../failures/index.js";
 import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
   IssueEnrollmentTokenResult,
   ListProjectsResult,
   ListConfigurationResourcesResult,
+  ListSetupResourcesResult,
   PublicAuthorization,
   PublicOperations,
   ValidateConfigurationResult,
@@ -18,6 +19,7 @@ import {
   InstalledConfigurationSchema,
   ProjectListSchema,
   ConfigurationResourcesSchema,
+  SetupResourcesSchema,
   ProblemSchema,
   ValidatedConfigurationSchema,
   type Problem,
@@ -27,6 +29,7 @@ import {
   publicOperation,
   publicOperationManifest,
   type PublicOperationId,
+  type PublicOperationDefinition,
 } from "./operation-manifest.js";
 
 export type { PublicOperationId } from "./operation-manifest.js";
@@ -34,6 +37,7 @@ export type { PublicOperationId } from "./operation-manifest.js";
 type PublicOperationResult =
   | ListProjectsResult
   | ListConfigurationResourcesResult
+  | ListSetupResourcesResult
   | ValidateConfigurationResult
   | InstallConfigurationResult
   | DispatchManualRunResult
@@ -122,8 +126,17 @@ async function executeSafely(
     }
     return await execute(id, request, requestId, composition.authenticator, operations);
   } catch (error) {
+    reportFailure(
+      error,
+      {
+        operation: `public-api.${id}`,
+        component: "public-api",
+        requestId,
+        status: isDatabaseUnavailableError(error) ? 503 : 500,
+      },
+      { status: isDatabaseUnavailableError(error) ? 503 : 500 },
+    );
     if (isDatabaseUnavailableError(error)) return infrastructureProblem(requestId);
-    logger.error({ err: error, requestId, operationId: id }, "public API internal error");
     return problem(
       requestId,
       500,
@@ -194,7 +207,15 @@ async function execute(
     input = parsed.data;
   }
   const result = await definition.invoke(operations, access, input);
-  switch (definition.resultMapping) {
+  return operationResponse(definition.resultMapping, requestId, result);
+}
+
+function operationResponse(
+  mapping: PublicOperationDefinition["resultMapping"],
+  requestId: string,
+  result: PublicOperationResult,
+): Response {
+  switch (mapping) {
     case "projects":
       if (!isProjectsResult(result)) throw new Error("invalid projects operation result");
       return projectsResponse(requestId, result);
@@ -202,6 +223,10 @@ async function execute(
       if (!isConfigurationResourcesResult(result))
         throw new Error("invalid configuration resources operation result");
       return configurationResourcesResponse(requestId, result);
+    case "setup-resources":
+      if (!isSetupResourcesResult(result))
+        throw new Error("invalid setup resources operation result");
+      return setupResourcesResponse(requestId, result);
     case "validation":
       if (!isValidationResult(result)) throw new Error("invalid validation operation result");
       return validationResponse(requestId, result);
@@ -215,7 +240,7 @@ async function execute(
       if (!isEnrollmentResult(result)) throw new Error("invalid enrollment operation result");
       return enrollmentResponse(requestId, result);
   }
-  return assertNever(definition.resultMapping);
+  return assertNever(mapping);
 }
 
 function projectsResponse(requestId: string, result: ListProjectsResult): Response {
@@ -231,6 +256,16 @@ function configurationResourcesResponse(
   return result.status === "listed"
     ? success(requestId, 200, ConfigurationResourcesSchema, {
         daemons: result.daemons,
+        github: result.github,
+        discord: result.discord,
+        slack: result.slack,
+      })
+    : infrastructureProblem(requestId);
+}
+
+function setupResourcesResponse(requestId: string, result: ListSetupResourcesResult): Response {
+  return result.status === "listed"
+    ? success(requestId, 200, SetupResourcesSchema, {
         github: result.github,
         discord: result.discord,
         slack: result.slack,
@@ -521,6 +556,13 @@ function isConfigurationResourcesResult(
   return (
     result.status === "infrastructure_unavailable" ||
     (result.status === "listed" && "daemons" in result)
+  );
+}
+
+function isSetupResourcesResult(result: PublicOperationResult): result is ListSetupResourcesResult {
+  return (
+    result.status === "infrastructure_unavailable" ||
+    (result.status === "listed" && "github" in result)
   );
 }
 

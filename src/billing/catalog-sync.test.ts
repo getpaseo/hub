@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import { describe, it } from "vitest";
+import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
 import { hashTemplate } from "../entitlements/catalog.js";
+import { runWithFailureTracking } from "../failures/index.js";
+import { createLogger } from "../logger.js";
 import { syncBillingCatalog } from "./catalog-sync.js";
 import type {
   StripeCatalogPrice,
@@ -69,6 +73,30 @@ function soloPrices(): StripeCatalogPrice[] {
 }
 
 describe("syncBillingCatalog", () => {
+  it("owns invalid catalog failures with structured, secret-free background diagnostics", async () => {
+    const canary = "formatless-catalog-secret-83bd2f99";
+    const stream = new CaptureStream();
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([
+      soloProduct({
+        name: canary,
+        metadata: { ...soloProduct().metadata, ent_seats_max: canary },
+      }),
+    ]);
+
+    await runWithFailureTracking(() => syncBillingCatalog(source, database), createLogger(stream));
+
+    const records = stream.records();
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.["operation"], "billing.catalog.product.validate");
+    assert.equal(records[0]?.["component"], "billing");
+    assert.equal(records[0]?.["provider"], "stripe");
+    const error = logRecordSchema.parse(records[0]?.["err"]);
+    assert.equal(error["type"], "Error");
+    assert.equal(typeof error["stack"], "string");
+    assert.equal(stream.text().includes(canary), false);
+  });
+
   it("mirrors a valid product and its prices into the local catalog", async () => {
     const database = createMemoryDatabase();
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
@@ -186,3 +214,30 @@ describe("syncBillingCatalog", () => {
     assert.deepEqual(after, before);
   });
 });
+
+class CaptureStream extends Writable {
+  private readonly chunks: string[] = [];
+
+  override _write(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.chunks.push(chunk.toString());
+    callback();
+  }
+
+  text(): string {
+    return this.chunks.join("");
+  }
+
+  records(): Record<string, unknown>[] {
+    return this.text()
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => logRecordSchema.parse(JSON.parse(line)));
+  }
+}
+
+const logRecordSchema = z.record(z.string(), z.unknown());

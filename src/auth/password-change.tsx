@@ -52,7 +52,9 @@ export function PasswordChangeEntry({
   );
   let message = validationError;
   if (save.data?.status === "error") message = save.data.error.message;
-  if (save.isError) message = "We couldn't change your password.";
+  if (save.isError)
+    message =
+      "Hub did not receive the password-change result. Your existing password remains active; check your connection before submitting again.";
   const busy = save.isPending || leave.isPending;
   const signOutAccount = useCallback(() => {
     leave.mutate({});

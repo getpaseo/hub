@@ -7,6 +7,7 @@ const UserSchema = z
   .passthrough()
   .optional()
   .catch(undefined);
+const LabelSchema = z.object({ name: OptionalStringSchema }).passthrough();
 
 export const WebhookPayloadSchema = z
   .object({
@@ -107,6 +108,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export const IssueCommentPayloadSchema = z
   .object({
+    action: OptionalStringSchema,
     issue: z
       .object({
         number: OptionalNumberSchema,
@@ -114,6 +116,7 @@ export const IssueCommentPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        labels: z.array(LabelSchema).optional().catch(undefined),
         pull_request: z.object({}).passthrough().optional().catch(undefined),
       })
       .optional()
@@ -132,6 +135,7 @@ export const IssueCommentPayloadSchema = z
 
 export const IssuesPayloadSchema = z
   .object({
+    action: OptionalStringSchema,
     issue: z
       .object({
         number: OptionalNumberSchema,
@@ -139,15 +143,18 @@ export const IssuesPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        labels: z.array(LabelSchema).optional().catch(undefined),
       })
       .optional()
       .catch(undefined),
     sender: UserSchema,
+    label: LabelSchema.optional().catch(undefined),
   })
   .passthrough();
 
 export const PullRequestPayloadSchema = z
   .object({
+    action: OptionalStringSchema,
     pull_request: z
       .object({
         number: OptionalNumberSchema,
@@ -155,6 +162,7 @@ export const PullRequestPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        labels: z.array(LabelSchema).optional().catch(undefined),
         head: z
           .object({
             ref: OptionalStringSchema,
@@ -165,6 +173,7 @@ export const PullRequestPayloadSchema = z
       .optional()
       .catch(undefined),
     sender: UserSchema,
+    label: LabelSchema.optional().catch(undefined),
   })
   .passthrough();
 

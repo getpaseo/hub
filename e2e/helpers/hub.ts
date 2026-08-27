@@ -25,6 +25,8 @@ import { createDatabase } from "../../src/db/test-utils/runtime.js";
 import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
+import { AppSetupSurface, allowClipboard } from "./apps.js";
+import { SHOTS } from "./app-evidence.js";
 import { ProjectNavigation } from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
 
@@ -46,6 +48,14 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  /** Records a daemon enrollment token for this instance's organization. */
+  issueDaemonEnrollment(verifier: string): Promise<void>;
+  /** Arms one project snapshot read failure inside the disposable built application. */
+  failNextProjectRead(): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
 }
 
 export interface BuiltApplicationOptions {
@@ -57,6 +67,16 @@ export interface BuiltApplicationOptions {
   providerConnections?: boolean;
   githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
+  /** Operator-managed provider applications, starting from nothing configured. */
+  providerApplications?: boolean;
+  /** Providers the instance environment configures, which the surface must render read-only. */
+  environmentApps?: readonly ("github" | "slack" | "discord")[];
+  /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
+  https?: boolean;
+  /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
+  reverseProxy?: boolean;
+  /** Exercise the built application with its zero-DATABASE_URL embedded PGlite runtime. */
+  embedded?: boolean;
   bootstrap?: {
     organizationName: string;
     ownerEmail: string;
@@ -71,6 +91,8 @@ export interface Account {
   email: string;
   password: string;
 }
+
+const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
 
 interface TeamExpectation {
   membersPresent: string[];
@@ -238,7 +260,7 @@ export class PaseoHub {
    * `machineAuth: false` is what keeps this application genuinely pristine — the machine-key
    * fixture seeds an organization and user into every other fresh application.
    */
-  async proveFirstRunOperatorClaim(account: Account, organizationName: string): Promise<void> {
+  async proveFirstRunOperatorClaim(account: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
       machineAuth: false,
@@ -246,12 +268,83 @@ export class PaseoHub {
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application.origin, context, await context.newPage());
-      await user.completeFirstRunJourney(account, organizationName, () =>
-        application.failNextAccountSetup(),
-      );
+      await user.completeFirstRunJourney(account, () => application.failNextAccountSetup());
+      const logs = plainLogs(application.logs());
+      expect(logs).toContain("auth.setup_instance");
+      expect(logs).toMatch(/failureKind:\s*["']?internal/u);
+      expect(logs).toMatch(/err:\s*\{/u);
+      expect(logs).toMatch(/["']?type["']?\s*:\s*["']?Error/u);
+      expect(logs).toMatch(/["']?stack["']?\s*:/u);
+      expect(logs).not.toContain("account setup failed");
+      expect(logs).not.toContain(account.email);
+      expect(logs).not.toContain(account.password);
     } finally {
       await context.close();
     }
+  }
+
+  /**
+   * A fresh instance with operator-managed apps and nothing configured, claimed by a first
+   * operator who is left standing on the app setup screen. The caller drives the surface through
+   * the returned DSL; closing the session tears the browser context down.
+   */
+  async openAppSetup(input: {
+    account: Account;
+    providerScenario?: BrowserProviderScenario;
+    environmentApps?: readonly ("github" | "slack" | "discord")[];
+    https?: boolean;
+    reverseProxy?: boolean;
+    embedded?: boolean;
+  }): Promise<AppSetupSession> {
+    const application = await this.startApplication({
+      databaseProfile: "fresh",
+      machineAuth: false,
+      providerApplications: true,
+      ...(input.providerScenario === undefined ? {} : { providerScenario: input.providerScenario }),
+      https: input.https === true,
+      reverseProxy: input.reverseProxy === true,
+      embedded: input.embedded === true,
+      ...(input.environmentApps === undefined ? {} : { environmentApps: input.environmentApps }),
+    });
+    const context = await this.browser.newContext({
+      ignoreHTTPSErrors: input.https === true || input.reverseProxy === true,
+    });
+    const page = await context.newPage();
+    await allowClipboard(page, application.origin);
+    const user = new HubUser(application.origin, context, page);
+    await user.claimInstance(input.account);
+    const surface = new AppSetupSurface(page);
+    await surface.expectOnboarding();
+    return {
+      application,
+      page,
+      surface,
+      origin: application.origin,
+      openManagement: async () => {
+        await page.goto(`${application.origin}/apps`);
+        await surface.expectManagement();
+      },
+      returnFromProvider: async (provider, result) => {
+        await page.goto(`${application.origin}/?app=${provider}&result=${result}`);
+      },
+      providerApplicationVersion: (provider) =>
+        providerApplicationVersion(application.databaseUrl, provider),
+      seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
+      prepareSlackSocketWorkflow: () => application.prepareSlackSocketWorkflow(),
+      deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
+      slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
+      restart: () => application.restart(),
+      connectDaemon: () => this.enrollOperatorDaemon(application),
+      openMember: async (member) => {
+        const memberContext = await this.browser.newContext();
+        const memberPage = await memberContext.newPage();
+        const joining = new HubUser(application.origin, memberContext, memberPage);
+        await joining.signUp(member);
+        await joining.createOrganization("Member Organization");
+        return { page: memberPage, close: () => memberContext.close() };
+      },
+      close: () => context.close(),
+    };
   }
 
   /** Two browsers open the same welcome; the one that submits second rejoins the ordinary flow. */
@@ -273,9 +366,9 @@ export class PaseoHub {
         await winnerContext.newPage(),
       );
       await winningUser.openFirstRunSetupForm();
-      await winningUser.completeFirstRunClaim(winner, "Winning Organization");
+      await winningUser.completeFirstRunClaim(winner);
 
-      await losingUser.expectSetupFormFallsBackToSignIn(loser, "Losing Organization");
+      await losingUser.expectSetupFormFallsBackToSignIn(loser);
     } finally {
       await winnerContext.close();
       await loserContext.close();
@@ -410,12 +503,8 @@ export class PaseoHub {
     await this.requireUser(alias).expectDesktopSidebarAndOrganizationMenu();
   }
 
-  async proveAuthenticationPendingLocksMode(
-    alias: string,
-    account: Account,
-    organization: string,
-  ): Promise<void> {
-    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account, organization);
+  async proveAuthenticationPendingLocksMode(alias: string, account: Account): Promise<void> {
+    await this.requireUser(alias).proveAuthenticationPendingLocksMode(account);
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -471,11 +560,11 @@ export class PaseoHub {
        ), activity as (
          insert into trigger_runs
            (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-            configured_trigger_name, status, raw_prompt, prompt, inputs, "values",
+            configured_trigger_name, status, prompt, inputs, "values",
             trigger_context, output_context, deadline_at, deadline_kind, outcome,
             created_at, completed_at)
          select revision.organization_id, revision.project_id, revision.id, receipt.id,
-                'Browser history', 'succeeded', 'Browser history', 'Browser history',
+                'Browser history', 'succeeded', 'Browser history',
                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
                 clock_timestamp(), 'whole_run', 'accepted', clock_timestamp(), clock_timestamp()
          from revision
@@ -705,13 +794,31 @@ export class PaseoHub {
 
   /**
    * Grant the instance-operator flag exactly as an administrator would in production — a single
-   * SQL update, documented in docs/entitlements.md, with no UI. Reload so the client re-reads the
-   * account state and the operator nav appears; the server-side guard already honours the flag.
+   * SQL statement, documented in docs/entitlements.md, with no UI. These journeys are not
+   * app-onboarding journeys, so the same transition also records that the instance has deferred app
+   * setup. Reload so the client re-reads both states and the operator nav appears.
    */
   async grantOperator(alias: string): Promise<void> {
     await this.queryDatabaseRows(
       this.primary.databaseUrl,
-      `update "user" set is_instance_operator = true where lower(email) = lower($1)`,
+      `with promoted as (
+         update "user"
+         set is_instance_operator = true
+         where lower(email) = lower($1)
+         returning id
+       )
+       insert into instance_bootstrap (
+         id, organization_id, owner_user_id, completed_at, app_onboarding_completed_at
+       )
+       select 'default', member.organization_id, promoted.id, now(), now()
+       from promoted
+       join member on member.user_id = promoted.id
+       limit 1
+       on conflict (id) do update
+       set app_onboarding_completed_at = coalesce(
+         instance_bootstrap.app_onboarding_completed_at,
+         excluded.app_onboarding_completed_at
+       )`,
       [this.requireUser(alias).accountEmail],
     );
     await this.page.reload();
@@ -723,6 +830,10 @@ export class PaseoHub {
 
   async expectBillingPageUnavailable(alias: string): Promise<void> {
     await this.requireUser(alias).expectBillingPageUnavailable();
+  }
+
+  async returnToProjects(alias: string): Promise<void> {
+    await this.requireUser(alias).returnToProjects();
   }
 
   async expectBillingWebhookUnavailable(): Promise<void> {
@@ -774,7 +885,7 @@ export class PaseoHub {
 
     await expect
       .poll(() => application.logs())
-      .toContain("rejected product with invalid entitlement metadata");
+      .toContain("billing.catalog.product.validate failed");
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
 
     // A product that loses its paseo_plan tag drops out of the reconciled snapshot: the sync
@@ -1243,8 +1354,8 @@ export class PaseoHub {
       await user.connectGitHub();
       await user.connectDiscord();
       await user.createAnotherOrganization("Conflict Orbit");
-      await user.expectGitHubConnectionUnavailable();
-      await user.expectDiscordConnectionUnavailable();
+      await user.expectGitHubConnectionConflict();
+      await user.expectDiscordConnectionConflict();
     } finally {
       await context.close();
     }
@@ -2190,6 +2301,22 @@ export class PaseoHub {
     }
   }
 
+  /**
+   * What `paseo hub login` leaves behind on the operator's own machine: a daemon enrolled into
+   * their organization and holding a live connection. The enrollment token is written straight
+   * to the database because the CLI's own path through it is the Paseo repository's to prove.
+   */
+  private async enrollOperatorDaemon(application: BuiltApplication): Promise<string> {
+    const enrollmentToken = randomUUID();
+    await application.issueDaemonEnrollment(
+      createHash("sha256").update(enrollmentToken).digest("base64url"),
+    );
+    const daemon = new ContractDaemon(application, this.requests);
+    await daemon.enroll(enrollmentToken);
+    await daemon.connect();
+    return daemon.slug;
+  }
+
   private async issueEnrollmentToken(
     application: BuiltApplication,
     headers: Record<string, string> = machineHeaders(application.machineKey),
@@ -2366,24 +2493,39 @@ class HubUser {
       .fill(replacementPassword);
     await change.getByLabel("Confirm new password").fill(replacementPassword);
     await change.getByRole("button", { name: "Save password" }).click();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await this.skipAppSetup();
     await this.expectActiveOrganization(organizationName);
+  }
+
+  /**
+   * A new instance operator meets app setup before the dashboard. Journeys that are not about
+   * apps pass straight through it, which is exactly what the operator can do.
+   */
+  async skipAppSetup(): Promise<void> {
+    await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    // Apps are followed by the daemon handoff. A journey that is not about either walks through
+    // both, exactly as the operator can, and lands in the default project the way they do.
+    await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Overview" })).toBeVisible();
   }
 
   async completeFirstRunJourney(
     account: Account,
-    organizationName: string,
     armAccountSetupFailure: () => Promise<void>,
   ): Promise<void> {
     await this.expectFirstRunWelcome();
     await this.openFirstRunSetupForm();
-    await this.expectFirstRunPasswordRefused(account, organizationName);
+    await this.captureFirstRunForm("first-run-account.desktop");
+    await this.expectFirstRunPasswordRefused(account);
     await this.expectFirstRunBackReturnsToWelcome();
     // The operator can finish on a phone without a pointer at all — and recover in place when
     // the server refuses the first attempt.
     await this.page.setViewportSize({ width: 390, height: 844 });
     await this.openFirstRunSetupForm();
-    await this.completeFirstRunClaimWithKeyboard(account, organizationName, armAccountSetupFailure);
+    await this.captureFirstRunForm("first-run-account.mobile");
+    await this.completeFirstRunClaimWithKeyboard(account, armAccountSetupFailure);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
     // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
@@ -2391,8 +2533,9 @@ class HubUser {
     await this.page.keyboard.press("Tab");
     await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
 
-    // Setup provisioned a working organization, not just a row: its default project opens.
-    await this.navigation.openProject("Default");
+    // Setup provisioned a working organization, not just a row: onboarding ended inside its
+    // default project, and that project renders.
+    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Default", "Overview");
     await this.returnToProjects();
     // The instance operator surface is the proof that this account owns the instance, not just
     // its organization: the console refuses anyone without the flag, server-side.
@@ -2411,7 +2554,7 @@ class HubUser {
     await signIn.getByLabel("Password").fill(account.password);
     await signIn.getByRole("button", { name: "Sign in" }).click();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    await this.expectActiveOrganization(organizationName);
+    await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 
   /** The welcome screen, first at phone width and then on the desktop layout it scales up to. */
@@ -2434,10 +2577,23 @@ class HubUser {
     await this.page.keyboard.press("Tab");
     await expect(begin).toBeFocused();
     await this.page.keyboard.press("Enter");
-    await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
+    const form = this.page.getByRole("form", { name: "Create your account" });
+    await expect(form).toBeVisible();
+    await expect(form.getByLabel("Email")).toBeVisible();
+    await expect(form.getByLabel("Password")).toBeVisible();
+    await expect(form.getByLabel("Name", { exact: true })).toHaveCount(0);
+    await expect(form.getByLabel("Organization name")).toHaveCount(0);
     // The card that replaced the screen takes focus; the next Tab reaches its first field.
     await expect(this.page.getByRole("heading", { name: "Create your account" })).toBeFocused();
     await expectAccessible(this.page);
+  }
+
+  private async captureFirstRunForm(name: string): Promise<void> {
+    await this.page.screenshot({
+      path: `${SHOTS}/${name}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
   }
 
   /** Leaving setup returns to the welcome card, and takes focus back with it. */
@@ -2449,19 +2605,16 @@ class HubUser {
   }
 
   /** A password below the instance minimum never reaches the server. */
-  private async expectFirstRunPasswordRefused(
-    account: Account,
-    organizationName: string,
-  ): Promise<void> {
-    await this.fillFirstRunSetupForm({ ...account, password: "short" }, organizationName);
+  private async expectFirstRunPasswordRefused(account: Account): Promise<void> {
+    await this.fillFirstRunSetupForm({ ...account, password: "short" });
     await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toHaveCount(0);
   }
 
-  async completeFirstRunClaim(account: Account, organizationName: string): Promise<void> {
+  async completeFirstRunClaim(account: Account): Promise<void> {
     this.email = account.email.toLowerCase();
-    await this.fillFirstRunSetupForm(account, organizationName);
-    await this.expectFirstRunDashboard(organizationName);
+    await this.fillFirstRunSetupForm(account);
+    await this.expectFirstRunDashboard();
   }
 
   /**
@@ -2472,36 +2625,36 @@ class HubUser {
    */
   private async completeFirstRunClaimWithKeyboard(
     account: Account,
-    organizationName: string,
     armAccountSetupFailure: () => Promise<void>,
   ): Promise<void> {
     this.email = account.email.toLowerCase();
     const form = this.page.getByRole("form", { name: "Create your account" });
-    for (const value of [account.name, account.email, account.password, organizationName]) {
+    for (const value of [account.email, account.password]) {
       await this.page.keyboard.press("Tab");
       await this.page.keyboard.type(value);
     }
-    await expect(form.getByLabel("Organization name")).toBeFocused();
+    await expect(form.getByLabel("Password")).toBeFocused();
 
     await armAccountSetupFailure();
     await this.page.keyboard.press("Enter");
     const alert = this.page.getByRole("alert");
-    await expect(alert).toHaveText("We couldn't create your account. Try again.");
-    await expect(alert).toBeFocused();
-    await expect(form.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(
-      account.name,
+    await expect(alert).toContainText(
+      "Hub couldn't finish the first account setup. Reload the page to confirm whether this instance has already been claimed.",
     );
+    await expect(alert).toBeFocused();
+    await expect(form.getByLabel("Email")).toHaveValue(account.email);
+    await expect(form.getByLabel("Password")).toHaveValue(account.password);
     await expectAccessible(this.page);
 
     await form.getByRole("button", { name: "Create account" }).click();
-    await this.expectFirstRunDashboard(organizationName);
+    await this.expectFirstRunDashboard();
   }
 
   /** The dashboard the claim lands on. The signed-in identity lives in the desktop sidebar, so
    * the journey asserts it once it is back at desktop width. */
-  private async expectFirstRunDashboard(organizationName: string): Promise<void> {
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    await this.expectActiveOrganization(organizationName);
+  private async expectFirstRunDashboard(): Promise<void> {
+    await this.skipAppSetup();
+    await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 
   /**
@@ -2509,11 +2662,8 @@ class HubUser {
    * the ordinary sign-in screen — no explanation of instance state, no conflict screen, and the
    * arriving card takes focus like any other.
    */
-  async expectSetupFormFallsBackToSignIn(
-    account: Account,
-    organizationName: string,
-  ): Promise<void> {
-    await this.fillFirstRunSetupForm(account, organizationName);
+  async expectSetupFormFallsBackToSignIn(account: Account): Promise<void> {
+    await this.fillFirstRunSetupForm(account);
     const signIn = this.page.getByRole("heading", { name: "Sign in to Paseo Hub" });
     await expect(signIn).toBeVisible();
     await expect(signIn).toBeFocused();
@@ -2523,12 +2673,18 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
-  private async fillFirstRunSetupForm(account: Account, organizationName: string): Promise<void> {
+  /** Creates the first operator and stops on whatever screen the claim lands on. */
+  async claimInstance(account: Account): Promise<void> {
+    this.email = account.email.toLowerCase();
+    await this.page.goto(this.origin);
+    await this.page.getByRole("button", { name: "Set up Paseo Hub" }).click();
+    await this.fillFirstRunSetupForm(account);
+  }
+
+  private async fillFirstRunSetupForm(account: Account): Promise<void> {
     const form = this.page.getByRole("form", { name: "Create your account" });
-    await form.getByRole("textbox", { name: "Name", exact: true }).fill(account.name);
     await form.getByLabel("Email").fill(account.email);
     await form.getByLabel("Password").fill(account.password);
-    await form.getByLabel("Organization name").fill(organizationName);
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
@@ -2644,7 +2800,7 @@ class HubUser {
     await form.getByRole("button", { name: "Create account" }).click();
   }
 
-  async proveAuthenticationPendingLocksMode(account: Account, organization: string): Promise<void> {
+  async proveAuthenticationPendingLocksMode(account: Account): Promise<void> {
     const serverFunctions = "**/_serverFn/**";
     let authRequests = 0;
     let responseCompleted = () => {};
@@ -2694,11 +2850,6 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(
-      this.page
-        .getByRole("heading", { name: "Choose an organization" })
-        .or(this.page.locator("header").first().getByText(organization, { exact: true })),
-    ).toBeVisible();
   }
 
   async proveAuthenticationSettlementLocksMode(
@@ -2836,7 +2987,7 @@ class HubUser {
         this.page.getByRole("heading", { name: "Choose an organization" }),
       ).toBeVisible();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
     } finally {
       releaseCommand();
@@ -2906,6 +3057,8 @@ class HubUser {
     await menu.getByRole("menuitem", { name, exact: true }).click();
     await expect(menu).toBeHidden();
     await expect(switcher).toContainText(name);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
+    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
   }
 
   async returnToProjects(): Promise<void> {
@@ -2933,7 +3086,7 @@ class HubUser {
         .getByRole("menuitem", { name: destinationOrganization, exact: true })
         .click();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(switcher).toContainText("Acme");
     } finally {
@@ -2953,7 +3106,7 @@ class HubUser {
       await form.getByLabel("Invitee email").fill(invitationEmail);
       await form.getByRole("button", { name: "Create invitation" }).click();
       await expect(this.page.getByRole("alert")).toHaveText(
-        "We couldn't update your account. Try again.",
+        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(this.invitationRow(invitationEmail)).toHaveCount(0);
       await expect(switcher).toContainText("Acme");
@@ -4117,24 +4270,24 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(forged.toString());
   }
 
-  async expectGitHubConnectionUnavailable(): Promise<void> {
+  async expectGitHubConnectionConflict(): Promise<void> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "That provider account is already connected to another organization. Disconnect it there before trying again.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("acme-inc");
   }
 
-  async expectDiscordConnectionUnavailable(): Promise<void> {
+  async expectDiscordConnectionConflict(): Promise<void> {
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "That provider account is already connected to another organization. Disconnect it there before trying again.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("Acme Guild");
@@ -4169,7 +4322,7 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
     await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
     await expect(this.page.getByRole("status")).toHaveText(
-      "The connection could not be completed.",
+      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
     );
   }
 
@@ -4575,6 +4728,100 @@ class HubUser {
     await listbox.getByRole("option", { name: option, exact: true }).click();
     await expect(listbox).toBeHidden();
     await expect(select).toHaveText(option);
+  }
+}
+
+export interface AppSetupSession {
+  application: BuiltApplication;
+  page: Page;
+  surface: AppSetupSurface;
+  origin: string;
+  openManagement(): Promise<void>;
+  returnFromProvider(provider: "github" | "slack" | "discord", result: string): Promise<void>;
+  providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
+  /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
+  seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
+  prepareSlackSocketWorkflow(): Promise<void>;
+  deliverSlackSocketMention(eventId: string): Promise<void>;
+  slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  restart(): Promise<void>;
+  /** Enrolls and connects a daemon into the operator's organization; answers with its slug. */
+  connectDaemon(): Promise<string>;
+  /** A second, ordinary account on the same instance. Never its operator. */
+  openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
+  close(): Promise<void>;
+}
+
+async function seedSignedDelivery(
+  page: Page,
+  origin: string,
+  provider: "github" | "slack",
+): Promise<void> {
+  if (provider === "github") {
+    const body = JSON.stringify({ installation: { id: 42 } });
+    const signature = `sha256=${createHmac("sha256", "phase-zero-webhook-secret")
+      .update(body)
+      .digest("hex")}`;
+    const response = await page.request.post(`${origin}/webhook`, {
+      data: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": `delivery-${randomUUID()}`,
+        "x-github-event": "ping",
+        "x-hub-signature-256": signature,
+      },
+    });
+    expect(response.ok()).toBe(true);
+    return;
+  }
+
+  const timestamp = String(Math.floor(Date.now() / 1_000));
+  const body = JSON.stringify({
+    type: "event_callback",
+    team_id: "T-ACME",
+    api_app_id: "browser-slack-app",
+    event_id: `event-${randomUUID()}`,
+    event_time: Number(timestamp),
+    event: {
+      type: "app_mention",
+      user: "U1",
+      channel: "C1",
+      text: "<@B1> verify delivery",
+      ts: `${timestamp}.000100`,
+      event_ts: `${timestamp}.000100`,
+    },
+  });
+  const signature = `v0=${createHmac("sha256", "phase-zero-slack-webhook-secret")
+    .update("v0:")
+    .update(timestamp)
+    .update(":")
+    .update(body)
+    .digest("hex")}`;
+  const response = await page.request.post(`${origin}/api/integrations/slack/events`, {
+    data: body,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+  });
+  expect(response.ok()).toBe(true);
+}
+
+async function providerApplicationVersion(
+  databaseUrl: string,
+  provider: "github" | "slack" | "discord",
+): Promise<number | null> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query<{ version: number }>(
+      `select version from runtime_provider_configuration where provider = $1`,
+      [provider],
+    );
+    return result.rows[0]?.version ?? null;
+  } finally {
+    await client.end();
   }
 }
 
@@ -5156,6 +5403,10 @@ function readSocketData(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString();
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString();
   return Buffer.from(data).toString();
+}
+
+function plainLogs(value: string): string {
+  return value.replace(/\u001B\[[0-9;]*m/gu, "");
 }
 
 async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
