@@ -426,6 +426,27 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it("uses the push payload sender for team authorization", async () => {
+    const base = configFor({ from_teams: ["boudra/maintainers"] });
+    const trigger = base.triggers[0]!;
+    const config = { ...base, triggers: [{ ...trigger, on: "github.push" }] };
+    const memberships = new TestTeamMemberships(true);
+    const event = eventFor("push", {
+      after: "commit-sha",
+      ref: "refs/heads/main",
+    });
+
+    assert.equal((await matchTriggers(config, event, { teamMemberships: memberships })).length, 1);
+    assert.deepEqual(memberships.checks, [
+      {
+        installationId: 42,
+        organization: "boudra",
+        teamSlug: "maintainers",
+        username: "boudra",
+      },
+    ]);
+  });
+
   it("treats direct-user and team allowlists as alternatives", async () => {
     const config = configFor({
       repo: "boudra/faro",

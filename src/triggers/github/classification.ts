@@ -4,6 +4,7 @@ import {
   PullRequestPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
   PullRequestReviewPayloadSchema,
+  PushPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 
@@ -52,7 +53,16 @@ export function classifyGitHubEvent(event: NormalizedGitHubEvent): GitHubClassif
   if (event.type === "issue_comment") return classifyIssueComment(event);
   if (event.type === "pull_request_review") return classifyReview(event);
   if (event.type === "pull_request_review_comment") return classifyReviewComment(event);
+  if (event.type === "push") return classifyPush(event);
   return emptyClassification();
+}
+
+function classifyPush(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
+  const payload = PushPayloadSchema.parse(event.payload);
+  return {
+    ...emptyClassification(),
+    actor: payload.sender?.login ?? "",
+  };
 }
 
 function classifyIssue(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
