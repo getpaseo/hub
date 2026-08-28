@@ -105,7 +105,7 @@ paseo hub connect https://hub.example.com
 The image is published as `ghcr.io/getpaseo/hub:latest`.
 
 See the [self-hosting guide](https://paseo.sh/docs/hub/self-hosting) for production deployment details.
-For the self-hosted Linear setup and a project-scout workflow, see [docs/linear.md](docs/linear.md).
+For Linear setup and workflows, see the public [Linear app](https://paseo.sh/docs/hub/self-hosting/linear-app) and [Linear triggers](https://paseo.sh/docs/hub/triggers/linear) guides.
 
 ## Provider options and Hub tools
 
