@@ -28,6 +28,14 @@ const McpToolRefSchema = z
   })
   .strict();
 
+const WorkspaceAffinitySchema = z
+  .object({
+    key: z.string().trim().min(1).max(512),
+    retainUntil: z.string().datetime(),
+    autoArchive: z.boolean(),
+  })
+  .strict();
+
 export const HubExecutionAgentSnapshotSchema = z
   .object({
     id: z.string(),
@@ -124,6 +132,7 @@ export const HubExecutionAgentCreateRequestSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   mcpServers: z.record(z.string(), McpHttpServerConfigSchema).optional(),
   worktree: WorktreeTargetSchema.optional(),
+  workspaceAffinity: WorkspaceAffinitySchema.optional(),
 });
 
 export const HubExecutionAgentValidateRequestSchema = z.object({
@@ -160,6 +169,9 @@ export const HubExecutionAgentCreateResponseSchema = z.object({
     agent: HubExecutionAgentSnapshotSchema.nullable(),
     success: z.boolean(),
     toolPolicyApplied: z.literal(true).optional(),
+    // Progressive capability acknowledgement. Omission means the create succeeded with the
+    // daemon's ordinary fresh-workspace behavior.
+    workspaceAffinityApplied: z.literal(true).optional(),
     error: z
       .union([
         z.string(),

@@ -209,6 +209,17 @@ export function createDiscordTriggerProvider(options: {
         },
       };
     },
+    workspaceAffinityKey(triggerContext) {
+      const target = triggerContext.target;
+      const thread = triggerContext.event.discord.trigger_message.thread;
+      return JSON.stringify([
+        "discord",
+        triggerContext.event.discord.connection_id,
+        target.guildId,
+        thread?.parent_channel_id ?? target.channelId,
+        thread?.id ?? target.messageId,
+      ]);
+    },
     async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
       if (discordReactionPhase(reactionState) !== undefined) return reactionState;
       await reactSafely(options.bot, triggerContext.target, "eyes");

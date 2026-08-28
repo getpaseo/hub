@@ -81,6 +81,18 @@ describe("daemon socket generations", () => {
     });
   });
 
+  it("lets an older daemon ignore workspace affinity without blocking execution", async () => {
+    const pending = await daemon.pendingCreate("affinity-create", { workspaceAffinity: true });
+    assert.deepEqual(pending.request["workspaceAffinity"], {
+      key: "thread-1",
+      retainUntil: "2026-08-06T12:02:00.000Z",
+      autoArchive: true,
+    });
+    daemon.respondCreate(pending, { agentId: "agent-affinity", toolPolicyApplied: true });
+
+    assert.deepEqual(await pending.promise, { id: "agent-affinity" });
+  });
+
   it("forwards agent status updates to the execution subscriber", async () => {
     const event = await daemon.reportAgentStatus("execution-1", "idle");
 

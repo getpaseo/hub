@@ -613,6 +613,56 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("allows explicit workspace affinity keys without letting prompt text select a workspace", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...trigger,
+          steps: [
+            {
+              ...step,
+              workspace_affinity: {
+                key: "review-${{ paseo.trigger.conversation_key }}",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.workspaceAffinity, {
+      key: "review-${{ paseo.trigger.conversation_key }}",
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            steps: [{ ...step, workspace_affinity: { key: "shared-release-triage" } }],
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...step, workspace_affinity: { key: "${{ paseo.prompt }}" } }],
+            },
+          ],
+        }),
+      /paseo\.prompt.*authority-bearing/iu,
+    );
+  });
+
   it("rejects the removed prompt inventory compatibility key", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(

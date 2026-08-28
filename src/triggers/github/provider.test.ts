@@ -70,6 +70,26 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.equal(match.invocation.prompt, prompt);
   });
 
+  it("derives a stable authenticated affinity key for comments on the same GitHub item", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const first = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    const secondEvent = { ...createEvent({ body: "follow up @paseo" }), id: "github-delivery-2" };
+    const second = (await provider.match(external(project.id, revision.id, secondEvent)))[0];
+    if (!isAcceptedTriggerProviderMatch(first) || !isAcceptedTriggerProviderMatch(second)) {
+      throw new Error("expected accepted matches");
+    }
+
+    assert.equal(
+      provider.workspaceAffinityKey?.(first.triggerContext),
+      JSON.stringify(["github", null, 7, "issue", 211]),
+    );
+    assert.equal(
+      provider.workspaceAffinityKey?.(first.triggerContext),
+      provider.workspaceAffinityKey?.(second.triggerContext),
+    );
+  });
+
   it("matches a literal one-step prompt only after the security filters pass", async () => {
     const { project, revision, store } = await activeConfiguration();
     const reactions = new TestReactions();

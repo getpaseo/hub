@@ -160,6 +160,8 @@ const EnvironmentSchema = z.discriminatedUnion("kind", [
 
 const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
 
+const WorkspaceAffinitySchema = z.object({ key: z.string().trim().min(1).max(512) }).strict();
+
 const StepSchema = z
   .object({
     id: z.string().min(1),
@@ -174,6 +176,7 @@ const StepSchema = z
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
+    workspace_affinity: WorkspaceAffinitySchema.optional(),
   })
   .strict();
 
@@ -235,6 +238,10 @@ export interface CompiledInput {
   choices?: readonly JsonPrimitive[] | undefined;
 }
 
+export interface CompiledWorkspaceAffinity {
+  key: string;
+}
+
 export interface CompiledStep {
   id: string;
   environment: string;
@@ -248,6 +255,7 @@ export interface CompiledStep {
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max: number; required: boolean }[];
   autoArchive: boolean;
+  workspaceAffinity?: CompiledWorkspaceAffinity | undefined;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -348,6 +356,10 @@ const CompiledInputSchema: z.ZodType<CompiledInput> = z
   })
   .strict();
 
+const CompiledWorkspaceAffinitySchema: z.ZodType<CompiledWorkspaceAffinity> = z
+  .object({ key: z.string().trim().min(1).max(512) })
+  .strict();
+
 const CompiledEnvironmentSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -403,6 +415,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
+    workspaceAffinity: CompiledWorkspaceAffinitySchema.optional(),
   })
   .strict();
 
@@ -599,6 +612,9 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
+    ...(step.workspace_affinity === undefined
+      ? {}
+      : { workspaceAffinity: { key: step.workspace_affinity.key } }),
   };
 }
 
@@ -853,6 +869,15 @@ function validateExpressionContract(
         }
       });
     }
+    if (step.workspaceAffinity !== undefined) {
+      compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity", "key"], () =>
+        validateWorkspaceAffinityTemplate(
+          step.workspaceAffinity!.key,
+          ordinal,
+          `step ${step.id} workspace_affinity.key`,
+        ),
+      );
+    }
     for (const [index, block] of step.prompt.entries()) {
       compileAt(["triggers", triggerName, "steps", step.id, "prompt", index], () =>
         validateTemplate(
@@ -994,32 +1019,43 @@ function validateExpressionContract(
     }
   }
 
+  function validateWorkspaceAffinityTemplate(value: string, ordinal: number, path: string): void {
+    let cursor = 0;
+    while (true) {
+      const start = value.indexOf(EXPRESSION_START, cursor);
+      if (start < 0) return;
+      const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
+      if (end < 0) throw new Error(`${path} uses an unterminated expression`);
+      const expression = parseExpression(value.slice(start + EXPRESSION_START.length, end));
+      for (const reference of expressionPaths(expression)) {
+        validateReference(reference, ordinal, path, true, false, true);
+        if (reference.namespace === "values") validateValue(reference.name, ordinal);
+      }
+      if (!isAffinityKeyExpression(expression)) {
+        throw new Error(
+          `${path} uses an unbounded key; use paseo.trigger.conversation_key or finite choices`,
+        );
+      }
+      cursor = end + EXPRESSION_END.length;
+    }
+  }
+
   function validateReference(
     reference: ExpressionPath,
     ordinal: number,
     path: string,
     authorityBearing: boolean,
     contextAllowed: boolean,
+    conversationKeyAllowed = false,
   ): void {
     if (reference.namespace === "paseo") {
-      if (reference.path === "prompt") {
-        if (authorityBearing)
-          throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
-        return;
-      }
-      if (reference.path === "context") {
-        if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
-        return;
-      }
-      if (reference.path[0] === "execution") {
-        throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
-      }
-      const inputName = reference.path[1];
-      const input = trigger.inputs[inputName];
-      if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
-      if (authorityBearing && input.choices === undefined) {
-        throw new Error(`${path} uses input ${inputName} without finite choices`);
-      }
+      validatePaseoReference(
+        reference,
+        path,
+        authorityBearing,
+        contextAllowed,
+        conversationKeyAllowed,
+      );
       return;
     }
     if (reference.namespace === "values") {
@@ -1046,6 +1082,45 @@ function validateExpressionContract(
     }
   }
 
+  function validatePaseoReference(
+    reference: Extract<ExpressionPath, { namespace: "paseo" }>,
+    path: string,
+    authorityBearing: boolean,
+    contextAllowed: boolean,
+    conversationKeyAllowed: boolean,
+  ): void {
+    if (reference.path === "prompt") {
+      if (authorityBearing)
+        throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
+      return;
+    }
+    if (reference.path === "context") {
+      if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
+      return;
+    }
+    if (reference.path[0] === "execution") {
+      throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
+    }
+    if (reference.path[0] === "trigger") {
+      if (
+        !conversationKeyAllowed ||
+        reference.path[1] !== "conversation_key" ||
+        reference.path.length !== 2
+      ) {
+        throw new Error(
+          `${path} uses paseo.trigger.conversation_key outside workspace_affinity.key`,
+        );
+      }
+      return;
+    }
+    const inputName = reference.path[1];
+    const input = trigger.inputs[inputName];
+    if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
+    if (authorityBearing && input.choices === undefined) {
+      throw new Error(`${path} uses input ${inputName} without finite choices`);
+    }
+  }
+
   function isFiniteAuthorityExpression(expression: Expression): boolean {
     if (expression.kind === "literal") return expression.value !== null;
     if (expression.kind === "not") return true;
@@ -1069,6 +1144,24 @@ function validateExpressionContract(
     const referencedOrdinal = stepOrdinals.get(reference.stepId);
     const step = referencedOrdinal === undefined ? undefined : trigger.steps[referencedOrdinal];
     return step?.output !== undefined && hasFiniteSchemaChoices(step.output.schema, reference.path);
+  }
+
+  function isAffinityKeyExpression(expression: Expression): boolean {
+    if (expression.kind === "literal") return true;
+    if (expression.kind === "not") return isAffinityKeyExpression(expression.value);
+    if (expression.kind === "binary") {
+      return isAffinityKeyExpression(expression.left) && isAffinityKeyExpression(expression.right);
+    }
+    const reference = expression.value;
+    if (
+      reference.namespace === "paseo" &&
+      Array.isArray(reference.path) &&
+      reference.path[0] === "trigger" &&
+      reference.path[1] === "conversation_key"
+    ) {
+      return true;
+    }
+    return isFiniteAuthorityExpression(expression);
   }
 
   if (
@@ -1229,6 +1322,7 @@ function validateStepEnvironmentContract(
       }
     }
   }
+
   if (github !== undefined) {
     validateGitHubAuthority(github, `trigger ${triggerName} step ${stepId} github`);
     if (github.repositories === undefined && !triggerEvent.startsWith("github.")) {
@@ -1302,7 +1396,8 @@ function isExpressionPath(value: unknown): boolean {
       (Array.isArray(value["path"]) &&
         value["path"].length === 2 &&
         ((value["path"][0] === "inputs" && typeof value["path"][1] === "string") ||
-          (value["path"][0] === "execution" && value["path"][1] === "id"))))
+          (value["path"][0] === "execution" && value["path"][1] === "id") ||
+          (value["path"][0] === "trigger" && value["path"][1] === "conversation_key"))))
   );
 }
 

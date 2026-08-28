@@ -115,6 +115,41 @@ describe("Discord Phase 1 trigger provider", () => {
     );
   });
 
+  it("uses one authenticated affinity key for a Discord thread starter and its replies", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+    const starter = (
+      await provider.match(
+        external(project.id, revision.id, event({ channelId: "200", messageId: "300" })),
+      )
+    )[0];
+    const reply = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          event({
+            channelId: "300",
+            threadId: "300",
+            parentChannelId: "200",
+            messageId: "301",
+          }),
+        ),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(starter) || !isAcceptedTriggerProviderMatch(reply)) {
+      throw new Error("expected accepted matches");
+    }
+
+    assert.equal(
+      provider.workspaceAffinityKey?.(starter.triggerContext),
+      provider.workspaceAffinityKey?.(reply.triggerContext),
+    );
+  });
+
   it("routes a durable Discord receipt to the configured connection", async () => {
     const database = createMemoryDatabase();
     const connection = {

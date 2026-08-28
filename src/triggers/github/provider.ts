@@ -128,7 +128,12 @@ export type GitHubReactionSubject =
 
 export interface GitHubTriggerContext {
   provider: "github";
-  target: { installationId: number; repository: string };
+  target: {
+    installationId: number;
+    repository: string;
+    repositoryId: number;
+    connectionId: string | null;
+  };
   event: GitHubMergeData;
   reactionSubject: GitHubReactionSubject | null;
 }
@@ -171,7 +176,12 @@ export function createGitHubTriggerProvider(options: {
           throw new Error(`compiled trigger not found: ${match.trigger.name}`);
         const triggerContext: GitHubTriggerContext = {
           provider: "github",
-          target: { installationId: event.installationId, repository: event.repo },
+          target: {
+            installationId: event.installationId,
+            repository: event.repo,
+            repositoryId: event.repositoryId,
+            connectionId: externalTrigger.connectionId ?? null,
+          },
           event: buildGitHubMergeData(event),
           reactionSubject: reactionSubjectForEvent(event),
         };
@@ -209,6 +219,17 @@ export function createGitHubTriggerProvider(options: {
     },
     async materializeContext(launch) {
       return launch.triggerContext.event;
+    },
+    workspaceAffinityKey(triggerContext) {
+      const item = triggerContext.event.github.item;
+      if (item === null || item.number === null) return undefined;
+      return JSON.stringify([
+        "github",
+        triggerContext.target.connectionId,
+        triggerContext.target.repositoryId,
+        item.type,
+        item.number,
+      ]);
     },
     async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
       if (triggerContext.reactionSubject === null) return null;

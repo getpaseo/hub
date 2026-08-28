@@ -142,6 +142,11 @@ export interface TriggerProvider<
   materializeContext?(
     launch: TriggerContextMaterialization<TriggerContext>,
   ): Promise<MaterializedContext>;
+  /**
+   * Returns a provider-authenticated conversation identity for workspace affinity. It must never
+   * be derived from untrusted prompt text.
+   */
+  workspaceAffinityKey?(triggerContext: TriggerContext): string | undefined;
   onDispatchAccepted?(
     triggerContext: TriggerContext,
     outputContext: OutputContext,

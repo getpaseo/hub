@@ -21,6 +21,17 @@ describe("Hub execution create protocol", () => {
     assert.equal(
       HubExecutionAgentCreateRequestSchema.safeParse({
         ...request,
+        workspaceAffinity: {
+          key: "slack:thread:1700000000.000001",
+          retainUntil: "2026-08-06T12:02:00.000Z",
+          autoArchive: true,
+        },
+      }).success,
+      true,
+    );
+    assert.equal(
+      HubExecutionAgentCreateRequestSchema.safeParse({
+        ...request,
         toolPolicy: { preapproved: [{ kind: "native", tool: "Bash" }] },
       }).success,
       false,
