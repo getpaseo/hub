@@ -112,6 +112,79 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("rejects execution-scoped worktree branches for workspace affinity steps", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const executionScopedEnvironment = {
+      ...environment,
+      worktree: {
+        mode: "branch-off" as const,
+        newBranch: "trigger-${{ paseo.execution.id }}",
+      },
+    };
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          environments: [executionScopedEnvironment],
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: { key: "shared-review" },
+                },
+              ],
+            },
+          ],
+        }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.deepEqual(Reflect.get(error, "path"), [
+          "triggers",
+          "run",
+          "steps",
+          "work",
+          "workspace_affinity",
+        ]);
+        assert.match(error.message, /stable worktree target.*paseo\.execution\.id/iu);
+        return true;
+      },
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          environments: [
+            environment,
+            { ...executionScopedEnvironment, name: "execution-scoped-runner" },
+          ],
+          triggers: [
+            {
+              ...trigger,
+              inputs: {
+                runner: {
+                  type: "string",
+                  required: true,
+                  choices: ["runner", "execution-scoped-runner"],
+                },
+              },
+              steps: [
+                {
+                  ...step,
+                  environment: "${{ paseo.inputs.runner }}",
+                  workspace_affinity: { key: "shared-review" },
+                },
+              ],
+            },
+          ],
+        }),
+      /environment execution-scoped-runner.*stable worktree target/iu,
+    );
+  });
+
   it("preserves opaque provider options and leaves an omitted mode omitted", () => {
     const sourceOptions = {
       sandbox_workspace_write: {

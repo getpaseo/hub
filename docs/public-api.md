@@ -81,7 +81,7 @@ workspace affinity.
 Affinity does not serialize matching executions: each gets its own agent in the shared workspace.
 All uses of a key must keep the same daemon target, cwd, worktree target, and auto-archive policy;
 the daemon rejects a mismatch rather than mixing state. In particular, an execution-ID-derived
-worktree branch is intentionally incompatible with reuse.
+worktree branch is incompatible with reuse and is rejected during configuration compilation.
 
 `deliveryKey` is caller-supplied request identity for the existing durable manual-event path. Hub namespaces it by the authenticated organization and resolved project before persistence, so the same caller key can be used independently in different tenants or projects. Existing receipt/run de-duplication applies, but this API does not promise exactly-once execution or guaranteed response replay; retries can still fail or conflict during restart and timing races. A successful representation contains `deliveryKey`, `providerEventReceiptId`, `triggerRunId`, `configuredTriggerName`, and the durable `workflowStatus`.
 

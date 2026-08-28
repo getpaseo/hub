@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   expressionPaths,
+  expressionPathsInTemplate,
   parseExpression,
   validateExecutionTemplate,
   type Expression,
@@ -884,6 +885,9 @@ function validateExpressionContract(
           `step ${step.id} workspace_affinity.key`,
         ),
       );
+      compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity"], () =>
+        validateWorkspaceAffinityEnvironmentSelection(step.environment, ordinal, step.id),
+      );
     }
     for (const [index, block] of step.prompt.entries()) {
       compileAt(["triggers", triggerName, "steps", step.id, "prompt", index], () =>
@@ -909,6 +913,31 @@ function validateExpressionContract(
       }
       if (environments.get(name)?.kind !== "daemon") {
         throw new Error(`step ${stepId} environment ${name} must be a daemon environment`);
+      }
+    }
+  }
+
+  function validateWorkspaceAffinityEnvironmentSelection(
+    template: string,
+    ordinal: number,
+    stepId: string,
+  ): void {
+    const selected = finiteTemplateValues(template, ordinal);
+    if (selected === undefined) return;
+    for (const name of selected) {
+      const environment = environments.get(name);
+      if (environment?.kind !== "daemon" || environment.worktree?.mode !== "branch-off") continue;
+      const executionScoped = expressionPathsInTemplate(environment.worktree.newBranch).some(
+        (reference) =>
+          reference.namespace === "paseo" &&
+          Array.isArray(reference.path) &&
+          reference.path[0] === "execution" &&
+          reference.path[1] === "id",
+      );
+      if (executionScoped) {
+        throw new Error(
+          `step ${stepId} workspace affinity environment ${name} must use a stable worktree target; worktree.newBranch references paseo.execution.id`,
+        );
       }
     }
   }
