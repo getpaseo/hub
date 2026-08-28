@@ -45,7 +45,7 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     const github = surface.github;
     await surface.expectOnboarding();
 
-    // Untouched, and already the right shape: three closed choices with no manual in sight.
+    // Untouched, and already the right shape: four closed choices with no manual in sight.
     for (const section of surface.sections()) await section.expectCollapsed();
     await surface.shoot(SHOTS, "apps-01-chooser.mobile");
 
@@ -119,11 +119,23 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-11-discord-connected.mobile");
 
+    await surface.discord.collapse();
+    await surface.linear.expand();
+    await surface.linear.expectStackedLayout();
+    await surface.linear.fillWorkingCredentials();
+    await surface.linear.save();
+    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
+    await page.getByRole("link", { name: "Accept installation" }).click();
+    await surface.linear.expectStatus("Connected");
+    await surface.linear.expectSummary({ Application: "Linear app", Workspaces: "Acme" });
+    await surface.expectNothingClipped();
+    await surface.shoot(SHOTS, "apps-11b-linear-connected.mobile");
+
     // The way out is a full-width button pinned to the bottom of a phone screen.
     const finish = surface.wayOut("Finish");
     await expect(finish).toBeInViewport();
-    await surface.discord.collapse();
-    await surface.shoot(SHOTS, "apps-12-all-three-connected.mobile");
+    await surface.linear.collapse();
+    await surface.shoot(SHOTS, "apps-12-all-four-connected.mobile");
 
     await surface.leave("Finish");
     await surface.shoot(SHOTS, "apps-13-finish-dashboard.mobile");
@@ -156,6 +168,7 @@ test("Slack Socket Mode and Discord read correctly on a phone", async ({ hub }) 
       GitHub: "Not set up",
       Slack: "Not set up",
       Discord: "Connected",
+      Linear: "Not set up",
     });
     // Instance → Apps renders the same sections inside the dashboard shell, whose padding leaves
     // each section narrower still. The generated URLs and the connected result read there too.

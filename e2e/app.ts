@@ -246,7 +246,7 @@ interface ApplicationEnvironmentInput {
   githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
   providerApplications?: boolean;
-  environmentApps?: readonly ("github" | "slack" | "discord")[];
+  environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
@@ -346,7 +346,7 @@ async function createTestTls(): Promise<TestTls> {
  * connectable — read-only in the UI is a product rule, not a broken app.
  */
 function environmentAppVariables(
-  providers: readonly ("github" | "slack" | "discord")[],
+  providers: readonly ("github" | "slack" | "discord" | "linear")[],
 ): NodeJS.ProcessEnv {
   const variables: NodeJS.ProcessEnv = {};
   if (providers.includes("github")) {
@@ -367,6 +367,11 @@ function environmentAppVariables(
     variables["SLACK_CLIENT_ID"] = "browser-slack-client";
     variables["SLACK_CLIENT_SECRET"] = "browser-slack-client-secret";
     variables["SLACK_SIGNING_SECRET"] = "phase-zero-slack-webhook-secret";
+  }
+  if (providers.includes("linear")) {
+    variables["LINEAR_CLIENT_ID"] = "browser-linear-client";
+    variables["LINEAR_CLIENT_SECRET"] = "browser-linear-client-secret";
+    variables["LINEAR_WEBHOOK_SECRET"] = "browser-linear-webhook-secret";
   }
   return variables;
 }
