@@ -60,6 +60,41 @@ describe("Linear trigger matching", () => {
       0,
     );
   });
+
+  it("keeps triggers isolated to their configured Linear connection", () => {
+    const connectionId = "11111111-1111-4111-8111-111111111111";
+    const config = configuration();
+    const scopedConfig = Object.assign({}, config, {
+      triggers: config.triggers.map((trigger) =>
+        Object.assign({}, trigger, {
+          filters: Object.assign({}, trigger.filters, { connectionId }),
+        }),
+      ),
+    });
+
+    const events = [
+      {
+        event: issue({ action: "update", updatedFrom: { stateId: "backlog" } }),
+        expected: "scout",
+      },
+      {
+        event: issue({ action: "update", updatedFrom: { assigneeId: null } }),
+        expected: "assignment",
+      },
+      { event: commentEvent(), expected: "comment" },
+    ];
+
+    for (const { event, expected } of events) {
+      assert.deepEqual(
+        matchLinearTriggers(scopedConfig, event, connectionId).map((match) => match.trigger.name),
+        [expected],
+      );
+      assert.equal(
+        matchLinearTriggers(scopedConfig, event, "22222222-2222-4222-8222-222222222222").length,
+        0,
+      );
+    }
+  });
 });
 
 function configuration() {
