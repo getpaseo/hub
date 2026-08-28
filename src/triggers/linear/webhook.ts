@@ -74,7 +74,11 @@ async function verifyLinearRequest(
   }
   const body = await readBoundedRequestBody(request, MAX_WEBHOOK_BYTES);
   if (body instanceof Response) return body;
-  if (!verifyLinearSignature(options.signingSecret, body, signature)) {
+  const normalizedSignature = canonicalLinearSignature(signature);
+  if (
+    normalizedSignature === undefined ||
+    !verifyLinearSignature(options.signingSecret, body, normalizedSignature)
+  ) {
     logger.warn("rejecting Linear event because signature verification failed");
     return new Response("Unauthorized", { status: 401 });
   }
@@ -94,7 +98,7 @@ async function verifyLinearRequest(
     deliveryId,
     eventName: request.headers.get("linear-event"),
     payload,
-    signatureHash: createHash("sha256").update(signature).digest("hex"),
+    signatureHash: createHash("sha256").update(normalizedSignature).digest("hex"),
     receivedAt,
   };
 }
@@ -185,11 +189,17 @@ export function verifyLinearSignature(
   body: string | Uint8Array,
   signature: string,
 ): boolean {
-  const normalizedSignature = signature.startsWith("sha256=") ? signature.slice(7) : signature;
-  if (!/^[a-f0-9]{64}$/iu.test(normalizedSignature)) return false;
+  const normalizedSignature = canonicalLinearSignature(signature);
+  if (normalizedSignature === undefined) return false;
   const expected = createHmac("sha256", secret).update(body).digest();
   const actual = Buffer.from(normalizedSignature, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/** A verified signature's spelling is not evidence; its normalized bytes are. */
+function canonicalLinearSignature(signature: string): string | undefined {
+  const unprefixed = signature.startsWith("sha256=") ? signature.slice(7) : signature;
+  return /^[a-f0-9]{64}$/iu.test(unprefixed) ? unprefixed.toLowerCase() : undefined;
 }
 
 /** The timestamp is inside the HMAC-protected body, so it can safely prevent replay. */

@@ -16,6 +16,7 @@ describe("Linear webhook", () => {
     const body = new TextEncoder().encode('{"title":"héllo"}');
     const signature = sign(body);
     assert.equal(verifyLinearSignature(SECRET, body, signature), true);
+    assert.equal(verifyLinearSignature(SECRET, body, `sha256=${signature.toUpperCase()}`), true);
     assert.equal(verifyLinearSignature(SECRET, body, sign("different")), false);
     assert.equal(verifyLinearSignature(SECRET, body, "short"), false);
     assert.equal(verifyLinearWebhookTimestamp({ webhookTimestamp: NOW }, NOW), true);
@@ -70,6 +71,36 @@ describe("Linear webhook", () => {
       },
       receivedAt: new Date(NOW),
     });
+  });
+
+  it("canonicalizes accepted signature evidence before receipt deduplication", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    const endpoint = webhookSource((input) => {
+      accepted.push(input);
+      return Promise.resolve(acceptedEvent(input));
+    });
+    const body = JSON.stringify(issueEnvelope());
+    const signature = sign(body);
+
+    assert.equal(
+      (await endpoint.handle(request(issueEnvelope(), "Issue", { signature }))).status,
+      200,
+    );
+    assert.equal(
+      (
+        await endpoint.handle(
+          request(issueEnvelope(), "Issue", { signature: `sha256=${signature.toUpperCase()}` }),
+        )
+      ).status,
+      200,
+    );
+
+    assert.deepEqual(
+      accepted.map((input) => input.signatureHash),
+      [acceptedSignatureHash(), acceptedSignatureHash()],
+    );
   });
 
   it("hydrates a comment issue before project-scoped routing", async () => {
@@ -174,15 +205,19 @@ function webhookSource(
   return createLinearWebhookSource({ signingSecret: SECRET, now: () => NOW, accept });
 }
 
-function request(payload: unknown, event = "Issue"): Request {
+function request(
+  payload: unknown,
+  event = "Issue",
+  evidence: { deliveryId?: string; signature?: string } = {},
+): Request {
   const body = JSON.stringify(payload);
   return new Request("https://hub.test/api/integrations/linear/events", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "linear-delivery": "delivery-1",
+      "linear-delivery": evidence.deliveryId ?? "delivery-1",
       "linear-event": event,
-      "linear-signature": sign(body),
+      "linear-signature": evidence.signature ?? sign(body),
     },
     body,
   });
