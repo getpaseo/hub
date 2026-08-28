@@ -1166,6 +1166,38 @@ describe("durable multi-step workflow engine", () => {
     assert.deepEqual(dispatches, []);
   });
 
+  it("does not resolve provider affinity for a literal workspace key", async () => {
+    const fixture = await workflowFixture({
+      rawConfiguration: affinityConfiguration(" shared-release-triage "),
+    });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => {
+        throw new Error("literal affinity must not query the provider");
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.equal(dispatched?.workspaceAffinity?.key, " shared-release-triage ");
+  });
+
   it("times out a live step when the whole-run deadline expires", async () => {
     let now = new Date("2026-08-06T12:00:00.000Z");
     const fixture = await workflowFixture({
@@ -1537,6 +1569,51 @@ describe("durable multi-step workflow engine", () => {
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.equal(execution?.launchIntent?.prompt, 'Context: {"ambient":"once"}\nTrigger: run');
   });
+
+  it("does not resolve conversation affinity when recovering a persisted pre-handoff execution", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    let affinityLookups = 0;
+    let dispatches = 0;
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      workspaceAffinityKey() {
+        affinityLookups += 1;
+        if (affinityLookups > 1) throw new Error("provider registration is unavailable");
+        return "conversation-once";
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches += 1;
+        if (dispatches === 1) throw new Error("dispatch crashed after persistence");
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    now = new Date("2026-08-06T12:00:02.000Z");
+    await engine.processAvailable();
+
+    assert.equal(affinityLookups, 1);
+    assert.equal(dispatches, 2);
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.equal(execution?.launchIntent?.workspaceAffinity?.key, " review-conversation-once ");
+  });
 });
 
 interface Fixture {
@@ -1733,7 +1810,9 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
   };
 }
 
-function affinityConfiguration(): Record<string, unknown> {
+function affinityConfiguration(
+  key = " review-${{ paseo.trigger.conversation_key }} ",
+): Record<string, unknown> {
   return {
     environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
     triggers: [
@@ -1752,7 +1831,7 @@ function affinityConfiguration(): Record<string, unknown> {
             prompt: [{ text: "run" }],
             auto_archive: true,
             workspace_affinity: {
-              key: " review-${{ paseo.trigger.conversation_key }} ",
+              key,
             },
           },
         ],

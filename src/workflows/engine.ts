@@ -479,11 +479,6 @@ export class DurableWorkflowEngine {
     }
     const step = trigger.steps[next.ordinal];
     if (step === undefined) throw new Error(`compiled step missing for ${next.stepId}`);
-    const triggerConversationKey = workspaceAffinityConversationKey(
-      step,
-      this.options.providers ?? [],
-      reconciledRun.triggerContext,
-    );
     return {
       run: reconciledRun,
       configuration,
@@ -491,7 +486,7 @@ export class DurableWorkflowEngine {
       steps,
       next,
       step,
-      context: workflowContext(reconciledRun, steps, trigger.values, triggerConversationKey),
+      context: workflowContext(reconciledRun, steps, trigger.values),
       recoverPreHandoffDispatch,
     };
   }
@@ -589,6 +584,11 @@ export class DurableWorkflowEngine {
     if (existing?.launchIntent !== null && existing?.launchIntent !== undefined) {
       return { executionId: existing.id, intent: existing.launchIntent };
     }
+    const triggerConversationKey = workspaceAffinityConversationKey(
+      step,
+      this.options.providers ?? [],
+      run.triggerContext,
+    );
     const executionId = durableExecutionId({
       triggerRunId: run.id,
       configurationRevisionId: run.configurationRevisionId,
@@ -602,7 +602,11 @@ export class DurableWorkflowEngine {
       trigger,
       step,
       run,
-      { ...context, context: materializedContext },
+      {
+        ...context,
+        context: materializedContext,
+        ...(triggerConversationKey === undefined ? {} : { triggerConversationKey }),
+      },
       stepRunId,
       deadlineAt,
       executionId,
@@ -985,7 +989,6 @@ function workflowContext(
   run: Extract<Awaited<ReturnType<Database["findTriggerRunById"]>>, { outcome: "accepted" }>,
   steps: readonly { stepId: string; status: string; output: unknown }[],
   values: Readonly<Record<string, import("./expression.js").Expression>>,
-  triggerConversationKey?: string,
 ): ExpressionContext {
   return {
     prompt: run.prompt,
@@ -995,7 +998,6 @@ function workflowContext(
       steps.map((step) => [step.stepId, { status: step.status, output: step.output }]),
     ),
     values,
-    ...(triggerConversationKey === undefined ? {} : { triggerConversationKey }),
   };
 }
 
@@ -1035,9 +1037,22 @@ function workspaceAffinityConversationKey(
   providers: readonly TriggerProvider[],
   triggerContext: unknown,
 ): string | undefined {
-  if (step.workspaceAffinity === undefined) return undefined;
+  if (!stepUsesTriggerConversationKey(step)) return undefined;
   return providerForTriggerContext(providers, triggerContext)?.workspaceAffinityKey?.(
     triggerContext,
+  );
+}
+
+function stepUsesTriggerConversationKey(
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+): boolean {
+  if (step.workspaceAffinity === undefined) return false;
+  return expressionPathsInTemplate(step.workspaceAffinity.key).some(
+    (path) =>
+      path.namespace === "paseo" &&
+      Array.isArray(path.path) &&
+      path.path[0] === "trigger" &&
+      path.path[1] === "conversation_key",
   );
 }
 

@@ -663,6 +663,28 @@ describe("workflow compiler", () => {
       /manual\.run does not provide a conversation key/iu,
     );
 
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...conversationTrigger,
+              on: "github.push",
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: {
+                    key: "review-${{ paseo.trigger.conversation_key }}",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      /github\.push does not provide a conversation key/iu,
+    );
+
     assert.doesNotThrow(() =>
       compileHubConfig({
         ...configuration(),
