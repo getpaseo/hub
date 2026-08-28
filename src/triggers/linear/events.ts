@@ -225,23 +225,31 @@ function firstDefined<T>(...values: readonly (T | undefined)[]): T | undefined {
 function normalizePreviousIssue(value: unknown): z.infer<typeof LinearIssuePreviousSchema> {
   const previous = asRecord(value);
   if (previous === undefined) return {};
-  const project = asRecord(previous["project"]);
-  const state = asRecord(previous["state"]);
-  const assignee = asRecord(previous["assignee"]);
   return {
-    ...(hasOwn(previous, "projectId") || project !== undefined
-      ? { projectId: readNullableId(previous, "projectId") ?? readNullableId(project, "id") }
+    ...(hasOwn(previous, "projectId") || hasOwn(previous, "project")
+      ? { projectId: readPreviousRelatedId(previous, "projectId", "project") }
       : {}),
-    ...(hasOwn(previous, "stateId") || state !== undefined
-      ? { stateId: readNullableId(previous, "stateId") ?? readNullableId(state, "id") }
+    ...(hasOwn(previous, "stateId") || hasOwn(previous, "state")
+      ? { stateId: readPreviousRelatedId(previous, "stateId", "state") }
       : {}),
-    ...(hasOwn(previous, "assigneeId") || assignee !== undefined
-      ? { assigneeId: readNullableId(previous, "assigneeId") ?? readNullableId(assignee, "id") }
+    ...(hasOwn(previous, "assigneeId") || hasOwn(previous, "assignee")
+      ? { assigneeId: readPreviousRelatedId(previous, "assigneeId", "assignee") }
       : {}),
     ...(hasOwn(previous, "labelIds") || hasOwn(previous, "labels")
       ? { labelIds: readLabelIds(previous) ?? [] }
       : {}),
   };
+}
+
+function readPreviousRelatedId(
+  previous: Record<string, unknown>,
+  directKey: string,
+  relationKey: string,
+): string | null | undefined {
+  return firstDefined(
+    readNullableId(previous, directKey),
+    previous[relationKey] === null ? null : readNullableId(asRecord(previous[relationKey]), "id"),
+  );
 }
 
 function normalizeActor(value: unknown): { id: string; name?: string } | null {

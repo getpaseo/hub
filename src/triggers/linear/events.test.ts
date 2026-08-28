@@ -44,6 +44,31 @@ describe("Linear event normalization", () => {
 
     assert.deepEqual(event?.actor, { id: "user-1" });
   });
+
+  it("preserves explicit nulls in relation-expanded previous issue values", () => {
+    const event = normalizeLinearEvent({
+      action: "update",
+      type: "Issue",
+      organizationId: "linear-org",
+      updatedFrom: { project: null, state: null, assignee: null },
+      data: {
+        id: "issue-1",
+        title: "Newly scoped issue",
+        description: null,
+        project: { id: "project-1" },
+        state: { id: "state-1" },
+        assignee: { id: "user-1" },
+      },
+    });
+
+    assert.equal(event?.type, "issue");
+    if (event?.type !== "issue") throw new Error("expected an issue event");
+    assert.deepEqual(event.updatedFrom, {
+      projectId: null,
+      stateId: null,
+      assigneeId: null,
+    });
+  });
 });
 
 function normalizeComment(extraData: Record<string, unknown>) {
