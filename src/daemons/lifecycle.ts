@@ -1652,11 +1652,12 @@ export class DaemonDispatchLifecycle {
       .catch(() => undefined)
       .then(async () => this.handleDaemonEvent(executionId, daemonId, event));
     this.pendingStreamHandlersByExecution.set(executionId, current);
-    void current.finally(() => {
+    const clearCurrent = () => {
       if (this.pendingStreamHandlersByExecution.get(executionId) === current) {
         this.pendingStreamHandlersByExecution.delete(executionId);
       }
-    });
+    };
+    void current.then(clearCurrent, clearCurrent);
     return current;
   }
 

@@ -75,6 +75,21 @@ describe("durable Hub action acknowledgement state", () => {
     await lifecycle.stop();
   });
 
+  it("owns a rejected daemon event without leaking it to the process", async () => {
+    const fixture = await acknowledgementFixture();
+    await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+    vi.spyOn(fixture.database, "recordAgentExecutionHubAcknowledgement").mockRejectedValueOnce(
+      new Error("database event write failed"),
+    );
+
+    try {
+      await fixture.connection.emitObserved(turnCompleted());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      await fixture.lifecycle.stop();
+    }
+  });
+
   it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
     const database = createMemoryDatabase();
     let failureHooks = 0;
@@ -276,6 +291,12 @@ class AcknowledgementConnection implements DaemonConnection {
 
   async emit(event: DaemonEvent): Promise<void> {
     for (const handler of this.handlers) await handler(event);
+  }
+
+  async emitObserved(event: DaemonEvent): Promise<void> {
+    for (const handler of this.handlers) {
+      await Promise.resolve(handler(event)).catch(() => undefined);
+    }
   }
 
   async createAgent(): Promise<never> {
