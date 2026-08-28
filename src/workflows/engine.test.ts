@@ -19,7 +19,7 @@ import type {
   ProviderEventReceiptRecord,
   TriggerRunRecord,
 } from "../db/types.js";
-import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
+import type { AcceptedTriggerProviderMatch, TriggerEventName } from "../triggers/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
@@ -1584,6 +1584,7 @@ async function workflowFixture(
         : { resolvedPromptPartials: options.resolvedPromptPartials }),
       ...(options.namedAgents === undefined ? {} : { namedAgents: options.namedAgents }),
     });
+  const eventSource = compiled.triggers[0]?.on ?? "manual.run";
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
       if (environment.kind !== "daemon") return environment;
@@ -1611,7 +1612,7 @@ async function workflowFixture(
     organizationId: "org-1",
     projectId: project.id,
     deliveryId: randomUUID(),
-    source: "manual.run",
+    source: eventSource,
     payload: {},
     receivedAt: new Date(),
   });
@@ -1630,7 +1631,7 @@ async function workflowFixture(
         organizationId: "org-1",
         projectId: project.id,
         configurationRevisionId: revision.id,
-        source: "manual.run",
+        source: eventSource,
         deliveryId: receipt.event.deliveryId,
         payload: { input: message },
         receivedAt: new Date(),
@@ -1738,8 +1739,9 @@ function affinityConfiguration(): Record<string, unknown> {
     triggers: [
       {
         name: "affinity-route",
-        on: "manual.run",
+        on: "slack.mention",
         max_runtime: "2m",
+        filters: { from_users: ["U_ALLOWED"] },
         steps: [
           {
             id: "review",
@@ -1992,9 +1994,12 @@ function finalValueConfiguration(): Record<string, unknown> {
 }
 
 function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
+  const eventName = configuration.triggers[0]?.on ?? "manual.run";
+  assertTriggerEventName(eventName);
+  const providerName = eventName.slice(0, eventName.indexOf("."));
   return {
-    name: "manual",
-    eventNames: ["manual.run"] as const,
+    name: providerName,
+    eventNames: [eventName],
     async match(external): Promise<readonly AcceptedTriggerProviderMatch[]> {
       const trigger = configuration.triggers[0]!;
       const input =
@@ -2007,8 +2012,8 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
       return [
         {
           triggerName: trigger.name,
-          triggerContext: { provider: "manual" },
-          outputContext: { provider: "manual" },
+          triggerContext: { provider: providerName },
+          outputContext: { provider: providerName },
           configurationRevisionId: revisionId,
           hubConfig: configuration,
           invocation,
@@ -2073,6 +2078,10 @@ function baseConfiguration(options: { unavailableValue?: boolean }): Record<stri
       },
     ],
   };
+}
+
+function assertTriggerEventName(value: string): asserts value is TriggerEventName {
+  if (!/^[^.]+\.[^.]+$/u.test(value)) throw new Error(`invalid test trigger event: ${value}`);
 }
 
 function terminalRecoveryConfiguration(): Record<string, unknown> {

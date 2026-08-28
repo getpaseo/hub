@@ -23,6 +23,7 @@ import {
   type CompiledGitHubAuthority,
 } from "./github-authority.js";
 import { validateConnectionTemplate } from "./connection-template.js";
+import { triggerSupportsWorkspaceAffinityConversationKey } from "../triggers/workspace-affinity.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -1115,6 +1116,11 @@ function validateExpressionContract(
       ) {
         throw new Error(
           `${path} uses paseo.trigger.conversation_key outside workspace_affinity.key`,
+        );
+      }
+      if (!triggerSupportsWorkspaceAffinityConversationKey(trigger.on)) {
+        throw new Error(
+          `${path} uses paseo.trigger.conversation_key, but trigger event ${trigger.on} does not provide a conversation key`,
         );
       }
       return;

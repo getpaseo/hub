@@ -616,11 +616,16 @@ describe("workflow compiler", () => {
   it("allows explicit workspace affinity keys without letting prompt text select a workspace", () => {
     const trigger = configuration().triggers[0]!;
     const step = trigger.steps[0]!;
+    const conversationTrigger = {
+      ...trigger,
+      on: "slack.mention",
+      filters: { from_users: ["U_ALLOWED"] },
+    };
     const compiled = compileHubConfig({
       ...configuration(),
       triggers: [
         {
-          ...trigger,
+          ...conversationTrigger,
           steps: [
             {
               ...step,
@@ -636,6 +641,27 @@ describe("workflow compiler", () => {
       key: " review-${{ paseo.trigger.conversation_key }} ",
     });
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: {
+                    key: "review-${{ paseo.trigger.conversation_key }}",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      /manual\.run does not provide a conversation key/iu,
+    );
 
     assert.doesNotThrow(() =>
       compileHubConfig({
