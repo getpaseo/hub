@@ -34,8 +34,8 @@ import {
   decodeEntitlementDenialFailureReason,
   entitlementDenialSummary,
 } from "../entitlements/denial.js";
+import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
-import { hasRequiredLinearScopes } from "../providers/linear/client.js";
 import { resolveRouteTenant } from "./access.js";
 import { ProjectCommandError } from "./command-error.js";
 
@@ -450,7 +450,7 @@ function connectionUsageView(
       slug: connection.slug,
       linearOrganizationId: connection.linearOrganizationId,
       linearOrganizationName: connection.linearOrganizationName,
-      requiresReauthorization: !hasRequiredLinearScopes(connection.scopes),
+      requiresReauthorization: linearConnectionRequiresReauthorization(connection),
     })),
   };
 }

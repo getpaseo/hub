@@ -210,6 +210,7 @@ function relatedId(
 ): string | null {
   const direct = readNullableId(data, directKey);
   if (direct !== undefined) return direct;
+  if (hasOwn(data, relationKey) && data[relationKey] === null) return null;
   const nested = readNullableId(asRecord(data[relationKey]), "id");
   return nested === undefined ? fallback : nested;
 }

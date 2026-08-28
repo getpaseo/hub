@@ -69,6 +69,44 @@ describe("Linear event normalization", () => {
       assigneeId: null,
     });
   });
+
+  it("does not replace explicit null issue relations with hydrated values", () => {
+    const event = normalizeLinearEvent(
+      {
+        action: "update",
+        type: "Issue",
+        organizationId: "linear-org",
+        data: {
+          id: "issue-1",
+          title: "Projectless issue",
+          project: null,
+          state: null,
+          assignee: null,
+        },
+      },
+      undefined,
+      {
+        id: "issue-1",
+        title: "Projectless issue",
+        description: null,
+        projectId: "later-project",
+        stateId: "later-state",
+        assigneeId: "later-assignee",
+        labelIds: [],
+      },
+    );
+
+    assert.equal(event?.type, "issue");
+    if (event?.type !== "issue") throw new Error("expected an issue event");
+    assert.deepEqual(
+      {
+        projectId: event.issue.projectId,
+        stateId: event.issue.stateId,
+        assigneeId: event.issue.assigneeId,
+      },
+      { projectId: null, stateId: null, assigneeId: null },
+    );
+  });
 });
 
 function normalizeComment(extraData: Record<string, unknown>) {
