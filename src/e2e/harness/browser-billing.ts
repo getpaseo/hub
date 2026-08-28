@@ -161,6 +161,7 @@ export interface FixtureSubscriptionState {
   quantity: number;
   status: string;
   currentPeriodEnd: Date | null;
+  trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
 }
 
@@ -194,12 +195,23 @@ export class FixtureStripeBillingClient {
     return `cus_fixture_${input.organizationId}`;
   }
 
+  async listCustomerSubscriptions(
+    customerId: string,
+  ): Promise<readonly FixtureSubscriptionState[]> {
+    const result: FixtureSubscriptionState[] = [];
+    for (const subscription of this.subscriptions.values()) {
+      if (subscription.customerId === customerId) result.push({ ...subscription });
+    }
+    return result;
+  }
+
   async createCheckoutSession(input: {
     organizationId: string;
     customerId: string;
     priceId: string;
     quantity: number;
     successUrl: string;
+    trial: boolean;
   }): Promise<{ url: string }> {
     const id = fixtureSubscriptionId(input.organizationId);
     // Idempotent initial subscription: if one already exists, checkout does not open a second or
@@ -211,8 +223,9 @@ export class FixtureStripeBillingClient {
         organizationId: input.organizationId,
         priceId: input.priceId,
         quantity: input.quantity,
-        status: "active",
+        status: input.trial ? "trialing" : "active",
         currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
+        trialEnd: input.trial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
         cancelAtPeriodEnd: false,
       });
     }

@@ -54,9 +54,8 @@ open to unlimited and logs loudly so the gap gets noticed; every organization st
 re-stamps to the real Free plan the moment it subscribes.
 
 The billing view derives the current plan from what the organization was last _stamped_ with, not
-from a Stripe subscription (`BillingRuntime.subscriptionSnapshot`) — so a provisioned Free
-organization reads "Free" rather than "No active plan", and a canceled one reads Free again. The
-subscription mirror only decides whether there is a live subscription to manage.
+from a copied Stripe subscription. It reads Stripe only for the billing page, through a short,
+single-flight in-memory cache; execution and workflow paths read the local entitlement stamp only.
 
 ## Checkout, portal, subscriptions
 
@@ -67,12 +66,12 @@ which. Checkout and the billing portal are Stripe-hosted; Hub's own dashboard su
 plan-picker dialog and a "Manage billing" link — payment methods, invoices, and cancellation stay
 in the Stripe portal.
 
-The first subscribe and a plan change are two different Stripe operations, and
-`BillingRuntime.createCheckout` picks the right one: with no subscription yet it opens a Checkout
-Session; once one exists, a change updates that single subscription's item in place
-(`changeSubscriptionPrice`) rather than opening a second checkout or a second subscription. Stripe
-models a plan change as an update to the one subscription, so an organization holds exactly one
-for its lifetime.
+The first subscribe starts a Stripe-owned 14-day trial: Checkout uses
+`payment_method_collection=if_required` and `trial_settings.end_behavior.missing_payment_method=cancel`,
+so it collects no card. Stripe subscription history determines eligibility; any former
+subscription receives ordinary paid Checkout. Customer, Checkout, and subscription metadata carry
+the organization id, and idempotency keys collapse concurrent Checkout attempts. During a trial,
+the Stripe portal remains available to add a card voluntarily.
 
 The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes
 only the subscription id from the event, then — under a per-organization advisory lock that
@@ -87,8 +86,10 @@ pure replay a no-op. When it cannot reconcile yet — a price still not in the m
 unreadable subscription — it returns a non-2xx so Stripe redelivers, rather than acknowledging a
 state nothing would revisit.
 
-`organization_subscriptions` (`src/db/schema.ts:1133`) is a table this repo owns and keys
-directly by `organization_id`, deliberately not part of Better Auth's schema.
+`organization_billing_customers` is the sole durable Stripe identity link. It deliberately does
+not copy subscription status, price, cancellation, or period timestamps; Stripe remains the owner
+of that lifecycle. `trialing` and `active` stamp Hosted access; `canceled`, `incomplete_expired`,
+and `unpaid` stamp Free; `past_due` retains the last stamp during Stripe's retry window.
 
 ## Seats
 

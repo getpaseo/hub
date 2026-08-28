@@ -86,8 +86,8 @@ import type {
   ConsumeOrganizationUsageInput,
   BillingPlanRecord,
   SyncBillingPlanInput,
-  OrganizationSubscriptionRecord,
-  ReconcileOrganizationSubscriptionInput,
+  OrganizationBillingCustomerRecord,
+  ReconcileOrganizationBillingInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
 } from "./types.js";
@@ -167,7 +167,10 @@ class MemoryDatabase implements Database {
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
   private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
   private readonly billingPlans = new Map<string, BillingPlanRecord>();
-  private readonly organizationSubscriptions = new Map<string, OrganizationSubscriptionRecord>();
+  private readonly organizationBillingCustomers = new Map<
+    string,
+    OrganizationBillingCustomerRecord
+  >();
   private readonly advisoryLocks = new Map<string, Promise<void>>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
@@ -2161,20 +2164,15 @@ class MemoryDatabase implements Database {
     return Array.from(this.billingPlans.values());
   }
 
-  async reconcileOrganizationSubscription(
-    input: ReconcileOrganizationSubscriptionInput,
-  ): Promise<OrganizationSubscriptionRecord> {
-    const record: OrganizationSubscriptionRecord = {
+  async reconcileOrganizationBilling(
+    input: ReconcileOrganizationBillingInput,
+  ): Promise<OrganizationBillingCustomerRecord> {
+    const record: OrganizationBillingCustomerRecord = {
       organizationId: input.organizationId,
       stripeCustomerId: input.stripeCustomerId,
-      stripeSubscriptionId: input.stripeSubscriptionId,
-      planId: input.planId,
-      status: input.status,
-      currentPeriodEnd: input.currentPeriodEnd,
-      cancelAtPeriodEnd: input.cancelAtPeriodEnd,
       updatedAt: this.now(),
     };
-    this.organizationSubscriptions.set(input.organizationId, record);
+    this.organizationBillingCustomers.set(input.organizationId, record);
     // No await between the two writes, so on Node's single thread the mirror and the stamp land
     // together — the in-memory stand-in for the Postgres transaction that couples them.
     if (input.stamp !== undefined) {
@@ -2207,10 +2205,10 @@ class MemoryDatabase implements Database {
     }
   }
 
-  async getOrganizationSubscription(
+  async getOrganizationBillingCustomer(
     organizationId: string,
-  ): Promise<OrganizationSubscriptionRecord | undefined> {
-    return this.organizationSubscriptions.get(organizationId);
+  ): Promise<OrganizationBillingCustomerRecord | undefined> {
+    return this.organizationBillingCustomers.get(organizationId);
   }
 
   async listProjectsForOrganization(organizationId: string) {

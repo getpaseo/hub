@@ -288,6 +288,13 @@
       "when": 1787443895467,
       "tag": "0040_cultured_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787949616226,
+      "tag": "0041_parched_bucky",
+      "breakpoints": true
     }
   ]
 }

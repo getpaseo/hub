@@ -1242,15 +1242,10 @@ export const billingPlanPrices = pgTable(
 // from the subscription's price at webhook time — never dereferenced by enforcement, which reads
 // only `organization_entitlements`. `status` carries Stripe's own vocabulary verbatim, so no
 // check constraint drifts against it. Self-hosted instances never write here.
-export const organizationSubscriptions = pgTable("organization_subscriptions", {
+export const organizationBillingCustomers = pgTable("organization_billing_customers", {
   organizationId: text("organization_id")
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
   stripeCustomerId: text("stripe_customer_id").notNull(),
-  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
-  planId: text("plan_id"),
-  status: text().notNull(),
-  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
-  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

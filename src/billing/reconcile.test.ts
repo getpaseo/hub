@@ -114,6 +114,7 @@ class FakeBillingClient implements StripeBillingClient {
       quantity: 1,
       status,
       currentPeriodEnd: new Date("2030-01-01T00:00:00Z"),
+      trialEnd: status === "trialing" ? new Date("2030-01-15T00:00:00Z") : null,
       cancelAtPeriodEnd: false,
     });
   }
@@ -123,8 +124,20 @@ class FakeBillingClient implements StripeBillingClient {
     if (state !== undefined) state.status = "canceled";
   }
 
+  setStatus(id: string, status: string): void {
+    const state = this.subscriptions.get(id);
+    if (state !== undefined) state.status = status;
+  }
+
   async ensureCustomer(): Promise<string> {
     throw new Error("unused");
+  }
+  async listCustomerSubscriptions(customerId: string): Promise<readonly StripeSubscriptionState[]> {
+    const result: StripeSubscriptionState[] = [];
+    for (const subscription of this.subscriptions.values()) {
+      if (subscription.customerId === customerId) result.push({ ...subscription });
+    }
+    return result;
   }
   async createCheckoutSession(): Promise<{ url: string }> {
     throw new Error("unused");
@@ -242,6 +255,25 @@ describe("subscription webhook reconciliation", () => {
     );
     assert.equal(deleted.status, 200);
     assert.equal(await grantedSeatsMax(database, "org_1"), 1); // Free caps seats
+    assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, FREE_PRODUCT);
+  });
+
+  it("grants trialing and active access, revokes canceled and unpaid access, and preserves past_due", async () => {
+    const { database, billingClient, billing } = await setup();
+    billingClient.setSubscription("sub_1", "org_1", SOLO_PRICE, "trialing");
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.created", "sub_1"));
+    assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, SOLO_PRODUCT);
+
+    billingClient.setStatus("sub_1", "active");
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.updated", "sub_1"));
+    assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, SOLO_PRODUCT);
+
+    billingClient.setStatus("sub_1", "past_due");
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.updated", "sub_1"));
+    assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, SOLO_PRODUCT);
+
+    billingClient.setStatus("sub_1", "unpaid");
+    await billing.handleWebhook(subscriptionWebhook("customer.subscription.updated", "sub_1"));
     assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, FREE_PRODUCT);
   });
 

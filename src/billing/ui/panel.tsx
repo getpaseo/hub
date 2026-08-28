@@ -189,7 +189,8 @@ function PlanDialog({
         <DialogHeader>
           <DialogTitle>Choose a plan</DialogTitle>
           <DialogDescription>
-            Billed through Stripe. You can change or cancel your plan at any time.
+            Start with 14 days free — no card required. Billing and cancellation are managed by
+            Stripe.
           </DialogDescription>
         </DialogHeader>
         <div
@@ -296,7 +297,7 @@ function PlanCard({
           disabled={isCurrent || pending || price === null}
           onClick={choose}
         >
-          {isCurrent ? "Current plan" : `Choose ${plan.name}`}
+          {isCurrent ? "Current plan" : `Start 14-day trial with ${plan.name}`}
         </Button>
       </CardFooter>
     </Card>
@@ -324,6 +325,7 @@ function priceLabel(
 
 function subscriptionStatusLabel(subscription: BillingOverviewView["subscription"]): string {
   if (subscription.planName === null) return "You're not on a plan yet.";
+  if (subscription.trialEnd !== null) return `Trial ends ${formatDate(subscription.trialEnd)}.`;
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
     return `Cancels on ${formatDate(subscription.currentPeriodEnd)}.`;
   }

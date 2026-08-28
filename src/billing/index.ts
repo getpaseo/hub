@@ -65,7 +65,7 @@ const STAMPABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 
 /** Terminal statuses: the subscription is over. Reconciliation stamps Free so a customer who
  * cancels through the portal cannot keep paid entitlements. */
-const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired", "unpaid"]);
 
 /** Whether a subscription webhook could be reconciled now, or Stripe should retry it later. */
 type ReconcileOutcome = "reconciled" | "retry";
@@ -97,7 +97,7 @@ const FREE_PLAN_SLUG = "free";
 const FREE_TIER_FALLBACK: EntitlementTemplate = {
   seats: { max: 1 },
   canInviteMembers: false,
-  meters: { "executions.monthly": { limit: 100 } },
+  meters: { "executions.monthly": { limit: 0 } },
 };
 
 export interface ComposeBillingOptions {
@@ -133,6 +133,7 @@ export interface CurrentSubscriptionView {
   status: string | null;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd: string | null;
+  trialEnd: string | null;
   /** True when a subscription exists, so "Manage billing" (the Stripe portal) can be opened. */
   manageable: boolean;
 }
@@ -159,6 +160,14 @@ export class BillingRequestError extends Error {
 export class BillingRuntime {
   /** Signature verification only — a fixture's plausible-but-fake secret works identically. */
   private readonly stripe: StripeSDK;
+  private readonly subscriptionCache = new Map<
+    string,
+    {
+      value: readonly StripeSubscriptionState[];
+      expiresAt: number;
+      pending?: Promise<readonly StripeSubscriptionState[]>;
+    }
+  >();
 
   constructor(
     private readonly config: BillingConfig,
@@ -217,18 +226,22 @@ export class BillingRuntime {
    */
   async createCheckout(input: CreateCheckoutInput): Promise<{ url: string }> {
     const price = await this.resolvePlanPrice(input.planSlug, input.interval);
-    const existing = await this.database.getOrganizationSubscription(input.organizationId);
+    const customerId = await this.resolveCustomer(input);
+    const subscriptions = await this.customerSubscriptions(customerId);
+    const existing = subscriptions.find(
+      (subscription) => !TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status),
+    );
     if (existing !== undefined) {
       await this.billingClient.changeSubscriptionPrice({
-        subscriptionId: existing.stripeSubscriptionId,
+        subscriptionId: existing.id,
         priceId: price.priceId,
       });
+      this.invalidateSubscriptions(customerId);
       // The change is immediate; Stripe fires a subscription webhook that re-stamps entitlements.
       // Return the caller straight back to the billing page rather than through checkout.
       return { url: input.successUrl };
     }
-    const customerId = await this.resolveCustomer(input);
-    return this.billingClient.createCheckoutSession({
+    const checkout = await this.billingClient.createCheckoutSession({
       organizationId: input.organizationId,
       customerId,
       priceId: price.priceId,
@@ -236,7 +249,10 @@ export class BillingRuntime {
       quantity: await this.seatUsage(input.organizationId),
       successUrl: input.successUrl,
       cancelUrl: input.cancelUrl,
+      trial: subscriptions.length === 0,
     });
+    this.invalidateSubscriptions(customerId);
+    return checkout;
   }
 
   /**
@@ -247,10 +263,14 @@ export class BillingRuntime {
    * to bill — a self-hosted or provisioned-Free organization returns immediately.
    */
   async reportSeatUsage(organizationId: string): Promise<void> {
-    const subscription = await this.database.getOrganizationSubscription(organizationId);
+    const customer = await this.database.getOrganizationBillingCustomer(organizationId);
+    if (customer === undefined) return;
+    const subscription = (await this.customerSubscriptions(customer.stripeCustomerId)).find(
+      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+    );
     if (subscription === undefined) return;
     await this.database.withAdvisoryLock(billingLockKey(organizationId), async () => {
-      const state = await this.billingClient.getSubscription(subscription.stripeSubscriptionId);
+      const state = await this.billingClient.getSubscription(subscription.id);
       if (state !== undefined) await this.settleSeatQuantity(state);
     });
   }
@@ -268,10 +288,10 @@ export class BillingRuntime {
   /** Open the Stripe billing portal for the organization's customer, or undefined when it has
    * no subscription yet (nothing for the portal to manage). */
   async createPortal(input: CreatePortalInput): Promise<{ url: string } | undefined> {
-    const subscription = await this.database.getOrganizationSubscription(input.organizationId);
-    if (subscription === undefined) return undefined;
+    const customer = await this.database.getOrganizationBillingCustomer(input.organizationId);
+    if (customer === undefined) return undefined;
     return this.billingClient.createBillingPortalSession({
-      customerId: subscription.stripeCustomerId,
+      customerId: customer.stripeCustomerId,
       returnUrl: input.returnUrl,
     });
   }
@@ -284,20 +304,26 @@ export class BillingRuntime {
    * The subscription mirror only decides whether there is a live subscription to manage.
    */
   async subscriptionSnapshot(organizationId: string): Promise<CurrentSubscriptionView> {
-    const [subscription, plans, entitlements] = await Promise.all([
-      this.database.getOrganizationSubscription(organizationId),
+    const [customer, plans, entitlements] = await Promise.all([
+      this.database.getOrganizationBillingCustomer(organizationId),
       this.database.listBillingPlans(),
       this.database.getOrganizationEntitlements(organizationId),
     ]);
     const stampedPlan = plans.find((plan) => plan.id === entitlements?.planId);
-    const live =
-      subscription !== undefined && !TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status);
+    const subscription =
+      customer === undefined
+        ? undefined
+        : (await this.customerSubscriptions(customer.stripeCustomerId)).find(
+            (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+          );
+    const live = subscription !== undefined;
     return {
       planSlug: stampedPlan?.slug ?? null,
       planName: stampedPlan?.name ?? null,
       status: live ? subscription.status : null,
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
+      trialEnd: live ? (subscription.trialEnd?.toISOString() ?? null) : null,
       manageable: live,
     };
   }
@@ -426,14 +452,10 @@ export class BillingRuntime {
       if (plan === undefined) return "retry";
     }
     const stamp = await this.resolveStamp(state.status, terminal, plan);
-    await this.database.reconcileOrganizationSubscription({
+    this.invalidateSubscriptions(state.customerId);
+    await this.database.reconcileOrganizationBilling({
       organizationId: state.organizationId,
       stripeCustomerId: state.customerId,
-      stripeSubscriptionId: state.id,
-      planId: plan?.id ?? null,
-      status: state.status,
-      currentPeriodEnd: state.currentPeriodEnd,
-      cancelAtPeriodEnd: state.cancelAtPeriodEnd,
       ...(stamp === undefined ? {} : { stamp }),
     });
     // Durable backstop for the membership-driven reporter: any subscription webhook re-reports the
@@ -457,13 +479,36 @@ export class BillingRuntime {
   }
 
   private async resolveCustomer(input: CreateCheckoutInput): Promise<string> {
-    const existing = await this.database.getOrganizationSubscription(input.organizationId);
+    const existing = await this.database.getOrganizationBillingCustomer(input.organizationId);
     if (existing !== undefined) return existing.stripeCustomerId;
     return this.billingClient.ensureCustomer({
       organizationId: input.organizationId,
       email: input.accountEmail,
       name: input.accountName,
     });
+  }
+
+  private customerSubscriptions(customerId: string): Promise<readonly StripeSubscriptionState[]> {
+    const now = Date.now();
+    const cached = this.subscriptionCache.get(customerId);
+    if (cached?.value !== undefined && cached.expiresAt > now) return Promise.resolve(cached.value);
+    if (cached?.pending !== undefined) return cached.pending;
+    const pending = this.billingClient
+      .listCustomerSubscriptions(customerId)
+      .then((value) => {
+        this.subscriptionCache.set(customerId, { value, expiresAt: Date.now() + 5_000 });
+        return value;
+      })
+      .catch((error: unknown) => {
+        this.subscriptionCache.delete(customerId);
+        throw error;
+      });
+    this.subscriptionCache.set(customerId, { value: cached?.value ?? [], expiresAt: 0, pending });
+    return pending;
+  }
+
+  private invalidateSubscriptions(customerId: string): void {
+    this.subscriptionCache.delete(customerId);
   }
 
   private async resolvePlanPrice(
