@@ -180,7 +180,7 @@ function summarizeLinear(payload: unknown): TriggerSummary {
   if (issue === null) {
     return {
       provider: "linear",
-      headline: "Linear comment",
+      headline: event.data.type === "agent_session" ? "Linear agent session" : "Linear comment",
       actor: event.data.actor?.name ?? null,
       externalUrl: null,
     };
