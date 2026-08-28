@@ -2,9 +2,6 @@ import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { projectApp } from "./helpers/projects/index.js";
 
-// Navigation shape only — nothing here asserts persistence, so it does not pay for a container.
-test.use({ primaryDatabase: "embedded" });
-
 const SHOTS = "e2e/screenshots/dashboard-navigation";
 
 const owner = {
@@ -112,11 +109,7 @@ test("groups organization administration under one Settings entry", async ({ hub
   });
 });
 
-// Granting the operator flag is a SQL statement against the primary database, which PGlite in
-// this harness does not serve.
 test.describe("instance scope", () => {
-  test.use({ primaryDatabase: "postgres" });
-
   /**
    * The instance is not a tenant: `is_instance_operator` belongs to the user, so no place in the
    * organization → project sidebar would be true. It enters through the account menu, and once

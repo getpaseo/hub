@@ -5,8 +5,6 @@ import { ProjectNavigation } from "./helpers/projects/navigation.js";
 // Each journey claims its own pristine embedded application: nothing here needs PostgreSQL, and
 // the fixture's primary is never navigated to, so neither should cost a container.
 test.describe.configure({ timeout: 150_000 });
-test.use({ primaryDatabase: "embedded" });
-
 const OPERATOR = {
   name: "Handoff Operator",
   email: "handoff-operator@example.com",
@@ -16,7 +14,7 @@ const OPERATOR = {
 test("app setup hands off to a daemon, and the daemon that connects opens the dashboard", async ({
   hub,
 }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR, embedded: true });
+  const session = await hub.openAppSetup({ account: OPERATOR });
   const handoff = session.surface.daemonHandoff;
   try {
     const { page, origin } = session;
@@ -57,7 +55,7 @@ test("app setup hands off to a daemon, and the daemon that connects opens the da
 test("an operator with no daemon yet does it later and stays out of onboarding", async ({
   hub,
 }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR, embedded: true });
+  const session = await hub.openAppSetup({ account: OPERATOR });
   const handoff = session.surface.daemonHandoff;
   try {
     const { page } = session;

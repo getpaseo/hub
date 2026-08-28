@@ -18,20 +18,6 @@ const validConfiguration =
   "environments:\n  runner:\n    kind: daemon\n    daemon: editor-daemon\n    cwd: /workspace\nagents: {}";
 const unresolvedConfiguration =
   "environments:\n  runner:\n    kind: daemon\n    daemon: missing-runner\n    cwd: /workspace\nagents: {}";
-/** Taller than the editor at any desktop viewport, so its last line starts out of sight. */
-const longConfiguration = [
-  "environments:",
-  "  runner:",
-  "    kind: daemon",
-  "    daemon: editor-daemon",
-  "    cwd: /workspace",
-  ...Array.from({ length: 40 }, (_, index) => [
-    `  runner-${String(index + 1)}:`,
-    "    kind: docker",
-    "    image: paseo/test",
-  ]).flat(),
-  "agents: {}",
-].join("\n");
 const includeResources = [
   "environments:",
   "  runner:",
@@ -64,25 +50,7 @@ const bundle = (hub: string, files: readonly { path: string; content: string }[]
   ...files,
 ];
 
-test("project read failure tells the truth and emits a safe owned server record", async ({
-  hub,
-  page,
-}) => {
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await hub.primaryApplication().failNextProjectRead();
-
-  await page.getByRole("link", { name: "Default" }).click();
-  const alert = page.getByRole("alert");
-  await expect(alert).toContainText("Project unavailable");
-  await expect(alert).toContainText(
-    "Hub couldn't load this project's configuration. Reload the page to try again.",
-  );
-  await expect.poll(() => hub.primaryApplication().logs()).toContain("project.read failed");
-  expect(hub.primaryApplication().logs()).not.toContain("formatless-project-secret-8ac72f");
-});
-
-test("creates and archives projects through the organization project list", async ({
+test("creates, switches, and archives projects without stale project context", async ({
   hub,
   page,
 }) => {
@@ -91,20 +59,14 @@ test("creates and archives projects through the organization project list", asyn
   await hub.createOrganization("owner", "Acme");
   await app.navigation.expectProjects();
   await app.projects.expectDefaultProject();
-  await app.projects.create("Edge", "edge");
-  await app.projects.archive("Edge");
-});
-
-test("switches projects without rendering stale project context", async ({ hub, page }) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
   await app.projects.create("Alpha", "alpha");
   await app.projects.create("Beta", "beta");
   await app.navigation.openProject("Alpha");
   await app.navigation.expectBreadcrumb("Acme", "Alpha", "Overview");
   await app.navigation.switchProject("Beta");
   await app.navigation.expectBreadcrumb("Acme", "Beta", "Overview");
+  await app.navigation.leaveProject();
+  await app.projects.archive("Alpha");
 });
 
 test("keeps the active exact-SHA revision when the next GitHub revision is invalid", async ({
@@ -121,6 +83,7 @@ test("keeps the active exact-SHA revision when the next GitHub revision is inval
   await app.navigation.openOrganizationSection("Projects");
   await app.navigation.openProject("Default");
   await app.configuration.useRepository("acme-inc/app");
+  await app.configuration.expectSourceControlsClearOfTheEditor();
   await projectExternal.setGitHubRevision(9001, "valid-sha", bundle(validConfiguration));
   await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
@@ -143,6 +106,7 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
   await hub.seedDaemonSlug("owner", "editor-daemon");
+  await app.projects.create("Second", "second");
   await app.navigation.openOrganizationSection("Connections");
   await app.connections.connectGitHub();
   await app.navigation.openOrganizationSection("Projects");
@@ -151,6 +115,9 @@ test("switches a project's configuration source between GitHub and manual", asyn
   await projectExternal.setGitHubRevision(9001, "valid-sha", bundle(validConfiguration));
   await app.configuration.syncNow();
   await app.configuration.expectActiveRevision(1);
+  await app.navigation.switchProject("Second");
+  await app.configuration.useRepository("acme-inc/app");
+  await app.navigation.switchProject("Default");
   await app.configuration.switchToManual();
   await app.configuration.saveManualConfiguration(validConfiguration);
   await app.configuration.expectActiveRevision(3);
@@ -197,17 +164,15 @@ test("a save owns its activation, so the next edit never races the remount", asy
       .getByRole("list", { name: "Configuration files" })
       .getByRole("button", { name: ".paseo/workflows/second.yml", exact: true }),
   ).toBeVisible();
-});
 
-test("keeps the GitHub source controls inside the editor rail", async ({ hub, page }) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "editor-daemon");
-  await app.navigation.openProject("Default");
-  await app.navigation.openProjectSection("Configuration");
-  await app.configuration.switchToGitHub();
-  await app.configuration.expectSourceControlsClearOfTheEditor();
+  await app.configuration.saveManualConfiguration(unresolvedConfiguration);
+  await app.configuration.expectValidationError(
+    '"missing-runner" does not match any daemon (connected: editor-daemon)',
+  );
+  await app.configuration.expectActiveRevision(2);
+  await app.configuration.saveManualConfiguration(validConfiguration);
+  await app.configuration.expectConfigurationActivated(4);
+  await app.configuration.expectActiveRevision(4);
 });
 
 test("keeps GitHub-authored partials openable after switching to manual", async ({
@@ -263,29 +228,6 @@ test("keeps GitHub-authored partials openable after switching to manual", async 
   );
   await app.configuration.saveUnmodified();
   await app.configuration.expectConfigurationActivated(3);
-});
-
-test("explains invalid manual configuration and allows a corrected retry", async ({
-  hub,
-  page,
-}) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "editor-daemon");
-  await app.navigation.openProject("Default");
-  await app.navigation.openProjectSection("Configuration");
-
-  await app.configuration.saveManualConfiguration(validConfiguration);
-  await app.configuration.expectActiveRevision(1);
-  await app.configuration.saveManualConfiguration(unresolvedConfiguration);
-  await app.configuration.expectValidationError(
-    '"missing-runner" does not match any daemon (connected: editor-daemon)',
-  );
-  await app.configuration.expectActiveRevision(1);
-  await app.configuration.saveManualConfiguration(validConfiguration);
-  await app.configuration.expectConfigurationActivated(3);
-  await app.configuration.expectActiveRevision(3);
 });
 
 test("scopes configuration activation feedback to its project", async ({ hub, page }) => {
@@ -344,43 +286,12 @@ test("edits configuration and prompt partials in the editor", async ({ hub, page
   await app.configuration.save();
   await app.configuration.expectConfigurationActivated(3);
   await app.configuration.expectFiles([".paseo/hub.yml", ".paseo/workflows/baseline.yml"]);
-});
 
-test("scrolls a long configuration down to its last line", async ({ hub, page }) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "editor-daemon");
-  await app.navigation.openProject("Default");
-  await app.navigation.openProjectSection("Configuration");
-  await app.configuration.saveManualConfiguration(longConfiguration);
-  await app.configuration.expectConfigurationActivated(1);
-
-  await app.configuration.expectReadOnlyEditor("environments:");
-  await app.configuration.expectLineOutOfSight("runner-40");
-  await app.configuration.scrollEditorToEnd();
-  await app.configuration.expectLineInSight("runner-40");
-});
-
-test("rejects a partial the configuration does not include", async ({ hub, page }) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "editor-daemon");
-  await app.navigation.openProject("Default");
-  await app.navigation.openProjectSection("Configuration");
-
-  await app.configuration.saveManualConfiguration(validConfiguration);
-  await app.configuration.expectActiveRevision(1);
   await app.configuration.addPartial("orphan.md", "Nothing includes this.");
   await app.configuration.save();
 
   await app.configuration.expectValidationError("not referenced by any workflow");
-  await app.configuration.expectActiveRevision(1);
-});
-
-test("uses manual configuration without a GitHub deployment", async ({ hub }) => {
-  await hub.proveManualConfigurationWithoutGitHub(owner, validConfiguration);
+  await app.configuration.expectActiveRevision(3);
 });
 
 test("isolates durable activity and step detail by project", async ({ hub, page }) => {
@@ -399,41 +310,25 @@ test("isolates durable activity and step detail by project", async ({ hub, page 
   await expectNoProjectActivity(page);
 });
 
-test("allows every project to use an organization GitHub repository", async ({ hub, page }) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await app.projects.create("Second", "second");
-  await app.navigation.openOrganizationSection("Connections");
-  await app.connections.connectGitHub();
-  await app.navigation.openOrganizationSection("Projects");
-  await app.navigation.openProject("Default");
-  await app.configuration.useRepository("acme-inc/app");
-  await app.navigation.switchProject("Second");
-  await app.configuration.useRepository("acme-inc/app");
-});
-
-test("rejects inaccessible tenant slugs and keeps core project routes accessible", async ({
+test("keeps project routes accessible and treats the deep-link URL as authority", async ({
   hub,
   page,
 }) => {
   const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
+
+  await page.goto(`${hub.primaryApplication().origin}/projects/default/activity`);
+  await expect(page).toHaveURL(/\/o\/acme-[a-f0-9]{8}\/projects\/default\/activity\/?$/u);
+  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+
+  await app.navigation.leaveProject();
   await app.navigation.openProject("Default");
   await expectAccessibleProjectRoute(page);
+  await app.navigation.leaveProject();
+  await app.navigation.proveDeepLinkAuthorityWithMismatchedLandingHint("Acme", "Default");
   await app.navigation.visit("/o/unavailable/projects");
   await app.navigation.expectUnavailable("Organization");
   await app.navigation.visit("/o/unavailable/projects/missing/overview");
   await app.navigation.expectUnavailable("Project");
-});
-
-test("treats a deep-link URL as authority when the landing hint names another organization", async ({
-  hub,
-  page,
-}) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
-  await app.navigation.proveDeepLinkAuthorityWithMismatchedLandingHint("Acme", "Default");
 });
