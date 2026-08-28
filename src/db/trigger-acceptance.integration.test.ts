@@ -182,6 +182,23 @@ describe("trigger acceptance persistence", () => {
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, projectId);
 
+    await client.query(
+      `update linear_connections
+       set refresh_token = null, access_token_expires_at = '1970-01-01T00:00:00.000Z'
+       where id = '${connectionId}'`,
+    );
+    const expired = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-expired-without-refresh",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expired.status, "dropped");
+    if (expired.status !== "dropped") throw new Error("expected an expired-token drop");
+    assert.equal(expired.reason, "configuration_unavailable");
+
     await client.close();
     await database.close();
   }, 120_000);

@@ -222,6 +222,28 @@ describe("ProjectConfigurationStore resource compilation", () => {
     if (underScoped.status === "dropped") {
       assert.equal(underScoped.reason, "configuration_unavailable");
     }
+
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === linear.linearOrganizationId
+        ? {
+            ...linear,
+            scopes: ["read", "comments:create"],
+            refreshToken: null,
+            accessTokenExpiresAt: new Date(0),
+          }
+        : undefined;
+    const expired = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-scout-expired",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expired.status, "dropped");
+    if (expired.status === "dropped") {
+      assert.equal(expired.reason, "configuration_unavailable");
+    }
   });
 
   it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {

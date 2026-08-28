@@ -7,6 +7,7 @@ export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
 /** Keep an issue description plus its preceding discussion within one bounded context window. */
 export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
 export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
+const LINEAR_ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 const LinearTokenResponseSchema = z
   .object({
@@ -158,6 +159,26 @@ export function hasRequiredLinearScopes(scopes: readonly string[]): boolean {
   return LINEAR_REQUIRED_SCOPES.every((scope) => granted.has(scope));
 }
 
+export function linearConnectionRequiresReauthorization(
+  connection: Pick<LinearConnectionRecord, "scopes" | "refreshToken" | "accessTokenExpiresAt">,
+  now = new Date(),
+): boolean {
+  return (
+    !hasRequiredLinearScopes(connection.scopes) ||
+    (connection.refreshToken === null && !hasUsableLinearAccessToken(connection, now))
+  );
+}
+
+function hasUsableLinearAccessToken(
+  connection: Pick<LinearConnectionRecord, "accessTokenExpiresAt">,
+  now: Date,
+): boolean {
+  const expiresAt = connection.accessTokenExpiresAt;
+  return (
+    expiresAt === null || expiresAt.getTime() > now.getTime() + LINEAR_ACCESS_TOKEN_REFRESH_SKEW_MS
+  );
+}
+
 export function createLinearConnectionClient(options: {
   clientId: string;
   clientSecret: string;
@@ -259,10 +280,8 @@ export function createLinearApiClient(options: {
   // truth for refresh serialization and rebind safety.
   const refreshes = new Map<string, Promise<string>>();
 
-  const hasUsableAccessToken = (connection: LinearConnectionRecord): boolean => {
-    const expiresAt = connection.accessTokenExpiresAt;
-    return expiresAt === null || expiresAt.getTime() > now().getTime() + 60_000;
-  };
+  const hasUsableAccessToken = (connection: LinearConnectionRecord): boolean =>
+    hasUsableLinearAccessToken(connection, now());
 
   const accessTokenFor = async (linearOrganizationId: string): Promise<string> => {
     const connection = await options.connectionForLinearOrganization(linearOrganizationId);

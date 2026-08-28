@@ -27,7 +27,7 @@ import type { ProviderConnectionRegistration, ProviderRegistration } from "../re
 import {
   createLinearApiClient,
   createLinearConnectionClient,
-  hasRequiredLinearScopes,
+  linearConnectionRequiresReauthorization,
   type LinearApiClient,
   type LinearConnectionClient,
   type LinearInstallation,
@@ -123,7 +123,7 @@ export function createLinearRegistration(
       : {
           canHydrateIssue: async (linearOrganizationId) => {
             const connection = await database.findLinearConnection(linearOrganizationId);
-            return connection !== undefined && hasRequiredLinearScopes(connection.scopes);
+            return connection !== undefined && !linearConnectionRequiresReauthorization(connection);
           },
         }),
     ...(api === undefined
@@ -380,7 +380,7 @@ function linearBinding(
 function linearStatus(configured: boolean, bindings: readonly LinearConnectionRecord[]) {
   if (!configured) return { status: "notConfigured" as const };
   if (bindings.length === 0) return { status: "disconnected" as const };
-  return bindings.some((binding) => !hasRequiredLinearScopes(binding.scopes))
+  return bindings.some((binding) => linearConnectionRequiresReauthorization(binding))
     ? { status: "requiresReauthorization" as const }
     : { status: "connected" as const };
 }

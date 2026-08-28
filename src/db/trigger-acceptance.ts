@@ -1,5 +1,5 @@
 import { and, eq, isNull, or } from "drizzle-orm";
-import { hasRequiredLinearScopes } from "../providers/linear/client.js";
+import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
@@ -63,10 +63,7 @@ export class ProviderEventAcceptanceRepository {
       const dropReason =
         input.dropReason ??
         ((provider === "github" && "status" in connection && connection.status === "suspended") ||
-        (provider === "linear" &&
-          (!("scopes" in connection) ||
-            !Array.isArray(connection.scopes) ||
-            !hasRequiredLinearScopes(connection.scopes)))
+        (provider === "linear" && linearConnectionUnavailable(connection, input.receivedAt))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
@@ -307,6 +304,34 @@ export class ProviderEventAcceptanceRepository {
   }
 }
 
+function linearConnectionUnavailable(connection: object, receivedAt: Date): boolean {
+  if (!("scopes" in connection) || !isStringArray(connection.scopes)) return true;
+  if (
+    !("refreshToken" in connection) ||
+    (connection.refreshToken !== null && typeof connection.refreshToken !== "string")
+  ) {
+    return true;
+  }
+  if (
+    !("accessTokenExpiresAt" in connection) ||
+    (connection.accessTokenExpiresAt !== null && !(connection.accessTokenExpiresAt instanceof Date))
+  ) {
+    return true;
+  }
+  return linearConnectionRequiresReauthorization(
+    {
+      scopes: connection.scopes,
+      refreshToken: connection.refreshToken,
+      accessTokenExpiresAt: connection.accessTokenExpiresAt,
+    },
+    receivedAt,
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 function eventFromReceipt(
   receipt: typeof schema.providerEventReceipts.$inferSelect,
   route: ProviderEventRouteSnapshot,
@@ -443,6 +468,8 @@ async function findConnection(
         id: schema.linearConnections.id,
         organizationId: schema.linearConnections.organizationId,
         scopes: schema.linearConnections.scopes,
+        refreshToken: schema.linearConnections.refreshToken,
+        accessTokenExpiresAt: schema.linearConnections.accessTokenExpiresAt,
       })
       .from(schema.linearConnections)
       .where(eq(schema.linearConnections.linearOrganizationId, String(externalId)))

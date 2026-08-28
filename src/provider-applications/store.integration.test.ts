@@ -289,4 +289,27 @@ async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
       ?.status,
     "actionNeeded",
   );
+
+  await bundle.runtime.query(
+    `update linear_connections
+     set scopes = '["read", "comments:create"]'::jsonb,
+         access_token_expires_at = '2000-01-01T00:00:00.000Z',
+         refresh_token = null
+     where linear_organization_id = 'linear-org'`,
+  );
+  assert.equal(
+    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("linear"))[0]
+      ?.status,
+    "actionNeeded",
+  );
+
+  await bundle.runtime.query(
+    `update linear_connections set refresh_token = 'linear-refresh-token'
+     where linear_organization_id = 'linear-org'`,
+  );
+  assert.equal(
+    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("linear"))[0]
+      ?.status,
+    "connected",
+  );
 }

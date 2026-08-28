@@ -111,7 +111,7 @@ describe("Linear registration", () => {
     assert.equal(auth.organizationAccessReads, 0);
   });
 
-  it("requires reconnection when an older token lacks comment authority", () => {
+  it("requires reconnection for missing authority or an expired non-refreshable token", () => {
     const registration = createLinearRegistration({
       database: createMemoryDatabase(),
       auth: null,
@@ -142,6 +142,33 @@ describe("Linear registration", () => {
         ],
       }),
       { status: "requiresReauthorization" },
+    );
+
+    const expired = {
+      id: "linear-connection",
+      organizationId: "org",
+      slug: "acme-linear",
+      providerApplicationId: "client",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Acme",
+      appUserId: "app-user",
+      accessToken: "expired-token",
+      refreshToken: null,
+      accessTokenExpiresAt: new Date(0),
+      scopes: ["read", "comments:create"],
+    };
+    assert.deepEqual(
+      registration.connection.status({ github: [], discord: [], slack: [], linear: [expired] }),
+      { status: "requiresReauthorization" },
+    );
+    assert.deepEqual(
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [{ ...expired, refreshToken: "refresh-token" }],
+      }),
+      { status: "connected" },
     );
   });
 
