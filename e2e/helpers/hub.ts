@@ -3691,9 +3691,9 @@ class HubUser {
     const mobile = drawerWasOpen || (await toggle.isVisible().catch(() => false));
     if (mobile && !drawerWasOpen) await toggle.click();
     const scope = mobile ? drawer : this.page;
-    await expect(
-      scope.getByRole("button", { name: "Organization", exact: true }),
-    ).toContainText(name);
+    await expect(scope.getByRole("button", { name: "Organization", exact: true })).toContainText(
+      name,
+    );
     if (mobile && !drawerWasOpen) {
       await this.page.keyboard.press("Escape");
       await expect(drawer).toBeHidden();
