@@ -3682,19 +3682,23 @@ class HubUser {
 
   async expectActiveOrganization(name: string): Promise<void> {
     const drawer = this.page.getByRole("dialog", { name: "Sidebar" });
-    const toggle = this.page.getByRole("button", { name: "Toggle Sidebar" });
-    const desktopSwitcher = this.page
-      .getByRole("button", { name: "Organization", exact: true })
-      .filter({ hasText: name });
-    await expect(toggle.or(desktopSwitcher)).toBeVisible();
+    const mobile = (this.page.viewportSize()?.width ?? 1280) < 768;
+    if (!mobile) {
+      await expect(
+        this.page.getByRole("button", { name: "Organization", exact: true }),
+      ).toContainText(name);
+      return;
+    }
     const drawerWasOpen = await drawer.isVisible().catch(() => false);
-    const mobile = drawerWasOpen || (await toggle.isVisible().catch(() => false));
-    if (mobile && !drawerWasOpen) await toggle.click();
-    const scope = mobile ? drawer : this.page;
-    await expect(scope.getByRole("button", { name: "Organization", exact: true })).toContainText(
+    if (!drawerWasOpen) {
+      const toggle = this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" });
+      await expect(toggle).toBeVisible();
+      await toggle.click();
+    }
+    await expect(drawer.getByRole("button", { name: "Organization", exact: true })).toContainText(
       name,
     );
-    if (mobile && !drawerWasOpen) {
+    if (!drawerWasOpen) {
       await this.page.keyboard.press("Escape");
       await expect(drawer).toBeHidden();
     }
