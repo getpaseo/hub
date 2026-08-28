@@ -63,8 +63,15 @@ single-flight in-memory cache; execution and workflow paths read the local entit
 `src/billing/stripe-catalog-source.ts`) are narrow ports: production wires the real Stripe SDK
 (`src/billing/stripe-client.ts`), the E2E harness wires a fixture, and a caller never learns
 which. Checkout and the billing portal are Stripe-hosted; Hub's own dashboard surface is a
-plan-picker dialog and a "Manage billing" link — payment methods, invoices, and cancellation stay
-in the Stripe portal.
+plan-picker dialog and a "Manage billing" button — payment methods, invoices, and cancellation
+stay in the Stripe portal.
+
+Inside `src/billing/ui/`, `panel.tsx` owns the page, `plan-dialog.tsx` owns the picker, and
+`presentation.tsx` owns every user-facing string either of them renders. Copy lives there and
+nowhere else because it is the only part of the surface worth unit-testing: a button label has to
+stay short enough for a narrow plan column while its accessible name still identifies the plan,
+and a catalog published monthly-only has to collapse the interval switch rather than price a
+column at "—".
 
 The first subscribe starts a Stripe-owned 14-day trial: Checkout uses
 `payment_method_collection=if_required` and `trial_settings.end_behavior.missing_payment_method=cancel`,

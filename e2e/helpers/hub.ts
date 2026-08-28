@@ -1011,6 +1011,14 @@ export class PaseoHub {
     await this.requireUser(alias).expectActiveTrial();
   }
 
+  async expectNoSecondTrialOffer(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoSecondTrialOffer();
+  }
+
+  async expectPlanPickerFitsPhone(alias: string): Promise<void> {
+    await this.requireUser(alias).expectPlanPickerFitsPhone();
+  }
+
   async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
     await this.requireUser(alias).expectInviteBlockedByPlan(email);
   }
@@ -3942,16 +3950,23 @@ class HubUser {
     await this.openOrganizationSection("Billing");
     await this.page.getByRole("button", { name: /^(Choose a plan|Change plan)$/u }).click();
     await expect(
-      this.page.getByRole("dialog").getByRole("heading", { name: "Choose a plan" }),
+      this.page.getByRole("dialog").getByRole("heading", { name: "Choose your plan" }),
     ).toBeVisible();
   }
 
   async choosePlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
     const dialog = this.page.getByRole("dialog");
-    await dialog.getByRole("button", { name: interval, exact: true }).click();
-    // Choosing a plan redirects through the fixture checkout back to the billing page.
     await dialog
-      .getByRole("button", { name: new RegExp(`^(Start 14-day trial with|Choose) ${plan}$`, "u") })
+      .getByRole("group", { name: "Billing interval" })
+      .getByRole("button", {
+        name: interval,
+        exact: true,
+      })
+      .click();
+    // Each plan's button carries the plan in its accessible name even when the visible label is
+    // the short "Start free trial", so a plan is always addressable by name.
+    await dialog
+      .getByRole("button", { name: new RegExp(`^(Start free trial with|Choose) ${plan}$`, "u") })
       .click();
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
@@ -3980,10 +3995,13 @@ class HubUser {
   async expectCardlessTrialOffer(): Promise<void> {
     await this.openPlanDialog();
     const dialog = this.page.getByRole("dialog");
-    await expect(dialog).toContainText("Start with 14 days free — no card required.");
-    await expect(
-      dialog.getByRole("button", { name: "Start 14-day trial with Solo" }),
-    ).toBeVisible();
+    await expect(dialog).toContainText("14 days free · No card required");
+    await expect(dialog.getByRole("button", { name: "Start free trial with Solo" })).toBeVisible();
+    // The paid plan spells out what happens when the free days run out; the plan the
+    // organization is already on is named as such and cannot be re-chosen.
+    await expect(dialog).toContainText("14 days free, then $29 per user each month.");
+    await expect(dialog.getByRole("button", { name: "Current plan: Free" })).toBeDisabled();
+    await expectAccessible(this.page);
   }
 
   async expectActiveTrial(): Promise<void> {
@@ -3995,6 +4013,44 @@ class HubUser {
     await expect(plan.getByText("Trialing", { exact: true })).toBeVisible();
     await expect(plan.getByText(/^Trial ends /u)).toBeVisible();
     await expect(plan.getByRole("button", { name: "Manage billing" })).toBeVisible();
+    // The card states what the trial actually entitles the organization to, not just its dates.
+    await expect(plan.getByRole("heading", { name: "What's included" })).toBeVisible();
+    await expectAccessible(this.page);
+  }
+
+  /**
+   * A former subscriber is never promised a second free trial: the picker drops the cardless
+   * offer and falls back to ordinary paid Checkout. Escape closes it, so the paywall is
+   * dismissible from the keyboard alone.
+   */
+  async expectNoSecondTrialOffer(): Promise<void> {
+    await this.openPlanDialog();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).not.toContainText("No card required");
+    await expect(dialog.getByRole("button", { name: /^Start free trial/u })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Choose Solo" })).toBeVisible();
+    await expectAccessible(this.page);
+    await this.page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  }
+
+  /**
+   * The picker at phone width: it never pushes the page sideways, and the paid plan's call to
+   * action is reachable by scrolling the dialog rather than stranded under three tall cards.
+   */
+  async expectPlanPickerFitsPhone(): Promise<void> {
+    await this.openPlanDialog();
+    const viewport = this.page.viewportSize();
+    expect(viewport).not.toBeNull();
+    expect(
+      await this.page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(viewport!.width);
+    const trial = this.page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Start free trial with Solo" });
+    await trial.scrollIntoViewIfNeeded();
+    await expect(trial).toBeInViewport();
+    await expectAccessible(this.page);
   }
 
   async expectInviteBlockedByPlan(email: string): Promise<void> {

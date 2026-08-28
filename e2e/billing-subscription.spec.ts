@@ -72,6 +72,12 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
     // canceled state and stamps Free, so paid entitlements do not outlive the subscription.
     await hub.cancelSubscription("owner");
     await hub.expectInviteBlockedByPlan("owner", afterCancelInvitee);
+    await hub.expectCurrentPlan("owner", "Free");
     await page.screenshot({ path: `${SLICE_6_DIR}/06-cancel-reverts-to-free.png`, fullPage: true });
+    // The trial was consumed by the cancelled subscription, so the paywall now sells the plan
+    // instead of promising another 14 free days.
+    await hub.expectNoSecondTrialOffer("owner");
+    await hub.openPlanDialog("owner");
+    await page.screenshot({ path: `${SLICE_6_DIR}/07-paid-paywall.png`, fullPage: true });
   });
 });
