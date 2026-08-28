@@ -479,11 +479,9 @@ export class DurableWorkflowEngine {
     }
     const step = trigger.steps[next.ordinal];
     if (step === undefined) throw new Error(`compiled step missing for ${next.stepId}`);
-    const affinityProvider = providerForTriggerContext(
+    const triggerConversationKey = workspaceAffinityConversationKey(
+      step,
       this.options.providers ?? [],
-      reconciledRun.triggerContext,
-    );
-    const triggerConversationKey = affinityProvider?.workspaceAffinityKey?.(
       reconciledRun.triggerContext,
     );
     return {
@@ -1031,6 +1029,17 @@ function providerForTriggerContext(
     return undefined;
   }
   return providers.find((provider) => provider.name === triggerContext.provider);
+}
+
+function workspaceAffinityConversationKey(
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+  providers: readonly TriggerProvider[],
+  triggerContext: unknown,
+): string | undefined {
+  if (step.workspaceAffinity === undefined) return undefined;
+  return providerForTriggerContext(providers, triggerContext)?.workspaceAffinityKey?.(
+    triggerContext,
+  );
 }
 
 function composeValues(
