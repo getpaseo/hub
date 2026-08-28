@@ -33,9 +33,9 @@ export const FIXTURE_BILLING_PRODUCTS: readonly FixtureBillingProduct[] = [
       paseo_plan_slug: "free",
       ent_seats_max: "1",
       ent_can_invite: "false",
-      ent_executions_monthly_limit: "100",
+      ent_executions_monthly_limit: "0",
     },
-    marketingFeatures: ["1 seat", "100 executions / month", "Community support"],
+    marketingFeatures: ["1 seat", "0 executions / month", "Community support"],
   },
   {
     id: "prod_fixture_solo",

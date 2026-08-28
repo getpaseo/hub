@@ -4983,7 +4983,7 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
   {
     slug: "free",
     name: "Free",
-    marketingFeatures: ["1 seat", "100 executions / month", "Community support"],
+    marketingFeatures: ["1 seat", "0 executions / month", "Community support"],
     prices: {
       monthly: { unitAmount: 0, currency: "usd" },
       annual: { unitAmount: 0, currency: "usd" },

@@ -41,7 +41,7 @@ const PRODUCTS: StripeCatalogProduct[] = [
       paseo_plan_slug: "free",
       ent_seats_max: "1",
       ent_can_invite: "false",
-      ent_executions_monthly_limit: "100",
+      ent_executions_monthly_limit: "0",
     },
     marketingFeatures: [],
   },
