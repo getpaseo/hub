@@ -1,4 +1,5 @@
 import { and, eq, isNull, or } from "drizzle-orm";
+import { hasRequiredLinearScopes } from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
@@ -61,7 +62,11 @@ export class ProviderEventAcceptanceRepository {
 
       const dropReason =
         input.dropReason ??
-        (provider === "github" && "status" in connection && connection.status === "suspended"
+        ((provider === "github" && "status" in connection && connection.status === "suspended") ||
+        (provider === "linear" &&
+          (!("scopes" in connection) ||
+            !Array.isArray(connection.scopes) ||
+            !hasRequiredLinearScopes(connection.scopes)))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
@@ -437,6 +442,7 @@ async function findConnection(
       .select({
         id: schema.linearConnections.id,
         organizationId: schema.linearConnections.organizationId,
+        scopes: schema.linearConnections.scopes,
       })
       .from(schema.linearConnections)
       .where(eq(schema.linearConnections.linearOrganizationId, String(externalId)))
