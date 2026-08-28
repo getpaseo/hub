@@ -55,6 +55,29 @@ describe("dynamic provider runtime", () => {
     assert.ok(trigger.eventNames.includes(eventName));
   });
 
+  it("advertises Agent Session events through the stable Linear runtime", () => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        downstreamRegistration(providerConfigurationId(configuration), [], []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "linear")!;
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+
+    assert.ok(trigger.eventNames.includes("linear.agent_session"));
+  });
+
   it("publishes a started replacement and routes later callbacks through it", async () => {
     const started: string[] = [];
     const stopped: string[] = [];
