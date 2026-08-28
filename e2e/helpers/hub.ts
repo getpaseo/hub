@@ -992,6 +992,10 @@ export class PaseoHub {
     await this.requireUser(alias).openPlanDialog();
   }
 
+  async expectCardlessTrialOffer(alias: string): Promise<void> {
+    await this.requireUser(alias).expectCardlessTrialOffer();
+  }
+
   async choosePlan(
     alias: string,
     plan: { plan: string; interval: "Monthly" | "Annual" },
@@ -1001,6 +1005,10 @@ export class PaseoHub {
 
   async expectCurrentPlan(alias: string, plan: string): Promise<void> {
     await this.requireUser(alias).expectCurrentPlan(plan);
+  }
+
+  async expectActiveTrial(alias: string): Promise<void> {
+    await this.requireUser(alias).expectActiveTrial();
   }
 
   async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
@@ -3942,7 +3950,9 @@ class HubUser {
     const dialog = this.page.getByRole("dialog");
     await dialog.getByRole("button", { name: interval, exact: true }).click();
     // Choosing a plan redirects through the fixture checkout back to the billing page.
-    await dialog.getByRole("button", { name: `Choose ${plan}`, exact: true }).click();
+    await dialog
+      .getByRole("button", { name: new RegExp(`^(Start 14-day trial with|Choose) ${plan}$`, "u") })
+      .click();
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
@@ -3965,6 +3975,26 @@ class HubUser {
       .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
     await expect(planSection.getByText(plan, { exact: true })).toBeVisible();
     await expectAccessible(this.page);
+  }
+
+  async expectCardlessTrialOffer(): Promise<void> {
+    await this.openPlanDialog();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toContainText("Start with 14 days free — no card required.");
+    await expect(
+      dialog.getByRole("button", { name: "Start 14-day trial with Solo" }),
+    ).toBeVisible();
+  }
+
+  async expectActiveTrial(): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.reload();
+    const plan = this.page
+      .locator("section")
+      .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
+    await expect(plan.getByText("Trialing", { exact: true })).toBeVisible();
+    await expect(plan.getByText(/^Trial ends /u)).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Manage billing" })).toBeVisible();
   }
 
   async expectInviteBlockedByPlan(email: string): Promise<void> {

@@ -39,7 +39,7 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
   });
 
   await test.step("open the upgrade dialog and choose a paid plan", async () => {
-    await hub.openPlanDialog("owner");
+    await hub.expectCardlessTrialOffer("owner");
     await page.screenshot({ path: `${SLICE_6_DIR}/03-upgrade-dialog.png`, fullPage: true });
     await hub.choosePlan("owner", { plan: "Solo", interval: "Monthly" });
   });
@@ -47,6 +47,7 @@ test("subscribing lifts a free org's invite limit, and replaying the webhook cha
   await test.step("the subscription webhook stamps the paid plan and bills for one seat", async () => {
     await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", "Solo");
+    await hub.expectActiveTrial("owner");
     // Post-paid seats: with only the owner, Stripe is billed for one seat.
     await hub.expectReportedSeatQuantity("owner", 1);
     await page.screenshot({ path: `${SLICE_6_DIR}/04-solo-plan.png`, fullPage: true });

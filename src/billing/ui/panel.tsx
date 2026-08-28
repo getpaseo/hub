@@ -118,6 +118,7 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
           plans={plans}
           slug={slug}
           currentPlanSlug={subscription.planSlug}
+          trialEligible={subscription.trialEligible}
           onClose={closeDialog}
         />
       )}
@@ -155,11 +156,13 @@ function PlanDialog({
   plans,
   slug,
   currentPlanSlug,
+  trialEligible,
   onClose,
 }: {
   plans: readonly PublicBillingPlan[];
   slug: string;
   currentPlanSlug: string | null;
+  trialEligible: boolean;
   onClose: () => void;
 }) {
   const [interval, setInterval] = useState<BillingPlanPriceInterval>("monthly");
@@ -189,8 +192,9 @@ function PlanDialog({
         <DialogHeader>
           <DialogTitle>Choose a plan</DialogTitle>
           <DialogDescription>
-            Start with 14 days free — no card required. Billing and cancellation are managed by
-            Stripe.
+            {trialEligible
+              ? "Start with 14 days free — no card required."
+              : "Billing and cancellation are managed by Stripe."}
           </DialogDescription>
         </DialogHeader>
         <div
@@ -215,6 +219,7 @@ function PlanDialog({
               plan={plan}
               interval={interval}
               isCurrent={plan.slug === currentPlanSlug}
+              trialEligible={trialEligible}
               pending={checkout.isPending}
               onChoose={choose}
             />
@@ -259,12 +264,14 @@ function PlanCard({
   plan,
   interval,
   isCurrent,
+  trialEligible,
   pending,
   onChoose,
 }: {
   plan: PublicBillingPlan;
   interval: BillingPlanPriceInterval;
   isCurrent: boolean;
+  trialEligible: boolean;
   pending: boolean;
   onChoose: (planSlug: string) => void;
 }) {
@@ -297,7 +304,11 @@ function PlanCard({
           disabled={isCurrent || pending || price === null}
           onClick={choose}
         >
-          {isCurrent ? "Current plan" : `Start 14-day trial with ${plan.name}`}
+          {isCurrent
+            ? "Current plan"
+            : trialEligible
+              ? `Start 14-day trial with ${plan.name}`
+              : `Choose ${plan.name}`}
         </Button>
       </CardFooter>
     </Card>

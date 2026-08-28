@@ -134,6 +134,7 @@ export interface CurrentSubscriptionView {
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd: string | null;
   trialEnd: string | null;
+  trialEligible: boolean;
   /** True when a subscription exists, so "Manage billing" (the Stripe portal) can be opened. */
   manageable: boolean;
 }
@@ -310,12 +311,11 @@ export class BillingRuntime {
       this.database.getOrganizationEntitlements(organizationId),
     ]);
     const stampedPlan = plans.find((plan) => plan.id === entitlements?.planId);
-    const subscription =
-      customer === undefined
-        ? undefined
-        : (await this.customerSubscriptions(customer.stripeCustomerId)).find(
-            (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
-          );
+    const subscriptions =
+      customer === undefined ? [] : await this.customerSubscriptions(customer.stripeCustomerId);
+    const subscription = subscriptions.find(
+      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+    );
     const live = subscription !== undefined;
     return {
       planSlug: stampedPlan?.slug ?? null,
@@ -324,6 +324,7 @@ export class BillingRuntime {
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
       trialEnd: live ? (subscription.trialEnd?.toISOString() ?? null) : null,
+      trialEligible: subscriptions.length === 0,
       manageable: live,
     };
   }
