@@ -82,6 +82,34 @@ describe("Linear registration", () => {
     assert.deepEqual(registration.requests, []);
   });
 
+  it("rejects an insecure direct connection start before auth or attempt persistence", async () => {
+    const database = createMemoryDatabase();
+    let attempts = 0;
+    database.startConnectionAttempt = () => {
+      attempts += 1;
+      return Promise.resolve();
+    };
+    const auth = new RegistrationAuth();
+    const registration = createLinearRegistration({
+      database,
+      auth,
+      applicationBaseUrl: "http://hub.test",
+      publicBaseUrl: "http://hub.test",
+      configuration: linearConfiguration(),
+      connectionClient: new LinearConnectionFake(),
+    });
+
+    const response = await registration.connection.actions["start"]!(
+      new Request("http://hub.test/start?organizationSlug=org", { method: "POST" }),
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "https_required" });
+    assert.equal(attempts, 0);
+    assert.equal(auth.cookieMutationChecks, 0);
+    assert.equal(auth.organizationAccessReads, 0);
+  });
+
   it("requires reconnection when an older token lacks comment authority", () => {
     const registration = createLinearRegistration({
       database: createMemoryDatabase(),
@@ -140,6 +168,9 @@ class LinearConnectionFake implements LinearConnectionClient {
 }
 
 class RegistrationAuth implements AuthServer {
+  cookieMutationChecks = 0;
+  organizationAccessReads = 0;
+
   handle(): Promise<Response> {
     return Promise.resolve(new Response());
   }
@@ -149,6 +180,7 @@ class RegistrationAuth implements AuthServer {
   }
 
   resolveOrganizationAccess(): Promise<OrganizationAccessValue> {
+    this.organizationAccessReads += 1;
     return Promise.resolve({
       session: { id: "session" },
       account: { id: "user", name: "User", email: "user@example.test" },
@@ -168,6 +200,7 @@ class RegistrationAuth implements AuthServer {
   }
 
   rejectCookieMutation(): Response | undefined {
+    this.cookieMutationChecks += 1;
     return undefined;
   }
 

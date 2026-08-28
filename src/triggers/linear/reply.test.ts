@@ -48,6 +48,10 @@ class RecordingLinearClient implements LinearApiClient {
     return undefined;
   }
 
+  async readIssueComments() {
+    return { comments: [], complete: true };
+  }
+
   async createComment(input: (typeof this.comments)[number]): Promise<void> {
     this.comments.push(input);
   }

@@ -3,6 +3,36 @@ import { describe, it } from "vitest";
 import { normalizeLinearEvent } from "./events.js";
 
 describe("Linear event normalization", () => {
+  it("uses a comment's own timestamp as the causal history anchor", () => {
+    const event = normalizeLinearEvent({
+      action: "create",
+      type: "Comment",
+      organizationId: "linear-org",
+      createdAt: "2026-01-02T00:00:05.000Z",
+      webhookTimestamp: Date.parse("2026-01-02T00:00:10.000Z"),
+      data: {
+        id: "comment-1",
+        issueId: "issue-1",
+        body: "Please investigate",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      },
+    });
+
+    assert.equal(event?.occurredAt, "2026-01-02T00:00:00.000Z");
+  });
+
+  it("does not use a delivery timestamp as a causal history anchor", () => {
+    const event = normalizeLinearEvent({
+      action: "create",
+      type: "Comment",
+      organizationId: "linear-org",
+      webhookTimestamp: Date.parse("2026-01-02T00:00:10.000Z"),
+      data: { id: "comment-1", issueId: "issue-1", body: "Please investigate" },
+    });
+
+    assert.equal(event?.occurredAt, undefined);
+  });
+
   it("falls back to a nested comment user when the top-level actor is null", () => {
     const event = normalizeComment({ user: { id: "user-1", displayName: "Operator" } });
 

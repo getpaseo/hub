@@ -4,6 +4,10 @@ import type { LinearConnectionRecord, UpdateLinearConnectionTokensInput } from "
 /** The minimum authority required to read issues and leave an outcome on the issue. */
 export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
 
+/** Keep an issue description plus its preceding discussion within one bounded context window. */
+export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
+export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
+
 const LinearTokenResponseSchema = z
   .object({
     access_token: z.string().min(1),
@@ -56,6 +60,28 @@ const IssueResponseSchema = z.object({
   }),
 });
 
+const IssueCommentHistoryResponseSchema = z.object({
+  data: z.object({
+    comments: z.object({
+      nodes: z.array(
+        z.object({
+          id: z.string().min(1),
+          body: z.string(),
+          createdAt: z.string().datetime(),
+          user: z
+            .object({
+              id: z.string().min(1),
+              name: z.string().min(1).nullable().optional(),
+            })
+            .nullable()
+            .optional(),
+        }),
+      ),
+      pageInfo: z.object({ hasPreviousPage: z.boolean() }),
+    }),
+  }),
+});
+
 const CommentResponseSchema = z.object({
   data: z.object({
     commentCreate: z.object({ success: z.literal(true) }),
@@ -98,11 +124,28 @@ export interface LinearIssueDetails {
   labelIds: string[];
 }
 
+export interface LinearIssueComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: { id: string; name?: string } | null;
+}
+
+export interface LinearIssueCommentHistory {
+  comments: LinearIssueComment[];
+  complete: boolean;
+}
+
 export interface LinearApiClient {
   readIssue(input: {
     linearOrganizationId: string;
     issueId: string;
   }): Promise<LinearIssueDetails | undefined>;
+  readIssueComments(input: {
+    linearOrganizationId: string;
+    issueId: string;
+    beforeCreatedAt: string;
+  }): Promise<LinearIssueCommentHistory>;
   createComment(input: {
     linearOrganizationId: string;
     issueId: string;
@@ -178,9 +221,7 @@ export function createLinearConnectionClient(options: {
       return {
         accessToken: token.accessToken,
         ...(token.refreshToken === undefined ? {} : { refreshToken: token.refreshToken }),
-        ...(token.accessTokenExpiresAt === undefined
-          ? {}
-          : { accessTokenExpiresAt: token.accessTokenExpiresAt }),
+        accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
         ...(token.scopes === undefined ? {} : { scopes: token.scopes }),
       };
     },
@@ -278,6 +319,46 @@ export function createLinearApiClient(options: {
             labelIds: issue.labels.nodes.map(({ id }) => id),
           };
     },
+    async readIssueComments(input) {
+      const result = IssueCommentHistoryResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `query PaseoIssueCommentHistory($issueId: String!, $before: DateTime!) {
+            comments(
+              last: ${LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT}
+              orderBy: createdAt
+              filter: {
+                issue: { id: { eq: $issueId } }
+                createdAt: { lt: $before }
+              }
+            ) {
+              nodes { id body createdAt user { id name } }
+              pageInfo { hasPreviousPage }
+            }
+          }`,
+          variables: { issueId: input.issueId, before: input.beforeCreatedAt },
+        }),
+      );
+      const comments = result.data.comments.nodes
+        .map((comment) => ({
+          id: comment.id,
+          body: comment.body,
+          createdAt: comment.createdAt,
+          author:
+            comment.user === undefined || comment.user === null
+              ? null
+              : {
+                  id: comment.user.id,
+                  ...(comment.user.name === undefined || comment.user.name === null
+                    ? {}
+                    : { name: comment.user.name }),
+                },
+        }))
+        .sort(compareLinearCommentOrder);
+      return {
+        comments,
+        complete: !result.data.comments.pageInfo.hasPreviousPage,
+      };
+    },
     async createComment(input) {
       const result = CommentResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
@@ -290,6 +371,14 @@ export function createLinearApiClient(options: {
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
     },
   };
+}
+
+function compareLinearCommentOrder(
+  left: Pick<LinearIssueComment, "createdAt" | "id">,
+  right: Pick<LinearIssueComment, "createdAt" | "id">,
+): number {
+  const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
 }
 
 async function exchangeToken(

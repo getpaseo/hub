@@ -14,6 +14,7 @@ const MAX_TIMESTAMP_SKEW_MS = 60_000;
 export interface LinearWebhookSourceOptions {
   signingSecret: string;
   now?: () => number;
+  isBound?(linearOrganizationId: string): Promise<boolean>;
   resolveIssue?(input: {
     linearOrganizationId: string;
     issueId: string;
@@ -110,6 +111,10 @@ async function handoffLinearEvent(
       return new Response("OK", { status: 200 });
     }
     if (eventProjectId(event) === undefined && options.resolveIssue !== undefined) {
+      const source = linearEventSource(event);
+      if (options.isBound !== undefined && !(await options.isBound(event.organizationId))) {
+        return await acceptAndDispatchLinearEvent(event, source, verified, handlers, options, true);
+      }
       const issue = await options.resolveIssue({
         linearOrganizationId: event.organizationId,
         issueId: eventIssueId(event),
@@ -120,34 +125,58 @@ async function handoffLinearEvent(
       logger.warn({ deliveryId: verified.deliveryId }, "Linear event issue hydration was invalid");
       return Response.json({ error: "invalid_linear_event" }, { status: 400 });
     }
-    const source = event.type === "issue" ? "linear.issue" : "linear.comment";
-    const projectId = eventProjectId(event);
-    const acceptance = await options.accept({
-      linearOrganizationId: event.organizationId,
-      ...(projectId === undefined ? {} : { projectId }),
-      deliveryId: verified.deliveryId,
-      signatureHash: verified.signatureHash,
-      source,
-      payload: event,
-      receivedAt: verified.receivedAt,
-      ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
-    });
-    logProviderEventIntake({
-      provider: "linear",
-      source,
-      deliveryId: verified.deliveryId,
-      resourceId: projectId,
-      acceptance,
-    });
-    const events = acceptance.status === "accepted" ? acceptance.events : [];
-    await Promise.all(
-      events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
+    return await acceptAndDispatchLinearEvent(
+      event,
+      linearEventSource(event),
+      verified,
+      handlers,
+      options,
     );
-    return new Response("OK", { status: 200 });
   } catch (error) {
     logger.error({ err: error, deliveryId: verified.deliveryId }, "Linear event handoff failed");
     return Response.json({ error: "event_handoff_unavailable" }, { status: 503 });
   }
+}
+
+async function acceptAndDispatchLinearEvent(
+  event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
+  source: "linear.issue" | "linear.comment",
+  verified: VerifiedLinearRequest,
+  handlers: Set<TriggerHandler>,
+  options: LinearWebhookSourceOptions,
+  preserveBindingDrop = false,
+): Promise<Response> {
+  const projectId = eventProjectId(event);
+  const acceptance = await options.accept({
+    linearOrganizationId: event.organizationId,
+    ...(projectId === undefined ? {} : { projectId }),
+    deliveryId: verified.deliveryId,
+    signatureHash: verified.signatureHash,
+    source,
+    payload: event,
+    receivedAt: verified.receivedAt,
+    ...(handlers.size === 0 && !preserveBindingDrop
+      ? { dropReason: "configuration_unavailable" }
+      : {}),
+  });
+  logProviderEventIntake({
+    provider: "linear",
+    source,
+    deliveryId: verified.deliveryId,
+    resourceId: projectId,
+    acceptance,
+  });
+  const events = acceptance.status === "accepted" ? acceptance.events : [];
+  await Promise.all(
+    events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
+  );
+  return new Response("OK", { status: 200 });
+}
+
+function linearEventSource(
+  event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
+): "linear.issue" | "linear.comment" {
+  return event.type === "issue" ? "linear.issue" : "linear.comment";
 }
 
 /** Verify Linear's HMAC-SHA256 over the exact raw request body. */

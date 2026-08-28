@@ -79,6 +79,7 @@ describe("Linear webhook", () => {
     const endpoint = createLinearWebhookSource({
       signingSecret: SECRET,
       now: () => NOW,
+      isBound: async () => true,
       resolveIssue: async () => ({
         id: "issue-1",
         identifier: "ENG-42",
@@ -98,6 +99,49 @@ describe("Linear webhook", () => {
     assert.equal((await endpoint.handle(request(commentEnvelope(), "Comment"))).status, 200);
     assert.equal(accepted[0]?.projectId, "project-1");
     assert.equal(accepted[0]?.source, "linear.comment");
+  });
+
+  it("acknowledges an unbound compact comment before attempting issue hydration", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    let issueReads = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      isBound: async () => false,
+      resolveIssue: async () => {
+        issueReads += 1;
+        throw new Error("Linear connection unavailable");
+      },
+      accept: async (input) => {
+        accepted.push(input);
+        return { status: "dropped", receiptId: input.deliveryId, reason: "linear_unbound" };
+      },
+    });
+
+    assert.equal((await endpoint.handle(request(commentEnvelope(), "Comment"))).status, 200);
+    assert.equal(issueReads, 0);
+    assert.equal(accepted.length, 1);
+    assert.equal(accepted[0]?.projectId, undefined);
+    assert.equal(accepted[0]?.dropReason, undefined);
+  });
+
+  it("keeps a bound compact comment retryable when issue hydration fails", async () => {
+    let accepted = false;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      isBound: async () => true,
+      resolveIssue: async () => Promise.reject(new Error("Linear API unavailable")),
+      accept: async () => {
+        accepted = true;
+        return { status: "duplicate", receiptId: "delivery-1" };
+      },
+    });
+
+    assert.equal((await endpoint.handle(request(commentEnvelope(), "Comment"))).status, 503);
+    assert.equal(accepted, false);
   });
 
   it("rejects unsigned and unavailable handoffs", async () => {
@@ -182,6 +226,7 @@ function issueEnvelope() {
     action: "create",
     type: "Issue",
     organizationId: "linear-org",
+    createdAt: new Date(NOW).toISOString(),
     webhookTimestamp: NOW,
     actor: { id: "user-1", name: "Operator" },
     data: {

@@ -103,9 +103,13 @@ function readEnvelope(
   ) {
     return undefined;
   }
+  // A signed delivery timestamp proves freshness, but it is not a causal event timestamp: a
+  // comment can be created before the delivery is emitted. Prefer the comment's own timestamp
+  // so deferred history can exclude the trigger and all later comments. If neither entity nor
+  // event time is supplied, context materialization safely leaves history unavailable.
   const occurredAt = firstDefined(
+    kind === "comment" ? readDate(data["createdAt"]) : undefined,
     readDate(payload["createdAt"]),
-    readDate(payload["webhookTimestamp"]),
   );
   return {
     kind,

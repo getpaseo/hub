@@ -74,6 +74,88 @@ describe("Linear connection client", () => {
     assert.deepEqual(installation.scopes, ["read", "comments:create"]);
   });
 
+  it("reads a bounded, chronological history before the triggering comment", async () => {
+    const requests: Array<{ authorization: string | null; body: string }> = [];
+    const connection: LinearConnectionRecord = {
+      id: "connection-1",
+      organizationId: "hub-org",
+      slug: "acme-linear",
+      providerApplicationId: "linear-app",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Acme",
+      appUserId: "app-user",
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      accessTokenExpiresAt: null,
+      scopes: ["comments:create", "read"],
+    };
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      updateTokens: async () => {},
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push({
+          authorization: new Headers(init?.headers).get("authorization"),
+          body: readableBody(init?.body),
+        });
+        return json({
+          data: {
+            comments: {
+              nodes: [
+                {
+                  id: "comment-2",
+                  body: "second",
+                  createdAt: "2023-11-14T22:13:19.002Z",
+                  user: { id: "user-2", name: "Paseo" },
+                },
+                {
+                  id: "comment-1",
+                  body: "first",
+                  createdAt: "2023-11-14T22:13:19.001Z",
+                  user: null,
+                },
+              ],
+              pageInfo: { hasPreviousPage: true },
+            },
+          },
+        });
+      },
+    });
+
+    const history = await api.readIssueComments({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      beforeCreatedAt: "2023-11-14T22:13:19.003Z",
+    });
+
+    assert.deepEqual(history, {
+      complete: false,
+      comments: [
+        {
+          id: "comment-1",
+          body: "first",
+          createdAt: "2023-11-14T22:13:19.001Z",
+          author: null,
+        },
+        {
+          id: "comment-2",
+          body: "second",
+          createdAt: "2023-11-14T22:13:19.002Z",
+          author: { id: "user-2", name: "Paseo" },
+        },
+      ],
+    });
+    assert.equal(requests[0]?.authorization, "Bearer access-token");
+    const request = graphqlRequest(requests[0]?.body ?? "{}");
+    assert.match(request.query, /last: 49/u);
+    assert.match(request.query, /orderBy: createdAt/u);
+    assert.match(request.query, /createdAt: \{ lt: \$before \}/u);
+    assert.deepEqual(request.variables, {
+      issueId: "issue-1",
+      before: "2023-11-14T22:13:19.003Z",
+    });
+  });
+
   it("refreshes an expired token before calling the Linear GraphQL API", async () => {
     const updates: unknown[] = [];
     const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
@@ -132,8 +214,9 @@ describe("Linear connection client", () => {
     assert.match(requests[0]?.body ?? "", /commentCreate/u);
   });
 
-  it("keeps granted scopes when Linear omits them from a refresh response", async () => {
+  it("clears a stale expiry when Linear omits it from a refresh response", async () => {
     const updates: unknown[] = [];
+    let tokenRequests = 0;
     const connection: LinearConnectionRecord = {
       id: "connection-1",
       organizationId: "hub-org",
@@ -149,7 +232,8 @@ describe("Linear connection client", () => {
     };
     const request: typeof fetch = async (url) => {
       if (readableUrl(url).endsWith("/oauth/token")) {
-        return json({ access_token: "fresh-token", expires_in: 3600 });
+        tokenRequests += 1;
+        return json({ access_token: "fresh-token" });
       }
       return json({ data: { commentCreate: { success: true } } });
     };
@@ -157,6 +241,11 @@ describe("Linear connection client", () => {
       connectionForLinearOrganization: async () => connection,
       updateTokens: async (update) => {
         updates.push(update);
+        connection.accessToken = update.accessToken;
+        if (update.refreshToken !== undefined) connection.refreshToken = update.refreshToken;
+        if (update.accessTokenExpiresAt !== undefined)
+          connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
+        if (update.scopes !== undefined) connection.scopes = update.scopes;
       },
       connectionClient: createLinearConnectionClient({
         clientId: "client-id",
@@ -174,14 +263,20 @@ describe("Linear connection client", () => {
       issueId: "issue-1",
       body: "Done",
     });
+    await api.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      body: "Still done",
+    });
 
     assert.deepEqual(updates, [
       {
         connectionId: "connection-1",
         accessToken: "fresh-token",
-        accessTokenExpiresAt: new Date(1_700_003_610_000),
+        accessTokenExpiresAt: null,
       },
     ]);
+    assert.equal(tokenRequests, 1);
   });
 
   it("coalesces concurrent refreshes for one Linear connection", async () => {
@@ -286,4 +381,18 @@ function readableBody(value: BodyInit | null | undefined): string {
   if (typeof value === "string") return value;
   if (value instanceof URLSearchParams) return value.toString();
   return "";
+}
+
+function graphqlRequest(value: string): { query: string; variables: unknown } {
+  const parsed: unknown = JSON.parse(value);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !("query" in parsed) ||
+    typeof parsed.query !== "string"
+  ) {
+    throw new Error("expected GraphQL request");
+  }
+  return { query: parsed.query, variables: "variables" in parsed ? parsed.variables : undefined };
 }

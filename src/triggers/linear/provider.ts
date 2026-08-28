@@ -1,4 +1,10 @@
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import {
+  LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT,
+  type LinearApiClient,
+  type LinearIssueComment,
+} from "../../providers/linear/client.js";
+import { reportFailure } from "../../failures/index.js";
 import type { TriggerProvider, TriggerProviderMatch } from "../index.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedLinearEventSchema, type NormalizedLinearEvent } from "./events.js";
@@ -33,16 +39,36 @@ export interface LinearTriggerContext {
         label_ids: string[];
       };
       comment: { id: string; body: string } | null;
+      trigger_thread_context:
+        | {
+            status: "deferred";
+            issue: { id: string };
+            before: { created_at: string };
+          }
+        | { status: "unavailable" };
     };
   };
 }
 
+export interface LinearIssueContextMessage {
+  id: string;
+  content: string;
+  author: { id: string; name?: string } | null;
+  created_at: string | null;
+}
+
 export interface LinearMaterializedContext {
-  linear: LinearTriggerContext["event"]["linear"];
+  linear: Omit<LinearTriggerContext["event"]["linear"], "trigger_thread_context"> & {
+    thread: {
+      status: "available" | "incomplete" | "unavailable";
+      messages: LinearIssueContextMessage[];
+    };
+  };
 }
 
 export function createLinearTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
+  client?: Pick<LinearApiClient, "readIssueComments">;
 }): TriggerProvider<
   "linear",
   LinearTriggerContext,
@@ -123,10 +149,87 @@ export function createLinearTriggerProvider(options: {
       }
       return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
-    async materializeContext(launch) {
-      return { linear: launch.triggerContext.event.linear };
+    async materializeContext(launch): Promise<LinearMaterializedContext> {
+      const { trigger_thread_context: locator, ...linear } = launch.triggerContext.event.linear;
+      const root = issueRootMessage(linear.issue);
+      if (locator.status !== "deferred" || options.client === undefined) {
+        return linearThreadContext(linear, "unavailable", [root]);
+      }
+      try {
+        const history = await options.client.readIssueComments({
+          linearOrganizationId: linear.organization.id,
+          issueId: locator.issue.id,
+          beforeCreatedAt: locator.before.created_at,
+        });
+        const causalComments = history.comments.filter((comment) =>
+          isBeforeLinearTrigger(comment, locator.before.created_at),
+        );
+        const messages = causalComments
+          .sort(compareLinearCommentOrder)
+          .slice(-LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT)
+          .map(commentMessage);
+        const complete =
+          history.complete &&
+          causalComments.length === history.comments.length &&
+          causalComments.length <= LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT;
+        return linearThreadContext(linear, complete ? "available" : "incomplete", [
+          root,
+          ...messages,
+        ]);
+      } catch (error) {
+        reportFailure(
+          error,
+          { operation: "linear.issue.history.hydrate", component: "triggers", provider: "linear" },
+          {
+            diagnostic: { linearOrganizationId: linear.organization.id, issueId: locator.issue.id },
+          },
+        );
+        return linearThreadContext(linear, "unavailable", [root]);
+      }
     },
   };
+}
+
+function linearThreadContext(
+  linear: Omit<LinearTriggerContext["event"]["linear"], "trigger_thread_context">,
+  status: LinearMaterializedContext["linear"]["thread"]["status"],
+  messages: LinearIssueContextMessage[],
+): LinearMaterializedContext {
+  return { linear: { ...linear, thread: { status, messages } } };
+}
+
+function issueRootMessage(
+  issue: LinearTriggerContext["event"]["linear"]["issue"],
+): LinearIssueContextMessage {
+  return {
+    id: issue.id,
+    content:
+      issue.description === null || issue.description.length === 0
+        ? issue.title
+        : `${issue.title}\n\n${issue.description}`,
+    author: null,
+    created_at: null,
+  };
+}
+
+function commentMessage(comment: LinearIssueComment): LinearIssueContextMessage {
+  return {
+    id: comment.id,
+    content: comment.body,
+    author: comment.author,
+    created_at: comment.createdAt,
+  };
+}
+
+function isBeforeLinearTrigger(comment: LinearIssueComment, beforeCreatedAt: string): boolean {
+  const commentAt = Date.parse(comment.createdAt);
+  const triggerAt = Date.parse(beforeCreatedAt);
+  return Number.isFinite(commentAt) && Number.isFinite(triggerAt) && commentAt < triggerAt;
+}
+
+function compareLinearCommentOrder(left: LinearIssueComment, right: LinearIssueComment): number {
+  const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
 }
 
 function hasSourceTrigger(triggers: readonly { on: string }[], source: string): boolean {
@@ -170,5 +273,13 @@ function buildLinearContext(
       label_ids: issue.labelIds,
     },
     comment: event.type === "comment" ? { id: event.comment.id, body: event.comment.body } : null,
+    trigger_thread_context:
+      event.occurredAt === undefined
+        ? { status: "unavailable" }
+        : {
+            status: "deferred",
+            issue: { id: issue.id },
+            before: { created_at: event.occurredAt },
+          },
   };
 }

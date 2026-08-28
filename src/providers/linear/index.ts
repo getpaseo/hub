@@ -118,6 +118,12 @@ export function createLinearRegistration(
   const webhook = createLinearWebhookSource({
     signingSecret: configuration.webhookSecret,
     accept,
+    ...(database === null
+      ? {}
+      : {
+          isBound: async (linearOrganizationId) =>
+            (await database.findLinearConnection(linearOrganizationId)) !== undefined,
+        }),
     ...(api === undefined
       ? {}
       : {
@@ -159,7 +165,10 @@ export function createLinearRegistration(
     connection,
     triggerProviders: [
       ({ configurationStoreForProject }) =>
-        createLinearTriggerProvider({ configurationStoreForProject }),
+        createLinearTriggerProvider({
+          configurationStoreForProject,
+          ...(api === undefined ? {} : { client: api }),
+        }),
     ],
     sources: [webhook],
     outputs:
@@ -217,6 +226,9 @@ function createLinearConnection(
   client: LinearConnectionClient | undefined,
 ): ProviderConnectionRegistration {
   const start = async (request: Request): Promise<Response> => {
+    if (!isHttpsCallbackOrigin(options.callbackOrigin)) {
+      return Response.json({ error: "https_required" }, { status: 400 });
+    }
     const rejected = options.auth.rejectCookieMutation(request);
     if (rejected !== undefined) return rejected;
     try {
@@ -275,6 +287,15 @@ function createLinearConnection(
       callback: (request) => completeAuthorization(options, client, request),
     },
   };
+}
+
+function isHttpsCallbackOrigin(value: string): boolean {
+  try {
+    const origin = new URL(value);
+    return origin.protocol === "https:" && origin.username === "" && origin.password === "";
+  } catch {
+    return false;
+  }
 }
 
 async function completeAuthorization(
