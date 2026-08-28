@@ -52,12 +52,12 @@ test("a first account continues to app setup, and skipping it is durable", async
     // wall of instructions that a `collapse()` call tidied away first.
     for (const section of surface.sections()) await section.expectCollapsed();
     await expect(surface.wayOut("Finish")).toHaveCount(0);
-    await surface.linear.expand();
-    await surface.linear.expectLinearHttpsBlocked(session.origin);
-    await surface.linear.collapse();
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-01-chooser.desktop");
 
+    await surface.linear.expand();
+    await surface.linear.expectLinearHttpsBlocked(session.origin);
+    await surface.linear.collapse();
     await surface.leave("Do this later");
     await expect(
       page

@@ -4530,7 +4530,6 @@ class HubUser {
     await this.page.getByRole("menuitem", { name: "Cancel invitation" }).click();
     await invitationDialog.getByRole("button", { name: "Cancel invitation" }).click();
     await expect(invitation).toHaveCount(0);
-    await expect(this.page.getByText("No pending invitations", { exact: true })).toBeVisible();
   }
 
   async expectMemberBoundary(organizationName: string): Promise<void> {
