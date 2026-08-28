@@ -6,34 +6,11 @@ import { SHOTS } from "./helpers/app-evidence.js";
 test.describe.configure({ timeout: 240_000 });
 // Every journey here claims its own pristine application, so the fixture's primary is never
 // navigated to. It must not cost a PostgreSQL container nobody reads.
-test.use({ primaryDatabase: "embedded" });
-
 const OPERATOR = {
   name: "Mobile Operator",
   email: "mobile-operator@example.com",
   password: "mobile-operator-password",
 };
-
-test("a phone operator can skip app setup and reach their dashboard", async ({ hub }) => {
-  const session = await hub.openAppSetup({
-    account: {
-      name: "Harbor Operator",
-      email: "harbor-operator@example.com",
-      password: "harbor-operator-password",
-    },
-  });
-  try {
-    await session.surface.leave("Do this later");
-    await expect(
-      session.page
-        .getByRole("navigation", { name: "Breadcrumb", exact: true })
-        .getByText("Paseo Hub", { exact: true }),
-    ).toBeVisible();
-    await session.surface.shoot(SHOTS, "apps-14-skip-dashboard.mobile");
-  } finally {
-    await session.close();
-  }
-});
 
 test("the whole app setup journey completes at phone width", async ({ hub }) => {
   const session = await hub.openAppSetup({
@@ -139,6 +116,19 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 
     await surface.leave("Finish");
     await surface.shoot(SHOTS, "apps-13-finish-dashboard.mobile");
+
+    await session.openManagement();
+    await surface.expectStatuses({
+      GitHub: "Connected",
+      Slack: "Connected",
+      Discord: "Connected",
+      Linear: "Connected",
+    });
+    await surface.github.expand();
+    await surface.github.action("Replace credentials").click();
+    expect(await surface.github.value("Private key")).toBe("");
+    await surface.expectNothingClipped();
+    await surface.shoot(SHOTS, "apps-17-replace-credentials.mobile");
   } finally {
     await session.close();
   }
@@ -210,28 +200,9 @@ test("mobile evidence covers skipping and later environment-managed apps", async
   }
 });
 
-test("mobile replacement keeps secrets empty in Instance → Apps", async ({ hub }) => {
-  const session = await hub.openAppSetup({ account: OPERATOR });
-  try {
-    await session.surface.github.expand();
-    await session.surface.github.fillWorkingCredentials();
-    await session.surface.github.save();
-    await session.surface.leave("Do this later");
-    await session.openManagement();
-    await session.surface.github.expand();
-    await session.surface.github.action("Replace credentials").click();
-    expect(await session.surface.github.value("Private key")).toBe("");
-    await session.surface.expectNothingClipped();
-    await session.surface.shoot(SHOTS, "apps-17-replace-credentials.mobile");
-  } finally {
-    await session.close();
-  }
-});
-
 test("Discord failures stay actionable and contained at phone width", async ({ hub }) => {
   const network = await hub.openAppSetup({
     account: OPERATOR,
-    embedded: true,
     providerScenario: "discord-verification-network",
   });
   try {
@@ -250,7 +221,6 @@ test("Discord failures stay actionable and contained at phone width", async ({ h
 
   const intents = await hub.openAppSetup({
     account: OPERATOR,
-    embedded: true,
     providerScenario: "discord-disallowed-intents",
   });
   try {

@@ -8,11 +8,8 @@ import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, open, readFile, rm, unlink } from "node:fs/promises";
 import { promisify } from "node:util";
 import { test as base } from "@playwright/test";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { Client } from "pg";
 import { z } from "zod";
 import { PaseoHub, type BuiltApplication, type BuiltApplicationOptions } from "./helpers/hub.js";
-import { createDatabase } from "../src/db/test-utils/runtime.js";
 import { SourcePaseo } from "./helpers/source-paseo.js";
 import type { BrowserDiscordEvent } from "../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../src/e2e/harness/browser-providers.js";
@@ -27,19 +24,13 @@ export const test = base.extend<{
   projectExternal: ProjectExternalFacts;
   billing: boolean;
   providerScenario: BrowserProviderScenario;
-  primaryDatabase: "postgres" | "embedded";
 }>({
   // Set with `test.use({ billing: true })` to configure the primary app with the fixture Stripe
   // catalog — the money test in billing-subscription.spec.ts needs a billing-configured instance.
   billing: [false, { option: true }],
   providerScenario: ["connected" as BrowserProviderScenario, { option: true }],
-  // The fixture always has a primary application, but a spec that claims its own applications
-  // never touches it. Set with `test.use({ primaryDatabase: "embedded" })` so those specs stop
-  // paying for a PostgreSQL container nothing reads. Anything asserting persistence behaviour
-  // keeps the default.
-  primaryDatabase: ["postgres" as "postgres" | "embedded", { option: true }],
   hub: async (
-    { browser, browserName, page, context, billing, providerScenario, primaryDatabase },
+    { browser, browserName, page, context, billing, providerScenario },
     provide,
     testInfo,
   ) => {
@@ -59,7 +50,6 @@ export const test = base.extend<{
         databaseProfile: "fresh",
         billing,
         providerScenario,
-        ...(primaryDatabase === "embedded" ? { embedded: true } : {}),
       });
       await provide(
         new PaseoHub(
@@ -91,16 +81,7 @@ class BuiltApplications {
   private readonly sourcePaseos: SourcePaseo[] = [];
 
   async start(options: BuiltApplicationOptions = {}): Promise<BuiltApplication> {
-    const postgres =
-      options.embedded === true
-        ? undefined
-        : await new PostgreSqlContainer("postgres:17-alpine").withStartupTimeout(30_000).start();
-    const dataDirectory =
-      options.embedded === true ? await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-")) : undefined;
-    const databaseUrl = postgres?.getConnectionUri();
-    if (databaseUrl !== undefined) {
-      await prepareDatabase(databaseUrl, options.databaseProfile ?? "legacy");
-    }
+    const dataDirectory = await mkdtemp(join(tmpdir(), "paseo-e2e-pglite-"));
     const portLease = await reservePort();
     const reverseProxyPortLease = options.reverseProxy === true ? await reservePort() : undefined;
     const port = portLease.port;
@@ -111,8 +92,7 @@ class BuiltApplications {
     const origin = `${tls === undefined ? "http" : "https"}://127.0.0.1:${publicPort}`;
     const machineKeyFile = join(tmpdir(), `paseo-e2e-machine-key-${randomUUID()}`);
     const childEnvironment = applicationEnvironment({
-      ...(databaseUrl === undefined ? {} : { databaseUrl }),
-      ...(dataDirectory === undefined ? {} : { dataDirectory }),
+      dataDirectory,
       origin,
       ...(options.reverseProxy === true ? {} : { appUrl: origin }),
       port,
@@ -135,10 +115,8 @@ class BuiltApplications {
         : await startReverseProxy(reverseProxyPortLease, port, tls);
     const application: RunningApplication = {
       origin,
-      databaseUrl: databaseUrl ?? `embedded:${dataDirectory}`,
       machineKey: "",
-      ...(postgres === undefined ? {} : { postgres }),
-      ...(dataDirectory === undefined ? {} : { dataDirectory }),
+      dataDirectory,
       portLeases: [
         portLease,
         ...(reverseProxyPortLease === undefined ? [] : [reverseProxyPortLease]),
@@ -168,6 +146,15 @@ class BuiltApplications {
         slackSocketEvidenceSchema.parse(
           await deliverCommandForData(server, { type: "slack-socket-inspect", eventId }),
         ),
+      query: async (sql, params = []) => {
+        const rows = await deliverCommandForData(server, { type: "database-query", sql, params });
+        if (!Array.isArray(rows)) throw new Error("database query returned invalid rows");
+        return rows as Record<string, unknown>[];
+      },
+      installUnroutedSlackFixture: (input) =>
+        deliverCommand(server, { type: "install-unrouted-slack-fixture", ...input }),
+      installProviderDispatchFixture: (input) =>
+        deliverCommand(server, { type: "install-provider-dispatch-fixture", ...input }),
       restart: async () => {
         await stopServer(server);
         await portLease.reacquire();
@@ -205,10 +192,7 @@ class BuiltApplications {
         await stopServer(application.server);
         await stopProxy(application.proxy);
         await Promise.all(application.portLeases.map((lease) => lease.release()));
-        await application.postgres?.stop();
-        if (application.dataDirectory !== undefined) {
-          await rm(application.dataDirectory, { recursive: true, force: true });
-        }
+        await rm(application.dataDirectory, { recursive: true, force: true });
         if (application.tlsRoot !== undefined) {
           await rm(application.tlsRoot, { recursive: true, force: true });
         }
@@ -224,8 +208,7 @@ class BuiltApplications {
 }
 
 interface RunningApplication extends BuiltApplication {
-  postgres?: StartedPostgreSqlContainer;
-  dataDirectory?: string;
+  dataDirectory: string;
   portLeases: readonly PortLease[];
   server: ChildProcess;
   tlsRoot?: string;
@@ -233,8 +216,7 @@ interface RunningApplication extends BuiltApplication {
 }
 
 interface ApplicationEnvironmentInput {
-  databaseUrl?: string;
-  dataDirectory?: string;
+  dataDirectory: string;
   origin: string;
   appUrl?: string;
   port: number;
@@ -299,10 +281,8 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
           PASEO_BOOTSTRAP_OWNER_PASSWORD: input.bootstrap.ownerPassword,
         }),
   };
-  if (input.databaseUrl === undefined) delete environment["DATABASE_URL"];
-  else environment["DATABASE_URL"] = input.databaseUrl;
-  if (input.dataDirectory === undefined) delete environment["PASEO_HUB_DATA_DIR"];
-  else environment["PASEO_HUB_DATA_DIR"] = input.dataDirectory;
+  delete environment["DATABASE_URL"];
+  environment["PASEO_HUB_DATA_DIR"] = input.dataDirectory;
   if (input.appUrl === undefined) delete environment["PASEO_HUB_APP_URL"];
   else environment["PASEO_HUB_APP_URL"] = input.appUrl;
   return environment;
@@ -406,48 +386,6 @@ async function deliverCommandForData(
   });
   server.send({ id, ...command });
   return result;
-}
-
-async function prepareDatabase(
-  databaseUrl: string,
-  profile: NonNullable<BuiltApplicationOptions["databaseProfile"]>,
-): Promise<void> {
-  const database = await createDatabase(databaseUrl);
-  await database.close();
-  if (profile === "fresh") return;
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  await client.query(
-    `insert into organization (id, name, slug)
-     values ('phase-zero', 'Phase Zero', 'phase-zero')`,
-  );
-  // A faithful legacy organization: it predates the meters field, so its granted document has
-  // the exact shape migration 0025 backfilled. Enforcement reads it on every provider event
-  // through the versioned normalization boundary, so the built server exercises that upgrade
-  // path end to end — without a row here, metering would throw and manual runs would 500.
-  await client.query(
-    `insert into organization_entitlements
-       (organization_id, granted, overrides, plan_id, plan_version, stamped_at, updated_at)
-     values ('phase-zero', '{"seats":{"max":null},"canInviteMembers":true}'::jsonb,
-             '{}'::jsonb, null, null, now(), now())`,
-  );
-  await client.query(
-    `insert into "user" (id, name, email, email_verified)
-     values ('phase-zero-user', 'Phase Zero', 'phase-zero@example.test', true)`,
-  );
-  await client.query(
-    `insert into member (id, organization_id, user_id, role)
-     values ('phase-zero-owner', 'phase-zero', 'phase-zero-user', 'owner')`,
-  );
-  await client.query(`
-    insert into projects (organization_id, name, slug)
-    select id, 'Default', 'default' from organization
-    on conflict (organization_id, slug) do nothing;
-    insert into project_configuration_sources (organization_id, project_id, kind)
-    select organization_id, id, 'manual' from projects
-    on conflict (project_id) do nothing;
-  `);
-  await client.end();
 }
 
 async function serverReady(server: ChildProcess, origin: string, output: string[]): Promise<void> {

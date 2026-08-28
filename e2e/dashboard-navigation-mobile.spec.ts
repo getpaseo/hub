@@ -2,9 +2,6 @@ import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { projectApp } from "./helpers/projects/index.js";
 
-// Navigation shape only — nothing here asserts persistence, so it does not pay for a container.
-test.use({ primaryDatabase: "embedded" });
-
 const SHOTS = "e2e/screenshots/dashboard-navigation-mobile";
 
 const owner = {
@@ -58,11 +55,7 @@ test("stacks two switchers but one set of destinations in the mobile drawer", as
   });
 });
 
-// Granting the operator flag is a SQL statement against the primary database, which PGlite in
-// this harness does not serve.
 test.describe("instance scope", () => {
-  test.use({ primaryDatabase: "postgres" });
-
   test("enters instance scope through the drawer's account menu", async ({ hub, page }) => {
     const app = projectApp(page);
     await hub.signUpAs("owner", owner);
