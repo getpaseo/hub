@@ -2547,11 +2547,11 @@ class HubUser {
     await this.completeFirstRunClaimWithKeyboard(account, armAccountSetupFailure);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
-    // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
-    // exactly as it is after an ordinary sign-in. Onboarding lands inside the default project, and
-    // the organization switcher tops the sidebar header in every scope, so it is that entry point.
-    await this.page.keyboard.press("Tab");
-    await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
+    // Keyboard control survives both the mobile onboarding arrival and the resize: closing the
+    // drawer restores its trigger, and that same control remains focused in the desktop header.
+    await expect(
+      this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" }),
+    ).toBeFocused();
 
     // Setup provisioned a working organization, not just a row: onboarding ended inside its
     // default project, and that project renders.
