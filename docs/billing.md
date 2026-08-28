@@ -12,7 +12,7 @@ there; it enforces nothing of its own.
 
 Nothing outside `src/billing/` may import it, except the composition root (`src/index.ts`,
 `src/application-runtime.ts`, `src/server/runtime.ts`, `src/e2e/harness/browser-child.ts`) and the
-billing dashboard route (`src/routes/_shell/o/$organizationSlug/billing.tsx`). Enforced by the
+billing dashboard route (`src/routes/_shell/o/$organizationSlug/settings/billing.tsx`). Enforced by the
 `no-restricted-imports` rule in `oxlint.json:90` — CI fails on a violation, so the rule doesn't
 depend on anyone remembering it. The billing UI lives under `src/billing/ui/` for the same
 reason: one directory is what makes "delete `src/billing/`, the app still runs" a real test.
