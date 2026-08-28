@@ -25,7 +25,7 @@ const SAVE = "provider_application.verify_and_save";
 
 async function openSetup(
   hub: PaseoHub,
-  environmentApps?: readonly ("github" | "slack" | "discord")[],
+  environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[],
 ): Promise<AppSetupSession> {
   return await hub.openAppSetup({
     account: OPERATOR,
@@ -53,8 +53,9 @@ test("a first account continues to app setup, and skipping it is durable", async
       GitHub: "Not set up",
       Slack: "Not set up",
       Discord: "Not set up",
+      Linear: "Not set up",
     });
-    // A chooser, not three open manuals. This is also the evidence contract: the screenshot
+    // A chooser, not four open manuals. This is also the evidence contract: the screenshot
     // below is taken before anything on the page has been touched, so it cannot be a shot of a
     // wall of instructions that a `collapse()` call tidied away first.
     for (const section of surface.sections()) await section.expectCollapsed();
@@ -542,6 +543,17 @@ test("Slack webhook setup remains available over HTTPS", async ({ hub }) => {
   }
 });
 
+test("Linear setup requires HTTPS before starting OAuth", async ({ hub }) => {
+  const session = await openSetup(hub);
+  try {
+    await session.surface.linear.expand();
+    await session.surface.linear.expectLinearHttpsBlocked(session.origin);
+    await session.surface.accessible();
+  } finally {
+    await session.close();
+  }
+});
+
 test("Slack Socket Mode rejects a bad app token without saving or leaking it", async ({ hub }) => {
   const session = await openSetup(hub);
   try {
@@ -622,6 +634,12 @@ test("every way a provider can send the operator back is answered in that sectio
         focus: "error" as const,
       },
       {
+        provider: "linear" as const,
+        result: "linear_cancelled",
+        copy: "Authorization cancelled at Linear. Nothing changed. Start again when you're ready.",
+        focus: "result" as const,
+      },
+      {
         provider: "github" as const,
         result: "something_nobody_mapped",
         copy: "GitHub ended the connection without saying why. Nothing was connected. Start the connection again from this page.",
@@ -635,7 +653,9 @@ test("every way a provider can send the operator back is answered in that sectio
           ? "GitHub"
           : outcome.provider === "slack"
             ? "Slack"
-            : "Discord",
+            : outcome.provider === "discord"
+              ? "Discord"
+              : "Linear",
       );
       // The provider's own section opens, takes the keyboard, and says what happened there.
       await section.expectExpanded();
@@ -790,7 +810,7 @@ test("the operator finishes, then manages the same apps from the account menu", 
     https: true,
   });
   try {
-    const { surface } = session;
+    const { surface, page } = session;
     await surface.github.expand();
     await surface.github.fillWorkingCredentials();
     await surface.github.save();
@@ -808,13 +828,25 @@ test("the operator finishes, then manages the same apps from the account menu", 
     await surface.discord.action("Add to a Discord server").click();
     await surface.discord.expectStatus("Connected");
 
+    await surface.linear.expand();
+    await surface.linear.fillWorkingCredentials();
+    await surface.linear.save();
+    await expect(page.getByRole("heading", { name: "Install Paseo in Acme" })).toBeVisible();
+    await page.getByRole("link", { name: "Accept installation" }).click();
+    await surface.linear.expectStatus("Connected");
+    await surface.linear.expectSummary({
+      Application: "Linear app",
+      Workspaces: "Acme",
+      Events: "Waiting for the first event",
+    });
+
     await surface.collapseAll();
-    await surface.shoot(SHOTS, "apps-12-all-three-connected.desktop");
+    await surface.shoot(SHOTS, "apps-12-all-four-connected.desktop");
 
     await surface.leave("Finish");
     await surface.shoot(SHOTS, "apps-13-finish-dashboard.desktop");
 
-    // Later management is the same three sections, with the state left behind. Onboarding leaves
+    // Later management is the same four sections, with the state left behind. Onboarding leaves
     // the operator inside the default project, and the instance is reachable from there — through
     // the account menu, because the flag belongs to them and not to the project they are in.
     await session.navigateToApps();
@@ -822,6 +854,7 @@ test("the operator finishes, then manages the same apps from the account menu", 
       GitHub: "Connected",
       Slack: "Connected",
       Discord: "Connected",
+      Linear: "Connected",
     });
     // Nothing is open on arrival here either; there is no journey to lead.
     for (const section of surface.sections()) await section.expectCollapsed();

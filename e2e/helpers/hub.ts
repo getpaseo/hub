@@ -74,7 +74,7 @@ export interface BuiltApplicationOptions {
   /** Operator-managed provider applications, starting from nothing configured. */
   providerApplications?: boolean;
   /** Providers the instance environment configures, which the surface must render read-only. */
-  environmentApps?: readonly ("github" | "slack" | "discord")[];
+  environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
   /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
   https?: boolean;
   /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
@@ -306,7 +306,7 @@ export class PaseoHub {
   async openAppSetup(input: {
     account: Account;
     providerScenario?: BrowserProviderScenario;
-    environmentApps?: readonly ("github" | "slack" | "discord")[];
+    environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
     https?: boolean;
     reverseProxy?: boolean;
     embedded?: boolean;
@@ -4511,7 +4511,7 @@ class HubUser {
 
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
-    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(3);
+    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(4);
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
     await expectAccessible(this.page);
   }
@@ -4784,8 +4784,13 @@ export interface AppSetupSession {
   openManagement(): Promise<void>;
   /** Reaches Apps the way an operator does after onboarding: through the account menu. */
   navigateToApps(): Promise<void>;
-  returnFromProvider(provider: "github" | "slack" | "discord", result: string): Promise<void>;
-  providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
+  returnFromProvider(
+    provider: "github" | "slack" | "discord" | "linear",
+    result: string,
+  ): Promise<void>;
+  providerApplicationVersion(
+    provider: "github" | "slack" | "discord" | "linear",
+  ): Promise<number | null>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
   seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
   prepareSlackSocketWorkflow(): Promise<void>;
@@ -4857,7 +4862,7 @@ async function seedSignedDelivery(
 
 async function providerApplicationVersion(
   databaseUrl: string,
-  provider: "github" | "slack" | "discord",
+  provider: "github" | "slack" | "discord" | "linear",
 ): Promise<number | null> {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();

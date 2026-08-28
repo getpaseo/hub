@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -259,6 +259,7 @@ export interface OrganizationConnectionUsage {
   github: GitHubConnectionRecord[];
   discord: DiscordConnectionRecord[];
   slack: SlackConnectionRecord[];
+  linear: LinearConnectionRecord[];
 }
 
 export interface GitHubRepositoryRecord {
@@ -321,13 +322,14 @@ export interface ProjectConfigurationRevisionRecord {
   validatedAt: Date | null;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack";
+export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
 
 export type ConnectionAttemptPhase =
   | "github_setup"
   | "github_user_authorization"
   | "discord_authorization"
-  | "slack_authorization";
+  | "slack_authorization"
+  | "linear_authorization";
 
 export interface ConnectionAccountAccess {
   sessionId: string;
@@ -401,6 +403,20 @@ export interface SlackConnectionRecord {
   providerApplicationId: string | null;
 }
 
+export interface LinearConnectionRecord {
+  id: string;
+  organizationId: string;
+  slug: string;
+  providerApplicationId: string | null;
+  linearOrganizationId: string;
+  linearOrganizationName: string;
+  appUserId: string;
+  accessToken: string;
+  refreshToken: string | null;
+  accessTokenExpiresAt: Date | null;
+  scopes: string[];
+}
+
 export interface StartConnectionAttemptInput {
   provider: ConnectionProvider;
   stateVerifier: string;
@@ -459,6 +475,41 @@ export interface CompleteSlackProviderApplicationInput extends BindSlackConnecti
   };
 }
 
+export interface BindLinearConnectionInput extends ReadConnectionAttemptInput {
+  providerApplicationId: string;
+  linearOrganizationId: string;
+  linearOrganizationName: string;
+  appUserId: string;
+  accessToken: string;
+  refreshToken?: string | null;
+  accessTokenExpiresAt?: Date | null;
+  scopes: string[];
+}
+
+export interface CompleteLinearProviderApplicationInput extends BindLinearConnectionInput {
+  providerConfiguration: {
+    configuration: unknown;
+    identity: { id: string };
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+  };
+}
+
+export interface UpdateLinearConnectionTokensInput {
+  connectionId: string;
+  accessToken: string;
+  refreshToken?: string | null;
+  accessTokenExpiresAt?: Date | null;
+  scopes?: string[];
+}
+
+export type LinearConnectionTokenUpdate = Omit<UpdateLinearConnectionTokensInput, "connectionId">;
+
+export type LinearConnectionRefreshOperation<T> = (
+  connection: LinearConnectionRecord | undefined,
+  updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
+) => Promise<T>;
+
 export type DisconnectConnectionResult =
   | { provider: "github" }
   | { provider: "discord"; guildId: string | undefined }
@@ -466,6 +517,11 @@ export type DisconnectConnectionResult =
       provider: "slack";
       teamId: string | undefined;
       botAccessToken: string | undefined;
+    }
+  | {
+      provider: "linear";
+      linearOrganizationId: string | undefined;
+      accessToken: string | undefined;
     };
 
 export type GitHubLifecycleIdentity = Omit<
@@ -536,6 +592,11 @@ export interface AcceptDiscordEventInput extends ProviderEventEvidence {
 
 export interface AcceptSlackEventInput extends ProviderEventEvidence {
   teamId: string;
+}
+
+export interface AcceptLinearEventInput extends ProviderEventEvidence {
+  linearOrganizationId: string;
+  projectId?: string;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {
@@ -1101,6 +1162,7 @@ export interface Database {
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
+  acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
@@ -1391,6 +1453,18 @@ export interface Database {
   bindDiscordConnection(input: BindDiscordConnectionInput): Promise<void>;
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
   completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
+  bindLinearConnection(input: BindLinearConnectionInput): Promise<void>;
+  completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void>;
+  updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void>;
+  /**
+   * Runs a Linear refresh decision under the same transaction-scoped external-connection lock
+   * used by OAuth rebind. The connection re-read and any token update use that transaction, so a
+   * stale refresh cannot overwrite a concurrent reauthorization or consume a rotating token twice.
+   */
+  withLinearConnectionRefresh<T>(
+    linearOrganizationId: string,
+    operation: LinearConnectionRefreshOperation<T>,
+  ): Promise<T>;
   disconnectConnection(
     provider: ConnectionProvider,
     connectionId: string,
@@ -1399,10 +1473,15 @@ export interface Database {
   findGitHubConnection(installationId: number): Promise<GitHubConnectionRecord | undefined>;
   findDiscordConnection(guildId: string): Promise<DiscordConnectionRecord | undefined>;
   findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
+  findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
   ): Promise<SlackConnectionRecord | undefined>;
+  findLinearConnectionForOrganization(
+    organizationId: string,
+    linearOrganizationId: string,
+  ): Promise<LinearConnectionRecord | undefined>;
   findDiscordConnectionForOrganization(
     organizationId: string,
     guildId: string,

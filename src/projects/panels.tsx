@@ -223,7 +223,7 @@ export function OrganizationConnectionsPanel() {
   const status = queryState<ConnectionStatus>(statusQuery, "Connections unavailable");
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: "github" | "discord" | "slack") => {
+  const connectProvider = (provider: "github" | "discord" | "slack" | "linear") => {
     connect.mutate(
       { data: { ...scope, provider } },
       {
@@ -235,8 +235,11 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
-  const connectionActionLabel = (provider: "github" | "discord" | "slack") => {
-    if (provider === "slack" && status.data.slack.status === "requiresReauthorization") {
+  const connectionActionLabel = (provider: "github" | "discord" | "slack" | "linear") => {
+    if (
+      (provider === "slack" || provider === "linear") &&
+      status.data[provider].status === "requiresReauthorization"
+    ) {
       return "Reauthorize";
     }
     if (
@@ -324,8 +327,8 @@ export function OrganizationConnectionsPanel() {
           ))}
         </DataTable>
         {data.capabilities.manageResources ? (
-          <div className="grid gap-2 sm:grid-cols-3">
-            {(["github", "discord", "slack"] as const).map((provider) => (
+          <div className="grid gap-2 sm:grid-cols-4">
+            {(["github", "discord", "slack", "linear"] as const).map((provider) => (
               <div
                 key={provider}
                 className="flex items-center justify-between gap-2 rounded-md border p-3"
@@ -398,10 +401,11 @@ export function ProjectOverviewPanel() {
           ready={
             data.connections.github.length +
               data.connections.discord.length +
-              data.connections.slack.length >
+              data.connections.slack.length +
+              data.connections.linear.length >
             0
           }
-          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length)} organization connections`}
+          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
         />
       </div>
       <Section
@@ -744,6 +748,15 @@ function connectionRows(data: OrganizationSnapshot) {
         ? ("requiresReauthorization" as const)
         : ("connected" as const),
     })),
+    ...data.connections.linear.map((connection) => ({
+      provider: "linear" as const,
+      id: connection.id,
+      name: connection.slug,
+      externalId: `workspace ${connection.linearOrganizationId}`,
+      status: connection.requiresReauthorization
+        ? ("requiresReauthorization" as const)
+        : ("connected" as const),
+    })),
   ];
 }
 /**
@@ -754,7 +767,7 @@ function UnconfiguredProvider({
   provider,
   operator,
 }: {
-  provider: "github" | "discord" | "slack";
+  provider: "github" | "discord" | "slack" | "linear";
   operator: boolean;
 }) {
   if (!operator) return <StatusPill tone="neutral">Not configured</StatusPill>;
@@ -765,10 +778,10 @@ function UnconfiguredProvider({
   );
 }
 
-function providerLabel(provider: "github" | "discord" | "slack") {
+function providerLabel(provider: "github" | "discord" | "slack" | "linear") {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
-  return "Slack";
+  return provider === "slack" ? "Slack" : "Linear";
 }
 
 function useConnectionResult() {
@@ -794,9 +807,11 @@ function connectionResultCopy(result: string): string {
   if (result === "github_connected") return "GitHub connected.";
   if (result === "discord_connected") return "Discord connected.";
   if (result === "slack_connected") return "Slack connected.";
+  if (result === "linear_connected") return "Linear connected.";
   if (result === "github_disconnected") return "GitHub disconnected.";
   if (result === "discord_disconnected") return "Discord disconnected.";
   if (result === "slack_disconnected") return "Slack disconnected.";
+  if (result === "linear_disconnected") return "Linear disconnected.";
   if (result === "github_approval_required") {
     return "GitHub owner approval is required. Retry after approval.";
   }

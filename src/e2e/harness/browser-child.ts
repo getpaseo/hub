@@ -16,6 +16,7 @@ import { createGitHubRegistration } from "../../providers/github/index.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createLinearRegistration } from "../../providers/linear/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
@@ -231,6 +232,13 @@ async function main(): Promise<void> {
               : null,
             ...(slackConfigured ? { botClient: slackBot } : {}),
           }),
+          createLinearRegistration({
+            database,
+            auth,
+            applicationBaseUrl: publicBaseUrl,
+            publicBaseUrl,
+            configuration: null,
+          }),
         ];
   const providers = await providerRuntimeOptions(auth, registrations, {
     database,
@@ -362,17 +370,23 @@ async function testServerOptions(): Promise<{
 
 function browserProviderPage(request: Request, publicBaseUrl: string): Response | undefined {
   const url = new URL(request.url);
-  if (url.pathname !== "/e2e/providers/slack/authorize") return undefined;
+  let provider: { name: string; callback: string } | undefined;
+  if (url.pathname === "/e2e/providers/slack/authorize") {
+    provider = { name: "Slack", callback: "/api/integrations/slack/callback" };
+  } else if (url.pathname === "/e2e/providers/linear/authorize") {
+    provider = { name: "Linear", callback: "/api/integrations/linear/callback" };
+  }
+  if (provider === undefined) return undefined;
   const state = url.searchParams.get("state");
   if (state === null) return new Response("Missing state", { status: 400 });
   const callback = new URL(
-    "/api/integrations/slack/callback",
+    provider.callback,
     request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? publicBaseUrl,
   );
   callback.searchParams.set("state", state);
   callback.searchParams.set("code", "accepted");
   return new Response(
-    `<!doctype html><html><body><main><h1>Install Paseo in Acme</h1><p>Slack is asking you to accept this app.</p><a href="${callback.toString()}">Accept installation</a></main></body></html>`,
+    `<!doctype html><html><body><main><h1>Install Paseo in Acme</h1><p>${provider.name} is asking you to accept this app.</p><a href="${callback.toString()}">Accept installation</a></main></body></html>`,
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
 }
