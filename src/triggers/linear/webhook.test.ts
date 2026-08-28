@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { DurableProviderEvent, ProviderEventAcceptance } from "../../db/types.js";
-import { NormalizedLinearAgentSessionEventSchema } from "./events.js";
 import {
   createLinearWebhookSource,
   verifyLinearSignature,
@@ -131,72 +130,6 @@ describe("Linear webhook", () => {
     assert.equal((await endpoint.handle(request(commentEnvelope(), "Comment"))).status, 200);
     assert.equal(accepted[0]?.projectId, "project-1");
     assert.equal(accepted[0]?.source, "linear.comment");
-  });
-
-  it("hydrates and dispatches native Linear agent-session events", async () => {
-    const accepted: Array<
-      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
-    > = [];
-    const dispatched: DurableProviderEvent[] = [];
-    const endpoint = createLinearWebhookSource({
-      signingSecret: SECRET,
-      now: () => NOW,
-      canHydrateIssue: async () => true,
-      resolveIssue: async () => ({
-        id: "issue-1",
-        identifier: "ENG-42",
-        title: "Ship the feature",
-        description: "Useful context",
-        projectId: "project-1",
-        stateId: "ready",
-        assigneeId: "app-user",
-        labelIds: [],
-      }),
-      accept: async (input) => {
-        accepted.push(input);
-        return acceptedEvent(input);
-      },
-    });
-    await endpoint.start((event) => {
-      dispatched.push(event);
-      return Promise.resolve();
-    });
-
-    const response = await endpoint.handle(request(agentSessionEnvelope(), "AgentSessionEvent"));
-
-    assert.equal(response.status, 200);
-    assert.equal(accepted[0]?.source, "linear.agent_session");
-    assert.equal(accepted[0]?.projectId, "project-1");
-    assert.equal(dispatched[0]?.source, "linear.agent_session");
-    assert.equal(
-      NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload).prompt,
-      "<issue>Canonical Linear context</issue>",
-    );
-  });
-
-  it("acknowledges an unbound compact agent session before issue hydration", async () => {
-    let issueReads = 0;
-    let acceptedSource: string | undefined;
-    const endpoint = createLinearWebhookSource({
-      signingSecret: SECRET,
-      now: () => NOW,
-      canHydrateIssue: async () => false,
-      resolveIssue: async () => {
-        issueReads += 1;
-        throw new Error("Linear connection unavailable");
-      },
-      accept: async (input) => {
-        acceptedSource = input.source;
-        return { status: "dropped", receiptId: input.deliveryId, reason: "linear_unbound" };
-      },
-    });
-
-    assert.equal(
-      (await endpoint.handle(request(agentSessionEnvelope(), "AgentSessionEvent"))).status,
-      200,
-    );
-    assert.equal(issueReads, 0);
-    assert.equal(acceptedSource, "linear.agent_session");
   });
 
   it("acknowledges an unbound compact comment before attempting issue hydration", async () => {
@@ -353,40 +286,5 @@ function commentEnvelope() {
     webhookTimestamp: NOW,
     actor: { id: "user-1", name: "Operator" },
     data: { id: "comment-1", issueId: "issue-1", body: "Please investigate" },
-  };
-}
-
-function agentSessionEnvelope() {
-  return {
-    action: "created",
-    type: "AgentSessionEvent",
-    organizationId: "linear-org",
-    appUserId: "app-user",
-    createdAt: new Date(NOW).toISOString(),
-    webhookTimestamp: NOW,
-    promptContext: "<issue>Canonical Linear context</issue>",
-    agentSession: {
-      id: "session-1",
-      appUserId: "app-user",
-      issueId: "issue-1",
-      status: "pending",
-      createdAt: new Date(NOW).toISOString(),
-      creator: { id: "user-1", name: "Operator" },
-      comment: {
-        id: "comment-1",
-        issueId: "issue-1",
-        userId: "user-1",
-        body: "@Paseo please draft a fix",
-      },
-      issue: {
-        id: "issue-1",
-        identifier: "ENG-42",
-        title: "Ship the feature",
-        description: "Useful context",
-        url: "https://linear.app/acme/issue/ENG-42/ship-the-feature",
-        teamId: "team-1",
-        team: { id: "team-1", name: "Engineering", key: "ENG" },
-      },
-    },
   };
 }

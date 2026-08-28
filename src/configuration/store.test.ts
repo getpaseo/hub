@@ -36,7 +36,7 @@ const linear: LinearConnectionRecord = {
   accessToken: "token",
   refreshToken: "refresh-token",
   accessTokenExpiresAt: null,
-  scopes: ["read", "write", "app:assignable", "app:mentionable"],
+  scopes: ["read", "comments:create"],
 };
 
 describe("ProjectConfigurationStore resource compilation", () => {
@@ -227,7 +227,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       linearOrganizationId === linear.linearOrganizationId
         ? {
             ...linear,
-            scopes: ["read", "write", "app:assignable", "app:mentionable"],
+            scopes: ["read", "comments:create"],
             refreshToken: null,
             accessTokenExpiresAt: new Date(0),
           }

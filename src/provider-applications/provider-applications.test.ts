@@ -375,7 +375,7 @@ describe("provider applications", () => {
         accessToken: "linear-token",
         refreshToken: "linear-refresh-token",
         accessTokenExpiresAt: null,
-        scopes: ["read", "write", "app:assignable", "app:mentionable"],
+        scopes: ["read", "comments:create"],
       },
       binding: linearBinding(),
     });
@@ -966,6 +966,6 @@ function linearBinding() {
     accessToken: "linear-token",
     refreshToken: "linear-refresh-token",
     accessTokenExpiresAt: null,
-    scopes: ["read", "write", "app:assignable", "app:mentionable"],
+    scopes: ["read", "comments:create"],
   };
 }

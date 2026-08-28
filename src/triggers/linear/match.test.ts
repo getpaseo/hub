@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
-import type {
-  NormalizedLinearAgentSessionEvent,
-  NormalizedLinearCommentEvent,
-  NormalizedLinearIssueEvent,
-} from "./events.js";
+import type { NormalizedLinearCommentEvent, NormalizedLinearIssueEvent } from "./events.js";
 import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
 
 describe("Linear trigger matching", () => {
@@ -86,7 +82,6 @@ describe("Linear trigger matching", () => {
         expected: "assignment",
       },
       { event: commentEvent(), expected: "comment" },
-      { event: agentSessionEvent(), expected: "agent-session" },
     ];
 
     for (const { event, expected } of events) {
@@ -99,24 +94,6 @@ describe("Linear trigger matching", () => {
         0,
       );
     }
-  });
-
-  it("matches created and prompted agent sessions with project and actor boundaries", () => {
-    const config = configuration();
-    assert.deepEqual(
-      matchLinearTriggers(config, agentSessionEvent()).map((match) => match.trigger.name),
-      ["agent-session"],
-    );
-    assert.deepEqual(
-      matchLinearTriggers(config, agentSessionEvent({ action: "created" })).map(
-        (match) => match.trigger.name,
-      ),
-      ["agent-session"],
-    );
-    assert.equal(
-      matchLinearTriggers(config, agentSessionEvent({ actor: { id: "untrusted" } })).length,
-      0,
-    );
   });
 });
 
@@ -218,18 +195,6 @@ function configuration() {
         filters: { project: "project-1", from_users: ["operator"], contains: "@paseo" },
         steps: [base],
       },
-      {
-        name: "agent-session",
-        on: "linear.agent_session",
-        max_runtime: "2h",
-        filters: { project: "project-1", from_users: ["operator"] },
-        steps: [
-          {
-            ...base,
-            allow_outputs: [{ type: "linear.reply", max: 1, required: true }],
-          },
-        ],
-      },
     ],
   });
 }
@@ -271,36 +236,5 @@ function commentEvent(body = "@paseo please investigate"): NormalizedLinearComme
     actor: event.actor,
     comment: { id: "comment-1", issueId: event.issue.id, body },
     issue: event.issue,
-  };
-}
-
-function agentSessionEvent(
-  overrides: Partial<NormalizedLinearAgentSessionEvent> = {},
-): NormalizedLinearAgentSessionEvent {
-  const base = issue();
-  return {
-    type: "agent_session",
-    action: "prompted",
-    id: "activity-1",
-    organizationId: base.organizationId,
-    actor: base.actor,
-    agentSession: {
-      id: "session-1",
-      appUserId: "app-user",
-      issueId: base.issue.id,
-      status: "active",
-    },
-    agentActivity: {
-      id: "activity-1",
-      type: "prompt",
-      body: "Please investigate",
-      createdAt: "2026-01-02T00:01:00.000Z",
-    },
-    prompt: "Please investigate",
-    parserMessage: "Please investigate",
-    promptContext: null,
-    issue: base.issue,
-    occurredAt: "2026-01-02T00:01:00.000Z",
-    ...overrides,
   };
 }

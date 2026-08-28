@@ -147,7 +147,7 @@ async function handoffLinearEvent(
 
 async function acceptAndDispatchLinearEvent(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-  source: "linear.issue" | "linear.comment" | "linear.agent_session",
+  source: "linear.issue" | "linear.comment",
   verified: VerifiedLinearRequest,
   handlers: Set<TriggerHandler>,
   options: LinearWebhookSourceOptions,
@@ -182,9 +182,8 @@ async function acceptAndDispatchLinearEvent(
 
 function linearEventSource(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-): "linear.issue" | "linear.comment" | "linear.agent_session" {
-  if (event.type === "issue") return "linear.issue";
-  return event.type === "comment" ? "linear.comment" : "linear.agent_session";
+): "linear.issue" | "linear.comment" {
+  return event.type === "issue" ? "linear.issue" : "linear.comment";
 }
 
 /** Verify Linear's HMAC-SHA256 over the exact raw request body. */

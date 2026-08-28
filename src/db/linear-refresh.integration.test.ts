@@ -147,7 +147,7 @@ function bindLinearConnection(
     linearOrganizationName: "Acme",
     appUserId: "linear-app-user",
     ...tokens,
-    scopes: ["read", "write", "app:assignable", "app:mentionable"],
+    scopes: ["read", "comments:create"],
   });
 }
 

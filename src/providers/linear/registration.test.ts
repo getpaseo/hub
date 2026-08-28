@@ -155,7 +155,7 @@ describe("Linear registration", () => {
       accessToken: "expired-token",
       refreshToken: null,
       accessTokenExpiresAt: new Date(0),
-      scopes: ["read", "write", "app:assignable", "app:mentionable"],
+      scopes: ["read", "comments:create"],
     };
     assert.deepEqual(
       registration.connection.status({ github: [], discord: [], slack: [], linear: [expired] }),
@@ -208,9 +208,7 @@ describe("Linear registration", () => {
         throw new Error("under-scoped token must not hydrate");
       },
       readIssueComments: async () => ({ comments: [], complete: true }),
-      readAgentSessionActivities: async () => ({ activities: [], complete: true }),
       createComment: async () => {},
-      createAgentActivity: async () => {},
     };
     const registration = createLinearRegistration({
       database,

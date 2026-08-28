@@ -15,7 +15,6 @@ describe("Linear reply output", () => {
         provider: "linear",
         linearOrganizationId: "linear-org",
         issueId: "issue-1",
-        agentSessionId: null,
       },
     });
     assert.deepEqual(client.comments, [
@@ -25,34 +24,6 @@ describe("Linear reply output", () => {
         body: "Draft PR: https://github.com/acme/repo/pull/42",
       },
     ]);
-  });
-
-  it("responds through a native Linear agent session", async () => {
-    const client = new RecordingLinearClient();
-    const execute = createLinearReplyExecutor({ client });
-    await execute({
-      agentExecutionId: "execution-1",
-      toolType: "linear.reply",
-      args: { content: "Draft PR: https://github.com/acme/repo/pull/42" },
-      outputContext: {
-        provider: "linear",
-        linearOrganizationId: "linear-org",
-        issueId: "issue-1",
-        agentSessionId: "session-1",
-      },
-    });
-
-    assert.deepEqual(client.activities, [
-      {
-        linearOrganizationId: "linear-org",
-        agentSessionId: "session-1",
-        content: {
-          type: "response",
-          body: "Draft PR: https://github.com/acme/repo/pull/42",
-        },
-      },
-    ]);
-    assert.deepEqual(client.comments, []);
   });
 
   it("fails closed for an output context from another provider", async () => {
@@ -72,7 +43,6 @@ describe("Linear reply output", () => {
 
 class RecordingLinearClient implements LinearApiClient {
   comments: Array<{ linearOrganizationId: string; issueId: string; body: string }> = [];
-  activities: Parameters<LinearApiClient["createAgentActivity"]>[0][] = [];
 
   async readIssue(): Promise<undefined> {
     return undefined;
@@ -82,17 +52,7 @@ class RecordingLinearClient implements LinearApiClient {
     return { comments: [], complete: true };
   }
 
-  async readAgentSessionActivities() {
-    return { activities: [], complete: true };
-  }
-
   async createComment(input: (typeof this.comments)[number]): Promise<void> {
     this.comments.push(input);
-  }
-
-  async createAgentActivity(
-    input: Parameters<LinearApiClient["createAgentActivity"]>[0],
-  ): Promise<void> {
-    this.activities.push(input);
   }
 }

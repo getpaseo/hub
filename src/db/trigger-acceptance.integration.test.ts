@@ -168,8 +168,7 @@ describe("trigger acceptance persistence", () => {
     );
 
     await client.query(
-      `update linear_connections
-       set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb
+      `update linear_connections set scopes = '["read", "comments:create"]'::jsonb
        where id = '${connectionId}'`,
     );
     const accepted = await database.acceptLinearEvent({
