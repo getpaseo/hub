@@ -37,10 +37,13 @@ import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../trigge
 import {
   ExpressionEvaluationError,
   evaluateExpression,
+  expressionPaths,
   expressionPathsInTemplate,
   renderExecutionTemplate,
   renderExpressionTemplate,
+  type Expression,
   type ExpressionContext,
+  type ExpressionPath,
 } from "./expression.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { Logger } from "pino";
@@ -585,6 +588,7 @@ export class DurableWorkflowEngine {
       return { executionId: existing.id, intent: existing.launchIntent };
     }
     const triggerConversationKey = workspaceAffinityConversationKey(
+      trigger,
       step,
       this.options.providers ?? [],
       run.triggerContext,
@@ -1033,27 +1037,58 @@ function providerForTriggerContext(
 }
 
 function workspaceAffinityConversationKey(
+  trigger: CompiledProjectConfiguration["triggers"][number],
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
   providers: readonly TriggerProvider[],
   triggerContext: unknown,
 ): string | undefined {
-  if (!stepUsesTriggerConversationKey(step)) return undefined;
+  if (!stepUsesTriggerConversationKey(trigger, step)) return undefined;
   return providerForTriggerContext(providers, triggerContext)?.workspaceAffinityKey?.(
     triggerContext,
   );
 }
 
 function stepUsesTriggerConversationKey(
+  trigger: CompiledProjectConfiguration["triggers"][number],
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
 ): boolean {
   if (step.workspaceAffinity === undefined) return false;
-  return expressionPathsInTemplate(step.workspaceAffinity.key).some(
-    (path) =>
+  return pathsUseTriggerConversationKey(
+    expressionPathsInTemplate(step.workspaceAffinity.key),
+    trigger.values,
+  );
+}
+
+function expressionUsesTriggerConversationKey(
+  expression: Expression,
+  values: Readonly<Record<string, Expression>>,
+): boolean {
+  return pathsUseTriggerConversationKey(expressionPaths(expression), values);
+}
+
+function pathsUseTriggerConversationKey(
+  paths: readonly ExpressionPath[],
+  values: Readonly<Record<string, Expression>>,
+): boolean {
+  const pending = [...paths];
+  const visitedValues = new Set<string>();
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (path === undefined) continue;
+    if (
       path.namespace === "paseo" &&
       Array.isArray(path.path) &&
       path.path[0] === "trigger" &&
-      path.path[1] === "conversation_key",
-  );
+      path.path[1] === "conversation_key"
+    ) {
+      return true;
+    }
+    if (path.namespace !== "values" || visitedValues.has(path.name)) continue;
+    visitedValues.add(path.name);
+    const expression = values[path.name];
+    if (expression !== undefined) pending.push(...expressionPaths(expression));
+  }
+  return false;
 }
 
 function composeValues(
@@ -1061,10 +1096,13 @@ function composeValues(
   context: ExpressionContext,
 ): Readonly<Record<string, JsonValue>> {
   return Object.fromEntries(
-    Object.entries(values).map(([name, expression]) => [
-      name,
-      evaluateExpression(expression, context),
-    ]),
+    Object.entries(values)
+      .filter(
+        ([, expression]) =>
+          context.triggerConversationKey !== undefined ||
+          !expressionUsesTriggerConversationKey(expression, values),
+      )
+      .map(([name, expression]) => [name, evaluateExpression(expression, context)]),
   );
 }
 

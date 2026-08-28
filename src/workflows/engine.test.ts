@@ -1134,6 +1134,52 @@ describe("durable multi-step workflow engine", () => {
     );
   });
 
+  it("resolves conversation affinity through transitive named values", async () => {
+    const fixture = await workflowFixture({
+      rawConfiguration: affinityConfiguration(" review-${{ values.conversation }} ", {
+        conversation: "${{ values.provider_conversation }}",
+        provider_conversation: "${{ paseo.trigger.conversation_key }}",
+      }),
+    });
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      workspaceAffinityKey: () => "thread-through-values",
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.equal(dispatched?.workspaceAffinity?.key, " review-thread-through-values ");
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
+      result: { status: "succeeded" },
+    });
+    await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+      status: "succeeded",
+    });
+    await engine.processAvailable();
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "succeeded");
+  });
+
   it("fails an invalid rendered workspace affinity key without retrying or dispatching", async () => {
     const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
     const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
@@ -1812,6 +1858,7 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
 
 function affinityConfiguration(
   key = " review-${{ paseo.trigger.conversation_key }} ",
+  values?: Readonly<Record<string, string>>,
 ): Record<string, unknown> {
   return {
     environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
@@ -1821,6 +1868,7 @@ function affinityConfiguration(
         on: "slack.mention",
         max_runtime: "2m",
         filters: { from_users: ["U_ALLOWED"] },
+        ...(values === undefined ? {} : { values }),
         steps: [
           {
             id: "review",

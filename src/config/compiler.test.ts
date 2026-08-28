@@ -881,6 +881,55 @@ describe("workflow compiler", () => {
         ],
       }),
     );
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            on: "slack.mention",
+            filters: { from_users: ["U_ALLOWED"] },
+            values: {
+              provider_conversation: "${{ paseo.trigger.conversation_key }}",
+              conversation: "${{ values.provider_conversation }}",
+            },
+            steps: [
+              {
+                ...step,
+                workspace_affinity: { key: "shared-${{ values.conversation }}" },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              on: "slack.mention",
+              filters: { from_users: ["U_ALLOWED"] },
+              values: {
+                provider_conversation: "${{ paseo.trigger.conversation_key }}",
+                conversation: "${{ values.provider_conversation }}",
+              },
+              steps: [
+                {
+                  ...step,
+                  prompt: [{ text: "Conversation: ${{ values.conversation }}" }],
+                  workspace_affinity: { key: "shared-${{ values.conversation }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /conversation_key outside workspace_affinity\.key/iu,
+    );
   });
 
   it("rejects the removed prompt inventory compatibility key", () => {

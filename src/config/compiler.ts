@@ -852,7 +852,7 @@ function validateExpressionContract(
   const valueNames = new Set(Object.keys(trigger.values));
   const visiting = new Set<string>();
 
-  for (const name of valueNames) validateValue(name);
+  for (const name of valueNames) validateValue(name, Number.POSITIVE_INFINITY, "declaration");
   for (const [ordinal, step] of trigger.steps.entries()) {
     if (step.condition !== undefined)
       compileAt(["triggers", triggerName, "steps", step.id, "if"], () =>
@@ -1011,18 +1011,36 @@ function validateExpressionContract(
   function validateValue(
     name: string,
     ordinal = Number.POSITIVE_INFINITY,
-    mode: "ordinary" | "authority" | "affinity" = "ordinary",
+    mode: "declaration" | "ordinary" | "authority" | "affinity" = "ordinary",
   ): void {
     if (visiting.has(name)) throw new Error(`value dependency cycle includes ${name}`);
     const expression = trigger.values[name];
     if (expression === undefined) throw new Error(`value ${name} is unavailable`);
     visiting.add(name);
-    if (mode === "affinity") {
+    if (mode === "declaration") {
+      validateDeclaredValueExpression(expression, ordinal, `value ${name}`);
+    } else if (mode === "affinity") {
       validateWorkspaceAffinityExpression(expression, ordinal, `value ${name}`);
     } else {
       validateExpression(expression, ordinal, `value ${name}`, mode === "authority");
     }
     visiting.delete(name);
+  }
+
+  function validateDeclaredValueExpression(
+    expression: Expression,
+    ordinal: number,
+    path: string,
+  ): void {
+    for (const reference of expressionPaths(expression)) {
+      // The declaration pass permits carrying conversation identity so an affinity consumer can
+      // validate it under affinity rules. Ordinary consumers recurse with ordinary rules and still
+      // reject the provider-only path.
+      validateReference(reference, ordinal, path, false, false, true);
+      if (reference.namespace === "values") {
+        validateValue(reference.name, ordinal, "declaration");
+      }
+    }
   }
 
   function validateExpression(
@@ -1219,6 +1237,10 @@ function validateExpressionContract(
       reference.path[1] === "conversation_key"
     ) {
       return true;
+    }
+    if (reference.namespace === "values") {
+      const value = trigger.values[reference.name];
+      return value !== undefined && isAffinityKeyExpression(value);
     }
     return isFiniteAuthorityExpression(expression);
   }
