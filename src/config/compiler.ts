@@ -1008,12 +1008,20 @@ function validateExpressionContract(
     return output === undefined ? undefined : finiteSchemaChoices(output.schema, reference.path);
   }
 
-  function validateValue(name: string, ordinal = Number.POSITIVE_INFINITY): void {
+  function validateValue(
+    name: string,
+    ordinal = Number.POSITIVE_INFINITY,
+    mode: "ordinary" | "authority" | "affinity" = "ordinary",
+  ): void {
     if (visiting.has(name)) throw new Error(`value dependency cycle includes ${name}`);
     const expression = trigger.values[name];
     if (expression === undefined) throw new Error(`value ${name} is unavailable`);
     visiting.add(name);
-    validateExpression(expression, ordinal, `value ${name}`, false);
+    if (mode === "affinity") {
+      validateWorkspaceAffinityExpression(expression, ordinal, `value ${name}`);
+    } else {
+      validateExpression(expression, ordinal, `value ${name}`, mode === "authority");
+    }
     visiting.delete(name);
   }
 
@@ -1026,7 +1034,9 @@ function validateExpressionContract(
   ): void {
     for (const reference of expressionPaths(expression)) {
       validateReference(reference, ordinal, path, authorityBearing, contextAllowed);
-      if (reference.namespace === "values") validateValue(reference.name, ordinal);
+      if (reference.namespace === "values") {
+        validateValue(reference.name, ordinal, authorityBearing ? "authority" : "ordinary");
+      }
     }
     if (authorityBearing && !isFiniteAuthorityExpression(expression)) {
       throw new Error(
@@ -1063,16 +1073,24 @@ function validateExpressionContract(
       const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
       if (end < 0) throw new Error(`${path} uses an unterminated expression`);
       const expression = parseExpression(value.slice(start + EXPRESSION_START.length, end));
-      for (const reference of expressionPaths(expression)) {
-        validateReference(reference, ordinal, path, true, false, true);
-        if (reference.namespace === "values") validateValue(reference.name, ordinal);
-      }
-      if (!isAffinityKeyExpression(expression)) {
-        throw new Error(
-          `${path} uses an unbounded key; use paseo.trigger.conversation_key or finite choices`,
-        );
-      }
+      validateWorkspaceAffinityExpression(expression, ordinal, path);
       cursor = end + EXPRESSION_END.length;
+    }
+  }
+
+  function validateWorkspaceAffinityExpression(
+    expression: Expression,
+    ordinal: number,
+    path: string,
+  ): void {
+    for (const reference of expressionPaths(expression)) {
+      validateReference(reference, ordinal, path, true, false, true);
+      if (reference.namespace === "values") validateValue(reference.name, ordinal, "affinity");
+    }
+    if (!isAffinityKeyExpression(expression)) {
+      throw new Error(
+        `${path} uses an unbounded key; use paseo.trigger.conversation_key or finite choices`,
+      );
     }
   }
 

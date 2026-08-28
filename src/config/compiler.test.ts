@@ -797,6 +797,92 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("propagates workspace affinity authority checks through referenced values", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              values: {
+                prompt_route: "${{ paseo.prompt == 'reuse' }}",
+                route: "${{ values.prompt_route }}",
+              },
+              steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+            },
+          ],
+        }),
+      /paseo\.prompt.*authority-bearing/iu,
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              inputs: { route: { type: "string", required: true } },
+              values: { route: "${{ paseo.inputs.route == 'reuse' }}" },
+              steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+            },
+          ],
+        }),
+      /input route without finite choices/iu,
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              values: { route: "${{ steps.classify.outputs.route == 'reuse' }}" },
+              steps: [
+                {
+                  ...step,
+                  id: "classify",
+                  output: {
+                    schema: {
+                      type: "object",
+                      properties: { route: { type: "string" } },
+                    },
+                  },
+                },
+                {
+                  ...step,
+                  id: "work",
+                  workspace_affinity: { key: "shared-${{ values.route }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /agent output without provable finite choices/iu,
+    );
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            inputs: {
+              route: { type: "string", required: true, choices: ["reuse", "fresh"] },
+            },
+            values: { route: "${{ paseo.inputs.route == 'reuse' }}" },
+            steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+          },
+        ],
+      }),
+    );
+  });
+
   it("rejects the removed prompt inventory compatibility key", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
