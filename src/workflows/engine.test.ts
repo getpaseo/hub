@@ -1134,6 +1134,38 @@ describe("durable multi-step workflow engine", () => {
     );
   });
 
+  it("fails an invalid rendered workspace affinity key without retrying or dispatching", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => "x".repeat(506),
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const dispatches: LaunchMachineIntent[] = [];
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches.push(intent);
+        throw new Error("invalid workspace affinity key must not dispatch");
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.equal(run.status, "failed");
+    assert.match(run.failureReason ?? "", /workspace affinity key exceeds 512 characters/iu);
+    assert.equal(step.status, "failed");
+    assert.deepEqual(dispatches, []);
+  });
+
   it("times out a live step when the whole-run deadline expires", async () => {
     let now = new Date("2026-08-06T12:00:00.000Z");
     const fixture = await workflowFixture({

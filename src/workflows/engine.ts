@@ -1003,8 +1003,12 @@ function workflowContext(
 
 function workspaceAffinityKey(value: string): string {
   const key = value.trim();
-  if (key.length === 0) throw new Error("workspace affinity key resolved to an empty value");
-  if (key.length > 512) throw new Error("workspace affinity key exceeds 512 characters");
+  if (key.length === 0) {
+    throw new ExpressionEvaluationError("workspace affinity key resolved to an empty value");
+  }
+  if (key.length > 512) {
+    throw new ExpressionEvaluationError("workspace affinity key exceeds 512 characters");
+  }
   return key;
 }
 
