@@ -1119,7 +1119,7 @@ describe("durable multi-step workflow engine", () => {
     await engine.processAvailable();
 
     assert.deepEqual(dispatched?.workspaceAffinity, {
-      key: "review-manual-conversation-7",
+      key: " review-manual-conversation-7 ",
       retainUntil: "2026-08-06T12:02:00.000Z",
       autoArchive: true,
     });
@@ -1750,7 +1750,7 @@ function affinityConfiguration(): Record<string, unknown> {
             prompt: [{ text: "run" }],
             auto_archive: true,
             workspace_affinity: {
-              key: "review-${{ paseo.trigger.conversation_key }}",
+              key: " review-${{ paseo.trigger.conversation_key }} ",
             },
           },
         ],

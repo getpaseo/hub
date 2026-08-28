@@ -30,7 +30,11 @@ const McpToolRefSchema = z
 
 const WorkspaceAffinitySchema = z
   .object({
-    key: z.string().trim().min(1).max(512),
+    key: z
+      .string()
+      .min(1)
+      .max(512)
+      .refine((value) => value.trim().length > 0, "workspace affinity key must not be blank"),
     retainUntil: z.string().datetime(),
     autoArchive: z.boolean(),
   })

@@ -160,7 +160,13 @@ const EnvironmentSchema = z.discriminatedUnion("kind", [
 
 const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
 
-const WorkspaceAffinitySchema = z.object({ key: z.string().trim().min(1).max(512) }).strict();
+const WorkspaceAffinityKeySchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((key) => key.trim().length > 0, "workspace affinity key must not be blank");
+
+const WorkspaceAffinitySchema = z.object({ key: WorkspaceAffinityKeySchema }).strict();
 
 const StepSchema = z
   .object({
@@ -357,7 +363,7 @@ const CompiledInputSchema: z.ZodType<CompiledInput> = z
   .strict();
 
 const CompiledWorkspaceAffinitySchema: z.ZodType<CompiledWorkspaceAffinity> = z
-  .object({ key: z.string().trim().min(1).max(512) })
+  .object({ key: WorkspaceAffinityKeySchema })
   .strict();
 
 const CompiledEnvironmentSchema = z.discriminatedUnion("kind", [
