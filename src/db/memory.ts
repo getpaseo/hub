@@ -88,6 +88,7 @@ import type {
   OrganizationSubscriptionRecord,
   ReconcileOrganizationSubscriptionInput,
   UpdateLinearConnectionTokensInput,
+  LinearConnectionRefreshOperation,
 } from "./types.js";
 import {
   clearOverrideKey,
@@ -2669,6 +2670,23 @@ class MemoryDatabase implements Database {
 
   updateLinearConnectionTokens(_input: UpdateLinearConnectionTokensInput): Promise<void> {
     return connectionPersistenceUnavailable();
+  }
+
+  withLinearConnectionRefresh<T>(
+    linearOrganizationId: string,
+    operation: LinearConnectionRefreshOperation<T>,
+  ): Promise<T> {
+    return this.withAdvisoryLock(
+      JSON.stringify(["paseo-connection", "linear", "external", linearOrganizationId]),
+      async () => {
+        const connection = this.linearConnections.get(linearOrganizationId);
+        return operation(connection, async (input) => {
+          const current = this.linearConnections.get(linearOrganizationId);
+          if (current === undefined) throw new Error("Linear connection unavailable");
+          this.linearConnections.set(linearOrganizationId, { ...current, ...input });
+        });
+      },
+    );
   }
 
   disconnectConnection(

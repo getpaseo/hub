@@ -24,6 +24,7 @@ import type {
   DiscordConnectionRecord,
   GitHubConnectionRecord,
   LinearConnectionRecord,
+  LinearConnectionRefreshOperation,
   ReadConnectionAttemptInput,
   SlackConnectionRecord,
   StartConnectionAttemptInput,
@@ -472,6 +473,40 @@ export class ConnectionRepository {
         updatedAt: sql`clock_timestamp()`,
       })
       .where(eq(schema.linearConnections.id, input.connectionId));
+  }
+
+  async withLinearRefresh<T>(
+    linearOrganizationId: string,
+    operation: LinearConnectionRefreshOperation<T>,
+  ): Promise<T> {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      // This is intentionally the same transaction-scoped identity lock as OAuth rebind. In
+      // particular, do not use the session-lock API here: the re-read and write below must share
+      // this transaction's client so waiters cannot starve the lock holder's pool query.
+      await lockExternal(this.locks, runtimeTransaction, "linear", linearOrganizationId);
+      const [row] = await transaction
+        .select()
+        .from(schema.linearConnections)
+        .where(eq(schema.linearConnections.linearOrganizationId, linearOrganizationId))
+        .for("update");
+      const connection = row === undefined ? undefined : linearConnection(row);
+      return operation(connection, async (input) => {
+        if (connection === undefined) throw new Error("Linear connection unavailable");
+        await transaction
+          .update(schema.linearConnections)
+          .set({
+            accessToken: input.accessToken,
+            ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
+            ...(input.accessTokenExpiresAt === undefined
+              ? {}
+              : { accessTokenExpiresAt: input.accessTokenExpiresAt }),
+            ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(eq(schema.linearConnections.id, connection.id));
+      });
+    });
   }
 
   private async bindExclusive(

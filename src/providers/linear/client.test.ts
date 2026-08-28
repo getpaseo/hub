@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { LinearConnectionRecord } from "../../db/types.js";
+import type {
+  Database,
+  LinearConnectionRecord,
+  LinearConnectionTokenUpdate,
+  UpdateLinearConnectionTokensInput,
+} from "../../db/types.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createLinearApiClient,
@@ -92,8 +97,7 @@ describe("Linear connection client", () => {
     };
     const api = createLinearApiClient({
       connectionForLinearOrganization: async () => connection,
-      updateTokens: async () => {},
-      withAdvisoryLock: withoutAdvisoryLock,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
       connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
       fetch: async (_url, init) => {
         requests.push({
@@ -174,12 +178,12 @@ describe("Linear connection client", () => {
       accessTokenExpiresAt: new Date(1_700_000_000_000),
       scopes: ["comments:create", "read"],
     };
+    const updateTokens = async (update: UpdateLinearConnectionTokensInput) => {
+      updates.push(update);
+    };
     const api = createLinearApiClient({
       connectionForLinearOrganization: async () => connection,
-      updateTokens: async (update) => {
-        updates.push(update);
-      },
-      withAdvisoryLock: withoutAdvisoryLock,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, updateTokens),
       connectionClient: {
         refresh: async () => ({
           accessToken: "fresh-token",
@@ -240,17 +244,17 @@ describe("Linear connection client", () => {
       }
       return json({ data: { commentCreate: { success: true } } });
     };
+    const updateTokens = async (update: UpdateLinearConnectionTokensInput) => {
+      updates.push(update);
+      connection.accessToken = update.accessToken;
+      if (update.refreshToken !== undefined) connection.refreshToken = update.refreshToken;
+      if (update.accessTokenExpiresAt !== undefined)
+        connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
+      if (update.scopes !== undefined) connection.scopes = update.scopes;
+    };
     const api = createLinearApiClient({
       connectionForLinearOrganization: async () => connection,
-      updateTokens: async (update) => {
-        updates.push(update);
-        connection.accessToken = update.accessToken;
-        if (update.refreshToken !== undefined) connection.refreshToken = update.refreshToken;
-        if (update.accessTokenExpiresAt !== undefined)
-          connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
-        if (update.scopes !== undefined) connection.scopes = update.scopes;
-      },
-      withAdvisoryLock: withoutAdvisoryLock,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, updateTokens),
       connectionClient: createLinearConnectionClient({
         clientId: "client-id",
         clientSecret: "client-secret",
@@ -317,6 +321,9 @@ describe("Linear connection client", () => {
       releaseRefresh = resolve;
     });
     let refreshCalls = 0;
+    const updateTokens = async (update: UpdateLinearConnectionTokensInput) => {
+      updates.push(update);
+    };
     const api = createLinearApiClient({
       connectionForLinearOrganization: async () => {
         connectionReads += 1;
@@ -324,10 +331,7 @@ describe("Linear connection client", () => {
         await connectionsReleased;
         return connection;
       },
-      updateTokens: async (update) => {
-        updates.push(update);
-      },
-      withAdvisoryLock: withoutAdvisoryLock,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, updateTokens),
       connectionClient: {
         refresh: async () => {
           refreshCalls += 1;
@@ -398,7 +402,7 @@ describe("Linear connection client", () => {
     });
     const connectionForLinearOrganization = async () => {
       connectionReads += 1;
-      if (connectionReads === 3) markSecondInitialRead();
+      if (connectionReads === 2) markSecondInitialRead();
       return connection;
     };
     const updateTokens = async (update: {
@@ -415,14 +419,19 @@ describe("Linear connection client", () => {
         connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
       if (update.scopes !== undefined) connection.scopes = update.scopes;
     };
-    const withAdvisoryLock = <T>(key: string, operation: () => Promise<T>): Promise<T> => {
+    const withLinearConnectionRefresh: Database["withLinearConnectionRefresh"] = async (
+      linearOrganizationId,
+      operation,
+    ) => {
+      const key = JSON.stringify(["paseo-connection", "linear", "external", linearOrganizationId]);
       lockKeys.push(key);
-      return locks.withAdvisoryLock(key, operation);
+      const updateWithinRefresh = (input: LinearConnectionTokenUpdate) =>
+        updateTokens({ connectionId: connection.id, ...input });
+      return locks.withAdvisoryLock(key, () => operation(connection, updateWithinRefresh));
     };
     const sharedOptions = {
       connectionForLinearOrganization,
-      updateTokens,
-      withAdvisoryLock,
+      withLinearConnectionRefresh,
       connectionClient: {
         refresh: async () => {
           refreshCalls += 1;
@@ -460,10 +469,10 @@ describe("Linear connection client", () => {
     await Promise.all([first, second]);
 
     assert.equal(refreshCalls, 1);
-    assert.equal(connectionReads, 4);
+    assert.equal(connectionReads, 2);
     assert.deepEqual(lockKeys, [
-      "linear:connection:refresh:linear-org",
-      "linear:connection:refresh:linear-org",
+      '["paseo-connection","linear","external","linear-org"]',
+      '["paseo-connection","linear","external","linear-org"]',
     ]);
     assert.deepEqual(updates, [
       {
@@ -489,8 +498,12 @@ function json(value: unknown): Response {
   });
 }
 
-async function withoutAdvisoryLock<T>(_key: string, operation: () => Promise<T>): Promise<T> {
-  return operation();
+function withinLinearRefresh(
+  connection: LinearConnectionRecord,
+  updateTokens: (input: UpdateLinearConnectionTokensInput) => Promise<void>,
+): Database["withLinearConnectionRefresh"] {
+  return async (_linearOrganizationId, operation) =>
+    operation(connection, (input) => updateTokens({ connectionId: connection.id, ...input }));
 }
 
 function readableUrl(value: RequestInfo | URL): string {

@@ -503,6 +503,13 @@ export interface UpdateLinearConnectionTokensInput {
   scopes?: string[];
 }
 
+export type LinearConnectionTokenUpdate = Omit<UpdateLinearConnectionTokensInput, "connectionId">;
+
+export type LinearConnectionRefreshOperation<T> = (
+  connection: LinearConnectionRecord | undefined,
+  updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
+) => Promise<T>;
+
 export type DisconnectConnectionResult =
   | { provider: "github" }
   | { provider: "discord"; guildId: string | undefined }
@@ -1449,6 +1456,15 @@ export interface Database {
   bindLinearConnection(input: BindLinearConnectionInput): Promise<void>;
   completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void>;
   updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void>;
+  /**
+   * Runs a Linear refresh decision under the same transaction-scoped external-connection lock
+   * used by OAuth rebind. The connection re-read and any token update use that transaction, so a
+   * stale refresh cannot overwrite a concurrent reauthorization or consume a rotating token twice.
+   */
+  withLinearConnectionRefresh<T>(
+    linearOrganizationId: string,
+    operation: LinearConnectionRefreshOperation<T>,
+  ): Promise<T>;
   disconnectConnection(
     provider: ConnectionProvider,
     connectionId: string,

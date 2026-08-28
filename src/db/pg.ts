@@ -68,6 +68,7 @@ import type {
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
+  LinearConnectionRefreshOperation,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -3698,6 +3699,13 @@ class PgDatabase implements Database {
 
   updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void> {
     return this.connections.updateLinearTokens(input);
+  }
+
+  withLinearConnectionRefresh<T>(
+    linearOrganizationId: string,
+    operation: LinearConnectionRefreshOperation<T>,
+  ): Promise<T> {
+    return this.connections.withLinearRefresh(linearOrganizationId, operation);
   }
 
   disconnectConnection(
