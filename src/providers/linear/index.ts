@@ -121,8 +121,10 @@ export function createLinearRegistration(
     ...(database === null
       ? {}
       : {
-          isBound: async (linearOrganizationId) =>
-            (await database.findLinearConnection(linearOrganizationId)) !== undefined,
+          canHydrateIssue: async (linearOrganizationId) => {
+            const connection = await database.findLinearConnection(linearOrganizationId);
+            return connection !== undefined && hasRequiredLinearScopes(connection.scopes);
+          },
         }),
     ...(api === undefined
       ? {}

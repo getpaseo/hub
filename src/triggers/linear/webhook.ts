@@ -14,7 +14,7 @@ const MAX_TIMESTAMP_SKEW_MS = 60_000;
 export interface LinearWebhookSourceOptions {
   signingSecret: string;
   now?: () => number;
-  isBound?(linearOrganizationId: string): Promise<boolean>;
+  canHydrateIssue?(linearOrganizationId: string): Promise<boolean>;
   resolveIssue?(input: {
     linearOrganizationId: string;
     issueId: string;
@@ -116,7 +116,10 @@ async function handoffLinearEvent(
     }
     if (eventProjectId(event) === undefined && options.resolveIssue !== undefined) {
       const source = linearEventSource(event);
-      if (options.isBound !== undefined && !(await options.isBound(event.organizationId))) {
+      if (
+        options.canHydrateIssue !== undefined &&
+        !(await options.canHydrateIssue(event.organizationId))
+      ) {
         return await acceptAndDispatchLinearEvent(event, source, verified, handlers, options, true);
       }
       const issue = await options.resolveIssue({

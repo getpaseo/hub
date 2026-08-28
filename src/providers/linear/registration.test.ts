@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import { z } from "zod";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
-import type { LinearConnectionClient } from "./client.js";
+import type { LinearApiClient, LinearConnectionClient } from "./client.js";
 import { createLinearRegistration } from "./index.js";
 
 describe("Linear registration", () => {
@@ -143,10 +144,87 @@ describe("Linear registration", () => {
       { status: "requiresReauthorization" },
     );
   });
+
+  it("drops an under-scoped compact event before attempting issue hydration", async () => {
+    const database = createMemoryDatabase();
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === "linear-org"
+        ? {
+            id: "linear-connection",
+            organizationId: "org",
+            slug: "acme-linear",
+            providerApplicationId: "client",
+            linearOrganizationId,
+            linearOrganizationName: "Acme",
+            appUserId: "app-user",
+            accessToken: "under-scoped-token",
+            refreshToken: "refresh-token",
+            accessTokenExpiresAt: null,
+            scopes: ["comments:create"],
+          }
+        : undefined;
+    let accepts = 0;
+    let acceptedProjectId: string | undefined;
+    database.acceptLinearEvent = async (input) => {
+      accepts += 1;
+      acceptedProjectId = input.projectId;
+      return {
+        status: "dropped",
+        receiptId: input.deliveryId,
+        reason: "configuration_unavailable",
+      };
+    };
+    let issueReads = 0;
+    const apiClient: LinearApiClient = {
+      readIssue: async () => {
+        issueReads += 1;
+        throw new Error("under-scoped token must not hydrate");
+      },
+      readIssueComments: async () => ({ comments: [], complete: true }),
+      createComment: async () => {},
+    };
+    const registration = createLinearRegistration({
+      database,
+      auth: null,
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: linearConfiguration(),
+      apiClient,
+    });
+
+    const response = await registration.requests[0]!.handle(linearCommentRequest());
+
+    assert.equal(response.status, 200);
+    assert.equal(issueReads, 0);
+    assert.equal(accepts, 1);
+    assert.equal(acceptedProjectId, undefined);
+  });
 });
 
 function linearConfiguration() {
   return { clientId: "client", clientSecret: "secret", webhookSecret: "webhook-secret" };
+}
+
+function linearCommentRequest(): Request {
+  const body = JSON.stringify({
+    action: "create",
+    type: "Comment",
+    organizationId: "linear-org",
+    webhookTimestamp: Date.now(),
+    data: { id: "comment-1", issueId: "issue-1", body: "Please investigate" },
+  });
+  return new Request("https://hub.test/api/integrations/linear/events", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "linear-delivery": "under-scoped-compact-comment",
+      "linear-event": "Comment",
+      "linear-signature": createHmac("sha256", linearConfiguration().webhookSecret)
+        .update(body)
+        .digest("hex"),
+    },
+    body,
+  });
 }
 
 class LinearConnectionFake implements LinearConnectionClient {

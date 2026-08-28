@@ -110,7 +110,7 @@ describe("Linear webhook", () => {
     const endpoint = createLinearWebhookSource({
       signingSecret: SECRET,
       now: () => NOW,
-      isBound: async () => true,
+      canHydrateIssue: async () => true,
       resolveIssue: async () => ({
         id: "issue-1",
         identifier: "ENG-42",
@@ -140,7 +140,7 @@ describe("Linear webhook", () => {
     const endpoint = createLinearWebhookSource({
       signingSecret: SECRET,
       now: () => NOW,
-      isBound: async () => false,
+      canHydrateIssue: async () => false,
       resolveIssue: async () => {
         issueReads += 1;
         throw new Error("Linear connection unavailable");
@@ -163,7 +163,7 @@ describe("Linear webhook", () => {
     const endpoint = createLinearWebhookSource({
       signingSecret: SECRET,
       now: () => NOW,
-      isBound: async () => true,
+      canHydrateIssue: async () => true,
       resolveIssue: async () => Promise.reject(new Error("Linear API unavailable")),
       accept: async () => {
         accepted = true;
