@@ -566,14 +566,14 @@ export function ProjectGeneralSettingsPanel() {
         onSuccess: (result) => {
           if (result.status === "ok")
             void navigate({
-              to: `/o/${tenant.organization.slug}/projects/${slug}/settings/general` as never,
+              to: `/o/${tenant.organization.slug}/projects/${slug}/settings` as never,
             });
         },
       },
     );
   };
   return (
-    <SettingsPage title="General">
+    <SettingsPage>
       <CommandError mutations={[updateSlug, archive]} />
       {data.capabilities.manageResources ? (
         <>
@@ -613,18 +613,12 @@ export function ProjectGeneralSettingsPanel() {
   );
 }
 
-function SettingsPage({ title, children }: { title: string; children: ReactNode }) {
+function SettingsPage({ children }: { children: ReactNode }) {
   const tenant = useRouteTenant();
   if (tenant.project === null) throw new Error("settings route has no project");
-  const base = `/o/${tenant.organization.slug}/projects/${tenant.project.slug}/settings`;
   return (
     <>
-      <PageHeader title={title} description={`Project settings for ${tenant.project.name}.`} />
-      <nav aria-label="Project settings" className="mb-6 flex flex-wrap gap-2 border-b pb-3">
-        <Link className="text-sm hover:underline" to={`${base}/general` as never}>
-          General
-        </Link>
-      </nav>
+      <PageHeader title="Settings" description={`Project settings for ${tenant.project.name}.`} />
       {children}
     </>
   );

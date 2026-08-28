@@ -784,13 +784,13 @@ test("credentials can be replaced in place after they are saved", async ({ hub }
   }
 });
 
-test("the operator finishes, then manages the same apps under Instance → Apps", async ({ hub }) => {
+test("the operator finishes, then manages the same apps from the account menu", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: OPERATOR,
     https: true,
   });
   try {
-    const { surface, page } = session;
+    const { surface } = session;
     await surface.github.expand();
     await surface.github.fillWorkingCredentials();
     await surface.github.save();
@@ -814,9 +814,10 @@ test("the operator finishes, then manages the same apps under Instance → Apps"
     await surface.leave("Finish");
     await surface.shoot(SHOTS, "apps-13-finish-dashboard.desktop");
 
-    // Later management is the same three sections, with the state left behind.
-    await page.getByRole("link", { name: "Apps", exact: true }).click();
-    await surface.expectManagement();
+    // Later management is the same three sections, with the state left behind. Onboarding leaves
+    // the operator inside the default project, and the instance is reachable from there — through
+    // the account menu, because the flag belongs to them and not to the project they are in.
+    await session.navigateToApps();
     await surface.expectStatuses({
       GitHub: "Connected",
       Slack: "Connected",

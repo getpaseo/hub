@@ -103,7 +103,9 @@ test.describe("metered usage", () => {
     });
 
     await test.step("install a manual deploy trigger against the registered daemon", async () => {
-      await app.navigation.openOrganizationSection("Projects");
+      // The override was set in instance scope, which lists no organization destinations. The
+      // back row is the way out, the same one an operator takes.
+      await app.navigation.leaveInstance();
       await app.navigation.openProject("Default");
       await app.navigation.openProjectSection("Configuration");
       await app.configuration.switchToManual();

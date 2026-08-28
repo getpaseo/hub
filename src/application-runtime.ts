@@ -432,7 +432,7 @@ function billingReturnUrl(
   fallbackSlug: string,
 ): string {
   const base = options.publicBaseUrl ?? new URL(request.url).origin;
-  return new URL(`/o/${organizationSlug ?? fallbackSlug}/billing`, base).toString();
+  return new URL(`/o/${organizationSlug ?? fallbackSlug}/settings/billing`, base).toString();
 }
 
 const billingPlanMarketingSchema = z.object({ features: z.array(z.string()) });

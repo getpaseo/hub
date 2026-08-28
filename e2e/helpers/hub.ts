@@ -27,7 +27,11 @@ import { configurationBundleFixture } from "../../src/test-utils/configuration-b
 import { slugify } from "../../src/slug.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { SHOTS } from "./app-evidence.js";
-import { ProjectNavigation } from "./projects/navigation.js";
+import {
+  ProjectNavigation,
+  type OrganizationSection,
+  type OrganizationSettingsSection,
+} from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
 
 export interface BuiltApplication {
@@ -93,6 +97,17 @@ export interface Account {
 }
 
 const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
+
+/** The sidebar's four organization entries, in rendered order. */
+const ORGANIZATION_DESTINATIONS = ["Projects", "Daemons", "Connections", "Settings"] as const;
+/** Instance surfaces sit outside `/o/`, so the path is what says the sidebar is in instance scope. */
+const INSTANCE_ROUTES: readonly string[] = ["/apps", "/operator"];
+const ORGANIZATION_SETTINGS_SECTIONS: readonly OrganizationSettingsSection[] = [
+  "Team",
+  "API keys",
+  "Usage",
+  "Billing",
+];
 
 interface TeamExpectation {
   membersPresent: string[];
@@ -322,6 +337,10 @@ export class PaseoHub {
       origin: application.origin,
       openManagement: async () => {
         await page.goto(`${application.origin}/apps`);
+        await surface.expectManagement();
+      },
+      navigateToApps: async () => {
+        await new ProjectNavigation(page).openInstanceSection(input.account.email, "Apps");
         await surface.expectManagement();
       },
       returnFromProvider: async (provider, result) => {
@@ -2528,10 +2547,11 @@ class HubUser {
     await this.completeFirstRunClaimWithKeyboard(account, armAccountSetupFailure);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
-    // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
-    // exactly as it is after an ordinary sign-in.
-    await this.page.keyboard.press("Tab");
-    await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
+    // Keyboard control survives both the mobile onboarding arrival and the resize: closing the
+    // drawer restores its trigger, and that same control remains focused in the desktop header.
+    await expect(
+      this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" }),
+    ).toBeFocused();
 
     // Setup provisioned a working organization, not just a row: onboarding ended inside its
     // default project, and that project renders.
@@ -3003,10 +3023,6 @@ class HubUser {
     await expect(form).toBeVisible();
     await form.getByLabel("Organization name").fill(name);
     await form.getByRole("button", { name: "Create organization" }).click();
-    await expect(switcher).toContainText(name);
-    await expect(
-      this.page.locator("header").first().getByText(name, { exact: true }),
-    ).toBeVisible();
     await this.expectActiveOrganization(name);
   }
 
@@ -3665,9 +3681,27 @@ class HubUser {
   }
 
   async expectActiveOrganization(name: string): Promise<void> {
-    await expect(
-      this.page.locator("header").first().getByText(name, { exact: true }),
-    ).toBeVisible();
+    const drawer = this.page.getByRole("dialog", { name: "Sidebar" });
+    const mobile = (this.page.viewportSize()?.width ?? 1280) < 768;
+    if (!mobile) {
+      await expect(
+        this.page.getByRole("button", { name: "Organization", exact: true }),
+      ).toContainText(name);
+      return;
+    }
+    const drawerWasOpen = await drawer.isVisible().catch(() => false);
+    if (!drawerWasOpen) {
+      const toggle = this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" });
+      await expect(toggle).toBeVisible();
+      await toggle.click();
+    }
+    await expect(drawer.getByRole("button", { name: "Organization", exact: true })).toContainText(
+      name,
+    );
+    if (!drawerWasOpen) {
+      await this.page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
+    }
   }
 
   async expectDesktopSidebarAndOrganizationMenu(): Promise<void> {
@@ -3675,28 +3709,11 @@ class HubUser {
     const identity = this.page.getByText(this.accountEmail, { exact: true });
     await expect(identity).toBeVisible();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
-    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
-    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
-    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
-    const team = this.page.getByRole("link", { name: "Team", exact: true });
-    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(projects).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(daemons).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(connections).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(apiKeys).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(team).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(usage).toBeFocused();
+    await this.tabThroughOrganizationDestinations();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3721,30 +3738,13 @@ class HubUser {
     await this.openOrganizationSection("Team");
     await this.page.reload();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
-    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
-    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
-    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
-    const team = this.page.getByRole("link", { name: "Team", exact: true });
-    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(projects).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(daemons).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(connections).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(apiKeys).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(team).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(usage).toBeFocused();
+    await this.tabThroughOrganizationDestinations();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3788,7 +3788,7 @@ class HubUser {
     const sidebar = this.page.getByRole("dialog", { name: "Sidebar" });
     await expect(sidebar).toBeVisible();
     const organization = sidebar.getByRole("button", { name: "Organization" });
-    const team = sidebar.getByRole("link", { name: "Team", exact: true });
+    const settings = sidebar.getByRole("link", { name: "Settings", exact: true });
     await expect(organization).toBeFocused();
     await expectAccessible(this.page);
     await this.page.keyboard.press("Escape");
@@ -3798,16 +3798,25 @@ class HubUser {
     await expect(sidebar).toBeVisible();
     await expect(organization).toBeFocused();
     // Forward through the destinations in their rendered order rather than relying on the
-    // focus trap wrapping backwards: the drawer now ends on the account menu, not on Team.
-    for (const destination of ["Projects", "Daemons", "Connections", "API keys", "Team"]) {
+    // focus trap wrapping backwards: the drawer now ends on the account menu, not on Settings.
+    for (const destination of ORGANIZATION_DESTINATIONS) {
       await this.page.keyboard.press("Tab");
       await expect(sidebar.getByRole("link", { name: destination, exact: true })).toBeFocused();
     }
-    await expect(team).toBeFocused();
+    await expect(settings).toBeFocused();
     await this.page.keyboard.press("Enter");
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    // Settings lands on Team, the one section every role can read.
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(sidebar).toBeHidden();
     await expect(this.page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
+  }
+
+  /** Tabs from the organization switcher through the sidebar's destinations, asserting order. */
+  private async tabThroughOrganizationDestinations(): Promise<void> {
+    for (const destination of ORGANIZATION_DESTINATIONS) {
+      await this.page.keyboard.press("Tab");
+      await expect(this.page.getByRole("link", { name: destination, exact: true })).toBeFocused();
+    }
   }
 
   async navigateToConnectionsFromMobileSidebar(): Promise<void> {
@@ -3850,10 +3859,18 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
+  /**
+   * A non-operator is offered the instance nowhere. It is not in the sidebar body in any scope,
+   * and the account menu it now enters through does not list it either.
+   */
   async expectNoOperatorNav(): Promise<void> {
     await this.openOrganizationSection("Projects");
     await expect(this.page.getByRole("navigation", { name: "Instance" })).toHaveCount(0);
     await expect(this.page.getByRole("link", { name: "Operator", exact: true })).toHaveCount(0);
+    const menu = await this.navigation.openAccountMenu(this.accountEmail);
+    await expect(menu.getByRole("menuitem", { name: "Instance administration" })).toHaveCount(0);
+    await this.page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
   }
 
   /** A non-operator reaching the operator route is refused server-side, not merely un-navigated to. */
@@ -3863,10 +3880,7 @@ class HubUser {
   }
 
   async openOperatorConsole(): Promise<void> {
-    await this.page
-      .getByRole("navigation", { name: "Instance" })
-      .getByRole("link", { name: "Operator" })
-      .click();
+    await this.navigation.openInstanceSection(this.accountEmail, "Operator");
     await expect(
       this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
     ).toBeVisible();
@@ -3994,7 +4008,7 @@ class HubUser {
   async expectBillingPageUnavailable(): Promise<void> {
     const organizationSlug = new URL(this.page.url()).pathname.split("/")[2];
     if (organizationSlug === undefined) throw new Error("organization slug is unavailable");
-    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/billing`);
+    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/settings/billing`);
     expect(response?.status()).toBe(404);
   }
 
@@ -4027,8 +4041,11 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
-    // Scope to main: a plan name like "Team" also names a sidebar nav link.
-    await expect(this.page.getByRole("main").getByText(plan, { exact: true })).toBeVisible();
+    // Scope to the Plan section: a plan name like "Team" also names a settings tab.
+    const planSection = this.page
+      .locator("section")
+      .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
+    await expect(planSection.getByText(plan, { exact: true })).toBeVisible();
     await expectAccessible(this.page);
   }
 
@@ -4534,7 +4551,7 @@ class HubUser {
   }
 
   async expectMobileTeamFitsViewport(): Promise<void> {
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(this.page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
     await expect(this.page.getByText("No pending invitations", { exact: true })).toBeVisible();
     const table = this.page.getByRole("table", { name: "Members" });
@@ -4600,9 +4617,7 @@ class HubUser {
 
   async expectMemberBoundary(organizationName: string): Promise<void> {
     await this.openOrganizationSection("Team");
-    await expect(
-      this.page.locator("header").first().getByText(organizationName, { exact: true }),
-    ).toBeVisible();
+    await this.expectActiveOrganization(organizationName);
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expect(this.page.getByRole("heading", { name: "Pending invitations" })).toHaveCount(0);
   }
@@ -4658,7 +4673,7 @@ class HubUser {
         this.page.getByRole("heading", { name: "Choose an organization" }),
       ).toBeVisible();
     }
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(this.page.getByRole("heading", { name: "Team" })).toHaveCount(0);
     for (const value of cachedValues) {
       await expect(this.page.getByText(value, { exact: true })).toHaveCount(0);
@@ -4696,16 +4711,46 @@ class HubUser {
     await form.getByRole("button", { name: "Create organization" }).click();
   }
 
+  /**
+   * Reaches an organization surface by whichever route the information architecture puts it on:
+   * Projects, Daemons, and Connections are sidebar entries, the administration sections are tabs
+   * under Settings. Callers name the destination, not the path to it.
+   */
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Usage" | "Billing",
+    name: OrganizationSection | OrganizationSettingsSection,
   ): Promise<void> {
-    const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
-    if (await mobileSidebar.isVisible().catch(() => false)) {
-      await this.navigation.openMobileOrganizationSection(name);
+    const settings = ORGANIZATION_SETTINGS_SECTIONS.includes(name as OrganizationSettingsSection);
+    await this.returnToOrganizationScope();
+    const mobile = await this.page
+      .getByRole("button", { name: "Toggle Sidebar" })
+      .isVisible()
+      .catch(() => false);
+    if (settings) {
+      const section = name as OrganizationSettingsSection;
+      if (mobile) await this.navigation.openMobileOrganizationSettings(section);
+      else await this.navigation.openOrganizationSettings(section);
     } else {
-      await this.navigation.openOrganizationSection(name);
+      const section = name as OrganizationSection;
+      if (mobile) await this.navigation.openMobileOrganizationSection(section);
+      else await this.navigation.openOrganizationSection(section);
     }
     await expect(this.page.getByRole("heading", { name, exact: true, level: 1 })).toBeVisible();
+  }
+
+  /**
+   * The sidebar body lists one scope's destinations, so organization destinations are not
+   * reachable from inside a project or from the instance. Take whichever back row the scope
+   * offers, exactly as a user would.
+   */
+  private async returnToOrganizationScope(): Promise<void> {
+    const pathname = new URL(this.page.url()).pathname;
+    const instance = INSTANCE_ROUTES.includes(pathname);
+    if (!instance && !/\/projects\/[^/]+\//u.test(pathname)) return;
+    const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
+    if (await mobileSidebar.isVisible().catch(() => false)) await mobileSidebar.click();
+    if (instance) await this.navigation.leaveInstance();
+    else await this.navigation.leaveProject();
+    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
   }
 
   private async refreshOrganizationSection(name: "Daemons" | "Connections" | "Team") {
@@ -4737,6 +4782,8 @@ export interface AppSetupSession {
   surface: AppSetupSurface;
   origin: string;
   openManagement(): Promise<void>;
+  /** Reaches Apps the way an operator does after onboarding: through the account menu. */
+  navigateToApps(): Promise<void>;
   returnFromProvider(provider: "github" | "slack" | "discord", result: string): Promise<void>;
   providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
