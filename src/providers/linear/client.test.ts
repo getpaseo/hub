@@ -54,6 +54,26 @@ describe("Linear connection client", () => {
     assert.match(requests[0]?.body ?? "", /code=code-value/u);
   });
 
+  it("keeps requested scopes when Linear omits them during authorization", async () => {
+    const client = createLinearConnectionClient({
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      publicBaseUrl: "https://hub.test",
+      fetch: async (url) => {
+        if (readableUrl(url).endsWith("/oauth/token")) {
+          return json({ access_token: "access-token", refresh_token: "refresh-token" });
+        }
+        return json({
+          data: { viewer: { id: "app-user", organization: { id: "linear-org", name: "Acme" } } },
+        });
+      },
+    });
+
+    const installation = await client.exchangeCode("code-value");
+
+    assert.deepEqual(installation.scopes, ["read", "comments:create"]);
+  });
+
   it("refreshes an expired token before calling the Linear GraphQL API", async () => {
     const updates: unknown[] = [];
     const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
@@ -162,6 +182,86 @@ describe("Linear connection client", () => {
         accessTokenExpiresAt: new Date(1_700_003_610_000),
       },
     ]);
+  });
+
+  it("coalesces concurrent refreshes for one Linear connection", async () => {
+    const connection: LinearConnectionRecord = {
+      id: "connection-1",
+      organizationId: "hub-org",
+      slug: "acme-linear",
+      providerApplicationId: "linear-app",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Acme",
+      appUserId: "app-user",
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      accessTokenExpiresAt: new Date(1_700_000_000_000),
+      scopes: ["comments:create", "read"],
+    };
+    const updates: unknown[] = [];
+    const requests: string[] = [];
+    let connectionReads = 0;
+    let releaseConnections!: () => void;
+    let markBothConnectionsRead!: () => void;
+    let releaseRefresh!: (value: { accessToken: string; refreshToken: string }) => void;
+    let markRefreshStarted!: () => void;
+    const connectionsReleased = new Promise<void>((resolve) => {
+      releaseConnections = resolve;
+    });
+    const bothConnectionsRead = new Promise<void>((resolve) => {
+      markBothConnectionsRead = resolve;
+    });
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    const refreshed = new Promise<{ accessToken: string; refreshToken: string }>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => {
+        connectionReads += 1;
+        if (connectionReads === 2) markBothConnectionsRead();
+        await connectionsReleased;
+        return connection;
+      },
+      updateTokens: async (update) => {
+        updates.push(update);
+      },
+      connectionClient: {
+        refresh: async () => {
+          refreshCalls += 1;
+          markRefreshStarted();
+          return refreshed;
+        },
+      },
+      now: () => new Date(1_700_000_010_000),
+      fetch: async (_url, init) => {
+        requests.push(new Headers(init?.headers).get("authorization") ?? "");
+        return json({ data: { commentCreate: { success: true } } });
+      },
+    });
+
+    const operations = [
+      api.createComment({ linearOrganizationId: "linear-org", issueId: "issue-1", body: "One" }),
+      api.createComment({ linearOrganizationId: "linear-org", issueId: "issue-2", body: "Two" }),
+    ];
+    await bothConnectionsRead;
+    releaseConnections();
+    await refreshStarted;
+
+    assert.equal(refreshCalls, 1);
+    releaseRefresh({ accessToken: "fresh-token", refreshToken: "next-refresh-token" });
+    await Promise.all(operations);
+
+    assert.deepEqual(updates, [
+      {
+        connectionId: "connection-1",
+        accessToken: "fresh-token",
+        refreshToken: "next-refresh-token",
+      },
+    ]);
+    assert.deepEqual(requests, ["Bearer fresh-token", "Bearer fresh-token"]);
   });
 
   it("requires read access and the narrow comment-creation scope", () => {

@@ -162,7 +162,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes ?? [],
+        scopes: token.scopes ?? [...LINEAR_REQUIRED_SCOPES],
       };
     },
     async refresh(refreshToken) {
@@ -214,6 +214,7 @@ export function createLinearApiClient(options: {
 }): LinearApiClient {
   const request = options.fetch ?? fetch;
   const now = options.now ?? (() => new Date());
+  const refreshes = new Map<string, Promise<string>>();
 
   const accessTokenFor = async (linearOrganizationId: string): Promise<string> => {
     const connection = await options.connectionForLinearOrganization(linearOrganizationId);
@@ -224,9 +225,26 @@ export function createLinearApiClient(options: {
     }
     if (connection.refreshToken === null)
       throw new Error("Linear connection requires reauthorization");
-    const refreshed = await options.connectionClient.refresh(connection.refreshToken);
-    await options.updateTokens({ connectionId: connection.id, ...refreshed });
-    return refreshed.accessToken;
+    return refreshAccessToken(connection, connection.refreshToken);
+  };
+
+  const refreshAccessToken = async (
+    connection: LinearConnectionRecord,
+    refreshToken: string,
+  ): Promise<string> => {
+    const existing = refreshes.get(connection.id);
+    if (existing !== undefined) return existing;
+    const pending = (async () => {
+      const refreshed = await options.connectionClient.refresh(refreshToken);
+      await options.updateTokens({ connectionId: connection.id, ...refreshed });
+      return refreshed.accessToken;
+    })();
+    refreshes.set(connection.id, pending);
+    try {
+      return await pending;
+    } finally {
+      if (refreshes.get(connection.id) === pending) refreshes.delete(connection.id);
+    }
   };
 
   return {

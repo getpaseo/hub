@@ -150,12 +150,11 @@ function normalizeCommentEvent(
     action: envelope.action,
     id: commentId,
     organizationId: envelope.organizationId,
-    actor: firstDefined(
-      normalizeActor(envelope.payload["actor"]),
-      normalizeActor(envelope.data["user"]),
-      actorFromUserId(envelope.data),
+    actor:
+      normalizeActor(envelope.payload["actor"]) ??
+      normalizeActor(envelope.data["user"]) ??
+      actorFromUserId(envelope.data) ??
       null,
-    ),
     comment: { id: commentId, body: readString(envelope.data["body"]) ?? "", issueId },
     issue: normalizeIssue(asRecord(envelope.data["issue"]) ?? {}, hydratedIssue) ?? null,
     ...(envelope.occurredAt === undefined ? {} : { occurredAt: envelope.occurredAt }),
