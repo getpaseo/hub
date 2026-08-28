@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedLinearCommentEvent, NormalizedLinearIssueEvent } from "./events.js";
-import { matchLinearTriggers } from "./match.js";
+import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
 
 describe("Linear trigger matching", () => {
   it("starts a project scout exactly when an issue enters its eligible scope", () => {
@@ -97,6 +97,67 @@ describe("Linear trigger matching", () => {
   });
 });
 
+describe("Linear comment invocation parser handoff", () => {
+  it.each([
+    {
+      name: "uses a later contains marker after a consumed pattern",
+      filters: { pattern: "@paseo", contains: "/run" },
+      body: "@paseo please /run priority=high investigate",
+      expected: "priority=high investigate",
+    },
+    {
+      name: "treats equal markers as one consumed marker",
+      filters: { pattern: "@paseo", contains: "@paseo" },
+      body: "@paseo priority=high investigate",
+      expected: "priority=high investigate",
+    },
+    {
+      name: "uses an overlapping contains marker that extends the pattern",
+      filters: { pattern: "@paseo", contains: "@paseo /run" },
+      body: "@paseo /run priority=high investigate",
+      expected: "priority=high investigate",
+    },
+    {
+      name: "keeps an input-shaped suffix of an overlapping contains marker",
+      filters: { pattern: "@paseo", contains: "@paseo repo=hub" },
+      body: "@paseo repo=hub priority=high investigate",
+      expected: "repo=hub priority=high investigate",
+    },
+    {
+      name: "uses the longer pattern when contains is inside it",
+      filters: { pattern: "@paseo /run", contains: "/run" },
+      body: "@paseo /run priority=high investigate",
+      expected: "priority=high investigate",
+    },
+    {
+      name: "uses the first boundary-valid repeated contains marker",
+      filters: { pattern: "@paseo", contains: "/run" },
+      body: "@paseo /run prose /run priority=high investigate",
+      expected: "prose /run priority=high investigate",
+    },
+    {
+      name: "does not treat an inside-word contains match as a marker",
+      filters: { pattern: "@paseo", contains: "run" },
+      body: "@paseo prerun priority=high investigate",
+      expected: "prerun priority=high investigate",
+    },
+    {
+      name: "does not bypass a non-boundary pattern prefix with contains",
+      filters: { pattern: "@paseo", contains: "/run" },
+      body: "@paseoX /run priority=high investigate",
+      expected: "@paseoX /run priority=high investigate",
+    },
+    {
+      name: "preserves a leading input-shaped pattern before a later command",
+      filters: { pattern: "repo=hub", contains: "/run" },
+      body: "repo=hub /run priority=high investigate",
+      expected: "repo=hub priority=high investigate",
+    },
+  ])("$name", ({ filters, body, expected }) => {
+    assert.equal(readLinearCommentInvocationParserMessage(commentEvent(body), filters), expected);
+  });
+});
+
 function configuration() {
   const base = {
     id: "work",
@@ -165,7 +226,7 @@ function issue(
   };
 }
 
-function commentEvent(): NormalizedLinearCommentEvent {
+function commentEvent(body = "@paseo please investigate"): NormalizedLinearCommentEvent {
   const event = issue();
   return {
     type: "comment",
@@ -173,7 +234,7 @@ function commentEvent(): NormalizedLinearCommentEvent {
     id: "comment-1",
     organizationId: event.organizationId,
     actor: event.actor,
-    comment: { id: "comment-1", issueId: event.issue.id, body: "@paseo please investigate" },
+    comment: { id: "comment-1", issueId: event.issue.id, body },
     issue: event.issue,
   };
 }

@@ -17,10 +17,9 @@ export interface MatchedLinearTrigger {
 }
 
 /**
- * Preserve a comment as the prompt while starting input parsing after its command marker. A
- * `contains` marker may occur in prose, so parsing begins at its first boundary-delimited
- * occurrence; input-shaped markers remain intact so declarations such as `repo=hub` can still be
- * consumed.
+ * Preserve a comment as the prompt while handing its input parser the text after its command
+ * marker. A command `pattern` is consumed only at a boundary; a `contains` marker is then found
+ * in the remaining tail. Input-shaped markers such as `repo=hub` remain in the parser text.
  */
 export function readLinearCommentInvocationParserMessage(
   event: NormalizedLinearCommentEvent,
@@ -28,14 +27,34 @@ export function readLinearCommentInvocationParserMessage(
 ): string {
   const body = event.comment.body;
   const pattern = readCommentTextFilter(filter, "pattern");
-  if (pattern !== undefined) {
-    return body.startsWith(pattern) ? stripLinearCommandMarker(body, pattern) : body;
-  }
   const contains = readCommentTextFilter(filter, "contains");
-  if (contains === undefined) return body;
-  const index = findBoundaryDelimitedMarker(body, contains);
-  if (index === undefined) return body;
-  return stripLinearCommandMarker(body.slice(index), contains);
+
+  const consumedPatternEnd = consumeLeadingLinearCommandMarker(body, pattern);
+  if (pattern !== undefined && !pattern.includes("=") && consumedPatternEnd === undefined) {
+    return body;
+  }
+  if (consumedPatternEnd !== undefined) {
+    const overlappingContainsEnd = findOverlappingContainsEnd(body, contains, consumedPatternEnd);
+    if (overlappingContainsEnd !== undefined) {
+      return contains!.includes("=")
+        ? body.slice(skipLeadingWhitespace(body, consumedPatternEnd))
+        : body.slice(overlappingContainsEnd).trimStart();
+    }
+
+    const parserStart = skipLeadingWhitespace(body, consumedPatternEnd);
+    const containsIndex = findBoundaryDelimitedMarker(body, contains, parserStart);
+    return containsIndex === undefined
+      ? body.slice(parserStart)
+      : parserMessageAfterContains(body, containsIndex, contains!);
+  }
+
+  const containsIndex = findBoundaryDelimitedMarker(body, contains);
+  if (containsIndex === undefined) return body;
+
+  const parserMessage = parserMessageAfterContains(body, containsIndex, contains!);
+  return isLeadingInputShapedPattern(body, pattern) && containsIndex > 0
+    ? `${pattern} ${parserMessage}`
+    : parserMessage;
 }
 
 /**
@@ -174,30 +193,75 @@ function matchesCommentText(
   return contains === undefined || event.comment.body.includes(contains);
 }
 
-function stripLinearCommandMarker(message: string, marker: string): string {
-  if (marker.length === 0 || marker.includes("=")) return message;
-  const nextCharacter = message.at(marker.length);
-  return nextCharacter === undefined || /\s/u.test(nextCharacter)
-    ? message.slice(marker.length).trimStart()
-    : message;
+function consumeLeadingLinearCommandMarker(
+  message: string,
+  marker: string | undefined,
+): number | undefined {
+  if (marker === undefined || marker.includes("=") || !message.startsWith(marker)) {
+    return undefined;
+  }
+  return hasTrailingMarkerBoundary(message, marker.length) ? marker.length : undefined;
 }
 
-function findBoundaryDelimitedMarker(message: string, marker: string): number | undefined {
-  let start = 0;
+function findOverlappingContainsEnd(
+  message: string,
+  marker: string | undefined,
+  consumedPatternEnd: number,
+): number | undefined {
+  const markerIndex = findBoundaryDelimitedMarker(message, marker);
+  if (markerIndex === undefined || markerIndex >= consumedPatternEnd) return undefined;
+  return Math.max(consumedPatternEnd, markerIndex + marker!.length);
+}
+
+function parserMessageAfterContains(message: string, markerIndex: number, marker: string): string {
+  return marker.includes("=")
+    ? message.slice(markerIndex)
+    : message.slice(markerIndex + marker.length).trimStart();
+}
+
+function isLeadingInputShapedPattern(
+  message: string,
+  marker: string | undefined,
+): marker is string {
+  return (
+    marker !== undefined &&
+    marker.includes("=") &&
+    message.startsWith(marker) &&
+    hasTrailingMarkerBoundary(message, marker.length)
+  );
+}
+
+function findBoundaryDelimitedMarker(
+  message: string,
+  marker: string | undefined,
+  from = 0,
+): number | undefined {
+  if (marker === undefined) return undefined;
+  let start = from;
   while (start < message.length) {
     const index = message.indexOf(marker, start);
     if (index === -1) return undefined;
     const before = message.at(index - 1);
-    const after = message.at(index + marker.length);
     if (
       (index === 0 || (before !== undefined && /\s/u.test(before))) &&
-      (after === undefined || /\s/u.test(after))
+      hasTrailingMarkerBoundary(message, index + marker.length)
     ) {
       return index;
     }
     start = index + marker.length;
   }
   return undefined;
+}
+
+function hasTrailingMarkerBoundary(message: string, end: number): boolean {
+  const after = message.at(end);
+  return after === undefined || /\s/u.test(after);
+}
+
+function skipLeadingWhitespace(message: string, from: number): number {
+  let start = from;
+  while (start < message.length && /\s/u.test(message[start]!)) start += 1;
+  return start;
 }
 
 function readCommentTextFilter(

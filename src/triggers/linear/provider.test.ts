@@ -45,6 +45,74 @@ describe("Linear trigger provider", () => {
     });
   });
 
+  it("parses after a contains command marker following a matched pattern", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      commandConfiguration({ pattern: "@paseo", contains: "/run" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "@paseo please /run priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { priority: "high" },
+    });
+  });
+
+  it("keeps an input-shaped contains marker after a matched pattern", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      inputShapedMarkerConfiguration({ pattern: "@paseo" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "@paseo please repo=hub priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { repo: "hub", priority: "high" },
+    });
+  });
+
+  it("keeps an input-shaped suffix of an overlapping contains marker", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      inputShapedMarkerConfiguration({ pattern: "@paseo", contains: "@paseo repo=hub" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "@paseo repo=hub priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { repo: "hub", priority: "high" },
+    });
+  });
+
+  it("retains a leading input-shaped pattern when stripping a later command marker", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      inputShapedMarkerConfiguration({ pattern: "repo=hub", contains: "/run" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "repo=hub /run priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { repo: "hub", priority: "high" },
+    });
+  });
+
   it("does not treat an inside-word contains match as a command marker", async () => {
     const { project, revision, store } = await activeConfiguration(
       commandConfiguration({ contains: "run" }),
@@ -280,7 +348,7 @@ function commandConfiguration(marker: { pattern?: string; contains?: string }) {
   };
 }
 
-function inputShapedMarkerConfiguration() {
+function inputShapedMarkerConfiguration(marker: { pattern?: string; contains?: string } = {}) {
   const configuration = linearCommentConfiguration();
   const trigger = configuration.triggers[0]!;
   return {
@@ -295,6 +363,7 @@ function inputShapedMarkerConfiguration() {
         filters: {
           ...trigger.filters,
           contains: "repo=hub",
+          ...marker,
           inputs: { repo: "hub" },
         },
       },
