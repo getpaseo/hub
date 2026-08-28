@@ -17,6 +17,28 @@ export interface MatchedLinearTrigger {
 }
 
 /**
+ * Preserve a comment as the prompt while starting input parsing after its command marker. A
+ * `contains` marker may occur in prose, so parsing begins at its first boundary-delimited
+ * occurrence; input-shaped markers remain intact so declarations such as `repo=hub` can still be
+ * consumed.
+ */
+export function readLinearCommentInvocationParserMessage(
+  event: NormalizedLinearCommentEvent,
+  filter: TriggerFilter | undefined,
+): string {
+  const body = event.comment.body;
+  const pattern = readCommentTextFilter(filter, "pattern");
+  if (pattern !== undefined) {
+    return body.startsWith(pattern) ? stripLinearCommandMarker(body, pattern) : body;
+  }
+  const contains = readCommentTextFilter(filter, "contains");
+  if (contains === undefined) return body;
+  const index = findBoundaryDelimitedMarker(body, contains);
+  if (index === undefined) return body;
+  return stripLinearCommandMarker(body.slice(index), contains);
+}
+
+/**
  * Match Linear's entity-level webhooks onto the small set of workflow-facing events. A scope
  * transition is edge-triggered: an eligible issue creates one run when it enters scope rather
  * than another run for every later title, estimate, or description update.
@@ -150,4 +172,38 @@ function matchesCommentText(
   if (pattern !== undefined && !event.comment.body.startsWith(pattern)) return false;
   const contains = filter?.contains;
   return contains === undefined || event.comment.body.includes(contains);
+}
+
+function stripLinearCommandMarker(message: string, marker: string): string {
+  if (marker.length === 0 || marker.includes("=")) return message;
+  const nextCharacter = message.at(marker.length);
+  return nextCharacter === undefined || /\s/u.test(nextCharacter)
+    ? message.slice(marker.length).trimStart()
+    : message;
+}
+
+function findBoundaryDelimitedMarker(message: string, marker: string): number | undefined {
+  let start = 0;
+  while (start < message.length) {
+    const index = message.indexOf(marker, start);
+    if (index === -1) return undefined;
+    const before = message.at(index - 1);
+    const after = message.at(index + marker.length);
+    if (
+      (index === 0 || (before !== undefined && /\s/u.test(before))) &&
+      (after === undefined || /\s/u.test(after))
+    ) {
+      return index;
+    }
+    start = index + marker.length;
+  }
+  return undefined;
+}
+
+function readCommentTextFilter(
+  filter: TriggerFilter | undefined,
+  key: "pattern" | "contains",
+): string | undefined {
+  const value = filter?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

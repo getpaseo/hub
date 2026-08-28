@@ -8,6 +8,82 @@ import type { NormalizedLinearCommentEvent } from "./events.js";
 import { createLinearTriggerProvider } from "./provider.js";
 
 describe("Linear trigger provider", () => {
+  it.each([
+    ["pattern", { pattern: "/run" }, "/run priority=high investigate"],
+    ["contains", { contains: "/run" }, "please /run priority=high investigate"],
+  ] as const)(
+    "parses inputs after a matched Linear %s marker while preserving the original comment prompt",
+    async (_filterName, marker, body) => {
+      const { project, revision, store } = await activeConfiguration(commandConfiguration(marker));
+      const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+
+      const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+      assert.deepEqual(match.invocation, {
+        status: "accepted",
+        prompt: body,
+        inputs: { priority: "high" },
+      });
+    },
+  );
+
+  it("keeps an input-shaped contains marker available to parsing and input filters", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      inputShapedMarkerConfiguration(),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "please repo=hub priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { repo: "hub", priority: "high" },
+    });
+  });
+
+  it("does not treat an inside-word contains match as a command marker", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      commandConfiguration({ contains: "run" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "please prerun priority=high investigate";
+
+    const matches = await provider.match(external(project.id, revision.id, undefined, body));
+    if (typeof matches === "string") throw new Error("expected invocation rejection");
+    const match = matches[0];
+    if (match === undefined || match.invocation.status !== "rejected") {
+      throw new Error("expected rejected match");
+    }
+
+    assert.equal(match.invocation.prompt, body);
+    assert.deepEqual(match.invocation.inputs, {});
+    assert.deepEqual(match.invocation.rejection, {
+      code: "missing_required",
+      inputName: "priority",
+    });
+  });
+
+  it("uses the first boundary-delimited contains marker after prose", async () => {
+    const { project, revision, store } = await activeConfiguration(
+      commandConfiguration({ contains: "run" }),
+    );
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const body = "please prerun run priority=high investigate";
+
+    const match = (await provider.match(external(project.id, revision.id, undefined, body)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.deepEqual(match.invocation, {
+      status: "accepted",
+      prompt: body,
+      inputs: { priority: "high" },
+    });
+  });
+
   it("defers a bounded, causal issue history until context materialization", async () => {
     const { project, revision, store } = await activeConfiguration();
     const triggerAt = "2026-01-02T00:00:00.000Z";
@@ -153,38 +229,84 @@ class RecordingHistoryClient implements Pick<LinearApiClient, "readIssueComments
   }
 }
 
-function activeConfiguration() {
-  return createActiveProjectConfiguration(
-    createMemoryDatabase(),
-    {
-      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-      triggers: [
-        {
-          name: "comment",
-          on: "linear.comment_created",
-          max_runtime: "1h",
-          filters: { project: "project-1", from_users: ["operator"] },
-          steps: [
-            {
-              id: "work",
-              environment: "runner",
-              max_runtime: "1h",
-              idle_timeout: "5m",
-              agent: { provider: "codex" },
-              prompt: [{ text: "Work from ${{ paseo.context }}" }],
-            },
-          ],
+function activeConfiguration(configuration = linearCommentConfiguration()) {
+  return createActiveProjectConfiguration(createMemoryDatabase(), configuration, {
+    organizationId: "hub-org",
+  });
+}
+
+function linearCommentConfiguration() {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+    triggers: [
+      {
+        name: "comment",
+        on: "linear.comment_created",
+        max_runtime: "1h",
+        filters: { project: "project-1", from_users: ["operator"] },
+        steps: [
+          {
+            id: "work",
+            environment: "runner",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Work from ${{ paseo.context }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function commandConfiguration(marker: { pattern?: string; contains?: string }) {
+  const configuration = linearCommentConfiguration();
+  const trigger = configuration.triggers[0]!;
+  return {
+    ...configuration,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          priority: { type: "string", required: true, choices: ["high", "low"] },
         },
-      ],
-    },
-    { organizationId: "hub-org" },
-  );
+        filters: {
+          ...trigger.filters,
+          ...marker,
+          inputs: { priority: "high" },
+        },
+      },
+    ],
+  };
+}
+
+function inputShapedMarkerConfiguration() {
+  const configuration = linearCommentConfiguration();
+  const trigger = configuration.triggers[0]!;
+  return {
+    ...configuration,
+    triggers: [
+      {
+        ...trigger,
+        inputs: {
+          repo: { type: "string", required: true, choices: ["hub", "paseo"] },
+          priority: { type: "string", required: true, choices: ["high", "low"] },
+        },
+        filters: {
+          ...trigger.filters,
+          contains: "repo=hub",
+          inputs: { repo: "hub" },
+        },
+      },
+    ],
+  };
 }
 
 function external(
   projectId: string,
   configurationRevisionId: string,
   occurredAt = "2026-01-02T00:00:00.000Z",
+  commentBody = "@paseo please investigate",
 ): ExternalTrigger {
   return {
     providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
@@ -195,18 +317,21 @@ function external(
     deliveryId: "delivery-1",
     receivedAt: new Date(occurredAt),
     connectionId: "linear-connection",
-    payload: event(occurredAt),
+    payload: event(occurredAt, commentBody),
   };
 }
 
-function event(occurredAt: string): NormalizedLinearCommentEvent {
+function event(
+  occurredAt: string,
+  commentBody = "@paseo please investigate",
+): NormalizedLinearCommentEvent {
   return {
     type: "comment",
     action: "create",
     id: "trigger-comment",
     organizationId: "linear-org",
     actor: { id: "operator" },
-    comment: { id: "trigger-comment", issueId: "issue-1", body: "@paseo please investigate" },
+    comment: { id: "trigger-comment", issueId: "issue-1", body: commentBody },
     issue: {
       id: "issue-1",
       identifier: "ENG-42",

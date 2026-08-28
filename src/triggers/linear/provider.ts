@@ -8,7 +8,7 @@ import { reportFailure } from "../../failures/index.js";
 import type { TriggerProvider, TriggerProviderMatch } from "../index.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedLinearEventSchema, type NormalizedLinearEvent } from "./events.js";
-import { matchLinearTriggers } from "./match.js";
+import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
 
 export interface LinearOutputContext {
   provider: "linear";
@@ -120,11 +120,14 @@ export function createLinearTriggerProvider(options: {
             ),
           },
         };
+        const prompt = promptForEvent(event);
         const invocation = parseInvocation(
-          promptForEvent(event),
+          prompt,
           compiledTrigger.inputs,
           undefined,
-          promptForEvent(event),
+          event.type === "comment"
+            ? readLinearCommentInvocationParserMessage(event, compiledTrigger.filters)
+            : prompt,
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
