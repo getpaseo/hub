@@ -810,7 +810,7 @@ test("the operator finishes, then manages the same apps from the account menu", 
     https: true,
   });
   try {
-    const { surface } = session;
+    const { surface, page } = session;
     await surface.github.expand();
     await surface.github.fillWorkingCredentials();
     await surface.github.save();
