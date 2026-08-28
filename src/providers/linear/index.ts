@@ -98,6 +98,7 @@ export function createLinearRegistration(
           connectionForLinearOrganization: (linearOrganizationId) =>
             database.findLinearConnection(linearOrganizationId),
           updateTokens: (input) => database.updateLinearConnectionTokens(input),
+          withAdvisoryLock: database.withAdvisoryLock.bind(database),
           connectionClient,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
         }));

@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { LinearConnectionRecord, UpdateLinearConnectionTokensInput } from "../../db/types.js";
+import type {
+  Database,
+  LinearConnectionRecord,
+  UpdateLinearConnectionTokensInput,
+} from "../../db/types.js";
 
 /** The minimum authority required to read issues and leave an outcome on the issue. */
 export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
@@ -249,6 +253,7 @@ export function createLinearApiClient(options: {
     linearOrganizationId: string,
   ): Promise<LinearConnectionRecord | undefined>;
   updateTokens(input: UpdateLinearConnectionTokensInput): Promise<void>;
+  withAdvisoryLock: Database["withAdvisoryLock"];
   connectionClient: Pick<LinearConnectionClient, "refresh">;
   fetch?: typeof fetch;
   now?: () => Date;
@@ -257,29 +262,39 @@ export function createLinearApiClient(options: {
   const now = options.now ?? (() => new Date());
   const refreshes = new Map<string, Promise<string>>();
 
+  const hasUsableAccessToken = (connection: LinearConnectionRecord): boolean => {
+    const expiresAt = connection.accessTokenExpiresAt;
+    return expiresAt === null || expiresAt.getTime() > now().getTime() + 60_000;
+  };
+
   const accessTokenFor = async (linearOrganizationId: string): Promise<string> => {
     const connection = await options.connectionForLinearOrganization(linearOrganizationId);
     if (connection === undefined) throw new Error("Linear connection unavailable");
-    const expiresAt = connection.accessTokenExpiresAt;
-    if (expiresAt === null || expiresAt.getTime() > now().getTime() + 60_000) {
-      return connection.accessToken;
-    }
+    if (hasUsableAccessToken(connection)) return connection.accessToken;
     if (connection.refreshToken === null)
       throw new Error("Linear connection requires reauthorization");
-    return refreshAccessToken(connection, connection.refreshToken);
+    return refreshAccessToken(linearOrganizationId, connection);
   };
 
   const refreshAccessToken = async (
+    linearOrganizationId: string,
     connection: LinearConnectionRecord,
-    refreshToken: string,
   ): Promise<string> => {
     const existing = refreshes.get(connection.id);
     if (existing !== undefined) return existing;
-    const pending = (async () => {
-      const refreshed = await options.connectionClient.refresh(refreshToken);
-      await options.updateTokens({ connectionId: connection.id, ...refreshed });
-      return refreshed.accessToken;
-    })();
+    const pending = options.withAdvisoryLock(
+      linearRefreshLockKey(linearOrganizationId),
+      async () => {
+        const current = await options.connectionForLinearOrganization(linearOrganizationId);
+        if (current === undefined) throw new Error("Linear connection unavailable");
+        if (hasUsableAccessToken(current)) return current.accessToken;
+        if (current.refreshToken === null)
+          throw new Error("Linear connection requires reauthorization");
+        const refreshed = await options.connectionClient.refresh(current.refreshToken);
+        await options.updateTokens({ connectionId: current.id, ...refreshed });
+        return refreshed.accessToken;
+      },
+    );
     refreshes.set(connection.id, pending);
     try {
       return await pending;
@@ -371,6 +386,11 @@ export function createLinearApiClient(options: {
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
     },
   };
+}
+
+/** The Linear workspace ID is globally unique, so this also survives a connection replacement. */
+function linearRefreshLockKey(linearOrganizationId: string): string {
+  return `linear:connection:refresh:${linearOrganizationId}`;
 }
 
 function compareLinearCommentOrder(

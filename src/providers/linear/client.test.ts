@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { LinearConnectionRecord } from "../../db/types.js";
+import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createLinearApiClient,
   createLinearConnectionClient,
@@ -92,6 +93,7 @@ describe("Linear connection client", () => {
     const api = createLinearApiClient({
       connectionForLinearOrganization: async () => connection,
       updateTokens: async () => {},
+      withAdvisoryLock: withoutAdvisoryLock,
       connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
       fetch: async (_url, init) => {
         requests.push({
@@ -177,6 +179,7 @@ describe("Linear connection client", () => {
       updateTokens: async (update) => {
         updates.push(update);
       },
+      withAdvisoryLock: withoutAdvisoryLock,
       connectionClient: {
         refresh: async () => ({
           accessToken: "fresh-token",
@@ -247,6 +250,7 @@ describe("Linear connection client", () => {
           connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
         if (update.scopes !== undefined) connection.scopes = update.scopes;
       },
+      withAdvisoryLock: withoutAdvisoryLock,
       connectionClient: createLinearConnectionClient({
         clientId: "client-id",
         clientSecret: "client-secret",
@@ -323,6 +327,7 @@ describe("Linear connection client", () => {
       updateTokens: async (update) => {
         updates.push(update);
       },
+      withAdvisoryLock: withoutAdvisoryLock,
       connectionClient: {
         refresh: async () => {
           refreshCalls += 1;
@@ -359,6 +364,118 @@ describe("Linear connection client", () => {
     assert.deepEqual(requests, ["Bearer fresh-token", "Bearer fresh-token"]);
   });
 
+  it("serializes rotating-token refreshes across Linear API clients", async () => {
+    const locks = createMemoryDatabase();
+    const lockKeys: string[] = [];
+    const connection: LinearConnectionRecord = {
+      id: "connection-1",
+      organizationId: "hub-org",
+      slug: "acme-linear",
+      providerApplicationId: "linear-app",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Acme",
+      appUserId: "app-user",
+      accessToken: "expired-token",
+      refreshToken: "rotating-refresh-token",
+      accessTokenExpiresAt: new Date(1_700_000_000_000),
+      scopes: ["comments:create", "read"],
+    };
+    const updates: unknown[] = [];
+    const requests: string[] = [];
+    let connectionReads = 0;
+    let refreshCalls = 0;
+    let releaseRefresh!: () => void;
+    let markRefreshStarted!: () => void;
+    let markSecondInitialRead!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    const secondInitialRead = new Promise<void>((resolve) => {
+      markSecondInitialRead = resolve;
+    });
+    const refreshReleased = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const connectionForLinearOrganization = async () => {
+      connectionReads += 1;
+      if (connectionReads === 3) markSecondInitialRead();
+      return connection;
+    };
+    const updateTokens = async (update: {
+      connectionId: string;
+      accessToken: string;
+      refreshToken?: string | null;
+      accessTokenExpiresAt?: Date | null;
+      scopes?: string[];
+    }) => {
+      updates.push(update);
+      connection.accessToken = update.accessToken;
+      if (update.refreshToken !== undefined) connection.refreshToken = update.refreshToken;
+      if (update.accessTokenExpiresAt !== undefined)
+        connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
+      if (update.scopes !== undefined) connection.scopes = update.scopes;
+    };
+    const withAdvisoryLock = <T>(key: string, operation: () => Promise<T>): Promise<T> => {
+      lockKeys.push(key);
+      return locks.withAdvisoryLock(key, operation);
+    };
+    const sharedOptions = {
+      connectionForLinearOrganization,
+      updateTokens,
+      withAdvisoryLock,
+      connectionClient: {
+        refresh: async () => {
+          refreshCalls += 1;
+          markRefreshStarted();
+          await refreshReleased;
+          return {
+            accessToken: "fresh-token",
+            refreshToken: "next-rotating-refresh-token",
+            accessTokenExpiresAt: new Date(1_700_003_600_000),
+          };
+        },
+      },
+      now: () => new Date(1_700_000_010_000),
+      fetch: async (_url: RequestInfo | URL, init?: RequestInit) => {
+        requests.push(new Headers(init?.headers).get("authorization") ?? "");
+        return json({ data: { commentCreate: { success: true } } });
+      },
+    };
+    const firstProcess = createLinearApiClient(sharedOptions);
+    const secondProcess = createLinearApiClient(sharedOptions);
+
+    const first = firstProcess.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      body: "One",
+    });
+    await refreshStarted;
+    const second = secondProcess.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-2",
+      body: "Two",
+    });
+    await secondInitialRead;
+    releaseRefresh();
+    await Promise.all([first, second]);
+
+    assert.equal(refreshCalls, 1);
+    assert.equal(connectionReads, 4);
+    assert.deepEqual(lockKeys, [
+      "linear:connection:refresh:linear-org",
+      "linear:connection:refresh:linear-org",
+    ]);
+    assert.deepEqual(updates, [
+      {
+        connectionId: "connection-1",
+        accessToken: "fresh-token",
+        refreshToken: "next-rotating-refresh-token",
+        accessTokenExpiresAt: new Date(1_700_003_600_000),
+      },
+    ]);
+    assert.deepEqual(requests, ["Bearer fresh-token", "Bearer fresh-token"]);
+  });
+
   it("requires read access and the narrow comment-creation scope", () => {
     assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
     assert.equal(hasRequiredLinearScopes(["read"]), false);
@@ -370,6 +487,10 @@ function json(value: unknown): Response {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+async function withoutAdvisoryLock<T>(_key: string, operation: () => Promise<T>): Promise<T> {
+  return operation();
 }
 
 function readableUrl(value: RequestInfo | URL): string {
