@@ -279,7 +279,11 @@ async function main(): Promise<void> {
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void runtime.hub.handleUpgrade?.(request, socket, head);
   });
-  server.listen(Number(requiredEnvironment("PORT")), "127.0.0.1");
+  await requestPortHandoff();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(Number(requiredEnvironment("PORT")), "127.0.0.1", resolve);
+  });
 
   process.on("message", (message: unknown) => {
     void acceptCommand(message, {
@@ -299,6 +303,29 @@ async function main(): Promise<void> {
   const stop = () => void shutdown(server, () => runtime.stop());
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+async function requestPortHandoff(): Promise<void> {
+  if (process.send === undefined) throw new Error("browser child requires an IPC channel");
+  await new Promise<void>((resolve, reject) => {
+    const receive = (message: unknown) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        Reflect.get(message, "type") !== "port-handoff-ready"
+      ) {
+        return;
+      }
+      process.off("message", receive);
+      resolve();
+    };
+    process.on("message", receive);
+    process.send?.({ type: "port-handoff-request" }, (error) => {
+      if (error === null) return;
+      process.off("message", receive);
+      reject(error);
+    });
+  });
 }
 
 async function createBrowserDatabase() {

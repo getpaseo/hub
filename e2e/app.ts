@@ -127,11 +127,12 @@ class BuiltApplications {
         stdio: ["pipe", "pipe", "pipe", "ipc"],
       });
     let server = spawnServer();
+    let serverPortHandoff = handoffPortWhenRequested(server, portLease);
     const output: string[] = [];
     const proxy =
-      reverseProxyPort === undefined || tls === undefined
+      reverseProxyPortLease === undefined || tls === undefined
         ? undefined
-        : await startReverseProxy(reverseProxyPort, port, tls);
+        : await startReverseProxy(reverseProxyPortLease, port, tls);
     const application: RunningApplication = {
       origin,
       databaseUrl: databaseUrl ?? `embedded:${dataDirectory}`,
@@ -169,8 +170,11 @@ class BuiltApplications {
         ),
       restart: async () => {
         await stopServer(server);
+        await portLease.reacquire();
         server = spawnServer();
+        serverPortHandoff = handoffPortWhenRequested(server, portLease);
         application.server = server;
+        await serverPortHandoff;
         await serverReady(server, origin, output);
       },
       reportedSeatQuantity: async (organizationId: string) => {
@@ -182,6 +186,7 @@ class BuiltApplications {
       },
     };
     this.running.push(application);
+    await serverPortHandoff;
     await serverReady(server, origin, output);
     application.machineKey = (await readFile(machineKeyFile, "utf8")).trim();
     return application;
@@ -478,7 +483,11 @@ async function stopServer(server: ChildProcess): Promise<void> {
   if (server.exitCode === null) server.kill("SIGKILL");
 }
 
-async function startReverseProxy(port: number, targetPort: number, tls: TestTls): Promise<Server> {
+async function startReverseProxy(
+  portLease: PortLease,
+  targetPort: number,
+  tls: TestTls,
+): Promise<Server> {
   const proxy = createHttpsServer(
     { key: await readFile(tls.key, "utf8"), cert: await readFile(tls.cert, "utf8") },
     (incoming, outgoing) => {
@@ -510,7 +519,10 @@ async function startReverseProxy(port: number, targetPort: number, tls: TestTls)
   );
   await new Promise<void>((resolve, reject) => {
     proxy.once("error", reject);
-    proxy.listen(port, "127.0.0.1", resolve);
+    void portLease
+      .handoff()
+      .then(() => proxy.listen(portLease.port, "127.0.0.1", resolve))
+      .catch(reject);
   });
   return proxy;
 }
@@ -526,6 +538,8 @@ async function stopProxy(proxy: Server | undefined): Promise<void> {
 
 interface PortLease {
   port: number;
+  handoff(): Promise<void>;
+  reacquire(): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -534,7 +548,7 @@ const PORT_LEASE_DIRECTORY = join(process.cwd(), "test-results", "port-leases");
 async function reservePort(): Promise<PortLease> {
   await mkdir(PORT_LEASE_DIRECTORY, { recursive: true });
   while (true) {
-    const server = createServer();
+    const server = createPortReservationServer();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
@@ -553,16 +567,70 @@ async function reservePort(): Promise<PortLease> {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
       throw error;
     }
-    await closeServer(server);
+    let reservation: NetServer | undefined = server;
+    const handoff = async () => {
+      if (reservation === undefined) return;
+      const held = reservation;
+      reservation = undefined;
+      await closeServer(held);
+    };
     return {
       port: address.port,
+      handoff,
+      reacquire: async () => {
+        if (reservation !== undefined) throw new Error(`port ${address.port} is already reserved`);
+        const next = createPortReservationServer();
+        await new Promise<void>((resolve, reject) => {
+          next.once("error", reject);
+          next.listen(address.port, "127.0.0.1", resolve);
+        });
+        reservation = next;
+      },
       release: async () => {
+        await handoff();
         await unlink(leasePath).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT") throw error;
         });
       },
     };
   }
+}
+
+function createPortReservationServer(): NetServer {
+  return createServer((socket) => socket.destroy());
+}
+
+async function handoffPortWhenRequested(server: ChildProcess, lease: PortLease): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onExit = () => finish(new Error("built application exited before requesting its port"));
+    const onMessage = (message: unknown) => {
+      if (
+        typeof message !== "object" ||
+        message === null ||
+        Reflect.get(message, "type") !== "port-handoff-request"
+      ) {
+        return;
+      }
+      cleanup();
+      void lease.handoff().then(
+        () =>
+          server.send({ type: "port-handoff-ready" }, (error) => {
+            error === null ? resolve() : reject(error);
+          }),
+        reject,
+      );
+    };
+    const cleanup = () => {
+      server.off("exit", onExit);
+      server.off("message", onMessage);
+    };
+    const finish = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    server.once("exit", onExit);
+    server.on("message", onMessage);
+  });
 }
 
 async function closeServer(server: NetServer): Promise<void> {
