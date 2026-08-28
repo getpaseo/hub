@@ -29,7 +29,7 @@ describe("Linear connection client", () => {
             access_token: "access-token",
             refresh_token: "refresh-token",
             expires_in: 3600,
-            scope: "read,comments:create",
+            scope: "read,write,app:assignable,app:mentionable",
           });
         }
         return json({
@@ -44,7 +44,10 @@ describe("Linear connection client", () => {
       authorization.searchParams.get("redirect_uri"),
       "https://hub.test/api/integrations/linear/callback",
     );
-    assert.equal(authorization.searchParams.get("scope"), "read,comments:create");
+    assert.equal(
+      authorization.searchParams.get("scope"),
+      "read,write,app:assignable,app:mentionable",
+    );
     assert.equal(authorization.searchParams.get("actor"), "app");
     assert.equal(authorization.searchParams.get("state"), "state-value");
 
@@ -55,7 +58,7 @@ describe("Linear connection client", () => {
       accessToken: "access-token",
       refreshToken: "refresh-token",
       accessTokenExpiresAt: new Date(1_700_003_600_000),
-      scopes: ["comments:create", "read"],
+      scopes: ["app:assignable", "app:mentionable", "read", "write"],
     });
     assert.match(requests[0]?.body ?? "", /code=code-value/u);
   });
@@ -77,7 +80,7 @@ describe("Linear connection client", () => {
 
     const installation = await client.exchangeCode("code-value");
 
-    assert.deepEqual(installation.scopes, ["read", "comments:create"]);
+    assert.deepEqual(installation.scopes, ["read", "write", "app:assignable", "app:mentionable"]);
   });
 
   it("reads a bounded, chronological history before the triggering comment", async () => {
@@ -159,6 +162,113 @@ describe("Linear connection client", () => {
     assert.deepEqual(request.variables, {
       issueId: "issue-1",
       before: "2023-11-14T22:13:19.003Z",
+    });
+  });
+
+  it("reads bounded agent-session activity before the prompting activity", async () => {
+    const requests: string[] = [];
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => linearConnection(),
+      withLinearConnectionRefresh: withinLinearRefresh(linearConnection(), async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json({
+          data: {
+            agentSession: {
+              activities: {
+                nodes: [
+                  {
+                    id: "activity-2",
+                    createdAt: "2023-11-14T22:13:19.002Z",
+                    user: { id: "app-user", name: "Paseo" },
+                    content: {
+                      __typename: "AgentActivityActionContent",
+                      type: "action",
+                      action: "Opened pull request",
+                      parameter: "getpaseo/hub#59",
+                      result: "Ready for review",
+                    },
+                  },
+                  {
+                    id: "activity-1",
+                    createdAt: "2023-11-14T22:13:19.001Z",
+                    user: { id: "user-1", name: "Operator" },
+                    content: {
+                      __typename: "AgentActivityPromptContent",
+                      type: "prompt",
+                      body: "Please implement this",
+                    },
+                  },
+                ],
+                pageInfo: { hasPreviousPage: true },
+              },
+            },
+          },
+        });
+      },
+    });
+
+    assert.deepEqual(
+      await api.readAgentSessionActivities({
+        linearOrganizationId: "linear-org",
+        agentSessionId: "session-1",
+        beforeCreatedAt: "2023-11-14T22:13:19.003Z",
+      }),
+      {
+        complete: false,
+        activities: [
+          {
+            id: "activity-1",
+            type: "prompt",
+            body: "Please implement this",
+            createdAt: "2023-11-14T22:13:19.001Z",
+            author: { id: "user-1", name: "Operator" },
+          },
+          {
+            id: "activity-2",
+            type: "action",
+            body: "Opened pull request: getpaseo/hub#59\n\nReady for review",
+            createdAt: "2023-11-14T22:13:19.002Z",
+            author: { id: "app-user", name: "Paseo" },
+          },
+        ],
+      },
+    );
+    const request = graphqlRequest(requests[0] ?? "{}");
+    assert.match(request.query, /activities\(/u);
+    assert.match(request.query, /last: 49/u);
+    assert.match(request.query, /createdAt: \{ lt: \$before \}/u);
+    assert.deepEqual(request.variables, {
+      agentSessionId: "session-1",
+      before: "2023-11-14T22:13:19.003Z",
+    });
+  });
+
+  it("creates native Linear agent activities", async () => {
+    const requests: string[] = [];
+    const connection = linearConnection();
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json({ data: { agentActivityCreate: { success: true } } });
+      },
+    });
+
+    await api.createAgentActivity({
+      linearOrganizationId: "linear-org",
+      agentSessionId: "session-1",
+      content: { type: "response", body: "Draft PR opened." },
+    });
+
+    const request = graphqlRequest(requests[0] ?? "{}");
+    assert.match(request.query, /agentActivityCreate/u);
+    assert.deepEqual(request.variables, {
+      agentSessionId: "session-1",
+      content: { type: "response", body: "Draft PR opened." },
     });
   });
 
@@ -485,11 +595,31 @@ describe("Linear connection client", () => {
     assert.deepEqual(requests, ["Bearer fresh-token", "Bearer fresh-token"]);
   });
 
-  it("requires read access and the narrow comment-creation scope", () => {
-    assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
+  it("requires issue, comment, assignment, and mention authority for agent mode", () => {
+    assert.equal(
+      hasRequiredLinearScopes(["read", "write", "app:assignable", "app:mentionable"]),
+      true,
+    );
+    assert.equal(hasRequiredLinearScopes(["read", "write"]), false);
     assert.equal(hasRequiredLinearScopes(["read"]), false);
   });
 });
+
+function linearConnection(): LinearConnectionRecord {
+  return {
+    id: "connection-1",
+    organizationId: "hub-org",
+    slug: "acme-linear",
+    providerApplicationId: "linear-app",
+    linearOrganizationId: "linear-org",
+    linearOrganizationName: "Acme",
+    appUserId: "app-user",
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    accessTokenExpiresAt: null,
+    scopes: ["app:assignable", "app:mentionable", "read", "write"],
+  };
+}
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), {

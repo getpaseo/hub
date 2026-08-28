@@ -3,6 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type {
+  NormalizedLinearAgentSessionEvent,
   NormalizedLinearCommentEvent,
   NormalizedLinearEvent,
   NormalizedLinearIssue,
@@ -25,7 +26,20 @@ export function readLinearCommentInvocationParserMessage(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
 ): string {
-  const body = event.comment.body;
+  return readLinearInvocationParserMessage(event.comment.body, filter);
+}
+
+export function readLinearAgentSessionInvocationParserMessage(
+  event: NormalizedLinearAgentSessionEvent,
+  filter: TriggerFilter | undefined,
+): string {
+  return readLinearInvocationParserMessage(event.parserMessage, filter);
+}
+
+function readLinearInvocationParserMessage(
+  body: string,
+  filter: TriggerFilter | undefined,
+): string {
   const pattern = readCommentTextFilter(filter, "pattern");
   const contains = readCommentTextFilter(filter, "contains");
 
@@ -113,6 +127,7 @@ function matchesLinearEvent(eventName: string, event: NormalizedLinearEvent): bo
       Object.hasOwn(event.updatedFrom, "assigneeId")
     );
   }
+  if (eventName === "linear.agent_session") return event.type === "agent_session";
   return (
     eventName === "linear.comment_created" && event.type === "comment" && event.action === "create"
   );
@@ -134,6 +149,9 @@ function matchesTriggerFilter(
   if (issue === null || !matchesIssueScope(issue, trigger.filters, connectionId)) return false;
   if (!matchesActor(event, trigger.filters?.from_users)) return false;
   if (event.type === "comment" && !matchesCommentText(event, trigger.filters)) return false;
+  if (event.type === "agent_session" && !matchesText(event.parserMessage, trigger.filters)) {
+    return false;
+  }
   return true;
 }
 
@@ -187,10 +205,14 @@ function matchesCommentText(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
 ): boolean {
+  return matchesText(event.comment.body, filter);
+}
+
+function matchesText(body: string, filter: TriggerFilter | undefined): boolean {
   const pattern = filter?.pattern;
-  if (pattern !== undefined && !event.comment.body.startsWith(pattern)) return false;
+  if (pattern !== undefined && !body.startsWith(pattern)) return false;
   const contains = filter?.contains;
-  return contains === undefined || event.comment.body.includes(contains);
+  return contains === undefined || body.includes(contains);
 }
 
 function consumeLeadingLinearCommandMarker(

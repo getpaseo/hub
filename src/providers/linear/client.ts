@@ -1,12 +1,18 @@
 import { z } from "zod";
 import type { Database, LinearConnectionRecord } from "../../db/types.js";
 
-/** The minimum authority required to read issues and leave an outcome on the issue. */
-export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
+/** The minimum authority required for issue triggers and Linear's native app-agent mode. */
+export const LINEAR_REQUIRED_SCOPES = [
+  "read",
+  "write",
+  "app:assignable",
+  "app:mentionable",
+] as const;
 
 /** Keep an issue description plus its preceding discussion within one bounded context window. */
 export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
 export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
+export const LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
 const LINEAR_ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 const LinearTokenResponseSchema = z
@@ -89,6 +95,50 @@ const CommentResponseSchema = z.object({
   }),
 });
 
+const AgentActivityBodyContentSchema = z.object({
+  __typename: z.enum([
+    "AgentActivityThoughtContent",
+    "AgentActivityElicitationContent",
+    "AgentActivityErrorContent",
+    "AgentActivityPromptContent",
+    "AgentActivityResponseContent",
+  ]),
+  type: z.enum(["thought", "elicitation", "error", "prompt", "response"]),
+  body: z.string(),
+});
+
+const AgentActivityActionContentSchema = z.object({
+  __typename: z.literal("AgentActivityActionContent"),
+  type: z.literal("action"),
+  action: z.string(),
+  parameter: z.string(),
+  result: z.string().nullable().optional(),
+});
+
+const AgentActivityHistoryResponseSchema = z.object({
+  data: z.object({
+    agentSession: z.object({
+      activities: z.object({
+        nodes: z.array(
+          z.object({
+            id: z.string().min(1),
+            createdAt: z.string().datetime(),
+            user: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+            content: z.union([AgentActivityBodyContentSchema, AgentActivityActionContentSchema]),
+          }),
+        ),
+        pageInfo: z.object({ hasPreviousPage: z.boolean() }),
+      }),
+    }),
+  }),
+});
+
+const AgentActivityResponseSchema = z.object({
+  data: z.object({
+    agentActivityCreate: z.object({ success: z.literal(true) }),
+  }),
+});
+
 export interface LinearInstallation {
   linearOrganizationId: string;
   linearOrganizationName: string;
@@ -137,6 +187,32 @@ export interface LinearIssueCommentHistory {
   complete: boolean;
 }
 
+export type LinearAgentActivityType =
+  | "thought"
+  | "elicitation"
+  | "action"
+  | "response"
+  | "prompt"
+  | "error";
+
+export interface LinearAgentActivity {
+  id: string;
+  type: LinearAgentActivityType;
+  body: string;
+  createdAt: string;
+  author: { id: string; name?: string } | null;
+}
+
+export interface LinearAgentActivityHistory {
+  activities: LinearAgentActivity[];
+  complete: boolean;
+}
+
+export interface LinearAgentActivityContent {
+  type: "thought" | "response" | "error";
+  body: string;
+}
+
 export interface LinearApiClient {
   readIssue(input: {
     linearOrganizationId: string;
@@ -147,10 +223,21 @@ export interface LinearApiClient {
     issueId: string;
     beforeCreatedAt: string;
   }): Promise<LinearIssueCommentHistory>;
+  readAgentSessionActivities(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    beforeCreatedAt: string;
+  }): Promise<LinearAgentActivityHistory>;
   createComment(input: {
     linearOrganizationId: string;
     issueId: string;
     body: string;
+  }): Promise<void>;
+  createAgentActivity(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    content: LinearAgentActivityContent;
+    ephemeral?: boolean;
   }): Promise<void>;
 }
 
@@ -389,6 +476,55 @@ export function createLinearApiClient(options: {
         complete: !result.data.comments.pageInfo.hasPreviousPage,
       };
     },
+    async readAgentSessionActivities(input) {
+      const result = AgentActivityHistoryResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `query PaseoAgentSessionActivityHistory(
+            $agentSessionId: String!
+            $before: DateTime!
+          ) {
+            agentSession(id: $agentSessionId) {
+              activities(
+                last: ${LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT}
+                orderBy: createdAt
+                filter: { createdAt: { lt: $before } }
+              ) {
+                nodes {
+                  id createdAt user { id name }
+                  content {
+                    __typename
+                    ... on AgentActivityThoughtContent { type body }
+                    ... on AgentActivityElicitationContent { type body }
+                    ... on AgentActivityErrorContent { type body }
+                    ... on AgentActivityPromptContent { type body }
+                    ... on AgentActivityResponseContent { type body }
+                    ... on AgentActivityActionContent { type action parameter result }
+                  }
+                }
+                pageInfo { hasPreviousPage }
+              }
+            }
+          }`,
+          variables: {
+            agentSessionId: input.agentSessionId,
+            before: input.beforeCreatedAt,
+          },
+        }),
+      );
+      const activities = result.data.agentSession.activities.nodes
+        .map((activity) => ({
+          id: activity.id,
+          type: activity.content.type,
+          body: agentActivityBody(activity.content),
+          createdAt: activity.createdAt,
+          author: { id: activity.user.id, name: activity.user.name },
+        }))
+        .sort(compareLinearActivityOrder);
+      return {
+        activities,
+        complete: !result.data.agentSession.activities.pageInfo.hasPreviousPage,
+      };
+    },
     async createComment(input) {
       const result = CommentResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
@@ -400,6 +536,31 @@ export function createLinearApiClient(options: {
       );
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
     },
+    async createAgentActivity(input) {
+      const result = AgentActivityResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `mutation PaseoAgentActivity(
+            $agentSessionId: String!
+            $content: JSONObject!
+            $ephemeral: Boolean
+          ) {
+            agentActivityCreate(input: {
+              agentSessionId: $agentSessionId
+              content: $content
+              ephemeral: $ephemeral
+            }) { success }
+          }`,
+          variables: {
+            agentSessionId: input.agentSessionId,
+            content: input.content,
+            ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }),
+          },
+        }),
+      );
+      if (!result.data.agentActivityCreate.success) {
+        throw new Error("Linear agent activity was not accepted");
+      }
+    },
   };
 }
 
@@ -409,6 +570,26 @@ function compareLinearCommentOrder(
 ): number {
   const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
   return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
+}
+
+function compareLinearActivityOrder(
+  left: Pick<LinearAgentActivity, "createdAt" | "id">,
+  right: Pick<LinearAgentActivity, "createdAt" | "id">,
+): number {
+  const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
+}
+
+function agentActivityBody(
+  content:
+    | z.infer<typeof AgentActivityBodyContentSchema>
+    | z.infer<typeof AgentActivityActionContentSchema>,
+): string {
+  if (content.type !== "action") return content.body;
+  const invocation = `${content.action}: ${content.parameter}`;
+  return content.result === undefined || content.result === null || content.result.length === 0
+    ? invocation
+    : `${invocation}\n\n${content.result}`;
 }
 
 async function exchangeToken(
@@ -456,7 +637,7 @@ async function readViewer(request: typeof fetch, accessToken: string) {
 async function graphql(
   request: typeof fetch,
   accessToken: string,
-  payload: { query: string; variables: Record<string, string> },
+  payload: { query: string; variables: Record<string, unknown> },
 ): Promise<unknown> {
   const response = await request("https://api.linear.app/graphql", {
     method: "POST",
