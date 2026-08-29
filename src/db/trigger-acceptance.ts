@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
@@ -30,27 +30,35 @@ export class ProviderEventAcceptanceRepository {
   ) {}
 
   acceptGitHub(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("github", input.installationId, input.repositoryId, input);
+    return this.acceptProvider("github", input.installationId, [input.repositoryId], input);
   }
 
   acceptDiscord(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("discord", input.guildId, input.guildId, input);
+    return this.acceptProvider("discord", input.guildId, [input.guildId], input);
   }
 
   acceptSlack(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("slack", input.teamId, input.teamId, input);
+    return this.acceptProvider("slack", input.teamId, [input.teamId], input);
   }
 
   acceptLinear(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
+    return this.acceptProvider(
+      "linear",
+      input.linearOrganizationId,
+      [input.projectId, input.teamId],
+      input,
+    );
   }
 
   private async acceptProvider(
     provider: "github" | "slack" | "discord" | "linear",
     externalId: number | string,
-    resourceId: number | string | undefined,
+    candidateResourceIds: readonly (number | string | undefined)[],
     input: ProviderEventEvidence,
   ): Promise<ProviderEventAcceptance> {
+    const resourceIds = [
+      ...new Set(candidateResourceIds.flatMap((id) => (id === undefined ? [] : [String(id)]))),
+    ];
     return this.database.transaction(async (transaction) => {
       const connection = await findConnection(transaction, provider, externalId);
       if (connection === undefined) {
@@ -70,7 +78,7 @@ export class ProviderEventAcceptanceRepository {
         organizationId: connection.organizationId,
         provider,
         connectionId: connection.id,
-        resourceId: resourceId === undefined ? null : String(resourceId),
+        resourceId: resourceIds[0] ?? null,
         input: dropReason === undefined ? input : { ...input, dropReason },
       });
       if (!receipt.inserted) {
@@ -109,10 +117,9 @@ export class ProviderEventAcceptanceRepository {
             eq(schema.projectTriggerRoutes.connectionId, connection.id),
             or(
               isNull(schema.projectTriggerRoutes.resourceId),
-              eq(
-                schema.projectTriggerRoutes.resourceId,
-                resourceId === undefined ? "" : String(resourceId),
-              ),
+              ...(resourceIds.length === 0
+                ? []
+                : [inArray(schema.projectTriggerRoutes.resourceId, resourceIds)]),
             ),
           ),
         );
