@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import {
+  hasRequiredLinearAgentSessionScopes,
+  linearConnectionRequiresReauthorization,
+} from "../providers/linear/client.js";
 import { launchedAgent } from "./mappers.js";
 import type {
   AgentExecutionRecord,
@@ -3524,7 +3527,11 @@ function linearDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "linear_unbound";
-  if (linearConnectionRequiresReauthorization(binding, input.receivedAt)) {
+  if (
+    linearConnectionRequiresReauthorization(binding, input.receivedAt) ||
+    (input.source === "linear.agent_session" &&
+      !hasRequiredLinearAgentSessionScopes(binding.scopes))
+  ) {
     return "configuration_unavailable";
   }
   return undefined;

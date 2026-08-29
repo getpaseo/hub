@@ -126,6 +126,24 @@ export function eventTeamId(event: NormalizedLinearEvent): string | undefined {
   return event.issue?.teamId ?? undefined;
 }
 
+/** Distinguish a complete projectless event from a compact event that still needs hydration. */
+export function hasExplicitNullLinearProject(payload: unknown, eventName?: string | null): boolean {
+  if (!isRecord(payload)) return false;
+  let issue: Record<string, unknown> | undefined;
+  if (isAgentSessionEvent(payload, eventName)) {
+    issue = asRecord(asRecord(payload["agentSession"])?.["issue"]);
+  } else {
+    const envelope = readEnvelope(payload, eventName);
+    if (envelope === undefined) return false;
+    issue = envelope.kind === "issue" ? envelope.data : asRecord(envelope.data["issue"]);
+  }
+  return (
+    issue !== undefined &&
+    ((hasOwn(issue, "projectId") && issue["projectId"] === null) ||
+      (hasOwn(issue, "project") && issue["project"] === null))
+  );
+}
+
 interface LinearEnvelope {
   kind: "issue" | "comment";
   action: "create" | "update" | "remove";
