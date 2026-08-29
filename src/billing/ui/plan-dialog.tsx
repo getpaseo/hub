@@ -5,13 +5,7 @@ import { Check, Sparkles } from "lucide-react";
 import { Alert, AlertDescription } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "../../components/ui/dialog.js";
+import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog.js";
 import { cn } from "../../lib/utils.js";
 import type { BillingPlanPriceInterval } from "../../db/types.js";
 import type { PublicBillingPlan } from "../../server/runtime.js";
@@ -21,17 +15,19 @@ import {
   offeredIntervals,
   planAction,
   planPrice,
-  recommendedPlanSlug,
-  trialFootnote,
   TRIAL_DAYS,
 } from "./presentation.js";
 
 type CheckoutResult = Awaited<ReturnType<typeof billingCheckout>>;
 
 /**
- * The plan picker. One modal, three bands: what the offer is, which interval to price it at, and
- * the plans themselves. The grid and the modal width are both driven by how many plans the
- * catalog publishes, so two plans read as a pair rather than two thirds of a three-column layout.
+ * The plan picker. It shows the offer and nothing else: the trial badge when one is available,
+ * then a card per plan, then the action. There is no heading, no framing sentence, and no
+ * interval control unless the catalog actually prices more than one interval — a customer who
+ * has one thing to accept should not have to read past anything to accept it.
+ *
+ * The grid and the modal width are driven by how many plans the catalog publishes, so a future
+ * second product lays out as a pair without a redesign.
  */
 export function PlanDialog({
   plans,
@@ -67,70 +63,65 @@ export function PlanDialog({
     (planSlug: string) => checkout.mutate({ data: { organizationSlug: slug, planSlug, interval } }),
     [checkout, interval, slug],
   );
-  const recommended = recommendedPlanSlug(plans, interval, currentPlanSlug);
 
   return (
     <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent
+        aria-describedby={undefined}
         className={cn(
           "max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0",
           dialogWidth(plans.length),
         )}
       >
-        <div className="grid justify-items-center gap-5 px-6 pt-6 pb-5">
-          {/* The badge reads the brand as text, so it uses `text-link`, not `text-primary` — the
-              fill colour only reaches 2.7:1 against this surface. See the palette note in
-              styles.css. */}
-          {trialEligible && (
-            <Badge variant="secondary" className="gap-1.5 px-3 py-1 text-link dark:bg-primary/15">
-              <Sparkles aria-hidden="true" className="size-3" />
-              {TRIAL_DAYS} days free · No card required
-            </Badge>
+        {/* Radix requires a title for the dialog to be announced. There is nothing on this
+            surface a sighted customer needs a heading for, so it is read, not shown. */}
+        <DialogTitle className="sr-only">Plan</DialogTitle>
+        <div className="grid gap-5 p-6">
+          {(trialEligible || intervals.length > 1) && (
+            <div className="grid justify-items-center gap-5">
+              {/* The badge reads the brand as text, so it uses `text-link`, not `text-primary` —
+                  the fill colour only reaches 2.7:1 against this surface. See the palette note in
+                  styles.css. */}
+              {trialEligible && (
+                <Badge
+                  variant="secondary"
+                  className="gap-1.5 px-3 py-1 text-link dark:bg-primary/15"
+                >
+                  <Sparkles aria-hidden="true" className="size-3" />
+                  {TRIAL_DAYS} days free · No card required
+                </Badge>
+              )}
+              {intervals.length > 1 && (
+                <IntervalSwitch intervals={intervals} value={interval} onSelect={setInterval} />
+              )}
+            </div>
           )}
-          <DialogHeader className="items-center gap-1.5 text-center">
-            <DialogTitle className="text-lg">Choose your plan</DialogTitle>
-            <DialogDescription className="max-w-md text-balance">
-              {trialEligible
-                ? "Nothing is charged until the trial ends, and you can add a card later."
-                : "Stripe handles payment and invoices. Cancel at any time."}
-            </DialogDescription>
-          </DialogHeader>
-          {intervals.length > 1 && (
-            <IntervalSwitch intervals={intervals} value={interval} onSelect={setInterval} />
-          )}
-        </div>
-        <div className={cn("grid gap-3 px-6 pb-6", planColumns(plans.length))}>
-          {plans.map((plan) => (
-            <PlanCard
-              key={plan.slug}
-              plan={plan}
-              interval={interval}
-              isCurrent={plan.slug === currentPlanSlug}
-              isRecommended={plan.slug === recommended}
-              // A recommendation only means something against alternatives; the badge and the
-              // ring would be decoration on a catalog that publishes one plan.
-              isHighlighted={plan.slug === recommended && plans.length > 1}
-              trialEligible={trialEligible}
-              pending={checkout.isPending}
-              onChoose={choose}
-            />
-          ))}
-        </div>
-        {error !== undefined && (
-          <div className="px-6 pb-6">
+          <div className={cn("grid gap-3", planColumns(plans.length))}>
+            {plans.map((plan) => (
+              <PlanCard
+                key={plan.slug}
+                plan={plan}
+                interval={interval}
+                isCurrent={plan.slug === currentPlanSlug}
+                trialEligible={trialEligible}
+                pending={checkout.isPending}
+                onChoose={choose}
+              />
+            ))}
+          </div>
+          {error !== undefined && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
-          </div>
-        )}
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );
 }
 
-/** A centred segmented control. Deliberately content-width: it is a choice between two words,
- * not a page-wide toolbar. The selected chip is a raised surface, so the one green thing in the
- * dialog stays the action the customer is here to take. */
+/** A centred segmented control, rendered only when the catalog prices more than one interval.
+ * Deliberately content-width: it is a choice between two words, not a page-wide toolbar. */
 function IntervalSwitch({
   intervals,
   value,
@@ -189,8 +180,6 @@ function PlanCard({
   plan,
   interval,
   isCurrent,
-  isRecommended,
-  isHighlighted,
   trialEligible,
   pending,
   onChoose,
@@ -198,30 +187,20 @@ function PlanCard({
   plan: PublicBillingPlan;
   interval: BillingPlanPriceInterval;
   isCurrent: boolean;
-  /** The plan the picker leads with — it carries the filled call to action. */
-  isRecommended: boolean;
-  /** Whether to say so visually, which only reads as a recommendation next to another plan. */
-  isHighlighted: boolean;
   trialEligible: boolean;
   pending: boolean;
   onChoose: (planSlug: string) => void;
 }) {
   const price = plan.prices[interval];
   const action = planAction({ planName: plan.name, price, isCurrent, trialEligible });
-  const footnote = trialFootnote(price, interval, trialEligible);
   const { amount, unit } = planPrice(price, interval);
   const choose = useCallback(() => onChoose(plan.slug), [onChoose, plan.slug]);
 
   return (
-    <div
-      className={cn(
-        "flex flex-col rounded-xl border bg-card p-5 text-card-foreground",
-        isHighlighted && "border-primary/50 bg-primary/[0.04] ring-1 ring-primary/25",
-      )}
-    >
+    <div className="flex flex-col rounded-xl border bg-card p-5 text-card-foreground">
       <div className="flex min-h-6 items-start justify-between gap-2">
         <h3 className="text-sm font-medium">{plan.name}</h3>
-        <PlanBadge isCurrent={isCurrent} isRecommended={isHighlighted} />
+        {isCurrent && <Badge variant="secondary">Current</Badge>}
       </div>
       <p className="mt-3 text-3xl leading-none font-semibold tracking-tight">{amount}</p>
       <p className="mt-1.5 text-xs text-muted-foreground">{unit}</p>
@@ -240,32 +219,17 @@ function PlanCard({
           </li>
         ))}
       </ul>
-      {/* The footnote sits above the button so every column's button shares one bottom edge,
-          however much a plan has to explain about what happens after the trial. */}
-      <div className="mt-6 grid gap-2">
-        {footnote !== null && (
-          <p className="text-center text-xs text-balance text-muted-foreground">{footnote}</p>
-        )}
-        <Button
-          type="button"
-          variant={isRecommended ? "default" : "outline"}
-          aria-label={action.name}
-          className="w-full"
-          disabled={action.disabled || pending}
-          onClick={choose}
-        >
-          {action.label}
-        </Button>
-      </div>
+      <Button
+        type="button"
+        aria-label={action.name}
+        className="mt-6 w-full"
+        disabled={action.disabled || pending}
+        onClick={choose}
+      >
+        {action.label}
+      </Button>
     </div>
   );
-}
-
-/** At most one badge per plan, and being the current plan outranks being recommended. */
-function PlanBadge({ isCurrent, isRecommended }: { isCurrent: boolean; isRecommended: boolean }) {
-  if (isCurrent) return <Badge variant="secondary">Current</Badge>;
-  if (isRecommended) return <Badge>Recommended</Badge>;
-  return null;
 }
 
 /** Two plans read as a pair, three as a row. More than three wrap rather than shrink to slivers. */

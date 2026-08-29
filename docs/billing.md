@@ -88,9 +88,14 @@ Inside `src/billing/ui/`, `panel.tsx` owns the page, `plan-dialog.tsx` owns the 
 `presentation.tsx` owns every user-facing string either of them renders. None of them knows which
 plans are for sale — that is settled before the view, in `public-catalog.ts`. Copy lives there and
 nowhere else because it is the only part of the surface worth unit-testing: a button label has to
-stay short enough for a narrow plan column while its accessible name still identifies the plan,
-and a catalog published monthly-only has to collapse the interval switch rather than price a
-column at "—".
+stay short enough for a narrow plan column while its accessible name still identifies the plan.
+
+Both surfaces render the offer and nothing around it. The picker has no heading (its dialog title
+is read, not shown), no framing sentence, and no interval switch unless the catalog prices more
+than one interval. The page offers "Change plan" only when there is more than one public plan to
+change to; with one offer, the way out is Manage billing. Everything here is driven off the
+catalog, so a second product or an annual price restores the controls without a redesign — but
+nothing that has no meaning today is rendered today.
 
 The first subscribe starts a Stripe-owned 14-day trial: Checkout uses
 `payment_method_collection=if_required` and `trial_settings.end_behavior.missing_payment_method=cancel`,

@@ -95,33 +95,7 @@ export function planAction(input: {
       disabled: false,
     };
   }
-  return { label: `Choose ${input.planName}`, name: `Choose ${input.planName}`, disabled: false };
-}
-
-/** The line under a trial button that spells out what happens when the free days run out. Null
- * when there is no trial to explain, so the free plan's column stays quiet. */
-export function trialFootnote(
-  price: PublicBillingPlanPrice | null,
-  interval: BillingPlanPriceInterval,
-  trialEligible: boolean,
-): string | null {
-  if (!trialEligible || !isPaidPrice(price) || price === null) return null;
-  return `${TRIAL_DAYS} days free, then ${formatAmount(price)} per user each ${INTERVAL_WORDS[interval].unit}.`;
-}
-
-/**
- * The plan the picker leans on: the first paid plan the organization is not already on. Catalog
- * order is the author's order, so "first" is the cheapest entry point they published.
- */
-export function recommendedPlanSlug(
-  plans: readonly PublicBillingPlan[],
-  interval: BillingPlanPriceInterval,
-  currentPlanSlug: string | null,
-): string | null {
-  const recommended = plans.find(
-    (plan) => plan.slug !== currentPlanSlug && isPaidPrice(plan.prices[interval]),
-  );
-  return recommended?.slug ?? null;
+  return { label: "Subscribe", name: `Subscribe to ${input.planName}`, disabled: false };
 }
 
 export interface SubscriptionSummary {
@@ -131,8 +105,9 @@ export interface SubscriptionSummary {
   /** The Stripe status pill. Null when no live subscription exists, which is the normal state
    * for a free organization and for one whose subscription was cancelled. */
   status: { tone: StatusTone; label: string } | null;
-  /** One sentence naming the next thing that will happen to this subscription. */
-  detail: string;
+  /** One sentence naming the next thing that will happen to this subscription, or null when
+   * there is no subscription and so nothing to say about one. */
+  detail: string | null;
 }
 
 export function subscriptionSummary(
@@ -152,16 +127,14 @@ export function subscriptionSummary(
  * for sale at zero, and the entitlement floor it sits on is enforcement, not an offer. */
 export const NO_SUBSCRIPTION = "No subscription";
 
-function subscriptionDetail(subscription: BillingOverviewView["subscription"]): string {
+function subscriptionDetail(subscription: BillingOverviewView["subscription"]): string | null {
+  // No subscription, nothing to date: the headline and the button already say everything, so the
+  // card stays silent rather than filling the gap with a pitch.
+  if (subscription.planName === null) return null;
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
     return `Cancels on ${formatDate(subscription.currentPeriodEnd)}.`;
   }
   if (subscription.trialEnd !== null) return `Trial ends ${formatDate(subscription.trialEnd)}.`;
-  if (subscription.planName === null) {
-    return subscription.trialEligible
-      ? `Start a ${TRIAL_DAYS}-day free trial — no card required.`
-      : "Subscribe to run workflows on hosted Hub.";
-  }
   if (subscription.currentPeriodEnd !== null) {
     return `Renews on ${formatDate(subscription.currentPeriodEnd)}.`;
   }

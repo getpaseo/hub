@@ -12,9 +12,7 @@ import {
   offeredIntervals,
   planAction,
   planPrice,
-  recommendedPlanSlug,
   subscriptionSummary,
-  trialFootnote,
 } from "./presentation.js";
 
 const euros = (unitAmount: number) => ({ unitAmount, currency: "eur" });
@@ -86,23 +84,28 @@ it("keeps the plan name in the trial button's accessible name while the visible 
 });
 
 it("offers a former subscriber ordinary checkout instead of a second trial", () => {
-  assert.deepEqual(
-    planAction({
-      planName: "Paseo Hub",
-      price: euros(1500),
-      isCurrent: false,
-      trialEligible: false,
-    }),
-    { label: "Choose Paseo Hub", name: "Choose Paseo Hub", disabled: false },
+  const action = planAction({
+    planName: "Paseo Hub",
+    price: euros(1500),
+    isCurrent: false,
+    trialEligible: false,
+  });
+  assert.deepEqual(action, {
+    label: "Subscribe",
+    name: "Subscribe to Paseo Hub",
+    disabled: false,
+  });
+  assert.ok(
+    action.name.includes(action.label),
+    "the accessible name must contain the visible label",
   );
 });
 
-it("never offers a trial on the free tier, even when the organization is trial eligible", () => {
+it("never offers a trial on a zero-priced plan, even when the organization is trial eligible", () => {
   assert.deepEqual(
     planAction({ planName: "Free", price: euros(0), isCurrent: false, trialEligible: true }),
-    { label: "Choose Free", name: "Choose Free", disabled: false },
+    { label: "Subscribe", name: "Subscribe to Free", disabled: false },
   );
-  assert.equal(trialFootnote(euros(0), "monthly", true), null);
 });
 
 it("disables the plan the organization is already on and names it", () => {
@@ -120,29 +123,6 @@ it("disables a plan the catalog does not price at the selected interval", () => 
     planAction({ planName: "Paseo Hub", price: null, isCurrent: false, trialEligible: true }),
     { label: "Not available", name: "Not available: Paseo Hub", disabled: true },
   );
-});
-
-it("spells out what the customer pays when the free days run out", () => {
-  assert.equal(
-    trialFootnote(euros(1500), "monthly", true),
-    "14 days free, then €15 per user each month.",
-  );
-  assert.equal(
-    trialFootnote(euros(15000), "annual", true),
-    "14 days free, then €150 per user each year.",
-  );
-  assert.equal(trialFootnote(euros(1500), "monthly", false), null);
-});
-
-it("recommends the first paid plan the organization is not already on", () => {
-  const plans = [
-    plan("free", "Free", { monthly: euros(0) }),
-    plan("starter", "Starter", { monthly: euros(1500) }),
-    plan("scale", "Scale", { monthly: euros(4900) }),
-  ];
-  assert.equal(recommendedPlanSlug(plans, "monthly", null), "starter");
-  assert.equal(recommendedPlanSlug(plans, "monthly", "starter"), "scale");
-  assert.equal(recommendedPlanSlug(plans.slice(0, 1), "monthly", null), null);
 });
 
 it("hides the interval switch for a catalog that only charges monthly", () => {
@@ -164,20 +144,14 @@ it("labels intervals the way the picker shows them", () => {
   assert.equal(intervalLabel("annual"), "Annual");
 });
 
-it("offers the trial to an organization that has never subscribed", () => {
-  assert.deepEqual(subscriptionSummary(subscription({ trialEligible: true })), {
-    planName: null,
-    status: null,
-    detail: "Start a 14-day free trial — no card required.",
-  });
-});
-
-it("sells the plan, not a second trial, to a former subscriber", () => {
-  assert.deepEqual(subscriptionSummary(subscription({ trialEligible: false })), {
-    planName: null,
-    status: null,
-    detail: "Subscribe to run workflows on hosted Hub.",
-  });
+it("says nothing beyond the fact when there is no subscription to describe", () => {
+  for (const trialEligible of [true, false]) {
+    assert.deepEqual(subscriptionSummary(subscription({ trialEligible })), {
+      planName: null,
+      status: null,
+      detail: null,
+    });
+  }
 });
 
 it("leads with the trial end date while a trial is running", () => {

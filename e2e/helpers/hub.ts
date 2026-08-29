@@ -3959,10 +3959,8 @@ class HubUser {
 
   async openPlanDialog(): Promise<void> {
     await this.openOrganizationSection("Billing");
-    await this.page.getByRole("button", { name: /^(Choose a plan|Change plan)$/u }).click();
-    await expect(
-      this.page.getByRole("dialog").getByRole("heading", { name: "Choose your plan" }),
-    ).toBeVisible();
+    await this.page.getByRole("button", { name: /^(Subscribe|Change plan)$/u }).click();
+    await expect(this.page.getByRole("dialog")).toBeVisible();
   }
 
   async choosePlan(plan: string): Promise<void> {
@@ -3970,7 +3968,9 @@ class HubUser {
     // the short "Start free trial", so a plan is always addressable by name.
     await this.page
       .getByRole("dialog")
-      .getByRole("button", { name: new RegExp(`^(Start free trial with|Choose) ${plan}$`, "u") })
+      .getByRole("button", {
+        name: new RegExp(`^(Start free trial with|Subscribe to) ${plan}$`, "u"),
+      })
       .click();
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
@@ -3993,43 +3993,59 @@ class HubUser {
   }
 
   /**
-   * The billing page for an organization with nothing to bill. It is a paywall: it names no plan,
-   * and it never dresses the zero-execution enforcement floor up as a tier the customer is on.
+   * The billing page for an organization with nothing to bill: the fact, and the one thing to do
+   * about it. Nothing dresses the zero-execution enforcement floor up as a tier the customer is
+   * on, and nothing argues for the plan — that is what the picker is for.
    */
   async expectNoSubscription(): Promise<void> {
     await this.openOrganizationSection("Billing");
     await this.page.reload();
     const plan = this.planSection();
     await expect(plan.getByText("No subscription", { exact: true })).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Subscribe", exact: true })).toBeVisible();
     await expect(plan).not.toContainText("0 executions");
     await expect(plan.getByText("Free", { exact: true })).toHaveCount(0);
     await expect(plan.getByRole("button", { name: "Manage billing" })).toHaveCount(0);
-    await expect(plan.getByRole("button", { name: "Choose a plan" })).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Choose a plan" })).toHaveCount(0);
+    await expect(plan).not.toContainText("run workflows");
     await expectAccessible(this.page);
   }
 
+  /** The picker offering the cardless trial, exactly: a badge, the offer, and the action. */
   async expectCardlessTrialOffer(): Promise<void> {
     await this.openPlanDialog();
     const dialog = this.page.getByRole("dialog");
     await expect(dialog).toContainText("14 days free · No card required");
     await expect(
       dialog.getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` }),
-    ).toBeVisible();
-    // The plan spells out what happens when the free days run out, at the price Stripe carries.
-    await expect(dialog).toContainText("14 days free, then €15 per user each month.");
+    ).toHaveText("Start free trial");
     await this.expectPickerShowsOnlyTheOffer(dialog);
+    // Nothing frames or hedges the offer: no heading, no sales sentence, no post-trial footnote.
+    await expect(dialog).not.toContainText("14 days free, then");
+    await expect(dialog).not.toContainText("Nothing is charged");
     await expectAccessible(this.page);
   }
 
   /**
-   * The picker only ever shows what Hub sells. The internal free entitlement record is in the same
-   * Stripe catalog, so its absence here is the visible half of the public-catalog boundary; the
-   * interval switch is absent because the catalog prices one interval.
+   * The picker only ever shows what Hub sells, and only what it takes to accept it. The internal
+   * free entitlement record is in the same Stripe catalog, so its absence here is the visible half
+   * of the public-catalog boundary. The interval switch is absent because the catalog prices one
+   * interval, and there is no visible heading — the dialog's accessible name is enough.
    */
   private async expectPickerShowsOnlyTheOffer(dialog: Locator): Promise<void> {
     await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([HOSTED_PLAN_NAME]);
+    await expect(dialog).toContainText("€15");
+    await expect(dialog).toContainText("per user / month");
     await expect(dialog).not.toContainText("0 executions");
+    await expect(dialog).not.toContainText("Choose your plan");
+    await expect(dialog).not.toContainText("Recommended");
     await expect(dialog.getByRole("group", { name: "Billing interval" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /^(Monthly|Annual)$/u })).toHaveCount(0);
+    // A dialog still has to announce itself, so its title exists for assistive technology and
+    // takes no space on screen.
+    const title = dialog.getByRole("heading", { level: 2 });
+    await expect(title).toHaveCount(1);
+    expect((await title.boundingBox())?.height ?? 0).toBeLessThanOrEqual(1);
   }
 
   /** Scoped to the Plan section: a plan name could otherwise collide with a settings tab. */
@@ -4047,8 +4063,17 @@ class HubUser {
     await expect(plan.getByText("Trialing", { exact: true })).toBeVisible();
     await expect(plan.getByText(/^Trial ends /u)).toBeVisible();
     await expect(plan.getByRole("button", { name: "Manage billing" })).toBeVisible();
-    // The card states what the trial actually entitles the organization to, not just its dates.
-    await expect(plan.getByRole("heading", { name: "What's included" })).toBeVisible();
+    // The card states what the trial entitles the organization to, unlabelled — the plan name
+    // above it is the label.
+    await expect(plan.getByRole("listitem")).toHaveText([
+      "Unlimited daemons",
+      "GitHub, Linear, Slack, and Discord triggers",
+      "Versioned workflows and activity",
+      "Bring your own agents and inference",
+    ]);
+    // One public offer means nothing to change to, so the picker has no entry point here.
+    await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
+    await expect(plan).not.toContainText("Stripe billing portal");
     await expectAccessible(this.page);
   }
 
@@ -4062,7 +4087,9 @@ class HubUser {
     const dialog = this.page.getByRole("dialog");
     await expect(dialog).not.toContainText("No card required");
     await expect(dialog.getByRole("button", { name: /^Start free trial/u })).toHaveCount(0);
-    await expect(dialog.getByRole("button", { name: `Choose ${HOSTED_PLAN_NAME}` })).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: `Subscribe to ${HOSTED_PLAN_NAME}` }),
+    ).toHaveText("Subscribe");
     await this.expectPickerShowsOnlyTheOffer(dialog);
     await expectAccessible(this.page);
     await this.page.keyboard.press("Escape");

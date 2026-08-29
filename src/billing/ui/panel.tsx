@@ -69,9 +69,8 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
         <div className="overflow-hidden rounded-xl border bg-card text-card-foreground">
           <PlanIdentity
             summary={summary}
-            canManage={canManage}
-            hasPlan={subscription.planSlug !== null}
-            onChangePlan={openDialog}
+            action={planPickerAction({ canManage, subscription, plans })}
+            onOpenPicker={openDialog}
           />
           {currentPlan !== undefined && <PlanIncludes plan={currentPlan} />}
           {canManage && subscription.manageable && <PortalBand slug={slug} />}
@@ -90,16 +89,34 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
   );
 }
 
+/**
+ * The button that opens the picker, or null when opening it would offer nothing. An organization
+ * with no subscription is offered the one thing there is to do; a subscribed one is offered a
+ * change only when the catalog publishes something to change to. Manage billing, in the band
+ * below, is the way to leave.
+ */
+function planPickerAction({
+  canManage,
+  subscription,
+  plans,
+}: {
+  canManage: boolean;
+  subscription: BillingOverviewView["subscription"];
+  plans: readonly PublicBillingPlan[];
+}): string | null {
+  if (!canManage) return null;
+  if (subscription.planSlug === null) return "Subscribe";
+  return plans.length > 1 ? "Change plan" : null;
+}
+
 function PlanIdentity({
   summary,
-  canManage,
-  hasPlan,
-  onChangePlan,
+  action,
+  onOpenPicker,
 }: {
   summary: SubscriptionSummary;
-  canManage: boolean;
-  hasPlan: boolean;
-  onChangePlan: () => void;
+  action: string | null;
+  onOpenPicker: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-4 p-5 sm:p-6">
@@ -113,11 +130,13 @@ function PlanIdentity({
         <p className="text-2xl leading-tight font-semibold tracking-tight">
           {summary.planName ?? NO_SUBSCRIPTION}
         </p>
-        <p className="text-sm text-muted-foreground">{summary.detail}</p>
+        {summary.detail !== null && (
+          <p className="text-sm text-muted-foreground">{summary.detail}</p>
+        )}
       </div>
-      {canManage && (
-        <Button type="button" onClick={onChangePlan}>
-          {hasPlan ? "Change plan" : "Choose a plan"}
+      {action !== null && (
+        <Button type="button" onClick={onOpenPicker}>
+          {action}
         </Button>
       )}
     </div>
@@ -128,10 +147,7 @@ function PlanIdentity({
 function PlanIncludes({ plan }: { plan: PublicBillingPlan }) {
   if (plan.marketingFeatures.length === 0) return null;
   return (
-    <div className="grid gap-3 border-t bg-muted/20 p-5 sm:p-6">
-      <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        What's included
-      </h3>
+    <div className="border-t bg-muted/20 p-5 sm:p-6">
       <ul className="grid gap-2 text-sm sm:grid-cols-2 sm:gap-x-6">
         {plan.marketingFeatures.map((feature) => (
           <li key={feature} className="flex items-start gap-2">
@@ -157,15 +173,10 @@ function PortalBand({ slug }: { slug: string }) {
   const start = useCallback(() => open.mutate({ data: { organizationSlug: slug } }), [open, slug]);
 
   return (
-    <div className="grid gap-3 border-t p-5 sm:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
-          Payment methods, invoices, and cancellation live in the Stripe billing portal.
-        </p>
-        <Button type="button" variant="outline" size="sm" onClick={start} disabled={open.isPending}>
-          Manage billing
-        </Button>
-      </div>
+    <div className="grid justify-items-start gap-3 border-t p-5 sm:p-6">
+      <Button type="button" variant="outline" size="sm" onClick={start} disabled={open.isPending}>
+        Manage billing
+      </Button>
       {error !== undefined && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
