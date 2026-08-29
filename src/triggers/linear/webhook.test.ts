@@ -106,6 +106,36 @@ describe("Linear webhook", () => {
     );
   });
 
+  it("routes an explicitly projectless team event without issue hydration", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    let issueReads = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      canHydrateIssue: async () => true,
+      resolveIssue: async () => {
+        issueReads += 1;
+        throw new Error("complete team event must not hydrate");
+      },
+      accept: async (input) => {
+        accepted.push(input);
+        return { status: "duplicate", receiptId: input.deliveryId };
+      },
+    });
+    const envelope = issueEnvelope();
+
+    const response = await endpoint.handle(
+      request({ ...envelope, data: { ...envelope.data, projectId: null } }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(issueReads, 0);
+    assert.equal(accepted[0]?.projectId, undefined);
+    assert.equal(accepted[0]?.teamId, "team-1");
+  });
+
   it("hydrates a comment issue before project-scoped routing", async () => {
     const accepted: Array<
       Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]

@@ -245,6 +245,32 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     database.findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId
+        ? { ...linear, scopes: ["read", "comments:create"] }
+        : undefined;
+    const baselineAccepted = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-scope-entry",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAccepted.status, "accepted");
+    const baselineAgentSession = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-agent-session",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAgentSession.status, "dropped");
+    if (baselineAgentSession.status === "dropped") {
+      assert.equal(baselineAgentSession.reason, "configuration_unavailable");
+    }
+
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === linear.linearOrganizationId
         ? { ...linear, scopes: ["read"] }
         : undefined;
     const underScoped = await database.acceptLinearEvent({

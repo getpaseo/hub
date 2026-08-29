@@ -1,8 +1,11 @@
 import { z } from "zod";
 import type { Database, LinearConnectionRecord } from "../../db/types.js";
 
-/** The minimum authority required for issue triggers and Linear's native app-agent mode. */
-export const LINEAR_REQUIRED_SCOPES = [
+/** The original issue/comment trigger authority. `write` also satisfies comment creation. */
+export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
+
+/** Additional authority requested for Linear's optional native app-agent mode. */
+export const LINEAR_AGENT_SESSION_REQUIRED_SCOPES = [
   "read",
   "write",
   "app:assignable",
@@ -248,7 +251,12 @@ export interface LinearApiClient {
 
 export function hasRequiredLinearScopes(scopes: readonly string[]): boolean {
   const granted = new Set(scopes);
-  return LINEAR_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+  return granted.has("read") && (granted.has("comments:create") || granted.has("write"));
+}
+
+export function hasRequiredLinearAgentSessionScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return LINEAR_AGENT_SESSION_REQUIRED_SCOPES.every((scope) => granted.has(scope));
 }
 
 export function linearConnectionRequiresReauthorization(
@@ -291,7 +299,7 @@ export function createLinearConnectionClient(options: {
         client_id: options.clientId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: LINEAR_REQUIRED_SCOPES.join(","),
+        scope: LINEAR_AGENT_SESSION_REQUIRED_SCOPES.join(","),
         state,
         // Keep workflow results visibly attributable to the installed Paseo application instead
         // of impersonating the administrator who completed the connection.
@@ -318,7 +326,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes ?? [...LINEAR_REQUIRED_SCOPES],
+        scopes: token.scopes ?? [...LINEAR_AGENT_SESSION_REQUIRED_SCOPES],
       };
     },
     async refresh(refreshToken) {
