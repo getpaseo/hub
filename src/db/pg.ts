@@ -106,8 +106,8 @@ import type {
   BillingPlanRecord,
   BillingPlanPriceRecord,
   SyncBillingPlanInput,
-  OrganizationSubscriptionRecord,
-  ReconcileOrganizationSubscriptionInput,
+  OrganizationBillingCustomerRecord,
+  ReconcileOrganizationBillingInput,
 } from "./types.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
@@ -2690,37 +2690,24 @@ class PgDatabase implements Database {
     return plans.rows.map((row) => toBillingPlanRecord(row, pricesByPlan.get(row.id) ?? []));
   }
 
-  async reconcileOrganizationSubscription(
-    input: ReconcileOrganizationSubscriptionInput,
-  ): Promise<OrganizationSubscriptionRecord> {
+  async reconcileOrganizationBilling(
+    input: ReconcileOrganizationBillingInput,
+  ): Promise<OrganizationBillingCustomerRecord> {
     try {
       return await this.pool.transaction(async (client) => {
-        const rows = await client.query<OrganizationSubscriptionRow>(
-          `insert into organization_subscriptions
-           (organization_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
-            current_period_end, cancel_at_period_end, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, now())
+        const rows = await client.query<OrganizationBillingCustomerRow>(
+          `insert into organization_billing_customers
+           (organization_id, stripe_customer_id, updated_at)
+         values ($1, $2, now())
          on conflict (organization_id) do update
            set stripe_customer_id = excluded.stripe_customer_id,
-               stripe_subscription_id = excluded.stripe_subscription_id,
-               plan_id = excluded.plan_id,
-               status = excluded.status,
-               current_period_end = excluded.current_period_end,
-               cancel_at_period_end = excluded.cancel_at_period_end,
                updated_at = now()
          returning *`,
-          [
-            input.organizationId,
-            input.stripeCustomerId,
-            input.stripeSubscriptionId,
-            input.planId,
-            input.status,
-            input.currentPeriodEnd,
-            input.cancelAtPeriodEnd,
-          ],
+          [input.organizationId, input.stripeCustomerId],
         );
         const row = rows.rows[0];
-        if (row === undefined) throw new Error("organization subscription upsert returned no row");
+        if (row === undefined)
+          throw new Error("organization billing customer upsert returned no row");
         // Same transaction as the mirror upsert: the plan the org is billed on and the entitlements
         // it enforces can never diverge across a crash between the two writes.
         if (input.stamp !== undefined) {
@@ -2729,7 +2716,7 @@ class PgDatabase implements Database {
             ...input.stamp,
           });
         }
-        return toOrganizationSubscriptionRecord(row);
+        return toOrganizationBillingCustomerRecord(row);
       });
     } catch (error) {
       throw toDatabaseError(error);
@@ -2740,15 +2727,17 @@ class PgDatabase implements Database {
     return this.locks.withLock(key, fn);
   }
 
-  async getOrganizationSubscription(
+  async getOrganizationBillingCustomer(
     organizationId: string,
-  ): Promise<OrganizationSubscriptionRecord | undefined> {
-    const rows = await query<OrganizationSubscriptionRow>(
+  ): Promise<OrganizationBillingCustomerRecord | undefined> {
+    const rows = await query<OrganizationBillingCustomerRow>(
       this.pool,
-      `select * from organization_subscriptions where organization_id = $1`,
+      `select * from organization_billing_customers where organization_id = $1`,
       [organizationId],
     );
-    return rows.rows[0] === undefined ? undefined : toOrganizationSubscriptionRecord(rows.rows[0]);
+    return rows.rows[0] === undefined
+      ? undefined
+      : toOrganizationBillingCustomerRecord(rows.rows[0]);
   }
 
   async listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]> {
@@ -4256,7 +4245,7 @@ export interface OrganizationEntitlementsRow extends QueryRow {
  * that lands the same granted template and the same plan provenance is a no-op — no timestamp
  * bump, no duplicate audit row — which is what stops the webhook re-stamp ping-pong. jsonb
  * `is distinct from` compares granted structurally. Shared by `stampOrganizationEntitlements`
- * and `reconcileOrganizationSubscription` so the subscription mirror and the stamp commit
+ * and `reconcileOrganizationBilling` so the subscription mirror and the stamp commit
  * together.
  */
 async function stampEntitlementsWithinTransaction(
@@ -4431,28 +4420,18 @@ function toBillingPlanRecord(
   };
 }
 
-export interface OrganizationSubscriptionRow extends QueryRow {
+export interface OrganizationBillingCustomerRow extends QueryRow {
   organization_id: string;
   stripe_customer_id: string;
-  stripe_subscription_id: string;
-  plan_id: string | null;
-  status: string;
-  current_period_end: Date | null;
-  cancel_at_period_end: boolean;
   updated_at: Date;
 }
 
-function toOrganizationSubscriptionRecord(
-  row: OrganizationSubscriptionRow,
-): OrganizationSubscriptionRecord {
+function toOrganizationBillingCustomerRecord(
+  row: OrganizationBillingCustomerRow,
+): OrganizationBillingCustomerRecord {
   return {
     organizationId: row.organization_id,
     stripeCustomerId: row.stripe_customer_id,
-    stripeSubscriptionId: row.stripe_subscription_id,
-    planId: row.plan_id,
-    status: row.status,
-    currentPeriodEnd: row.current_period_end,
-    cancelAtPeriodEnd: row.cancel_at_period_end,
     updatedAt: row.updated_at,
   };
 }

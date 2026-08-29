@@ -307,7 +307,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 41,
+      drizzleMigrations: 42,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -487,6 +487,42 @@ describe("database migration application", () => {
         source_kind: "manual",
       },
     ]);
+  }, 120_000);
+
+  it("preserves Stripe customer identity while removing the subscription mirror", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "billing_customer_identity",
+      through: "0040_cultured_punisher",
+    });
+    await poolQuery(
+      url,
+      `insert into organization (id, name, slug)
+       values ('organization-billing', 'Billing organization', 'billing-organization');
+       insert into organization_subscriptions
+         (organization_id, stripe_customer_id, stripe_subscription_id, status)
+       values ('organization-billing', 'cus_durable', 'sub_retired', 'active')`,
+    );
+
+    const database = await createDatabase(url);
+    await database.close();
+
+    const customer = await poolQuery<{ organization_id: string; stripe_customer_id: string }>(
+      url,
+      `select organization_id, stripe_customer_id from organization_billing_customers`,
+    );
+    assert.deepEqual(customer.rows, [
+      { organization_id: "organization-billing", stripe_customer_id: "cus_durable" },
+    ]);
+    assert.deepEqual(
+      (
+        await poolQuery<{ subscriptions: string | null }>(
+          url,
+          `select to_regclass('public.organization_subscriptions')::text as subscriptions`,
+        )
+      ).rows,
+      [{ subscriptions: null }],
+    );
   }, 120_000);
 
   it("migrates an empty database and reruns as a no-op", async () => {

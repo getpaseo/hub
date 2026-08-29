@@ -1,10 +1,8 @@
-import { z } from "zod";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
-import { selectActivePlanPrice, type BillingRuntime } from "./billing/index.js";
-import { reportFailure } from "./failures/index.js";
+import type { BillingRuntime } from "./billing/index.js";
 import type { ConnectionResolver } from "./config/connections.js";
-import type { BillingPlanPriceInterval, BillingPlanRecord, Database } from "./db/types.js";
+import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import { capabilitiesFor } from "./auth/organization-policy.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
@@ -24,7 +22,6 @@ import {
   type ApplicationRuntime,
   type BillingCheckoutInput,
   type BillingOverviewView,
-  type PublicBillingPlan,
 } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
@@ -250,8 +247,7 @@ async function createOwnedApplicationRuntime(
       // catalog endpoint does not exist rather than serving an empty list. Null tells the route
       // to answer 404 — see the plan's "no config means billing routes are never registered".
       if (options.billing === null || options.database === null) return null;
-      const plans = await options.database.listBillingPlans();
-      return plans.filter((plan) => plan.active).map(publicBillingPlan);
+      return options.billing.publicCatalog();
     },
     billingConfigured: () => options.billing !== null,
     billingOverview: async (request, organizationSlug): Promise<BillingOverviewView> => {
@@ -261,7 +257,7 @@ async function createOwnedApplicationRuntime(
       });
       const [subscription, plans] = await Promise.all([
         billing.subscriptionSnapshot(tenant.organization.id),
-        database.listBillingPlans(),
+        billing.publicCatalog(),
       ]);
       return {
         organization: {
@@ -270,7 +266,7 @@ async function createOwnedApplicationRuntime(
         },
         canManage: capabilitiesFor(tenant.membership.role).manageResources,
         subscription,
-        plans: plans.filter((plan) => plan.active).map(publicBillingPlan),
+        plans,
       };
     },
     billingCheckout: async (request, input: BillingCheckoutInput) => {
@@ -433,42 +429,4 @@ function billingReturnUrl(
 ): string {
   const base = options.publicBaseUrl ?? new URL(request.url).origin;
   return new URL(`/o/${organizationSlug ?? fallbackSlug}/settings/billing`, base).toString();
-}
-
-const billingPlanMarketingSchema = z.object({ features: z.array(z.string()) });
-
-/**
- * Strips everything but marketing copy and pricing — the entitlement template never leaves
- * this function. See the plan's public plans endpoint section for why.
- */
-function publicBillingPlan(record: BillingPlanRecord): PublicBillingPlan {
-  return {
-    slug: record.slug,
-    name: record.name,
-    marketingFeatures: billingPlanMarketingSchema.parse(record.marketing).features,
-    prices: {
-      monthly: activePriceForInterval(record, "monthly"),
-      annual: activePriceForInterval(record, "annual"),
-    },
-  };
-}
-
-function activePriceForInterval(
-  record: BillingPlanRecord,
-  interval: BillingPlanPriceInterval,
-): PublicBillingPlan["prices"][BillingPlanPriceInterval] {
-  // Exact `{slug}_{interval}` lookup-key identity, matching checkout. Ambiguous pricing (two active
-  // prices for one key) is surfaced as "unavailable" and logged, never displayed as an arbitrary
-  // amount the customer might not be charged.
-  try {
-    const price = selectActivePlanPrice(record.prices, record.slug, interval);
-    return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
-  } catch (error) {
-    reportFailure(
-      error,
-      { operation: "billing.catalog.price.select", component: "billing", provider: "stripe" },
-      { kind: "conflict", diagnostic: { planSlug: record.slug, interval } },
-    );
-    return null;
-  }
 }

@@ -19,7 +19,10 @@ import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
-import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
+import {
+  FIXTURE_BILLING_PRODUCTS,
+  fixtureSubscriptionId,
+} from "../../src/e2e/harness/browser-billing.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
@@ -94,7 +97,8 @@ export interface BuiltApplicationOptions {
     ownerEmail: string;
     ownerPassword: string;
   };
-  /** Configures billing with the fixture Stripe catalog (Free/Solo/Team). Default: unconfigured. */
+  /** Configures billing with the fixture Stripe catalog (internal free record plus the one
+   * purchasable Paseo Hub plan). Default: unconfigured. */
   billing?: boolean;
 }
 
@@ -851,48 +855,57 @@ export class PaseoHub {
   }
 
   /**
-   * Starts a second, billing-configured application serving the fixture Free/Solo/Team
-   * catalog, verifies the public plans endpoint mirrors it, then simulates a Stripe dashboard
-   * typo (invalid `ent_seats_max`) on the Team product and delivers a real HMAC-signed
-   * `product.updated` webhook. The catalog sync must reject that one product, log loudly, and
-   * leave the previously synced row untouched — the other two plans are unaffected throughout.
+   * Starts a second, billing-configured application and walks the plan catalog mirror through
+   * three states. First: the public endpoint serves the one purchasable plan and withholds the
+   * internal free entitlement record, which is in the same Stripe catalog. Second: a Stripe
+   * dashboard typo (invalid `ent_seats_max`) delivered as a real HMAC-signed `product.updated`
+   * is rejected by the sync, logged loudly, and leaves the previously synced row serving. Third:
+   * a product that loses its `paseo_plan` tag is deactivated by the reconciled snapshot, so the
+   * catalog stops offering it rather than leaving a removed plan selectable — and what is left is
+   * an empty offer, never the free record promoted into one. Re-tagging restores it, because the
+   * mirror is a reconciled snapshot rather than a one-way delete.
    */
   async proveStripePlanCatalogMirror(): Promise<string> {
     const application = await this.startApplication({ databaseProfile: "fresh", billing: true });
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
 
     await application.setBillingProduct({
-      id: "prod_fixture_team",
-      name: "Team",
+      id: "prod_fixture_hosted",
+      name: "Paseo Hub",
       active: true,
       metadata: {
         paseo_plan: "true",
-        paseo_plan_slug: "team",
+        paseo_plan_slug: "hosted",
         ent_seats_max: "not-a-number",
         ent_can_invite: "true",
         ent_executions_monthly_limit: "unlimited",
       },
-      marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
+      marketingFeatures: [],
     });
-    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
 
     await expect
       .poll(() => application.logs())
       .toContain("billing.catalog.product.validate failed");
     await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
 
-    // A product that loses its paseo_plan tag drops out of the reconciled snapshot: the sync
-    // deactivates its mirrored row, so the public catalog stops serving it rather than leaving a
-    // removed plan selectable. Free and Solo are unaffected.
     await application.setBillingProduct({
-      id: "prod_fixture_team",
-      name: "Team",
+      id: "prod_fixture_hosted",
+      name: "Paseo Hub",
       active: true,
       metadata: { paseo_plan: "false" },
       marketingFeatures: [],
     });
-    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_team");
-    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS.slice(0, 2));
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
+    // Nothing left to sell. The free record is still mirrored for entitlement stamping, so an
+    // empty offer here is also the proof that it never gets promoted into one.
+    await this.expectPublicBillingPlans(application, []);
+
+    // Re-tagging in Stripe brings the plan back: the mirror is a reconciled snapshot, not a
+    // one-way delete.
+    await application.setBillingProduct(FIXTURE_BILLING_PRODUCTS[1]!);
+    await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
+    await this.expectPublicBillingPlans(application, FIXTURE_BILLING_PLAN_EXPECTATIONS);
     return application.origin;
   }
 
@@ -981,26 +994,40 @@ export class PaseoHub {
     await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
   }
 
-  async subscribeToPlan(
-    alias: string,
-    plan: { plan: string; interval: "Monthly" | "Annual" },
-  ): Promise<void> {
-    await this.requireUser(alias).subscribeToPlan(plan.plan, plan.interval);
+  async subscribeToPlan(alias: string, plan: string): Promise<void> {
+    await this.requireUser(alias).subscribeToPlan(plan);
   }
 
   async openPlanDialog(alias: string): Promise<void> {
     await this.requireUser(alias).openPlanDialog();
   }
 
-  async choosePlan(
-    alias: string,
-    plan: { plan: string; interval: "Monthly" | "Annual" },
-  ): Promise<void> {
-    await this.requireUser(alias).choosePlan(plan.plan, plan.interval);
+  async expectCardlessTrialOffer(alias: string): Promise<void> {
+    await this.requireUser(alias).expectCardlessTrialOffer();
+  }
+
+  async choosePlan(alias: string, plan: string): Promise<void> {
+    await this.requireUser(alias).choosePlan(plan);
   }
 
   async expectCurrentPlan(alias: string, plan: string): Promise<void> {
     await this.requireUser(alias).expectCurrentPlan(plan);
+  }
+
+  async expectActiveTrial(alias: string): Promise<void> {
+    await this.requireUser(alias).expectActiveTrial();
+  }
+
+  async expectNoSubscription(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoSubscription();
+  }
+
+  async expectNoSecondTrialOffer(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoSecondTrialOffer();
+  }
+
+  async expectPlanPickerFitsPhone(alias: string): Promise<void> {
+    await this.requireUser(alias).expectPlanPickerFitsPhone();
   }
 
   async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
@@ -3932,25 +3959,27 @@ class HubUser {
 
   async openPlanDialog(): Promise<void> {
     await this.openOrganizationSection("Billing");
-    await this.page.getByRole("button", { name: /^(Choose a plan|Change plan)$/u }).click();
-    await expect(
-      this.page.getByRole("dialog").getByRole("heading", { name: "Choose a plan" }),
-    ).toBeVisible();
+    await this.page.getByRole("button", { name: /^(Subscribe|Change plan)$/u }).click();
+    await expect(this.page.getByRole("dialog")).toBeVisible();
   }
 
-  async choosePlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
-    const dialog = this.page.getByRole("dialog");
-    await dialog.getByRole("button", { name: interval, exact: true }).click();
-    // Choosing a plan redirects through the fixture checkout back to the billing page.
-    await dialog.getByRole("button", { name: `Choose ${plan}`, exact: true }).click();
+  async choosePlan(plan: string): Promise<void> {
+    // Each plan's button carries the plan in its accessible name even when the visible label is
+    // the short "Start free trial", so a plan is always addressable by name.
+    await this.page
+      .getByRole("dialog")
+      .getByRole("button", {
+        name: new RegExp(`^(Start free trial with|Subscribe to) ${plan}$`, "u"),
+      })
+      .click();
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
   }
 
-  async subscribeToPlan(plan: string, interval: "Monthly" | "Annual"): Promise<void> {
+  async subscribeToPlan(plan: string): Promise<void> {
     await this.openPlanDialog();
-    await this.choosePlan(plan, interval);
+    await this.choosePlan(plan);
   }
 
   async expectCurrentPlan(plan: string): Promise<void> {
@@ -3959,11 +3988,130 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
-    // Scope to the Plan section: a plan name like "Team" also names a settings tab.
-    const planSection = this.page
+    await expect(this.planSection().getByText(plan, { exact: true })).toBeVisible();
+    await expectAccessible(this.page);
+  }
+
+  /**
+   * The billing page for an organization with nothing to bill: the fact, and the one thing to do
+   * about it. Nothing dresses the zero-execution enforcement floor up as a tier the customer is
+   * on, and nothing argues for the plan — that is what the picker is for.
+   */
+  async expectNoSubscription(): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.reload();
+    const plan = this.planSection();
+    await expect(plan.getByText("No subscription", { exact: true })).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Subscribe", exact: true })).toBeVisible();
+    await expect(plan).not.toContainText("0 executions");
+    await expect(plan.getByText("Free", { exact: true })).toHaveCount(0);
+    await expect(plan.getByRole("button", { name: "Manage billing" })).toHaveCount(0);
+    await expect(plan.getByRole("button", { name: "Choose a plan" })).toHaveCount(0);
+    await expect(plan).not.toContainText("run workflows");
+    await expectAccessible(this.page);
+  }
+
+  /** The picker offering the cardless trial, exactly: a badge, the offer, and the action. */
+  async expectCardlessTrialOffer(): Promise<void> {
+    await this.openPlanDialog();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toContainText("14 days free · No card required");
+    await expect(
+      dialog.getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` }),
+    ).toHaveText("Start free trial");
+    await this.expectPickerShowsOnlyTheOffer(dialog);
+    // Nothing frames or hedges the offer: no heading, no sales sentence, no post-trial footnote.
+    await expect(dialog).not.toContainText("14 days free, then");
+    await expect(dialog).not.toContainText("Nothing is charged");
+    await expectAccessible(this.page);
+  }
+
+  /**
+   * The picker only ever shows what Hub sells, and only what it takes to accept it. The internal
+   * free entitlement record is in the same Stripe catalog, so its absence here is the visible half
+   * of the public-catalog boundary. The interval switch is absent because the catalog prices one
+   * interval, and there is no visible heading — the dialog's accessible name is enough.
+   */
+  private async expectPickerShowsOnlyTheOffer(dialog: Locator): Promise<void> {
+    await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([HOSTED_PLAN_NAME]);
+    await expect(dialog).toContainText("€15");
+    await expect(dialog).toContainText("per user / month");
+    await expect(dialog).not.toContainText("0 executions");
+    await expect(dialog).not.toContainText("Choose your plan");
+    await expect(dialog).not.toContainText("Recommended");
+    await expect(dialog.getByRole("group", { name: "Billing interval" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /^(Monthly|Annual)$/u })).toHaveCount(0);
+    // A dialog still has to announce itself, so its title exists for assistive technology and
+    // takes no space on screen.
+    const title = dialog.getByRole("heading", { level: 2 });
+    await expect(title).toHaveCount(1);
+    expect((await title.boundingBox())?.height ?? 0).toBeLessThanOrEqual(1);
+  }
+
+  /** Scoped to the Plan section: a plan name could otherwise collide with a settings tab. */
+  private planSection(): Locator {
+    return this.page
       .locator("section")
       .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
-    await expect(planSection.getByText(plan, { exact: true })).toBeVisible();
+  }
+
+  async expectActiveTrial(): Promise<void> {
+    await this.openOrganizationSection("Billing");
+    await this.page.reload();
+    const plan = this.planSection();
+    await expect(plan.getByText(HOSTED_PLAN_NAME, { exact: true })).toBeVisible();
+    await expect(plan.getByText("Trialing", { exact: true })).toBeVisible();
+    await expect(plan.getByText(/^Trial ends /u)).toBeVisible();
+    await expect(plan.getByRole("button", { name: "Manage billing" })).toBeVisible();
+    // The card states what the trial entitles the organization to, unlabelled — the plan name
+    // above it is the label.
+    await expect(plan.getByRole("listitem")).toHaveText([
+      "Unlimited daemons",
+      "GitHub, Linear, Slack, and Discord triggers",
+      "Versioned workflows and activity",
+      "Bring your own agents and inference",
+    ]);
+    // One public offer means nothing to change to, so the picker has no entry point here.
+    await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
+    await expect(plan).not.toContainText("Stripe billing portal");
+    await expectAccessible(this.page);
+  }
+
+  /**
+   * A former subscriber is never promised a second free trial: the picker drops the cardless
+   * offer and falls back to ordinary paid Checkout. Escape closes it, so the paywall is
+   * dismissible from the keyboard alone.
+   */
+  async expectNoSecondTrialOffer(): Promise<void> {
+    await this.openPlanDialog();
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).not.toContainText("No card required");
+    await expect(dialog.getByRole("button", { name: /^Start free trial/u })).toHaveCount(0);
+    await expect(
+      dialog.getByRole("button", { name: `Subscribe to ${HOSTED_PLAN_NAME}` }),
+    ).toHaveText("Subscribe");
+    await this.expectPickerShowsOnlyTheOffer(dialog);
+    await expectAccessible(this.page);
+    await this.page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  }
+
+  /**
+   * The picker at phone width: it never pushes the page sideways, and the plan's call to action
+   * is reachable by scrolling the dialog rather than stranded below the fold.
+   */
+  async expectPlanPickerFitsPhone(): Promise<void> {
+    await this.openPlanDialog();
+    const viewport = this.page.viewportSize();
+    expect(viewport).not.toBeNull();
+    expect(
+      await this.page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(viewport!.width);
+    const trial = this.page
+      .getByRole("dialog")
+      .getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` });
+    await trial.scrollIntoViewIfNeeded();
+    await expect(trial).toBeInViewport();
     await expectAccessible(this.page);
   }
 
@@ -4948,36 +5096,26 @@ interface PublicBillingPlanExpectation {
   };
 }
 
-// Mirrors src/e2e/harness/browser-billing.ts's FIXTURE_BILLING_PRODUCTS/FIXTURE_BILLING_PRICES.
+/**
+ * What `/api/billing/plans` serves for the fixture catalog in `browser-billing.ts`: the one plan
+ * Hub sells. The `free` product is in that catalog too — it carries the entitlement floor — but it
+ * is not an offer, and billing withholds it from every public response.
+ */
 const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
   {
-    slug: "free",
-    name: "Free",
-    marketingFeatures: ["1 seat", "100 executions / month", "Community support"],
-    prices: {
-      monthly: { unitAmount: 0, currency: "usd" },
-      annual: { unitAmount: 0, currency: "usd" },
-    },
-  },
-  {
-    slug: "solo",
-    name: "Solo",
-    marketingFeatures: ["Unlimited seats", "2,000 executions / month", "Email support"],
-    prices: {
-      monthly: { unitAmount: 2900, currency: "usd" },
-      annual: { unitAmount: 29000, currency: "usd" },
-    },
-  },
-  {
-    slug: "team",
-    name: "Team",
-    marketingFeatures: ["Unlimited seats", "Unlimited executions", "Priority support"],
-    prices: {
-      monthly: { unitAmount: 9900, currency: "usd" },
-      annual: { unitAmount: 99000, currency: "usd" },
-    },
+    slug: "hosted",
+    name: "Paseo Hub",
+    marketingFeatures: [
+      "Unlimited daemons",
+      "GitHub, Linear, Slack, and Discord triggers",
+      "Versioned workflows and activity",
+      "Bring your own agents and inference",
+    ],
+    prices: { monthly: { unitAmount: 1500, currency: "eur" }, annual: null },
   },
 ];
+/** The one plan the fixture catalog — and the live Stripe catalog — publishes. */
+const HOSTED_PLAN_NAME = "Paseo Hub";
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const PROBLEM_TYPE = "application/problem+json";

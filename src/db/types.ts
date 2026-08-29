@@ -965,14 +965,9 @@ export interface SyncBillingPlanInput {
  * mirror. Enforcement never reads this — the subscription webhook re-stamps
  * `organization_entitlements` from the resolved plan's template.
  */
-export interface OrganizationSubscriptionRecord {
+export interface OrganizationBillingCustomerRecord {
   organizationId: string;
   stripeCustomerId: string;
-  stripeSubscriptionId: string;
-  planId: string | null;
-  status: string;
-  currentPeriodEnd: Date | null;
-  cancelAtPeriodEnd: boolean;
   updatedAt: Date;
 }
 
@@ -984,14 +979,9 @@ export interface OrganizationSubscriptionRecord {
  * grandfathered (a transient status that leaves the last stamp untouched). The stamp reuses the
  * same idempotent logic as `stampOrganizationEntitlements`, so a replay is a no-op.
  */
-export interface ReconcileOrganizationSubscriptionInput {
+export interface ReconcileOrganizationBillingInput {
   organizationId: string;
   stripeCustomerId: string;
-  stripeSubscriptionId: string;
-  planId: string | null;
-  status: string;
-  currentPeriodEnd: Date | null;
-  cancelAtPeriodEnd: boolean;
   stamp?: Omit<StampOrganizationEntitlementsInput, "organizationId">;
 }
 
@@ -1348,13 +1338,13 @@ export interface Database {
    * re-stamps its entitlements in the same transaction. `src/billing/` only — the sole convergent
    * writer the subscription webhook drives.
    */
-  reconcileOrganizationSubscription(
-    input: ReconcileOrganizationSubscriptionInput,
-  ): Promise<OrganizationSubscriptionRecord>;
+  reconcileOrganizationBilling(
+    input: ReconcileOrganizationBillingInput,
+  ): Promise<OrganizationBillingCustomerRecord>;
   /** The organization's current subscription mirror, or undefined when it never subscribed. */
-  getOrganizationSubscription(
+  getOrganizationBillingCustomer(
     organizationId: string,
-  ): Promise<OrganizationSubscriptionRecord | undefined>;
+  ): Promise<OrganizationBillingCustomerRecord | undefined>;
   /**
    * Runs `fn` while holding a named advisory lock that serializes across processes, so a
    * per-organization critical section (re-read external state, then write) cannot interleave with

@@ -45,23 +45,32 @@ entitlement template (`granted` caps/flags/meters); that stays internal to `src/
 `src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
 Hub itself has no pricing page.
 
+It returns the plans that are for sale. The catalog also carries the internal record that
+authors the no-subscription entitlement floor; that one is withheld here and everywhere else a
+customer can see. Today the hosted offer is one plan:
+
 ```json
 {
   "plans": [
     {
-      "slug": "solo",
-      "name": "Solo",
-      "marketingFeatures": ["Unlimited seats", "2,000 executions / month", "Email support"],
+      "slug": "hosted",
+      "name": "Paseo Hub",
+      "marketingFeatures": [
+        "Unlimited daemons",
+        "GitHub, Linear, Slack, and Discord triggers",
+        "Versioned workflows and activity",
+        "Bring your own agents and inference"
+      ],
       "prices": {
-        "monthly": { "unitAmount": 2900, "currency": "usd" },
-        "annual": { "unitAmount": 29000, "currency": "usd" }
+        "monthly": { "unitAmount": 1500, "currency": "eur" },
+        "annual": null
       }
     }
   ]
 }
 ```
 
-`unitAmount` is in the smallest currency unit (cents for `usd`), matching Stripe's own `Price`
+`unitAmount` is in the smallest currency unit (cents for `eur`), matching Stripe's own `Price`
 convention. An interval is `null` when the plan has no active price at that interval. A
 self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
 catalog — the billing boundary means the route is never registered on an unconfigured instance.
