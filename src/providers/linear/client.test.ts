@@ -31,7 +31,7 @@ describe("Linear connection client", () => {
             access_token: "access-token",
             refresh_token: "refresh-token",
             expires_in: 3600,
-            scope: "read,write,app:assignable,app:mentionable",
+            scope: "read,comments:create",
           });
         }
         return json({
@@ -46,10 +46,7 @@ describe("Linear connection client", () => {
       authorization.searchParams.get("redirect_uri"),
       "https://hub.test/api/integrations/linear/callback",
     );
-    assert.equal(
-      authorization.searchParams.get("scope"),
-      "read,write,app:assignable,app:mentionable",
-    );
+    assert.equal(authorization.searchParams.get("scope"), "read,comments:create");
     assert.equal(authorization.searchParams.get("actor"), "app");
     assert.equal(authorization.searchParams.get("state"), "state-value");
 
@@ -60,12 +57,12 @@ describe("Linear connection client", () => {
       accessToken: "access-token",
       refreshToken: "refresh-token",
       accessTokenExpiresAt: new Date(1_700_003_600_000),
-      scopes: ["app:assignable", "app:mentionable", "read", "write"],
+      scopes: ["comments:create", "read"],
     });
     assert.match(requests[0]?.body ?? "", /code=code-value/u);
   });
 
-  it("keeps requested scopes when Linear omits them during authorization", async () => {
+  it("keeps the explicitly requested scope set when Linear omits it", async () => {
     const client = createLinearConnectionClient({
       clientId: "client-id",
       clientSecret: "client-secret",
@@ -80,9 +77,16 @@ describe("Linear connection client", () => {
       },
     });
 
-    const installation = await client.exchangeCode("code-value");
+    const baseline = await client.exchangeCode("baseline-code");
+    const authorization = new URL(client.authorizationUrl("state-value", "agentSessions"));
+    const agentSessions = await client.exchangeCode("agent-code", "agentSessions");
 
-    assert.deepEqual(installation.scopes, ["read", "write", "app:assignable", "app:mentionable"]);
+    assert.deepEqual(baseline.scopes, ["read", "comments:create"]);
+    assert.equal(
+      authorization.searchParams.get("scope"),
+      "read,write,app:assignable,app:mentionable",
+    );
+    assert.deepEqual(agentSessions.scopes, ["read", "write", "app:assignable", "app:mentionable"]);
   });
 
   it("reads the issue team used for routing", async () => {
