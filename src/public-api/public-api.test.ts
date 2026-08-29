@@ -290,6 +290,8 @@ describe("generated public OpenAPI", () => {
       "/api/v1/manual-runs",
       "/api/v1/projects",
       "/api/v1/setup-resources",
+      "/api/v1/triggers/install",
+      "/api/v1/triggers/validate",
     ]);
     const expectations = {
       "/api/v1/configurations/install": [
@@ -407,6 +409,16 @@ function authenticator(
 
 function successfulOperations(): PublicOperations {
   return {
+    validateTrigger: () => Promise.resolve({ status: "valid", name: "mention", valid: true }),
+    installTrigger: () =>
+      Promise.resolve({
+        status: "installed",
+        triggerId: "84af3583-23ff-4fcc-9838-ed3262499be2",
+        name: "mention",
+        revisionId: "f83dc934-02a0-4849-8de7-699110be24ed",
+        version: 1,
+        active: true,
+      }),
     listProjects: () =>
       Promise.resolve({
         status: "listed",

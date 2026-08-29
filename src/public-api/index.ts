@@ -5,6 +5,7 @@ import { reportFailure } from "../failures/index.js";
 import type {
   DispatchManualRunResult,
   InstallConfigurationResult,
+  InstallTriggerResult,
   IssueEnrollmentTokenResult,
   ListProjectsResult,
   ListConfigurationResourcesResult,
@@ -12,16 +13,19 @@ import type {
   PublicAuthorization,
   PublicOperations,
   ValidateConfigurationResult,
+  ValidateTriggerResult,
 } from "../public-operations/index.js";
 import {
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
+  InstalledTriggerSchema,
   ProjectListSchema,
   ConfigurationResourcesSchema,
   SetupResourcesSchema,
   ProblemSchema,
   ValidatedConfigurationSchema,
+  ValidatedTriggerSchema,
   type Problem,
 } from "./contracts.js";
 import { publicOpenApiDocument } from "./openapi.js";
@@ -35,6 +39,8 @@ import {
 export type { PublicOperationId } from "./operation-manifest.js";
 
 type PublicOperationResult =
+  | ValidateTriggerResult
+  | InstallTriggerResult
   | ListProjectsResult
   | ListConfigurationResourcesResult
   | ListSetupResourcesResult
@@ -216,6 +222,14 @@ function operationResponse(
   result: PublicOperationResult,
 ): Response {
   switch (mapping) {
+    case "trigger-validation":
+      if (!isTriggerValidationResult(result)) throw new Error("invalid trigger validation result");
+      return triggerValidationResponse(requestId, result);
+    case "trigger-installation":
+      if (!isTriggerInstallationResult(result)) {
+        throw new Error("invalid trigger installation result");
+      }
+      return triggerInstallationResponse(requestId, result);
     case "projects":
       if (!isProjectsResult(result)) throw new Error("invalid projects operation result");
       return projectsResponse(requestId, result);
@@ -241,6 +255,50 @@ function operationResponse(
       return enrollmentResponse(requestId, result);
   }
   return assertNever(mapping);
+}
+
+function triggerValidationResponse(requestId: string, result: ValidateTriggerResult): Response {
+  switch (result.status) {
+    case "valid":
+      return success(requestId, 200, ValidatedTriggerSchema, { name: result.name, valid: true });
+    case "invalid_trigger":
+      return problem(
+        requestId,
+        422,
+        "invalid_trigger",
+        "Invalid trigger",
+        "Correct the self-contained trigger YAML.",
+        result.issues,
+      );
+    case "infrastructure_unavailable":
+      return infrastructureProblem(requestId);
+  }
+  return assertNever(result);
+}
+
+function triggerInstallationResponse(requestId: string, result: InstallTriggerResult): Response {
+  switch (result.status) {
+    case "installed":
+      return success(requestId, 201, InstalledTriggerSchema, {
+        triggerId: result.triggerId,
+        name: result.name,
+        revisionId: result.revisionId,
+        version: result.version,
+        active: true,
+      });
+    case "invalid_trigger":
+      return problem(
+        requestId,
+        422,
+        "invalid_trigger",
+        "Invalid trigger",
+        "Correct the self-contained trigger YAML and submit it again.",
+        result.issues,
+      );
+    case "infrastructure_unavailable":
+      return infrastructureProblem(requestId);
+  }
+  return assertNever(result);
 }
 
 function projectsResponse(requestId: string, result: ListProjectsResult): Response {
@@ -545,6 +603,24 @@ function isInstallationResult(result: PublicOperationResult): result is InstallC
     "invalid_configuration",
     "infrastructure_unavailable",
   ].includes(result.status);
+}
+
+function isTriggerValidationResult(result: PublicOperationResult): result is ValidateTriggerResult {
+  return (
+    result.status === "infrastructure_unavailable" ||
+    result.status === "invalid_trigger" ||
+    (result.status === "valid" && "name" in result)
+  );
+}
+
+function isTriggerInstallationResult(
+  result: PublicOperationResult,
+): result is InstallTriggerResult {
+  return (
+    result.status === "infrastructure_unavailable" ||
+    result.status === "invalid_trigger" ||
+    (result.status === "installed" && "triggerId" in result)
+  );
 }
 
 function isProjectsResult(result: PublicOperationResult): result is ListProjectsResult {

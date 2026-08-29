@@ -110,8 +110,14 @@ export interface Account {
 
 const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
 
-/** The sidebar's four organization entries, in rendered order. */
-const ORGANIZATION_DESTINATIONS = ["Projects", "Daemons", "Connections", "Settings"] as const;
+/** The flat organization sidebar entries, in rendered order. */
+const ORGANIZATION_DESTINATIONS = [
+  "Triggers",
+  "Activity",
+  "Daemons",
+  "Connections",
+  "Settings",
+] as const;
 /** Instance surfaces sit outside `/o/`, so the path is what says the sidebar is in instance scope. */
 const INSTANCE_ROUTES: readonly string[] = ["/apps", "/operator"];
 const ORGANIZATION_SETTINGS_SECTIONS: readonly OrganizationSettingsSection[] = [
@@ -1830,6 +1836,80 @@ export class PaseoHub {
     return this.seedDaemon(alias, slug);
   }
 
+  /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */
+  async seedSlackConnection(alias: string, slug: string, teamName: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary,
+      `insert into slack_connections
+         (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes,
+          connected_by_user_id)
+       select session.active_organization_id, $1, $2, $3, 'BROWSER_BOT', 'browser-token',
+              '["app_mentions:read","chat:write"]'::jsonb, "user".id
+       from session join "user" on "user".id = session.user_id
+       where lower("user".email) = $4 and session.expires_at > now()`,
+      [`browser-${randomUUID()}`, slug, teamName, this.requireUser(alias).accountEmail],
+    );
+  }
+
+  /** A migrated workflow precondition for the compatibility lane in the trigger editor. */
+  async seedLegacyTrigger(alias: string, name: string, yaml: string): Promise<void> {
+    const triggerId = randomUUID();
+    const revisionId = randomUUID();
+    const [identity] = z
+      .array(z.object({ organization_id: z.string(), user_id: z.string() }))
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select member.organization_id, "user".id as user_id
+           from "user" join member on member.user_id = "user".id
+           where lower("user".email) = $1
+           order by member.created_at
+           limit 1`,
+          [this.requireUser(alias).accountEmail],
+        ),
+      );
+    expect(identity).toBeDefined();
+    await this.queryDatabase(
+      this.primary,
+      `insert into organization_triggers
+         (id, organization_id, name, enabled, format, runtime_project_id)
+       values ($1, $2, $3, true, 'legacy_multistep', null)`,
+      [triggerId, identity!.organization_id, name],
+    );
+    await this.queryDatabase(
+      this.primary,
+      `insert into organization_trigger_revisions
+         (id, trigger_id, organization_id, version, yaml, normalized_configuration,
+          content_hash, source_kind, source_evidence, created_by_user_id)
+       values ($1, $2, $3, 1, $4, '{"environments":[],"triggers":[]}'::jsonb, $5,
+               'manual', '{"conversionBlockers":["multiple steps require manual migration"]}'::jsonb,
+               $6)`,
+      [
+        revisionId,
+        triggerId,
+        identity!.organization_id,
+        yaml,
+        `browser-${randomUUID()}`,
+        identity!.user_id,
+      ],
+    );
+    await this.queryDatabase(
+      this.primary,
+      `update organization_triggers set active_revision_id = $2 where id = $1`,
+      [triggerId, revisionId],
+    );
+    const seeded = z
+      .array(z.object({ name: z.string() }))
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select name from organization_triggers where id = $1 and active_revision_id = $2`,
+          [triggerId, revisionId],
+        ),
+      );
+    expect(seeded).toEqual([{ name }]);
+  }
+
   private async seedDaemon(alias: string, displayName: string): Promise<string> {
     return this.seedDaemonForEmail(this.primary, this.requireUser(alias).accountEmail, displayName);
   }
@@ -2518,7 +2598,7 @@ class HubUser {
     await signIn.getByLabel("Email").fill(account.email);
     await signIn.getByLabel("Password").fill(account.password);
     await signIn.getByRole("button", { name: "Sign in" }).click();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
     await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 
@@ -2573,7 +2653,7 @@ class HubUser {
   private async expectFirstRunPasswordRefused(account: Account): Promise<void> {
     await this.fillFirstRunSetupForm({ ...account, password: "short" });
     await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toHaveCount(0);
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toHaveCount(0);
   }
 
   async completeFirstRunClaim(account: Account): Promise<void> {
@@ -3018,13 +3098,13 @@ class HubUser {
     await menu.getByRole("menuitem", { name, exact: true }).click();
     await expect(menu).toBeHidden();
     await expect(switcher).toContainText(name);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
   }
 
   async returnToProjects(): Promise<void> {
     await this.page.goto(this.origin);
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
   }
 
   async rejectOrganizationSwitchAndInvitation(
@@ -3190,8 +3270,8 @@ class HubUser {
       releaseRefetch();
     }
     await expect(switcher).toContainText(destinationOrganization);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
     await expect(this.page.getByText(oldDaemonName, { exact: true })).toHaveCount(0);
     await this.page.unroute(serverFunctions);
   }
@@ -3559,7 +3639,7 @@ class HubUser {
 
   async acceptInvitation(): Promise<void> {
     await this.page.getByRole("button", { name: "Accept invitation" }).click();
-    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
   }
 
   async acceptInvitationWithSignOutLocked(): Promise<void> {
@@ -3603,7 +3683,7 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
   }
 
   async acceptInvitationAfterSessionExpiry(
@@ -3725,7 +3805,7 @@ class HubUser {
 
   async navigateToTeamFromMobileSidebar(): Promise<void> {
     await this.page.goto(this.origin);
-    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
     const trigger = this.page.getByRole("button", { name: "Toggle Sidebar" });
     await this.page.keyboard.press("Tab");
     await expect(trigger).toBeFocused();
@@ -3809,7 +3889,7 @@ class HubUser {
    * and the account menu it now enters through does not list it either.
    */
   async expectNoOperatorNav(): Promise<void> {
-    await this.openOrganizationSection("Projects");
+    await this.openOrganizationSection("Triggers");
     await expect(this.page.getByRole("navigation", { name: "Instance" })).toHaveCount(0);
     await expect(this.page.getByRole("link", { name: "Operator", exact: true })).toHaveCount(0);
     const menu = await this.navigation.openAccountMenu(this.accountEmail);
@@ -3944,7 +4024,7 @@ class HubUser {
   }
 
   async expectNoBillingNavigation(): Promise<void> {
-    await this.openOrganizationSection("Projects");
+    await this.openOrganizationSection("Triggers");
     await expect(this.page.getByRole("link", { name: "Billing", exact: true })).toHaveCount(0);
     await expect(this.page.getByRole("button", { name: "Billing", exact: true })).toHaveCount(0);
     await expectAccessible(this.page);
@@ -4402,8 +4482,8 @@ class HubUser {
 
   async expectUntrustedConnectionReturnUnavailable(url: string): Promise<void> {
     await this.page.goto(url);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/projects$/u);
-    await expect(this.page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
     await expect(this.page.getByRole("status")).toHaveText(
       "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
     );
@@ -4815,11 +4895,11 @@ class HubUser {
     if (await mobileSidebar.isVisible().catch(() => false)) await mobileSidebar.click();
     if (instance) await this.navigation.leaveInstance();
     else await this.navigation.leaveProject();
-    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
   }
 
   private async refreshOrganizationSection(name: "Daemons" | "Connections" | "Team") {
-    await this.openOrganizationSection("Projects");
+    await this.openOrganizationSection("Triggers");
     await this.openOrganizationSection(name);
     await this.page.reload();
   }

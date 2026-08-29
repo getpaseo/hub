@@ -228,6 +228,8 @@ describe("HTTP failure ownership", () => {
     const failure = new Error("storage exploded with formatless-secret-f09e");
     const failOperation = () => Promise.reject(failure);
     const operations: PublicOperations = {
+      validateTrigger: failOperation,
+      installTrigger: failOperation,
       listProjects: failOperation,
       listConfigurationResources: failOperation,
       listSetupResources: failOperation,

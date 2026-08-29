@@ -131,7 +131,36 @@ export interface InfrastructureUnavailable {
   status: "infrastructure_unavailable";
 }
 
+export interface TriggerYamlInput {
+  yaml: string;
+}
+
+export type ValidateTriggerResult =
+  | { status: "valid"; name: string; valid: true }
+  | { status: "invalid_trigger"; issues: readonly DomainIssue[] }
+  | InfrastructureUnavailable;
+
+export type InstallTriggerResult =
+  | {
+      status: "installed";
+      triggerId: string;
+      name: string;
+      revisionId: string;
+      version: number;
+      active: true;
+    }
+  | { status: "invalid_trigger"; issues: readonly DomainIssue[] }
+  | InfrastructureUnavailable;
+
 export interface PublicOperations {
+  validateTrigger(
+    authorization: PublicAuthorization,
+    input: TriggerYamlInput,
+  ): Promise<ValidateTriggerResult>;
+  installTrigger(
+    authorization: PublicAuthorization,
+    input: TriggerYamlInput,
+  ): Promise<InstallTriggerResult>;
   listProjects(authorization: PublicAuthorization): Promise<ListProjectsResult>;
   listConfigurationResources(
     authorization: PublicAuthorization,
@@ -177,6 +206,14 @@ export interface PublicOperationRepository {
 }
 
 export interface PublicOperationCapabilities {
+  triggerForOrganization?(organizationId: string): {
+    validate(yaml: string): Promise<{ name: string }>;
+    install(input: {
+      yaml: string;
+      credentialId: string;
+      credentialKind: "apiKey" | "cliCredential";
+    }): Promise<{ triggerId: string; name: string; revisionId: string; version: number }>;
+  };
   configurationForProject(projectId: string): {
     validateBundle(
       files: readonly HubBundleFile[],
