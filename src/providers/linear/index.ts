@@ -29,10 +29,13 @@ import {
   createLinearApiClient,
   createLinearConnectionClient,
   linearConnectionRequiresReauthorization,
+  type LinearAuthorizationMode,
   type LinearApiClient,
   type LinearConnectionClient,
   type LinearInstallation,
 } from "./client.js";
+
+const LINEAR_AGENT_SESSION_STATE_PREFIX = "agent-sessions.";
 
 export interface LinearRegistrationConfiguration {
   clientId: string;
@@ -238,7 +241,8 @@ function createLinearConnection(
       const access = await manageConnectionAccess(options.auth, options.database, request);
       if (client === undefined)
         return Response.json({ error: "provider_not_configured" }, { status: 409 });
-      const state = newConnectionState();
+      const authorizationMode = linearAuthorizationModeForRequest(request);
+      const state = linearConnectionState(authorizationMode);
       await options.database.startConnectionAttempt({
         provider: "linear",
         stateVerifier: stateHash(state),
@@ -251,7 +255,7 @@ function createLinearConnection(
         expectedConfigurationVersion: options.expectedConfigurationVersion ?? null,
         activateConfiguration: options.activateConfiguration,
       });
-      return Response.json({ url: client.authorizationUrl(state) });
+      return Response.json({ url: client.authorizationUrl(state, authorizationMode) });
     } catch (error) {
       return connectionActionFailure(error, "linear", "start");
     }
@@ -301,6 +305,21 @@ function isHttpsCallbackOrigin(value: string): boolean {
   }
 }
 
+function linearAuthorizationModeForRequest(request: Request): LinearAuthorizationMode {
+  return new URL(request.url).searchParams.get("linearAgentSessions") === "true"
+    ? "agentSessions"
+    : "baseline";
+}
+
+function linearConnectionState(mode: LinearAuthorizationMode): string {
+  const state = newConnectionState();
+  return mode === "agentSessions" ? `${LINEAR_AGENT_SESSION_STATE_PREFIX}${state}` : state;
+}
+
+function linearAuthorizationModeForState(state: string): LinearAuthorizationMode {
+  return state.startsWith(LINEAR_AGENT_SESSION_STATE_PREFIX) ? "agentSessions" : "baseline";
+}
+
 async function completeAuthorization(
   options: LinearConnectionOptions,
   client: LinearConnectionClient | undefined,
@@ -341,7 +360,7 @@ async function completeAuthorization(
     });
     returnRoute = attempt.returnRoute;
     callbackOrigin = attempt.callbackOrigin;
-    const installation = await client.exchangeCode(code);
+    const installation = await client.exchangeCode(code, linearAuthorizationModeForState(state));
     const binding = linearBinding(state, access, installation, options.configuration.clientId);
     if (attempt.activateConfiguration) {
       if (options.onVerifiedInstallation === undefined) {

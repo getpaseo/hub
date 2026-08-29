@@ -12,6 +12,8 @@ export const LINEAR_AGENT_SESSION_REQUIRED_SCOPES = [
   "app:mentionable",
 ] as const;
 
+export type LinearAuthorizationMode = "baseline" | "agentSessions";
+
 /** Keep an issue description plus its preceding discussion within one bounded context window. */
 export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
 export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
@@ -164,8 +166,8 @@ export interface LinearTokenRefresh {
 }
 
 export interface LinearConnectionClient {
-  authorizationUrl(state: string): string;
-  exchangeCode(code: string): Promise<LinearInstallation>;
+  authorizationUrl(state: string, mode?: LinearAuthorizationMode): string;
+  exchangeCode(code: string, mode?: LinearAuthorizationMode): Promise<LinearInstallation>;
   refresh(refreshToken: string): Promise<LinearTokenRefresh>;
   revoke(accessToken: string): Promise<void>;
 }
@@ -294,12 +296,13 @@ export function createLinearConnectionClient(options: {
   const now = options.now ?? (() => new Date());
 
   return {
-    authorizationUrl(state) {
+    authorizationUrl(state, mode = "baseline") {
+      const requestedScopes = linearAuthorizationScopes(mode);
       const parameters = new URLSearchParams({
         client_id: options.clientId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: LINEAR_AGENT_SESSION_REQUIRED_SCOPES.join(","),
+        scope: requestedScopes.join(","),
         state,
         // Keep workflow results visibly attributable to the installed Paseo application instead
         // of impersonating the administrator who completed the connection.
@@ -307,7 +310,8 @@ export function createLinearConnectionClient(options: {
       });
       return `https://linear.app/oauth/authorize?${parameters.toString()}`;
     },
-    async exchangeCode(code) {
+    async exchangeCode(code, mode = "baseline") {
+      const requestedScopes = linearAuthorizationScopes(mode);
       const token = await exchangeToken(
         request,
         options,
@@ -326,7 +330,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes ?? [...LINEAR_AGENT_SESSION_REQUIRED_SCOPES],
+        scopes: token.scopes ?? [...requestedScopes],
       };
     },
     async refresh(refreshToken) {
@@ -359,6 +363,10 @@ export function createLinearConnectionClient(options: {
       if (!response.ok) throw new Error(`Linear revoke HTTP ${response.status}`);
     },
   };
+}
+
+function linearAuthorizationScopes(mode: LinearAuthorizationMode): readonly string[] {
+  return mode === "agentSessions" ? LINEAR_AGENT_SESSION_REQUIRED_SCOPES : LINEAR_REQUIRED_SCOPES;
 }
 
 /**

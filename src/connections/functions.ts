@@ -54,6 +54,9 @@ const scopeSchema = z.object({
 const providerSchema = scopeSchema.extend({
   provider: z.enum(CONNECTION_PROVIDERS),
 });
+const startConnectionSchema = providerSchema.extend({
+  linearAgentSessions: z.boolean().optional(),
+});
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
 
@@ -85,7 +88,7 @@ export const connectionStatus = createServerFn({ method: "GET" })
   });
 
 export const startConnection = createServerFn({ method: "POST" })
-  .validator(providerSchema)
+  .validator(startConnectionSchema)
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
     const name = connectionProviderName(data.provider);
     try {
@@ -204,12 +207,17 @@ function connectionResponseFailure(
 function operationRequest(
   method: "GET" | "POST",
   path: string,
-  scope: { organizationSlug: string; projectSlug?: string | undefined },
+  scope: {
+    organizationSlug: string;
+    projectSlug?: string | undefined;
+    linearAgentSessions?: boolean | undefined;
+  },
   connectionId?: string,
 ): Request {
   return connectionOperationRequest(method, path, {
     organizationSlug: scope.organizationSlug,
     ...(scope.projectSlug === undefined ? {} : { projectSlug: scope.projectSlug }),
+    ...(scope.linearAgentSessions === true ? { linearAgentSessions: "true" } : {}),
     ...(connectionId === undefined ? {} : { connectionId }),
   });
 }
