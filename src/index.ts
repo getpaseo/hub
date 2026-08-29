@@ -288,12 +288,13 @@ async function main(): Promise<void> {
   await build.startProductionRuntime();
   const config = loadRuntimeConfig();
   const port = readPort();
-  const server = createFetchServer(
-    (request) => build.default.fetch(request),
-    config.trustedClientIpHeader === undefined
+  const canonicalRequestOrigin = nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]);
+  const server = createFetchServer((request) => build.default.fetch(request), {
+    ...(config.trustedClientIpHeader === undefined
       ? {}
-      : { trustedClientIpHeader: config.trustedClientIpHeader },
-  );
+      : { trustedClientIpHeader: config.trustedClientIpHeader }),
+    ...(canonicalRequestOrigin === undefined ? {} : { canonicalRequestOrigin }),
+  });
   server.on("upgrade", (request, socket, head) => {
     void handleDaemonUpgradeRequest({
       request,

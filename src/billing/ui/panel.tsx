@@ -78,7 +78,7 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
       />
       <p className="text-sm text-muted-foreground">
         Your limits and current usage live on the{" "}
-        <Link to={`/o/${slug}/usage` as never} className="underline underline-offset-4">
+        <Link to={`/o/${slug}/settings/usage` as never} className="underline underline-offset-4">
           Usage
         </Link>{" "}
         page.

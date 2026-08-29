@@ -9,7 +9,8 @@ const owner = {
   password: "alice-mobile-projects-password",
 };
 
-test("project read failure remains focused and contained on mobile", async ({ hub, page }) => {
+test("project failures and navigation stay contained on mobile", async ({ hub, page }) => {
+  const app = projectApp(page);
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
   await hub.primaryApplication().failNextProjectRead();
@@ -21,15 +22,10 @@ test("project read failure remains focused and contained on mobile", async ({ hu
     "Hub couldn't load this project's configuration. Reload the page to try again.",
   );
   await expect(alert).toBeInViewport();
-});
+  await expect.poll(() => hub.primaryApplication().logs()).toContain("project.read failed");
+  expect(hub.primaryApplication().logs()).not.toContain("formatless-project-secret-8ac72f");
 
-test("dismisses the mobile project navigation overlay and keeps the route within the viewport", async ({
-  hub,
-  page,
-}) => {
-  const app = projectApp(page);
-  await hub.signUpAs("owner", owner);
-  await hub.createOrganization("owner", "Acme");
+  await hub.returnToProjects("owner");
   await app.navigation.openProject("Default");
   await app.navigation.openMobileProjectSection("Configuration");
   await expectMobileOverlayDismissed(page);

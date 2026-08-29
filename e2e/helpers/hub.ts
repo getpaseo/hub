@@ -12,7 +12,6 @@ import AxeBuilder from "@axe-core/playwright";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WebSocket, type RawData } from "ws";
-import { Client } from "pg";
 import { z } from "zod";
 import { dump } from "js-yaml";
 import type { SourcePaseo } from "./source-paseo.js";
@@ -21,18 +20,19 @@ import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-provider
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
 import { fixtureSubscriptionId } from "../../src/e2e/harness/browser-billing.js";
-import { createDatabase } from "../../src/db/test-utils/runtime.js";
-import { ProjectConfigurationStore } from "../../src/configuration/store.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { SHOTS } from "./app-evidence.js";
-import { ProjectNavigation } from "./projects/navigation.js";
+import {
+  ProjectNavigation,
+  type OrganizationSection,
+  type OrganizationSettingsSection,
+} from "./projects/navigation.js";
 import { ProjectConfiguration } from "./projects/configuration.js";
 
 export interface BuiltApplication {
   origin: string;
-  databaseUrl: string;
   machineKey: string;
   logs(): string;
   deliverDiscord(event: BrowserDiscordEvent): Promise<void>;
@@ -55,6 +55,20 @@ export interface BuiltApplication {
   prepareSlackSocketWorkflow(): Promise<void>;
   deliverSlackSocketMention(eventId: string): Promise<void>;
   slackSocketEvidence(eventId: string): Promise<{ receipts: number; runs: number }>;
+  /** Executes fixture setup or inspection against the database owned by this application. */
+  query(sql: string, params?: readonly unknown[]): Promise<Record<string, unknown>[]>;
+  installUnroutedSlackFixture(input: {
+    projectId: string;
+    userId: string;
+    files: readonly HubBundleFile[];
+  }): Promise<void>;
+  installProviderDispatchFixture(input: {
+    organizationId: string;
+    repositoryId: number;
+    repository: string;
+    guildId: string;
+    files: readonly HubBundleFile[];
+  }): Promise<void>;
   restart(): Promise<void>;
 }
 
@@ -70,13 +84,11 @@ export interface BuiltApplicationOptions {
   /** Operator-managed provider applications, starting from nothing configured. */
   providerApplications?: boolean;
   /** Providers the instance environment configures, which the surface must render read-only. */
-  environmentApps?: readonly ("github" | "slack" | "discord")[];
+  environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
   /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
   https?: boolean;
   /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
   reverseProxy?: boolean;
-  /** Exercise the built application with its zero-DATABASE_URL embedded PGlite runtime. */
-  embedded?: boolean;
   bootstrap?: {
     organizationName: string;
     ownerEmail: string;
@@ -93,6 +105,17 @@ export interface Account {
 }
 
 const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
+
+/** The sidebar's four organization entries, in rendered order. */
+const ORGANIZATION_DESTINATIONS = ["Projects", "Daemons", "Connections", "Settings"] as const;
+/** Instance surfaces sit outside `/o/`, so the path is what says the sidebar is in instance scope. */
+const INSTANCE_ROUTES: readonly string[] = ["/apps", "/operator"];
+const ORGANIZATION_SETTINGS_SECTIONS: readonly OrganizationSettingsSection[] = [
+  "Team",
+  "API keys",
+  "Usage",
+  "Billing",
+];
 
 interface TeamExpectation {
   membersPresent: string[];
@@ -291,10 +314,9 @@ export class PaseoHub {
   async openAppSetup(input: {
     account: Account;
     providerScenario?: BrowserProviderScenario;
-    environmentApps?: readonly ("github" | "slack" | "discord")[];
+    environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
     https?: boolean;
     reverseProxy?: boolean;
-    embedded?: boolean;
   }): Promise<AppSetupSession> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -303,7 +325,6 @@ export class PaseoHub {
       ...(input.providerScenario === undefined ? {} : { providerScenario: input.providerScenario }),
       https: input.https === true,
       reverseProxy: input.reverseProxy === true,
-      embedded: input.embedded === true,
       ...(input.environmentApps === undefined ? {} : { environmentApps: input.environmentApps }),
     });
     const context = await this.browser.newContext({
@@ -324,11 +345,13 @@ export class PaseoHub {
         await page.goto(`${application.origin}/apps`);
         await surface.expectManagement();
       },
+      navigateToApps: async () => {
+        await new ProjectNavigation(page).openInstanceSection(input.account.email, "Apps");
+        await surface.expectManagement();
+      },
       returnFromProvider: async (provider, result) => {
         await page.goto(`${application.origin}/?app=${provider}&result=${result}`);
       },
-      providerApplicationVersion: (provider) =>
-        providerApplicationVersion(application.databaseUrl, provider),
       seedSignedDelivery: (provider) => seedSignedDelivery(page, application.origin, provider),
       prepareSlackSocketWorkflow: () => application.prepareSlackSocketWorkflow(),
       deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
@@ -531,7 +554,7 @@ export class PaseoHub {
 
   async seedProjectHistory(alias: string, projectSlug: string): Promise<void> {
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `with target as (
          select project.id project_id, project.organization_id, "user".id user_id
          from session
@@ -592,7 +615,7 @@ export class PaseoHub {
       )
       .parse(
         await this.queryDatabaseRows(
-          this.primary.databaseUrl,
+          this.primary,
           `select project.id project_id, project.organization_id, "user".id user_id
            from session
            join "user" on "user".id = session.user_id
@@ -604,7 +627,7 @@ export class PaseoHub {
       );
     if (target === undefined) throw new Error("Slack event project unavailable");
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `insert into slack_connections
          (organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes, connected_by_user_id)
        values ($1, 'T-drop-reason', 'drop-reason-slack', 'Drop Reason Slack', 'UBOT',
@@ -612,42 +635,13 @@ export class PaseoHub {
                '["app_mentions:read","channels:history","chat:write","files:read","groups:history","reactions:write","users:read"]'::jsonb, $2)`,
       [target.organization_id, target.user_id],
     );
-    const database = await createDatabase(this.primary.databaseUrl);
-    try {
-      const verifier = `browser-drop-reason-${randomUUID()}`;
-      const now = new Date();
-      const issued = await database.issueEnrollmentToken({
-        id: randomUUID(),
-        verifier,
-        organizationId: target.organization_id,
-        expiresAt: new Date(now.getTime() + 10 * 60_000),
-        consumedAt: null,
-      });
-      if (!issued) throw new Error("Slack event daemon enrollment token unavailable");
-      const daemon = await database.enrollDaemon({
-        daemonId: randomUUID(),
-        idempotencyKey: randomUUID(),
-        tokenVerifier: verifier,
-        serverId: randomUUID(),
-        daemonPublicKey: "browser-drop-reason-public-key",
-        credentialVerifier: createHash("sha256")
-          .update("browser-drop-reason-credential")
-          .digest("base64url"),
-        scopes: ["hub.execution.*"],
-        now,
-      });
-      if (daemon === undefined || daemon.status === "slug_conflict")
-        throw new Error("Slack event daemon enrollment failed");
-      const store = new ProjectConfigurationStore(database, target.project_id);
-      const revision = await store.insertManualBundleRevision({
-        files: configurationBundleFixture(dump(browserUnroutedSlackConfiguration(daemon.slug))),
-        userId: target.user_id,
-        sourceEvidence: { kind: "browser-drop-reason" },
-      });
-      await store.activate(revision.id);
-    } finally {
-      await database.close();
-    }
+    const daemonSlug = "browser-drop-reason";
+    await this.seedDaemonForEmail(this.primary, email, daemonSlug);
+    await this.primary.installUnroutedSlackFixture({
+      projectId: target.project_id,
+      userId: target.user_id,
+      files: configurationBundleFixture(dump(browserUnroutedSlackConfiguration(daemonSlug))),
+    });
 
     const body = JSON.stringify({
       type: "event_callback",
@@ -684,7 +678,7 @@ export class PaseoHub {
 
     const reasons = z.array(z.object({ dropped_reason: z.string() })).parse(
       await this.queryDatabaseRows(
-        this.primary.databaseUrl,
+        this.primary,
         `select dropped_reason from provider_event_receipts
            where delivery_id = 'slack-browser-unrouted-reason'`,
         [],
@@ -696,11 +690,10 @@ export class PaseoHub {
   }
 
   async setDaemonSlug(daemonId: string, slug: string): Promise<void> {
-    await this.queryDatabase(
-      this.primary.databaseUrl,
-      "update daemons set slug = $2 where id = $1",
-      [daemonId, slug],
-    );
+    await this.queryDatabase(this.primary, "update daemons set slug = $2 where id = $1", [
+      daemonId,
+      slug,
+    ]);
   }
 
   async runManualInput(input: {
@@ -800,7 +793,7 @@ export class PaseoHub {
    */
   async grantOperator(alias: string): Promise<void> {
     await this.queryDatabaseRows(
-      this.primary.databaseUrl,
+      this.primary,
       `with promoted as (
          update "user"
          set is_instance_operator = true
@@ -1052,7 +1045,7 @@ export class PaseoHub {
   private async organizationIdForAlias(alias: string): Promise<string> {
     const rows = z.array(z.object({ id: z.string() })).parse(
       await this.queryDatabaseRows(
-        this.primary.databaseUrl,
+        this.primary,
         `select active_organization_id as id from session
          join "user" on "user".id = session.user_id
          where lower("user".email) = $1 and active_organization_id is not null
@@ -1154,7 +1147,7 @@ export class PaseoHub {
       .array(z.object({ id: z.string(), name: z.string() }))
       .parse(
         await this.queryDatabaseRows(
-          this.primary.databaseUrl,
+          this.primary,
           `select id, name from organization where name in ('Acme', 'Orbit') order by name`,
           [],
         ),
@@ -1162,7 +1155,7 @@ export class PaseoHub {
     const acmeId = z.string().parse(organizations.find(({ name }) => name === "Acme")?.id);
     const orbitId = z.string().parse(organizations.find(({ name }) => name === "Orbit")?.id);
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `update daemons set slug = 'shared-dispatch' where id = any($1::uuid[])`,
       [[acmeDaemon.daemonId, orbitDaemon.daemonId]],
     );
@@ -1191,7 +1184,7 @@ export class PaseoHub {
       async () =>
         dispatchesSchema.parse(
           await this.queryDatabaseRows(
-            this.primary.databaseUrl,
+            this.primary,
             `select r.delivery_id,
                     r.organization_id as trigger_organization_id,
                     c.organization_id as config_organization_id,
@@ -1242,7 +1235,7 @@ export class PaseoHub {
       )
       .parse(
         await this.queryDatabaseRows(
-          this.primary.databaseUrl,
+          this.primary,
           `select r.delivery_id, r.organization_id, r.dropped_reason,
                   count(run.id)::integer as executions
            from provider_event_receipts r
@@ -1289,7 +1282,7 @@ export class PaseoHub {
       const configuration = new ProjectConfiguration(page);
       await user.signUp(account);
       await user.createOrganization("Discord only");
-      await this.seedDaemonForEmail(application.databaseUrl, account.email, "editor-daemon");
+      await this.seedDaemonForEmail(application, account.email, "editor-daemon");
       await navigation.openProject("Default");
       await navigation.openProjectSection("Configuration");
       await configuration.saveManualConfiguration(rawYaml);
@@ -1327,7 +1320,7 @@ export class PaseoHub {
       await user.expectForgedConnectionStateRejected();
       const expired = await user.beginProviderConnection("github");
       await this.queryDatabase(
-        application.databaseUrl,
+        application,
         `update organization_connection_attempts
          set expires_at = clock_timestamp() - interval '1 millisecond'`,
         [],
@@ -1408,19 +1401,14 @@ export class PaseoHub {
   }
 
   async seedSuspendedGitHubConnection(organizationName: string): Promise<void> {
-    const client = new Client({ connectionString: this.primary.databaseUrl });
-    await client.connect();
-    try {
-      await client.query(
-        `insert into github_connections
-           (organization_id, installation_id, slug, account_id, account_login, account_type, status)
-         select id, 42, 'github-suspended-inc', '420', 'suspended-inc', 'Organization', 'suspended'
-         from organization where name = $1`,
-        [organizationName],
-      );
-    } finally {
-      await client.end();
-    }
+    await this.queryDatabase(
+      this.primary,
+      `insert into github_connections
+         (organization_id, installation_id, slug, account_id, account_login, account_type, status)
+       select id, 42, 'github-suspended-inc', '420', 'suspended-inc', 'Organization', 'suspended'
+       from organization where name = $1`,
+      [organizationName],
+    );
   }
 
   async expectSuspendedGitHubConnection(alias: string): Promise<void> {
@@ -1533,7 +1521,7 @@ export class PaseoHub {
     const credential = `paseo_cli_${randomUUID().replaceAll("-", "").slice(0, 12)}_${randomUUID().replaceAll("-", "")}`;
     const prefix = credential.slice(0, "paseo_cli_".length + 12);
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `insert into organization_cli_credentials
          (id, organization_id, prefix, verifier, created_by_user_id)
        select $1, session.active_organization_id, $2, $3, "user".id
@@ -1557,15 +1545,14 @@ export class PaseoHub {
       credential,
     );
     const daemonId = z.string().uuid().parse(result["daemonId"]);
-    await this.queryDatabase(
-      this.primary.databaseUrl,
-      "update daemons set slug = $2 where id = $1",
-      [daemonId, slugify(displayName, "daemon")],
-    );
+    await this.queryDatabase(this.primary, "update daemons set slug = $2 where id = $1", [
+      daemonId,
+      slugify(displayName, "daemon"),
+    ]);
     await expect
       .poll(async () => {
         const rows = await this.queryDatabaseRows(
-          this.primary.databaseUrl,
+          this.primary,
           "select presence from daemons where id = $1",
           [daemonId],
         );
@@ -1691,7 +1678,7 @@ export class PaseoHub {
     await user.openCliLoginApproval(request.verificationUrl, "Acme");
     await user.approveCliLogin();
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       "update cli_authorizations set next_poll_at = now() where status = 'approved'",
       [],
     );
@@ -1728,7 +1715,7 @@ export class PaseoHub {
   async expireCliLogin(alias: string): Promise<void> {
     const request = await this.startRegistrationRequest("CLI login");
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       "update cli_authorizations set expires_at = now() - interval '1 minute'",
       [],
     );
@@ -1804,7 +1791,7 @@ export class PaseoHub {
 
   async expireSession(alias: string): Promise<void> {
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `update session set expires_at = now() - interval '1 minute'
        from "user" where session.user_id = "user".id and lower("user".email) = $1`,
       [this.requireUser(alias).accountEmail],
@@ -1817,22 +1804,18 @@ export class PaseoHub {
   }
 
   private async seedDaemon(alias: string, displayName: string): Promise<string> {
-    return this.seedDaemonForEmail(
-      this.primary.databaseUrl,
-      this.requireUser(alias).accountEmail,
-      displayName,
-    );
+    return this.seedDaemonForEmail(this.primary, this.requireUser(alias).accountEmail, displayName);
   }
 
   private async seedDaemonForEmail(
-    databaseUrl: string,
+    application: BuiltApplication,
     accountEmail: string,
     displayName: string,
   ): Promise<string> {
     const daemonId = randomUUID();
     const machineId = randomUUID();
     await this.queryDatabase(
-      databaseUrl,
+      application,
       `insert into machines (id, org_id, source, status)
        select $1, session.active_organization_id,
               jsonb_build_object('kind', 'daemon', 'daemonId', $2::text), 'alive'
@@ -1841,7 +1824,7 @@ export class PaseoHub {
       [machineId, daemonId, accountEmail],
     );
     await this.queryDatabase(
-      databaseUrl,
+      application,
       `insert into daemons
          (id, idempotency_key, enrollment_verifier, slug, machine_id, organization_id, server_id,
           daemon_public_key, credential_verifier, scopes, status)
@@ -1855,7 +1838,7 @@ export class PaseoHub {
 
   async revokeActiveMembership(alias: string): Promise<void> {
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `delete from member using "user"
        where member.user_id = "user".id and lower("user".email) = $1
          and member.organization_id in (
@@ -1947,7 +1930,7 @@ export class PaseoHub {
     const enrollmentToken = randomUUID();
     const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
     await this.queryDatabase(
-      this.primary.databaseUrl,
+      this.primary,
       `insert into daemon_enrollment_tokens (id, verifier, organization_id, expires_at)
        select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
       [randomUUID(), verifier, organizationName],
@@ -1964,60 +1947,22 @@ export class PaseoHub {
     repo: string,
     guildId: string,
   ): Promise<void> {
-    const database = await createDatabase(this.primary.databaseUrl);
-    try {
-      const project = await database.findProjectBySlugForOrganization(organizationId, "default");
-      if (project === undefined) throw new Error("default project unavailable");
-      const daemon = await database.findDaemonBySlugForOrganization(
-        organizationId,
-        "shared-dispatch",
-      );
-      if (daemon === undefined) throw new Error("dispatch daemon unavailable");
-      const [owner] = z.array(z.object({ user_id: z.string() })).parse(
-        await this.queryDatabaseRows(
-          this.primary.databaseUrl,
-          `select user_id from member
-             where organization_id = $1 and role = 'owner'
-             order by id limit 1`,
-          [organizationId],
-        ),
-      );
-      if (owner === undefined) throw new Error("organization owner unavailable");
-      const github = await database.findGitHubConnection(repositoryId);
-      if (github === undefined || github.organizationId !== organizationId) {
-        throw new Error("GitHub connection unavailable");
-      }
-      await database.upsertGitHubRepositories(organizationId, github.id, [
-        {
-          repositoryId,
-          fullName: repo,
-          defaultBranch: "main",
-        },
-      ]);
-      await database.setProjectGitHubConfigurationSource({
-        projectId: project.id,
-        githubConnectionId: github.id,
-        githubRepositoryId: repositoryId,
-        githubRepositoryFullName: repo,
-        githubDefaultBranch: "main",
-        automaticDeploymentEnabled: true,
-        userId: owner.user_id,
-      });
-      const discord = await database.findDiscordConnection(guildId);
-      if (discord === undefined || discord.organizationId !== organizationId) {
-        throw new Error("Discord connection unavailable");
-      }
-
-      const store = new ProjectConfigurationStore(database, project.id);
-      const revision = await store.insertManualBundleRevision({
-        files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, discord.slug))),
-        userId: owner.user_id,
-        sourceEvidence: { kind: "browser-fixture", userId: owner.user_id },
-      });
-      await store.activate(revision.id);
-    } finally {
-      await database.close();
-    }
+    const [discord] = z.array(z.object({ slug: z.string() })).parse(
+      await this.queryDatabaseRows(
+        this.primary,
+        `select slug from discord_connections
+         where organization_id = $1 and guild_id = $2`,
+        [organizationId, guildId],
+      ),
+    );
+    if (discord === undefined) throw new Error("Discord connection unavailable");
+    await this.primary.installProviderDispatchFixture({
+      organizationId,
+      repositoryId,
+      repository: repo,
+      guildId,
+      files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, discord.slug))),
+    });
   }
 
   private async deliverGitHub(
@@ -2052,28 +1997,20 @@ export class PaseoHub {
     });
   }
 
-  private async queryDatabase(databaseUrl: string, text: string, values: unknown[]): Promise<void> {
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
-    try {
-      await client.query(text, values);
-    } finally {
-      await client.end();
-    }
+  private async queryDatabase(
+    application: BuiltApplication,
+    text: string,
+    values: readonly unknown[],
+  ): Promise<void> {
+    await application.query(text, values);
   }
 
   private async queryDatabaseRows(
-    databaseUrl: string,
+    application: BuiltApplication,
     text: string,
-    values: unknown[],
+    values: readonly unknown[],
   ): Promise<unknown[]> {
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
-    try {
-      return (await client.query(text, values)).rows;
-    } finally {
-      await client.end();
-    }
+    return await application.query(text, values);
   }
 
   private async verifyManualApplication(application: BuiltApplication): Promise<void> {
@@ -2393,7 +2330,7 @@ export class PaseoHub {
       async () =>
         z.array(z.object({ id: z.string().uuid() })).parse(
           await this.queryDatabaseRows(
-            application.databaseUrl,
+            application,
             `select execution.id
                from agent_executions execution
                join workflow_step_runs step on step.agent_execution_id = execution.id
@@ -2528,10 +2465,11 @@ class HubUser {
     await this.completeFirstRunClaimWithKeyboard(account, armAccountSetupFailure);
     await this.page.setViewportSize({ width: 1280, height: 800 });
     await expect(this.page.getByText(account.email, { exact: true })).toBeVisible();
-    // Keyboard control survives the arrival: the dashboard's own entry point is one Tab away,
-    // exactly as it is after an ordinary sign-in.
-    await this.page.keyboard.press("Tab");
-    await expect(this.page.getByRole("button", { name: "Organization" })).toBeFocused();
+    // Keyboard control survives both the mobile onboarding arrival and the resize: closing the
+    // drawer restores its trigger, and that same control remains focused in the desktop header.
+    await expect(
+      this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" }),
+    ).toBeFocused();
 
     // Setup provisioned a working organization, not just a row: onboarding ended inside its
     // default project, and that project renders.
@@ -3003,10 +2941,6 @@ class HubUser {
     await expect(form).toBeVisible();
     await form.getByLabel("Organization name").fill(name);
     await form.getByRole("button", { name: "Create organization" }).click();
-    await expect(switcher).toContainText(name);
-    await expect(
-      this.page.locator("header").first().getByText(name, { exact: true }),
-    ).toBeVisible();
     await this.expectActiveOrganization(name);
   }
 
@@ -3665,9 +3599,27 @@ class HubUser {
   }
 
   async expectActiveOrganization(name: string): Promise<void> {
-    await expect(
-      this.page.locator("header").first().getByText(name, { exact: true }),
-    ).toBeVisible();
+    const drawer = this.page.getByRole("dialog", { name: "Sidebar" });
+    const mobile = (this.page.viewportSize()?.width ?? 1280) < 768;
+    if (!mobile) {
+      await expect(
+        this.page.getByRole("button", { name: "Organization", exact: true }),
+      ).toContainText(name);
+      return;
+    }
+    const drawerWasOpen = await drawer.isVisible().catch(() => false);
+    if (!drawerWasOpen) {
+      const toggle = this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" });
+      await expect(toggle).toBeVisible();
+      await toggle.click();
+    }
+    await expect(drawer.getByRole("button", { name: "Organization", exact: true })).toContainText(
+      name,
+    );
+    if (!drawerWasOpen) {
+      await this.page.keyboard.press("Escape");
+      await expect(drawer).toBeHidden();
+    }
   }
 
   async expectDesktopSidebarAndOrganizationMenu(): Promise<void> {
@@ -3675,28 +3627,11 @@ class HubUser {
     const identity = this.page.getByText(this.accountEmail, { exact: true });
     await expect(identity).toBeVisible();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
-    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
-    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
-    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
-    const team = this.page.getByRole("link", { name: "Team", exact: true });
-    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(projects).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(daemons).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(connections).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(apiKeys).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(team).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(usage).toBeFocused();
+    await this.tabThroughOrganizationDestinations();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3721,30 +3656,13 @@ class HubUser {
     await this.openOrganizationSection("Team");
     await this.page.reload();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const projects = this.page.getByRole("link", { name: "Projects", exact: true });
-    const daemons = this.page.getByRole("link", { name: "Daemons", exact: true });
-    const connections = this.page.getByRole("link", { name: "Connections", exact: true });
-    const apiKeys = this.page.getByRole("link", { name: "API keys", exact: true });
-    const team = this.page.getByRole("link", { name: "Team", exact: true });
-    const usage = this.page.getByRole("link", { name: "Usage", exact: true });
     const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(projects).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(daemons).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(connections).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(apiKeys).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(team).toBeFocused();
-    await this.page.keyboard.press("Tab");
-    await expect(usage).toBeFocused();
+    await this.tabThroughOrganizationDestinations();
     await this.page.keyboard.press("Tab");
     await expect(account).toBeFocused();
 
@@ -3788,7 +3706,7 @@ class HubUser {
     const sidebar = this.page.getByRole("dialog", { name: "Sidebar" });
     await expect(sidebar).toBeVisible();
     const organization = sidebar.getByRole("button", { name: "Organization" });
-    const team = sidebar.getByRole("link", { name: "Team", exact: true });
+    const settings = sidebar.getByRole("link", { name: "Settings", exact: true });
     await expect(organization).toBeFocused();
     await expectAccessible(this.page);
     await this.page.keyboard.press("Escape");
@@ -3798,16 +3716,25 @@ class HubUser {
     await expect(sidebar).toBeVisible();
     await expect(organization).toBeFocused();
     // Forward through the destinations in their rendered order rather than relying on the
-    // focus trap wrapping backwards: the drawer now ends on the account menu, not on Team.
-    for (const destination of ["Projects", "Daemons", "Connections", "API keys", "Team"]) {
+    // focus trap wrapping backwards: the drawer now ends on the account menu, not on Settings.
+    for (const destination of ORGANIZATION_DESTINATIONS) {
       await this.page.keyboard.press("Tab");
       await expect(sidebar.getByRole("link", { name: destination, exact: true })).toBeFocused();
     }
-    await expect(team).toBeFocused();
+    await expect(settings).toBeFocused();
     await this.page.keyboard.press("Enter");
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    // Settings lands on Team, the one section every role can read.
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(sidebar).toBeHidden();
     await expect(this.page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
+  }
+
+  /** Tabs from the organization switcher through the sidebar's destinations, asserting order. */
+  private async tabThroughOrganizationDestinations(): Promise<void> {
+    for (const destination of ORGANIZATION_DESTINATIONS) {
+      await this.page.keyboard.press("Tab");
+      await expect(this.page.getByRole("link", { name: destination, exact: true })).toBeFocused();
+    }
   }
 
   async navigateToConnectionsFromMobileSidebar(): Promise<void> {
@@ -3850,10 +3777,18 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
+  /**
+   * A non-operator is offered the instance nowhere. It is not in the sidebar body in any scope,
+   * and the account menu it now enters through does not list it either.
+   */
   async expectNoOperatorNav(): Promise<void> {
     await this.openOrganizationSection("Projects");
     await expect(this.page.getByRole("navigation", { name: "Instance" })).toHaveCount(0);
     await expect(this.page.getByRole("link", { name: "Operator", exact: true })).toHaveCount(0);
+    const menu = await this.navigation.openAccountMenu(this.accountEmail);
+    await expect(menu.getByRole("menuitem", { name: "Instance administration" })).toHaveCount(0);
+    await this.page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
   }
 
   /** A non-operator reaching the operator route is refused server-side, not merely un-navigated to. */
@@ -3863,10 +3798,7 @@ class HubUser {
   }
 
   async openOperatorConsole(): Promise<void> {
-    await this.page
-      .getByRole("navigation", { name: "Instance" })
-      .getByRole("link", { name: "Operator" })
-      .click();
+    await this.navigation.openInstanceSection(this.accountEmail, "Operator");
     await expect(
       this.page.getByRole("heading", { name: "Operator", exact: true, level: 1 }),
     ).toBeVisible();
@@ -3994,7 +3926,7 @@ class HubUser {
   async expectBillingPageUnavailable(): Promise<void> {
     const organizationSlug = new URL(this.page.url()).pathname.split("/")[2];
     if (organizationSlug === undefined) throw new Error("organization slug is unavailable");
-    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/billing`);
+    const response = await this.page.goto(`${this.origin}/o/${organizationSlug}/settings/billing`);
     expect(response?.status()).toBe(404);
   }
 
@@ -4027,8 +3959,11 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
     ).toBeVisible();
-    // Scope to main: a plan name like "Team" also names a sidebar nav link.
-    await expect(this.page.getByRole("main").getByText(plan, { exact: true })).toBeVisible();
+    // Scope to the Plan section: a plan name like "Team" also names a settings tab.
+    const planSection = this.page
+      .locator("section")
+      .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
+    await expect(planSection.getByText(plan, { exact: true })).toBeVisible();
     await expectAccessible(this.page);
   }
 
@@ -4494,7 +4429,7 @@ class HubUser {
 
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
-    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(3);
+    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(4);
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
     await expectAccessible(this.page);
   }
@@ -4534,7 +4469,7 @@ class HubUser {
   }
 
   async expectMobileTeamFitsViewport(): Promise<void> {
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(this.page.getByRole("heading", { name: "Team", exact: true })).toBeVisible();
     await expect(this.page.getByText("No pending invitations", { exact: true })).toBeVisible();
     const table = this.page.getByRole("table", { name: "Members" });
@@ -4595,14 +4530,11 @@ class HubUser {
     await this.page.getByRole("menuitem", { name: "Cancel invitation" }).click();
     await invitationDialog.getByRole("button", { name: "Cancel invitation" }).click();
     await expect(invitation).toHaveCount(0);
-    await expect(this.page.getByText("No pending invitations", { exact: true })).toBeVisible();
   }
 
   async expectMemberBoundary(organizationName: string): Promise<void> {
     await this.openOrganizationSection("Team");
-    await expect(
-      this.page.locator("header").first().getByText(organizationName, { exact: true }),
-    ).toBeVisible();
+    await this.expectActiveOrganization(organizationName);
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expect(this.page.getByRole("heading", { name: "Pending invitations" })).toHaveCount(0);
   }
@@ -4658,7 +4590,7 @@ class HubUser {
         this.page.getByRole("heading", { name: "Choose an organization" }),
       ).toBeVisible();
     }
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/team$/u);
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/settings\/team$/u);
     await expect(this.page.getByRole("heading", { name: "Team" })).toHaveCount(0);
     for (const value of cachedValues) {
       await expect(this.page.getByText(value, { exact: true })).toHaveCount(0);
@@ -4696,16 +4628,46 @@ class HubUser {
     await form.getByRole("button", { name: "Create organization" }).click();
   }
 
+  /**
+   * Reaches an organization surface by whichever route the information architecture puts it on:
+   * Projects, Daemons, and Connections are sidebar entries, the administration sections are tabs
+   * under Settings. Callers name the destination, not the path to it.
+   */
   private async openOrganizationSection(
-    name: "Projects" | "Daemons" | "Connections" | "Team" | "API keys" | "Usage" | "Billing",
+    name: OrganizationSection | OrganizationSettingsSection,
   ): Promise<void> {
-    const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
-    if (await mobileSidebar.isVisible().catch(() => false)) {
-      await this.navigation.openMobileOrganizationSection(name);
+    const settings = ORGANIZATION_SETTINGS_SECTIONS.includes(name as OrganizationSettingsSection);
+    await this.returnToOrganizationScope();
+    const mobile = await this.page
+      .getByRole("button", { name: "Toggle Sidebar" })
+      .isVisible()
+      .catch(() => false);
+    if (settings) {
+      const section = name as OrganizationSettingsSection;
+      if (mobile) await this.navigation.openMobileOrganizationSettings(section);
+      else await this.navigation.openOrganizationSettings(section);
     } else {
-      await this.navigation.openOrganizationSection(name);
+      const section = name as OrganizationSection;
+      if (mobile) await this.navigation.openMobileOrganizationSection(section);
+      else await this.navigation.openOrganizationSection(section);
     }
     await expect(this.page.getByRole("heading", { name, exact: true, level: 1 })).toBeVisible();
+  }
+
+  /**
+   * The sidebar body lists one scope's destinations, so organization destinations are not
+   * reachable from inside a project or from the instance. Take whichever back row the scope
+   * offers, exactly as a user would.
+   */
+  private async returnToOrganizationScope(): Promise<void> {
+    const pathname = new URL(this.page.url()).pathname;
+    const instance = INSTANCE_ROUTES.includes(pathname);
+    if (!instance && !/\/projects\/[^/]+\//u.test(pathname)) return;
+    const mobileSidebar = this.page.getByRole("button", { name: "Toggle Sidebar" });
+    if (await mobileSidebar.isVisible().catch(() => false)) await mobileSidebar.click();
+    if (instance) await this.navigation.leaveInstance();
+    else await this.navigation.leaveProject();
+    await expect(this.page.getByRole("heading", { name: "Projects" })).toBeVisible();
   }
 
   private async refreshOrganizationSection(name: "Daemons" | "Connections" | "Team") {
@@ -4737,8 +4699,12 @@ export interface AppSetupSession {
   surface: AppSetupSurface;
   origin: string;
   openManagement(): Promise<void>;
-  returnFromProvider(provider: "github" | "slack" | "discord", result: string): Promise<void>;
-  providerApplicationVersion(provider: "github" | "slack" | "discord"): Promise<number | null>;
+  /** Reaches Apps the way an operator does after onboarding: through the account menu. */
+  navigateToApps(): Promise<void>;
+  returnFromProvider(
+    provider: "github" | "slack" | "discord" | "linear",
+    result: string,
+  ): Promise<void>;
   /** A correctly-signed inbound delivery — the only thing that proves a webhook secret. */
   seedSignedDelivery(provider: "github" | "slack"): Promise<void>;
   prepareSlackSocketWorkflow(): Promise<void>;
@@ -4806,23 +4772,6 @@ async function seedSignedDelivery(
     },
   });
   expect(response.ok()).toBe(true);
-}
-
-async function providerApplicationVersion(
-  databaseUrl: string,
-  provider: "github" | "slack" | "discord",
-): Promise<number | null> {
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  try {
-    const result = await client.query<{ version: number }>(
-      `select version from runtime_provider_configuration where provider = $1`,
-      [provider],
-    );
-    return result.rows[0]?.version ?? null;
-  } finally {
-    await client.end();
-  }
 }
 
 async function expectAccessible(page: Page): Promise<void> {
