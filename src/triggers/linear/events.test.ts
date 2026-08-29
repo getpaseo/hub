@@ -45,17 +45,27 @@ describe("Linear event normalization", () => {
     assert.deepEqual(event?.actor, { id: "user-1" });
   });
 
+  it("preserves a comment's parent identity", () => {
+    const reply = normalizeComment({ parent: { id: "comment-root" } });
+    const root = normalizeComment({ parentId: null });
+
+    assert.equal(reply?.type, "comment");
+    assert.equal(reply?.type === "comment" ? reply.comment.parentId : undefined, "comment-root");
+    assert.equal(root?.type === "comment" ? root.comment.parentId : undefined, null);
+  });
+
   it("preserves explicit nulls in relation-expanded previous issue values", () => {
     const event = normalizeLinearEvent({
       action: "update",
       type: "Issue",
       organizationId: "linear-org",
-      updatedFrom: { project: null, state: null, assignee: null },
+      updatedFrom: { project: null, team: null, state: null, assignee: null },
       data: {
         id: "issue-1",
         title: "Newly scoped issue",
         description: null,
         project: { id: "project-1" },
+        team: { id: "team-1" },
         state: { id: "state-1" },
         assignee: { id: "user-1" },
       },
@@ -65,6 +75,7 @@ describe("Linear event normalization", () => {
     if (event?.type !== "issue") throw new Error("expected an issue event");
     assert.deepEqual(event.updatedFrom, {
       projectId: null,
+      teamId: null,
       stateId: null,
       assigneeId: null,
     });
@@ -80,6 +91,7 @@ describe("Linear event normalization", () => {
           id: "issue-1",
           title: "Projectless issue",
           project: null,
+          team: null,
           state: null,
           assignee: null,
         },
@@ -90,6 +102,7 @@ describe("Linear event normalization", () => {
         title: "Projectless issue",
         description: null,
         projectId: "later-project",
+        teamId: "later-team",
         stateId: "later-state",
         assigneeId: "later-assignee",
         labelIds: [],
@@ -101,10 +114,11 @@ describe("Linear event normalization", () => {
     assert.deepEqual(
       {
         projectId: event.issue.projectId,
+        teamId: event.issue.teamId,
         stateId: event.issue.stateId,
         assigneeId: event.issue.assigneeId,
       },
-      { projectId: null, stateId: null, assigneeId: null },
+      { projectId: null, teamId: null, stateId: null, assigneeId: null },
     );
   });
 
@@ -122,6 +136,7 @@ describe("Linear event normalization", () => {
     assert.equal(event.parserMessage, "@Paseo please draft a fix");
     assert.equal(event.actor?.id, "user-1");
     assert.equal(event.issue?.projectId, "project-1");
+    assert.equal(event.issue?.teamId, "team-1");
     assert.equal(event.agentActivity, null);
   });
 
@@ -181,6 +196,7 @@ function hydratedIssue() {
     description: "Useful context",
     url: "https://linear.app/acme/issue/ENG-42/ship-the-feature",
     projectId: "project-1",
+    teamId: "team-1",
     stateId: "ready",
     assigneeId: "app-user",
     labelIds: ["agent-ready"],

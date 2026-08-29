@@ -65,6 +65,78 @@ describe("Linear trigger matching", () => {
     );
   });
 
+  it("routes projectless issues by team and can select comment replies", () => {
+    const config = configuration();
+    const teamScout = {
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "scout")
+        .map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: { team: "team-1", states: ["ready"], exclude_labels: ["no-paseo"] },
+          }),
+        ),
+    };
+    assert.deepEqual(
+      matchLinearTriggers(
+        teamScout,
+        issue({ issue: { ...issue().issue, projectId: null, teamId: "team-1" } }),
+      ).map((match) => match.trigger.name),
+      ["scout"],
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({ issue: { ...issue().issue, projectId: null, teamId: "other-team" } }),
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({
+          action: "update",
+          issue: { ...issue().issue, projectId: null, teamId: "team-1" },
+          updatedFrom: { teamId: "other-team" },
+        }),
+      ).length,
+      1,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({
+          action: "update",
+          issue: { ...issue().issue, projectId: null, teamId: "team-1" },
+          updatedFrom: { teamId: "team-1" },
+        }),
+      ).length,
+      0,
+    );
+
+    const replies = {
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: {
+              project: "project-1",
+              from_users: ["operator"],
+              replies_only: true,
+            },
+          }),
+        ),
+    };
+    assert.equal(matchLinearTriggers(replies, commentEvent("continue", null)).length, 0);
+    assert.deepEqual(
+      matchLinearTriggers(replies, commentEvent("continue", "root-comment")).map(
+        (match) => match.trigger.name,
+      ),
+      ["comment"],
+    );
+  });
+
   it("keeps triggers isolated to their configured Linear connection", () => {
     const connectionId = "11111111-1111-4111-8111-111111111111";
     const config = configuration();
@@ -252,6 +324,7 @@ function issue(
       title: "Ship the feature",
       description: "Useful context",
       projectId: "project-1",
+      teamId: "team-1",
       stateId: "ready",
       assigneeId: "user-1",
       labelIds: labelIds ?? [],
@@ -261,7 +334,10 @@ function issue(
   };
 }
 
-function commentEvent(body = "@paseo please investigate"): NormalizedLinearCommentEvent {
+function commentEvent(
+  body = "@paseo please investigate",
+  parentId: string | null = null,
+): NormalizedLinearCommentEvent {
   const event = issue();
   return {
     type: "comment",
@@ -269,7 +345,7 @@ function commentEvent(body = "@paseo please investigate"): NormalizedLinearComme
     id: "comment-1",
     organizationId: event.organizationId,
     actor: event.actor,
-    comment: { id: "comment-1", issueId: event.issue.id, body },
+    comment: { id: "comment-1", issueId: event.issue.id, body, parentId },
     issue: event.issue,
   };
 }
