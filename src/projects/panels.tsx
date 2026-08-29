@@ -223,9 +223,18 @@ export function OrganizationConnectionsPanel() {
   const status = queryState<ConnectionStatus>(statusQuery, "Connections unavailable");
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: "github" | "discord" | "slack" | "linear") => {
+  const connectProvider = (
+    provider: "github" | "discord" | "slack" | "linear",
+    linearAgentSessions = false,
+  ) => {
     connect.mutate(
-      { data: { ...scope, provider } },
+      {
+        data: {
+          ...scope,
+          provider,
+          ...(provider === "linear" && linearAgentSessions ? { linearAgentSessions: true } : {}),
+        },
+      },
       {
         onSuccess: (response) => {
           if (response.status === "ok") window.location.assign(response.data.url);
@@ -340,13 +349,24 @@ export function OrganizationConnectionsPanel() {
                 {status.data[provider].status === "notConfigured" ? (
                   <UnconfiguredProvider provider={provider} operator={isInstanceOperator} />
                 ) : (
-                  <Button
-                    disabled={busy}
-                    variant="outline"
-                    onClick={() => connectProvider(provider)}
-                  >
-                    {connectionActionLabel(provider)} {providerLabel(provider)}
-                  </Button>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      disabled={busy}
+                      variant="outline"
+                      onClick={() => connectProvider(provider)}
+                    >
+                      {connectionActionLabel(provider)} {providerLabel(provider)}
+                    </Button>
+                    {provider === "linear" ? (
+                      <Button
+                        disabled={busy}
+                        variant="outline"
+                        onClick={() => connectProvider(provider, true)}
+                      >
+                        Connect for Agent Sessions
+                      </Button>
+                    ) : null}
+                  </div>
                 )}
               </div>
             ))}

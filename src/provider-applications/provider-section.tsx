@@ -215,9 +215,21 @@ export function ProviderSection({
     [activeGuide, fields, save, surface, view.configurationVersion],
   );
 
-  const startConnection = useCallback(() => {
-    connect.mutate({ data: { provider: guide.provider, organizationId, surface } });
-  }, [connect, guide.provider, organizationId, surface]);
+  const startConnection = useCallback(
+    (linearAgentSessions = false) => {
+      connect.mutate({
+        data: {
+          provider: guide.provider,
+          organizationId,
+          surface,
+          ...(guide.provider === "linear" && linearAgentSessions
+            ? { linearAgentSessions: true }
+            : {}),
+        },
+      });
+    },
+    [connect, guide.provider, organizationId, surface],
+  );
 
   const status = statusPresentation(view.status);
   // Once anything is saved the instructions become reference material and move behind a
@@ -368,7 +380,7 @@ function SectionBody({
   busy: boolean;
   connecting: boolean;
   replaceRef: React.RefObject<HTMLButtonElement | null>;
-  onConnect: () => void;
+  onConnect: (linearAgentSessions?: boolean) => void;
   onRetry: () => void;
   onReplace: () => void;
 }) {
@@ -654,7 +666,7 @@ function ConnectAction({
   view: ProviderApplicationView;
   busy: boolean;
   pending: boolean;
-  onConnect: () => void;
+  onConnect: (linearAgentSessions?: boolean) => void;
 }) {
   const label =
     view.connections.length > 0 ? guide.actions.connectAgain : (guide.actions.connect ?? undefined);
@@ -664,9 +676,16 @@ function ConnectAction({
   )
     return null;
   return (
-    <Button type="button" disabled={busy} onClick={onConnect}>
-      {pending ? "Opening…" : label}
-    </Button>
+    <>
+      <Button type="button" disabled={busy} onClick={() => onConnect(false)}>
+        {pending ? "Opening…" : label}
+      </Button>
+      {guide.provider === "linear" ? (
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onConnect(true)}>
+          {pending ? "Opening…" : "Connect for Agent Sessions"}
+        </Button>
+      ) : null}
+    </>
   );
 }
 
