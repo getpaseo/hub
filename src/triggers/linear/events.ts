@@ -10,12 +10,14 @@ const LinearIssueSchema = z.object({
   description: z.string().nullable(),
   url: z.string().url().optional(),
   projectId: LinearIdSchema.nullable(),
+  teamId: LinearIdSchema.nullable(),
   stateId: LinearIdSchema.nullable(),
   assigneeId: LinearIdSchema.nullable(),
   labelIds: z.array(LinearIdSchema),
 });
 const LinearIssuePreviousSchema = z.object({
   projectId: LinearIdSchema.nullable().optional(),
+  teamId: LinearIdSchema.nullable().optional(),
   stateId: LinearIdSchema.nullable().optional(),
   assigneeId: LinearIdSchema.nullable().optional(),
   labelIds: z.array(LinearIdSchema).optional(),
@@ -38,7 +40,12 @@ export const NormalizedLinearCommentEventSchema = z.object({
   id: LinearIdSchema,
   organizationId: LinearIdSchema,
   actor: LinearActorSchema.nullable(),
-  comment: z.object({ id: LinearIdSchema, body: z.string(), issueId: LinearIdSchema }),
+  comment: z.object({
+    id: LinearIdSchema,
+    body: z.string(),
+    issueId: LinearIdSchema,
+    parentId: LinearIdSchema.nullable(),
+  }),
   issue: LinearIssueSchema.nullable(),
   occurredAt: z.string().datetime().optional(),
 });
@@ -113,6 +120,10 @@ export function eventIssueId(event: NormalizedLinearEvent): string {
 
 export function eventProjectId(event: NormalizedLinearEvent): string | undefined {
   return event.issue?.projectId ?? undefined;
+}
+
+export function eventTeamId(event: NormalizedLinearEvent): string | undefined {
+  return event.issue?.teamId ?? undefined;
 }
 
 interface LinearEnvelope {
@@ -197,7 +208,12 @@ function normalizeCommentEvent(
       normalizeActor(envelope.data["user"]) ??
       actorFromUserId(envelope.data) ??
       null,
-    comment: { id: commentId, body: readString(envelope.data["body"]) ?? "", issueId },
+    comment: {
+      id: commentId,
+      body: readString(envelope.data["body"]) ?? "",
+      issueId,
+      parentId: relatedId(envelope.data, "parentId", "parent", null),
+    },
     issue: normalizeIssue(asRecord(envelope.data["issue"]) ?? {}, hydratedIssue) ?? null,
     ...(envelope.occurredAt === undefined ? {} : { occurredAt: envelope.occurredAt }),
   });
@@ -370,6 +386,7 @@ function normalizeIssue(
     description: nullableValue(data, "description", hydrated?.description ?? null),
     ...optionalProperty("url", url),
     projectId: relatedId(data, "projectId", "project", hydrated?.projectId ?? null),
+    teamId: relatedId(data, "teamId", "team", hydrated?.teamId ?? null),
     stateId: relatedId(data, "stateId", "state", hydrated?.stateId ?? null),
     assigneeId: relatedId(data, "assigneeId", "assignee", hydrated?.assigneeId ?? null),
     labelIds: firstDefined(readLabelIds(data), hydrated?.labelIds) ?? [],
@@ -422,6 +439,9 @@ function normalizePreviousIssue(value: unknown): z.infer<typeof LinearIssuePrevi
   return {
     ...(hasOwn(previous, "projectId") || hasOwn(previous, "project")
       ? { projectId: readPreviousRelatedId(previous, "projectId", "project") }
+      : {}),
+    ...(hasOwn(previous, "teamId") || hasOwn(previous, "team")
+      ? { teamId: readPreviousRelatedId(previous, "teamId", "team") }
       : {}),
     ...(hasOwn(previous, "stateId") || hasOwn(previous, "state")
       ? { stateId: readPreviousRelatedId(previous, "stateId", "state") }
