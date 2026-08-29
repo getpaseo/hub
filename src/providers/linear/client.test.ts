@@ -156,6 +156,7 @@ describe("Linear connection client", () => {
     });
     assert.equal(requests[0]?.authorization, "Bearer access-token");
     const request = graphqlRequest(requests[0]?.body ?? "{}");
+    assert.match(request.query, /\$before: DateTimeOrDuration!/u);
     assert.match(request.query, /last: 49/u);
     assert.match(request.query, /orderBy: createdAt/u);
     assert.match(request.query, /createdAt: \{ lt: \$before \}/u);
@@ -236,6 +237,7 @@ describe("Linear connection client", () => {
       },
     );
     const request = graphqlRequest(requests[0] ?? "{}");
+    assert.match(request.query, /\$before: DateTimeOrDuration!/u);
     assert.match(request.query, /activities\(/u);
     assert.match(request.query, /last: 49/u);
     assert.match(request.query, /createdAt: \{ lt: \$before \}/u);
