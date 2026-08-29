@@ -19,6 +19,7 @@ import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 import { selectActivePlanPrice } from "./plan-prices.js";
+import { publicBillingPlans, type PublicBillingPlan } from "./public-catalog.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -35,6 +36,7 @@ export type {
 } from "./stripe-catalog-source.js";
 export type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js";
+export type { PublicBillingPlan, PublicBillingPlanPrice } from "./public-catalog.js";
 
 /**
  * The four Stripe events that mean "the plan catalog may have changed" — see the plan's
@@ -80,9 +82,15 @@ function billingLockKey(organizationId: string): string {
 }
 
 /**
- * The plan a hosted organization gets before it pays. Identified by its `paseo_plan_slug`
- * metadata, mirrored as `billing_plans.slug` — so which product is "free" is set in the Stripe
- * dashboard, not hardcoded here (the plan's "Stripe is the source of truth" rule).
+ * The internal entitlement record a hosted organization is stamped with before it pays and again
+ * after it cancels. Identified by its `paseo_plan_slug` metadata, mirrored as `billing_plans.slug`
+ * — so which product carries the floor is set in the Stripe dashboard, not hardcoded here (the
+ * plan's "Stripe is the source of truth" rule).
+ *
+ * It is not an offer. Nothing customer-facing may present it as the organization's plan or as
+ * something to buy: `publicCatalog` withholds it from the catalog, and `subscriptionSnapshot`
+ * reports an organization stamped with it as having no plan. Enforcing both here is what keeps
+ * consumers from having to know this slug exists.
  */
 const FREE_PLAN_SLUG = "free";
 
@@ -182,6 +190,15 @@ export class BillingRuntime {
 
   async syncCatalog(): Promise<void> {
     await syncBillingCatalog(this.catalogSource, this.database);
+  }
+
+  /**
+   * The plans a customer may buy, derived from the catalog mirror. Everything that renders an
+   * offer — the public plans endpoint, the billing overview, the picker — reads this and nothing
+   * else, so "what Hub sells" is decided once, here.
+   */
+  async publicCatalog(): Promise<PublicBillingPlan[]> {
+    return publicBillingPlans(await this.database.listBillingPlans(), FREE_PLAN_SLUG);
   }
 
   /**
@@ -300,9 +317,13 @@ export class BillingRuntime {
   /**
    * The organization's current plan and subscription status, for the billing section. The plan
    * shown is the plan enforced: it is derived from what the organization was last *stamped* with
-   * (its entitlements provenance), not from the Stripe subscription — so a provisioned Free
-   * organization reads "Free" rather than "No active plan", and a canceled one reads Free again.
-   * The subscription mirror only decides whether there is a live subscription to manage.
+   * (its entitlements provenance), not from the Stripe subscription, so a trialing organization
+   * reads the plan it is trialing. The subscription mirror only decides whether there is a live
+   * subscription to manage.
+   *
+   * A stamp of the internal free record is not a plan. An organization that has not subscribed —
+   * or has cancelled back down to it — reports no plan at all, which is what makes the billing
+   * page a paywall rather than an advert for a tier nobody sells.
    */
   async subscriptionSnapshot(organizationId: string): Promise<CurrentSubscriptionView> {
     const [customer, plans, entitlements] = await Promise.all([
@@ -310,7 +331,8 @@ export class BillingRuntime {
       this.database.listBillingPlans(),
       this.database.getOrganizationEntitlements(organizationId),
     ]);
-    const stampedPlan = plans.find((plan) => plan.id === entitlements?.planId);
+    const stamped = plans.find((plan) => plan.id === entitlements?.planId);
+    const purchased = stamped?.slug === FREE_PLAN_SLUG ? undefined : stamped;
     const subscriptions =
       customer === undefined ? [] : await this.customerSubscriptions(customer.stripeCustomerId);
     const subscription = subscriptions.find(
@@ -318,8 +340,8 @@ export class BillingRuntime {
     );
     const live = subscription !== undefined;
     return {
-      planSlug: stampedPlan?.slug ?? null,
-      planName: stampedPlan?.name ?? null,
+      planSlug: purchased?.slug ?? null,
+      planName: purchased?.name ?? null,
       status: live ? subscription.status : null,
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,

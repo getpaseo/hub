@@ -1,6 +1,10 @@
 import type { HubOperations, HubRuntime } from "../app.js";
 import type { InitialOperator, InstanceClaim } from "../instance-setup/index.js";
-import type { BillingRuntime, CurrentSubscriptionView } from "../billing/index.js";
+import type {
+  BillingRuntime,
+  CurrentSubscriptionView,
+  PublicBillingPlan,
+} from "../billing/index.js";
 import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { OperatorConsole } from "../operator/console.js";
 import type {
@@ -13,20 +17,11 @@ import type { UsageDashboard } from "../usage/dashboard.js";
 import type { ProviderApplications } from "../provider-applications/index.js";
 
 /**
- * The public plan catalog shape — name, slug, prices by interval, marketing bullets. Never
- * carries the entitlement template; see the plan's public plans endpoint section.
+ * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
+ * plans are an offer and what a consumer may see of them. Re-exported here so the rest of the app
+ * names it without importing across the billing boundary.
  */
-export interface PublicBillingPlan {
-  slug: string;
-  name: string;
-  marketingFeatures: readonly string[];
-  prices: Record<BillingPlanPriceInterval, PublicBillingPlanPrice | null>;
-}
-
-export interface PublicBillingPlanPrice {
-  unitAmount: number;
-  currency: string;
-}
+export type { PublicBillingPlan, PublicBillingPlanPrice } from "../billing/index.js";
 
 /** The dashboard billing section: the organization's current plan plus the catalog to upgrade
  * into. Only ever built on a billing-configured instance; the route guards on that. */

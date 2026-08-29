@@ -92,7 +92,7 @@ export function PlanDialog({
             <DialogDescription className="max-w-md text-balance">
               {trialEligible
                 ? "Nothing is charged until the trial ends, and you can add a card later."
-                : "Change plan at any time. Stripe handles payment, invoices, and cancellation."}
+                : "Stripe handles payment and invoices. Cancel at any time."}
             </DialogDescription>
           </DialogHeader>
           {intervals.length > 1 && (
@@ -107,6 +107,9 @@ export function PlanDialog({
               interval={interval}
               isCurrent={plan.slug === currentPlanSlug}
               isRecommended={plan.slug === recommended}
+              // A recommendation only means something against alternatives; the badge and the
+              // ring would be decoration on a catalog that publishes one plan.
+              isHighlighted={plan.slug === recommended && plans.length > 1}
               trialEligible={trialEligible}
               pending={checkout.isPending}
               onChoose={choose}
@@ -187,6 +190,7 @@ function PlanCard({
   interval,
   isCurrent,
   isRecommended,
+  isHighlighted,
   trialEligible,
   pending,
   onChoose,
@@ -194,7 +198,10 @@ function PlanCard({
   plan: PublicBillingPlan;
   interval: BillingPlanPriceInterval;
   isCurrent: boolean;
+  /** The plan the picker leads with — it carries the filled call to action. */
   isRecommended: boolean;
+  /** Whether to say so visually, which only reads as a recommendation next to another plan. */
+  isHighlighted: boolean;
   trialEligible: boolean;
   pending: boolean;
   onChoose: (planSlug: string) => void;
@@ -209,12 +216,12 @@ function PlanCard({
     <div
       className={cn(
         "flex flex-col rounded-xl border bg-card p-5 text-card-foreground",
-        isRecommended && "border-primary/50 bg-primary/[0.04] ring-1 ring-primary/25",
+        isHighlighted && "border-primary/50 bg-primary/[0.04] ring-1 ring-primary/25",
       )}
     >
       <div className="flex min-h-6 items-start justify-between gap-2">
         <h3 className="text-sm font-medium">{plan.name}</h3>
-        <PlanBadge isCurrent={isCurrent} isRecommended={isRecommended} />
+        <PlanBadge isCurrent={isCurrent} isRecommended={isHighlighted} />
       </div>
       <p className="mt-3 text-3xl leading-none font-semibold tracking-tight">{amount}</p>
       <p className="mt-1.5 text-xs text-muted-foreground">{unit}</p>
@@ -270,7 +277,7 @@ function planColumns(count: number): string {
 }
 
 function dialogWidth(count: number): string {
-  if (count <= 1) return "sm:max-w-sm";
+  if (count <= 1) return "sm:max-w-md";
   if (count === 2) return "sm:max-w-2xl";
   return "sm:max-w-3xl";
 }

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
+/**
+ * Copy rules, not the product catalog. Where several plans are needed to pin generic behaviour
+ * these use deliberately synthetic names — Hub sells one plan today, and a fixture that pretends
+ * otherwise is how obsolete tiers end up on a screenshot.
+ */
+
 import {
   intervalLabel,
   offeredIntervals,
@@ -131,22 +137,22 @@ it("spells out what the customer pays when the free days run out", () => {
 it("recommends the first paid plan the organization is not already on", () => {
   const plans = [
     plan("free", "Free", { monthly: euros(0) }),
-    plan("solo", "Solo", { monthly: euros(1500) }),
-    plan("team", "Team", { monthly: euros(4900) }),
+    plan("starter", "Starter", { monthly: euros(1500) }),
+    plan("scale", "Scale", { monthly: euros(4900) }),
   ];
-  assert.equal(recommendedPlanSlug(plans, "monthly", null), "solo");
-  assert.equal(recommendedPlanSlug(plans, "monthly", "solo"), "team");
+  assert.equal(recommendedPlanSlug(plans, "monthly", null), "starter");
+  assert.equal(recommendedPlanSlug(plans, "monthly", "starter"), "scale");
   assert.equal(recommendedPlanSlug(plans.slice(0, 1), "monthly", null), null);
 });
 
 it("hides the interval switch for a catalog that only charges monthly", () => {
   const plans = [
     plan("free", "Free", { monthly: euros(0), annual: euros(0) }),
-    plan("solo", "Solo", { monthly: euros(1500) }),
+    plan("starter", "Starter", { monthly: euros(1500) }),
   ];
   assert.deepEqual(offeredIntervals(plans), ["monthly"]);
   assert.deepEqual(
-    offeredIntervals([plan("solo", "Solo", { monthly: euros(1500), annual: euros(15000) })]),
+    offeredIntervals([plan("starter", "Starter", { monthly: euros(1500), annual: euros(15000) })]),
     ["monthly", "annual"],
   );
   // A catalog with nothing priced still has to render at one interval.
@@ -158,27 +164,27 @@ it("labels intervals the way the picker shows them", () => {
   assert.equal(intervalLabel("annual"), "Annual");
 });
 
-it("asks an unprovisioned organization to pick a plan", () => {
-  assert.deepEqual(subscriptionSummary(subscription({})), {
+it("offers the trial to an organization that has never subscribed", () => {
+  assert.deepEqual(subscriptionSummary(subscription({ trialEligible: true })), {
     planName: null,
     status: null,
-    detail: "Pick a plan to get started.",
+    detail: "Start a 14-day free trial — no card required.",
   });
 });
 
-it("reads a free organization as having no subscription rather than an active one", () => {
-  assert.deepEqual(subscriptionSummary(subscription({ planSlug: "free", planName: "Free" })), {
-    planName: "Free",
+it("sells the plan, not a second trial, to a former subscriber", () => {
+  assert.deepEqual(subscriptionSummary(subscription({ trialEligible: false })), {
+    planName: null,
     status: null,
-    detail: "No subscription — upgrade whenever you're ready.",
+    detail: "Subscribe to run workflows on hosted Hub.",
   });
 });
 
 it("leads with the trial end date while a trial is running", () => {
   const summary = subscriptionSummary(
     subscription({
-      planSlug: "solo",
-      planName: "Solo",
+      planSlug: "hosted",
+      planName: "Paseo Hub",
       status: "trialing",
       trialEnd: "2026-09-11T00:00:00.000Z",
       currentPeriodEnd: "2026-09-11T00:00:00.000Z",
@@ -192,8 +198,8 @@ it("leads with the trial end date while a trial is running", () => {
 it("leads with the cancellation date once a subscription is set to end", () => {
   const summary = subscriptionSummary(
     subscription({
-      planSlug: "solo",
-      planName: "Solo",
+      planSlug: "hosted",
+      planName: "Paseo Hub",
       status: "active",
       cancelAtPeriodEnd: true,
       trialEnd: "2026-09-11T00:00:00.000Z",
@@ -206,11 +212,11 @@ it("leads with the cancellation date once a subscription is set to end", () => {
 
 it("warns on a payment problem and stays neutral on an unrecognised status", () => {
   assert.deepEqual(
-    subscriptionSummary(subscription({ planName: "Solo", status: "past_due" })).status,
+    subscriptionSummary(subscription({ planName: "Paseo Hub", status: "past_due" })).status,
     { tone: "warning", label: "Past Due" },
   );
   assert.deepEqual(
-    subscriptionSummary(subscription({ planName: "Solo", status: "paused" })).status,
+    subscriptionSummary(subscription({ planName: "Paseo Hub", status: "paused" })).status,
     { tone: "neutral", label: "Paused" },
   );
 });

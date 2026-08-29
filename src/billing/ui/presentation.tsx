@@ -125,7 +125,8 @@ export function recommendedPlanSlug(
 }
 
 export interface SubscriptionSummary {
-  /** The plan the organization is billed on, or null before provisioning stamps one. */
+  /** The plan the organization is billed on, or null when it has none. Billing never reports the
+   * internal free entitlement record here, so null means "no subscription", not "the free tier". */
   planName: string | null;
   /** The Stripe status pill. Null when no live subscription exists, which is the normal state
    * for a free organization and for one whose subscription was cancelled. */
@@ -147,13 +148,20 @@ export function subscriptionSummary(
   };
 }
 
+/** The headline for an organization with no subscription. Never names a tier — there is nothing
+ * for sale at zero, and the entitlement floor it sits on is enforcement, not an offer. */
+export const NO_SUBSCRIPTION = "No subscription";
+
 function subscriptionDetail(subscription: BillingOverviewView["subscription"]): string {
-  if (subscription.planName === null) return "Pick a plan to get started.";
-  if (subscription.status === null) return "No subscription — upgrade whenever you're ready.";
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
     return `Cancels on ${formatDate(subscription.currentPeriodEnd)}.`;
   }
   if (subscription.trialEnd !== null) return `Trial ends ${formatDate(subscription.trialEnd)}.`;
+  if (subscription.planName === null) {
+    return subscription.trialEligible
+      ? `Start a ${TRIAL_DAYS}-day free trial — no card required.`
+      : "Subscribe to run workflows on hosted Hub.";
+  }
   if (subscription.currentPeriodEnd !== null) {
     return `Renews on ${formatDate(subscription.currentPeriodEnd)}.`;
   }

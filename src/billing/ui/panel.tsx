@@ -14,7 +14,7 @@ import { useRouteTenant } from "../../projects/context.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 import { billingOverview, billingPortal } from "./functions.js";
 import { PlanDialog } from "./plan-dialog.js";
-import { subscriptionSummary, type SubscriptionSummary } from "./presentation.js";
+import { NO_SUBSCRIPTION, subscriptionSummary, type SubscriptionSummary } from "./presentation.js";
 
 type PortalResult = Awaited<ReturnType<typeof billingPortal>>;
 
@@ -111,7 +111,7 @@ function PlanIdentity({
           </div>
         )}
         <p className="text-2xl leading-tight font-semibold tracking-tight">
-          {summary.planName ?? "No plan yet"}
+          {summary.planName ?? NO_SUBSCRIPTION}
         </p>
         <p className="text-sm text-muted-foreground">{summary.detail}</p>
       </div>

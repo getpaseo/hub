@@ -44,14 +44,32 @@ boot sync racy right after a dashboard edit.
 `GET /api/billing/plans` is documented in docs/public-api.md — marketing copy and pricing only,
 never the entitlement template.
 
+## The offer, and the record that is not one
+
+The Stripe catalog carries a `free` product. It is not a tier Hub sells: it is where the
+entitlement floor is authored, so provisioning and cancellation have a real template to stamp
+instead of a constant in the code. Hosted Hub sells exactly one plan today — Paseo Hub, per user,
+per month.
+
+`BillingRuntime.publicCatalog` is the boundary that keeps those two apart. It withholds the free
+record and every plan the sync deactivated, so "the catalog" and "the offer" are the same thing to
+every consumer — the plans endpoint, the billing overview, the picker. `subscriptionSnapshot` is
+the other half: an organization stamped with the free record reports **no plan**, which is why the
+billing page reads as a paywall rather than advertising a zero-execution tier as the customer's
+own. No consumer knows the slug exists, and none should learn it.
+
+Nothing about this is hardcoded to one plan. Publish a second product in Stripe and the picker
+lays out two columns; publish an annual price and the interval switch appears. What is fixed is
+that a customer only ever sees what Stripe says is for sale.
+
 ## Free-tier provisioning
 
-A hosted organization is provisioned with the Free plan's template resolved from the mirror
+A hosted organization is provisioned with the free record's template resolved from the mirror
 (`BillingRuntime.provisioningEntitlement`), not the unlimited default self-hosted gets. If the
-mirror has no active Free plan yet — first boot before sync, or a Stripe account missing the
+mirror has no active free record yet — first boot before sync, or a Stripe account missing the
 product — provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails closed rather than
 open to unlimited and logs loudly so the gap gets noticed; every organization stamped from it
-re-stamps to the real Free plan the moment it subscribes.
+re-stamps to the real template the moment it subscribes.
 
 The billing view derives the current plan from what the organization was last _stamped_ with, not
 from a copied Stripe subscription. It reads Stripe only for the billing page, through a short,
@@ -67,7 +85,8 @@ plan-picker dialog and a "Manage billing" button — payment methods, invoices, 
 stay in the Stripe portal.
 
 Inside `src/billing/ui/`, `panel.tsx` owns the page, `plan-dialog.tsx` owns the picker, and
-`presentation.tsx` owns every user-facing string either of them renders. Copy lives there and
+`presentation.tsx` owns every user-facing string either of them renders. None of them knows which
+plans are for sale — that is settled before the view, in `public-catalog.ts`. Copy lives there and
 nowhere else because it is the only part of the surface worth unit-testing: a button label has to
 stay short enough for a narrow plan column while its accessible name still identifies the plan,
 and a catalog published monthly-only has to collapse the interval switch rather than price a
@@ -84,7 +103,7 @@ The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than
 only the subscription id from the event, then — under a per-organization advisory lock that
 serializes across processes — re-reads the subscription's live state and converges the
 organization onto it: resolve the price to a plan (resyncing the catalog once when a subscription
-webhook beat its own price webhook), then stamp the plan's template, or stamp Free on a terminal
+webhook beat its own price webhook), then stamp the plan's template, or stamp the free floor on a terminal
 cancellation so paid entitlements never outlive the subscription. The subscription mirror and the
 entitlement stamp commit in one transaction (`Database.reconcileOrganizationSubscription`), so the
 two can never disagree across a crash. Re-reading current state under the lock is what stops an
@@ -96,7 +115,7 @@ state nothing would revisit.
 `organization_billing_customers` is the sole durable Stripe identity link. It deliberately does
 not copy subscription status, price, cancellation, or period timestamps; Stripe remains the owner
 of that lifecycle. `trialing` and `active` stamp Hosted access; `canceled`, `incomplete_expired`,
-and `unpaid` stamp Free; `past_due` retains the last stamp during Stripe's retry window.
+and `unpaid` stamp the free floor; `past_due` retains the last stamp during Stripe's retry window.
 
 ## Seats
 
@@ -107,7 +126,7 @@ to `BillingRuntime.reportSeatUsage`. The reporter reads the live count and write
 when it differs from what the subscription is currently billed for — so the resulting
 `customer.subscription.updated` echo carries no delta and cannot ping-pong with reconciliation.
 Reconciliation re-checks the count on every subscription webhook, the durable backstop if a
-post-commit report is lost. Only paid plans report; the Free plan caps seats instead
+post-commit report is lost. Only paid plans report; the free floor caps seats instead
 (`ent_seats_max=1`, `ent_can_invite=false`).
 
 ### Why not `@better-auth/stripe`
