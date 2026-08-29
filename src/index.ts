@@ -44,6 +44,7 @@ import {
 } from "./provider-applications/index.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
+import { composeInvitationMailer } from "./invitations/index.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
@@ -76,6 +77,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     const entitlements = composeEntitlements(database, runtime);
     resources.own(() => entitlements.close());
     const billingConfig = readBillingConfig();
+    const invitationMailer = composeInvitationMailer();
     const billing =
       billingConfig === undefined
         ? null
@@ -103,6 +105,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       identity,
       config.trustedClientIpHeader,
       billing,
+      invitationMailer,
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
@@ -178,6 +181,7 @@ function createProductionAuthServer(
   identity: HubIdentity,
   trustedClientIpHeader: string | undefined,
   billing: BillingRuntime | null,
+  invitationMailer: ReturnType<typeof composeInvitationMailer>,
 ) {
   return createAuthServer({
     database,
@@ -187,6 +191,7 @@ function createProductionAuthServer(
     baseURL: identity.appUrl,
     policy: authPolicy,
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
+    ...(invitationMailer === undefined ? {} : { invitationMailer }),
     // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
     // (billing null) keeps the createAuthServer default, which stamps unlimited.
     ...(billing === null
