@@ -10,7 +10,9 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createLinearApiClient,
   createLinearConnectionClient,
+  hasRequiredLinearAgentSessionScopes,
   hasRequiredLinearScopes,
+  linearConnectionRequiresReauthorization,
 } from "./client.js";
 
 describe("Linear connection client", () => {
@@ -640,13 +642,27 @@ describe("Linear connection client", () => {
     assert.deepEqual(requests, ["Bearer fresh-token", "Bearer fresh-token"]);
   });
 
-  it("requires issue, comment, assignment, and mention authority for agent mode", () => {
+  it("keeps optional Agent Session scopes separate from baseline connection health", () => {
+    assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
     assert.equal(
       hasRequiredLinearScopes(["read", "write", "app:assignable", "app:mentionable"]),
       true,
     );
-    assert.equal(hasRequiredLinearScopes(["read", "write"]), false);
+    assert.equal(hasRequiredLinearScopes(["read", "write"]), true);
     assert.equal(hasRequiredLinearScopes(["read"]), false);
+    assert.equal(
+      hasRequiredLinearAgentSessionScopes(["read", "write", "app:assignable", "app:mentionable"]),
+      true,
+    );
+    assert.equal(hasRequiredLinearAgentSessionScopes(["read", "comments:create"]), false);
+    assert.equal(
+      linearConnectionRequiresReauthorization({
+        scopes: ["read", "comments:create"],
+        refreshToken: null,
+        accessTokenExpiresAt: null,
+      }),
+      false,
+    );
   });
 });
 
