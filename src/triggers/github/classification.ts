@@ -58,10 +58,11 @@ export function classifyGitHubEvent(event: NormalizedGitHubEvent): GitHubClassif
 }
 
 function classifyPush(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
-  const payload = PushPayloadSchema.parse(event.payload);
+  const parsed = PushPayloadSchema.safeParse(event.payload);
+  if (!parsed.success) return emptyClassification();
   return {
     ...emptyClassification(),
-    actor: payload.sender?.login ?? "",
+    actor: parsed.data.sender?.login ?? "",
   };
 }
 
