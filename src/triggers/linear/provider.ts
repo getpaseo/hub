@@ -281,18 +281,10 @@ export function createLinearTriggerProvider(options: {
       return { phase: "accepted" };
     },
     async onAgentExecutionFailed(triggerContext, _outputContext, reason, reactionState) {
-      const agentSession = triggerContext.event.linear.agent_session;
-      if (agentSession === null || options.client === undefined) return reactionState;
-      if (linearAgentReactionPhase(reactionState) === "failed") return reactionState;
-      await options.client.createAgentActivity({
-        linearOrganizationId: triggerContext.event.linear.organization.id,
-        agentSessionId: agentSession.id,
-        content: {
-          type: "error",
-          body: `Paseo could not complete this workflow: ${reason.slice(0, 1_000)}`,
-        },
-      });
-      return { phase: "failed" };
+      return notifyLinearAgentFailure(options.client, triggerContext, reason, reactionState);
+    },
+    async onMachineTerminated(triggerContext, reason, reactionState) {
+      return notifyLinearAgentFailure(options.client, triggerContext, reason, reactionState);
     },
   };
 }
@@ -467,4 +459,24 @@ function linearAgentReactionPhase(
   }
   const phase = reactionState["phase"];
   return phase === "accepted" || phase === "failed" ? phase : undefined;
+}
+
+async function notifyLinearAgentFailure(
+  client: Pick<LinearApiClient, "createAgentActivity"> | undefined,
+  triggerContext: LinearTriggerContext,
+  reason: string,
+  reactionState: TriggerProviderReactionState | undefined,
+): Promise<TriggerProviderReactionState | undefined> {
+  const agentSession = triggerContext.event.linear.agent_session;
+  if (agentSession === null || client === undefined) return reactionState;
+  if (linearAgentReactionPhase(reactionState) === "failed") return reactionState;
+  await client.createAgentActivity({
+    linearOrganizationId: triggerContext.event.linear.organization.id,
+    agentSessionId: agentSession.id,
+    content: {
+      type: "error",
+      body: `Paseo could not complete this workflow: ${reason.slice(0, 1_000)}`,
+    },
+  });
+  return { phase: "failed" };
 }
