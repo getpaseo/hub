@@ -83,6 +83,49 @@ describe("Linear connection client", () => {
     assert.deepEqual(installation.scopes, ["read", "write", "app:assignable", "app:mentionable"]);
   });
 
+  it("reads the issue team used for routing", async () => {
+    let requestBody = "";
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => linearConnection(),
+      withLinearConnectionRefresh: withinLinearRefresh(linearConnection(), async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requestBody = readableBody(init?.body);
+        return json({
+          data: {
+            issue: {
+              id: "issue-1",
+              identifier: "ENG-42",
+              title: "Ship the feature",
+              description: null,
+              project: null,
+              team: { id: "team-1" },
+              state: { id: "ready" },
+              assignee: null,
+              labels: { nodes: [] },
+            },
+          },
+        });
+      },
+    });
+
+    assert.deepEqual(
+      await api.readIssue({ linearOrganizationId: "linear-org", issueId: "issue-1" }),
+      {
+        id: "issue-1",
+        identifier: "ENG-42",
+        title: "Ship the feature",
+        description: null,
+        projectId: null,
+        teamId: "team-1",
+        stateId: "ready",
+        assigneeId: null,
+        labelIds: [],
+      },
+    );
+    assert.match(graphqlRequest(requestBody).query, /team \{ id \}/u);
+  });
+
   it("reads a bounded, chronological history before the triggering comment", async () => {
     const requests: Array<{ authorization: string | null; body: string }> = [];
     const connection: LinearConnectionRecord = {
