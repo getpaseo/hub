@@ -50,7 +50,7 @@ export function TriggerActivityPanel() {
         {activity.map((run) => (
           <DataRow key={run.id}>
             <DataCell>
-              <span className="font-medium">{run.triggerName}</span>
+              <span>{run.triggerName}</span>
               {run.repo === null ? null : (
                 <span className="block text-xs text-muted-foreground">{run.repo}</span>
               )}

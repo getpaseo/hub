@@ -92,7 +92,7 @@ export function TriggersPanel() {
                 <span className="min-w-0">
                   <Link
                     to={triggerPath(trigger.id)}
-                    className="block truncate font-medium hover:underline"
+                    className="block truncate hover:underline"
                     onClick={(event) => event.stopPropagation()}
                   >
                     {trigger.name}
@@ -601,9 +601,7 @@ function TriggerForm({
           />
         </div>
         <details className="rounded-md border bg-muted/20 p-3">
-          <summary className="cursor-pointer text-sm font-medium">
-            Advanced provider options (JSON)
-          </summary>
+          <summary className="cursor-pointer text-sm">Advanced provider options (JSON)</summary>
           <Field className="mt-3">
             <FieldLabel htmlFor="trigger-provider-options" className="sr-only">
               Advanced provider options (JSON)
@@ -648,11 +646,11 @@ function FormSection({
       className="overflow-hidden rounded-lg border bg-card"
     >
       <header className="flex items-start gap-3 border-b bg-muted/20 px-5 py-4">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium text-muted-foreground">
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
           {number}
         </span>
         <div>
-          <h2 id={`trigger-section-${number}`} className="text-sm font-semibold">
+          <h2 id={`trigger-section-${number}`} className="text-sm">
             {title}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
@@ -681,7 +679,7 @@ function ModeButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-sm px-3 text-xs font-semibold transition-colors [&_svg]:size-3.5 ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"} disabled:opacity-40`}
+      className={`inline-flex h-7 items-center gap-1.5 rounded-sm px-3 text-xs transition-colors [&_svg]:size-3.5 ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"} disabled:opacity-40`}
     >
       {icon === "form" ? <FileText /> : <Braces />}
       {children}
@@ -697,7 +695,7 @@ function EnabledSwitch({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+    <label className="flex cursor-pointer items-center gap-2 text-sm">
       <input
         type="checkbox"
         className="peer sr-only"
