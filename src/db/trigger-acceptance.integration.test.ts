@@ -175,7 +175,7 @@ describe("trigger acceptance persistence", () => {
 
     await client.query(
       `update linear_connections
-       set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb
+       set scopes = '["read", "comments:create"]'::jsonb
        where id = '${connectionId}'`,
     );
     const accepted = await database.acceptLinearEvent({
@@ -188,6 +188,34 @@ describe("trigger acceptance persistence", () => {
     });
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, projectId);
+
+    const agentSessionWithoutScopes = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-under-scoped",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(2),
+    });
+    assert.equal(agentSessionWithoutScopes.status, "dropped");
+    if (agentSessionWithoutScopes.status === "dropped") {
+      assert.equal(agentSessionWithoutScopes.reason, "configuration_unavailable");
+    }
+
+    await client.query(
+      `update linear_connections
+       set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb
+       where id = '${connectionId}'`,
+    );
+    const acceptedAgentSession = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-reauthorized",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(3),
+    });
+    assert.equal(acceptedAgentSession.status, "accepted");
 
     const acceptedByTeam = await database.acceptLinearEvent({
       linearOrganizationId: "linear-scope-workspace",
