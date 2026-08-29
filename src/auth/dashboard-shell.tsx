@@ -509,7 +509,7 @@ function InstanceHeader() {
             <ShieldCheck aria-hidden="true" className="size-4" />
           </span>
           <span className="grid flex-1 leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="truncate font-medium">Instance</span>
+            <span className="truncate">Instance</span>
             <span className="truncate text-xs text-muted-foreground">Administration</span>
           </span>
         </div>
@@ -623,7 +623,7 @@ function OrganizationSwitcher({
                 <PaseoGlyph />
               </span>
               <span className="grid flex-1 text-left leading-tight">
-                <span className="truncate text-sm font-medium">{currentOrganization.name}</span>
+                <span className="truncate text-sm">{currentOrganization.name}</span>
                 <span className="truncate text-xs text-muted-foreground">
                   {ROLE_LABELS[currentRole] ?? currentRole}
                 </span>
@@ -846,7 +846,7 @@ function AccountMenu({
           tooltip={email}
           className="data-[state=open]:bg-sidebar-accent"
         >
-          <span className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-accent text-xs font-medium">
+          <span className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-accent text-xs">
             {initials(name, email)}
           </span>
           <span className="grid flex-1 text-left leading-tight">

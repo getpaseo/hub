@@ -151,7 +151,7 @@ export function AppSetupEntry({
           <h1
             ref={heading}
             tabIndex={-1}
-            className="text-xl font-semibold tracking-tight outline-none"
+            className="text-xl font-medium tracking-tight outline-none"
           >
             Set up your apps
           </h1>
