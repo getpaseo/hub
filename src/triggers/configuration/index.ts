@@ -58,10 +58,7 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
       name: internalEventName(authored.name, index),
       on: event,
       max_runtime: authored.max_runtime ?? authored.run.max_runtime,
-      filters: {
-        ...definition.filters,
-        ...(definition.connection === undefined ? {} : { connection: definition.connection }),
-      },
+      filters: authoredFilters(event, definition),
       steps: [
         {
           id: "run",
@@ -104,6 +101,19 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     environment: compiledEnvironment,
     events: compiled.triggers,
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
+  };
+}
+
+function authoredFilters(
+  event: string,
+  definition: TriggerDocument["on"][string],
+): NonNullable<AuthoredTrigger["filters"]> {
+  return {
+    ...definition.filters,
+    ...(event === "manual.run" && definition.filters?.from_users === undefined
+      ? { from_users: ["*"] }
+      : {}),
+    ...(definition.connection === undefined ? {} : { connection: definition.connection }),
   };
 }
 

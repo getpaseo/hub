@@ -2549,10 +2549,10 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
     // Apps are followed by the daemon handoff. A journey that is not about either walks through
-    // both, exactly as the operator can, and lands in the default project the way they do.
+    // both, exactly as the operator can, and lands on organization triggers.
     await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
-    await expect(this.page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
   }
 
   async completeFirstRunJourney(
@@ -2578,9 +2578,8 @@ class HubUser {
       this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" }),
     ).toBeFocused();
 
-    // Setup provisioned a working organization, not just a row: onboarding ended inside its
-    // default project, and that project renders.
-    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Default", "Overview");
+    // Setup provisioned a working organization, not just a row: organization triggers render.
+    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Triggers");
     await this.returnToProjects();
     // The instance operator surface is the proof that this account owns the instance, not just
     // its organization: the console refuses anyone without the flag, server-side.

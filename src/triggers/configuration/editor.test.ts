@@ -165,6 +165,28 @@ describe("trigger form YAML bridge", () => {
     });
   });
 
+  test("submits an unchanged minimal manual trigger", () => {
+    const initial = createTriggerYaml({
+      name: "deploy",
+      enabled: true,
+      event: "manual.run",
+      connection: "",
+      allowedUsers: "*",
+      daemon: "office",
+      cwd: "/workspace",
+      agent: "opencode",
+      mode: "",
+      providerOptions: "",
+      prompt: "${{ paseo.prompt }}",
+    });
+    const projection = projectTriggerForm(initial);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+
+    expect(mergeTriggerForm(initial, { ...projection.value, name: "release" })).toContain(
+      "name: release",
+    );
+  });
+
   test("splits only the first slash in a full agent ID", () => {
     expect(splitAgentId("pi/gateway/vendor/model-v1")).toEqual({
       provider: "pi",

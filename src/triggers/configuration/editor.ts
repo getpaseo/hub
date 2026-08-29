@@ -88,8 +88,8 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     document.setIn(["on", value.event], definition ?? {});
   }
   if (value.event === "manual.run") {
-    document.deleteIn(["on", value.event, "connection"]);
-    document.deleteIn(["on", value.event, "filters", "from_users"]);
+    deleteIfPresent(document, ["on", value.event, "connection"]);
+    deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
   } else {
     setIfChanged(document, ["on", value.event, "connection"], value.connection);
     setIfChanged(document, ["on", value.event, "filters", "from_users"], users(value.allowedUsers));
@@ -196,8 +196,12 @@ function setIfChanged(document: Document, path: readonly string[], value: unknow
 }
 
 function setOptional(document: Document, path: readonly string[], value: unknown): void {
-  if (value === undefined) document.deleteIn(path);
+  if (value === undefined) deleteIfPresent(document, path);
   else setIfChanged(document, path, value);
+}
+
+function deleteIfPresent(document: Document, path: readonly string[]): void {
+  if (document.hasIn(path)) document.deleteIn(path);
 }
 
 function sameFormValue(left: TriggerFormValue, right: TriggerFormValue): boolean {

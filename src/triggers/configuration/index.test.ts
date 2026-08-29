@@ -92,6 +92,21 @@ describe("self-contained trigger documents", () => {
     assert.deepEqual(parseTriggerDocument(serializeTriggerDocument(parsed)), parsed);
   });
 
+  it("allows authenticated manual dispatches when no actor filter is authored", () => {
+    const compiled = compileTriggerDocument(`
+name: deploy
+enabled: true
+on:
+  manual.run: {}
+run:
+  target: { daemon: devbox, cwd: /workspace }
+  agent: { provider: codex }
+  prompt: Handle it
+`);
+
+    assert.deepEqual(compiled.events[0]?.filters?.from_users, ["*"]);
+  });
+
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>

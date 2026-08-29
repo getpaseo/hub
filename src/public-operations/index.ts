@@ -185,11 +185,13 @@ export function createPublicOperations(
     },
     async dispatchManualRun(authorization, input) {
       try {
-        const project = await repository.findActiveProject(
+        const project = await repository.resolveManualRunProject(
           authorization.organizationId,
+          input.trigger,
           input.projectSlug,
         );
         if (project === undefined) return { status: "project_not_found" };
+        if (project.status === "disabled") return { status: "trigger_not_found" };
         let result: DispatchManualRunResult;
         try {
           result = await dispatchManualRun(

@@ -198,10 +198,11 @@ export interface PublicOperationRepository {
   listActiveProjects(organizationId: string): Promise<readonly PublicProject[]>;
   listConfigurationResources(organizationId: string): Promise<ConfigurationResources>;
   listSetupResources(organizationId: string): Promise<SetupResources>;
-  findActiveProject(
+  resolveManualRunProject(
     organizationId: string,
+    triggerName: string,
     projectSlug: string,
-  ): Promise<{ id: string; slug: string } | undefined>;
+  ): Promise<{ status: "resolved"; id: string } | { status: "disabled" } | undefined>;
   resolveDeploymentProject(input: {
     organizationId: string;
     explicitProjectSlug?: string | undefined;
