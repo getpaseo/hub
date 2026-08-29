@@ -5,7 +5,7 @@ import { logger } from "../../logger.js";
 import { logProviderEventIntake } from "../audit.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
-import { eventIssueId, eventProjectId, normalizeLinearEvent } from "./events.js";
+import { eventIssueId, eventProjectId, eventTeamId, normalizeLinearEvent } from "./events.js";
 import type { LinearIssueDetails } from "../../providers/linear/client.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
@@ -22,6 +22,7 @@ export interface LinearWebhookSourceOptions {
   accept(input: {
     linearOrganizationId: string;
     projectId?: string;
+    teamId?: string;
     deliveryId: string;
     signatureHash: string;
     source: string;
@@ -154,9 +155,11 @@ async function acceptAndDispatchLinearEvent(
   preserveBindingDrop = false,
 ): Promise<Response> {
   const projectId = eventProjectId(event);
+  const teamId = eventTeamId(event);
   const acceptance = await options.accept({
     linearOrganizationId: event.organizationId,
     ...(projectId === undefined ? {} : { projectId }),
+    ...(teamId === undefined ? {} : { teamId }),
     deliveryId: verified.deliveryId,
     signatureHash: verified.signatureHash,
     source,
@@ -170,7 +173,7 @@ async function acceptAndDispatchLinearEvent(
     provider: "linear",
     source,
     deliveryId: verified.deliveryId,
-    resourceId: projectId,
+    resourceId: projectId ?? teamId,
     acceptance,
   });
   const events = acceptance.status === "accepted" ? acceptance.events : [];

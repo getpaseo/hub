@@ -301,13 +301,25 @@ describe("workflow compiler", () => {
         ],
       }),
     );
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "linear.issue_entered_scope",
+            filters: { team: "linear-team-id", states: ["ready"] },
+          },
+        ],
+      }),
+    );
     assert.throws(
       () =>
         compileHubConfig({
           ...raw,
           triggers: [{ ...trigger, on: "linear.issue_entered_scope", filters: {} }],
         }),
-      /requires filters\.project/iu,
+      /requires filters\.project or filters\.team/iu,
     );
     assert.throws(
       () =>

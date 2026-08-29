@@ -45,11 +45,12 @@ export interface LinearTriggerContext {
         description: string | null;
         url?: string;
         project: { id: string } | null;
+        team: { id: string } | null;
         state: { id: string } | null;
         assignee: { id: string } | null;
         label_ids: string[];
       };
-      comment: { id: string; body: string } | null;
+      comment: { id: string; body: string; parent_id: string | null } | null;
       agent_session: {
         id: string;
         app_user_id: string;
@@ -403,11 +404,19 @@ function buildLinearContext(
       description: issue.description,
       ...(issue.url === undefined ? {} : { url: issue.url }),
       project: issue.projectId === null ? null : { id: issue.projectId },
+      team: issue.teamId === null ? null : { id: issue.teamId },
       state: issue.stateId === null ? null : { id: issue.stateId },
       assignee: issue.assigneeId === null ? null : { id: issue.assigneeId },
       label_ids: issue.labelIds,
     },
-    comment: event.type === "comment" ? { id: event.comment.id, body: event.comment.body } : null,
+    comment:
+      event.type === "comment"
+        ? {
+            id: event.comment.id,
+            body: event.comment.body,
+            parent_id: event.comment.parentId,
+          }
+        : null,
     agent_session:
       event.type === "agent_session"
         ? {

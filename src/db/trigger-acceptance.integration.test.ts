@@ -148,6 +148,12 @@ describe("trigger acceptance persistence", () => {
         resourceId: "linear-project",
         triggerName: "linear-issue",
       },
+      {
+        provider: "linear",
+        connectionId,
+        resourceId: "linear-team",
+        triggerName: "linear-team-issue",
+      },
     ]);
 
     const dropped = await database.acceptLinearEvent({
@@ -182,6 +188,20 @@ describe("trigger acceptance persistence", () => {
     });
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, projectId);
+
+    const acceptedByTeam = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      teamId: "linear-team",
+      deliveryId: "linear-team-route",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(2),
+    });
+    assert.equal(acceptedByTeam.status, "accepted");
+    if (acceptedByTeam.status === "accepted") {
+      assert.equal(acceptedByTeam.events[0]?.projectId, projectId);
+      assert.equal(acceptedByTeam.events[0]?.resourceId, "linear-team");
+    }
 
     await client.query(
       `update linear_connections
