@@ -90,6 +90,9 @@ Hub generates and stores its authentication secret in the database. Advanced dep
 
 Billing is optional: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
 
+Invitation email is optional too: set `RESEND_API_KEY` and `RESEND_FROM` to email organization
+invites through Resend. Without them, managers can still copy and share invitation links.
+
 Then start Hub and PostgreSQL:
 
 ```sh
