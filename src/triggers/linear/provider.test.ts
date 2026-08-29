@@ -353,6 +353,45 @@ describe("Linear trigger provider", () => {
         },
       },
     ]);
+
+    const terminationClient = new RecordingHistoryClient({ complete: true, comments: [] });
+    const terminationProvider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client: terminationClient,
+    });
+    const terminationAcceptedState = await terminationProvider.onDispatchAccepted?.(
+      match.triggerContext,
+      match.outputContext,
+    );
+    const terminationFailedState = await terminationProvider.onMachineTerminated?.(
+      match.triggerContext,
+      "daemon disconnected",
+      terminationAcceptedState ?? undefined,
+    );
+    await terminationProvider.onMachineTerminated?.(
+      match.triggerContext,
+      "daemon disconnected",
+      terminationFailedState ?? undefined,
+    );
+    assert.deepEqual(terminationClient.createdActivities, [
+      {
+        linearOrganizationId: "linear-org",
+        agentSessionId: "session-1",
+        content: {
+          type: "thought",
+          body: "Paseo accepted this task and is starting the workflow.",
+        },
+        ephemeral: true,
+      },
+      {
+        linearOrganizationId: "linear-org",
+        agentSessionId: "session-1",
+        content: {
+          type: "error",
+          body: "Paseo could not complete this workflow: daemon disconnected",
+        },
+      },
+    ]);
   });
 
   it("materializes only bounded causal activity for prompted agent-session turns", async () => {
