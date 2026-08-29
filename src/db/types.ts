@@ -629,6 +629,7 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
 export interface AcceptLinearEventInput extends ProviderEventEvidence {
   linearOrganizationId: string;
   projectId?: string;
+  teamId?: string;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {

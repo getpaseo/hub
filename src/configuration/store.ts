@@ -640,13 +640,13 @@ async function compileTriggers(
         database,
         organizationId,
         provider,
-        authored,
+        authored.value,
         new Set(candidates.map((connection) => connection.id)),
       );
       if (resolved === undefined) {
         issues.push({
-          path: triggerFilterPath(trigger, resourceField(provider)),
-          message: `"${authored}" does not match any ${resourceLabel(provider)} (${await formatResourceCandidates(
+          path: triggerFilterPath(trigger, authored.field),
+          message: `"${authored.value}" does not match any ${resourceLabel(provider, authored.field)} (${await formatResourceCandidates(
             database,
             organizationId,
             provider,
@@ -656,9 +656,7 @@ async function compileTriggers(
         continue;
       }
       const resolvedFilter =
-        provider === "github"
-          ? filter
-          : { ...filter, [resourceField(provider)]: resolved.resourceId };
+        provider === "github" ? filter : { ...filter, [authored.field]: resolved.resourceId };
       const nextFilter: CompiledTriggerFilter = {
         ...resolvedFilter,
         connectionId: resolved.connectionId,
@@ -704,14 +702,11 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
 function readAuthoredResource(
   provider: ConnectionProvider,
   filters: CompiledTrigger["filters"] | undefined,
-): string | undefined {
+): { field: ResourceFilterField; value: string } | undefined {
   if (filters === undefined) return undefined;
-  let value: string | undefined;
-  if (provider === "github") value = filters.repo;
-  else if (provider === "slack") value = filters.workspace;
-  else if (provider === "discord") value = filters.guild;
-  else value = filters.project;
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const field = resourceField(provider, filters);
+  const value = filters[field];
+  return typeof value === "string" && value.length > 0 ? { field, value } : undefined;
 }
 
 function connectionCandidates(
@@ -768,10 +763,16 @@ function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (s
   return [trigger.sourceFile ?? ".paseo/workflows", "filters", field];
 }
 
-function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
+type ResourceFilterField = "repo" | "workspace" | "guild" | "project" | "team";
+
+function resourceField(
+  provider: ConnectionProvider,
+  filters?: CompiledTrigger["filters"],
+): ResourceFilterField {
   if (provider === "github") return "repo";
   if (provider === "slack") return "workspace";
-  return provider === "discord" ? "guild" : "project";
+  if (provider === "discord") return "guild";
+  return filters?.project === undefined && filters?.team !== undefined ? "team" : "project";
 }
 
 function providerLabel(provider: ConnectionProvider): string {
@@ -780,9 +781,9 @@ function providerLabel(provider: ConnectionProvider): string {
   return provider === "discord" ? "Discord" : "Linear";
 }
 
-function resourceLabel(provider: ConnectionProvider): string {
+function resourceLabel(provider: ConnectionProvider, field?: ResourceFilterField): string {
   if (provider === "github") return "GitHub repository";
-  if (provider === "linear") return "Linear project";
+  if (provider === "linear") return field === "team" ? "Linear team" : "Linear project";
   return `${providerLabel(provider)} connection`;
 }
 
