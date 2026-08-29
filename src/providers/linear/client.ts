@@ -53,6 +53,10 @@ const IssueResponseSchema = z.object({
           .object({ id: z.string().min(1) })
           .nullable()
           .optional(),
+        team: z
+          .object({ id: z.string().min(1) })
+          .nullable()
+          .optional(),
         state: z
           .object({ id: z.string().min(1) })
           .nullable()
@@ -170,6 +174,7 @@ export interface LinearIssueDetails {
   description: string | null;
   url?: string;
   projectId: string | null;
+  teamId: string | null;
   stateId: string | null;
   assigneeId: string | null;
   labelIds: string[];
@@ -413,6 +418,7 @@ export function createLinearApiClient(options: {
             issue(id: $id) {
               id identifier title description url
               project { id }
+              team { id }
               state { id }
               assignee { id }
               labels { nodes { id } }
@@ -431,6 +437,7 @@ export function createLinearApiClient(options: {
             description: issue.description ?? null,
             ...(issue.url === undefined ? {} : { url: issue.url }),
             projectId: issue.project?.id ?? null,
+            teamId: issue.team?.id ?? null,
             stateId: issue.state?.id ?? null,
             assigneeId: issue.assignee?.id ?? null,
             labelIds: issue.labels.nodes.map(({ id }) => id),

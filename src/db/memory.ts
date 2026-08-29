@@ -1072,12 +1072,16 @@ class MemoryDatabase implements Database {
   async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
     const reason = linearDropReason(input, binding);
+    const resourceIds = [input.projectId, input.teamId].flatMap((id) =>
+      id === undefined ? [] : [id],
+    );
     return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
-      input.projectId ?? null,
+      resourceIds[0] ?? null,
       reason,
+      resourceIds,
     );
   }
 
@@ -3210,6 +3214,7 @@ class MemoryDatabase implements Database {
     connectionId: string | undefined,
     resourceId: string | null,
     reason: string | undefined,
+    candidateResourceIds: readonly string[] = resourceId === null ? [] : [resourceId],
   ): Promise<ProviderEventAcceptance> {
     const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
@@ -3268,7 +3273,7 @@ class MemoryDatabase implements Database {
                 (route) =>
                   route.provider === provider &&
                   route.connectionId === connectionId &&
-                  (route.resourceId === null || route.resourceId === resourceId),
+                  (route.resourceId === null || candidateResourceIds.includes(route.resourceId)),
               )
               .map((route) => Object.assign({}, route, { projectId }))
           : [];
@@ -3405,7 +3410,7 @@ function providerForInput(
 ): "github" | "discord" | "slack" | "linear" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
-  return "teamId" in input ? "slack" : "linear";
+  return "linearOrganizationId" in input ? "linear" : "slack";
 }
 
 function githubDropReason(

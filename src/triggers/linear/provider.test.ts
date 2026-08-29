@@ -182,6 +182,12 @@ describe("Linear trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     assert.deepEqual(client.historyReads, []);
+    assert.deepEqual(match.triggerContext.event.linear.issue.team, { id: "team-1" });
+    assert.deepEqual(match.triggerContext.event.linear.comment, {
+      id: "trigger-comment",
+      body: "@paseo please investigate",
+      parent_id: "root-comment",
+    });
     assert.deepEqual(match.triggerContext.event.linear.trigger_thread_context, {
       status: "deferred",
       issue: { id: "issue-1" },
@@ -684,13 +690,19 @@ function event(
     id: "trigger-comment",
     organizationId: "linear-org",
     actor: { id: "operator" },
-    comment: { id: "trigger-comment", issueId: "issue-1", body: commentBody },
+    comment: {
+      id: "trigger-comment",
+      issueId: "issue-1",
+      body: commentBody,
+      parentId: "root-comment",
+    },
     issue: {
       id: "issue-1",
       identifier: "ENG-42",
       title: "Ship the feature",
       description: "Useful context",
       projectId: "project-1",
+      teamId: "team-1",
       stateId: "ready",
       assigneeId: null,
       labelIds: [],
@@ -730,6 +742,7 @@ function agentSessionEvent(
       title: "Ship the feature",
       description: "Useful context",
       projectId: "project-1",
+      teamId: "team-1",
       stateId: "ready",
       assigneeId: "app-user",
       labelIds: [],

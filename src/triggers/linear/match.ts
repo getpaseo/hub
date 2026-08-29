@@ -96,6 +96,7 @@ export function matchesIssueScope(
   if (filter === undefined) return false;
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) return false;
   if (filter.project !== undefined && filter.project !== issue.projectId) return false;
+  if (filter.team !== undefined && filter.team !== issue.teamId) return false;
   if (filter.states !== undefined && !matchesOptionalId(filter.states, issue.stateId)) return false;
   if (filter.assignees !== undefined && !matchesOptionalId(filter.assignees, issue.assigneeId)) {
     return false;
@@ -148,7 +149,7 @@ function matchesTriggerFilter(
   const issue = event.type === "issue" ? event.issue : event.issue;
   if (issue === null || !matchesIssueScope(issue, trigger.filters, connectionId)) return false;
   if (!matchesActor(event, trigger.filters?.from_users)) return false;
-  if (event.type === "comment" && !matchesCommentText(event, trigger.filters)) return false;
+  if (event.type === "comment" && !matchesComment(event, trigger.filters)) return false;
   if (event.type === "agent_session" && !matchesText(event.parserMessage, trigger.filters)) {
     return false;
   }
@@ -168,6 +169,9 @@ function enteredConfiguredScope(
     ...event.issue,
     ...(Object.hasOwn(event.updatedFrom, "projectId")
       ? { projectId: event.updatedFrom.projectId ?? null }
+      : {}),
+    ...(Object.hasOwn(event.updatedFrom, "teamId")
+      ? { teamId: event.updatedFrom.teamId ?? null }
       : {}),
     ...(Object.hasOwn(event.updatedFrom, "stateId")
       ? { stateId: event.updatedFrom.stateId ?? null }
@@ -201,10 +205,11 @@ function matchesOptionalId(allowed: readonly string[], value: string | null): bo
   return value !== null && allowed.includes(value);
 }
 
-function matchesCommentText(
+function matchesComment(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
 ): boolean {
+  if (filter?.replies_only === true && event.comment.parentId === null) return false;
   return matchesText(event.comment.body, filter);
 }
 
