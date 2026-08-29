@@ -1,5 +1,8 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import {
+  hasRequiredLinearAgentSessionScopes,
+  linearConnectionRequiresReauthorization,
+} from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
@@ -71,7 +74,8 @@ export class ProviderEventAcceptanceRepository {
       const dropReason =
         input.dropReason ??
         ((provider === "github" && "status" in connection && connection.status === "suspended") ||
-        (provider === "linear" && linearConnectionUnavailable(connection, input.receivedAt))
+        (provider === "linear" &&
+          linearConnectionUnavailable(connection, input.receivedAt, input.source))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
@@ -311,7 +315,11 @@ export class ProviderEventAcceptanceRepository {
   }
 }
 
-function linearConnectionUnavailable(connection: object, receivedAt: Date): boolean {
+function linearConnectionUnavailable(
+  connection: object,
+  receivedAt: Date,
+  source: string,
+): boolean {
   if (!("scopes" in connection) || !isStringArray(connection.scopes)) return true;
   if (
     !("refreshToken" in connection) ||
@@ -325,13 +333,17 @@ function linearConnectionUnavailable(connection: object, receivedAt: Date): bool
   ) {
     return true;
   }
-  return linearConnectionRequiresReauthorization(
-    {
-      scopes: connection.scopes,
-      refreshToken: connection.refreshToken,
-      accessTokenExpiresAt: connection.accessTokenExpiresAt,
-    },
-    receivedAt,
+  return (
+    (source === "linear.agent_session" &&
+      !hasRequiredLinearAgentSessionScopes(connection.scopes)) ||
+    linearConnectionRequiresReauthorization(
+      {
+        scopes: connection.scopes,
+        refreshToken: connection.refreshToken,
+        accessTokenExpiresAt: connection.accessTokenExpiresAt,
+      },
+      receivedAt,
+    )
   );
 }
 

@@ -5,7 +5,13 @@ import { logger } from "../../logger.js";
 import { logProviderEventIntake } from "../audit.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
-import { eventIssueId, eventProjectId, eventTeamId, normalizeLinearEvent } from "./events.js";
+import {
+  eventIssueId,
+  eventProjectId,
+  eventTeamId,
+  hasExplicitNullLinearProject,
+  normalizeLinearEvent,
+} from "./events.js";
 import type { LinearIssueDetails } from "../../providers/linear/client.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
@@ -115,7 +121,14 @@ async function handoffLinearEvent(
       logger.info({ deliveryId: verified.deliveryId }, "ignoring unsupported Linear event");
       return new Response("OK", { status: 200 });
     }
-    if (eventProjectId(event) === undefined && options.resolveIssue !== undefined) {
+    const hasCompleteTeamRoute =
+      eventTeamId(event) !== undefined &&
+      hasExplicitNullLinearProject(verified.payload, verified.eventName);
+    if (
+      eventProjectId(event) === undefined &&
+      !hasCompleteTeamRoute &&
+      options.resolveIssue !== undefined
+    ) {
       const source = linearEventSource(event);
       if (
         options.canHydrateIssue !== undefined &&
