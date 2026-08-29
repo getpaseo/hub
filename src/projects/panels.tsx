@@ -106,9 +106,18 @@ export function OrganizationConnectionsPanel() {
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: ConnectionProviderName) => {
+  const connectProvider = (
+    provider: ConnectionProviderName,
+    linearAgentSessions = false,
+  ) => {
     connect.mutate(
-      { data: { ...scope, provider } },
+      {
+        data: {
+          ...scope,
+          provider,
+          ...(provider === "linear" && linearAgentSessions ? { linearAgentSessions: true } : {}),
+        },
+      },
       {
         onSuccess: (response) => {
           if (response.status === "ok") window.location.assign(response.data.url);
@@ -150,9 +159,26 @@ export function OrganizationConnectionsPanel() {
       );
     }
     return (
-      <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
-        {connectionActionLabel(provider)} {providerLabel(provider)}
-      </Button>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          disabled={busy}
+          variant="outline"
+          size="sm"
+          onClick={() => connectProvider(provider)}
+        >
+          {connectionActionLabel(provider)} {providerLabel(provider)}
+        </Button>
+        {provider === "linear" ? (
+          <Button
+            disabled={busy}
+            variant="outline"
+            size="sm"
+            onClick={() => connectProvider(provider, true)}
+          >
+            Connect for Agent Sessions
+          </Button>
+        ) : null}
+      </div>
     );
   };
   // A provider block that can neither be acted on nor list anything says only its own name.
