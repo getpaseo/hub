@@ -305,6 +305,17 @@ function createAppPublicOperations(
       triggerForOrganization: (organizationId) => {
         const store = new OrganizationTriggerStore(database, organizationId);
         return {
+          async list() {
+            return Promise.all(
+              (await store.list()).map(async (trigger) => ({
+                id: trigger.id,
+                name: trigger.name,
+                enabled: trigger.enabled,
+                format: trigger.format,
+                yaml: (await store.activeRevision(trigger)).yaml,
+              })),
+            );
+          },
           async validate(yaml) {
             const prepared = await store.validate(yaml);
             return { name: prepared.compiled.authored.name };

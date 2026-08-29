@@ -218,6 +218,22 @@ export const ProjectListSchema = z
     },
   });
 
+export const TriggerExportSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    enabled: z.boolean(),
+    format: z.enum(["single_run", "legacy_multistep"]),
+    yaml: z.string(),
+  })
+  .strict()
+  .openapi("TriggerExport");
+
+export const TriggerListSchema = z
+  .object({ triggers: z.array(TriggerExportSchema) })
+  .strict()
+  .openapi("TriggerList");
+
 export const ConfigurationResourcesSchema = z
   .object({
     daemons: z.array(z.object({ id: z.string().uuid(), slug: z.string() }).strict()),

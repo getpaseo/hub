@@ -152,7 +152,20 @@ export type InstallTriggerResult =
   | { status: "invalid_trigger"; issues: readonly DomainIssue[] }
   | InfrastructureUnavailable;
 
+export interface PublicTrigger {
+  id: string;
+  name: string;
+  enabled: boolean;
+  format: "single_run" | "legacy_multistep";
+  yaml: string;
+}
+
+export type ListTriggersResult =
+  | { status: "listed"; triggers: readonly PublicTrigger[] }
+  | InfrastructureUnavailable;
+
 export interface PublicOperations {
+  listTriggers(authorization: PublicAuthorization): Promise<ListTriggersResult>;
   validateTrigger(
     authorization: PublicAuthorization,
     input: TriggerYamlInput,
@@ -207,6 +220,7 @@ export interface PublicOperationRepository {
 
 export interface PublicOperationCapabilities {
   triggerForOrganization?(organizationId: string): {
+    list(): Promise<readonly PublicTrigger[]>;
     validate(yaml: string): Promise<{ name: string }>;
     install(input: {
       yaml: string;

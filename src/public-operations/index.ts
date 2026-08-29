@@ -25,6 +25,16 @@ export function createPublicOperations(
   clock: DaemonClock = { nowDate: () => new Date() },
 ): PublicOperations {
   return {
+    async listTriggers(authorization) {
+      try {
+        return {
+          status: "listed",
+          triggers: await triggerCapability(capabilities, authorization.organizationId).list(),
+        };
+      } catch (error) {
+        return storageUnavailableOrThrow(error);
+      }
+    },
     async validateTrigger(authorization, input) {
       try {
         const trigger = await triggerCapability(

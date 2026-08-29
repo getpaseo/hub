@@ -18,6 +18,7 @@ import {
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
   ProjectListSchema,
+  TriggerListSchema,
   ProblemSchema,
   publicOperationManifest,
   publicOpenApiDocument,
@@ -138,6 +139,15 @@ describe("public API interface", () => {
     );
     InstalledConfigurationSchema.parse(
       await (await successApi.handle(installRequest("/api/v1/configurations/install"))).json(),
+    );
+    TriggerListSchema.parse(
+      await (
+        await successApi.handle(
+          new Request("https://hub.test/api/v1/triggers", {
+            headers: { authorization: "Bearer valid" },
+          }),
+        )
+      ).json(),
     );
     ProjectListSchema.parse(
       await (
@@ -290,6 +300,7 @@ describe("generated public OpenAPI", () => {
       "/api/v1/manual-runs",
       "/api/v1/projects",
       "/api/v1/setup-resources",
+      "/api/v1/triggers",
       "/api/v1/triggers/install",
       "/api/v1/triggers/validate",
     ]);
@@ -307,6 +318,7 @@ describe("generated public OpenAPI", () => {
         ["200", "401", "403", "500", "503"],
       ],
       "/api/v1/setup-resources": ["configuration:validate", ["200", "401", "403", "500", "503"]],
+      "/api/v1/triggers": ["configuration:validate", ["200", "401", "403", "500", "503"]],
       "/api/v1/projects": ["projects:read", ["200", "401", "403", "500", "503"]],
       "/api/v1/manual-runs": [
         "runs:dispatch",
@@ -317,6 +329,7 @@ describe("generated public OpenAPI", () => {
     for (const [path, [scope, statuses]] of Object.entries(expectations)) {
       const operation =
         path === "/api/v1/projects" ||
+        path === "/api/v1/triggers" ||
         path === "/api/v1/configuration-resources" ||
         path === "/api/v1/setup-resources"
           ? publicOpenApiDocument.paths?.[path]?.get
@@ -409,6 +422,19 @@ function authenticator(
 
 function successfulOperations(): PublicOperations {
   return {
+    listTriggers: () =>
+      Promise.resolve({
+        status: "listed",
+        triggers: [
+          {
+            id: "84af3583-23ff-4fcc-9838-ed3262499be2",
+            name: "mention",
+            enabled: true,
+            format: "single_run",
+            yaml: "name: mention\nenabled: true\n",
+          },
+        ],
+      }),
     validateTrigger: () => Promise.resolve({ status: "valid", name: "mention", valid: true }),
     installTrigger: () =>
       Promise.resolve({

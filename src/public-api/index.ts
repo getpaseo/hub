@@ -8,6 +8,7 @@ import type {
   InstallTriggerResult,
   IssueEnrollmentTokenResult,
   ListProjectsResult,
+  ListTriggersResult,
   ListConfigurationResourcesResult,
   ListSetupResourcesResult,
   PublicAuthorization,
@@ -21,6 +22,7 @@ import {
   InstalledConfigurationSchema,
   InstalledTriggerSchema,
   ProjectListSchema,
+  TriggerListSchema,
   ConfigurationResourcesSchema,
   SetupResourcesSchema,
   ProblemSchema,
@@ -41,6 +43,7 @@ export type { PublicOperationId } from "./operation-manifest.js";
 type PublicOperationResult =
   | ValidateTriggerResult
   | InstallTriggerResult
+  | ListTriggersResult
   | ListProjectsResult
   | ListConfigurationResourcesResult
   | ListSetupResourcesResult
@@ -213,11 +216,15 @@ async function execute(
     input = parsed.data;
   }
   const result = await definition.invoke(operations, access, input);
+  if (definition.resultMapping === "triggers") {
+    if (!isTriggersResult(result)) throw new Error("invalid triggers operation result");
+    return triggersResponse(requestId, result);
+  }
   return operationResponse(definition.resultMapping, requestId, result);
 }
 
 function operationResponse(
-  mapping: PublicOperationDefinition["resultMapping"],
+  mapping: Exclude<PublicOperationDefinition["resultMapping"], "triggers">,
   requestId: string,
   result: PublicOperationResult,
 ): Response {
@@ -255,6 +262,12 @@ function operationResponse(
       return enrollmentResponse(requestId, result);
   }
   return assertNever(mapping);
+}
+
+function triggersResponse(requestId: string, result: ListTriggersResult): Response {
+  return result.status === "listed"
+    ? success(requestId, 200, TriggerListSchema, { triggers: result.triggers })
+    : infrastructureProblem(requestId);
 }
 
 function triggerValidationResponse(requestId: string, result: ValidateTriggerResult): Response {
@@ -625,6 +638,13 @@ function isTriggerInstallationResult(
 
 function isProjectsResult(result: PublicOperationResult): result is ListProjectsResult {
   return ["listed", "infrastructure_unavailable"].includes(result.status);
+}
+
+function isTriggersResult(result: PublicOperationResult): result is ListTriggersResult {
+  return (
+    result.status === "infrastructure_unavailable" ||
+    (result.status === "listed" && "triggers" in result)
+  );
 }
 
 function isConfigurationResourcesResult(

@@ -7,6 +7,7 @@ import type {
   ListConfigurationResourcesResult,
   ListSetupResourcesResult,
   ListProjectsResult,
+  ListTriggersResult,
   PublicOperations,
   ValidateConfigurationResult,
   ValidateTriggerResult,
@@ -19,6 +20,7 @@ import {
   InstalledConfigurationSchema,
   InstalledTriggerSchema,
   ProjectListSchema,
+  TriggerListSchema,
   ConfigurationResourcesSchema,
   SetupResourcesSchema,
   ValidatedConfigurationSchema,
@@ -27,6 +29,7 @@ import {
 } from "./contracts.js";
 
 export type PublicOperationId =
+  | "listTriggers"
   | "validateTrigger"
   | "installTrigger"
   | "listProjects"
@@ -52,6 +55,7 @@ export interface PublicOperationDefinition {
     | typeof InstalledConfigurationSchema
     | typeof ValidatedConfigurationSchema
     | typeof ProjectListSchema
+    | typeof TriggerListSchema
     | typeof ConfigurationResourcesSchema
     | typeof SetupResourcesSchema
     | typeof DispatchedManualRunSchema
@@ -59,6 +63,7 @@ export interface PublicOperationDefinition {
   successStatus: 200 | 201;
   resultMapping:
     | "trigger-validation"
+    | "triggers"
     | "trigger-installation"
     | "projects"
     | "configuration-resources"
@@ -77,6 +82,7 @@ export interface PublicOperationDefinition {
     input: unknown,
   ): Promise<
     | ListProjectsResult
+    | ListTriggersResult
     | ValidateTriggerResult
     | InstallTriggerResult
     | ListConfigurationResourcesResult
@@ -89,6 +95,26 @@ export interface PublicOperationDefinition {
 }
 
 export const publicOperationManifest: readonly PublicOperationDefinition[] = [
+  {
+    id: "listTriggers",
+    method: "get",
+    path: "/api/v1/triggers",
+    scope: "configuration:validate",
+    successSchema: TriggerListSchema,
+    successStatus: 200,
+    resultMapping: "triggers",
+    summary: "List triggers",
+    description: "Lists active organization triggers with their deployable YAML documents.",
+    tag: "Triggers",
+    responses: {
+      200: "The organization's active trigger documents.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:validate.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization) => operations.listTriggers(authorization),
+  },
   {
     id: "validateTrigger",
     method: "post",
