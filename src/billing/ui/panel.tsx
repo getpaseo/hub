@@ -127,7 +127,7 @@ function PlanIdentity({
             <StatusPill tone={summary.status.tone}>{summary.status.label}</StatusPill>
           </div>
         )}
-        <p className="text-2xl leading-tight font-semibold tracking-tight">
+        <p className="text-2xl leading-tight tracking-tight">
           {summary.planName ?? NO_SUBSCRIPTION}
         </p>
         {summary.detail !== null && (

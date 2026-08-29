@@ -199,10 +199,10 @@ function PlanCard({
   return (
     <div className="flex flex-col rounded-xl border bg-card p-5 text-card-foreground">
       <div className="flex min-h-6 items-start justify-between gap-2">
-        <h3 className="text-sm font-medium">{plan.name}</h3>
+        <h3 className="text-sm">{plan.name}</h3>
         {isCurrent && <Badge variant="secondary">Current</Badge>}
       </div>
-      <p className="mt-3 text-3xl leading-none font-semibold tracking-tight">{amount}</p>
+      <p className="mt-3 text-3xl leading-none tracking-tight">{amount}</p>
       <p className="mt-1.5 text-xs text-muted-foreground">{unit}</p>
       {/* Stacked on a phone, the plan you are already on collapses to a marker: its feature list
           is the one thing on the screen nobody needs to read, and it costs a full scroll. */}

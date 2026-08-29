@@ -150,13 +150,13 @@ function ProjectCard({
     <>
       <span
         aria-hidden="true"
-        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-link"
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm text-link"
       >
         {monogram(project.name)}
       </span>
       <span className="grid min-w-0 flex-1 gap-0.5">
         <span className="flex items-center gap-2">
-          <span className="truncate font-medium group-hover:text-link">{project.name}</span>
+          <span className="truncate group-hover:text-link">{project.name}</span>
           {project.status === "active" ? null : <StatusPill tone="neutral">Archived</StatusPill>}
         </span>
         <span className="truncate font-mono text-xs text-muted-foreground">{project.slug}</span>
@@ -276,7 +276,7 @@ export function OrganizationConnectionsPanel() {
           {rows.map((connection) => (
             <DataRow key={`${connection.provider}-${connection.id}`}>
               <DataCell>
-                <span className="font-medium">{connection.name}</span>
+                <span>{connection.name}</span>
                 <span className="block font-mono text-xs text-muted-foreground">
                   {connection.externalId}
                 </span>
@@ -333,7 +333,7 @@ export function OrganizationConnectionsPanel() {
                 key={provider}
                 className="flex items-center justify-between gap-2 rounded-md border p-3"
               >
-                <span className="inline-flex items-center gap-2 text-sm font-medium">
+                <span className="inline-flex items-center gap-2 text-sm">
                   <ProviderGlyph provider={provider} />
                   {providerLabel(provider)}
                 </span>
@@ -511,7 +511,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
             {activity.steps.map((step) => (
               <DataRow key={step.id}>
                 <DataCell>
-                  <span className="font-medium">
+                  <span>
                     {step.ordinal + 1}. {step.stepId}
                   </span>
                 </DataCell>
@@ -632,7 +632,7 @@ function SetupCard({ label, ready, detail }: { label: string; ready: boolean; de
   return (
     <section aria-label={label} className="rounded-lg border bg-card p-5">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="font-medium">{label}</h2>
+        <h2>{label}</h2>
         <StatusPill tone={ready ? "success" : "neutral"}>
           {ready ? "Ready" : "Setup needed"}
         </StatusPill>
@@ -645,7 +645,7 @@ function SetupCard({ label, ready, detail }: { label: string; ready: boolean; de
 function DetailField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid gap-1">
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="min-w-0">{children}</dd>
     </div>
   );
@@ -699,10 +699,7 @@ function ActivityTable({
             {detailBasePath &&
             "configuredTriggerName" in event &&
             event.configuredTriggerName !== null ? (
-              <Link
-                className="font-medium hover:underline"
-                to={`${detailBasePath}/${event.id}` as never}
-              >
+              <Link className="hover:underline" to={`${detailBasePath}/${event.id}` as never}>
                 {event.configuredTriggerName}
               </Link>
             ) : (
