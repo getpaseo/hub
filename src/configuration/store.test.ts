@@ -87,6 +87,31 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.deepEqual(storedAgent.options, options);
   });
 
+  it("accepts a Discord guild id as documented in filters.guild", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({ github: [], slack: [], discord: [primary] });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Guild id project",
+      slug: "guild-id-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(discordConfiguration({ guild: primary.guildId }))),
+      userId: "user-1",
+    });
+
+    assert.equal(revision.validationErrors, null);
+    const active = await store.activate(revision.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.guild, primary.guildId);
+    assert.equal(active.configuration.triggers[0]?.filters?.connectionId, primary.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.resourceId, primary.guildId);
+  });
+
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
