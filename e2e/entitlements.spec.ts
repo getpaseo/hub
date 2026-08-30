@@ -140,18 +140,20 @@ test.describe("metered usage", () => {
       expect(second.triggerRunId).toBeDefined();
     });
 
-    await test.step("the denied run fails with the entitlement reason, not a generic failure", async () => {
+    await test.step("the denied run fails in organization activity", async () => {
       await app.navigation.openOrganizationSection("Activity");
-      const deniedRow = page
+      const deployRows = page
         .getByRole("table", { name: "Trigger activity" })
         .getByRole("row")
-        .filter({ hasText: "deploy" })
-        .filter({ hasText: "failed" });
+        .filter({ has: page.getByRole("cell", { name: "deploy", exact: true }) });
       // Organization activity is intentionally compact and has no legacy run-detail route. The
       // durable-engine suite retains the exact entitlement-reason assertion.
       await expect(async () => {
         await page.reload();
-        await expect(deniedRow).toBeVisible();
+        await expect(deployRows).toHaveCount(2);
+        await expect(
+          deployRows.first().getByRole("cell", { name: "failed", exact: true }),
+        ).toBeVisible();
       }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
       await page.screenshot({ path: `${SLICE_3_DIR}/02-execution-denied.png`, fullPage: true });
     });
