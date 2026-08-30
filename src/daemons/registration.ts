@@ -9,6 +9,13 @@ import { slugify } from "../slug.js";
 import { reportFailure } from "../failures/index.js";
 
 const renameBody = z.object({ slug: z.string().trim().min(1).max(100) }).strict();
+const grantBody = z
+  .object({
+    memberId: z.string().min(1),
+    role: z.enum(["owner", "operator", "viewer"]),
+  })
+  .strict();
+const revokeGrantBody = z.object({ memberId: z.string().min(1) }).strict();
 const enrollmentBody = z
   .object({
     daemonId: z.string().uuid(),
@@ -33,11 +40,61 @@ export class DaemonRegistration {
   async list(request: Request): Promise<Response> {
     const access = await this.browserRouteAccess(request, false);
     if (access instanceof Response) return access;
-    const daemons = await this.options.database.listDaemonsForOrganization(access.organization.id);
+    const [daemons, grants] = await Promise.all([
+      this.options.database.listDaemonsForOrganization(access.organization.id),
+      this.options.database.listDaemonAccessGrantsForOrganization(access.organization.id),
+    ]);
+    const canManage = access.capabilities.manageResources;
+    const visibleDaemonIds = new Set(
+      grants
+        .filter((grant) => canManage || grant.memberId === access.membership.id)
+        .map((grant) => grant.daemonId),
+    );
+    const visibleDaemons = canManage
+      ? daemons
+      : daemons.filter((daemon) => visibleDaemonIds.has(daemon.id));
     return Response.json({
-      daemons: daemons.map(daemonSummary),
-      canManage: access.capabilities.manageResources,
+      daemons: visibleDaemons.map(daemonSummary),
+      grants: grants
+        .filter((grant) => canManage || grant.memberId === access.membership.id)
+        .map(grantSummary),
+      canManage,
     });
+  }
+
+  async grantAccess(request: Request, daemonId: string): Promise<Response> {
+    const access = await this.browserRouteAccess(request, true);
+    if (access instanceof Response) return access;
+    if (!access.capabilities.manageResources) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    const input = await parseRequest(request, grantBody);
+    if (input instanceof Response) return input;
+    const grant = await this.options.database.setDaemonAccessGrant({
+      organizationId: access.organization.id,
+      daemonId,
+      memberId: input.memberId,
+      role: input.role,
+      actorUserId: access.account.id,
+    });
+    return grant === undefined ? unavailableDaemonOrMember() : Response.json(grantSummary(grant));
+  }
+
+  async revokeAccess(request: Request, daemonId: string): Promise<Response> {
+    const access = await this.browserRouteAccess(request, true);
+    if (access instanceof Response) return access;
+    if (!access.capabilities.manageResources) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    const input = await parseRequest(request, revokeGrantBody);
+    if (input instanceof Response) return input;
+    const removed = await this.options.database.removeDaemonAccessGrant({
+      organizationId: access.organization.id,
+      daemonId,
+      memberId: input.memberId,
+      actorUserId: access.account.id,
+    });
+    return removed ? new Response(null, { status: 204 }) : unavailableDaemonOrMember();
   }
 
   async rename(request: Request, daemonId: string): Promise<Response> {
@@ -210,8 +267,24 @@ function daemonSummary(daemon: DaemonRecord) {
   };
 }
 
+function grantSummary(grant: Awaited<ReturnType<Database["setDaemonAccessGrant"]>>) {
+  if (grant === undefined) throw new Error("daemon access grant is unavailable");
+  return {
+    id: grant.id,
+    daemonId: grant.daemonId,
+    memberId: grant.memberId,
+    role: grant.role,
+    createdAt: grant.createdAt.toISOString(),
+    updatedAt: grant.updatedAt.toISOString(),
+  };
+}
+
 function unavailableDaemon(): Response {
   return Response.json({ error: "daemon_unavailable" }, { status: 404 });
+}
+
+function unavailableDaemonOrMember(): Response {
+  return Response.json({ error: "daemon_or_member_unavailable" }, { status: 404 });
 }
 
 function daemonSlugConflict(slug: string): Response {

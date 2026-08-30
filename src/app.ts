@@ -90,6 +90,8 @@ export interface HubOperations {
   handleOrganizationDaemons(request: Request): Promise<Response>;
   handleOrganizationDaemonRename(request: Request, daemonId: string): Promise<Response>;
   handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
+  handleOrganizationDaemonAccessGrant(request: Request, daemonId: string): Promise<Response>;
+  handleOrganizationDaemonAccessRevocation(request: Request, daemonId: string): Promise<Response>;
   handleExecutionCapabilities(request: Request, executionId: string): Promise<Response>;
   handleAttachmentDownload(
     request: Request,
@@ -274,6 +276,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       registration === null ? databaseUnavailable() : registration.rename(request, daemonId),
     handleOrganizationDaemonRevocation: (request, daemonId) =>
       registration === null ? databaseUnavailable() : registration.revoke(request, daemonId),
+    handleOrganizationDaemonAccessGrant: (request, daemonId) =>
+      registration === null ? databaseUnavailable() : registration.grantAccess(request, daemonId),
+    handleOrganizationDaemonAccessRevocation: (request, daemonId) =>
+      registration === null ? databaseUnavailable() : registration.revokeAccess(request, daemonId),
     handleExecutionCapabilities: (request, executionId) =>
       capabilityServer === null
         ? databaseUnavailable()

@@ -14,8 +14,18 @@ const daemonSchema = z.object({
   lastSeenAt: z.string().datetime(),
   registeredAt: z.string().datetime(),
 });
+const daemonAccessRoleSchema = z.enum(["owner", "operator", "viewer"]);
+const daemonAccessGrantSchema = z.object({
+  id: z.string().uuid(),
+  daemonId: z.string().uuid(),
+  memberId: z.string(),
+  role: daemonAccessRoleSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
 const daemonListSchema = z.object({
   daemons: z.array(daemonSchema),
+  grants: z.array(daemonAccessGrantSchema),
   canManage: z.boolean(),
 });
 const renameSchema = z.object({ daemonId: z.string().uuid(), slug: z.string() });
@@ -23,8 +33,19 @@ const daemonIdSchema = z.object({ daemonId: z.string().uuid() });
 const organizationScopeSchema = z.object({ organizationSlug: z.string().min(1) });
 const scopedRenameSchema = organizationScopeSchema.extend(renameSchema.shape);
 const scopedDaemonIdSchema = organizationScopeSchema.extend(daemonIdSchema.shape);
+const daemonGrantSchema = daemonIdSchema.extend({
+  memberId: z.string().min(1),
+  role: daemonAccessRoleSchema,
+});
+const scopedDaemonGrantSchema = organizationScopeSchema.extend(daemonGrantSchema.shape);
+const scopedDaemonGrantRevocationSchema = organizationScopeSchema.extend({
+  daemonId: z.string().uuid(),
+  memberId: z.string().min(1),
+});
 
 export type BrowserDaemon = z.infer<typeof daemonSchema>;
+export type BrowserDaemonAccessGrant = z.infer<typeof daemonAccessGrantSchema>;
+export type BrowserDaemonAccessRole = z.infer<typeof daemonAccessRoleSchema>;
 export type BrowserDaemonList = z.infer<typeof daemonListSchema>;
 export interface DaemonCommand {
   state: "complete" | "sessionExpired" | "organizationRequired";
@@ -148,6 +169,76 @@ export const revokeDaemon = createServerFn({ method: "POST" })
         error,
         daemonContext("daemon.revoke", data.organizationSlug, data.daemonId),
         { fallback: "Hub couldn't revoke the daemon. Reload its status before submitting again." },
+      );
+    }
+  });
+
+export const grantDaemonAccess = createServerFn({ method: "POST" })
+  .validator(scopedDaemonGrantSchema)
+  .handler(async ({ data }): Promise<Result<DaemonCommand>> => {
+    try {
+      const response = await (
+        await getApplication()
+      ).operations.handleOrganizationDaemonAccessGrant(
+        operationRequest(
+          "POST",
+          "/organization/daemons/access/grant",
+          { memberId: data.memberId, role: data.role },
+          data.organizationSlug,
+        ),
+        data.daemonId,
+      );
+      if (response.status === 401)
+        return daemonStateFailure("daemon.access.grant", response, "sessionExpired", data);
+      if (!response.ok)
+        return daemonResponseFailure(
+          "daemon.access.grant",
+          response,
+          "Hub couldn't grant daemon access. Reload the member and daemon lists before trying again.",
+          data.organizationSlug,
+          data.daemonId,
+        );
+      return respondOk({ state: "complete" });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.access.grant", data.organizationSlug, data.daemonId),
+        { fallback: "Hub couldn't grant daemon access. Reload and try again." },
+      );
+    }
+  });
+
+export const revokeDaemonAccess = createServerFn({ method: "POST" })
+  .validator(scopedDaemonGrantRevocationSchema)
+  .handler(async ({ data }): Promise<Result<DaemonCommand>> => {
+    try {
+      const response = await (
+        await getApplication()
+      ).operations.handleOrganizationDaemonAccessRevocation(
+        operationRequest(
+          "POST",
+          "/organization/daemons/access/revoke",
+          { memberId: data.memberId },
+          data.organizationSlug,
+        ),
+        data.daemonId,
+      );
+      if (response.status === 401)
+        return daemonStateFailure("daemon.access.revoke", response, "sessionExpired", data);
+      if (!response.ok)
+        return daemonResponseFailure(
+          "daemon.access.revoke",
+          response,
+          "Hub couldn't revoke daemon access. Reload the member and daemon lists before trying again.",
+          data.organizationSlug,
+          data.daemonId,
+        );
+      return respondOk({ state: "complete" });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.access.revoke", data.organizationSlug, data.daemonId),
+        { fallback: "Hub couldn't revoke daemon access. Reload and try again." },
       );
     }
   });
