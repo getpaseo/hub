@@ -718,6 +718,17 @@ export class HubHarness {
     await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
     return this.execution(id);
   }
+  async waitForExecutionForTriggerRun(triggerRunId: string): Promise<AgentExecutionRecord> {
+    let execution: AgentExecutionRecord | undefined;
+    await waitFor(async () => {
+      const step = await this.requireDatabase().findWorkflowStepRunByTriggerRun(triggerRunId);
+      if (step === undefined) return false;
+      execution = await this.requireDatabase().findAgentExecutionByWorkflowStepRunId(step.id);
+      return execution !== undefined;
+    });
+    if (execution === undefined) throw new Error("Workflow execution does not exist");
+    return execution;
+  }
   async waitForExecutionStatus(
     id: string,
     status: AgentExecutionRecord["status"],

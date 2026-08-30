@@ -1712,14 +1712,25 @@ describe("daemon enrollment and execution", () => {
       });
       assert.equal(result.status, 200);
       assert.ok(result.triggerRunId);
+      const execution = await hub.waitForExecutionForTriggerRun(result.triggerRunId);
+      await hub.waitForExecutionStatus(execution.id, "running");
       await hub.restartApp();
+      await hub.waitForRecoveredExecution(execution.id);
+      assert.deepEqual(
+        await hub.runtimeResources({
+          recoveredExecutionSubscriptions: 1,
+        }),
+        {
+          recoveredExecutionSubscriptions: 1,
+        },
+      );
+      assert.equal(await hub.completeExecution(execution.id), 200);
+      await hub.waitForExecutionStatus(execution.id, "succeeded");
       assert.deepEqual(
         await hub.runtimeResources({
           recoveredExecutionSubscriptions: 0,
         }),
-        {
-          recoveredExecutionSubscriptions: 0,
-        },
+        { recoveredExecutionSubscriptions: 0 },
       );
     }
 
@@ -1727,7 +1738,12 @@ describe("daemon enrollment and execution", () => {
       deliveryKey: "resource-runtime-stop",
     });
     assert.equal(stopped.status, 200);
+    assert.ok(stopped.triggerRunId);
+    const execution = await hub.waitForExecutionForTriggerRun(stopped.triggerRunId);
+    await hub.waitForExecutionStatus(execution.id, "running");
     await hub.restartApp();
+    await hub.waitForRecoveredExecution(execution.id);
+    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
     assert.deepEqual(await hub.stopRuntimeResources(), {
       recoveredExecutionSubscriptions: 0,
     });
