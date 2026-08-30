@@ -26,7 +26,14 @@ export interface TriggerFormValue {
   cwd: string;
   agent: string;
   mode: string;
+  thinkingOptionId: string;
   providerOptions: string;
+  maxRuntime: string;
+  idleTimeout: string;
+  githubConnection: string;
+  githubRepositories: string;
+  githubPermissions: string;
+  githubDuration: string;
   prompt: string;
 }
 
@@ -35,6 +42,7 @@ export type TriggerFormProjection =
   | { status: "yaml_only"; reason: string };
 
 const ProviderOptionsSchema = z.record(z.string(), z.unknown());
+const GitHubPermissionsSchema = z.record(z.string(), z.enum(["read", "write", "admin"]));
 
 export function projectTriggerForm(yaml: string): TriggerFormProjection {
   const parsed = parseEditorDocument(yaml);
@@ -54,19 +62,38 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   const agent = trigger.run.agent;
   return {
     status: "editable",
-    value: {
-      name: trigger.name,
-      enabled: trigger.enabled,
-      event,
-      connection: definition.connection ?? "",
-      allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
-      daemon: trigger.run.target.daemon,
-      cwd: trigger.run.target.cwd,
-      agent: joinAgentId(agent.provider, agent.model),
-      mode: agent.mode ?? "",
-      providerOptions: agent.options === undefined ? "" : JSON.stringify(agent.options, null, 2),
-      prompt: trigger.run.prompt,
-    },
+    value: toFormValue(trigger, event, definition, agent),
+  };
+}
+
+function toFormValue(
+  trigger: TriggerDocument,
+  event: EditorEvent,
+  definition: TriggerDocument["on"][string],
+  agent: Extract<TriggerDocument["run"]["agent"], { provider: string }>,
+): TriggerFormValue {
+  return {
+    name: trigger.name,
+    enabled: trigger.enabled,
+    event,
+    connection: definition.connection ?? "",
+    allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
+    daemon: trigger.run.target.daemon,
+    cwd: trigger.run.target.cwd,
+    agent: joinAgentId(agent.provider, agent.model),
+    mode: agent.mode ?? "",
+    thinkingOptionId: agent.thinkingOptionId ?? "",
+    providerOptions: agent.options === undefined ? "" : JSON.stringify(agent.options, null, 2),
+    maxRuntime: trigger.run.max_runtime,
+    idleTimeout: trigger.run.idle_timeout,
+    githubConnection: trigger.run.github?.connection ?? "",
+    githubRepositories: trigger.run.github?.repositories?.join(", ") ?? "",
+    githubPermissions:
+      trigger.run.github?.permissions === undefined
+        ? ""
+        : JSON.stringify(trigger.run.github.permissions, null, 2),
+    githubDuration: trigger.run.github?.duration ?? "",
+    prompt: trigger.run.prompt,
   };
 }
 
@@ -75,6 +102,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   const projection = projectTriggerForm(yaml);
   if (projection.status !== "editable") throw new Error(projection.reason);
   if (sameFormValue(projection.value, value)) return yaml;
+  validateFormValue(value);
 
   const document = parseDocument(yaml);
   assertDocument(document);
@@ -100,8 +128,16 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   const agent = splitAgentId(value.agent);
   setIfChanged(document, ["run", "agent", "provider"], agent.provider);
   setOptional(document, ["run", "agent", "model"], agent.model);
-  setOptional(document, ["run", "agent", "mode"], blankToUndefined(value.mode));
+  setIfChanged(document, ["run", "agent", "mode"], value.mode.trim());
+  setOptional(
+    document,
+    ["run", "agent", "thinkingOptionId"],
+    blankToUndefined(value.thinkingOptionId),
+  );
   setOptional(document, ["run", "agent", "options"], parseProviderOptions(value.providerOptions));
+  setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
+  setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
+  setOptional(document, ["run", "github"], githubAuthority(value));
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -114,9 +150,10 @@ export function mergeTriggerForm(yaml: string, value: TriggerFormValue): string 
 }
 
 export function createTriggerYaml(value: TriggerFormValue): string {
+  validateFormValue(value);
   const agent = splitAgentId(value.agent);
-  const mode = blankToUndefined(value.mode);
   const providerOptions = parseProviderOptions(value.providerOptions);
+  const github = githubAuthority(value);
   const definition =
     value.event === "manual.run"
       ? {}
@@ -131,14 +168,49 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         agent: {
           provider: agent.provider,
           ...(agent.model === undefined ? {} : { model: agent.model }),
-          ...(mode === undefined ? {} : { mode }),
+          mode: value.mode.trim(),
+          ...(blankToUndefined(value.thinkingOptionId) === undefined
+            ? {}
+            : { thinkingOptionId: value.thinkingOptionId.trim() }),
           ...(providerOptions === undefined ? {} : { options: providerOptions }),
         },
+        max_runtime: value.maxRuntime.trim(),
+        idle_timeout: value.idleTimeout.trim(),
+        ...(github === undefined ? {} : { github }),
         prompt: value.prompt,
       },
     },
     { lineWidth: 0 },
   );
+}
+
+function githubAuthority(value: TriggerFormValue) {
+  const connection = blankToUndefined(value.githubConnection);
+  if (connection === undefined) return undefined;
+  const repositories = commaSeparated(value.githubRepositories);
+  const permissions = parsePermissions(value.githubPermissions);
+  const duration = blankToUndefined(value.githubDuration);
+  return {
+    connection,
+    ...(repositories.length === 0 ? {} : { repositories }),
+    ...(permissions === undefined ? {} : { permissions }),
+    ...(duration === undefined ? {} : { duration }),
+  };
+}
+
+function parsePermissions(value: string): Record<string, "read" | "write" | "admin"> | undefined {
+  const parsed = parseProviderOptions(value);
+  if (parsed === undefined) return undefined;
+  return GitHubPermissionsSchema.parse(parsed);
+}
+
+function validateFormValue(value: TriggerFormValue): void {
+  if (!value.cwd.trim().startsWith("/")) {
+    throw new Error("Working directory must be an absolute path.");
+  }
+  if (value.mode.trim().length === 0) throw new Error("Execution mode is required.");
+  if (value.maxRuntime.trim().length === 0) throw new Error("Maximum runtime is required.");
+  if (value.idleTimeout.trim().length === 0) throw new Error("Idle timeout is required.");
 }
 
 export function parseProviderOptions(value: string): Record<string, unknown> | undefined {
@@ -209,11 +281,15 @@ function sameFormValue(left: TriggerFormValue, right: TriggerFormValue): boolean
 }
 
 function users(value: string): string[] {
-  const values = value
+  const values = commaSeparated(value);
+  return values.length === 0 ? ["*"] : values;
+}
+
+function commaSeparated(value: string): string[] {
+  return value
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
-  return values.length === 0 ? ["*"] : values;
 }
 
 function blankToUndefined(value: string): string | undefined {

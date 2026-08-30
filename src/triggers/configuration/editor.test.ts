@@ -150,7 +150,14 @@ describe("trigger form YAML bridge", () => {
       cwd: "/workspace",
       agent: "codex/gpt-5.4",
       mode: "full-access",
+      thinkingOptionId: "",
       providerOptions: "",
+      maxRuntime: "2h",
+      idleTimeout: "10m",
+      githubConnection: "",
+      githubRepositories: "",
+      githubPermissions: "",
+      githubDuration: "1h",
       prompt: "Handle it.",
     });
     expect(parseDocument(yaml).toJS()).toEqual({
@@ -160,6 +167,8 @@ describe("trigger form YAML bridge", () => {
       run: {
         target: { daemon: "office", cwd: "/workspace" },
         agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
+        max_runtime: "2h",
+        idle_timeout: "10m",
         prompt: "Handle it.",
       },
     });
@@ -175,8 +184,15 @@ describe("trigger form YAML bridge", () => {
       daemon: "office",
       cwd: "/workspace",
       agent: "opencode",
-      mode: "",
+      mode: "full-access",
+      thinkingOptionId: "",
       providerOptions: "",
+      maxRuntime: "2h",
+      idleTimeout: "10m",
+      githubConnection: "",
+      githubRepositories: "",
+      githubPermissions: "",
+      githubDuration: "1h",
       prompt: "${{ paseo.prompt }}",
     });
     const projection = projectTriggerForm(initial);

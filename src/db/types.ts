@@ -1322,7 +1322,7 @@ export interface Database {
   beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
-    maxOutputs: number,
+    maxOutputs: number | undefined,
     startedAt: Date,
   ): Promise<AgentExecutionOutputAttempt | undefined>;
   completeAgentExecutionOutput(

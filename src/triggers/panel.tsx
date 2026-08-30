@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, ArrowLeft, Braces, Copy, FileText, LockKeyhole, Plus } from "lucide-react";
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { SiteHeaderActions } from "../components/app/site-header-actions.js";
@@ -444,6 +444,11 @@ function TriggerForm({
 }) {
   const provider = form.event.split(".")[0];
   const connections = snapshot.connections.filter((connection) => connection.provider === provider);
+  const githubConnections = snapshot.connections.filter(
+    (connection) => connection.provider === "github",
+  );
+  const githubEnabled = form.githubConnection !== "";
+  const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
@@ -581,7 +586,21 @@ function TriggerForm({
             label="Working directory"
             value={form.cwd}
             onChange={(value) => update("cwd", value)}
-            description="Absolute or home-relative path on the daemon."
+            description="Absolute path on the daemon."
+            required
+          />
+          <ControlledInput
+            label="Maximum runtime"
+            value={form.maxRuntime}
+            onChange={(value) => update("maxRuntime", value)}
+            description="Hard deadline for the agent, for example 2h."
+            required
+          />
+          <ControlledInput
+            label="Idle timeout"
+            value={form.idleTimeout}
+            onChange={(value) => update("idleTimeout", value)}
+            description="Stop an unresponsive agent, for example 10m."
             required
           />
         </div>
@@ -601,10 +620,17 @@ function TriggerForm({
             required
           />
           <ControlledInput
-            label="Execution mode (optional)"
+            label="Execution mode"
             value={form.mode}
             onChange={(value) => update("mode", value)}
             description="Provider mode, for example full-access."
+            required
+          />
+          <ControlledInput
+            label="Thinking option ID"
+            value={form.thinkingOptionId}
+            onChange={(value) => update("thinkingOptionId", value)}
+            description="Leave blank to use the provider's default thinking option."
           />
         </div>
         <details className="rounded-md border bg-muted/20 p-3">
@@ -624,6 +650,67 @@ function TriggerForm({
               Passed to the provider on your daemon. YAML-only agent fields remain untouched.
             </FieldDescription>
           </Field>
+        </details>
+        <details
+          className="rounded-md border bg-muted/20 p-3"
+          open={githubExpanded}
+          onToggle={(event) => setGithubExpanded(event.currentTarget.open)}
+        >
+          <summary className="cursor-pointer text-sm">GitHub access</summary>
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="trigger-github-connection">GitHub connection</FieldLabel>
+              <select
+                id="trigger-github-connection"
+                value={form.githubConnection}
+                onChange={(event) => update("githubConnection", event.target.value)}
+                className="h-9 rounded-md border bg-background px-3 text-sm"
+              >
+                <option value="">Do not inject a GitHub token</option>
+                {githubConnections.map((connection) => (
+                  <option key={connection.id} value={connection.slug}>
+                    {connection.label}
+                  </option>
+                ))}
+              </select>
+              <FieldDescription>
+                Mints a short-lived, restricted GH_TOKEN for this run.
+              </FieldDescription>
+            </Field>
+            {githubEnabled ? (
+              <>
+                <ControlledInput
+                  label="GitHub repositories"
+                  value={form.githubRepositories}
+                  onChange={(value) => update("githubRepositories", value)}
+                  description="Comma-separated owner/repository names."
+                  required
+                />
+                <ControlledInput
+                  label="GitHub token lifetime"
+                  value={form.githubDuration}
+                  onChange={(value) => update("githubDuration", value)}
+                  description="At most 1h."
+                  required
+                />
+                <Field>
+                  <FieldLabel htmlFor="trigger-github-permissions">
+                    GitHub permissions (JSON)
+                  </FieldLabel>
+                  <Textarea
+                    id="trigger-github-permissions"
+                    value={form.githubPermissions}
+                    onChange={(event) => update("githubPermissions", event.target.value)}
+                    rows={4}
+                    placeholder={'{"contents":"write","pull_requests":"write"}'}
+                  />
+                  <FieldDescription>
+                    Defaults to read-only repository contents when empty.
+                  </FieldDescription>
+                </Field>
+              </>
+            ) : null}
+          </div>
         </details>
         <PromptEditor value={form.prompt} onChange={(prompt) => update("prompt", prompt)} />
         <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
@@ -717,6 +804,12 @@ function EnabledSwitch({
 
 function PromptEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = textarea.current;
+    if (element === null) return;
+    element.style.height = "0px";
+    element.style.height = `${String(element.scrollHeight)}px`;
+  }, [value]);
   const insert = (mergeTag: string) => {
     const element = textarea.current;
     if (element === null) return;
@@ -797,11 +890,18 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     allowedUsers: "*",
     daemon: snapshot.daemons[0]?.slug ?? "",
     cwd: "/workspace",
-    agent: "codex",
-    mode: "",
+    agent: "codex/gpt-5.4",
+    mode: "full-access",
+    thinkingOptionId: "",
     providerOptions: "",
+    maxRuntime: "2h",
+    idleTimeout: "10m",
+    githubConnection: "",
+    githubRepositories: "",
+    githubPermissions: "",
+    githubDuration: "1h",
     prompt:
-      "Handle the request. Use Paseo to delegate or create worktrees when useful.\n\n${{ paseo.prompt }}",
+      "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };
 }
 

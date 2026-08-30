@@ -1716,13 +1716,13 @@ class MemoryDatabase implements Database {
   async beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
-    maxOutputs: number,
+    maxOutputs: number | undefined,
     startedAt: Date,
   ): Promise<AgentExecutionOutputAttempt | undefined> {
     const execution = this.agentExecutions.get(executionId);
     if (
       execution === undefined ||
-      maxOutputs < 1 ||
+      (maxOutputs !== undefined && maxOutputs < 1) ||
       (execution.status !== "spawning" && execution.status !== "running")
     ) {
       return undefined;
@@ -1733,7 +1733,10 @@ class MemoryDatabase implements Database {
         attempt.status === "pending" &&
         attempt.leaseExpiresAt > startedAt,
     ).length;
-    if ((execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs) {
+    if (
+      maxOutputs !== undefined &&
+      (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs
+    ) {
       return undefined;
     }
     const attempt: AgentExecutionOutputAttempt = {

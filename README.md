@@ -119,6 +119,7 @@ the names and nesting exactly; the selected Paseo provider validates and applies
 agent:
   provider: codex
   model: gpt-5.5
+  mode: full-access
   thinkingOptionId: high
   options:
     sandbox_workspace_write:
@@ -127,12 +128,12 @@ agent:
       network_access: false
 ```
 
-Options are specific to the selected provider and are not portable. Omit `mode` to inherit the
-provider or daemon default. Tool preapproval is not configurable in Hub YAML: Hub grants only the
-execution-scoped MCP tools it materializes (`finish_execution`, plus an allowed output tool such as
-`reply`). Provider or machine policy still controls every unrelated tool. A read-only provider
-configuration is defense in depth; Hub output authorization remains enforced by the execution MCP
-server.
+Options and modes are specific to the selected provider and are not portable. New triggers require
+an explicit `mode`; `thinkingOptionId` may be omitted to use the provider default. Hub always grants
+the execution-scoped `finish_execution` tool. Conversational triggers also receive an unlimited
+event-native `reply` tool for progress and final responses. Provider or machine policy still
+controls every unrelated tool. A read-only provider configuration is defense in depth; Hub output
+authorization remains enforced by the execution MCP server.
 
 ## Public API
 

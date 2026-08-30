@@ -85,6 +85,10 @@ describe("self-contained trigger documents", () => {
     assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, [
       { type: "slack.reply", max: 5, required: false },
     ]);
+    assert.deepEqual(compiled.events[1]?.steps[0]?.allowOutputs, [
+      { type: "slack.reply", max: 5, required: false },
+      { type: "github.reply", required: false },
+    ]);
   });
 
   it("round-trips the semantic document through canonical YAML", () => {
@@ -105,6 +109,25 @@ run:
 `);
 
     assert.deepEqual(compiled.events[0]?.filters?.from_users, ["*"]);
+    assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, []);
+  });
+
+  it("automatically grants an unlimited event-native reply for a new conversational trigger", () => {
+    const compiled = compileTriggerDocument(`
+name: answer
+on:
+  slack.mention:
+    connection: acme-slack
+    filters: { from_users: ["*"] }
+run:
+  target: { daemon: devbox, cwd: /workspace }
+  agent: { provider: codex, mode: full-access }
+  prompt: Handle it
+`);
+
+    assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, [
+      { type: "slack.reply", required: false },
+    ]);
   });
 
   it("rejects a trigger without events at the document boundary", () => {

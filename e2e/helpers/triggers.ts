@@ -41,13 +41,13 @@ export class OrganizationTriggers {
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.page.getByLabel("When this happens").selectOption("slack.mention");
-    await this.page.getByLabel("Connection").selectOption(input.connection);
+    await this.page.getByLabel("Connection", { exact: true }).selectOption(input.connection);
     await this.page.getByRole("button", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
     await this.page.getByLabel("Run on daemon").selectOption(input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.page.getByLabel("Agent ID", { exact: true }).fill(input.agent);
-    await this.page.getByLabel("Execution mode (optional)").fill(input.mode);
+    await this.page.getByLabel("Execution mode", { exact: true }).fill(input.mode);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })
@@ -107,7 +107,7 @@ export class OrganizationTriggers {
     prompt: string;
   }) {
     await expect(this.page.getByLabel("Agent ID", { exact: true })).toHaveValue(input.agent);
-    await expect(this.page.getByLabel("Execution mode (optional)")).toHaveValue(input.mode);
+    await expect(this.page.getByLabel("Execution mode", { exact: true })).toHaveValue(input.mode);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })

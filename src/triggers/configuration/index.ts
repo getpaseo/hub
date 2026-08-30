@@ -99,9 +99,33 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
   return {
     authored,
     environment: compiledEnvironment,
-    events: compiled.triggers,
+    events: compiled.triggers.map(withAutomaticReply),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
+}
+
+function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
+  const replyType = automaticReplyType(trigger.on);
+  if (replyType === undefined) return trigger;
+  return {
+    ...trigger,
+    steps: trigger.steps.map((step) => ({
+      ...step,
+      allowOutputs: step.allowOutputs.some(({ type }) => type === replyType)
+        ? step.allowOutputs
+        : [...step.allowOutputs, { type: replyType, required: false }],
+    })),
+  };
+}
+
+function automaticReplyType(event: string): string | undefined {
+  const provider = event.split(".", 1)[0];
+  return provider === "slack" ||
+    provider === "discord" ||
+    provider === "linear" ||
+    provider === "github"
+    ? `${provider}.reply`
+    : undefined;
 }
 
 function authoredFilters(

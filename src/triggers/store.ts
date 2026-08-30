@@ -39,7 +39,8 @@ export class OrganizationTriggerStore {
   }
 
   async save(input: SaveTriggerInput): Promise<OrganizationTriggerRecord> {
-    const prepared = await this.validate(input.yaml);
+    const unchangedLegacyAuthoring = await this.isUnchangedExistingYaml(input);
+    const prepared = await this.validate(input.yaml, !unchangedLegacyAuthoring);
     return this.database.saveOrganizationTrigger({
       organizationId: this.organizationId,
       ...(input.triggerId === undefined ? {} : { triggerId: input.triggerId }),
@@ -59,8 +60,9 @@ export class OrganizationTriggerStore {
     });
   }
 
-  async validate(yaml: string) {
+  async validate(yaml: string, enforceAuthoringContract = true) {
     const compiled = compileTriggerDocument(yaml);
+    if (enforceAuthoringContract) validateAuthoringContract(compiled.authored);
     const resolved = await resolveTriggerConfigurationForOrganization(
       this.database,
       this.organizationId,
@@ -74,4 +76,36 @@ export class OrganizationTriggerStore {
     }
     return { compiled, resolved };
   }
+
+  private async isUnchangedExistingYaml(input: SaveTriggerInput): Promise<boolean> {
+    if (input.triggerId === undefined) return false;
+    const trigger = (await this.list()).find(({ id }) => id === input.triggerId);
+    if (trigger === undefined) return false;
+    return (await this.activeRevision(trigger)).yaml === input.yaml;
+  }
+}
+
+function validateAuthoringContract(
+  trigger: ReturnType<typeof compileTriggerDocument>["authored"],
+): void {
+  const issues: Array<{ path: readonly (string | number)[]; message: string }> = [];
+  if (!trigger.run.target.cwd.startsWith("/")) {
+    issues.push({ path: ["run", "target", "cwd"], message: "must be an absolute path" });
+  }
+  if ("choices" in trigger.run.agent) {
+    for (const [name, agent] of Object.entries(trigger.run.agent.choices)) {
+      if (agent.mode === undefined) {
+        issues.push({
+          path: ["run", "agent", "choices", name, "mode"],
+          message: "is required for new triggers",
+        });
+      }
+    }
+  } else if (trigger.run.agent.mode === undefined) {
+    issues.push({
+      path: ["run", "agent", "mode"],
+      message: "is required for new triggers",
+    });
+  }
+  if (issues.length > 0) throw new TriggerDocumentError(issues);
 }
