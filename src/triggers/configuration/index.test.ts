@@ -130,6 +130,34 @@ run:
     ]);
   });
 
+  it("compiles forgejo authority onto the single-run step and omits secrets", () => {
+    const compiled = compileTriggerDocument(`
+name: forgejo-work
+enabled: true
+on:
+  forgejo.issue_created:
+    connection: acme-forgejo
+    filters: { from_users: ["*"] }
+run:
+  target: { daemon: devbox, cwd: /workspace }
+  agent: { provider: codex }
+  forgejo:
+    connection: acme-forgejo
+    repositories: [acme/widgets]
+    contents: write
+    issues: read
+  prompt: Handle it
+`);
+    assert.deepEqual(compiled.events[0]?.steps[0]?.forgejo, {
+      connection: "acme-forgejo",
+      repositories: ["acme/widgets"],
+      contents: "write",
+      issues: "read",
+    });
+    assert.equal(compiled.events[0]?.steps[0]?.github, undefined);
+    assert.equal(JSON.stringify(compiled).includes("FORGEJO_TOKEN"), false);
+  });
+
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>

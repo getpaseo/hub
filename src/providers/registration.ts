@@ -29,7 +29,13 @@ export interface ForgejoAuthorityRegistration {
     repositories: readonly string[];
     contents: "read" | "write";
     issues: "read" | "write";
-  }): Promise<{ token: string; expiresAt: number }>;
+  }): Promise<{
+    token: string;
+    expiresAt: number;
+    origin: string;
+    userId: number;
+    login: string;
+  }>;
   revoke(token: string): Promise<void>;
 }
 

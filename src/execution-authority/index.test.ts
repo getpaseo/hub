@@ -48,6 +48,7 @@ describe("Hub execution authority", () => {
       });
       const launchEnv = launch.env as Record<string, string>;
       assert.equal(launchEnv["GH_TOKEN"], undefined);
+      assert.equal(launchEnv["FORGEJO_TOKEN"], undefined);
       assert.equal(launchEnv["GIT_CONFIG_COUNT"], undefined);
       assert.deepEqual(authoredEnv, {
         SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
@@ -105,7 +106,59 @@ describe("Hub execution authority", () => {
     });
   });
 
-  it("defaults an omitted repository list to only the GitHub event repository", async () => {
+  it("does not inject FORGEJO_TOKEN unless the step declares forgejo authority", async () => {
+    const mint = forgejoAuthorityFake();
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async () => "unused",
+      githubAuthority: githubAuthorityFake(),
+      forgejoAuthority: mint,
+    });
+    const launch = await authority.materialize({
+      executionId: "execution-unauthorized",
+      projectId: "project-1",
+      triggerContext: { provider: "forgejo", target: { repository: "acme/widgets" } },
+    });
+    assert.deepEqual(mint.inputs, []);
+    assert.equal(launch.env["FORGEJO_TOKEN"], undefined);
+    assert.equal(launch.env["GIT_CONFIG_COUNT"], undefined);
+    assert.equal(launch.env["GH_TOKEN"], undefined);
+  });
+
+  it("mints only explicit Forgejo execution authority and origin Git rewrite", async () => {
+    const mint = forgejoAuthorityFake();
+    const authority = createExecutionAuthority({
+      connectionsForProject: () => async () => "unused",
+      forgejoAuthority: mint,
+    });
+    const launch = await authority.materialize({
+      executionId: "execution-forgejo",
+      projectId: "project-1",
+      triggerContext: { provider: "manual" },
+      forgejo: {
+        connection: "acme-forgejo",
+        repositories: ["acme/widgets"],
+        contents: "write",
+        issues: "read",
+      },
+    });
+    assert.deepEqual(mint.inputs, [
+      {
+        projectId: "project-1",
+        connectionSlug: "acme-forgejo",
+        repositories: ["acme/widgets"],
+        contents: "write",
+        issues: "read",
+      },
+    ]);
+    assert.equal(launch.env["FORGEJO_TOKEN"], "forgejo-exec-token-1");
+    assert.equal(launch.env["GH_TOKEN"], undefined);
+    assert.equal(launch.env["GIT_CONFIG_KEY_2"], "url.https://forgejo.example.test/.insteadOf");
+    assert.equal(String(launch.env["GIT_CONFIG_VALUE_4"]).includes("forgejo-exec-token-1"), false);
+    await authority.onExecutionTerminal("execution-forgejo");
+    assert.deepEqual(mint.revoked, ["forgejo-exec-token-1"]);
+  });
+
+  it("defaults an omitted GitHub repository list to only the GitHub event repository", async () => {
     const mint = githubAuthorityFake();
     const authority = createExecutionAuthority({
       connectionsForProject: () => async () => "unused",
@@ -848,6 +901,36 @@ function githubAuthorityFake(now: () => number = Date.now) {
         expiresAt: now() + 60 * 60 * 1000,
         botUserId: 9876,
         botLogin: "paseo[bot]",
+      };
+    },
+    async revoke(token: string) {
+      revoked.push(token);
+    },
+  };
+}
+
+function forgejoAuthorityFake(now: () => number = Date.now) {
+  const inputs: Array<{
+    projectId: string;
+    connectionSlug: string;
+    repositories: readonly string[];
+    contents: "read" | "write";
+    issues: "read" | "write";
+  }> = [];
+  const revoked: string[] = [];
+  let count = 0;
+  return {
+    inputs,
+    revoked,
+    async mint(input: (typeof inputs)[number]) {
+      inputs.push(input);
+      count += 1;
+      return {
+        token: `forgejo-exec-token-${count}`,
+        expiresAt: now() + 60 * 60 * 1000,
+        origin: "https://forgejo.example.test",
+        userId: 2,
+        login: "t00bot",
       };
     },
     async revoke(token: string) {

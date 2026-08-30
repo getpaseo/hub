@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
+import { AuthoredForgejoAuthoritySchema } from "../../config/forgejo-authority.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -98,6 +99,7 @@ export const TriggerRunSchema = z
     idle_timeout: z.string().min(1).default("10m"),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    forgejo: AuthoredForgejoAuthoritySchema.optional(),
     output: z
       .object({ schema: z.record(z.string(), z.unknown()) })
       .strict()
@@ -105,7 +107,16 @@ export const TriggerRunSchema = z
     outputs: z.record(z.string().regex(EVENT_NAME), TriggerOutputSchema).optional(),
     auto_archive: z.boolean().default(true),
   })
-  .strict();
+  .strict()
+  .superRefine((run, context) => {
+    if (run.github !== undefined && run.forgejo !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["forgejo"],
+        message: "run may declare github or forgejo authority, not both",
+      });
+    }
+  });
 
 export const TriggerDocumentSchema = z
   .object({

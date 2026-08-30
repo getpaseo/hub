@@ -927,6 +927,7 @@ function buildStepIntent(
       },
       ...(step.env === undefined ? {} : { env: step.env }),
       ...(step.github === undefined ? {} : { github: step.github }),
+      ...(step.forgejo === undefined ? {} : { forgejo: step.forgejo }),
       prompt: step.prompt
         .map((block) =>
           renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),

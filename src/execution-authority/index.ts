@@ -1,10 +1,18 @@
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
+import type { CompiledForgejoAuthority } from "../config/forgejo-authority.js";
+import {
+  forgejoDaemonEnvironment,
+  repositoriesForForgejoAuthority,
+} from "../config/forgejo-authority.js";
 import {
   parseConnectionTemplate,
   resolveConnectionTemplate,
 } from "../config/connection-template.js";
 import type { ConnectionResolver } from "../config/connections.js";
-import type { GitHubAuthorityRegistration } from "../providers/registration.js";
+import type {
+  ForgejoAuthorityRegistration,
+  GitHubAuthorityRegistration,
+} from "../providers/registration.js";
 import { reportFailure, type FailureContext, type ReportOptions } from "../failures/index.js";
 import type { Logger } from "pino";
 
@@ -33,6 +41,7 @@ export interface ExecutionAuthorityMaterialization {
   triggerContext: unknown;
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
+  forgejo?: CompiledForgejoAuthority | undefined;
 }
 
 export interface MaterializedExecutionAuthority {
@@ -66,6 +75,8 @@ export interface ExecutionAuthorityStopResult {
 export interface CreateExecutionAuthorityOptions {
   connectionsForProject: (projectId: string) => ConnectionResolver;
   githubAuthority?: GitHubAuthorityRegistration | undefined;
+  /** T11: attach via createForgejoAuthorityRegistration. */
+  forgejoAuthority?: ForgejoAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
   isExecutionActive: (executionId: string) => Promise<boolean>;
   logger?: Pick<Logger, "warn" | "error">;
@@ -132,6 +143,12 @@ export function createExecutionAuthority(
         },
       };
       const env = await materializeEnvironment(input, context, tokenRevocations);
+      if (input.github !== undefined && input.forgejo !== undefined) {
+        throw authorityError(
+          "forgejo_authority_unavailable",
+          "step may declare github or forgejo authority, not both",
+        );
+      }
       if (input.github !== undefined) {
         if (options.githubAuthority === undefined) {
           throw authorityError(
@@ -160,6 +177,40 @@ export function createExecutionAuthority(
           env: {
             ...env,
             ...githubEnvironment(authority.botUserId, authority.botLogin, authority.token),
+          },
+        };
+      }
+      if (input.forgejo !== undefined) {
+        if (options.forgejoAuthority === undefined) {
+          throw authorityError(
+            "forgejo_authority_unavailable",
+            "Forgejo step authority is unavailable",
+          );
+        }
+        const repositories = repositoriesForForgejoAuthority(input.forgejo, input.triggerContext);
+        const authority = await options.forgejoAuthority.mint({
+          projectId: input.projectId,
+          connectionSlug: input.forgejo.connection,
+          repositories,
+          contents: input.forgejo.contents,
+          issues: input.forgejo.issues,
+        });
+        await registerLease(state, input.executionId, authority.token, () =>
+          options.forgejoAuthority!.revoke(authority.token),
+        );
+        ownedTokens.add(authority.token);
+        await assertExecutionActive(state, input.executionId);
+        return {
+          env: {
+            ...env,
+            ...forgejoDaemonEnvironment(
+              {
+                origin: authority.origin,
+                userId: authority.userId,
+                login: authority.login,
+              },
+              authority.token,
+            ),
           },
         };
       }

@@ -34,6 +34,10 @@ export interface TriggerFormValue {
   githubRepositories: string;
   githubPermissions: string;
   githubDuration: string;
+  forgejoConnection: string;
+  forgejoRepositories: string;
+  forgejoContents: string;
+  forgejoIssues: string;
   prompt: string;
 }
 
@@ -93,6 +97,7 @@ function toFormValue(
         ? ""
         : JSON.stringify(trigger.run.github.permissions, null, 2),
     githubDuration: trigger.run.github?.duration ?? "",
+    ...forgejoFormFields(trigger.run.forgejo),
     prompt: trigger.run.prompt,
   };
 }
@@ -138,6 +143,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
+  setOptional(document, ["run", "forgejo"], forgejoAuthority(value));
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -154,6 +160,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
+  const forgejo = forgejoAuthority(value);
   const definition =
     value.event === "manual.run"
       ? {}
@@ -177,11 +184,42 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
+        ...(forgejo === undefined ? {} : { forgejo }),
         prompt: value.prompt,
       },
     },
     { lineWidth: 0 },
   );
+}
+
+function forgejoFormFields(
+  forgejo: TriggerDocument["run"]["forgejo"],
+): Pick<
+  TriggerFormValue,
+  "forgejoConnection" | "forgejoRepositories" | "forgejoContents" | "forgejoIssues"
+> {
+  return {
+    forgejoConnection: forgejo?.connection ?? "",
+    forgejoRepositories: forgejo?.repositories?.join(", ") ?? "",
+    forgejoContents: forgejo?.contents ?? "",
+    forgejoIssues: forgejo?.issues ?? "",
+  };
+}
+
+function forgejoAuthority(value: TriggerFormValue) {
+  const connection = blankToUndefined(value.forgejoConnection);
+  if (connection === undefined) return undefined;
+  const repositories = commaSeparated(value.forgejoRepositories);
+  const contents = blankToUndefined(value.forgejoContents);
+  const issues = blankToUndefined(value.forgejoIssues);
+  return {
+    connection,
+    ...(repositories.length === 0 ? {} : { repositories }),
+    ...(contents === undefined || (contents !== "read" && contents !== "write")
+      ? {}
+      : { contents }),
+    ...(issues === undefined || (issues !== "read" && issues !== "write") ? {} : { issues }),
+  };
 }
 
 function githubAuthority(value: TriggerFormValue) {

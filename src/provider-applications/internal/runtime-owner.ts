@@ -407,6 +407,46 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             },
           }
         : {}),
+      ...(provider === "forgejo"
+        ? {
+            integration: {
+              resolve: (
+                ...args: Parameters<NonNullable<ProviderRegistration["integration"]>["resolve"]>
+              ) => {
+                const active = slot.active;
+                const integration = active?.registration.integration;
+                if (active === undefined || integration === undefined) {
+                  throw unavailable("forgejo_integration_unavailable");
+                }
+                return this.withLease(active, () => integration.resolve(...args));
+              },
+              forgejoAuthority: {
+                mint: (
+                  input: Parameters<
+                    NonNullable<
+                      NonNullable<ProviderRegistration["integration"]>["forgejoAuthority"]
+                    >["mint"]
+                  >[0],
+                ) => {
+                  const active = slot.active;
+                  const authority = active?.registration.integration?.forgejoAuthority;
+                  if (active === undefined || authority === undefined) {
+                    throw unavailable("forgejo_authority_unavailable");
+                  }
+                  return this.withLease(active, () => authority.mint(input));
+                },
+                revoke: (token: string) => {
+                  const active = slot.active;
+                  const authority = active?.registration.integration?.forgejoAuthority;
+                  if (active === undefined || authority === undefined) {
+                    throw unavailable("forgejo_authority_unavailable");
+                  }
+                  return this.withLease(active, () => authority.revoke(token));
+                },
+              },
+            },
+          }
+        : {}),
       triggerProviders: [
         (resources) => {
           slot.triggerResources = resources;

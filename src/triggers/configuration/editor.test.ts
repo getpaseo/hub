@@ -158,6 +158,10 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      forgejoConnection: "",
+      forgejoRepositories: "",
+      forgejoContents: "",
+      forgejoIssues: "",
       prompt: "Handle it.",
     });
     expect(parseDocument(yaml).toJS()).toEqual({
@@ -193,6 +197,10 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      forgejoConnection: "",
+      forgejoRepositories: "",
+      forgejoContents: "",
+      forgejoIssues: "",
       prompt: "${{ paseo.prompt }}",
     });
     const projection = projectTriggerForm(initial);
@@ -201,6 +209,49 @@ describe("trigger form YAML bridge", () => {
     expect(mergeTriggerForm(initial, { ...projection.value, name: "release" })).toContain(
       "name: release",
     );
+  });
+
+  test("round-trips forgejo authority through the form without github fields", () => {
+    const yaml = createTriggerYaml({
+      name: "forgejo-work",
+      enabled: true,
+      event: "manual.run",
+      connection: "",
+      allowedUsers: "*",
+      daemon: "office",
+      cwd: "/workspace",
+      agent: "codex/gpt-5.4",
+      mode: "full-access",
+      thinkingOptionId: "",
+      providerOptions: "",
+      maxRuntime: "2h",
+      idleTimeout: "10m",
+      githubConnection: "",
+      githubRepositories: "",
+      githubPermissions: "",
+      githubDuration: "",
+      forgejoConnection: "acme-forgejo",
+      forgejoRepositories: "acme/widgets",
+      forgejoContents: "write",
+      forgejoIssues: "read",
+      prompt: "Handle it.",
+    });
+    const projection = projectTriggerForm(yaml);
+    expect(projection.status).toBe("editable");
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(projection.value.forgejoConnection).toBe("acme-forgejo");
+    expect(projection.value.forgejoRepositories).toBe("acme/widgets");
+    expect(projection.value.forgejoContents).toBe("write");
+    expect(projection.value.forgejoIssues).toBe("read");
+    const parsed = TriggerDocumentSchema.parse(parseDocument(yaml).toJS());
+    expect(parsed.run.forgejo).toEqual({
+      connection: "acme-forgejo",
+      repositories: ["acme/widgets"],
+      contents: "write",
+      issues: "read",
+    });
+    expect(parsed.run.github).toBeUndefined();
+    expect(patchTriggerYaml(yaml, projection.value)).toBe(yaml);
   });
 
   test("splits only the first slash in a full agent ID", () => {

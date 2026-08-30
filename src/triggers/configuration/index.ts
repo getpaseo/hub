@@ -69,6 +69,7 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
           ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
+          ...(authored.run.forgejo === undefined ? {} : { forgejo: authored.run.forgejo }),
           ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
           ...(allowOutputs.length === 0 ? {} : { allow_outputs: allowOutputs }),
           auto_archive: authored.run.auto_archive,

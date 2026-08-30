@@ -564,6 +564,9 @@ export class DaemonDispatchLifecycle {
     if (this.options.executionAuthority === undefined && materializedIntent.github !== undefined) {
       throw new Error("GitHub step authority is unavailable");
     }
+    if (this.options.executionAuthority === undefined && materializedIntent.forgejo !== undefined) {
+      throw new Error("Forgejo step authority is unavailable");
+    }
     const authoredEnv = {
       ...(materialized.environmentEnv ?? intent.environment.env),
       ...materializedIntent.env,
@@ -571,7 +574,9 @@ export class DaemonDispatchLifecycle {
     let env: Record<string, string>;
     if (
       this.options.executionAuthority === undefined ||
-      (Object.keys(authoredEnv).length === 0 && materializedIntent.github === undefined)
+      (Object.keys(authoredEnv).length === 0 &&
+        materializedIntent.github === undefined &&
+        materializedIntent.forgejo === undefined)
     ) {
       env = authoredEnv;
     } else {
@@ -582,6 +587,9 @@ export class DaemonDispatchLifecycle {
           triggerContext: materializedIntent.triggerContext,
           ...(Object.keys(authoredEnv).length === 0 ? {} : { env: authoredEnv }),
           ...(materializedIntent.github === undefined ? {} : { github: materializedIntent.github }),
+          ...(materializedIntent.forgejo === undefined
+            ? {}
+            : { forgejo: materializedIntent.forgejo }),
         })
       ).env;
     }
@@ -1975,6 +1983,12 @@ const DISPATCH_PREPARATION_FAILURE_CODES = new Set([
   "github_authority_unavailable",
   "github_integration_unavailable",
   "github_trigger_unavailable",
+  "forgejo_authority_unavailable",
+  "forgejo_authority_scope_invalid",
+  "forgejo_connection_unavailable",
+  "forgejo_credential_unavailable",
+  "forgejo_repository_unenrolled",
+  "forgejo_scope_invalid",
   "slack_trigger_unavailable",
 ]);
 
