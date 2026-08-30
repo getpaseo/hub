@@ -23,6 +23,7 @@ import {
   createDaemonModule,
   enrollDaemon,
   revokeDaemon,
+  updateDaemonPermissions,
   type DaemonClock,
   type DaemonModule,
 } from "./daemons/index.js";
@@ -84,6 +85,7 @@ export interface HubRuntime {
 export interface HubOperations {
   handleDaemonEnrollment(request: Request): Promise<Response>;
   handleDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
+  handleDaemonPermissionUpdate(request: Request, daemonId: string): Promise<Response>;
   handleCliAuthorizationStart(request: Request): Promise<Response>;
   handleCliAuthorizationPoll(request: Request): Promise<Response>;
   handleCliAuthorizationInspect(request: Request): Promise<Response>;
@@ -261,6 +263,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       options.database === null || daemons === null
         ? databaseUnavailable()
         : revokeDaemon(request, daemonId, options.database, daemons),
+    handleDaemonPermissionUpdate: (request, daemonId) =>
+      options.database === null || daemons === null
+        ? databaseUnavailable()
+        : updateDaemonPermissions(request, daemonId, options.database, daemons),
     handleCliAuthorizationStart: (request) =>
       cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.start(request),
     handleCliAuthorizationPoll: (request) =>

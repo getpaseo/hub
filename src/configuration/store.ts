@@ -459,7 +459,7 @@ async function resolveCompiledConfiguration(
   configuration: CompiledHubConfig,
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
-    ({ status }) => status === "active",
+    ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
   );
   const resolutions = await Promise.all(
     configuration.environments.map(async (environment) =>
@@ -475,7 +475,8 @@ async function resolveCompiledConfiguration(
     ),
   );
   const daemonIssues = resolutions.flatMap(({ environment, daemon }) =>
-    environment.kind === "daemon" && daemon === undefined
+    environment.kind === "daemon" &&
+    (daemon === undefined || !daemon.permissions.includes("hub.execute"))
       ? [
           {
             path: [HUB_RESOURCE_PATH, "environments", environment.name, "daemon"],

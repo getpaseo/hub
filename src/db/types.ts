@@ -170,7 +170,7 @@ export interface DaemonRecord {
   serverId: string;
   daemonPublicKey: string;
   credentialVerifier: string;
-  scopes: string[];
+  permissions: string[];
   registeredByApiKeyId: string | null;
   registeredByCliCredentialId: string | null;
   status: "active" | "revoked";
@@ -847,7 +847,7 @@ export interface EnrollDaemonInput {
   serverId: string;
   daemonPublicKey: string;
   credentialVerifier: string;
-  scopes: string[];
+  permissions: string[];
   now: Date;
 }
 
@@ -1292,6 +1292,7 @@ export interface Database {
   ): Promise<DaemonWriteResult>;
   touchDaemon(id: string): Promise<void>;
   setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void>;
+  setDaemonPermissions(id: string, permissions: string[]): Promise<DaemonRecord | undefined>;
   revokeDaemon(id: string): Promise<boolean>;
   attachAgentToExecution(
     executionId: string,

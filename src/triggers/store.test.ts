@@ -21,7 +21,7 @@ describe("organization trigger store", () => {
       serverId: "server",
       daemonPublicKey: "public-key",
       credentialVerifier: "credential-verifier",
-      scopes: ["hub.execution.*"],
+      permissions: ["hub.execute"],
       now: new Date("2026-08-29T21:00:00.000Z"),
     });
     const store = new OrganizationTriggerStore(database, "org");

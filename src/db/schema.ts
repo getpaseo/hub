@@ -604,7 +604,7 @@ export const daemons = pgTable(
     serverId: text("server_id").notNull(),
     daemonPublicKey: text("daemon_public_key").notNull(),
     credentialVerifier: text("credential_verifier").notNull(),
-    scopes: jsonb().$type<string[]>().notNull(),
+    permissions: jsonb("scopes").$type<string[]>().notNull(),
     registeredByApiKeyId: uuid("registered_by_api_key_id"),
     registeredByCliCredentialId: uuid("registered_by_cli_credential_id").references(
       (): AnyPgColumn => organizationCliCredentials.id,
