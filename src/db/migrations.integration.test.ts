@@ -19,6 +19,9 @@ import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { EntitlementsService } from "../entitlements/service.js";
+import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
+import { OrganizationTriggerStore } from "../triggers/store.js";
+import type { MigrateProjectTriggersInput } from "./types.js";
 
 const LEGACY_MIGRATIONS = join(process.cwd(), "src/db/migrations");
 const DRIZZLE_MIGRATIONS = join(process.cwd(), "drizzle");
@@ -307,7 +310,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 42,
+      drizzleMigrations: 45,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -1053,6 +1056,184 @@ describe("database migration application", () => {
       await database.close();
     }
   });
+
+  it("atomically explodes mixed project workflows and remains idempotent across concurrent startup", async () => {
+    const url = databaseUrl(postgres, "organization_trigger_startup_migration");
+    const database = await createDatabase(url);
+    try {
+      const [project] = await createProjectFixtures(database, url);
+      await seedTestDaemon(url, "organization-a");
+      const slackConnectionId = "11111111-1111-4111-8111-111111111191";
+      await poolQuery(
+        url,
+        `insert into slack_connections
+           (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+         values ($1, 'organization-a', 'startup-team', 'startup-slack', 'Startup Slack',
+                 'startup-bot', 'startup-token', '[]'::jsonb)`,
+        [slackConnectionId],
+      );
+      const configuration = {
+        environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
+        triggers: [
+          {
+            name: "single",
+            on: "slack.mention",
+            max_runtime: "2h",
+            filters: { connection: "startup-slack", from_users: ["U1"] },
+            steps: [
+              {
+                id: "work",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "test" },
+                prompt: [{ text: "Work" }],
+              },
+            ],
+          },
+          {
+            name: "multi",
+            on: "manual.run",
+            max_runtime: "2h",
+            steps: [
+              {
+                id: "classify",
+                environment: "runner",
+                max_runtime: "5m",
+                idle_timeout: "1m",
+                agent: { provider: "test" },
+                prompt: [{ text: "Classify" }],
+              },
+              {
+                id: "work",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "test" },
+                prompt: [{ text: "Work" }],
+              },
+            ],
+          },
+        ],
+      };
+      const store = new ProjectConfigurationStore(database, project.id);
+      const configurationRevision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(configuration)),
+        userId: "project-user",
+      });
+      await store.activate(configurationRevision.id);
+
+      await Promise.all([
+        migrateLegacyProjectTriggers(database),
+        migrateLegacyProjectTriggers(database),
+      ]);
+      const triggers = await database.listOrganizationTriggers("organization-a");
+      assert.deepEqual(
+        triggers.map(({ name, format }) => ({ name, format })),
+        [
+          { name: "multi", format: "legacy_multistep" },
+          { name: "single", format: "single_run" },
+        ],
+      );
+      assert.equal((await database.listPendingProjectTriggerMigrations()).length, 0);
+      assert.deepEqual(
+        (
+          await poolQuery<{
+            connection_id: string;
+            configured_event_name: string;
+            resource_id: string | null;
+          }>(
+            url,
+            `select connection_id::text, configured_event_name, resource_id
+             from organization_trigger_routes`,
+          )
+        ).rows,
+        [
+          {
+            connection_id: slackConnectionId,
+            configured_event_name: "slack.mention",
+            resource_id: null,
+          },
+        ],
+      );
+      assert.equal(
+        (
+          await poolQuery<{ count: number }>(
+            url,
+            `select count(*)::integer as count from organization_trigger_revisions`,
+          )
+        ).rows[0]?.count,
+        2,
+      );
+      const single = triggers.find(({ name }) => name === "single")!;
+      const multi = triggers.find(({ name }) => name === "multi")!;
+      assert.notEqual(single.runtimeProjectId, project.id);
+      assert.notEqual(multi.runtimeProjectId, project.id);
+      assert.notEqual(single.runtimeProjectId, multi.runtimeProjectId);
+      assert.equal((await database.listProjectsForOrganization("organization-a")).length, 0);
+      const singleRevision = await database.findOrganizationTriggerRevision(
+        single.id,
+        single.activeRevisionId,
+      );
+      await new OrganizationTriggerStore(database, "organization-a").save({
+        triggerId: single.id,
+        yaml: singleRevision!.yaml,
+        userId: "project-user",
+      });
+      const accepted = await database.acceptSlackEvent({
+        teamId: "startup-team",
+        deliveryId: "organization-trigger-adapter-route",
+        source: "slack.mention",
+        payload: {},
+        receivedAt: new Date(0),
+      });
+      assert.equal(accepted.status, "accepted");
+      if (accepted.status === "accepted") {
+        assert.equal(accepted.events[0]?.projectId, single.runtimeProjectId);
+      }
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
+  it("rolls back every trigger when an atomic project migration fails", async () => {
+    const url = databaseUrl(postgres, "organization_trigger_migration_rollback");
+    const database = await createDatabase(url);
+    try {
+      const [project] = await createProjectFixtures(database, url);
+      const revisionRecord = await database.insertProjectConfigurationRevision(
+        revision(project.id),
+      );
+      await database.activateProjectConfigurationRevision(project.id, revisionRecord.id);
+      const validTrigger = {
+        name: "valid",
+        format: "single_run" as const,
+        enabled: true,
+        yaml: "name: valid",
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash: "valid",
+        sourceEvidence: { legacyProjectId: project.id },
+        routes: [],
+      };
+      const input: MigrateProjectTriggersInput = {
+        projectId: project.id,
+        organizationId: project.organizationId,
+        configurationRevisionId: revisionRecord.id,
+        projectSlug: project.slug,
+        triggers: [
+          validTrigger,
+          // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- verifies the database constraint independently of TypeScript.
+          { ...validTrigger, name: "invalid", format: "invalid" as "single_run" },
+        ],
+      };
+
+      await assert.rejects(database.migrateProjectTriggers(input));
+      assert.equal((await database.listOrganizationTriggers("organization-a")).length, 0);
+      assert.equal((await database.listPendingProjectTriggerMigrations()).length, 1);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
 });
 
 interface RejectedPhaseOneFixtures {

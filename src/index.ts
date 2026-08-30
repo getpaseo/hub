@@ -45,6 +45,7 @@ import {
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
 import { composeInvitationMailer } from "./invitations/index.js";
+import { migrateLegacyProjectTriggers } from "./triggers/migration.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
@@ -73,6 +74,10 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     const config = loadRuntimeConfig();
     const { database, runtime, locks } = await createDatabaseHandle();
     resources.own(() => database.close());
+    const migration = await migrateLegacyProjectTriggers(database);
+    if (migration.projects > 0) {
+      logger.info(migration, "migrated project configurations to organization triggers");
+    }
     const identity = await resolveHubIdentity(runtime, readPort());
     const entitlements = composeEntitlements(database, runtime);
     resources.own(() => entitlements.close());

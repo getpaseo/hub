@@ -39,6 +39,7 @@ import {
   handleManualTriggerRequest,
 } from "./triggers/manual/source.js";
 import { createManualRunProvider } from "./triggers/manual/provider.js";
+import { OrganizationTriggerStore } from "./triggers/store.js";
 import { DaemonRegistration } from "./daemons/registration.js";
 import { CliAuthorizations } from "./cli-authorizations/index.js";
 import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
@@ -301,6 +302,49 @@ function createAppPublicOperations(
   return createPublicOperations(
     createDatabasePublicOperationRepository(database),
     {
+      triggerForOrganization: (organizationId) => {
+        const store = new OrganizationTriggerStore(database, organizationId);
+        return {
+          async list() {
+            return Promise.all(
+              (await store.list()).map(async (trigger) => ({
+                id: trigger.id,
+                name: trigger.name,
+                enabled: trigger.enabled,
+                format: trigger.format,
+                yaml: (await store.activeRevision(trigger)).yaml,
+              })),
+            );
+          },
+          async validate(yaml) {
+            const prepared = await store.validate(yaml);
+            return { name: prepared.compiled.authored.name };
+          },
+          async install(input) {
+            const prepared = await store.validate(input.yaml);
+            const existing = (await store.list()).find(
+              ({ name }) => name === prepared.compiled.authored.name,
+            );
+            const trigger = await store.save({
+              ...(existing === undefined ? {} : { triggerId: existing.id }),
+              yaml: input.yaml,
+              userId: null,
+              sourceEvidence: {
+                kind: input.credentialKind === "apiKey" ? "api-key" : "cli-credential",
+                credentialId: input.credentialId,
+                authoredFormat: "self_contained_trigger_v1",
+              },
+            });
+            const revision = await store.activeRevision(trigger);
+            return {
+              triggerId: trigger.id,
+              name: trigger.name,
+              revisionId: revision.id,
+              version: revision.version,
+            };
+          },
+        };
+      },
       configurationForProject,
       validateBundleForOrganization: (organizationId, files) =>
         validateHubBundleForOrganization(

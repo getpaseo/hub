@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
-import type { JsonValue } from "../config/compiler.js";
+import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type {
@@ -64,6 +64,12 @@ import type {
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
+  MigrateProjectTriggersInput,
+  OrganizationTriggerRecord,
+  OrganizationTriggerRevisionRecord,
+  PendingProjectTriggerMigration,
+  SaveOrganizationTriggerInput,
+  OrganizationTriggerRoute,
   CreateAcceptedTriggerRunInput,
   CreateRejectedTriggerRunInput,
   AcceptedTriggerRunRecord,
@@ -187,6 +193,13 @@ class MemoryDatabase implements Database {
   >();
   private readonly configurationSyncAttempts = new Map<string, ConfigurationSyncAttemptRecord[]>();
   private readonly projectTriggerRoutes = new Map<string, ProjectTriggerRoute[]>();
+  private readonly organizationTriggers = new Map<string, OrganizationTriggerRecord>();
+  private readonly organizationTriggerRevisions = new Map<
+    string,
+    OrganizationTriggerRevisionRecord
+  >();
+  private readonly migratedProjects = new Set<string>();
+  private readonly organizationTriggerRoutes = new Map<string, OrganizationTriggerRoute[]>();
   private readonly githubRepositories = new Map<string, GitHubRepositoryRecord>();
   private readonly githubConnections = new Map<number, GitHubConnectionRecord>();
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
@@ -2212,9 +2225,287 @@ class MemoryDatabase implements Database {
   }
 
   async listProjectsForOrganization(organizationId: string) {
-    return Array.from(this.projects.values()).filter(
-      (project) => project.organizationId === organizationId,
+    const runtimeProjects = new Set(
+      Array.from(this.organizationTriggers.values()).map(
+        ({ runtimeProjectId }) => runtimeProjectId,
+      ),
     );
+    return Array.from(this.projects.values()).filter(
+      (project) =>
+        project.organizationId === organizationId &&
+        project.status === "active" &&
+        !runtimeProjects.has(project.id),
+    );
+  }
+
+  async listPendingProjectTriggerMigrations(): Promise<PendingProjectTriggerMigration[]> {
+    const runtimeProjects = new Set(
+      Array.from(this.organizationTriggers.values()).map(
+        ({ runtimeProjectId }) => runtimeProjectId,
+      ),
+    );
+    return Array.from(this.projects.values()).flatMap((project) => {
+      if (
+        project.status !== "active" ||
+        project.activeConfigurationRevisionId === null ||
+        this.migratedProjects.has(project.id) ||
+        runtimeProjects.has(project.id)
+      ) {
+        return [];
+      }
+      const revision = this.configurationRevisions.get(project.activeConfigurationRevisionId);
+      return revision === undefined ? [] : [{ project, revision }];
+    });
+  }
+
+  async migrateProjectTriggers(
+    input: MigrateProjectTriggersInput,
+  ): Promise<OrganizationTriggerRecord[]> {
+    if (this.migratedProjects.has(input.projectId)) return [];
+    const project = this.projects.get(input.projectId);
+    if (
+      project === undefined ||
+      project.organizationId !== input.organizationId ||
+      project.activeConfigurationRevisionId !== input.configurationRevisionId
+    ) {
+      throw new Error("project configuration changed during trigger migration");
+    }
+    const compiledCandidates = input.triggers.map((candidate) => {
+      if (candidate.format !== "single_run" && candidate.format !== "legacy_multistep") {
+        throw new Error("invalid organization trigger format");
+      }
+      return parseCompiledHubConfig(candidate.normalizedConfiguration);
+    });
+    const created: OrganizationTriggerRecord[] = [];
+    for (const [index, candidate] of input.triggers.entries()) {
+      const name = this.availableMigratedTriggerName(
+        input.organizationId,
+        input.projectSlug,
+        candidate.name,
+      );
+      const now = this.now();
+      const triggerId = randomUUID();
+      const revisionId = randomUUID();
+      const runtimeProjectId = this.createTriggerRuntimeProject({
+        organizationId: input.organizationId,
+        name: candidate.name,
+        createdByUserId: null,
+      });
+      const trigger: OrganizationTriggerRecord = {
+        id: triggerId,
+        organizationId: input.organizationId,
+        name,
+        enabled: candidate.enabled,
+        format: candidate.format,
+        runtimeProjectId,
+        activeRevisionId: revisionId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const revision: OrganizationTriggerRevisionRecord = {
+        id: revisionId,
+        triggerId,
+        organizationId: input.organizationId,
+        version: 1,
+        yaml: candidate.yaml,
+        normalizedConfiguration: candidate.normalizedConfiguration,
+        contentHash: candidate.contentHash,
+        sourceKind: "project_migration",
+        sourceEvidence: candidate.sourceEvidence,
+        createdByUserId: null,
+        createdAt: now,
+      };
+      this.organizationTriggers.set(trigger.id, trigger);
+      this.organizationTriggerRevisions.set(revision.id, revision);
+      this.organizationTriggerRoutes.set(trigger.id, [...candidate.routes]);
+      const runtimeRevision = await this.insertProjectConfigurationRevision({
+        projectId: runtimeProjectId,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "organization_trigger_adapter", triggerId },
+        rawYaml: candidate.yaml,
+        normalizedConfiguration: candidate.normalizedConfiguration,
+        contentHash: candidate.contentHash,
+      });
+      const configuration = compiledCandidates[index]!;
+      await this.activateProjectConfigurationRevision(
+        runtimeProjectId,
+        runtimeRevision.id,
+        candidate.routes.map((route) => ({
+          provider: route.provider,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+          triggerName:
+            configuration.triggers.find(({ on }) => on === route.configuredEventName)?.name ??
+            configuration.triggers[0]?.name ??
+            candidate.name,
+        })),
+      );
+      created.push(trigger);
+    }
+    this.projectTriggerRoutes.delete(input.projectId);
+    this.projects.set(input.projectId, {
+      ...project,
+      status: "archived",
+      activeConfigurationRevisionId: null,
+      archivedAt: this.now(),
+      updatedAt: this.now(),
+    });
+    this.migratedProjects.add(input.projectId);
+    return created;
+  }
+
+  async listOrganizationTriggers(organizationId: string): Promise<OrganizationTriggerRecord[]> {
+    return Array.from(this.organizationTriggers.values()).filter(
+      (trigger) => trigger.organizationId === organizationId,
+    );
+  }
+
+  async findOrganizationTriggerRevision(
+    triggerId: string,
+    revisionId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined> {
+    const revision = this.organizationTriggerRevisions.get(revisionId);
+    return revision?.triggerId === triggerId ? revision : undefined;
+  }
+
+  async findOrganizationTriggerMigrationRevision(
+    triggerId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined> {
+    return Array.from(this.organizationTriggerRevisions.values())
+      .filter(
+        (revision) =>
+          revision.triggerId === triggerId && revision.sourceKind === "project_migration",
+      )
+      .sort((left, right) => left.version - right.version)[0];
+  }
+
+  async saveOrganizationTrigger(
+    input: SaveOrganizationTriggerInput,
+  ): Promise<OrganizationTriggerRecord> {
+    const existing =
+      input.triggerId === undefined ? undefined : this.organizationTriggers.get(input.triggerId);
+    if (existing !== undefined && existing.organizationId !== input.organizationId) {
+      throw new Error("organization trigger not found");
+    }
+    if (
+      Array.from(this.organizationTriggers.values()).some(
+        (trigger) =>
+          trigger.organizationId === input.organizationId &&
+          trigger.name === input.name &&
+          trigger.id !== input.triggerId,
+      )
+    ) {
+      throw new Error("trigger name already exists");
+    }
+    const now = this.now();
+    const triggerId = existing?.id ?? randomUUID();
+    const runtimeProjectId =
+      existing?.runtimeProjectId ??
+      this.createTriggerRuntimeProject({
+        organizationId: input.organizationId,
+        name: input.name,
+        createdByUserId: input.createdByUserId,
+      });
+    const revisionId = randomUUID();
+    const version =
+      Math.max(
+        0,
+        ...Array.from(this.organizationTriggerRevisions.values())
+          .filter((revision) => revision.triggerId === triggerId)
+          .map((revision) => revision.version),
+      ) + 1;
+    const revision: OrganizationTriggerRevisionRecord = {
+      id: revisionId,
+      triggerId,
+      organizationId: input.organizationId,
+      version,
+      yaml: input.yaml,
+      normalizedConfiguration: input.normalizedConfiguration,
+      contentHash: input.contentHash,
+      sourceKind: input.sourceKind,
+      sourceEvidence: input.sourceEvidence,
+      createdByUserId: input.createdByUserId,
+      createdAt: now,
+    };
+    const trigger: OrganizationTriggerRecord = {
+      id: triggerId,
+      organizationId: input.organizationId,
+      name: input.name,
+      enabled: input.enabled,
+      format: input.format,
+      runtimeProjectId,
+      activeRevisionId: revisionId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.organizationTriggerRevisions.set(revision.id, revision);
+    this.organizationTriggers.set(trigger.id, trigger);
+    this.organizationTriggerRoutes.set(trigger.id, [...input.routes]);
+    const runtimeRevision = await this.insertProjectConfigurationRevision({
+      projectId: runtimeProjectId,
+      sourceKind: input.sourceKind,
+      sourceEvidence: { kind: "organization_trigger_adapter", triggerId },
+      rawYaml: input.yaml,
+      normalizedConfiguration: input.normalizedConfiguration,
+      contentHash: input.contentHash,
+      createdByUserId: input.createdByUserId,
+    });
+    const configuration = parseCompiledHubConfig(input.normalizedConfiguration);
+    await this.activateProjectConfigurationRevision(
+      runtimeProjectId,
+      runtimeRevision.id,
+      input.routes.map((route) => ({
+        provider: route.provider,
+        connectionId: route.connectionId,
+        resourceId: route.resourceId,
+        triggerName:
+          configuration.triggers.find(({ on }) => on === route.configuredEventName)?.name ??
+          configuration.triggers[0]?.name ??
+          input.name,
+      })),
+    );
+    return trigger;
+  }
+
+  private createTriggerRuntimeProject(input: {
+    organizationId: string;
+    name: string;
+    createdByUserId: string | null;
+  }): string {
+    const id = randomUUID();
+    const now = this.now();
+    this.projects.set(id, {
+      id,
+      organizationId: input.organizationId,
+      name: `Trigger runtime: ${input.name}`,
+      slug: `trigger-${id.slice(0, 8)}`,
+      status: "active",
+      createdByUserId: input.createdByUserId,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      activeConfigurationRevisionId: null,
+    });
+    this.configurationAuthorities.set(id, "manual");
+    return id;
+  }
+
+  private availableMigratedTriggerName(
+    organizationId: string,
+    projectSlug: string,
+    requestedName: string,
+  ): string {
+    const occupied = new Set(
+      Array.from(this.organizationTriggers.values())
+        .filter((trigger) => trigger.organizationId === organizationId)
+        .map((trigger) => trigger.name),
+    );
+    if (!occupied.has(requestedName)) return requestedName;
+    const base = `${projectSlug}-${requestedName}`;
+    if (!occupied.has(base)) return base;
+    let suffix = 2;
+    while (occupied.has(`${base}-${String(suffix)}`)) suffix += 1;
+    return `${base}-${String(suffix)}`;
   }
 
   async findProjectForOrganization(organizationId: string, projectId: string) {

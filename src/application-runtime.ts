@@ -25,6 +25,7 @@ import {
 } from "./server/runtime.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
+import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
 
 export interface ApplicationCompositionOptions {
@@ -144,6 +145,7 @@ async function createOwnedApplicationRuntime(
             githubConfigurations[0],
             (projectId) => application.configurationForProject(projectId),
           ),
+    triggerDashboard: triggerDashboardFor(options),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -322,6 +324,12 @@ async function createOwnedApplicationRuntime(
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),
   };
+}
+
+function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
+  return options.database === null || options.auth === null
+    ? null
+    : new TriggerDashboard(options.database, options.auth);
 }
 
 function providerApplicationsFor(

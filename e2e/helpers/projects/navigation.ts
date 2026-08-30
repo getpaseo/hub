@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-export type OrganizationSection = "Projects" | "Daemons" | "Connections" | "Settings";
+export type OrganizationSection = "Triggers" | "Activity" | "Daemons" | "Connections" | "Settings";
 export type OrganizationSettingsSection = "Team" | "API keys" | "Usage" | "Billing";
 export type ProjectSection = "Overview" | "Configuration" | "Activity" | "Settings";
 export type InstanceSection = "Apps" | "Operator";

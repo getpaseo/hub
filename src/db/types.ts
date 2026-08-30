@@ -322,6 +322,38 @@ export interface ProjectConfigurationRevisionRecord {
   validatedAt: Date | null;
 }
 
+export interface OrganizationTriggerRecord {
+  id: string;
+  organizationId: string;
+  name: string;
+  enabled: boolean;
+  format: "single_run" | "legacy_multistep";
+  /** Temporary workflow-engine adapter; never exposed as a product project. */
+  runtimeProjectId: string;
+  activeRevisionId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface OrganizationTriggerRevisionRecord {
+  id: string;
+  triggerId: string;
+  organizationId: string;
+  version: number;
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceKind: "manual" | "github" | "project_migration";
+  sourceEvidence: unknown;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface PendingProjectTriggerMigration {
+  project: ProjectRecord;
+  revision: ProjectConfigurationRevisionRecord;
+}
+
 export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
 
 export type ConnectionAttemptPhase =
@@ -1003,6 +1035,47 @@ export interface ProjectTriggerRoute {
   triggerName: string;
 }
 
+export interface OrganizationTriggerRoute {
+  provider: ConnectionProvider;
+  connectionId: string;
+  resourceId: string | null;
+  configuredEventName: string;
+}
+
+export interface MigrateProjectTriggerInput {
+  name: string;
+  format: "single_run" | "legacy_multistep";
+  enabled: boolean;
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceEvidence: unknown;
+  routes: readonly OrganizationTriggerRoute[];
+}
+
+export interface MigrateProjectTriggersInput {
+  projectId: string;
+  organizationId: string;
+  configurationRevisionId: string;
+  projectSlug: string;
+  triggers: readonly MigrateProjectTriggerInput[];
+}
+
+export interface SaveOrganizationTriggerInput {
+  organizationId: string;
+  triggerId?: string;
+  name: string;
+  enabled: boolean;
+  format: "single_run" | "legacy_multistep";
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceKind: "manual" | "github";
+  sourceEvidence: unknown;
+  createdByUserId: string | null;
+  routes: readonly OrganizationTriggerRoute[];
+}
+
 export interface SwitchProjectConfigurationToManualInput {
   projectId: string;
   userId: string;
@@ -1351,6 +1424,17 @@ export interface Database {
    * another instance handling the same organization. Released even if `fn` throws.
    */
   withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  listPendingProjectTriggerMigrations(): Promise<PendingProjectTriggerMigration[]>;
+  migrateProjectTriggers(input: MigrateProjectTriggersInput): Promise<OrganizationTriggerRecord[]>;
+  listOrganizationTriggers(organizationId: string): Promise<OrganizationTriggerRecord[]>;
+  findOrganizationTriggerRevision(
+    triggerId: string,
+    revisionId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined>;
+  findOrganizationTriggerMigrationRevision(
+    triggerId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined>;
+  saveOrganizationTrigger(input: SaveOrganizationTriggerInput): Promise<OrganizationTriggerRecord>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

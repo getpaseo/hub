@@ -5,7 +5,7 @@ import {
   daemonLink,
   daemonLoginCommand,
   DaemonHandoffView,
-  defaultProjectRoute,
+  organizationTriggersRoute,
   type DaemonLink,
 } from "./handoff.js";
 import type { BrowserDaemon, BrowserDaemonList } from "./functions.js";
@@ -58,11 +58,8 @@ describe("the daemon login command", () => {
 });
 
 describe("where onboarding ends", () => {
-  it("addresses the project every organization is provisioned with", () => {
-    assert.equal(
-      defaultProjectRoute("paseo-hub-1a2b3c4d"),
-      "/o/paseo-hub-1a2b3c4d/projects/default/overview",
-    );
+  it("opens the organization's trigger list", () => {
+    assert.equal(organizationTriggersRoute("paseo-hub-1a2b3c4d"), "/o/paseo-hub-1a2b3c4d/triggers");
   });
 });
 
