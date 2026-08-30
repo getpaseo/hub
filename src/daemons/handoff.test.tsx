@@ -26,7 +26,7 @@ function daemon(overrides: Partial<BrowserDaemon> = {}): BrowserDaemon {
 }
 
 function listing(daemons: readonly BrowserDaemon[]): { status: "ok"; data: BrowserDaemonList } {
-  return { status: "ok", data: { daemons: [...daemons], canManage: true } };
+  return { status: "ok", data: { daemons: [...daemons], grants: [], canManage: true } };
 }
 
 function markup(link: DaemonLink, command = "paseo hub login http://localhost:4173"): string {

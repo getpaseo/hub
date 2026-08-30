@@ -25,6 +25,7 @@ export { INVITATION_ROLES, ORGANIZATION_ROLES };
 export const MACHINE_STATUSES = ["spawning", "alive", "terminated"] as const;
 export const AGENT_EXECUTION_STATUSES = ["spawning", "running", "succeeded", "failed"] as const;
 export const INVITATION_STATUSES = ["pending", "accepted", "rejected", "canceled"] as const;
+export const DAEMON_ACCESS_ROLES = ["owner", "operator", "viewer"] as const;
 
 export type MachineStatus = (typeof MACHINE_STATUSES)[number];
 export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
@@ -1003,10 +1004,42 @@ export const members = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    uniqueIndex("members_id_organization_unique").on(table.id, table.organizationId),
     uniqueIndex("members_organization_user_unique").on(table.organizationId, table.userId),
     index("members_user_id_idx").on(table.userId),
     index("members_organization_id_idx").on(table.organizationId),
     check("members_role_check", sql`${table.role} in ('owner', 'admin', 'member')`),
+  ],
+);
+
+/** Organization membership is coarse; these grants decide which daemon spaces a member sees. */
+export const daemonAccessGrants = pgTable(
+  "daemon_access_grants",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    daemonId: uuid("daemon_id").notNull(),
+    memberId: text("member_id").notNull(),
+    role: text().$type<(typeof DAEMON_ACCESS_ROLES)[number]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("daemon_access_grants_daemon_member_unique").on(table.daemonId, table.memberId),
+    index("daemon_access_grants_organization_member_idx").on(table.organizationId, table.memberId),
+    foreignKey({
+      columns: [table.daemonId, table.organizationId],
+      foreignColumns: [daemons.id, daemons.organizationId],
+      name: "daemon_access_grants_daemon_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.memberId, table.organizationId],
+      foreignColumns: [members.id, members.organizationId],
+      name: "daemon_access_grants_member_organization_fk",
+    }).onDelete("cascade"),
+    check("daemon_access_grants_role_check", sql`${table.role} in ('owner', 'operator', 'viewer')`),
   ],
 );
 

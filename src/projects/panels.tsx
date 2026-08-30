@@ -365,11 +365,13 @@ export function OrganizationConnectionsPanel() {
 
 export function OrganizationDaemonsPanel() {
   const tenant = useRouteTenant();
+  const account = useActiveAccount();
   return (
     <DaemonsPanel
       accountId={tenant.account.id}
       organizationId={tenant.organization.id}
       organizationSlug={tenant.organization.slug}
+      members={account.team.members}
     />
   );
 }

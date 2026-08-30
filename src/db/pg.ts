@@ -45,6 +45,9 @@ import type {
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
+  DaemonAccessGrantRecord,
+  SetDaemonAccessGrantInput,
+  RemoveDaemonAccessGrantInput,
   CliAuthorizationRecord,
   CliAuthorizationDecisionInput,
   CliAuthorizationPollResult,
@@ -1703,6 +1706,79 @@ class PgDatabase implements Database {
       [organizationId],
     );
     return rows.rows.map(toDaemon);
+  }
+
+  async listDaemonAccessGrantsForOrganization(
+    organizationId: string,
+  ): Promise<DaemonAccessGrantRecord[]> {
+    const rows = await query<DaemonAccessGrantRow>(
+      this.pool,
+      `select * from daemon_access_grants
+       where organization_id = $1
+       order by daemon_id, member_id`,
+      [organizationId],
+    );
+    return rows.rows.map(toDaemonAccessGrant);
+  }
+
+  async setDaemonAccessGrant(
+    input: SetDaemonAccessGrantInput,
+  ): Promise<DaemonAccessGrantRecord | undefined> {
+    try {
+      return await this.pool.transaction(async (client) => {
+        const rows = await client.query<DaemonAccessGrantRow>(
+          `insert into daemon_access_grants
+           (organization_id, daemon_id, member_id, role)
+           select $1, daemons.id, member.id, $4
+           from daemons
+           join member on member.id = $3 and member.organization_id = $1
+           where daemons.id = $2 and daemons.organization_id = $1
+           on conflict (daemon_id, member_id) do update
+           set role = excluded.role, updated_at = clock_timestamp()
+           returning *`,
+          [input.organizationId, input.daemonId, input.memberId, input.role],
+        );
+        const row = rows.rows[0];
+        if (row === undefined) return undefined;
+        await client.query(
+          `insert into audit_events
+           (organization_id, actor_kind, actor_identity, action,
+            subject_type, subject_id, evidence)
+           values ($1, 'user', $2, 'daemon.access.granted', 'daemon', $3,
+                   jsonb_build_object('memberId', $4::text, 'role', $5::text))`,
+          [input.organizationId, input.actorUserId, input.daemonId, input.memberId, input.role],
+        );
+        return toDaemonAccessGrant(row);
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async removeDaemonAccessGrant(input: RemoveDaemonAccessGrantInput): Promise<boolean> {
+    try {
+      return await this.pool.transaction(async (client) => {
+        const rows = await client.query<DaemonAccessGrantRow>(
+          `delete from daemon_access_grants
+           where organization_id = $1 and daemon_id = $2 and member_id = $3
+           returning *`,
+          [input.organizationId, input.daemonId, input.memberId],
+        );
+        const removed = rows.rows[0];
+        if (removed === undefined) return false;
+        await client.query(
+          `insert into audit_events
+           (organization_id, actor_kind, actor_identity, action,
+            subject_type, subject_id, evidence)
+           values ($1, 'user', $2, 'daemon.access.revoked', 'daemon', $3,
+                   jsonb_build_object('memberId', $4::text, 'role', $5::text))`,
+          [input.organizationId, input.actorUserId, input.daemonId, input.memberId, removed.role],
+        );
+        return true;
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
   }
 
   async renameDaemonForOrganization(organizationId: string, id: string, slug: string) {
@@ -4179,6 +4255,16 @@ interface DaemonRow extends QueryRow {
   created_at: Date;
 }
 
+interface DaemonAccessGrantRow extends QueryRow {
+  id: string;
+  organization_id: string;
+  daemon_id: string;
+  member_id: string;
+  role: DaemonAccessGrantRecord["role"];
+  created_at: Date;
+  updated_at: Date;
+}
+
 interface CliAuthorizationRow extends QueryRow {
   id: string;
   device_verifier: string;
@@ -4211,6 +4297,18 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     disconnectedAt: row.disconnected_at,
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
+  };
+}
+
+function toDaemonAccessGrant(row: DaemonAccessGrantRow): DaemonAccessGrantRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    daemonId: row.daemon_id,
+    memberId: row.member_id,
+    role: row.role,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

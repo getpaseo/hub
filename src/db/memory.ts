@@ -19,6 +19,9 @@ import type {
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
+  DaemonAccessGrantRecord,
+  SetDaemonAccessGrantInput,
+  RemoveDaemonAccessGrantInput,
   CliAuthorizationRecord,
   CliAuthorizationDecisionInput,
   CliAuthorizationPollResult,
@@ -104,6 +107,10 @@ import {
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
+function daemonAccessGrantKey(daemonId: string, memberId: string): string {
+  return `${daemonId}:${memberId}`;
+}
+
 export interface MemoryDatabaseOptions {
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
   organizationIds?: readonly string[];
@@ -163,6 +170,7 @@ class MemoryDatabase implements Database {
   private readonly enrollmentTokens = new Map<string, EnrollmentTokenRecord>();
   private readonly cliAuthorizations = new Map<string, MemoryCliAuthorization>();
   private readonly daemons = new Map<string, DaemonRecord>();
+  private readonly daemonAccessGrants = new Map<string, DaemonAccessGrantRecord>();
   private readonly organizationEntitlements = new Map<string, OrganizationEntitlementsRecord>();
   private readonly entitlementChanges: EntitlementChangeRecord[] = [];
   private readonly organizationUsage = new Map<string, OrganizationUsageRecord>();
@@ -1538,6 +1546,43 @@ class MemoryDatabase implements Database {
     return Array.from(this.daemons.values())
       .filter((daemon) => this.machines.get(daemon.machineId)?.orgId === organizationId)
       .sort((left, right) => left.slug.localeCompare(right.slug));
+  }
+  async listDaemonAccessGrantsForOrganization(organizationId: string) {
+    return Array.from(this.daemonAccessGrants.values())
+      .filter((grant) => grant.organizationId === organizationId)
+      .sort((left, right) => {
+        const daemonOrder = left.daemonId.localeCompare(right.daemonId);
+        return daemonOrder === 0 ? left.memberId.localeCompare(right.memberId) : daemonOrder;
+      });
+  }
+  async setDaemonAccessGrant(input: SetDaemonAccessGrantInput) {
+    const daemon = await this.findDaemonForOrganization(input.organizationId, input.daemonId);
+    const member = this.options.memberships?.find(
+      (candidate) =>
+        candidate.organizationId === input.organizationId &&
+        candidate.membershipId === input.memberId,
+    );
+    if (daemon === undefined || member === undefined) return undefined;
+    const key = daemonAccessGrantKey(input.daemonId, input.memberId);
+    const existing = this.daemonAccessGrants.get(key);
+    const now = this.now();
+    const grant: DaemonAccessGrantRecord = {
+      id: existing?.id ?? randomUUID(),
+      organizationId: input.organizationId,
+      daemonId: input.daemonId,
+      memberId: input.memberId,
+      role: input.role,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.daemonAccessGrants.set(key, grant);
+    return grant;
+  }
+  async removeDaemonAccessGrant(input: RemoveDaemonAccessGrantInput) {
+    const key = daemonAccessGrantKey(input.daemonId, input.memberId);
+    const existing = this.daemonAccessGrants.get(key);
+    if (existing?.organizationId !== input.organizationId) return false;
+    return this.daemonAccessGrants.delete(key);
   }
   async renameDaemonForOrganization(organizationId: string, id: string, slug: string) {
     const daemon = await this.findDaemonForOrganization(organizationId, id);

@@ -181,6 +181,33 @@ export interface DaemonRecord {
   createdAt: Date;
 }
 
+export type DaemonAccessRole = "owner" | "operator" | "viewer";
+
+export interface DaemonAccessGrantRecord {
+  id: string;
+  organizationId: string;
+  daemonId: string;
+  memberId: string;
+  role: DaemonAccessRole;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SetDaemonAccessGrantInput {
+  organizationId: string;
+  daemonId: string;
+  memberId: string;
+  role: DaemonAccessRole;
+  actorUserId: string;
+}
+
+export interface RemoveDaemonAccessGrantInput {
+  organizationId: string;
+  daemonId: string;
+  memberId: string;
+  actorUserId: string;
+}
+
 export interface DaemonSlugConflict {
   status: "slug_conflict";
   slug: string;
@@ -1212,6 +1239,11 @@ export interface Database {
   findDaemonById(id: string): Promise<DaemonRecord | undefined>;
   findDaemonForOrganization(organizationId: string, id: string): Promise<DaemonRecord | undefined>;
   listDaemonsForOrganization(organizationId: string): Promise<DaemonRecord[]>;
+  listDaemonAccessGrantsForOrganization(organizationId: string): Promise<DaemonAccessGrantRecord[]>;
+  setDaemonAccessGrant(
+    input: SetDaemonAccessGrantInput,
+  ): Promise<DaemonAccessGrantRecord | undefined>;
+  removeDaemonAccessGrant(input: RemoveDaemonAccessGrantInput): Promise<boolean>;
   renameDaemonForOrganization(
     organizationId: string,
     id: string,
