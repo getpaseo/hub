@@ -666,6 +666,7 @@ function identityFor(
   if (provider === "github") return github;
   if (provider === "discord") return { provider, id: "100", name: "Paseo" };
   if (provider === "linear") return { provider, id: "linear-client", name: "Paseo" };
+  if (provider === "forgejo") return { provider, id: "forgejo", name: "Forgejo" };
   return { provider, id: "A1", name: "Paseo" };
 }
 
@@ -937,6 +938,7 @@ function candidateConfigurationId(configuration: ProviderApplicationConfiguratio
     return configuration.appId;
   }
   if (configuration.provider === "linear") return configuration.clientId;
+  if (configuration.provider === "forgejo") return configuration.provider;
   return configuration.applicationId;
 }
 

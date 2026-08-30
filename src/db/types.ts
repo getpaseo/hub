@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "forgejo" | "manual";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -260,6 +260,7 @@ export interface OrganizationConnectionUsage {
   discord: DiscordConnectionRecord[];
   slack: SlackConnectionRecord[];
   linear: LinearConnectionRecord[];
+  forgejo: ForgejoConnectionRecord[];
 }
 
 export interface GitHubRepositoryRecord {
@@ -282,6 +283,8 @@ export interface ConfigurationSyncAttemptRecord {
   projectId: string;
   githubConnectionId: string | null;
   githubRepositoryId: number | null;
+  forgejoConnectionId: string | null;
+  forgejoRepositoryId: number | null;
   webhookDeliveryId: string | null;
   commitSha: string | null;
   outcome: string;
@@ -290,7 +293,7 @@ export interface ConfigurationSyncAttemptRecord {
 }
 
 export interface ProjectConfigurationReadModel {
-  authority: "manual" | "github";
+  authority: "manual" | "github" | "forgejo";
   activeRevision: ProjectConfigurationRevisionRecord | null;
   lastSyncAttempt: ConfigurationSyncAttemptRecord | null;
   sourceState:
@@ -302,6 +305,14 @@ export interface ProjectConfigurationReadModel {
         githubRepositoryFullName: string;
         githubDefaultBranch: string;
         automaticDeploymentEnabled: boolean;
+      }
+    | {
+        kind: "forgejo";
+        forgejoConnectionId: string;
+        forgejoRepositoryId: number;
+        forgejoRepositoryFullName: string;
+        forgejoDefaultBranch: string;
+        automaticDeploymentEnabled: boolean;
       };
 }
 
@@ -310,7 +321,7 @@ export interface ProjectConfigurationRevisionRecord {
   projectId: string;
   organizationId: string;
   version: number;
-  sourceKind: "github" | "manual";
+  sourceKind: "github" | "manual" | "forgejo";
   sourceEvidence: unknown;
   rawYaml: string | null;
   normalizedConfiguration: unknown;
@@ -354,7 +365,7 @@ export interface PendingProjectTriggerMigration {
   revision: ProjectConfigurationRevisionRecord;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
+export type ConnectionProvider = "github" | "discord" | "slack" | "linear" | "forgejo";
 
 export type ConnectionAttemptPhase =
   | "github_setup"
@@ -449,8 +460,53 @@ export interface LinearConnectionRecord {
   scopes: string[];
 }
 
+export interface ForgejoInstanceRecord {
+  id: string;
+  canonicalOrigin: string;
+  allowPrivateNetwork: boolean;
+  externalIdentity: unknown;
+  reportedVersion: string;
+  status:
+    | "pending_verification"
+    | "active"
+    | "incompatible"
+    | "unreachable"
+    | "identity_drifted"
+    | "revoked";
+  approvedByUserId: string | null;
+  approvedAt: Date | null;
+  lastHealthAt: Date | null;
+  lastHealthError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ForgejoConnectionRecord {
+  id: string;
+  organizationId: string;
+  instanceId: string;
+  slug: string;
+  status: "pending_identity" | "active" | "degraded" | "disconnected";
+  forgejoUserId: number;
+  forgejoUserLogin: string;
+  providerApplicationId: string | null;
+}
+
+export interface ForgejoRepositoryRecord {
+  id: string;
+  organizationId: string;
+  connectionId: string;
+  repositoryId: number;
+  fullName: string;
+  ownerLogin: string;
+  name: string;
+  defaultBranch: string;
+  htmlUrl: string;
+  enrolled: boolean;
+}
+
 export interface StartConnectionAttemptInput {
-  provider: ConnectionProvider;
+  provider: Exclude<ConnectionProvider, "forgejo">;
   stateVerifier: string;
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
@@ -554,7 +610,8 @@ export type DisconnectConnectionResult =
       provider: "linear";
       linearOrganizationId: string | undefined;
       accessToken: string | undefined;
-    };
+    }
+  | { provider: "forgejo" };
 
 export type GitHubLifecycleIdentity = Omit<
   GitHubConnectionRecord,
@@ -611,6 +668,9 @@ export interface ProviderEventEvidence {
   payload: unknown;
   receivedAt: Date;
   dropReason?: string;
+  provider?: ProviderEventReceiptRecord["provider"];
+  connectionId?: string | null;
+  bodySha256?: string | null;
 }
 
 export interface AcceptGitHubEventInput extends ProviderEventEvidence {
@@ -1019,7 +1079,7 @@ export interface ReconcileOrganizationBillingInput {
 
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
-  sourceKind: "github" | "manual";
+  sourceKind: "github" | "manual" | "forgejo";
   sourceEvidence: unknown;
   rawYaml?: string | null;
   normalizedConfiguration: unknown;

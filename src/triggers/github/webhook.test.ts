@@ -263,13 +263,15 @@ class OversizedGitHubWebhook {
   constructor(private readonly endpoint: WebhookEndpoint) {}
 
   async deliverDeclared(): Promise<number> {
+    const declared = createHeaders("sha256=invalid", "declared");
+    const headers: Record<string, string> = { "content-length": "1048577" };
+    declared.forEach((value, name) => {
+      headers[name] = value;
+    });
     const response = await this.endpoint.handle(
       new Request("http://localhost/webhook", {
         method: "POST",
-        headers: {
-          ...Object.fromEntries(createHeaders("sha256=invalid", "declared")),
-          "content-length": "1048577",
-        },
+        headers,
         body: "{}",
       }),
     );

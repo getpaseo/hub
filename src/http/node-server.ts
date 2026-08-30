@@ -114,7 +114,9 @@ async function forwardRequest(
     }
     outgoing.statusCode = response.status;
     outgoing.statusMessage = response.statusText;
-    for (const [name, value] of response.headers) outgoing.setHeader(name, value);
+    response.headers.forEach((value, name) => {
+      outgoing.setHeader(name, value);
+    });
     if (responseRequestId !== undefined) outgoing.setHeader("x-request-id", responseRequestId);
     const cookies = response.headers.getSetCookie();
     if (cookies.length > 0) outgoing.setHeader("set-cookie", cookies);

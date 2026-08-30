@@ -3646,6 +3646,8 @@ class PgDatabase implements Database {
       projectId: row.project_id,
       githubConnectionId: row.github_connection_id,
       githubRepositoryId: row.github_repository_id,
+      forgejoConnectionId: null,
+      forgejoRepositoryId: null,
       webhookDeliveryId: row.webhook_delivery_id,
       commitSha: row.commit_sha,
       outcome: row.outcome,
@@ -3656,16 +3658,21 @@ class PgDatabase implements Database {
 
   async projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel> {
     const source = await query<{
-      kind: "manual" | "github";
+      kind: "manual" | "github" | "forgejo";
       github_connection_id: string | null;
       github_repository_id: number | null;
       github_repository_full_name: string | null;
       github_default_branch: string | null;
+      forgejo_connection_id: string | null;
+      forgejo_repository_id: number | null;
+      forgejo_repository_full_name: string | null;
+      forgejo_default_branch: string | null;
       automatic_deployment_enabled: boolean;
     }>(
       this.pool,
       `select kind, github_connection_id, github_repository_id, github_repository_full_name,
-              github_default_branch, automatic_deployment_enabled
+              github_default_branch, forgejo_connection_id, forgejo_repository_id,
+              forgejo_repository_full_name, forgejo_default_branch, automatic_deployment_enabled
        from project_configuration_sources where project_id = $1`,
       [projectId],
     );
@@ -3677,6 +3684,8 @@ class PgDatabase implements Database {
       project_id: string;
       github_connection_id: string | null;
       github_repository_id: number | null;
+      forgejo_connection_id: string | null;
+      forgejo_repository_id: number | null;
       webhook_delivery_id: string | null;
       commit_sha: string | null;
       outcome: string;
@@ -3697,6 +3706,8 @@ class PgDatabase implements Database {
             projectId: attempt.project_id,
             githubConnectionId: attempt.github_connection_id,
             githubRepositoryId: attempt.github_repository_id,
+            forgejoConnectionId: attempt.forgejo_connection_id,
+            forgejoRepositoryId: attempt.forgejo_repository_id,
             webhookDeliveryId: attempt.webhook_delivery_id,
             commitSha: attempt.commit_sha,
             outcome: attempt.outcome,
@@ -3715,6 +3726,29 @@ class PgDatabase implements Database {
         activeRevision,
         lastSyncAttempt,
         sourceState: { kind: "manual", formattingPreserved },
+      };
+    }
+    if (sourceRow.kind === "forgejo") {
+      if (
+        sourceRow.forgejo_connection_id === null ||
+        sourceRow.forgejo_repository_id === null ||
+        sourceRow.forgejo_repository_full_name === null ||
+        sourceRow.forgejo_default_branch === null
+      ) {
+        throw new Error("forgejo configuration authority has no repository");
+      }
+      return {
+        authority: "forgejo",
+        activeRevision,
+        lastSyncAttempt,
+        sourceState: {
+          kind: "forgejo",
+          forgejoConnectionId: sourceRow.forgejo_connection_id,
+          forgejoRepositoryId: sourceRow.forgejo_repository_id,
+          forgejoRepositoryFullName: sourceRow.forgejo_repository_full_name,
+          forgejoDefaultBranch: sourceRow.forgejo_default_branch,
+          automaticDeploymentEnabled: sourceRow.automatic_deployment_enabled,
+        },
       };
     }
     if (
@@ -3861,6 +3895,7 @@ class PgDatabase implements Database {
         scopes: stringArray(row.scopes),
         providerApplicationId: row.provider_application_id,
       })),
+      forgejo: [],
     };
   }
 
@@ -4869,7 +4904,7 @@ export interface ProjectConfigurationRevisionRow extends QueryRow {
   project_id: string;
   organization_id: string;
   version: number;
-  source_kind: "github" | "manual";
+  source_kind: "github" | "manual" | "forgejo";
   source_evidence: unknown;
   raw_yaml: string | null;
   normalized_configuration: unknown;
@@ -4922,7 +4957,7 @@ interface PendingProjectTriggerMigrationRow extends QueryRow {
   r_project_id: string;
   r_organization_id: string;
   r_version: number;
-  r_source_kind: "github" | "manual";
+  r_source_kind: "github" | "manual" | "forgejo";
   r_source_evidence: unknown;
   r_raw_yaml: string | null;
   r_normalized_configuration: unknown;

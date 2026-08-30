@@ -46,6 +46,7 @@ export type HubConfig = AuthoredHubConfig;
 export type CompiledConfiguration = CompiledHubConfig;
 export type CompiledTriggerConfig = CompiledTrigger;
 export type CompiledStepConfig = CompiledStep;
+export type { CompiledForgejoAuthority } from "./forgejo-authority.js";
 export type { CompiledGitHubAuthority, GitHubPermissionLevel };
 export type InputDefinition = AuthoredInput;
 export type CompiledInputDefinition = CompiledInput;

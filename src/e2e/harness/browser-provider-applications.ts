@@ -1,6 +1,7 @@
 import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { createForgejoRegistration } from "../../providers/forgejo/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
@@ -134,6 +135,7 @@ export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicati
   discord: { provider: "discord", id: "900", name: "Paseo" },
   slack: { provider: "slack", id: "browser-slack-app", name: "Paseo" },
   linear: { provider: "linear", id: "browser-linear-client", name: "Paseo" },
+  forgejo: { provider: "forgejo", id: "forgejo", name: "Forgejo" },
 };
 
 /** The identity an environment-configured provider activates with at boot. */
@@ -212,6 +214,9 @@ export class BrowserProviderApplicationVerifier implements ProviderApplicationVe
     }
     // Slack matches production: client credentials have no honest verification endpoint, so the
     // installation callback is the only thing that can accept them.
+    if (configuration.provider === "forgejo") {
+      return Promise.resolve(FIXTURE_APP_IDENTITIES.forgejo);
+    }
     return Promise.reject(new ProviderVerificationError("credentialsRejected"));
   }
 }
@@ -298,6 +303,12 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
           : { expectedConfigurationVersion: input.expectedConfigurationVersion }),
         activateConfiguration: input.activateConfiguration,
         onVerifiedInstallation: input.onVerifiedLinearInstallation,
+      });
+    }
+    if (configuration.provider === "forgejo") {
+      return createForgejoRegistration({
+        ...shared,
+        configuration,
       });
     }
     return createSlackRegistration({

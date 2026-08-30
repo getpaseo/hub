@@ -58,6 +58,7 @@ describe("project dashboard activity read models", () => {
             scopes: ["read", "comments:create"],
           },
         ],
+        forgejo: [],
       });
 
     const dashboard = new ProjectDashboard(database, accountAuth(), undefined);

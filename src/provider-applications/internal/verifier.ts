@@ -43,6 +43,9 @@ export function createProviderApplicationVerifier(
       if (configuration.provider === "discord") {
         return verifyDiscord(configuration, request, timeoutMs);
       }
+      if (configuration.provider === "forgejo") {
+        return Promise.resolve({ provider: "forgejo", id: "forgejo", name: "Forgejo" });
+      }
       // Slack client credentials have no honest verification endpoint. They are verified only
       // by the OAuth installation callback, where the returned bot token is tested.
       return Promise.reject(new ProviderVerificationError("credentialsRejected"));

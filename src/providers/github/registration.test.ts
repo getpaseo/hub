@@ -205,7 +205,13 @@ describe("GitHub registration", () => {
     });
 
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [],
+        forgejo: [],
+      }),
       {
         status: "notConfigured",
       },
@@ -235,6 +241,7 @@ describe("GitHub registration", () => {
       discord: [],
       slack: [],
       linear: [],
+      forgejo: [],
     });
     const installations: number[] = [];
     const registration = createGitHubRegistration({
@@ -295,6 +302,7 @@ describe("GitHub registration", () => {
       discord: [],
       slack: [],
       linear: [],
+      forgejo: [],
     });
     const requests: unknown[] = [];
     const revoked: string[] = [];

@@ -3,6 +3,7 @@ import type { ConnectionResolutionContext, ConnectionResolver } from "../config/
 import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
+import type { ForgejoConfigurationProvider } from "../configuration/forgejo-sync.js";
 import type { GitHubConfigurationProvider } from "../configuration/github-sync.js";
 import type {
   AttachmentCapabilityRegistry,
@@ -21,6 +22,17 @@ export type TriggerProviderFactory = (
   resources: TriggerProviderResources,
 ) => TriggerProvider | undefined;
 
+export interface ForgejoAuthorityRegistration {
+  mint(input: {
+    projectId: string;
+    connectionSlug: string;
+    repositories: readonly string[];
+    contents: "read" | "write";
+    issues: "read" | "write";
+  }): Promise<{ token: string; expiresAt: number }>;
+  revoke(token: string): Promise<void>;
+}
+
 export interface ProviderIntegrationRegistration {
   resolve(
     projectId: string,
@@ -29,6 +41,7 @@ export interface ProviderIntegrationRegistration {
     context?: ConnectionResolutionContext,
   ): Promise<string>;
   githubAuthority?: GitHubAuthorityRegistration;
+  forgejoAuthority?: ForgejoAuthorityRegistration;
 }
 
 export interface GitHubAuthorityRegistration {
@@ -79,5 +92,6 @@ export interface ProviderRegistration {
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
   githubConfiguration?: GitHubConfigurationProvider;
+  forgejoConfiguration?: ForgejoConfigurationProvider;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

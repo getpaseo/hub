@@ -1,0 +1,29 @@
+{
+  "version": {
+    "version": "16.0.3+gitea-1.22.0"
+  },
+  "settings": {
+    "max_response_items": 50,
+    "default_paging_num": 30,
+    "default_git_trees_per_page": 1000,
+    "default_max_blob_size": 10485760
+  },
+  "pagination": {
+    "search": {
+      "status": 200,
+      "link": null,
+      "xTotalCount": "1",
+      "count": 1
+    }
+  },
+  "reviewCommentList404": {
+    "pullsIndexComments": 404,
+    "repoPullComments": 404
+  },
+  "tree": {
+    "status": 200,
+    "sha": "fe666713ef59ed851551920693909fbfa8ae9815",
+    "truncated": false,
+    "count": 4
+  }
+}

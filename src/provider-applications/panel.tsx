@@ -323,6 +323,7 @@ function providerName(provider: Provider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
   if (provider === "linear") return "Linear";
+  if (provider === "forgejo") return "Forgejo";
   return "Discord";
 }
 

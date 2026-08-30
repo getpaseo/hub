@@ -73,7 +73,7 @@ function ProjectConfigurationScreen() {
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const configuration = data.configuration;
-  const mode = sourceMode ?? configuration.authority;
+  const mode = sourceMode ?? (configuration.authority === "github" ? "github" : "manual");
   const selectMode = (next: "manual" | "github") => {
     setSourceMode(next);
     setStagedRepository(null);
@@ -439,6 +439,24 @@ function ConfigurationSource({
   onSync: () => void;
   syncPending: boolean;
 }) {
+  if (configuration.authority === "forgejo") {
+    const label =
+      configuration.sourceState.kind === "forgejo"
+        ? `Forgejo · ${configuration.sourceState.forgejoRepositoryFullName}`
+        : "Forgejo";
+    return (
+      <div className="grid gap-1.5">
+        <RailLabel>Source</RailLabel>
+        <p className="text-sm text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <ProviderGlyph provider="forgejo" />
+            {label}. Configuration synchronization is not available yet.
+          </span>
+        </p>
+      </div>
+    );
+  }
+
   const currentRepository: ComboboxRepository | null =
     configuration.sourceState.kind === "github"
       ? {

@@ -257,6 +257,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
             teamName: `Slack ${organizationId.at(-1)?.toUpperCase()}`,
           },
         ],
+        forgejo: [],
       });
       const validation = await post("/api/v1/configurations/validate", secrets[organizationId], {
         projectSlug: "same-project",

@@ -4,6 +4,7 @@ import {
   boolean,
   bigint,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -30,9 +31,15 @@ export type MachineStatus = (typeof MACHINE_STATUSES)[number];
 export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 
 export const PROJECT_STATUSES = ["active", "archived"] as const;
-export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
+export const CONFIGURATION_SOURCE_KINDS = ["github", "manual", "forgejo"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
-export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear", "forgejo"] as const;
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -58,6 +65,7 @@ export const providerEventReceipts = pgTable(
     source: text().notNull(),
     repo: text(),
     payload: jsonb().notNull(),
+    bodySha256: text("body_sha256"),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
     acceptedRoutes: jsonb("accepted_routes"),
@@ -67,10 +75,12 @@ export const providerEventReceipts = pgTable(
       table.id,
       table.organizationId,
     ),
-    uniqueIndex("provider_event_receipts_organization_delivery_unique").on(
-      table.organizationId,
-      table.deliveryId,
-    ),
+    uniqueIndex("provider_event_receipts_organization_delivery_unique")
+      .on(table.organizationId, table.deliveryId)
+      .where(sql`${table.provider} <> 'forgejo'`),
+    uniqueIndex("provider_event_receipts_forgejo_delivery_unique")
+      .on(table.provider, table.connectionId, table.deliveryId)
+      .where(sql`${table.provider} = 'forgejo' AND ${table.connectionId} is not null`),
     uniqueIndex("provider_event_receipts_signature_unique")
       .on(table.signatureHash)
       .where(sql`${table.signatureHash} is not null`),
@@ -86,7 +96,7 @@ export const providerEventReceipts = pgTable(
     ),
     check(
       "provider_event_receipts_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo', 'manual')`,
     ),
   ],
 );
@@ -178,6 +188,13 @@ export const projectConfigurationRevisions = pgTable(
     githubSender: text("github_sender"),
     githubAuthor: text("github_author"),
     githubCommitter: text("github_committer"),
+    forgejoConnectionId: uuid("forgejo_connection_id"),
+    forgejoRepositoryId: bigint("forgejo_repository_id", { mode: "number" }),
+    forgejoCommitSha: text("forgejo_commit_sha"),
+    forgejoCommitUrl: text("forgejo_commit_url"),
+    forgejoRef: text("forgejo_ref"),
+    forgejoWebhookDeliveryId: text("forgejo_webhook_delivery_id"),
+    forgejoSender: text("forgejo_sender"),
     createdByUserId: text("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -201,7 +218,7 @@ export const projectConfigurationRevisions = pgTable(
     ),
     check(
       "project_configuration_revisions_source_kind_check",
-      sql`${table.sourceKind} in ('github', 'manual')`,
+      sql`${table.sourceKind} in ('github', 'manual', 'forgejo')`,
     ),
     foreignKey({
       columns: [table.projectId, table.organizationId],
@@ -254,7 +271,7 @@ export const projectTriggerRoutes = pgTable(
     }).onDelete("cascade"),
     check(
       "project_trigger_routes_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
   ],
 );
@@ -304,7 +321,9 @@ export const organizationTriggerRevisions = pgTable(
     yaml: text().notNull(),
     normalizedConfiguration: jsonb("normalized_configuration").notNull(),
     contentHash: text("content_hash").notNull(),
-    sourceKind: text("source_kind").$type<"manual" | "github" | "project_migration">().notNull(),
+    sourceKind: text("source_kind")
+      .$type<"manual" | "github" | "forgejo" | "project_migration">()
+      .notNull(),
     sourceEvidence: jsonb("source_evidence").notNull(),
     createdByUserId: text("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
@@ -327,7 +346,7 @@ export const organizationTriggerRevisions = pgTable(
     ),
     check(
       "organization_trigger_revisions_source_kind_check",
-      sql`${table.sourceKind} in ('manual', 'github', 'project_migration')`,
+      sql`${table.sourceKind} in ('manual', 'github', 'forgejo', 'project_migration')`,
     ),
     foreignKey({
       columns: [table.triggerId, table.organizationId],
@@ -1042,6 +1061,265 @@ export const linearConnections = pgTable(
   ],
 );
 
+export const forgejoInstances = pgTable(
+  "forgejo_instances",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    canonicalOrigin: text("canonical_origin").notNull().unique(),
+    allowPrivateNetwork: boolean("allow_private_network").default(false).notNull(),
+    externalIdentity: jsonb("external_identity").notNull(),
+    reportedVersion: text("reported_version").notNull(),
+    status: text().$type<ForgejoInstanceStatus>().notNull(),
+    approvedByUserId: text("approved_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    lastHealthAt: timestamp("last_health_at", { withTimezone: true }),
+    lastHealthError: text("last_health_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "forgejo_instances_status_check",
+      sql`${table.status} in ('pending_verification', 'active', 'incompatible', 'unreachable', 'identity_drifted', 'revoked')`,
+    ),
+  ],
+);
+
+export const forgejoConnections = pgTable(
+  "forgejo_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    instanceId: uuid("instance_id")
+      .notNull()
+      .references(() => forgejoInstances.id, { onDelete: "restrict" }),
+    slug: text().notNull(),
+    status: text().$type<ForgejoConnectionStatus>().notNull(),
+    forgejoUserId: bigint("forgejo_user_id", { mode: "number" }).notNull(),
+    forgejoUserLogin: text("forgejo_user_login").notNull(),
+    providerApplicationId: text("provider_application_id"),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("forgejo_connections_id_organization_unique").on(table.id, table.organizationId),
+    uniqueIndex("forgejo_connections_organization_slug_unique").on(
+      table.organizationId,
+      table.slug,
+    ),
+    uniqueIndex("forgejo_connections_organization_instance_user_unique").on(
+      table.organizationId,
+      table.instanceId,
+      table.forgejoUserId,
+    ),
+    check(
+      "forgejo_connections_status_check",
+      sql`${table.status} in ('pending_identity', 'active', 'degraded', 'disconnected')`,
+    ),
+  ],
+);
+
+export const forgejoRepositories = pgTable(
+  "forgejo_repositories",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    fullName: text("full_name").notNull(),
+    ownerLogin: text("owner_login").notNull(),
+    name: text().notNull(),
+    defaultBranch: text("default_branch").notNull(),
+    htmlUrl: text("html_url").notNull(),
+    enrolled: boolean().default(false).notNull(),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("forgejo_repositories_connection_repository_unique").on(
+      table.connectionId,
+      table.repositoryId,
+    ),
+    foreignKey({
+      columns: [table.connectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "forgejo_repositories_connection_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const forgejoCredentials = pgTable(
+  "forgejo_credentials",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    kind: text().$type<ForgejoCredentialKind>().notNull(),
+    alg: text().notNull(),
+    keyId: integer("key_id").notNull(),
+    nonce: bytea("nonce").notNull(),
+    ciphertext: bytea("ciphertext").notNull(),
+    aadVersion: integer("aad_version").notNull(),
+    scopeEvidence: jsonb("scope_evidence").notNull(),
+    status: text().$type<ForgejoCredentialStatus>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("forgejo_credentials_connection_kind_active_unique")
+      .on(table.connectionId, table.kind)
+      .where(sql`${table.status} = 'active'`),
+    foreignKey({
+      columns: [table.connectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "forgejo_credentials_connection_organization_fk",
+    }).onDelete("cascade"),
+    check(
+      "forgejo_credentials_kind_check",
+      sql`${table.kind} in ('connection', 'execution', 'webhook_secret')`,
+    ),
+    check(
+      "forgejo_credentials_status_check",
+      sql`${table.status} in ('active', 'rotating', 'revoked')`,
+    ),
+  ],
+);
+
+export const forgejoRepositoryHooks = pgTable(
+  "forgejo_repository_hooks",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    forgejoHookId: bigint("forgejo_hook_id", { mode: "number" }),
+    callbackPath: text("callback_path").notNull(),
+    managed: boolean().notNull(),
+    status: text().$type<ForgejoRepositoryHookStatus>().notNull(),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("forgejo_repository_hooks_connection_repository_unique").on(
+      table.connectionId,
+      table.repositoryId,
+    ),
+    foreignKey({
+      columns: [table.connectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "forgejo_repository_hooks_connection_organization_fk",
+    }).onDelete("cascade"),
+    check(
+      "forgejo_repository_hooks_status_check",
+      sql`${table.status} in ('unconfigured', 'pending_verification', 'active', 'manual_pending', 'drifted', 'cleanup_failed')`,
+    ),
+  ],
+);
+
+export const forgejoHydrationCursors = pgTable(
+  "forgejo_hydration_cursors",
+  {
+    connectionId: uuid("connection_id").notNull(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    subjectKind: text("subject_kind").$type<"issue" | "pull_request">().notNull(),
+    subjectId: bigint("subject_id", { mode: "number" }).notNull(),
+    recordKind: text("record_kind").$type<"timeline" | "review" | "review_comment">().notNull(),
+    cursorRecordId: bigint("cursor_record_id", { mode: "number" }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.connectionId,
+        table.repositoryId,
+        table.subjectKind,
+        table.subjectId,
+        table.recordKind,
+      ],
+      name: "forgejo_hydration_cursors_pk",
+    }),
+    foreignKey({
+      columns: [table.connectionId],
+      foreignColumns: [forgejoConnections.id],
+      name: "forgejo_hydration_cursors_connection_fk",
+    }).onDelete("cascade"),
+    check(
+      "forgejo_hydration_cursors_subject_kind_check",
+      sql`${table.subjectKind} in ('issue', 'pull_request')`,
+    ),
+    check(
+      "forgejo_hydration_cursors_record_kind_check",
+      sql`${table.recordKind} in ('timeline', 'review', 'review_comment')`,
+    ),
+  ],
+);
+
+export const forgejoHydratedEvents = pgTable(
+  "forgejo_hydrated_events",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
+    subjectKind: text("subject_kind").$type<"issue" | "pull_request">().notNull(),
+    subjectId: bigint("subject_id", { mode: "number" }).notNull(),
+    sourceRecordKind: text("source_record_kind")
+      .$type<"timeline" | "review" | "review_comment" | "label">()
+      .notNull(),
+    sourceRecordId: bigint("source_record_id", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("forgejo_hydrated_events_source_unique").on(
+      table.connectionId,
+      table.repositoryId,
+      table.subjectKind,
+      table.subjectId,
+      table.sourceRecordKind,
+      table.sourceRecordId,
+    ),
+    foreignKey({
+      columns: [table.connectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "forgejo_hydrated_events_connection_organization_fk",
+    }).onDelete("cascade"),
+    check(
+      "forgejo_hydrated_events_subject_kind_check",
+      sql`${table.subjectKind} in ('issue', 'pull_request')`,
+    ),
+    check(
+      "forgejo_hydrated_events_source_record_kind_check",
+      sql`${table.sourceRecordKind} in ('timeline', 'review', 'review_comment', 'label')`,
+    ),
+  ],
+);
+
+export type ForgejoInstanceStatus =
+  | "pending_verification"
+  | "active"
+  | "incompatible"
+  | "unreachable"
+  | "identity_drifted"
+  | "revoked";
+export type ForgejoConnectionStatus = "pending_identity" | "active" | "degraded" | "disconnected";
+export type ForgejoCredentialKind = "connection" | "execution" | "webhook_secret";
+export type ForgejoCredentialStatus = "active" | "rotating" | "revoked";
+export type ForgejoRepositoryHookStatus =
+  | "unconfigured"
+  | "pending_verification"
+  | "active"
+  | "manual_pending"
+  | "drifted"
+  | "cleanup_failed";
+
 export const projectConfigurationSources = pgTable(
   "project_configuration_sources",
   {
@@ -1052,6 +1330,10 @@ export const projectConfigurationSources = pgTable(
     githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
     githubRepositoryFullName: text("github_repository_full_name"),
     githubDefaultBranch: text("github_default_branch"),
+    forgejoConnectionId: uuid("forgejo_connection_id"),
+    forgejoRepositoryId: bigint("forgejo_repository_id", { mode: "number" }),
+    forgejoRepositoryFullName: text("forgejo_repository_full_name"),
+    forgejoDefaultBranch: text("forgejo_default_branch"),
     automaticDeploymentEnabled: boolean("automatic_deployment_enabled").default(false).notNull(),
     selectedByUserId: text("selected_by_user_id").references(() => users.id, {
       onDelete: "set null",
@@ -1070,9 +1352,33 @@ export const projectConfigurationSources = pgTable(
       foreignColumns: [githubConnections.id, githubConnections.organizationId],
       name: "project_configuration_sources_github_connection_organization_fk",
     }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.forgejoConnectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "project_configuration_sources_forgejo_connection_organization_fk",
+    }).onDelete("restrict"),
     check(
       "project_configuration_sources_authority_shape_check",
-      sql`(${table.kind} = 'manual' and ${table.githubConnectionId} is null and ${table.githubRepositoryId} is null and not ${table.automaticDeploymentEnabled}) or (${table.kind} = 'github' and ${table.githubConnectionId} is not null and ${table.githubRepositoryId} is not null)`,
+      sql`(
+        ${table.kind} = 'manual'
+        and ${table.githubConnectionId} is null
+        and ${table.githubRepositoryId} is null
+        and ${table.forgejoConnectionId} is null
+        and ${table.forgejoRepositoryId} is null
+        and not ${table.automaticDeploymentEnabled}
+      ) or (
+        ${table.kind} = 'github'
+        and ${table.githubConnectionId} is not null
+        and ${table.githubRepositoryId} is not null
+        and ${table.forgejoConnectionId} is null
+        and ${table.forgejoRepositoryId} is null
+      ) or (
+        ${table.kind} = 'forgejo'
+        and ${table.forgejoConnectionId} is not null
+        and ${table.forgejoRepositoryId} is not null
+        and ${table.githubConnectionId} is null
+        and ${table.githubRepositoryId} is null
+      )`,
     ),
   ],
 );
@@ -1085,6 +1391,8 @@ export const configurationSyncAttempts = pgTable(
     projectId: uuid("project_id").notNull(),
     githubConnectionId: uuid("github_connection_id"),
     githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
+    forgejoConnectionId: uuid("forgejo_connection_id"),
+    forgejoRepositoryId: bigint("forgejo_repository_id", { mode: "number" }),
     webhookDeliveryId: text("webhook_delivery_id"),
     commitSha: text("commit_sha"),
     outcome: text().notNull(),
@@ -1106,6 +1414,11 @@ export const configurationSyncAttempts = pgTable(
       foreignColumns: [githubConnections.id, githubConnections.organizationId],
       name: "configuration_sync_attempts_github_connection_organization_fk",
     }).onDelete("set null"),
+    foreignKey({
+      columns: [table.forgejoConnectionId, table.organizationId],
+      foreignColumns: [forgejoConnections.id, forgejoConnections.organizationId],
+      name: "configuration_sync_attempts_forgejo_connection_organization_fk",
+    }).onDelete("set null"),
   ],
 );
 
@@ -1119,7 +1432,7 @@ export const auditEvents = pgTable(
     projectId: uuid("project_id").references(() => projects.id, {
       onDelete: "cascade",
     }),
-    actorKind: text("actor_kind").$type<"user" | "github" | "system">().notNull(),
+    actorKind: text("actor_kind").$type<"user" | "github" | "forgejo" | "system">().notNull(),
     actorIdentity: text("actor_identity").notNull(),
     action: text().notNull(),
     subjectType: text("subject_type").notNull(),
@@ -1130,7 +1443,10 @@ export const auditEvents = pgTable(
   (table) => [
     index("audit_events_organization_created_idx").on(table.organizationId, table.createdAt.desc()),
     index("audit_events_project_created_idx").on(table.projectId, table.createdAt.desc()),
-    check("audit_events_actor_kind_check", sql`${table.actorKind} in ('user', 'github', 'system')`),
+    check(
+      "audit_events_actor_kind_check",
+      sql`${table.actorKind} in ('user', 'github', 'forgejo', 'system')`,
+    ),
     foreignKey({
       columns: [table.projectId, table.organizationId],
       foreignColumns: [projects.id, projects.organizationId],
@@ -1235,7 +1551,7 @@ export const runtimeProviderConfiguration = pgTable(
   (table) => [
     check(
       "runtime_provider_configuration_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
     check("runtime_provider_configuration_version_check", sql`${table.version} > 0`),
   ],
@@ -1252,7 +1568,7 @@ export const runtimeProviderActivations = pgTable(
   (table) => [
     check(
       "runtime_provider_activation_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
     check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
   ],

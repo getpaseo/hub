@@ -123,12 +123,18 @@ async function createOwnedApplicationRuntime(
     }
     requests.set(request.name, (incoming) => request.handle(incoming));
   }
-  const githubConfigurations = registrations.flatMap((registration) =>
-    registration.githubConfiguration === undefined ? [] : [registration.githubConfiguration],
+  const githubConfiguration = onlyOne(
+    registrations.flatMap((registration) =>
+      registration.githubConfiguration === undefined ? [] : [registration.githubConfiguration],
+    ),
+    "GitHub configuration registrations must be unique",
   );
-  if (githubConfigurations.length > 1) {
-    throw new Error("GitHub configuration registrations must be unique");
-  }
+  onlyOne(
+    registrations.flatMap((registration) =>
+      registration.forgejoConfiguration === undefined ? [] : [registration.forgejoConfiguration],
+    ),
+    "Forgejo configuration registrations must be unique",
+  );
   return {
     hub: application.hub,
     operations: application.operations,
@@ -139,11 +145,8 @@ async function createOwnedApplicationRuntime(
     projectDashboard:
       options.database === null || options.auth === null
         ? null
-        : new ProjectDashboard(
-            options.database,
-            options.auth,
-            githubConfigurations[0],
-            (projectId) => application.configurationForProject(projectId),
+        : new ProjectDashboard(options.database, options.auth, githubConfiguration, (projectId) =>
+            application.configurationForProject(projectId),
           ),
     triggerDashboard: triggerDashboardFor(options),
     ...entitlementSurfaces(options),
@@ -324,6 +327,11 @@ async function createOwnedApplicationRuntime(
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),
   };
+}
+
+function onlyOne<T>(values: readonly T[], message: string): T | undefined {
+  if (values.length > 1) throw new Error(message);
+  return values[0];
 }
 
 function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {

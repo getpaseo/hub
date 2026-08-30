@@ -658,11 +658,51 @@ export const LINEAR_GUIDE: ProviderGuide = {
   receivesEvents: true,
 };
 
+export const FORGEJO_GUIDE: ProviderGuide = {
+  provider: "forgejo",
+  name: "Forgejo",
+  summary: "Connects self-hosted Forgejo repositories to Hub workflows.",
+  portal: { label: "Forgejo documentation", href: "https://forgejo.org/docs/latest/" },
+  formTitle: "Enable Forgejo",
+  summaryLabels: { identity: "Provider", connections: "Connections" },
+  environmentVariables: [],
+  groups: [
+    {
+      id: "slot",
+      steps: [
+        {
+          segments: [
+            {
+              kind: "text",
+              value:
+                "Enable the Hub-wide Forgejo provider. Instance operators later approve a canonical HTTPS origin; organizations then enroll repositories. Connection, webhook, and execution behavior stay unavailable until those steps exist.",
+            },
+          ],
+        },
+      ],
+      fields: [],
+    },
+  ],
+  urls: [],
+  savingContinues: false,
+  actions: {
+    save: "Enable Forgejo",
+    savePending: "Enabling Forgejo…",
+  },
+  saveHint:
+    "This only registers Forgejo. Approving an instance and connecting repositories is not available yet.",
+  requiresHttps: false,
+  httpsRequirement: (origin) =>
+    `Forgejo only accepts canonical HTTPS origins, and Hub is at ${origin}. Reopen Hub at its public HTTPS address to approve a Forgejo instance.`,
+  receivesEvents: true,
+};
+
 export const PROVIDER_GUIDES: readonly ProviderGuide[] = [
   GITHUB_GUIDE,
   SLACK_GUIDE,
   DISCORD_GUIDE,
   LINEAR_GUIDE,
+  FORGEJO_GUIDE,
 ];
 
 export function guideFor(provider: Provider): ProviderGuide {

@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "path": "README.md",
+  "body": {
+    "name": "README.md",
+    "path": "README.md",
+    "sha": "0c612cc8319c95ab9d9f736f3a6fdebfd5389751",
+    "last_commit_sha": "516b5539009ae384be19ce65c66441ca24872ecc",
+    "last_commit_when": "2026-08-30T12:00:41Z",
+    "type": "file",
+    "size": 34,
+    "encoding": "base64",
+    "content": "IyB0MDByZXBvCgpUMDAgaXNvbGF0ZWQgcmVwb3NpdG9yeQ==",
+    "target": null,
+    "url": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/contents/README.md?ref=main",
+    "html_url": "https://forgejo.example.test/t00org/t00repo/src/branch/main/README.md",
+    "git_url": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/git/blobs/0c612cc8319c95ab9d9f736f3a6fdebfd5389751",
+    "download_url": "https://forgejo.example.test/t00org/t00repo/raw/branch/main/README.md",
+    "submodule_git_url": null,
+    "_links": {
+      "self": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/contents/README.md?ref=main",
+      "git": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/git/blobs/0c612cc8319c95ab9d9f736f3a6fdebfd5389751",
+      "html": "https://forgejo.example.test/t00org/t00repo/src/branch/main/README.md"
+    }
+  }
+}

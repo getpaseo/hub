@@ -355,6 +355,23 @@ async function findReceipt(
   input: ProviderEventEvidence,
   organizationId: string,
 ) {
+  if (input.provider === "forgejo") {
+    if (input.connectionId === undefined || input.connectionId === null) {
+      throw new Error("forgejo receipt lookup requires connectionId");
+    }
+    const [receipt] = await transaction
+      .select()
+      .from(schema.providerEventReceipts)
+      .where(
+        and(
+          eq(schema.providerEventReceipts.provider, "forgejo"),
+          eq(schema.providerEventReceipts.connectionId, input.connectionId),
+          eq(schema.providerEventReceipts.deliveryId, input.deliveryId),
+        ),
+      )
+      .limit(1);
+    return receipt;
+  }
   const [receipt] = await transaction
     .select()
     .from(schema.providerEventReceipts)

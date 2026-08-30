@@ -331,6 +331,7 @@ function configurationResourcesResponse(
         discord: result.discord,
         slack: result.slack,
         linear: result.linear,
+        forgejo: result.forgejo,
       })
     : infrastructureProblem(requestId);
 }
@@ -341,6 +342,7 @@ function setupResourcesResponse(requestId: string, result: ListSetupResourcesRes
         github: result.github,
         discord: result.discord,
         slack: result.slack,
+        forgejo: result.forgejo,
       })
     : infrastructureProblem(requestId);
 }

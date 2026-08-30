@@ -20,7 +20,10 @@ export function providerApplicationSaveFailure(
   const gateway = discordGatewayDiagnostic(error);
   const report = { operation, component: "provider_applications", provider } as const;
 
-  if ((provider === "slack" || provider === "linear") && code === "httpsRequired") {
+  if (
+    (provider === "slack" || provider === "linear" || provider === "forgejo") &&
+    code === "httpsRequired"
+  ) {
     return respondWithFailure(
       error,
       report,
@@ -117,6 +120,7 @@ export function providerHost(provider: Provider): string {
   if (provider === "github") return "api.github.com";
   if (provider === "slack") return "slack.com";
   if (provider === "linear") return "linear.app";
+  if (provider === "forgejo") return "forgejo";
   return "discord.com";
 }
 
@@ -124,6 +128,7 @@ export function providerName(provider: Provider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
   if (provider === "linear") return "Linear";
+  if (provider === "forgejo") return "Forgejo";
   return "Discord";
 }
 
@@ -163,6 +168,9 @@ function credentialMessage(provider: Provider, subject: string | undefined): str
   if (provider === "linear") {
     return "Linear rejected these app credentials. Nothing was saved. Check the Client ID and Client Secret in the Linear application, then continue again.";
   }
+  if (provider === "forgejo") {
+    return "Forgejo is not ready to connect yet. Instance approval and repository enrollment are still unavailable.";
+  }
   if (subject === "appToken") {
     return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
   }
@@ -188,6 +196,9 @@ function identityMismatchMessage(provider: Provider): string {
   }
   if (provider === "linear") {
     return "The Linear Client ID and Client Secret do not belong to the same application. Nothing was saved. Copy both from one Linear application, then continue again.";
+  }
+  if (provider === "forgejo") {
+    return "Forgejo identity is Hub-wide and cannot be remapped. Nothing was saved.";
   }
   return "The app-level token and bot token belong to different Slack apps. Nothing was saved. Copy both tokens from the same app, then connect again.";
 }

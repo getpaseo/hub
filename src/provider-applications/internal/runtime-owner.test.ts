@@ -608,6 +608,7 @@ function providerConfiguration(provider: Provider, id: string): ProviderApplicat
   if (provider === "linear") {
     return { provider, clientId: id, clientSecret: "secret", webhookSecret: "webhook" };
   }
+  if (provider === "forgejo") return { provider };
   return { provider, applicationId: id, clientSecret: "secret", botToken: "token" };
 }
 
@@ -620,6 +621,7 @@ function providerConfigurationId(configuration: ProviderApplicationConfiguration
   if (configuration.provider === "github") return configuration.appId;
   if (configuration.provider === "slack") return configuration.appId;
   if (configuration.provider === "linear") return configuration.clientId;
+  if (configuration.provider === "forgejo") return configuration.provider;
   return configuration.applicationId;
 }
 

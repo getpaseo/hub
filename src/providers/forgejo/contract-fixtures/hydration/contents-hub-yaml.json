@@ -1,0 +1,25 @@
+{
+  "status": 200,
+  "body": {
+    "name": "hub.yaml",
+    "path": ".paseo/hub.yaml",
+    "sha": "ec8216c492ab4e8d8798321383b29a9931944683",
+    "last_commit_sha": "f24ee4d3bd1205aa777a53d20ac45f4a1e404966",
+    "last_commit_when": "2026-08-30T12:17:04Z",
+    "type": "file",
+    "size": 63,
+    "encoding": "base64",
+    "content": "ZW52aXJvbm1lbnRzOgogIC0gbmFtZTogZGVmYXVsdAogICAgZGFlbW9uOiBsb2NhbAp0cmlnZ2VyczogW10K",
+    "target": null,
+    "url": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/contents/.paseo/hub.yaml?ref=main",
+    "html_url": "https://forgejo.example.test/t00org/t00repo/src/branch/main/.paseo/hub.yaml",
+    "git_url": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/git/blobs/ec8216c492ab4e8d8798321383b29a9931944683",
+    "download_url": "https://forgejo.example.test/t00org/t00repo/raw/branch/main/.paseo/hub.yaml",
+    "submodule_git_url": null,
+    "_links": {
+      "self": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/contents/.paseo/hub.yaml?ref=main",
+      "git": "https://forgejo.example.test/api/v1/repos/t00org/t00repo/git/blobs/ec8216c492ab4e8d8798321383b29a9931944683",
+      "html": "https://forgejo.example.test/t00org/t00repo/src/branch/main/.paseo/hub.yaml"
+    }
+  }
+}

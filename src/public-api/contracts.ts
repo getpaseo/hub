@@ -250,6 +250,16 @@ export const ConfigurationResourcesSchema = z
     discord: z.array(z.object({ slug: z.string(), guildName: z.string() }).strict()),
     slack: z.array(z.object({ slug: z.string(), teamName: z.string() }).strict()),
     linear: z.array(z.object({ slug: z.string(), organizationName: z.string() }).strict()),
+    forgejo: z.array(
+      z
+        .object({
+          slug: z.string(),
+          instanceOrigin: z.string(),
+          userLogin: z.string(),
+          repositories: z.array(z.string()),
+        })
+        .strict(),
+    ),
   })
   .strict()
   .openapi("ConfigurationResources");
@@ -268,6 +278,15 @@ export const SetupResourcesSchema = z
     ),
     discord: z.array(z.object({ guildId: z.string(), guildName: z.string() }).strict()),
     slack: z.array(z.object({ teamId: z.string(), teamName: z.string() }).strict()),
+    forgejo: z.array(
+      z
+        .object({
+          instanceOrigin: z.string(),
+          userLogin: z.string(),
+          repositories: z.array(z.string()),
+        })
+        .strict(),
+    ),
   })
   .strict()
   .openapi("SetupResources");

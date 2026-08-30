@@ -9,12 +9,13 @@ import { TerminalIcon } from "lucide-react";
 export function ProviderGlyph({
   provider,
 }: {
-  provider: "github" | "discord" | "slack" | "linear" | "manual";
+  provider: "github" | "discord" | "slack" | "linear" | "forgejo" | "manual";
 }) {
   if (provider === "github") return <GitHubMark />;
   if (provider === "discord") return <DiscordMark />;
   if (provider === "slack") return <SlackMark />;
   if (provider === "linear") return <LinearMark />;
+  if (provider === "forgejo") return <ForgejoMark />;
   return <TerminalIcon className="size-4.5" aria-hidden="true" />;
 }
 
@@ -46,6 +47,14 @@ function LinearMark() {
   return (
     <svg viewBox="0 0 16 16" className="size-4.5" fill="currentColor" aria-hidden="true">
       <path d="M2.15 13.85 13.85 2.15A6.77 6.77 0 0 0 2.15 13.85Zm.9-5.2 5.6-5.6a4.8 4.8 0 0 1 4.3-.9l-8.99 8.99a4.8 4.8 0 0 1-.9-2.49Zm4.3 4.3 5.6-5.6a4.8 4.8 0 0 1-.9 4.3l-1.2 1.2a4.8 4.8 0 0 1-2.5.1Z" />
+    </svg>
+  );
+}
+
+function ForgejoMark() {
+  return (
+    <svg viewBox="0 0 16 16" className="size-4.5" fill="currentColor" aria-hidden="true">
+      <path d="M8 1.2 2.4 4.4v7.2L8 14.8l5.6-3.2V4.4L8 1.2Zm0 1.7 3.9 2.25L8 7.4 4.1 5.15 8 2.9Zm-4.4 3.4 3.6 2.08v4.24L3.6 10.54V6.3Zm5.2 6.32V8.38L12.4 6.3v4.24L8.8 12.62Z" />
     </svg>
   );
 }

@@ -1,0 +1,127 @@
+{
+  "secret": "test-webhook-secret",
+  "origin": "https://forgejo.example.test",
+  "deliveries": [
+    {
+      "name": "issues-opened",
+      "file": "webhooks/issues-opened.json",
+      "event": "issues",
+      "eventType": "issues",
+      "action": "opened",
+      "semantic": "forgejo.issue_created",
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "issue-comment-created",
+      "file": "webhooks/issue-comment-created.json",
+      "event": "issue_comment",
+      "eventType": "issue_comment",
+      "action": "created",
+      "semantic": "forgejo.issue_comment_created",
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "issue-label-updated",
+      "file": "webhooks/issue-label-updated.json",
+      "event": "issues",
+      "eventType": "issue_label",
+      "action": "label_updated",
+      "semantic": "forgejo.issue_label_added",
+      "incompleteLabelSignal": true,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "pull-request-opened",
+      "file": "webhooks/pull-request-opened.json",
+      "event": "pull_request",
+      "eventType": "pull_request",
+      "action": "opened",
+      "semantic": "forgejo.pull_request_created",
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "pull-request-comment-created",
+      "file": "webhooks/pull-request-comment-created.json",
+      "event": "issue_comment",
+      "eventType": "pull_request_comment",
+      "action": "created",
+      "semantic": "forgejo.pull_request_comment_created",
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "pull-request-label-updated",
+      "file": "webhooks/pull-request-label-updated.json",
+      "event": "pull_request",
+      "eventType": "pull_request_label",
+      "action": "label_updated",
+      "semantic": "forgejo.pull_request_label_added",
+      "incompleteLabelSignal": true,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "pull-request-review-submitted",
+      "file": "webhooks/pull-request-review-submitted.json",
+      "event": "pull_request_comment",
+      "eventType": "pull_request_review_comment",
+      "action": "reviewed",
+      "semantic": null,
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": true
+    },
+    {
+      "name": "push-default-branch",
+      "file": "webhooks/push-default-branch.json",
+      "event": "push",
+      "eventType": "push",
+      "action": null,
+      "semantic": null,
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    },
+    {
+      "name": "push-any",
+      "file": "webhooks/push-any.json",
+      "event": "push",
+      "eventType": "push",
+      "action": null,
+      "semantic": null,
+      "incompleteLabelSignal": false,
+      "incompleteReviewSignal": false
+    }
+  ],
+  "hydration": {
+    "timelineIssue": "hydration/timeline-issue.json",
+    "timelinePr": "hydration/timeline-pr.json",
+    "reviews": "hydration/reviews.json",
+    "reviewComments": "hydration/review-comments.json",
+    "reactions": "hydration/reactions.json",
+    "repository": "hydration/repository.json",
+    "contentsFile": "hydration/contents-file.json",
+    "contentsHubYaml": "hydration/contents-hub-yaml.json",
+    "apiCapability": "hydration/api-capability.json"
+  },
+  "rawFamilies": [
+    "forgejo.issues",
+    "forgejo.issue_comment",
+    "forgejo.pull_request",
+    "forgejo.pull_request_review",
+    "forgejo.pull_request_review_comment",
+    "forgejo.push"
+  ],
+  "semanticFamilies": [
+    "forgejo.issue_created",
+    "forgejo.pull_request_created",
+    "forgejo.issue_comment_created",
+    "forgejo.pull_request_comment_created",
+    "forgejo.issue_label_added",
+    "forgejo.pull_request_label_added"
+  ],
+  "notes": {
+    "reviewWebhook": "Forgejo 16.0.3 COMMENT reviews arrive as X-Forgejo-Event=pull_request_comment and X-Forgejo-Event-Type=pull_request_review_comment with payload.review={type,content} and no review id. T05 classifies this as the raw pull_request_review family plus a reconciliation signal. Stable review identity is hydration/reviews.json plus timeline type=review.review_id.",
+    "labelWebhook": "Label changes arrive as action=label_updated with no label object (key absent). T10 hydrates timeline type=label body==1 in ID order."
+  }
+}

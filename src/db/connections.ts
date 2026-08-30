@@ -642,6 +642,9 @@ export class ConnectionRepository {
           accessToken: connection.accessToken,
         } as const;
       }
+      if (provider === "forgejo") {
+        throw new ConnectionAccessDeniedError();
+      }
       const [connection] = await transaction
         .select({
           teamId: schema.slackConnections.teamId,
@@ -1051,7 +1054,9 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
     .where(eq(schema.organizationConnectionAttempts.id, attemptId));
 }
 
-function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
+function initialConnectionAttemptPhase(
+  provider: Exclude<ConnectionProvider, "forgejo">,
+): ConnectionAttemptPhase {
   if (provider === "github") return "github_setup";
   if (provider === "discord") return "discord_authorization";
   return provider === "slack" ? "slack_authorization" : "linear_authorization";

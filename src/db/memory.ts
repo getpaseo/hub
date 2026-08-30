@@ -63,6 +63,7 @@ import type {
   LinearConnectionRecord,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
+  ProjectConfigurationReadModel,
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
@@ -180,7 +181,7 @@ class MemoryDatabase implements Database {
   private readonly advisoryLocks = new Map<string, Promise<void>>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
-  private readonly configurationAuthorities = new Map<string, "manual" | "github">();
+  private readonly configurationAuthorities = new Map<string, "manual" | "github" | "forgejo">();
   private readonly githubConfigurationSources = new Map<
     string,
     {
@@ -2737,6 +2738,8 @@ class MemoryDatabase implements Database {
       projectId: input.projectId,
       githubConnectionId: input.githubConnectionId,
       githubRepositoryId: input.githubRepositoryId,
+      forgejoConnectionId: null,
+      forgejoRepositoryId: null,
       webhookDeliveryId: input.webhookDeliveryId,
       commitSha: input.commitSha,
       outcome: input.outcome,
@@ -2756,23 +2759,10 @@ class MemoryDatabase implements Database {
       authority,
       activeRevision: (await this.findActiveProjectConfiguration(projectId)) ?? null,
       lastSyncAttempt: this.configurationSyncAttempts.get(projectId)?.at(-1) ?? null,
-      sourceState:
-        authority === "manual"
-          ? ({ kind: "manual", formattingPreserved: false } as const)
-          : ({
-              kind: "github",
-              githubConnectionId:
-                this.githubConfigurationSources.get(projectId)?.githubConnectionId ?? "unavailable",
-              githubRepositoryId:
-                this.githubConfigurationSources.get(projectId)?.githubRepositoryId ?? 0,
-              githubRepositoryFullName:
-                this.githubConfigurationSources.get(projectId)?.githubRepositoryFullName ??
-                "unavailable",
-              githubDefaultBranch:
-                this.githubConfigurationSources.get(projectId)?.githubDefaultBranch ?? "main",
-              automaticDeploymentEnabled:
-                this.githubConfigurationSources.get(projectId)?.automaticDeploymentEnabled ?? false,
-            } as const),
+      sourceState: memoryConfigurationSourceState(
+        authority,
+        this.githubConfigurationSources.get(projectId),
+      ),
     };
   }
 
@@ -2790,6 +2780,7 @@ class MemoryDatabase implements Database {
       linear: Array.from(this.linearConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
+      forgejo: [],
     };
   }
 
@@ -3296,6 +3287,41 @@ interface MemoryCliAuthorization extends CliAuthorizationRecord {
   fingerprintVerifier: string;
   nextPollAt: Date;
   credential: { id: string; prefix: string; verifier: string } | null;
+}
+
+function memoryConfigurationSourceState(
+  authority: "manual" | "github" | "forgejo",
+  github:
+    | {
+        githubConnectionId: string;
+        githubRepositoryId: number;
+        githubRepositoryFullName: string;
+        githubDefaultBranch: string;
+        automaticDeploymentEnabled: boolean;
+      }
+    | undefined,
+): ProjectConfigurationReadModel["sourceState"] {
+  if (authority === "manual") {
+    return { kind: "manual", formattingPreserved: false };
+  }
+  if (authority === "forgejo") {
+    return {
+      kind: "forgejo",
+      forgejoConnectionId: "unavailable",
+      forgejoRepositoryId: 0,
+      forgejoRepositoryFullName: "unavailable",
+      forgejoDefaultBranch: "main",
+      automaticDeploymentEnabled: false,
+    };
+  }
+  return {
+    kind: "github",
+    githubConnectionId: github?.githubConnectionId ?? "unavailable",
+    githubRepositoryId: github?.githubRepositoryId ?? 0,
+    githubRepositoryFullName: github?.githubRepositoryFullName ?? "unavailable",
+    githubDefaultBranch: github?.githubDefaultBranch ?? "main",
+    automaticDeploymentEnabled: github?.automaticDeploymentEnabled ?? false,
+  };
 }
 
 function workflowDeadlineKind(

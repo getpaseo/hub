@@ -22,6 +22,14 @@ import {
   validateGitHubAuthority,
   type CompiledGitHubAuthority,
 } from "./github-authority.js";
+import {
+  AuthoredForgejoAuthoritySchema,
+  CompiledForgejoAuthoritySchema,
+  compileForgejoAuthority,
+  isForgejoAuthorityEnvironmentKey,
+  validateForgejoAuthority,
+  type CompiledForgejoAuthority,
+} from "./forgejo-authority.js";
 import { validateConnectionTemplate } from "./connection-template.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
@@ -170,6 +178,7 @@ const StepSchema = z
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    forgejo: AuthoredForgejoAuthoritySchema.optional(),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
@@ -244,6 +253,7 @@ export interface CompiledStep {
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
+  forgejo?: CompiledForgejoAuthority | undefined;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
@@ -391,6 +401,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
+    forgejo: CompiledForgejoAuthoritySchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -578,7 +589,14 @@ function compileStep(
     step.github === undefined
       ? undefined
       : compileGitHubAuthority(step.github, `trigger ${trigger.name} step ${step.id} github`);
-  validateStepEnvironmentContract(trigger.name, trigger.on, step.id, env, github);
+  const forgejo =
+    step.forgejo === undefined
+      ? undefined
+      : compileForgejoAuthority(step.forgejo, `trigger ${trigger.name} step ${step.id} forgejo`);
+  if (github !== undefined && forgejo !== undefined) {
+    throw new Error(`step ${step.id} may declare github or forgejo authority, not both`);
+  }
+  validateStepEnvironmentContract(trigger.name, trigger.on, step.id, env, github, forgejo);
   const agent = compileAt([...stepPath, "agent"], () =>
     compileAgentSelection(trigger.name, step.id, step.agent, namedAgents),
   );
@@ -591,6 +609,7 @@ function compileStep(
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
+    ...(forgejo === undefined ? {} : { forgejo }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
@@ -1157,7 +1176,14 @@ function validateCompiledContract(config: CompiledHubConfig): void {
         throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
       }
       validateCompiledStepEnvironment(step, trigger.inputs, environments);
-      validateStepEnvironmentContract(trigger.name, trigger.on, step.id, step.env, step.github);
+      validateStepEnvironmentContract(
+        trigger.name,
+        trigger.on,
+        step.id,
+        step.env,
+        step.github,
+        step.forgejo,
+      );
       if (step.idleTimeoutMs > step.maxRuntimeMs) {
         throw new Error(`step ${step.id} idle_timeout must not exceed max_runtime`);
       }
@@ -1218,6 +1244,7 @@ function validateStepEnvironmentContract(
   stepId: string,
   env: Readonly<Record<string, string>> | undefined,
   github: CompiledGitHubAuthority | undefined,
+  forgejo: CompiledForgejoAuthority | undefined,
 ): void {
   if (env !== undefined) {
     for (const [key, value] of Object.entries(env)) {
@@ -1227,13 +1254,31 @@ function validateStepEnvironmentContract(
           `trigger ${triggerName} step ${stepId} env.${key}: reserved by the step-level github authority; remove it from env`,
         );
       }
+      if (forgejo !== undefined && isForgejoAuthorityEnvironmentKey(key)) {
+        throw new Error(
+          `trigger ${triggerName} step ${stepId} env.${key}: reserved by the step-level forgejo authority; remove it from env`,
+        );
+      }
     }
+  }
+  if (github !== undefined && forgejo !== undefined) {
+    throw new Error(
+      `trigger ${triggerName} step ${stepId} may declare github or forgejo authority, not both`,
+    );
   }
   if (github !== undefined) {
     validateGitHubAuthority(github, `trigger ${triggerName} step ${stepId} github`);
     if (github.repositories === undefined && !triggerEvent.startsWith("github.")) {
       throw new Error(
         `trigger ${triggerName} step ${stepId} github.repositories is required for non-GitHub triggers; list the repositories explicitly`,
+      );
+    }
+  }
+  if (forgejo !== undefined) {
+    validateForgejoAuthority(forgejo, `trigger ${triggerName} step ${stepId} forgejo`);
+    if (forgejo.repositories === undefined && !triggerEvent.startsWith("forgejo.")) {
+      throw new Error(
+        `trigger ${triggerName} step ${stepId} forgejo.repositories is required for non-Forgejo triggers; list the repositories explicitly`,
       );
     }
   }

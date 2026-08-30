@@ -1,0 +1,43 @@
+[
+  {
+    "id": 1,
+    "user": {
+      "id": 2,
+      "login": "t00bot",
+      "login_name": "",
+      "source_id": 0,
+      "full_name": "",
+      "email": "forgejo-bot@example.test",
+      "avatar_url": "https://forgejo.example.test/avatars/fixture-fcf50d20b0167477070a944ad38775df",
+      "html_url": "https://forgejo.example.test/t00bot",
+      "language": "",
+      "is_admin": false,
+      "last_login": "1970-01-01T00:00:00Z",
+      "created": "2026-08-30T11:57:58Z",
+      "restricted": false,
+      "active": true,
+      "prohibit_login": false,
+      "location": "",
+      "pronouns": "",
+      "website": "",
+      "description": "",
+      "visibility": "public",
+      "followers_count": 0,
+      "following_count": 0,
+      "starred_repos_count": 0,
+      "username": "t00bot"
+    },
+    "team": null,
+    "state": "COMMENT",
+    "body": "Submitted review for signed delivery capture.",
+    "commit_id": "60e4522d608ca35416427b2445ab16428e342d3a",
+    "stale": false,
+    "official": false,
+    "dismissed": false,
+    "comments_count": 1,
+    "submitted_at": "2026-08-30T12:09:24Z",
+    "updated_at": "2026-08-30T12:09:24Z",
+    "html_url": "https://forgejo.example.test/t00org/t00repo/pulls/4#issuecomment-8",
+    "pull_request_url": "https://forgejo.example.test/t00org/t00repo/pulls/4"
+  }
+]

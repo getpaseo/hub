@@ -1,11 +1,13 @@
 import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
+import type { ForgejoConfigurationProvider } from "../../configuration/forgejo-sync.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { createForgejoRegistration, FORGEJO_REQUEST_NAMES } from "../../providers/forgejo/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type {
@@ -14,12 +16,13 @@ import type {
 } from "../../providers/registration.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
-import type {
-  Provider,
-  ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
-  ProviderRuntimeCandidate,
-  ProviderRuntimeOwner,
+import {
+  PROVIDERS,
+  type Provider,
+  type ProviderApplicationConfiguration,
+  type ProviderApplicationIdentity,
+  type ProviderRuntimeCandidate,
+  type ProviderRuntimeOwner,
 } from "../index.js";
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
@@ -80,29 +83,21 @@ interface DynamicProviderRuntimeOptions {
 
 /** @package */
 export class DynamicProviderRuntime implements ProviderRuntimeOwner {
-  private readonly slots = new Map<Provider, Slot>([
-    ["github", emptySlot()],
-    ["slack", emptySlot()],
-    ["discord", emptySlot()],
-    ["linear", emptySlot()],
-  ]);
+  private readonly slots = new Map<Provider, Slot>(
+    PROVIDERS.map((provider) => [provider, emptySlot()]),
+  );
   private readonly stable = new Map<Provider, ProviderRegistration>();
   private slackInstallationHandler: SlackInstallationHandler | undefined;
   private linearInstallationHandler: LinearInstallationHandler | undefined;
 
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
-    for (const provider of ["github", "slack", "discord", "linear"] as const) {
+    for (const provider of PROVIDERS) {
       this.stable.set(provider, this.stableRegistration(provider));
     }
   }
 
   registrations(): readonly ProviderRegistration[] {
-    return [
-      this.stable.get("github")!,
-      this.stable.get("discord")!,
-      this.stable.get("slack")!,
-      this.stable.get("linear")!,
-    ];
+    return PROVIDERS.map((provider) => this.stable.get(provider)!);
   }
 
   identity(provider: Provider): ProviderApplicationIdentity | undefined {
@@ -222,6 +217,25 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         ),
       );
     }
+    return this.buildDefault(
+      provider,
+      configuration,
+      callbackOrigin,
+      configurationVersion,
+      activation,
+    );
+  }
+
+  private buildDefault(
+    provider: Provider,
+    configuration: ProviderApplicationConfiguration,
+    callbackOrigin: string,
+    configurationVersion: number,
+    activation?: {
+      expectedConfigurationVersion: number | undefined;
+      activateConfiguration: boolean;
+    },
+  ): ProviderRegistration {
     const shared = {
       database: this.options.database,
       auth: this.options.auth,
@@ -263,6 +277,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
         activateConfiguration: activation?.activateConfiguration ?? false,
         onVerifiedInstallation: (input) => this.handleLinearInstallation(input),
+      });
+    }
+    if (provider === "forgejo" && configuration.provider === "forgejo") {
+      return createForgejoRegistration({
+        ...shared,
+        configuration,
       });
     }
     throw new Error("provider configuration mismatch");
@@ -400,7 +420,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       ],
       sources: [source],
       outputs:
-        provider === "github"
+        provider === "github" || provider === "forgejo"
           ? []
           : [
               {
@@ -419,23 +439,12 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 },
               },
             ],
-      requests:
-        provider === "discord"
-          ? []
-          : [
-              {
-                name: provider === "github" ? "webhook" : `${provider}.events`,
-                handle: (request) => {
-                  const active = slot.active;
-                  const handler = active?.registration.requests[0];
-                  return active === undefined || handler === undefined
-                    ? Promise.resolve(new Response("Not Found", { status: 404 }))
-                    : this.withLease(active, () => handler.handle(request));
-                },
-              },
-            ],
+      requests: this.stableRequests(provider, slot),
       ...(provider === "github"
         ? { githubConfiguration: this.dynamicGitHubConfiguration(slot) }
+        : {}),
+      ...(provider === "forgejo"
+        ? { forgejoConfiguration: this.dynamicForgejoConfiguration(slot) }
         : {}),
       ...(provider === "slack" || provider === "discord"
         ? {
@@ -453,6 +462,36 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           }
         : {}),
     };
+  }
+
+  private stableRequests(provider: Provider, slot: Slot): ProviderRegistration["requests"] {
+    if (provider === "discord") return [];
+    if (provider === "forgejo") {
+      return [...FORGEJO_REQUEST_NAMES].map((name) => ({
+        name,
+        handle: (request: Request) => {
+          const active = slot.active;
+          const handler = active?.registration.requests.find(
+            (candidate) => candidate.name === name,
+          );
+          return active === undefined || handler === undefined
+            ? Promise.resolve(Response.json({ error: "unavailable" }, { status: 409 }))
+            : this.withLease(active, () => handler.handle(request));
+        },
+      }));
+    }
+    return [
+      {
+        name: provider === "github" ? "webhook" : `${provider}.events`,
+        handle: (request: Request) => {
+          const active = slot.active;
+          const handler = active?.registration.requests[0];
+          return active === undefined || handler === undefined
+            ? Promise.resolve(new Response("Not Found", { status: 404 }))
+            : this.withLease(active, () => handler.handle(request));
+        },
+      },
+    ];
   }
 
   private slot(provider: Provider): Slot {
@@ -551,6 +590,26 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
   }
 
+  private dynamicForgejoConfiguration(slot: Slot): ForgejoConfigurationProvider {
+    const invoke = <T>(operation: (configuration: ForgejoConfigurationProvider) => Promise<T>) => {
+      const active = slot.active;
+      const configuration = active?.registration.forgejoConfiguration;
+      if (active === undefined || configuration === undefined) {
+        throw unavailable("forgejo_configuration_unavailable");
+      }
+      return this.withLease(active, () => operation(configuration));
+    };
+    return {
+      listConnectionRepositories: (input) =>
+        invoke((configuration) => configuration.listConnectionRepositories(input)),
+      readDefaultBranchHead: (input) =>
+        invoke((configuration) => configuration.readDefaultBranchHead(input)),
+      listFilesAtCommit: (input) =>
+        invoke((configuration) => configuration.listFilesAtCommit(input)),
+      readFileAtCommit: (input) => invoke((configuration) => configuration.readFileAtCommit(input)),
+    };
+  }
+
   private async withLease<T>(active: ActiveRegistration, operation: () => Promise<T>): Promise<T> {
     active.leases += 1;
     try {
@@ -634,6 +693,7 @@ function emptySlot(): Slot {
 
 function actionNames(provider: Provider): readonly string[] {
   if (provider === "github") return ["start", "disconnect", "setup", "callback"];
+  if (provider === "forgejo") return ["start", "disconnect"];
   return ["start", "disconnect", "callback"];
 }
 
@@ -641,6 +701,7 @@ function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
   if (provider === "linear") return ["linear.issue", "linear.comment"];
+  if (provider === "forgejo") return [];
   return GITHUB_TRIGGER_SOURCE_NAMES;
 }
 

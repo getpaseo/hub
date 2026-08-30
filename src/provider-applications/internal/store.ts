@@ -48,11 +48,15 @@ const linearConfigurationSchema = z.object({
   clientSecret: z.string().min(1),
   webhookSecret: z.string().min(1),
 });
+const forgejoConfigurationSchema = z.object({
+  provider: z.literal("forgejo"),
+});
 const configurationSchema = z.discriminatedUnion("provider", [
   githubConfigurationSchema,
   slackConfigurationSchema,
   discordConfigurationSchema,
   linearConfigurationSchema,
+  forgejoConfigurationSchema,
 ]);
 
 /** @package */
@@ -76,6 +80,7 @@ const identitySchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("slack"), id: z.string().min(1), name: z.string().min(1) }),
   z.object({ provider: z.literal("discord"), id: z.string().min(1), name: z.string().min(1) }),
   z.object({ provider: z.literal("linear"), id: z.string().min(1), name: z.string().min(1) }),
+  z.object({ provider: z.literal("forgejo"), id: z.string().min(1), name: z.string().min(1) }),
 ]);
 
 interface ProviderConfigurationRow extends QueryRow {
@@ -337,6 +342,7 @@ function connectionTable(provider: Provider): string {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
   if (provider === "linear") return "linear_connections";
+  if (provider === "forgejo") return "forgejo_connections";
   return "discord_connections";
 }
 
@@ -359,7 +365,13 @@ function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {
 }
 
 function providerSchema(value: string): Provider {
-  if (value === "github" || value === "slack" || value === "discord" || value === "linear") {
+  if (
+    value === "github" ||
+    value === "slack" ||
+    value === "discord" ||
+    value === "linear" ||
+    value === "forgejo"
+  ) {
     return value;
   }
   throw new Error("stored provider configuration has invalid provider");

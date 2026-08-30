@@ -188,6 +188,7 @@ describe("public API interface", () => {
         ],
         discord: [{ guildId: "123456789", guildName: "Paseo Guild" }],
         slack: [{ teamId: "T01234567", teamName: "Paseo Workspace" }],
+        forgejo: [],
       },
     );
     ValidatedConfigurationSchema.parse(
@@ -464,6 +465,7 @@ function successfulOperations(): PublicOperations {
         discord: [],
         slack: [],
         linear: [],
+        forgejo: [],
       }),
     listSetupResources: () =>
       Promise.resolve({
@@ -478,6 +480,7 @@ function successfulOperations(): PublicOperations {
         ],
         discord: [{ guildId: "123456789", guildName: "Paseo Guild" }],
         slack: [{ teamId: "T01234567", teamName: "Paseo Workspace" }],
+        forgejo: [],
       }),
     validateConfiguration: () =>
       Promise.resolve({

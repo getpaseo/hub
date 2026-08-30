@@ -23,6 +23,8 @@ import {
   type ProviderRuntimeOwner,
 } from "./index.js";
 
+type OAuthProvider = Exclude<Provider, "forgejo">;
+
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -52,7 +54,7 @@ describe("provider application OAuth bind authority", () => {
   );
 });
 
-async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
+async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: OAuthProvider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
   const first = application(provider, "A");
@@ -94,7 +96,7 @@ async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider:
   assert.equal(await connectionApplicationId(bundle, provider), replacement.identity.id);
 }
 
-async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider: Provider) {
+async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider: OAuthProvider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
   const first = application(provider, "RACE-A");
@@ -132,7 +134,7 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
   }
 }
 
-async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provider: Provider) {
+async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provider: OAuthProvider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
   const environment = application(provider, "ENV");
@@ -193,7 +195,7 @@ async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provide
 async function assertStaleBindRollsBack(
   bundle: DatabaseRuntimeBundle,
   database: Database,
-  provider: Provider,
+  provider: OAuthProvider,
   stateVerifier: string,
   applicationId: string,
 ) {
@@ -243,7 +245,7 @@ function callbackPhase(provider: Provider) {
 
 async function startAttempt(
   database: Database,
-  provider: Provider,
+  provider: Exclude<Provider, "forgejo">,
   configuration: ProviderApplicationConfiguration,
   configurationVersion: number,
   name: string,
@@ -276,7 +278,7 @@ async function startAttempt(
 
 function bind(
   database: Database,
-  provider: Provider,
+  provider: OAuthProvider,
   stateVerifier: string,
   providerApplicationId: string,
 ): Promise<void> {
@@ -325,7 +327,7 @@ function bind(
 
 async function connectionApplicationId(
   bundle: DatabaseRuntimeBundle,
-  provider: Provider,
+  provider: OAuthProvider,
 ): Promise<string | undefined> {
   const table = `${provider}_connections`;
   return (
@@ -391,6 +393,8 @@ function application(provider: Provider, suffix: string) {
       clientSecret: `linear-secret-${suffix}`,
       webhookSecret: `linear-webhook-${suffix}`,
     };
+  } else if (provider === "forgejo") {
+    configuration = { provider };
   } else {
     configuration = {
       provider,
@@ -416,6 +420,9 @@ function identity(configuration: ProviderApplicationConfiguration): ProviderAppl
   }
   if (configuration.provider === "linear") {
     return { provider: "linear", id: configuration.clientId, name: configuration.clientId };
+  }
+  if (configuration.provider === "forgejo") {
+    return { provider: "forgejo", id: "forgejo", name: "Forgejo" };
   }
   return {
     provider: "discord",

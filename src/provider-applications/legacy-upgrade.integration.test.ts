@@ -174,6 +174,9 @@ const ENVIRONMENT_APPLICATIONS = {
     clientSecret: "linear-secret",
     webhookSecret: "linear-webhook-secret",
   },
+  forgejo: {
+    provider: "forgejo",
+  },
 } satisfies Record<Provider, ProviderApplicationConfiguration>;
 
 async function legacyDatabase(engine: "PGlite" | "PostgreSQL"): Promise<{
@@ -327,6 +330,9 @@ function identity(configuration: ProviderApplicationConfiguration): ProviderAppl
   }
   if (configuration.provider === "linear") {
     return { provider: "linear", id: configuration.clientId, name: "Linear app" };
+  }
+  if (configuration.provider === "forgejo") {
+    return { provider: "forgejo", id: "forgejo", name: "Forgejo" };
   }
   return { provider: "discord", id: configuration.applicationId, name: "Discord app" };
 }

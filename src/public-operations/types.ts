@@ -45,6 +45,12 @@ export interface ConfigurationResources {
   discord: readonly { slug: string; guildName: string }[];
   slack: readonly { slug: string; teamName: string }[];
   linear: readonly { slug: string; organizationName: string }[];
+  forgejo: readonly {
+    slug: string;
+    instanceOrigin: string;
+    userLogin: string;
+    repositories: readonly string[];
+  }[];
 }
 
 export type ListConfigurationResourcesResult =
@@ -60,6 +66,11 @@ export interface SetupResources {
   }[];
   discord: readonly { guildId: string; guildName: string }[];
   slack: readonly { teamId: string; teamName: string }[];
+  forgejo: readonly {
+    instanceOrigin: string;
+    userLogin: string;
+    repositories: readonly string[];
+  }[];
 }
 
 export type ListSetupResourcesResult =

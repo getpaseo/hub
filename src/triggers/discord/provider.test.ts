@@ -126,7 +126,7 @@ describe("Discord Phase 1 trigger provider", () => {
       providerApplicationId: "discord-app",
     };
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [connection], linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: [connection], linear: [], forgejo: [] });
     database.findDiscordConnectionForOrganization = () => Promise.resolve(connection);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,

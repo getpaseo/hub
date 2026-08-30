@@ -7,7 +7,7 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
 import { reportFailure } from "../failures/index.js";
 
-export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+export const PROVIDERS = ["github", "slack", "discord", "linear", "forgejo"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export interface GitHubProviderApplicationConfiguration {
@@ -56,17 +56,24 @@ export interface LinearProviderApplicationConfiguration {
   expectedVersion?: number;
 }
 
+export interface ForgejoProviderApplicationConfiguration {
+  provider: "forgejo";
+  expectedVersion?: number;
+}
+
 export type ProviderApplicationConfiguration =
   | GitHubProviderApplicationConfiguration
   | SlackProviderApplicationConfiguration
   | DiscordProviderApplicationConfiguration
-  | LinearProviderApplicationConfiguration;
+  | LinearProviderApplicationConfiguration
+  | ForgejoProviderApplicationConfiguration;
 
 export type ProviderApplicationIdentity =
   | { provider: "github"; id: string; name: string; ownerLogin: string }
   | { provider: "slack"; id: string; name: string }
   | { provider: "discord"; id: string; name: string }
-  | { provider: "linear"; id: string; name: string };
+  | { provider: "linear"; id: string; name: string }
+  | { provider: "forgejo"; id: string; name: string };
 
 export interface StoredProviderApplication {
   provider: Provider;
@@ -417,16 +424,10 @@ export function createProviderApplications(
           return [provider, view] as const;
         }),
       );
-      const [github, slack, discord, linear] = entries.map(([, view]) => view);
-      if (
-        github === undefined ||
-        slack === undefined ||
-        discord === undefined ||
-        linear === undefined
-      ) {
-        throw new Error("provider overview is incomplete");
-      }
-      return { callbackOrigin, providers: { github, slack, discord, linear } };
+      return {
+        callbackOrigin,
+        providers: completeProviderViews(entries),
+      };
     },
 
     async verifyAndSave(request, provider, input, surface) {
@@ -468,6 +469,7 @@ export function createProviderApplications(
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
       if (provider === "linear") requireHttpsOrigin(callbackOrigin);
+      if (provider === "forgejo") requireHttpsOrigin(callbackOrigin);
       return serialize(queues, provider, async () => {
         const stored = await options.store.read(provider);
         const configuration = options.environment[provider] ?? stored?.configuration;
@@ -659,7 +661,11 @@ function providerStatus(
 function acceptsEvents(configuration: ProviderApplicationConfiguration | undefined): boolean {
   if (configuration === undefined) return false;
   if (configuration.provider === "github") return (configuration.webhookSecret ?? "") !== "";
-  return configuration.provider === "slack" || configuration.provider === "linear";
+  return (
+    configuration.provider === "slack" ||
+    configuration.provider === "linear" ||
+    configuration.provider === "forgejo"
+  );
 }
 
 function publicIdentifiers(
@@ -684,6 +690,8 @@ function publicIdentifiers(
       return { applicationId: configuration.applicationId };
     case "linear":
       return { clientId: configuration.clientId };
+    case "forgejo":
+      return { id: "forgejo" };
   }
   throw new Error("unknown provider configuration");
 }
@@ -841,6 +849,9 @@ async function startupIdentity(
   }
   if (provider === "linear" && environmentConfiguration.provider === "linear") {
     return { provider: "linear", id: environmentConfiguration.clientId, name: "Linear app" };
+  }
+  if (provider === "forgejo" && environmentConfiguration.provider === "forgejo") {
+    return { provider: "forgejo", id: "forgejo", name: "Forgejo" };
   }
   return verifier.verify(provider, environmentConfiguration);
 }
@@ -1152,6 +1163,27 @@ async function completeLinearInstallation(
     await closeCandidate(candidate, "linear", "complete_installation");
     throw error;
   }
+}
+
+function completeProviderViews(
+  entries: ReadonlyArray<readonly [Provider, ProviderApplicationView]>,
+): Record<Provider, ProviderApplicationView> {
+  const views = new Map(entries);
+  const github = views.get("github");
+  const slack = views.get("slack");
+  const discord = views.get("discord");
+  const linear = views.get("linear");
+  const forgejo = views.get("forgejo");
+  if (
+    github === undefined ||
+    slack === undefined ||
+    discord === undefined ||
+    linear === undefined ||
+    forgejo === undefined
+  ) {
+    throw new Error("provider application overview is incomplete");
+  }
+  return { github, slack, discord, linear, forgejo };
 }
 
 async function closeCandidate(

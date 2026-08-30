@@ -36,6 +36,12 @@ export function createDatabasePublicOperationRepository(
           slug,
           organizationName: linearOrganizationName,
         })),
+        forgejo: connections.forgejo.map(({ slug, forgejoUserLogin }) => ({
+          slug,
+          instanceOrigin: "",
+          userLogin: forgejoUserLogin,
+          repositories: [],
+        })),
       };
     },
     async listSetupResources(organizationId) {
@@ -51,6 +57,11 @@ export function createDatabasePublicOperationRepository(
         })),
         discord: connections.discord.map(({ guildId, guildName }) => ({ guildId, guildName })),
         slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
+        forgejo: connections.forgejo.map(({ forgejoUserLogin }) => ({
+          instanceOrigin: "",
+          userLogin: forgejoUserLogin,
+          repositories: [],
+        })),
       };
     },
     async resolveManualRunProject(organizationId, triggerName, projectSlug) {

@@ -16,6 +16,7 @@ import type { ProviderRegistration } from "../../providers/registration.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
+import { createForgejoRegistration } from "../../providers/forgejo/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
@@ -260,6 +261,13 @@ async function main(): Promise<void> {
             ...(slackConfigured ? { botClient: slackBot } : {}),
           }),
           createLinearRegistration({
+            database,
+            auth,
+            applicationBaseUrl: publicBaseUrl,
+            publicBaseUrl,
+            configuration: null,
+          }),
+          createForgejoRegistration({
             database,
             auth,
             applicationBaseUrl: publicBaseUrl,
