@@ -1520,7 +1520,7 @@ class MemoryDatabase implements Database {
       serverId: input.serverId,
       daemonPublicKey: input.daemonPublicKey,
       credentialVerifier: input.credentialVerifier,
-      scopes: input.scopes,
+      permissions: input.permissions,
       registeredByApiKeyId: token.issuedByApiKeyId ?? null,
       registeredByCliCredentialId: token.issuedByCliCredentialId ?? null,
       status: "active",
@@ -1579,6 +1579,13 @@ class MemoryDatabase implements Database {
       connectedAt: presence === "connected" ? new Date() : value.connectedAt,
       disconnectedAt: presence === "offline" ? new Date() : value.disconnectedAt,
     });
+  }
+  async setDaemonPermissions(id: string, permissions: string[]) {
+    const value = this.daemons.get(id);
+    if (!value) return undefined;
+    const updated = { ...value, permissions: [...permissions] };
+    this.daemons.set(id, updated);
+    return updated;
   }
   async revokeDaemon(id: string) {
     const value = this.daemons.get(id);

@@ -54,6 +54,47 @@ describe("daemon enrollment and execution", () => {
     );
   });
 
+  it("keeps a connected-only daemon online without execution permission", async () => {
+    const daemonId = await hub.connectDaemon(undefined, []);
+    const daemon = await hub.daemon(daemonId);
+
+    assert.deepEqual(
+      {
+        permissions: daemon.permissions,
+        presence: daemon.presence,
+        connected: daemon.connectedAt !== null,
+      },
+      { permissions: [], presence: "connected", connected: true },
+    );
+  });
+
+  it("lets the authenticated daemon update semantic permissions without reconnecting", async () => {
+    const daemonId = await hub.connectDaemon(undefined, []);
+
+    assert.equal(await hub.updateConnectedDaemonPermissions(["hub.execute"]), 200);
+    assert.deepEqual((await hub.daemon(daemonId)).permissions, ["hub.execute"]);
+
+    assert.equal(await hub.updateConnectedDaemonPermissions([]), 200);
+    assert.deepEqual((await hub.daemon(daemonId)).permissions, []);
+  });
+
+  it("rejects permission changes that do not carry the daemon credential", async () => {
+    const daemonId = await hub.connectDaemon(undefined, []);
+
+    assert.equal(
+      await hub.updateConnectedDaemonPermissions(["hub.execute"], "wrong-credential"),
+      401,
+    );
+    assert.deepEqual((await hub.daemon(daemonId)).permissions, []);
+  });
+
+  it("maps a legacy enrollment scope to hub.execute at the compatibility boundary", async () => {
+    const enrollment = await hub.enrollLegacyDaemon();
+
+    assert.deepEqual(enrollment.scopes, ["hub.execution.*"]);
+    assert.deepEqual((await hub.daemon(enrollment.daemonId)).permissions, ["hub.execute"]);
+  });
+
   it("replays one enrollment ceremony with a stable daemon", async () => {
     const enrollment = await hub.connectWithEnrollmentReplay();
 

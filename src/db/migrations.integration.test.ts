@@ -551,7 +551,7 @@ describe("database migration application", () => {
         serverId: "phase-one-server",
         daemonPublicKey: "phase-one-public-key",
         credentialVerifier: "phase-one-credential",
-        scopes: ["hub.execution.*"],
+        permissions: ["hub.execute"],
         now: new Date(),
       });
       assert.ok(enrolled !== undefined);

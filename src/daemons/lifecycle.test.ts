@@ -335,7 +335,7 @@ function daemonRecord(): DaemonRecord {
     serverId: "server-lifecycle",
     daemonPublicKey: "public-key",
     credentialVerifier: "verifier",
-    scopes: ["hub.execution.*"],
+    permissions: ["hub.execute"],
     registeredByApiKeyId: null,
     registeredByCliCredentialId: null,
     status: "active",
