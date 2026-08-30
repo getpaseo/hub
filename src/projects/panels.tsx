@@ -37,6 +37,7 @@ import {
   type ConnectionStatus,
 } from "../connections/functions.js";
 import { useRouteTenant } from "./context.js";
+import { ForgejoOrganizationConnectionSection } from "../providers/forgejo/ui/connection-org-section.js";
 import type { ProjectDashboard } from "./dashboard.js";
 import {
   CommandError,
@@ -354,6 +355,7 @@ export function OrganizationConnectionsPanel() {
           </div>
         ) : null}
       </Section>
+      <ForgejoOrganizationConnectionSection />
       <Section
         title="Known unrouted events"
         description="Events received for this organization that were not routed to a workflow."
@@ -403,10 +405,11 @@ export function ProjectOverviewPanel() {
             data.connections.github.length +
               data.connections.discord.length +
               data.connections.slack.length +
-              data.connections.linear.length >
+              data.connections.linear.length +
+              data.connections.forgejo.length >
             0
           }
-          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
+          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length + data.connections.forgejo.length)} organization connections`}
         />
       </div>
       <Section

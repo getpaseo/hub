@@ -3,6 +3,7 @@ import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import type { ForgejoDirectory } from "../providers/forgejo/instances.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
@@ -1551,6 +1552,7 @@ export interface Database {
   ): Promise<ConfigurationSyncAttemptRecord>;
   projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel>;
   organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage>;
+  forgejoDirectory(): ForgejoDirectory;
   listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]>;
   findGitHubRepositoryForOrganization(
     organizationId: string,

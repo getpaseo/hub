@@ -70,6 +70,12 @@ export class TriggerDashboard {
           provider: "linear" as const,
           label: linearOrganizationName,
         })),
+        ...connections.forgejo.map(({ id, slug, forgejoUserLogin }) => ({
+          id,
+          slug,
+          provider: "forgejo" as const,
+          label: forgejoUserLogin,
+        })),
       ],
     };
   }

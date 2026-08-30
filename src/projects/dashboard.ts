@@ -452,6 +452,13 @@ function connectionUsageView(
       linearOrganizationName: connection.linearOrganizationName,
       requiresReauthorization: linearConnectionRequiresReauthorization(connection),
     })),
+    forgejo: connections.forgejo.map((connection) => ({
+      id: connection.id,
+      slug: connection.slug,
+      instanceId: connection.instanceId,
+      forgejoUserLogin: connection.forgejoUserLogin,
+      status: connection.status,
+    })),
   };
 }
 

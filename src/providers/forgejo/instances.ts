@@ -13,7 +13,10 @@ import type {
   ForgejoInstanceRecord,
   ForgejoRepositoryRecord,
 } from "../../db/types.js";
-import type { AuthenticatedEnvelope } from "../../secrets/authenticated-envelope.js";
+import {
+  SecretEnvelopeError,
+  type AuthenticatedEnvelope,
+} from "../../secrets/authenticated-envelope.js";
 
 export const FORGEJO_MINIMUM_VERSION = "16.0.3";
 export const FORGEJO_PAT_MASK = "••••";
@@ -97,6 +100,21 @@ export interface ForgejoDirectory {
   ): Promise<ForgejoCredentialRecord | undefined>;
   upsertRepository(record: ForgejoRepositoryRecord): Promise<void>;
   listRepositoriesForConnection(connectionId: string): Promise<ForgejoRepositoryRecord[]>;
+  findActiveExecutionCredential(
+    connectionId: string,
+  ): Promise<ForgejoExecutionCredentialRecord | undefined>;
+}
+
+export interface ForgejoExecutionCredentialRecord {
+  id: string;
+  organizationId: string;
+  kind: "execution";
+  status: "active" | "rotating" | "revoked";
+  envelope: AuthenticatedEnvelope;
+  scopeEvidence: {
+    scopes: readonly string[];
+    repositories: readonly string[];
+  };
 }
 
 export interface ForgejoHttp {
@@ -232,6 +250,9 @@ export function createMemoryForgejoDirectory(
         if (row.connectionId === connectionId) rows.push(cloneRepository(row));
       }
       return rows;
+    },
+    async findActiveExecutionCredential() {
+      return undefined;
     },
   };
 }
@@ -445,6 +466,9 @@ export function forgejoErrorResponse(error: unknown): Response {
       { error: originCode(error.code) },
       { status: error.code === "private_network_forbidden" ? 400 : 400 },
     );
+  }
+  if (error instanceof SecretEnvelopeError) {
+    return Response.json({ error: "forgejo_credential_unavailable" }, { status: 409 });
   }
   return Response.json({ error: "forgejo_origin_unapproved" }, { status: 500 });
 }

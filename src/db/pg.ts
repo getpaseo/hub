@@ -11,6 +11,7 @@ import {
 import { toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
+import { createSqlForgejoDirectory } from "./forgejo-directory.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import {
   toAgentExecutionRecord,
@@ -114,6 +115,7 @@ import type {
   OrganizationBillingCustomerRecord,
   ReconcileOrganizationBillingInput,
 } from "./types.js";
+import type { ForgejoDirectory } from "../providers/forgejo/instances.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -133,6 +135,7 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 class PgDatabase implements Database {
   private readonly connections;
   private readonly triggerAcceptance;
+  private readonly forgejo: ForgejoDirectory;
 
   constructor(
     private readonly pool: DatabaseRuntime,
@@ -141,6 +144,7 @@ class PgDatabase implements Database {
     const database = this.pool.drizzle();
     this.connections = new ConnectionRepository(this.pool, locks);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
+    this.forgejo = createSqlForgejoDirectory(this.pool);
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -3796,7 +3800,7 @@ class PgDatabase implements Database {
        order by connection.account_login, connection.id`,
       [organizationId],
     );
-    const [discord, slack, linear] = await Promise.all([
+    const [discord, slack, linear, forgejo] = await Promise.all([
       query<{
         id: string;
         organization_id: string;
@@ -3850,6 +3854,7 @@ class PgDatabase implements Database {
          order by linear_organization_name, id`,
         [organizationId],
       ),
+      this.forgejo.listConnectionsForOrganization(organizationId),
     ]);
     return {
       github: github.rows.map((row) => ({
@@ -3895,8 +3900,12 @@ class PgDatabase implements Database {
         scopes: stringArray(row.scopes),
         providerApplicationId: row.provider_application_id,
       })),
-      forgejo: [],
+      forgejo,
     };
+  }
+
+  forgejoDirectory(): ForgejoDirectory {
+    return this.forgejo;
   }
 
   async listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]> {

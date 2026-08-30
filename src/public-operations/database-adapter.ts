@@ -15,7 +15,10 @@ export function createDatabasePublicOperationRepository(
         .map(({ id, name, slug }) => ({ id, name, slug }));
     },
     async listConfigurationResources(organizationId) {
-      const [{ connections, repositories }, daemons] = await Promise.all([
+      const [
+        { connections, repositories, originByInstanceId, enrolledFullNamesByConnectionId },
+        daemons,
+      ] = await Promise.all([
         providerResources(database, organizationId),
         database.listDaemonsForOrganization(organizationId),
       ]);
@@ -39,13 +42,14 @@ export function createDatabasePublicOperationRepository(
         })),
         forgejo: forgejoConfigurationResourceItems({
           connections: connections.forgejo,
-          originByInstanceId: new Map(),
-          enrolledFullNamesByConnectionId: new Map(),
+          originByInstanceId,
+          enrolledFullNamesByConnectionId,
         }),
       };
     },
     async listSetupResources(organizationId) {
-      const { connections, repositories } = await providerResources(database, organizationId);
+      const { connections, repositories, originByInstanceId, enrolledFullNamesByConnectionId } =
+        await providerResources(database, organizationId);
       return {
         github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
           slug,
@@ -59,8 +63,8 @@ export function createDatabasePublicOperationRepository(
         slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
         forgejo: forgejoConfigurationResourceItems({
           connections: connections.forgejo,
-          originByInstanceId: new Map(),
-          enrolledFullNamesByConnectionId: new Map(),
+          originByInstanceId,
+          enrolledFullNamesByConnectionId,
         }).map(({ instanceOrigin, userLogin, repositories: enrolledNames }) => ({
           instanceOrigin,
           userLogin,
@@ -109,5 +113,19 @@ async function providerResources(database: Database, organizationId: string) {
     database.organizationConnectionUsage(organizationId),
     database.listGitHubRepositories(organizationId),
   ]);
-  return { connections, repositories };
+  const directory = database.forgejoDirectory();
+  const instances = await directory.listInstances();
+  const originByInstanceId = new Map(
+    instances.map((instance) => [instance.id, instance.canonicalOrigin]),
+  );
+  const enrolledFullNamesByConnectionId = new Map<string, readonly string[]>();
+  await Promise.all(
+    connections.forgejo.map(async (connection) => {
+      const enrolled = (await directory.listRepositoriesForConnection(connection.id))
+        .filter((repository) => repository.enrolled)
+        .map((repository) => repository.fullName);
+      enrolledFullNamesByConnectionId.set(connection.id, enrolled);
+    }),
+  );
+  return { connections, repositories, originByInstanceId, enrolledFullNamesByConnectionId };
 }

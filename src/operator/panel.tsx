@@ -37,6 +37,7 @@ import {
   operatorOverride,
   operatorSnapshot,
 } from "./functions.js";
+import { ForgejoInstanceOperatorSection } from "../providers/forgejo/ui/instance-operator-section.js";
 
 type Snapshot = Awaited<ReturnType<OperatorConsole["snapshot"]>>;
 type OverrideResult = Awaited<ReturnType<typeof operatorOverride>>;
@@ -80,6 +81,7 @@ export function OperatorEntitlementsPage() {
         title="Operator"
         description="View and edit any organization's entitlements. Instance operators only."
       />
+      <ForgejoInstanceOperatorSection />
       <OrganizationPicker slug={slug} onSelect={setSlug} />
       {slug !== null && <OperatorOrganization slug={slug} />}
     </>

@@ -39,6 +39,7 @@ import { Route as ApiIntegrationsLinearEventsRouteImport } from './routes/api/in
 import { Route as ApiIntegrationsLinearCallbackRouteImport } from './routes/api/integrations/linear/callback'
 import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/integrations/github/setup'
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
+import { Route as ApiIntegrationsForgejoSplatRouteImport } from './routes/api/integrations/forgejo/$'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
 import { Route as ShellOOrganizationSlugTriggersRouteImport } from './routes/_shell/o/$organizationSlug/triggers'
@@ -211,6 +212,12 @@ const ApiIntegrationsGithubCallbackRoute =
     path: '/api/integrations/github/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiIntegrationsForgejoSplatRoute =
+  ApiIntegrationsForgejoSplatRouteImport.update({
+    id: '/api/integrations/forgejo/$',
+    path: '/api/integrations/forgejo/$',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiIntegrationsDiscordCallbackRoute =
   ApiIntegrationsDiscordCallbackRouteImport.update({
     id: '/api/integrations/discord/callback',
@@ -326,6 +333,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
+  '/api/integrations/forgejo/$': typeof ApiIntegrationsForgejoSplatRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
@@ -369,6 +377,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
+  '/api/integrations/forgejo/$': typeof ApiIntegrationsForgejoSplatRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
@@ -416,6 +425,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
+  '/api/integrations/forgejo/$': typeof ApiIntegrationsForgejoSplatRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
@@ -463,6 +473,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
+    | '/api/integrations/forgejo/$'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
     | '/api/integrations/linear/callback'
@@ -506,6 +517,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/daemons'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
+    | '/api/integrations/forgejo/$'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
     | '/api/integrations/linear/callback'
@@ -552,6 +564,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
+    | '/api/integrations/forgejo/$'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
     | '/api/integrations/linear/callback'
@@ -589,6 +602,7 @@ export interface RootRouteChildren {
   ApiV1CliAuthorizationsRoute: typeof ApiV1CliAuthorizationsRouteWithChildren
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
+  ApiIntegrationsForgejoSplatRoute: typeof ApiIntegrationsForgejoSplatRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
   ApiIntegrationsGithubSetupRoute: typeof ApiIntegrationsGithubSetupRoute
   ApiIntegrationsLinearCallbackRoute: typeof ApiIntegrationsLinearCallbackRoute
@@ -809,6 +823,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsGithubCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/forgejo/$': {
+      id: '/api/integrations/forgejo/$'
+      path: '/api/integrations/forgejo/$'
+      fullPath: '/api/integrations/forgejo/$'
+      preLoaderRoute: typeof ApiIntegrationsForgejoSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/integrations/discord/callback': {
       id: '/api/integrations/discord/callback'
       path: '/api/integrations/discord/callback'
@@ -1022,6 +1043,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
     AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,
+  ApiIntegrationsForgejoSplatRoute: ApiIntegrationsForgejoSplatRoute,
   ApiIntegrationsGithubCallbackRoute: ApiIntegrationsGithubCallbackRoute,
   ApiIntegrationsGithubSetupRoute: ApiIntegrationsGithubSetupRoute,
   ApiIntegrationsLinearCallbackRoute: ApiIntegrationsLinearCallbackRoute,

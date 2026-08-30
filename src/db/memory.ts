@@ -108,6 +108,10 @@ import {
   isProviderEventDropReasonCode,
   type ProviderEventDropReasonCode,
 } from "../triggers/drop-reason.js";
+import {
+  createMemoryForgejoDirectory,
+  type ForgejoDirectory,
+} from "../providers/forgejo/instances.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -206,6 +210,7 @@ class MemoryDatabase implements Database {
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
+  private readonly forgejo = createMemoryForgejoDirectory();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
@@ -2780,8 +2785,12 @@ class MemoryDatabase implements Database {
       linear: Array.from(this.linearConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
-      forgejo: [],
+      forgejo: await this.forgejo.listConnectionsForOrganization(organizationId),
     };
+  }
+
+  forgejoDirectory(): ForgejoDirectory {
+    return this.forgejo;
   }
 
   async listGitHubRepositories(organizationId: string) {
