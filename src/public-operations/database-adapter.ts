@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../db/types.js";
 import { DeploymentProjects } from "../project-deployments/index.js";
+import { forgejoConfigurationResourceItems } from "../providers/forgejo/connections.js";
 import type { PublicOperationRepository } from "./types.js";
 
 export function createDatabasePublicOperationRepository(
@@ -36,12 +37,11 @@ export function createDatabasePublicOperationRepository(
           slug,
           organizationName: linearOrganizationName,
         })),
-        forgejo: connections.forgejo.map(({ slug, forgejoUserLogin }) => ({
-          slug,
-          instanceOrigin: "",
-          userLogin: forgejoUserLogin,
-          repositories: [],
-        })),
+        forgejo: forgejoConfigurationResourceItems({
+          connections: connections.forgejo,
+          originByInstanceId: new Map(),
+          enrolledFullNamesByConnectionId: new Map(),
+        }),
       };
     },
     async listSetupResources(organizationId) {
@@ -57,10 +57,14 @@ export function createDatabasePublicOperationRepository(
         })),
         discord: connections.discord.map(({ guildId, guildName }) => ({ guildId, guildName })),
         slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
-        forgejo: connections.forgejo.map(({ forgejoUserLogin }) => ({
-          instanceOrigin: "",
-          userLogin: forgejoUserLogin,
-          repositories: [],
+        forgejo: forgejoConfigurationResourceItems({
+          connections: connections.forgejo,
+          originByInstanceId: new Map(),
+          enrolledFullNamesByConnectionId: new Map(),
+        }).map(({ instanceOrigin, userLogin, repositories: enrolledNames }) => ({
+          instanceOrigin,
+          userLogin,
+          repositories: enrolledNames,
         })),
       };
     },
