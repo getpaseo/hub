@@ -41,7 +41,7 @@ export class OrganizationTriggers {
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.page.getByLabel("When this happens").selectOption("slack.mention");
-    await this.page.getByLabel("Connection").selectOption(input.connection);
+    await this.page.getByLabel("Connection", { exact: true }).selectOption(input.connection);
     await this.page.getByRole("button", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
     await this.page.getByLabel("Run on daemon").selectOption(input.daemon);
