@@ -246,7 +246,7 @@ export interface CompiledStep {
   github?: CompiledGitHubAuthority | undefined;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
-  allowOutputs: readonly { type: string; max: number; required: boolean }[];
+  allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
   autoArchive: boolean;
 }
 
@@ -397,7 +397,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
       z
         .object({
           type: z.string().regex(EVENT_NAME),
-          max: z.number().int().positive(),
+          max: z.number().int().positive().optional(),
           required: z.boolean().default(false),
         })
         .strict(),

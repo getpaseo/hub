@@ -74,7 +74,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: ${TEST_DAEMON_SLUG}, cwd: /workspace }
-  agent: { provider: test }
+  agent: { provider: test, mode: full-access }
   prompt: Handle it
 `;
 

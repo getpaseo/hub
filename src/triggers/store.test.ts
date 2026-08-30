@@ -47,6 +47,20 @@ describe("organization trigger store", () => {
     assert.equal((await store.list()).length, 0);
     assert.equal((await database.listProjectsForOrganization("org")).length, 0);
   });
+
+  it.each([
+    ["a relative working directory", "cwd: workspace", /absolute path/iu],
+    ["an omitted execution mode", "provider: test, mode: full-access", /mode.*required/iu],
+  ])("rejects %s at the authoring boundary", async (_name, authored, expected) => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const store = new OrganizationTriggerStore(database, "org");
+    const yaml = triggerYaml(true).replace(
+      authored === "cwd: workspace" ? "cwd: /workspace" : authored,
+      authored === "cwd: workspace" ? authored : "provider: test",
+    );
+
+    await assert.rejects(store.save({ yaml, userId: null }), expected);
+  });
 });
 
 function triggerYaml(enabled: boolean): string {
@@ -56,7 +70,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: devbox, cwd: /workspace }
-  agent: { provider: test }
+  agent: { provider: test, mode: full-access }
   prompt: Handle it
   max_runtime: 1h
   idle_timeout: 5m

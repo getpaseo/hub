@@ -63,7 +63,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: daemon-10000000, cwd: /workspace }
-  agent: { provider: test }
+  agent: { provider: test, mode: full-access }
   prompt: Handle it
 `;
 }

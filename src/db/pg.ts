@@ -2004,7 +2004,7 @@ class PgDatabase implements Database {
   async beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
-    maxOutputs: number,
+    maxOutputs: number | undefined,
     startedAt: Date,
   ): Promise<AgentExecutionOutputAttempt | undefined> {
     try {
@@ -2025,9 +2025,10 @@ class PgDatabase implements Database {
             attempt.leaseExpiresAt > startedAt,
         ).length;
         if (
-          maxOutputs < 1 ||
+          (maxOutputs !== undefined && maxOutputs < 1) ||
           (execution.status !== "spawning" && execution.status !== "running") ||
-          (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs
+          (maxOutputs !== undefined &&
+            (execution.outputEmissions[outputType] ?? 0) + activeAttempts >= maxOutputs)
         ) {
           return undefined;
         }

@@ -47,7 +47,7 @@ export class OrganizationTriggers {
     await this.page.getByLabel("Run on daemon").selectOption(input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.page.getByLabel("Agent ID", { exact: true }).fill(input.agent);
-    await this.page.getByLabel("Execution mode (optional)").fill(input.mode);
+    await this.page.getByLabel("Execution mode", { exact: true }).fill(input.mode);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })
@@ -107,7 +107,7 @@ export class OrganizationTriggers {
     prompt: string;
   }) {
     await expect(this.page.getByLabel("Agent ID", { exact: true })).toHaveValue(input.agent);
-    await expect(this.page.getByLabel("Execution mode (optional)")).toHaveValue(input.mode);
+    await expect(this.page.getByLabel("Execution mode", { exact: true })).toHaveValue(input.mode);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })

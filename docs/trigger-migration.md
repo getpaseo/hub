@@ -47,6 +47,12 @@ The simple editor writes `from_users: ["*"]` when “Allowed users” is left at
 wildcard is an explicit allow-everyone policy for Slack, Discord, and GitHub; an absent or empty
 allowlist still fails closed.
 
+New single-run triggers require an absolute daemon working directory and an explicit agent mode.
+Existing migrated YAML keeps its authored provider defaults until it is edited. Legacy output
+grants and limits remain enforceable, but newly-authored conversational triggers automatically
+receive an unlimited provider-native `hub.reply`; `hub.finish_execution` remains available to every
+execution. GitHub replies are posted to the issue or pull request that originated the event.
+
 ## CLI deployment tradeoffs
 
 The new CLI reads sorted direct children of `.paseo/triggers/` and upserts each by YAML name. It
