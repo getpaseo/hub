@@ -14,6 +14,13 @@ import {
   readForgejoMention,
 } from "./matching.js";
 
+const T08_OWNED_EVENT_NAMES = new Set([
+  "forgejo.issues",
+  "forgejo.pull_request",
+  "forgejo.issue_created",
+  "forgejo.pull_request_created",
+]);
+
 export interface ForgejoTriggerContext {
   provider: "forgejo";
   target: { connectionId: string; repositoryId: number; repository: string };
@@ -37,7 +44,7 @@ export function createForgejoTriggerProvider(options: {
 }): TriggerProvider<"forgejo", ForgejoTriggerContext> {
   return {
     name: "forgejo",
-    eventNames: [...FORGEJO_TRIGGER_EVENT_NAMES],
+    eventNames: FORGEJO_TRIGGER_EVENT_NAMES.filter((name) => !T08_OWNED_EVENT_NAMES.has(name)),
     async match(externalTrigger) {
       const connectionId = externalTrigger.connectionId;
       if (connectionId === undefined || connectionId === null) return "no_trigger_for_source";
