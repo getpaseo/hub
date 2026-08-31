@@ -1667,7 +1667,7 @@ class PgDatabase implements Database {
             input.serverId,
             input.daemonPublicKey,
             input.credentialVerifier,
-            JSON.stringify(input.scopes),
+            JSON.stringify(input.permissions),
             consumedToken.issued_by_api_key_id,
             consumedToken.issued_by_cli_credential_id,
           ],
@@ -1691,7 +1691,7 @@ class PgDatabase implements Database {
               input.serverId,
               input.daemonPublicKey,
               input.credentialVerifier,
-              JSON.stringify(input.scopes),
+              JSON.stringify(input.permissions),
               consumedToken.issued_by_api_key_id,
               consumedToken.issued_by_cli_credential_id,
             ],
@@ -1785,6 +1785,15 @@ class PgDatabase implements Database {
       `update daemons set presence = $2, connected_at = case when $2 = 'connected' then now() else connected_at end, disconnected_at = case when $2 = 'offline' then now() else disconnected_at end where id = $1`,
       [id, presence],
     );
+  }
+
+  async setDaemonPermissions(id: string, permissions: string[]): Promise<DaemonRecord | undefined> {
+    const rows = await query<DaemonRow>(
+      this.pool,
+      `update daemons set scopes = $2 where id = $1 and status = 'active' returning *`,
+      [id, JSON.stringify(permissions)],
+    );
+    return rows.rows[0] === undefined ? undefined : toDaemon(rows.rows[0]);
   }
 
   async revokeDaemon(id: string): Promise<boolean> {
@@ -4860,7 +4869,7 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     serverId: row.server_id,
     daemonPublicKey: row.daemon_public_key,
     credentialVerifier: row.credential_verifier,
-    scopes: row.scopes,
+    permissions: semanticDaemonPermissions(row.scopes),
     registeredByApiKeyId: row.registered_by_api_key_id,
     registeredByCliCredentialId: row.registered_by_cli_credential_id,
     status: row.status,
@@ -4870,6 +4879,14 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
   };
+}
+
+function semanticDaemonPermissions(stored: readonly string[]): string[] {
+  return [
+    ...new Set(
+      stored.map((permission) => (permission === "hub.execution.*" ? "hub.execute" : permission)),
+    ),
+  ];
 }
 
 function toCliAuthorization(row: CliAuthorizationRow): CliAuthorizationRecord {

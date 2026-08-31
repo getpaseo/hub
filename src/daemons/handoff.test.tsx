@@ -21,6 +21,7 @@ function daemon(overrides: Partial<BrowserDaemon> = {}): BrowserDaemon {
     connectedAt: "2026-01-01T00:00:00.000Z",
     lastSeenAt: "2026-01-01T00:00:00.000Z",
     registeredAt: "2026-01-01T00:00:00.000Z",
+    permissions: ["hub.execute"],
     ...overrides,
   };
 }

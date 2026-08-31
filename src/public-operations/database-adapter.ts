@@ -22,7 +22,9 @@ export function createDatabasePublicOperationRepository(
         ]);
       return {
         daemons: daemons
-          .filter(({ status }) => status === "active")
+          .filter(
+            ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
+          )
           .map(({ id, slug }) => ({ id, slug })),
         github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
           slug,
