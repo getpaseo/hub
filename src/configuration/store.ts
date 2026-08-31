@@ -198,6 +198,56 @@ export class ProjectConfigurationStore {
     });
   }
 
+  async insertForgejoBundleRevision(input: {
+    files: readonly HubBundleFile[];
+    forgejoConnectionId: string;
+    forgejoRepositoryId: number;
+    forgejoRepositoryFullName: string;
+    forgejoDefaultBranch: string;
+    commitSha: string;
+    webhookDeliveryId: string | null;
+    validationErrors?: unknown;
+  }): Promise<ProjectConfigurationRevisionRecord> {
+    const bundle = compileHubBundle(input.files);
+    const prepared =
+      input.validationErrors === undefined
+        ? await prepareCompiledRevision(
+            this.database,
+            this.projectId,
+            bundle.configuration,
+            bundle.agentValidationTargets,
+            this.daemonAgentValidator,
+          )
+        : {
+            normalizedConfiguration: bundle.configuration,
+            contentHash: bundle.authoredHash,
+            validationErrors: input.validationErrors,
+          };
+    return this.database.insertProjectConfigurationRevision({
+      projectId: this.projectId,
+      sourceKind: "forgejo",
+      sourceEvidence: addBundleEvidence(
+        {
+          kind: "forgejo",
+          forgejoConnectionId: input.forgejoConnectionId,
+          forgejoRepositoryId: input.forgejoRepositoryId,
+          forgejoRepositoryFullName: input.forgejoRepositoryFullName,
+          forgejoDefaultBranch: input.forgejoDefaultBranch,
+          commitSha: input.commitSha,
+          path: HUB_RESOURCE_PATH,
+          webhookDeliveryId: input.webhookDeliveryId,
+        },
+        bundle,
+      ),
+      rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
+      normalizedConfiguration: prepared.normalizedConfiguration,
+      ...(prepared.validationErrors === undefined
+        ? {}
+        : { validationErrors: prepared.validationErrors }),
+      contentHash: prepared.contentHash,
+    });
+  }
+
   async activate(revisionId: string): Promise<StoredProjectConfiguration> {
     const candidate = await this.database.findProjectConfigurationRevision(
       this.projectId,
@@ -695,7 +745,8 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
   return provider === "github" ||
     provider === "slack" ||
     provider === "discord" ||
-    provider === "linear"
+    provider === "linear" ||
+    provider === "forgejo"
     ? provider
     : undefined;
 }
@@ -706,7 +757,7 @@ function readAuthoredResource(
 ): string | undefined {
   if (filters === undefined) return undefined;
   let value: string | undefined;
-  if (provider === "github") value = filters.repo;
+  if (provider === "github" || provider === "forgejo") value = filters.repo;
   else if (provider === "slack") value = filters.workspace;
   else if (provider === "discord") value = filters.guild;
   else value = filters.project;
@@ -740,6 +791,9 @@ async function resolveResource(
     const repository = repositories[0]!;
     return { connectionId: repository.connectionId, resourceId: String(repository.repositoryId) };
   }
+  if (provider === "forgejo") {
+    return resolveForgejoResource(database, organizationId, resource, allowedConnectionIds);
+  }
   if (provider === "slack") {
     const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
       ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
@@ -763,24 +817,51 @@ async function resolveResource(
     : { connectionId: connection.id, resourceId: connection.guildId };
 }
 
+async function resolveForgejoResource(
+  database: Database,
+  organizationId: string,
+  resource: string,
+  allowedConnectionIds: ReadonlySet<string>,
+): Promise<{ connectionId: string; resourceId: string } | undefined> {
+  const matches: { connectionId: string; resourceId: string }[] = [];
+  const connections = (await database.organizationConnectionUsage(organizationId)).forgejo;
+  const directory = database.forgejoDirectory();
+  for (const connection of connections) {
+    if (!allowedConnectionIds.has(connection.id)) continue;
+    const repositories = await directory.listRepositoriesForConnection(connection.id);
+    for (const repository of repositories) {
+      if (repository.enrolled && repository.fullName === resource) {
+        matches.push({
+          connectionId: connection.id,
+          resourceId: String(repository.repositoryId),
+        });
+      }
+    }
+  }
+  if (matches.length !== 1) return undefined;
+  return matches[0];
+}
+
 function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (string | number)[] {
   return [trigger.sourceFile ?? ".paseo/workflows", "filters", field];
 }
 
 function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
-  if (provider === "github") return "repo";
+  if (provider === "github" || provider === "forgejo") return "repo";
   if (provider === "slack") return "workspace";
   return provider === "discord" ? "guild" : "project";
 }
 
 function providerLabel(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub";
+  if (provider === "forgejo") return "Forgejo";
   if (provider === "slack") return "Slack";
   return provider === "discord" ? "Discord" : "Linear";
 }
 
 function resourceLabel(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub repository";
+  if (provider === "forgejo") return "Forgejo repository";
   if (provider === "linear") return "Linear project";
   return `${providerLabel(provider)} connection`;
 }

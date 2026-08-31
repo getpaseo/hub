@@ -53,7 +53,7 @@ export async function loadForgejoContractFixtures(
         incompleteReviewSignal: field(named, "incompleteReviewSignal") === true,
         headers: record(field(fixture, "headers"), `${name} headers`),
         raw: text(field(fixture, "raw"), `${name} raw`),
-        payload: field(fixture, "payload"),
+        payload: field(fixture, "payload") ?? field(fixture, "body"),
       };
     }),
   );
@@ -73,3 +73,62 @@ export function deliveryByName(
   if (found === undefined) throw new Error(`unknown Forgejo delivery ${name}`);
   return found;
 }
+
+export interface ForgejoEventTableRow {
+  name: string;
+  rawFamily: string;
+  semantic: string | null;
+  signal: "incomplete_label" | "incomplete_review" | null;
+}
+
+export const FORGEJO_EVENT_TABLE: readonly ForgejoEventTableRow[] = [
+  {
+    name: "issues-opened",
+    rawFamily: "forgejo.issues",
+    semantic: "forgejo.issue_created",
+    signal: null,
+  },
+  {
+    name: "issue-comment-created",
+    rawFamily: "forgejo.issue_comment",
+    semantic: "forgejo.issue_comment_created",
+    signal: null,
+  },
+  {
+    name: "issue-label-updated",
+    rawFamily: "forgejo.issues",
+    semantic: "forgejo.issue_label_added",
+    signal: "incomplete_label",
+  },
+  {
+    name: "pull-request-opened",
+    rawFamily: "forgejo.pull_request",
+    semantic: "forgejo.pull_request_created",
+    signal: null,
+  },
+  {
+    name: "pull-request-comment-created",
+    rawFamily: "forgejo.issue_comment",
+    semantic: "forgejo.pull_request_comment_created",
+    signal: null,
+  },
+  {
+    name: "pull-request-label-updated",
+    rawFamily: "forgejo.pull_request",
+    semantic: "forgejo.pull_request_label_added",
+    signal: "incomplete_label",
+  },
+  {
+    name: "pull-request-review-submitted",
+    rawFamily: "forgejo.pull_request_review",
+    semantic: null,
+    signal: "incomplete_review",
+  },
+  {
+    name: "push-default-branch",
+    rawFamily: "forgejo.push",
+    semantic: null,
+    signal: null,
+  },
+  { name: "push-any", rawFamily: "forgejo.push", semantic: null, signal: null },
+];

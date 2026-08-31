@@ -11,6 +11,7 @@ import {
 import type {
   ForgejoConnectionRecord,
   ForgejoInstanceRecord,
+  ForgejoRepositoryHookRecord,
   ForgejoRepositoryRecord,
 } from "../../db/types.js";
 import {
@@ -84,6 +85,19 @@ export interface ForgejoCredentialRecord {
   status: "active" | "rotating" | "revoked";
 }
 
+export interface ForgejoWebhookSecretRecord {
+  id: string;
+  organizationId: string;
+  connectionId: string;
+  kind: "webhook_secret";
+  alg: string;
+  keyId: number;
+  nonce: Buffer;
+  ciphertext: Buffer;
+  aadVersion: number;
+  status: "active" | "rotating" | "revoked";
+}
+
 export interface ForgejoDirectory {
   insertInstance(record: ForgejoInstanceRecord): Promise<void>;
   updateInstance(record: ForgejoInstanceRecord): Promise<void>;
@@ -103,6 +117,14 @@ export interface ForgejoDirectory {
   findActiveExecutionCredential(
     connectionId: string,
   ): Promise<ForgejoExecutionCredentialRecord | undefined>;
+  insertWebhookSecret(record: ForgejoWebhookSecretRecord): Promise<void>;
+  findActiveWebhookSecret(connectionId: string): Promise<ForgejoWebhookSecretRecord | undefined>;
+  upsertRepositoryHook(record: ForgejoRepositoryHookRecord): Promise<void>;
+  findRepositoryHook(
+    connectionId: string,
+    repositoryId: number,
+  ): Promise<ForgejoRepositoryHookRecord | undefined>;
+  listRepositoryHooksForConnection(connectionId: string): Promise<ForgejoRepositoryHookRecord[]>;
 }
 
 export interface ForgejoExecutionCredentialRecord {
@@ -136,12 +158,18 @@ export function createMemoryForgejoDirectory(
     connections?: readonly ForgejoConnectionRecord[];
     credentials?: readonly ForgejoCredentialRecord[];
     repositories?: readonly ForgejoRepositoryRecord[];
+    webhookSecrets?: readonly ForgejoWebhookSecretRecord[];
+    hooks?: readonly ForgejoRepositoryHookRecord[];
   } = {},
 ): ForgejoDirectory {
   const instances = new Map(seed.instances?.map((row) => [row.id, { ...row }]) ?? []);
   const connections = new Map(seed.connections?.map((row) => [row.id, { ...row }]) ?? []);
   const credentials = new Map(seed.credentials?.map((row) => [row.id, cloneCredential(row)]) ?? []);
   const repositories = new Map(seed.repositories?.map((row) => [row.id, { ...row }]) ?? []);
+  const webhookSecrets = new Map(
+    seed.webhookSecrets?.map((row) => [row.id, cloneWebhookSecret(row)]) ?? [],
+  );
+  const hooks = new Map(seed.hooks?.map((row) => [row.id, cloneHook(row)]) ?? []);
   return {
     async insertInstance(record) {
       if ([...instances.values()].some((row) => row.canonicalOrigin === record.canonicalOrigin)) {
@@ -253,6 +281,58 @@ export function createMemoryForgejoDirectory(
     },
     async findActiveExecutionCredential() {
       return undefined;
+    },
+    async insertWebhookSecret(record) {
+      if (record.kind !== "webhook_secret") {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          400,
+          "only webhook_secret credentials may be persisted here",
+        );
+      }
+      const duplicate = [...webhookSecrets.values()].some(
+        (row) => row.connectionId === record.connectionId && row.status === "active",
+      );
+      if (duplicate) {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          409,
+          "Forgejo credential already exists",
+        );
+      }
+      webhookSecrets.set(record.id, cloneWebhookSecret(record));
+    },
+    async findActiveWebhookSecret(connectionId) {
+      const row = [...webhookSecrets.values()].find(
+        (candidate) => candidate.connectionId === connectionId && candidate.status === "active",
+      );
+      return row === undefined ? undefined : cloneWebhookSecret(row);
+    },
+    async upsertRepositoryHook(record) {
+      const existing = [...hooks.values()].find(
+        (row) =>
+          row.connectionId === record.connectionId && row.repositoryId === record.repositoryId,
+      );
+      if (existing === undefined) {
+        hooks.set(record.id, cloneHook(record));
+        return;
+      }
+      hooks.set(existing.id, cloneHook({ ...record, id: existing.id }));
+    },
+    async findRepositoryHook(connectionId, repositoryId) {
+      const row = [...hooks.values()].find(
+        (candidate) =>
+          candidate.connectionId === connectionId && candidate.repositoryId === repositoryId,
+      );
+      return row === undefined ? undefined : cloneHook(row);
+    },
+    async listRepositoryHooksForConnection(connectionId) {
+      const rows: ForgejoRepositoryHookRecord[] = [];
+      for (const row of hooks.values()) {
+        if (row.connectionId === connectionId) rows.push(cloneHook(row));
+      }
+      rows.sort((left, right) => left.repositoryId - right.repositoryId);
+      return rows;
     },
   };
 }
@@ -786,5 +866,34 @@ function cloneCredential(record: ForgejoCredentialRecord): ForgejoCredentialReco
       repositoryIds: [...record.scopeEvidence.repositoryIds],
     },
     status: record.status,
+  };
+}
+
+function cloneWebhookSecret(record: ForgejoWebhookSecretRecord): ForgejoWebhookSecretRecord {
+  return {
+    id: record.id,
+    organizationId: record.organizationId,
+    connectionId: record.connectionId,
+    kind: "webhook_secret",
+    alg: record.alg,
+    keyId: record.keyId,
+    nonce: Buffer.from(record.nonce),
+    ciphertext: Buffer.from(record.ciphertext),
+    aadVersion: record.aadVersion,
+    status: record.status,
+  };
+}
+
+function cloneHook(record: ForgejoRepositoryHookRecord): ForgejoRepositoryHookRecord {
+  return {
+    id: record.id,
+    organizationId: record.organizationId,
+    connectionId: record.connectionId,
+    repositoryId: record.repositoryId,
+    forgejoHookId: record.forgejoHookId,
+    callbackPath: record.callbackPath,
+    managed: record.managed,
+    status: record.status,
+    lastVerifiedAt: record.lastVerifiedAt === null ? null : new Date(record.lastVerifiedAt),
   };
 }

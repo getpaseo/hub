@@ -15,7 +15,7 @@ import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
 import { classifyGitHubEvent } from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "forgejo";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -36,6 +36,7 @@ export function summarizeTrigger(source: string, payload: unknown): TriggerSumma
   if (provider === "slack") return summarizeSlack(payload);
   if (provider === "discord") return summarizeDiscord(payload);
   if (provider === "linear") return summarizeLinear(payload);
+  if (provider === "forgejo") return summarizeForgejo(source, payload);
   return summarizeManual(payload);
 }
 
@@ -192,6 +193,73 @@ function summarizeLinear(payload: unknown): TriggerSummary {
     actor: event.data.actor?.name ?? event.data.actor?.id ?? null,
     externalUrl: issue.url ?? null,
   };
+}
+
+function summarizeForgejo(source: string, payload: unknown): TriggerSummary {
+  const envelope = asObject(payload);
+  const raw = typeof envelope?.["raw"] === "string" ? envelope["raw"] : undefined;
+  const parsed = raw === undefined ? asObject(payload) : asObject(tryJson(raw));
+  const sender = asObject(parsed?.["sender"]);
+  const actor = typeof sender?.["login"] === "string" ? sender["login"] : null;
+  const repository = asObject(parsed?.["repository"]);
+  const htmlUrl =
+    readNestedUrl(parsed, "comment", "html_url") ??
+    readNestedUrl(parsed, "issue", "html_url") ??
+    readNestedUrl(parsed, "pull_request", "html_url") ??
+    (typeof repository?.["html_url"] === "string" ? repository["html_url"] : null);
+  const family = source.slice("forgejo.".length);
+  return {
+    provider: "forgejo",
+    headline: forgejoHeadline(family, parsed),
+    actor,
+    externalUrl: htmlUrl,
+  };
+}
+
+function forgejoHeadline(family: string, payload: Record<string, unknown> | undefined): string {
+  if (family === "push") {
+    const ref =
+      typeof payload?.["ref"] === "string" ? payload["ref"].replace("refs/heads/", "") : "branch";
+    return `Push to ${ref}`;
+  }
+  const issue = asObject(payload?.["issue"]);
+  const pull = asObject(payload?.["pull_request"]);
+  const number = issue?.["number"] ?? pull?.["number"];
+  if (family === "issue_comment" || family === "pull_request_comment") {
+    return typeof number === "number" ? `Comment on #${String(number)}` : "Forgejo comment";
+  }
+  if (family === "issues") {
+    return typeof number === "number" ? `Issue #${String(number)}` : "Forgejo issue";
+  }
+  if (family === "pull_request") {
+    return typeof number === "number" ? `Pull request #${String(number)}` : "Forgejo pull request";
+  }
+  return `Forgejo ${family.replaceAll("_", " ")}`;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function tryJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function readNestedUrl(
+  payload: Record<string, unknown> | undefined,
+  key: string,
+  field: string,
+): string | null {
+  const nested = asObject(payload?.[key]);
+  return typeof nested?.[field] === "string" ? nested[field] : null;
 }
 
 function summarizeManual(payload: unknown): TriggerSummary {

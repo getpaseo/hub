@@ -103,11 +103,28 @@ export const availableGitHubRepositories = createServerFn({ method: "GET" })
     read(data, (dashboard) => dashboard.availableGitHubRepositories(getRequest(), data)),
   );
 
+export const availableForgejoRepositories = createServerFn({ method: "GET" })
+  .validator(projectScopeSchema)
+  .handler(async ({ data }) =>
+    read(data, (dashboard) => dashboard.availableForgejoRepositories(getRequest(), data)),
+  );
+
 export const useGitHubConfiguration = createServerFn({ method: "POST" })
   .validator(configurationRepositorySchema)
   .handler(async ({ data }) =>
     command(data, (dashboard) =>
       dashboard.useGitHubConfiguration(getRequest(), data, {
+        connectionId: data.connectionId,
+        repositoryId: data.repositoryId,
+      }),
+    ),
+  );
+
+export const useForgejoConfiguration = createServerFn({ method: "POST" })
+  .validator(configurationRepositorySchema)
+  .handler(async ({ data }) =>
+    command(data, (dashboard) =>
+      dashboard.useForgejoConfiguration(getRequest(), data, {
         connectionId: data.connectionId,
         repositoryId: data.repositoryId,
       }),

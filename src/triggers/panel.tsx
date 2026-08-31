@@ -497,6 +497,31 @@ function TriggerForm({
               <option value="linear.issue_created">
                 Linear issue created (linear.issue_created)
               </option>
+              <option value="forgejo.issue_created">
+                Forgejo issue created (forgejo.issue_created)
+              </option>
+              <option value="forgejo.pull_request_created">
+                Forgejo pull request created (forgejo.pull_request_created)
+              </option>
+              <option value="forgejo.issue_comment_created">
+                Forgejo issue comment created (forgejo.issue_comment_created)
+              </option>
+              <option value="forgejo.pull_request_comment_created">
+                Forgejo pull request comment created (forgejo.pull_request_comment_created)
+              </option>
+              <option value="forgejo.issue_label_added">
+                Forgejo issue label added (forgejo.issue_label_added)
+              </option>
+              <option value="forgejo.pull_request_label_added">
+                Forgejo pull request label added (forgejo.pull_request_label_added)
+              </option>
+              <option value="forgejo.push">Forgejo push (forgejo.push)</option>
+              <option value="forgejo.pull_request_review">
+                Forgejo pull request review (forgejo.pull_request_review)
+              </option>
+              <option value="forgejo.pull_request_review_comment">
+                Forgejo pull request review comment (forgejo.pull_request_review_comment)
+              </option>
               <option value="manual.run">Manual run (manual.run)</option>
             </select>
             <FieldDescription>Exactly one event launches this trigger.</FieldDescription>
@@ -914,6 +939,18 @@ function eventLabel(event: string): string {
   if (event === "discord.mention") return "Discord mention";
   if (event === "github.issue_comment") return "GitHub issue comment";
   if (event === "linear.issue_created") return "Linear issue created";
+  if (event === "forgejo.issue_created") return "Forgejo issue created";
+  if (event === "forgejo.pull_request_created") return "Forgejo pull request created";
+  if (event === "forgejo.issue_comment_created") return "Forgejo issue comment created";
+  if (event === "forgejo.pull_request_comment_created")
+    return "Forgejo pull request comment created";
+  if (event === "forgejo.issue_label_added") return "Forgejo issue label added";
+  if (event === "forgejo.pull_request_label_added") return "Forgejo pull request label added";
+  if (event === "forgejo.push") return "Forgejo push";
+  if (event === "forgejo.pull_request_review") return "Forgejo pull request review";
+  if (event === "forgejo.pull_request_review_comment") {
+    return "Forgejo pull request review comment";
+  }
   if (event === "manual.run") return "Manual run";
   return event;
 }

@@ -2,6 +2,7 @@ import type { QueryHandle, QueryRow } from "./runtime/index.js";
 import type {
   ForgejoConnectionRecord,
   ForgejoInstanceRecord,
+  ForgejoRepositoryHookRecord,
   ForgejoRepositoryRecord,
 } from "./types.js";
 import {
@@ -9,6 +10,7 @@ import {
   type ForgejoCredentialRecord,
   type ForgejoDirectory,
   type ForgejoExecutionCredentialRecord,
+  type ForgejoWebhookSecretRecord,
 } from "../providers/forgejo/instances.js";
 import { FORGEJO_CREDENTIAL_ALG } from "../secrets/authenticated-envelope.js";
 
@@ -174,6 +176,84 @@ export function createSqlForgejoDirectory(runtime: QueryHandle): ForgejoDirector
       );
       return mapExecutionCredential(rows.rows[0]);
     },
+    async insertWebhookSecret(record) {
+      if (record.kind !== "webhook_secret") {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          400,
+          "only webhook_secret credentials may be persisted here",
+        );
+      }
+      try {
+        await runtime.query(
+          `insert into forgejo_credentials (
+             id, organization_id, connection_id, kind, alg, key_id, nonce, ciphertext,
+             aad_version, scope_evidence, status
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)`,
+          [
+            record.id,
+            record.organizationId,
+            record.connectionId,
+            record.kind,
+            record.alg,
+            record.keyId,
+            record.nonce,
+            record.ciphertext,
+            record.aadVersion,
+            JSON.stringify({}),
+            record.status,
+          ],
+        );
+      } catch (error) {
+        throw mapUnique(error, undefined, "credential");
+      }
+    },
+    async findActiveWebhookSecret(connectionId) {
+      const rows = await runtime.query<CredentialRow>(
+        `${CREDENTIAL_SELECT} where connection_id = $1 and kind = 'webhook_secret' and status = 'active'`,
+        [connectionId],
+      );
+      return mapWebhookSecret(rows.rows[0]);
+    },
+    async upsertRepositoryHook(record) {
+      await runtime.query(
+        `insert into forgejo_repository_hooks (
+           id, organization_id, connection_id, repository_id, forgejo_hook_id, callback_path,
+           managed, status, last_verified_at
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (connection_id, repository_id) do update set
+           forgejo_hook_id = excluded.forgejo_hook_id,
+           callback_path = excluded.callback_path,
+           managed = excluded.managed,
+           status = excluded.status,
+           last_verified_at = excluded.last_verified_at`,
+        [
+          record.id,
+          record.organizationId,
+          record.connectionId,
+          record.repositoryId,
+          record.forgejoHookId,
+          record.callbackPath,
+          record.managed,
+          record.status,
+          record.lastVerifiedAt,
+        ],
+      );
+    },
+    async findRepositoryHook(connectionId, repositoryId) {
+      const rows = await runtime.query<HookRow>(
+        `${HOOK_SELECT} where connection_id = $1 and repository_id = $2`,
+        [connectionId, repositoryId],
+      );
+      return mapHook(rows.rows[0]);
+    },
+    async listRepositoryHooksForConnection(connectionId) {
+      const rows = await runtime.query<HookRow>(
+        `${HOOK_SELECT} where connection_id = $1 order by repository_id, id`,
+        [connectionId],
+      );
+      return rows.rows.map((row) => mapHook(row)!);
+    },
   };
 }
 
@@ -189,6 +269,10 @@ const CONNECTION_SELECT = `select id, organization_id, instance_id, slug, status
 const CREDENTIAL_SELECT = `select id, organization_id, connection_id, kind, alg, key_id, nonce,
        ciphertext, aad_version, scope_evidence, status
  from forgejo_credentials`;
+
+const HOOK_SELECT = `select id, organization_id, connection_id, repository_id, forgejo_hook_id,
+       callback_path, managed, status, last_verified_at
+ from forgejo_repository_hooks`;
 
 interface InstanceRow extends QueryRow {
   id: string;
@@ -241,6 +325,18 @@ interface RepositoryRow extends QueryRow {
   default_branch: string;
   html_url: string;
   enrolled: boolean;
+}
+
+interface HookRow extends QueryRow {
+  id: string;
+  organization_id: string;
+  connection_id: string;
+  repository_id: number | string;
+  forgejo_hook_id: number | string | null;
+  callback_path: string;
+  managed: boolean;
+  status: ForgejoRepositoryHookRecord["status"];
+  last_verified_at: Date | null;
 }
 
 function instanceValues(record: ForgejoInstanceRecord): unknown[] {
@@ -348,6 +444,37 @@ function mapExecutionCredential(
       scopes: stringList(evidence["scopes"]),
       repositories: stringList(evidence["repositories"]),
     },
+  };
+}
+
+function mapWebhookSecret(row: CredentialRow | undefined): ForgejoWebhookSecretRecord | undefined {
+  if (row === undefined || row.kind !== "webhook_secret") return undefined;
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    connectionId: row.connection_id,
+    kind: "webhook_secret",
+    alg: row.alg,
+    keyId: row.key_id,
+    nonce: asBuffer(row.nonce),
+    ciphertext: asBuffer(row.ciphertext),
+    aadVersion: row.aad_version,
+    status: row.status,
+  };
+}
+
+function mapHook(row: HookRow | undefined): ForgejoRepositoryHookRecord | undefined {
+  if (row === undefined) return undefined;
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    connectionId: row.connection_id,
+    repositoryId: Number(row.repository_id),
+    forgejoHookId: row.forgejo_hook_id === null ? null : Number(row.forgejo_hook_id),
+    callbackPath: row.callback_path,
+    managed: row.managed,
+    status: row.status,
+    lastVerifiedAt: row.last_verified_at,
   };
 }
 

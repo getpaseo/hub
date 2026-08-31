@@ -30,6 +30,20 @@ export interface ForgejoConnectionView {
   status: "pending_identity" | "active" | "degraded" | "disconnected";
   credentialMask: "••••";
   repositories: readonly ForgejoVisibleRepositoryView[];
+  webhook?: ForgejoWebhookSetupView;
+}
+
+export interface ForgejoWebhookSetupView {
+  callbackUrl: string;
+  events: readonly string[];
+  secret: string;
+  hooks: readonly {
+    repositoryId: number;
+    fullName: string;
+    htmlUrl: string;
+    managed: boolean;
+    status: string;
+  }[];
 }
 
 export function ForgejoConnectionPanel({
@@ -39,6 +53,7 @@ export function ForgejoConnectionPanel({
   canConnect,
   onConnect,
   onEnroll,
+  onSetupHooks,
 }: {
   approvedInstances: readonly ForgejoApprovedInstanceOption[];
   connections: readonly ForgejoConnectionView[];
@@ -51,6 +66,11 @@ export function ForgejoConnectionPanel({
     pat: string;
   }) => void;
   onEnroll: (input: { connectionId: string; repositoryIds: readonly number[] }) => void;
+  onSetupHooks: (input: {
+    connectionId: string;
+    mode: "manual" | "automatic";
+    adminPat?: string;
+  }) => void;
 }) {
   const submitConnection = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -82,7 +102,12 @@ export function ForgejoConnectionPanel({
         approvedInstances={approvedInstances}
         onSubmit={submitConnection}
       />
-      <ConnectionList connections={connections} onEnroll={onEnroll} />
+      <ConnectionList
+        connections={connections}
+        canManage={canConnect}
+        onEnroll={onEnroll}
+        onSetupHooks={onSetupHooks}
+      />
     </section>
   );
 }
@@ -158,10 +183,18 @@ function ConnectionCreateForm({
 
 function ConnectionList({
   connections,
+  canManage,
   onEnroll,
+  onSetupHooks,
 }: {
   connections: readonly ForgejoConnectionView[];
+  canManage: boolean;
   onEnroll: (input: { connectionId: string; repositoryIds: readonly number[] }) => void;
+  onSetupHooks: (input: {
+    connectionId: string;
+    mode: "manual" | "automatic";
+    adminPat?: string;
+  }) => void;
 }) {
   if (connections.length === 0) {
     return (
@@ -174,7 +207,13 @@ function ConnectionList({
   return (
     <ul aria-label="Forgejo connections" className="grid gap-3">
       {connections.map((connection) => (
-        <ConnectionCard key={connection.id} connection={connection} onEnroll={onEnroll} />
+        <ConnectionCard
+          key={connection.id}
+          connection={connection}
+          canManage={canManage}
+          onEnroll={onEnroll}
+          onSetupHooks={onSetupHooks}
+        />
       ))}
     </ul>
   );
@@ -182,10 +221,18 @@ function ConnectionList({
 
 function ConnectionCard({
   connection,
+  canManage,
   onEnroll,
+  onSetupHooks,
 }: {
   connection: ForgejoConnectionView;
+  canManage: boolean;
   onEnroll: (input: { connectionId: string; repositoryIds: readonly number[] }) => void;
+  onSetupHooks: (input: {
+    connectionId: string;
+    mode: "manual" | "automatic";
+    adminPat?: string;
+  }) => void;
 }) {
   const submitEnrollment = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -238,7 +285,91 @@ function ConnectionCard({
           </Button>
         </form>
       )}
+      <HookSetup connection={connection} canManage={canManage} onSetupHooks={onSetupHooks} />
     </li>
+  );
+}
+
+function HookSetup({
+  connection,
+  canManage,
+  onSetupHooks,
+}: {
+  connection: ForgejoConnectionView;
+  canManage: boolean;
+  onSetupHooks: (input: {
+    connectionId: string;
+    mode: "manual" | "automatic";
+    adminPat?: string;
+  }) => void;
+}) {
+  const enrolled = connection.repositories.some((repository) => repository.enrolled);
+  if (!enrolled) return null;
+  const submitAutomatic = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onSetupHooks({
+      connectionId: connection.id,
+      mode: "automatic",
+      adminPat: formString(form, "adminPat"),
+    });
+    const pat = event.currentTarget.elements.namedItem("adminPat");
+    if (pat instanceof HTMLInputElement) pat.value = "";
+  };
+  return (
+    <div className="grid gap-2 border-t pt-3">
+      <p className="text-xs font-medium">Repository hooks</p>
+      {connection.webhook === undefined ? null : (
+        <div className="grid gap-1 text-xs text-muted-foreground">
+          <p>
+            Callback URL{" "}
+            <code className="break-all text-foreground">{connection.webhook.callbackUrl}</code>
+          </p>
+          <p>Signing secret {connection.webhook.secret}</p>
+          <p>Required events: {connection.webhook.events.join(", ")}</p>
+          <ul aria-label={`Hook status for ${connection.slug}`} className="grid gap-1">
+            {connection.webhook.hooks.map((hook) => (
+              <li key={hook.repositoryId}>
+                {hook.fullName}: {hook.status.replaceAll("_", " ")}
+                {hook.managed ? " (managed)" : " (manual)"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {canManage ? (
+        <>
+          <form
+            aria-label={`Automatic hook setup for ${connection.slug}`}
+            className="grid gap-2"
+            onSubmit={submitAutomatic}
+          >
+            <Field>
+              <FieldLabel htmlFor={`forgejo-admin-pat-${connection.id}`}>
+                One-time webhook-admin PAT
+              </FieldLabel>
+              <Input
+                id={`forgejo-admin-pat-${connection.id}`}
+                name="adminPat"
+                type="password"
+                autoComplete="off"
+                placeholder="Unscoped write:repository. Discarded after setup."
+              />
+            </Field>
+            <Button type="submit" variant="outline">
+              Configure hooks automatically
+            </Button>
+          </form>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onSetupHooks({ connectionId: connection.id, mode: "manual" })}
+          >
+            Configure hooks manually
+          </Button>
+        </>
+      ) : null}
+    </div>
   );
 }
 

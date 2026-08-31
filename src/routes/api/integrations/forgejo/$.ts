@@ -15,6 +15,9 @@ function handleForgejoIntegrationRequest({ request }: { request: Request }): Pro
   if (path.includes("/instances")) {
     return handleProviderRequest("forgejo.instances", request);
   }
+  if (path.includes("/webhook") || path.includes("/hooks")) {
+    return handleProviderRequest("forgejo.webhook", request);
+  }
   if (path.includes("/connections")) {
     return handleProviderRequest("forgejo.connections", request);
   }

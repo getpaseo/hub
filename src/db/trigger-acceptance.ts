@@ -5,9 +5,11 @@ import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
 import type {
   AcceptDiscordEventInput,
+  AcceptForgejoEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
+  ConnectionProvider,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -43,6 +45,43 @@ export class ProviderEventAcceptanceRepository {
 
   acceptLinear(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
+  }
+
+  acceptForgejo(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance> {
+    return this.database.transaction(async (transaction) => {
+      const [connection] = await transaction
+        .select({
+          id: schema.forgejoConnections.id,
+          organizationId: schema.forgejoConnections.organizationId,
+        })
+        .from(schema.forgejoConnections)
+        .where(eq(schema.forgejoConnections.id, input.connectionId))
+        .limit(1);
+      if (connection === undefined || connection.organizationId !== input.organizationId) {
+        return { status: "dropped", receiptId: input.deliveryId, reason: "forgejo_unbound" };
+      }
+      const evidence: ProviderEventEvidence = {
+        ...input,
+        provider: "forgejo",
+        connectionId: input.connectionId,
+        bodySha256: input.bodySha256,
+      };
+      const existing = await findReceipt(transaction, evidence, connection.organizationId);
+      if (existing !== undefined) return replayOrConflictForgejo(existing, input.bodySha256);
+      const receipt = await claimProviderReceipt(transaction, {
+        organizationId: connection.organizationId,
+        provider: "forgejo",
+        connectionId: connection.id,
+        resourceId: String(input.repositoryId),
+        input: evidence,
+      });
+      if (!receipt.inserted) {
+        const existingReceipt = await findReceipt(transaction, evidence, connection.organizationId);
+        if (existingReceipt === undefined) throw new Error("provider receipt unavailable");
+        return replayOrConflictForgejo(existingReceipt, input.bodySha256);
+      }
+      return { status: "accepted", events: [], receiptId: receipt.id };
+    });
   }
 
   private async acceptProvider(
@@ -155,6 +194,73 @@ export class ProviderEventAcceptanceRepository {
         receiptId: receipt.id,
       };
     });
+  }
+
+  async listActiveTriggerDispatchTargets(input: {
+    organizationId: string;
+    provider: ConnectionProvider;
+    connectionId: string;
+    resourceId: string;
+  }): Promise<
+    readonly {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[]
+  > {
+    const routes = await this.database
+      .select({
+        projectId: schema.projectTriggerRoutes.projectId,
+        revisionId: schema.projectTriggerRoutes.configurationRevisionId,
+        connectionId: schema.projectTriggerRoutes.connectionId,
+        resourceId: schema.projectTriggerRoutes.resourceId,
+      })
+      .from(schema.projectTriggerRoutes)
+      .innerJoin(
+        schema.projects,
+        and(
+          eq(schema.projects.id, schema.projectTriggerRoutes.projectId),
+          eq(schema.projects.organizationId, input.organizationId),
+          eq(schema.projects.status, "active"),
+          eq(
+            schema.projects.activeConfigurationRevisionId,
+            schema.projectTriggerRoutes.configurationRevisionId,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(schema.projectTriggerRoutes.organizationId, input.organizationId),
+          eq(schema.projectTriggerRoutes.provider, input.provider),
+          eq(schema.projectTriggerRoutes.connectionId, input.connectionId),
+          or(
+            isNull(schema.projectTriggerRoutes.resourceId),
+            eq(schema.projectTriggerRoutes.resourceId, input.resourceId),
+          ),
+        ),
+      );
+    const seen = new Set<string>();
+    const targets: {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[] = [];
+    for (const route of routes) {
+      if (seen.has(route.projectId)) continue;
+      seen.add(route.projectId);
+      targets.push({
+        projectId: route.projectId,
+        organizationId: input.organizationId,
+        configurationRevisionId: route.revisionId,
+        connectionId: route.connectionId,
+        resourceId: route.resourceId,
+      });
+    }
+    return targets;
   }
 
   persistManual(input: PersistManualEventInput): Promise<ManualEventPersistence> {
@@ -390,6 +496,16 @@ async function findReceipt(
   return receipt;
 }
 
+function replayOrConflictForgejo(
+  receipt: typeof schema.providerEventReceipts.$inferSelect,
+  bodySha256: string,
+): ProviderEventAcceptance {
+  if (receipt.bodySha256 !== bodySha256) {
+    return { status: "conflict", receiptId: receipt.id };
+  }
+  return replayProviderReceipt(receipt);
+}
+
 function replayProviderReceipt(
   receipt: typeof schema.providerEventReceipts.$inferSelect,
 ): ProviderEventAcceptance {
@@ -508,7 +624,7 @@ async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: "github" | "slack" | "discord" | "linear" | "manual" | "forgejo";
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;
@@ -528,6 +644,7 @@ async function claimProviderReceipt(
       source: input.input.source,
       repo: input.input.repo ?? null,
       payload: input.input.payload,
+      bodySha256: input.input.bodySha256 ?? null,
       receivedAt: input.input.receivedAt,
       droppedReason: input.input.dropReason ?? null,
     })

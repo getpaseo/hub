@@ -7,6 +7,15 @@ export const EDITOR_EVENTS = [
   "discord.mention",
   "github.issue_comment",
   "linear.issue_created",
+  "forgejo.issue_created",
+  "forgejo.pull_request_created",
+  "forgejo.issue_comment_created",
+  "forgejo.pull_request_comment_created",
+  "forgejo.issue_label_added",
+  "forgejo.pull_request_label_added",
+  "forgejo.push",
+  "forgejo.pull_request_review",
+  "forgejo.pull_request_review_comment",
   "manual.run",
 ] as const;
 

@@ -52,6 +52,7 @@ import type {
   StartCliAuthorizationInput,
   SwitchProjectConfigurationToManualInput,
   SetProjectGitHubConfigurationSourceInput,
+  SetProjectForgejoConfigurationSourceInput,
   RecordConfigurationSyncAttemptInput,
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
@@ -65,6 +66,7 @@ import type {
   ReadConnectionAttemptInput,
   StartConnectionAttemptInput,
   AcceptDiscordEventInput,
+  AcceptForgejoEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
@@ -80,6 +82,7 @@ import type {
   OrganizationConnectionUsage,
   GitHubRepositoryRecord,
   GitHubConfigurationTarget,
+  ForgejoConfigurationTarget,
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
@@ -161,6 +164,19 @@ class PgDatabase implements Database {
 
   acceptLinearEvent(input: AcceptLinearEventInput) {
     return this.triggerAcceptance.acceptLinear(input);
+  }
+
+  acceptForgejoEvent(input: AcceptForgejoEventInput) {
+    return this.triggerAcceptance.acceptForgejo(input);
+  }
+
+  listActiveTriggerDispatchTargets(input: {
+    organizationId: string;
+    provider: ConnectionProvider;
+    connectionId: string;
+    resourceId: string;
+  }) {
+    return this.triggerAcceptance.listActiveTriggerDispatchTargets(input);
   }
 
   persistManualEvent(input: PersistManualEventInput) {
@@ -3532,6 +3548,8 @@ class PgDatabase implements Database {
           `update project_configuration_sources
          set kind = 'manual', github_connection_id = null, github_repository_id = null,
              github_repository_full_name = null, github_default_branch = null,
+             forgejo_connection_id = null, forgejo_repository_id = null,
+             forgejo_repository_full_name = null, forgejo_default_branch = null,
              automatic_deployment_enabled = false, selected_by_user_id = $2,
              updated_at = clock_timestamp()
          where project_id = $1`,
@@ -3595,6 +3613,10 @@ class PgDatabase implements Database {
              github_repository_id = excluded.github_repository_id,
              github_repository_full_name = excluded.github_repository_full_name,
              github_default_branch = excluded.github_default_branch,
+             forgejo_connection_id = null,
+             forgejo_repository_id = null,
+             forgejo_repository_full_name = null,
+             forgejo_default_branch = null,
              automatic_deployment_enabled = excluded.automatic_deployment_enabled,
              selected_by_user_id = excluded.selected_by_user_id,
              updated_at = clock_timestamp()
@@ -3610,7 +3632,61 @@ class PgDatabase implements Database {
     if (result.rowCount !== 1) throw new Error("project access denied");
   }
 
+  async setProjectForgejoConfigurationSource(
+    input: SetProjectForgejoConfigurationSourceInput,
+  ): Promise<void> {
+    const result = await query(
+      this.pool,
+      `insert into project_configuration_sources
+         (organization_id, project_id, kind, forgejo_connection_id, forgejo_repository_id,
+          forgejo_repository_full_name, forgejo_default_branch,
+          automatic_deployment_enabled, selected_by_user_id)
+       select p.organization_id, p.id, 'forgejo', $2, r.repository_id,
+              r.full_name, r.default_branch, $4, $5
+       from projects p
+       join member m on m.organization_id = p.organization_id
+       join forgejo_repositories r
+         on r.organization_id = p.organization_id and r.connection_id = $2
+        and r.repository_id = $3 and r.enrolled = true
+       join forgejo_connections c
+         on c.id = r.connection_id and c.organization_id = p.organization_id
+       where p.id = $1 and p.status = 'active'
+         and m.user_id = $5 and m.role in ('owner', 'admin')
+       on conflict (project_id) do update
+         set kind = 'forgejo',
+             forgejo_connection_id = excluded.forgejo_connection_id,
+             forgejo_repository_id = excluded.forgejo_repository_id,
+             forgejo_repository_full_name = excluded.forgejo_repository_full_name,
+             forgejo_default_branch = excluded.forgejo_default_branch,
+             github_connection_id = null,
+             github_repository_id = null,
+             github_repository_full_name = null,
+             github_default_branch = null,
+             automatic_deployment_enabled = excluded.automatic_deployment_enabled,
+             selected_by_user_id = excluded.selected_by_user_id,
+             updated_at = clock_timestamp()
+       returning project_id`,
+      [
+        input.projectId,
+        input.forgejoConnectionId,
+        input.forgejoRepositoryId,
+        input.automaticDeploymentEnabled,
+        input.userId,
+      ],
+    );
+    if (result.rowCount !== 1) throw new Error("project access denied");
+  }
+
   async recordConfigurationSyncAttempt(
+    input: RecordConfigurationSyncAttemptInput,
+  ): Promise<ConfigurationSyncAttemptRecord> {
+    if (input.forgejoConnectionId !== undefined && input.forgejoConnectionId !== null) {
+      return this.recordForgejoConfigurationSyncAttempt(input);
+    }
+    return this.recordGitHubConfigurationSyncAttempt(input);
+  }
+
+  private async recordGitHubConfigurationSyncAttempt(
     input: RecordConfigurationSyncAttemptInput,
   ): Promise<ConfigurationSyncAttemptRecord> {
     const result = await query<{
@@ -3652,6 +3728,59 @@ class PgDatabase implements Database {
       githubRepositoryId: row.github_repository_id,
       forgejoConnectionId: null,
       forgejoRepositoryId: null,
+      webhookDeliveryId: row.webhook_delivery_id,
+      commitSha: row.commit_sha,
+      outcome: row.outcome,
+      evidence: row.evidence,
+      createdAt: row.created_at,
+    };
+  }
+
+  private async recordForgejoConfigurationSyncAttempt(
+    input: RecordConfigurationSyncAttemptInput,
+  ): Promise<ConfigurationSyncAttemptRecord> {
+    const result = await query<{
+      id: string;
+      project_id: string;
+      github_connection_id: string | null;
+      github_repository_id: number | null;
+      forgejo_connection_id: string | null;
+      forgejo_repository_id: number | null;
+      webhook_delivery_id: string | null;
+      commit_sha: string | null;
+      outcome: string;
+      evidence: unknown;
+      created_at: Date;
+    }>(
+      this.pool,
+      `insert into configuration_sync_attempts
+         (organization_id, project_id, forgejo_connection_id, forgejo_repository_id,
+          webhook_delivery_id, commit_sha, outcome, evidence)
+       select p.organization_id, p.id, $2, $3, $4, $5, $6, $7::jsonb
+       from projects p
+       where p.id = $1 and p.organization_id = (select organization_id from forgejo_connections where id = $2)
+       returning id, project_id, github_connection_id, github_repository_id,
+                 forgejo_connection_id, forgejo_repository_id, webhook_delivery_id,
+                 commit_sha, outcome, evidence, created_at`,
+      [
+        input.projectId,
+        input.forgejoConnectionId,
+        input.forgejoRepositoryId,
+        input.webhookDeliveryId,
+        input.commitSha,
+        input.outcome,
+        JSON.stringify(input.evidence),
+      ],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error("configuration source unavailable");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      githubConnectionId: row.github_connection_id,
+      githubRepositoryId: row.github_repository_id,
+      forgejoConnectionId: row.forgejo_connection_id,
+      forgejoRepositoryId: row.forgejo_repository_id,
       webhookDeliveryId: row.webhook_delivery_id,
       commitSha: row.commit_sha,
       outcome: row.outcome,
@@ -4040,6 +4169,64 @@ class PgDatabase implements Database {
     );
   }
 
+  async findForgejoConfigurationTarget(
+    projectId: string,
+    repositoryId?: number,
+  ): Promise<ForgejoConfigurationTarget | undefined> {
+    const rows = await query<ForgejoConfigurationTargetRow>(
+      this.pool,
+      `select project.id as project_id,
+              repository.id, repository.organization_id, repository.connection_id,
+              repository.repository_id, repository.full_name, repository.owner_login,
+              repository.name, repository.default_branch, repository.html_url,
+              repository.enrolled, source.automatic_deployment_enabled
+       from project_configuration_sources source
+       join projects project on project.id = source.project_id and project.status = 'active'
+       join forgejo_repositories repository
+         on repository.organization_id = project.organization_id
+        and repository.connection_id = source.forgejo_connection_id
+        and repository.repository_id = source.forgejo_repository_id
+        and repository.enrolled = true
+       where source.project_id = $1 and source.kind = 'forgejo'
+         and ($2::bigint is null or repository.repository_id = $2)
+       limit 1`,
+      [projectId, repositoryId ?? null],
+    );
+    const row = rows.rows[0];
+    return row === undefined ? undefined : toForgejoConfigurationTarget(row);
+  }
+
+  async listForgejoConfigurationTargets(
+    organizationId: string,
+    connectionId: string,
+    repositoryId: number,
+  ): Promise<ForgejoConfigurationTarget[]> {
+    const rows = await query<ForgejoConfigurationTargetRow>(
+      this.pool,
+      `select project.id as project_id,
+              repository.id, repository.organization_id, repository.connection_id,
+              repository.repository_id, repository.full_name, repository.owner_login,
+              repository.name, repository.default_branch, repository.html_url,
+              repository.enrolled, source.automatic_deployment_enabled
+       from project_configuration_sources source
+       join projects project
+         on project.id = source.project_id
+        and project.organization_id = $1
+        and project.status = 'active'
+       join forgejo_repositories repository
+         on repository.organization_id = project.organization_id
+        and repository.connection_id = source.forgejo_connection_id
+        and repository.repository_id = source.forgejo_repository_id
+        and repository.enrolled = true
+       where source.kind = 'forgejo'
+         and source.forgejo_connection_id = $2
+         and source.forgejo_repository_id = $3
+       order by project.id`,
+      [organizationId, connectionId, repositoryId],
+    );
+    return rows.rows.map((row) => toForgejoConfigurationTarget(row));
+  }
+
   async listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]> {
@@ -4378,6 +4565,7 @@ export interface ProviderEventReceiptRow extends QueryRow {
   received_at: Date;
   dropped_reason: string | null;
   accepted_routes: unknown;
+  body_sha256?: string | null;
 }
 
 interface TriggerRunRow extends QueryRow {
@@ -5346,6 +5534,40 @@ function toGitHubRepositoryRecord(row: GitHubRepositoryRow): GitHubRepositoryRec
     repositoryId: Number(row.repository_id),
     fullName: row.full_name,
     defaultBranch: row.default_branch,
+  };
+}
+
+interface ForgejoConfigurationTargetRow extends QueryRow {
+  project_id: string;
+  id: string;
+  organization_id: string;
+  connection_id: string;
+  repository_id: number | string;
+  full_name: string;
+  owner_login: string;
+  name: string;
+  default_branch: string;
+  html_url: string;
+  enrolled: boolean;
+  automatic_deployment_enabled: boolean;
+}
+
+function toForgejoConfigurationTarget(
+  row: ForgejoConfigurationTargetRow,
+): ForgejoConfigurationTarget {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    connectionId: row.connection_id,
+    repositoryId: Number(row.repository_id),
+    fullName: row.full_name,
+    ownerLogin: row.owner_login,
+    name: row.name,
+    defaultBranch: row.default_branch,
+    htmlUrl: row.html_url,
+    enrolled: row.enrolled,
+    projectId: row.project_id,
+    automaticDeploymentEnabled: row.automatic_deployment_enabled,
   };
 }
 

@@ -1,5 +1,5 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop -- organization connection forms bind submit per panel snapshot */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useActiveAccount } from "../../../auth/active-account.js";
 import { FORGEJO_PAT_MASK } from "../instances.js";
@@ -7,14 +7,18 @@ import {
   createForgejoConnection,
   enrollForgejoRepositories,
   listForgejoConnections,
+  listForgejoHooks,
+  setupForgejoHooks,
+  type ForgejoHookSetup,
 } from "../functions.js";
-import { ForgejoConnectionPanel } from "./connection-panel.js";
+import { ForgejoConnectionPanel, type ForgejoConnectionView } from "./connection-panel.js";
 import { resultError } from "./result-error.js";
 
 export function ForgejoOrganizationConnectionSection() {
   const { membership } = useActiveAccount();
   const queryClient = useQueryClient();
   const load = useServerFn(listForgejoConnections);
+  const loadHooks = useServerFn(listForgejoHooks);
   const connect = useMutation({
     mutationFn: useServerFn(createForgejoConnection),
     onSuccess: async () => {
@@ -24,14 +28,40 @@ export function ForgejoOrganizationConnectionSection() {
   const enroll = useMutation({
     mutationFn: useServerFn(enrollForgejoRepositories),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["forgejo", "connections"] });
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const setupHooks = useMutation({
+    mutationFn: useServerFn(setupForgejoHooks),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
     },
   });
   const query = useQuery({
     queryKey: ["forgejo", "connections"],
     queryFn: () => load(),
   });
-  const error = resultError(query.data, connect.data, enroll.data, query.error);
+  const connections = query.data?.status === "ok" ? query.data.data.connections : [];
+  const hookQueries = useQueries({
+    queries: connections.map((connection) => ({
+      queryKey: ["forgejo", "hooks", connection.id],
+      queryFn: () => loadHooks({ data: { connectionId: connection.id } }),
+    })),
+  });
+  const hookByConnection = new Map<string, ForgejoHookSetup>();
+  for (const [index, connection] of connections.entries()) {
+    const result = hookQueries[index]?.data;
+    if (result?.status === "ok") hookByConnection.set(connection.id, result.data);
+  }
+  const error = resultError(
+    query.data,
+    connect.data,
+    enroll.data,
+    setupHooks.data,
+    query.error,
+    ...hookQueries.map((entry) => entry.data),
+    ...hookQueries.map((entry) => entry.error),
+  );
   const data = query.data?.status === "ok" ? query.data.data : undefined;
   return (
     <ForgejoConnectionPanel
@@ -40,26 +70,50 @@ export function ForgejoOrganizationConnectionSection() {
         canonicalOrigin: instance.canonicalOrigin,
         reportedVersion: instance.reportedVersion,
       }))}
-      connections={(data?.connections ?? []).map((connection) => ({
-        id: connection.id,
-        slug: connection.slug,
-        instanceId: connection.instanceId,
-        forgejoUserLogin: connection.forgejoUserLogin,
-        status: connection.status,
-        credentialMask: FORGEJO_PAT_MASK,
-        repositories: connection.repositories.map((repository) => ({
-          repositoryId: repository.repositoryId,
-          fullName: repository.fullName,
-          htmlUrl: repository.htmlUrl,
-          enrolled: repository.enrolled,
-        })),
-      }))}
+      connections={(data?.connections ?? []).map((connection) => {
+        const webhook = hookByConnection.get(connection.id);
+        const view: ForgejoConnectionView = {
+          id: connection.id,
+          slug: connection.slug,
+          instanceId: connection.instanceId,
+          forgejoUserLogin: connection.forgejoUserLogin,
+          status: connection.status,
+          credentialMask: FORGEJO_PAT_MASK,
+          repositories: connection.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            fullName: repository.fullName,
+            htmlUrl: repository.htmlUrl,
+            enrolled: repository.enrolled,
+          })),
+        };
+        if (webhook !== undefined) {
+          view.webhook = {
+            callbackUrl: webhook.callbackUrl,
+            events: webhook.events,
+            secret: webhook.credential.secret,
+            hooks: webhook.hooks,
+          };
+        }
+        return view;
+      })}
       error={error}
       canConnect={membership.role === "owner"}
       onConnect={(input) => connect.mutate({ data: input })}
       onEnroll={(input) =>
         enroll.mutate({
           data: { connectionId: input.connectionId, repositoryIds: [...input.repositoryIds] },
+        })
+      }
+      onSetupHooks={(input) =>
+        setupHooks.mutate({
+          data:
+            input.mode === "automatic"
+              ? {
+                  connectionId: input.connectionId,
+                  mode: "automatic",
+                  adminPat: input.adminPat ?? "",
+                }
+              : { connectionId: input.connectionId, mode: "manual" },
         })
       }
     />

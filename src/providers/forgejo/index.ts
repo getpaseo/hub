@@ -1,15 +1,27 @@
 import type { AuthServer } from "../../auth/server.js";
 import type { ForgejoConfigurationProvider } from "../../configuration/forgejo-sync.js";
+import { createForgejoConfigSyncConsumer } from "../../configuration/forgejo-sync.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { Database, OrganizationConnectionUsage } from "../../db/types.js";
 import {
   envSecretEncryptionKeySource,
   type SecretEncryptionKeySource,
 } from "../../secrets/authenticated-envelope.js";
+import {
+  createForgejoClaimedHandoff,
+  registerForgejoConfigSyncConsumer,
+} from "../../triggers/forgejo/dispatch.js";
+import { createForgejoPushSource } from "../../triggers/forgejo/push.js";
+import { createForgejoTriggerProvider } from "../../triggers/forgejo/provider.js";
+import type { AcceptVerifiedForgejoDelivery } from "../../triggers/forgejo/webhook.js";
+import { createForgejoReceiptAcceptance } from "../../triggers/forgejo/receipt.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import { createForgejoAccessResolver } from "./access.js";
 import { createDatabaseForgejoAuthorityStore } from "./authority-store.js";
+import { createForgejoConfigurationProvider } from "./configuration.js";
 import { handleForgejoConnectionsRequest } from "./connections.js";
 import { createForgejoAuthorityRegistration } from "./execution-authority.js";
+import { handleForgejoWebhookRequest } from "./hooks.js";
 import {
   createDefaultForgejoHttp,
   handleForgejoInstancesRequest,
@@ -43,6 +55,8 @@ export interface CreateForgejoRegistrationOptions {
   http?: ForgejoHttp;
   secrets?: SecretEncryptionKeySource;
   directory?: ForgejoDirectory;
+  acceptForgejoDelivery?: AcceptVerifiedForgejoDelivery;
+  onForgejoClaimed?: Parameters<typeof createForgejoReceiptAcceptance>[0]["onClaimed"];
 }
 
 export function createForgejoRegistration(
@@ -50,17 +64,16 @@ export function createForgejoRegistration(
 ): ProviderRegistration {
   const configured = options.configuration !== null && options.configuration !== undefined;
   const live = liveForgejoRegistration(options);
+  const configurationProvider = options.configurationProvider ?? live?.configurationProvider;
   return {
     connection: forgejoConnectionStatus(configured),
     ...(live === undefined ? {} : { integration: live.integration }),
-    triggerProviders: [],
-    sources: [],
+    triggerProviders: live?.triggerProviders ?? [],
+    sources: live?.sources ?? [],
     outputs: [],
     requests:
       live?.requests ?? FORGEJO_REQUEST_NAMES.map((name) => ({ name, handle: UNAVAILABLE })),
-    ...(options.configurationProvider === undefined
-      ? {}
-      : { forgejoConfiguration: options.configurationProvider }),
+    ...(configurationProvider === undefined ? {} : { forgejoConfiguration: configurationProvider }),
   };
 }
 
@@ -68,6 +81,9 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
   | {
       requests: ProviderRegistration["requests"];
       integration: NonNullable<ProviderRegistration["integration"]>;
+      triggerProviders: ProviderRegistration["triggerProviders"];
+      sources: ProviderRegistration["sources"];
+      configurationProvider: ForgejoConfigurationProvider;
     }
   | undefined {
   if (options.database === null || options.auth === null) return undefined;
@@ -80,7 +96,47 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
     store: createDatabaseForgejoAuthorityStore(database),
     keys: secrets,
   });
+  let configurationForProject: ((projectId: string) => ProjectConfigurationStore) | undefined;
+  const configurationProvider =
+    options.configurationProvider ??
+    createForgejoConfigurationProvider({ directory, http, secrets });
+  registerForgejoConfigSyncConsumer(
+    createForgejoConfigSyncConsumer({
+      database,
+      client: configurationProvider,
+      configurationForProject: (projectId) => {
+        if (configurationForProject === undefined) {
+          throw new Error("Forgejo configuration store is not initialized");
+        }
+        return configurationForProject(projectId);
+      },
+    }),
+  );
+  const connectionContext = async (connectionId: string) => {
+    const row = await directory.findConnectionById(connectionId);
+    if (row === undefined) return undefined;
+    return { id: row.id, slug: row.slug, instanceId: row.instanceId };
+  };
+  const onClaimed =
+    options.onForgejoClaimed ?? createForgejoClaimedHandoff({ connectionFor: connectionContext });
+  const accept =
+    options.acceptForgejoDelivery ??
+    createForgejoReceiptAcceptance({
+      database,
+      onClaimed,
+    });
   return {
+    configurationProvider,
+    triggerProviders: [
+      ({ configurationStoreForProject }) => {
+        configurationForProject = configurationStoreForProject;
+        return createForgejoTriggerProvider({
+          configurationStoreForProject,
+          connectionFor: connectionContext,
+        });
+      },
+    ],
+    sources: [createForgejoPushSource({ database })],
     integration: {
       resolve() {
         return Promise.reject(new Error("forgejo_integration_unavailable"));
@@ -117,7 +173,21 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
           });
         },
       },
-      { name: "forgejo.webhook", handle: UNAVAILABLE },
+      {
+        name: "forgejo.webhook",
+        handle: (request) =>
+          handleForgejoWebhookRequest(rewriteForgejoRequest(request), {
+            access,
+            directory,
+            http,
+            secrets,
+            applicationBaseUrl: options.applicationBaseUrl,
+            ...(options.publicBaseUrl === undefined
+              ? {}
+              : { publicBaseUrl: options.publicBaseUrl }),
+            accept,
+          }),
+      },
     ],
   };
 }

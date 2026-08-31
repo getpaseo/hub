@@ -129,7 +129,7 @@ async function createOwnedApplicationRuntime(
     ),
     "GitHub configuration registrations must be unique",
   );
-  onlyOne(
+  const forgejoConfiguration = onlyOne(
     registrations.flatMap((registration) =>
       registration.forgejoConfiguration === undefined ? [] : [registration.forgejoConfiguration],
     ),
@@ -145,8 +145,12 @@ async function createOwnedApplicationRuntime(
     projectDashboard:
       options.database === null || options.auth === null
         ? null
-        : new ProjectDashboard(options.database, options.auth, githubConfiguration, (projectId) =>
-            application.configurationForProject(projectId),
+        : new ProjectDashboard(
+            options.database,
+            options.auth,
+            githubConfiguration,
+            (projectId) => application.configurationForProject(projectId),
+            forgejoConfiguration,
           ),
     triggerDashboard: triggerDashboardFor(options),
     ...entitlementSurfaces(options),

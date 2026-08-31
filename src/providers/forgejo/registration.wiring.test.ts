@@ -52,8 +52,12 @@ describe("Forgejo registration wiring", () => {
 
     const webhook = await registration.requests
       .find((request) => request.name === "forgejo.webhook")!
-      .handle(new Request("https://hub.example.test/webhook"));
-    assert.equal(webhook.status, 409);
+      .handle(
+        new Request("https://hub.example.test/api/integrations/forgejo/webhook/missing", {
+          method: "POST",
+        }),
+      );
+    assert.equal(webhook.status, 400);
   });
 });
 

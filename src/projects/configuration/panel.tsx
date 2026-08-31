@@ -12,10 +12,12 @@ import { cn } from "../../lib/utils.js";
 import { useRouteTenant } from "../context.js";
 import type { ManualConfigurationSaveResult } from "../dashboard.js";
 import {
+  availableForgejoRepositories,
   availableGitHubRepositories,
   saveManualConfiguration,
   switchConfigurationToManual,
   syncProjectConfiguration,
+  useForgejoConfiguration,
   useGitHubConfiguration,
 } from "../functions.js";
 import {
@@ -63,21 +65,36 @@ function ProjectConfigurationScreen() {
     ManualConfigurationSaveResult
   >(saveManualConfiguration, queryClient, scope);
   const configure = useProjectCommand(useGitHubConfiguration, queryClient, scope);
+  const configureForgejo = useProjectCommand(useForgejoConfiguration, queryClient, scope);
   const loadRepositories = useServerFn(availableGitHubRepositories);
+  const loadForgejoRepositories = useServerFn(availableForgejoRepositories);
   const repositories = useQuery({
     queryKey: ["github-repositories", tenant.organization.id, tenant.project?.id],
     queryFn: () => loadRepositories({ data: scope }),
   });
-  const [sourceMode, setSourceMode] = useState<"manual" | "github" | null>(null);
+  const forgejoRepositories = useQuery({
+    queryKey: ["forgejo-repositories", tenant.organization.id, tenant.project?.id],
+    queryFn: () => loadForgejoRepositories({ data: scope }),
+  });
+  const [sourceMode, setSourceMode] = useState<"manual" | "github" | "forgejo" | null>(null);
   const [stagedRepository, setStagedRepository] = useState<ComboboxRepository | null>(null);
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const configuration = data.configuration;
-  const mode = sourceMode ?? (configuration.authority === "github" ? "github" : "manual");
-  const selectMode = (next: "manual" | "github") => {
+  const mode =
+    sourceMode ??
+    (configuration.authority === "github" || configuration.authority === "forgejo"
+      ? configuration.authority
+      : "manual");
+  const selectMode = (next: "manual" | "github" | "forgejo") => {
     setSourceMode(next);
     setStagedRepository(null);
-    if (next === "manual" && configuration.authority === "github") manual.mutate({ data: scope });
+    if (
+      next === "manual" &&
+      (configuration.authority === "github" || configuration.authority === "forgejo")
+    ) {
+      manual.mutate({ data: scope });
+    }
   };
   return (
     <>
@@ -85,7 +102,7 @@ function ProjectConfigurationScreen() {
         title="Configuration"
         description={`Setup and source for ${data.project.name}.`}
       />
-      <CommandError mutations={[sync, manual, save, configure]} />
+      <CommandError mutations={[sync, manual, save, configure, configureForgejo]} />
       <ManualConfigurationResult result={save.data} />
       <ConfigurationWorkbench
         key={configuration.activeRevision?.id ?? "none"}
@@ -106,11 +123,16 @@ function ProjectConfigurationScreen() {
             switchToManualPending={manual.isPending}
             repositories={repositories.data?.status === "ok" ? repositories.data.data : []}
             repositoriesLoading={repositories.isPending}
+            forgejoRepositories={
+              forgejoRepositories.data?.status === "ok" ? forgejoRepositories.data.data : []
+            }
+            forgejoRepositoriesLoading={forgejoRepositories.isPending}
             stagedRepository={stagedRepository}
             onStageRepository={setStagedRepository}
             onSaveRepository={() => {
               if (stagedRepository === null) return;
-              configure.mutate(
+              const command = mode === "forgejo" ? configureForgejo : configure;
+              command.mutate(
                 {
                   data: {
                     ...scope,
@@ -121,7 +143,7 @@ function ProjectConfigurationScreen() {
                 { onSuccess: () => setStagedRepository(null) },
               );
             }}
-            saveRepositoryPending={configure.isPending}
+            saveRepositoryPending={configure.isPending || configureForgejo.isPending}
             onSync={() => sync.mutate({ data: scope })}
             syncPending={sync.isPending}
           />
@@ -221,6 +243,11 @@ function ConfigurationWorkbench({
               GitHub-managed. Switch the source to Manual to change it here.
             </span>
           ) : null}
+          {!editable && configuration.authority === "forgejo" ? (
+            <span className="text-xs text-muted-foreground">
+              Forgejo-managed. Switch the source to Manual to change it here.
+            </span>
+          ) : null}
           {editable && !editing ? (
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
               Edit
@@ -287,8 +314,7 @@ function RevisionSummary({ revision }: { revision: Configuration["activeRevision
         <div className="rounded-md border px-2.5 py-2">
           <p className="text-sm">Revision {revision.version}</p>
           <p className="text-xs text-muted-foreground">
-            {revision.sourceKind === "github" ? "GitHub-managed" : "Manual"} ·{" "}
-            {formatDate(revision.createdAt)}
+            {revisionSourceKindLabel(revision.sourceKind)} · {formatDate(revision.createdAt)}
           </p>
         </div>
       )}
@@ -418,6 +444,8 @@ function ConfigurationSource({
   switchToManualPending,
   repositories,
   repositoriesLoading,
+  forgejoRepositories,
+  forgejoRepositoriesLoading,
   stagedRepository,
   onStageRepository,
   onSaveRepository,
@@ -427,11 +455,13 @@ function ConfigurationSource({
 }: {
   configuration: Configuration;
   manageResources: boolean;
-  mode: "manual" | "github";
-  onSelectMode: (mode: "manual" | "github") => void;
+  mode: "manual" | "github" | "forgejo";
+  onSelectMode: (mode: "manual" | "github" | "forgejo") => void;
   switchToManualPending: boolean;
   repositories: ComboboxRepository[];
   repositoriesLoading: boolean;
+  forgejoRepositories: ComboboxRepository[];
+  forgejoRepositoriesLoading: boolean;
   stagedRepository: ComboboxRepository | null;
   onStageRepository: (repository: ComboboxRepository) => void;
   onSaveRepository: () => void;
@@ -439,47 +469,24 @@ function ConfigurationSource({
   onSync: () => void;
   syncPending: boolean;
 }) {
-  if (configuration.authority === "forgejo") {
-    const label =
-      configuration.sourceState.kind === "forgejo"
-        ? `Forgejo · ${configuration.sourceState.forgejoRepositoryFullName}`
-        : "Forgejo";
-    return (
-      <div className="grid gap-1.5">
-        <RailLabel>Source</RailLabel>
-        <p className="text-sm text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            <ProviderGlyph provider="forgejo" />
-            {label}. Configuration synchronization is not available yet.
-          </span>
-        </p>
-      </div>
-    );
-  }
-
-  const currentRepository: ComboboxRepository | null =
-    configuration.sourceState.kind === "github"
-      ? {
-          connectionId: configuration.sourceState.githubConnectionId,
-          repositoryId: configuration.sourceState.githubRepositoryId,
-          fullName: configuration.sourceState.githubRepositoryFullName,
-          defaultBranch: configuration.sourceState.githubDefaultBranch,
-        }
-      : null;
-
+  const currentRepository = currentSourceRepository(configuration);
   if (!manageResources) {
     return (
       <div className="grid gap-1.5">
         <RailLabel>Source</RailLabel>
-        <p className="text-sm text-muted-foreground">
-          {currentRepository === null ? "Manual" : `GitHub · ${currentRepository.fullName}`}
-        </p>
+        <p className="text-sm text-muted-foreground">{sourceLabel(configuration)}</p>
       </div>
     );
   }
 
-  const manualUnavailable =
-    configuration.authority === "github" && configuration.activeRevision === null;
+  const repositoryBacked =
+    configuration.authority === "github" || configuration.authority === "forgejo";
+  const manualUnavailable = repositoryBacked && configuration.activeRevision === null;
+  const listed = mode === "forgejo" ? forgejoRepositories : repositories;
+  const listedLoading = mode === "forgejo" ? forgejoRepositoriesLoading : repositoriesLoading;
+  const syncingThisSource =
+    (mode === "github" && configuration.authority === "github") ||
+    (mode === "forgejo" && configuration.authority === "forgejo");
 
   return (
     <div className="grid gap-2">
@@ -493,7 +500,9 @@ function ConfigurationSource({
           active={mode === "manual"}
           disabled={switchToManualPending || manualUnavailable}
           title={
-            manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined
+            manualUnavailable
+              ? "Sync a repository-backed revision before switching to manual."
+              : undefined
           }
           onClick={() => onSelectMode("manual")}
         >
@@ -507,12 +516,20 @@ function ConfigurationSource({
           <ProviderGlyph provider="github" />
           GitHub
         </SourceModeButton>
+        <SourceModeButton
+          active={mode === "forgejo"}
+          disabled={switchToManualPending}
+          onClick={() => onSelectMode("forgejo")}
+        >
+          <ProviderGlyph provider="forgejo" />
+          Forgejo
+        </SourceModeButton>
       </div>
-      {mode === "github" ? (
+      {mode === "github" || mode === "forgejo" ? (
         <div className="grid gap-2">
           <RepositoryCombobox
-            repositories={repositories}
-            loading={repositoriesLoading}
+            repositories={listed}
+            loading={listedLoading}
             selected={stagedRepository ?? currentRepository}
             placeholder="Select repository…"
             disabled={saveRepositoryPending}
@@ -527,7 +544,7 @@ function ConfigurationSource({
             >
               Save
             </Button>
-            {configuration.authority === "github" ? (
+            {syncingThisSource ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -539,7 +556,7 @@ function ConfigurationSource({
               </Button>
             ) : null}
           </div>
-          {configuration.authority === "github" ? (
+          {syncingThisSource ? (
             <p role="status" className="text-xs text-muted-foreground">
               {configuration.lastSyncAttempt === null
                 ? "No synchronization attempt yet."
@@ -554,6 +571,42 @@ function ConfigurationSource({
       )}
     </div>
   );
+}
+
+function currentSourceRepository(configuration: Configuration): ComboboxRepository | null {
+  if (configuration.sourceState.kind === "github") {
+    return {
+      connectionId: configuration.sourceState.githubConnectionId,
+      repositoryId: configuration.sourceState.githubRepositoryId,
+      fullName: configuration.sourceState.githubRepositoryFullName,
+      defaultBranch: configuration.sourceState.githubDefaultBranch,
+    };
+  }
+  if (configuration.sourceState.kind === "forgejo") {
+    return {
+      connectionId: configuration.sourceState.forgejoConnectionId,
+      repositoryId: configuration.sourceState.forgejoRepositoryId,
+      fullName: configuration.sourceState.forgejoRepositoryFullName,
+      defaultBranch: configuration.sourceState.forgejoDefaultBranch,
+    };
+  }
+  return null;
+}
+
+function sourceLabel(configuration: Configuration): string {
+  if (configuration.sourceState.kind === "github") {
+    return `GitHub · ${configuration.sourceState.githubRepositoryFullName}`;
+  }
+  if (configuration.sourceState.kind === "forgejo") {
+    return `Forgejo · ${configuration.sourceState.forgejoRepositoryFullName}`;
+  }
+  return "Manual";
+}
+
+function revisionSourceKindLabel(sourceKind: "github" | "manual" | "forgejo"): string {
+  if (sourceKind === "github") return "GitHub-managed";
+  if (sourceKind === "forgejo") return "Forgejo-managed";
+  return "Manual";
 }
 
 function SourceModeButton({

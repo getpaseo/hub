@@ -122,6 +122,75 @@ export const enrollForgejoRepositories = createServerFn({ method: "POST" })
     return readConnectionList();
   });
 
+const hookStatusSchema = z.enum([
+  "unconfigured",
+  "pending_verification",
+  "active",
+  "manual_pending",
+  "drifted",
+  "cleanup_failed",
+]);
+
+const hookViewSchema = z.object({
+  repositoryId: z.number(),
+  fullName: z.string(),
+  htmlUrl: z.string(),
+  managed: z.boolean(),
+  status: hookStatusSchema,
+});
+
+const hookSetupSchema = z.object({
+  connectionId: z.string(),
+  callbackUrl: z.string(),
+  events: z.array(z.string()),
+  credential: z.object({ kind: z.literal("webhook_secret"), secret: z.string() }),
+  hooks: z.array(hookViewSchema),
+});
+
+export type ForgejoHookSetup = z.infer<typeof hookSetupSchema>;
+
+export const listForgejoHooks = createServerFn({ method: "GET" })
+  .validator(z.object({ connectionId: z.string().min(1) }).strict())
+  .handler(async ({ data }): Promise<Result<ForgejoHookSetup>> => {
+    return forgejoResult(
+      await handleProviderRequest(
+        "forgejo.webhook",
+        forgejoApiRequest(`/connections/${data.connectionId}/hooks`),
+      ),
+      (body) => hookSetupSchema.parse(body),
+    );
+  });
+
+export const setupForgejoHooks = createServerFn({ method: "POST" })
+  .validator(
+    z.discriminatedUnion("mode", [
+      z.object({ connectionId: z.string().min(1), mode: z.literal("manual") }).strict(),
+      z
+        .object({
+          connectionId: z.string().min(1),
+          mode: z.literal("automatic"),
+          adminPat: z.string().min(1),
+        })
+        .strict(),
+    ]),
+  )
+  .handler(async ({ data }): Promise<Result<ForgejoHookSetup>> => {
+    const body =
+      data.mode === "automatic"
+        ? { mode: "automatic", adminPat: data.adminPat }
+        : { mode: "manual" };
+    return forgejoResult(
+      await handleProviderRequest(
+        "forgejo.webhook",
+        forgejoApiRequest(`/connections/${data.connectionId}/hooks`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+      ),
+      (parsed) => hookSetupSchema.parse(parsed),
+    );
+  });
+
 async function readInstanceList(): Promise<Result<ForgejoInstanceList>> {
   return forgejoResult(
     await handleProviderRequest("forgejo.instances", forgejoApiRequest("/instances")),

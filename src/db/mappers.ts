@@ -88,6 +88,7 @@ export function toProviderEventReceiptRecord(
     receivedAt: row.received_at,
     droppedReason: row.dropped_reason,
     acceptedRoutes: parseProviderEventRouteSnapshots(row.accepted_routes),
+    bodySha256: row.body_sha256 ?? null,
   };
 }
 

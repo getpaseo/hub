@@ -1,4 +1,9 @@
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type {
+  AgentExecutionStatus,
+  ForgejoRepositoryHookStatus,
+  MachineSource,
+  MachineStatus,
+} from "./schema.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
@@ -28,6 +33,7 @@ export interface ProviderEventReceiptRecord {
   receivedAt: Date;
   droppedReason: string | null;
   acceptedRoutes: readonly ProviderEventRouteSnapshot[] | null;
+  bodySha256: string | null;
 }
 
 export interface ProviderEventReceiptSummary {
@@ -279,6 +285,11 @@ export interface GitHubConfigurationTarget extends GitHubRepositoryRecord {
   automaticDeploymentEnabled: boolean;
 }
 
+export interface ForgejoConfigurationTarget extends ForgejoRepositoryRecord {
+  projectId: string;
+  automaticDeploymentEnabled: boolean;
+}
+
 export interface ConfigurationSyncAttemptRecord {
   id: string;
   projectId: string;
@@ -506,6 +517,18 @@ export interface ForgejoRepositoryRecord {
   enrolled: boolean;
 }
 
+export interface ForgejoRepositoryHookRecord {
+  id: string;
+  organizationId: string;
+  connectionId: string;
+  repositoryId: number;
+  forgejoHookId: number | null;
+  callbackPath: string;
+  managed: boolean;
+  status: ForgejoRepositoryHookStatus;
+  lastVerifiedAt: Date | null;
+}
+
 export interface StartConnectionAttemptInput {
   provider: Exclude<ConnectionProvider, "forgejo">;
   stateVerifier: string;
@@ -657,7 +680,8 @@ export interface DurableProviderEvent {
 export type ProviderEventAcceptance =
   | { status: "accepted"; events: DurableProviderEvent[]; receiptId: string }
   | { status: "duplicate"; receiptId: string }
-  | { status: "dropped"; receiptId: string; reason: string };
+  | { status: "dropped"; receiptId: string; reason: string }
+  | { status: "conflict"; receiptId: string };
 
 export interface ProviderEventEvidence {
   deliveryId: string;
@@ -690,6 +714,13 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
 export interface AcceptLinearEventInput extends ProviderEventEvidence {
   linearOrganizationId: string;
   projectId?: string;
+}
+
+export interface AcceptForgejoEventInput extends ProviderEventEvidence {
+  organizationId: string;
+  connectionId: string;
+  repositoryId: number;
+  bodySha256: string;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {
@@ -1157,10 +1188,22 @@ export interface SetProjectGitHubConfigurationSourceInput {
   userId: string;
 }
 
+export interface SetProjectForgejoConfigurationSourceInput {
+  projectId: string;
+  forgejoConnectionId: string;
+  forgejoRepositoryId: number;
+  forgejoRepositoryFullName: string;
+  forgejoDefaultBranch: string;
+  automaticDeploymentEnabled: boolean;
+  userId: string;
+}
+
 export interface RecordConfigurationSyncAttemptInput {
   projectId: string;
-  githubConnectionId: string;
-  githubRepositoryId: number;
+  githubConnectionId?: string | null;
+  githubRepositoryId?: number | null;
+  forgejoConnectionId?: string | null;
+  forgejoRepositoryId?: number | null;
   webhookDeliveryId: string | null;
   commitSha: string;
   outcome: "activated" | "invalid" | "fetch_failed" | "superseded";
@@ -1287,6 +1330,21 @@ export interface Database {
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
   acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
+  acceptForgejoEvent(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance>;
+  listActiveTriggerDispatchTargets(input: {
+    organizationId: string;
+    provider: ConnectionProvider;
+    connectionId: string;
+    resourceId: string;
+  }): Promise<
+    readonly {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[]
+  >;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
@@ -1547,6 +1605,9 @@ export interface Database {
   setProjectGitHubConfigurationSource(
     input: SetProjectGitHubConfigurationSourceInput,
   ): Promise<void>;
+  setProjectForgejoConfigurationSource(
+    input: SetProjectForgejoConfigurationSourceInput,
+  ): Promise<void>;
   recordConfigurationSyncAttempt(
     input: RecordConfigurationSyncAttemptInput,
   ): Promise<ConfigurationSyncAttemptRecord>;
@@ -1574,6 +1635,15 @@ export interface Database {
     connectionId: string,
     repositoryId: number,
   ): Promise<GitHubConfigurationTarget[]>;
+  findForgejoConfigurationTarget(
+    projectId: string,
+    repositoryId?: number,
+  ): Promise<ForgejoConfigurationTarget | undefined>;
+  listForgejoConfigurationTargets(
+    organizationId: string,
+    connectionId: string,
+    repositoryId: number,
+  ): Promise<ForgejoConfigurationTarget[]>;
   listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]>;

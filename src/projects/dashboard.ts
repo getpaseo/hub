@@ -21,6 +21,10 @@ import {
   synchronizeGitHubDefaultBranch,
   type GitHubConfigurationProvider,
 } from "../configuration/github-sync.js";
+import {
+  synchronizeForgejoDefaultBranch,
+  type ForgejoConfigurationProvider,
+} from "../configuration/forgejo-sync.js";
 import type {
   Database,
   ProjectActivityRunListRecord,
@@ -70,6 +74,7 @@ export class ProjectDashboard {
     private readonly configurationForProject: (projectId: string) => ProjectConfigurationStore = (
       projectId,
     ) => new ProjectConfigurationStore(database, projectId),
+    private readonly forgejo?: ForgejoConfigurationProvider,
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -230,6 +235,68 @@ export class ProjectDashboard {
     });
   }
 
+  async availableForgejoRepositories(request: Request, scope: ProjectRouteScope) {
+    const { tenant } = await this.resolveProject(request, scope);
+    const connections = (await this.database.organizationConnectionUsage(tenant.organization.id))
+      .forgejo;
+    if (connections.length === 0) return [];
+    if (this.forgejo === undefined) {
+      throw new ProjectCommandError("forgejo_repositories_unavailable");
+    }
+    const repositories: Array<{
+      connectionId: string;
+      repositoryId: number;
+      fullName: string;
+      defaultBranch: string;
+    }> = [];
+    for (const connection of connections) {
+      const listed = await this.forgejo.listConnectionRepositories({
+        connectionId: connection.id,
+      });
+      repositories.push(
+        ...listed.map((repository) => ({
+          connectionId: connection.id,
+          repositoryId: repository.repositoryId,
+          fullName: repository.fullName,
+          defaultBranch: repository.defaultBranch,
+        })),
+      );
+    }
+    return repositories;
+  }
+
+  async useForgejoConfiguration(
+    request: Request,
+    scope: ProjectRouteScope,
+    input: { connectionId: string; repositoryId: number },
+  ) {
+    const { account, tenant } = await this.resolveProjectManager(request, scope);
+    const repository = (await this.availableForgejoRepositories(request, scope)).find(
+      (candidate) =>
+        candidate.connectionId === input.connectionId &&
+        candidate.repositoryId === input.repositoryId,
+    );
+    if (repository === undefined) throw new ProjectCommandError("repository_unavailable");
+    await this.database.setProjectForgejoConfigurationSource({
+      projectId: tenant.project.id,
+      forgejoConnectionId: repository.connectionId,
+      forgejoRepositoryId: repository.repositoryId,
+      forgejoRepositoryFullName: repository.fullName,
+      forgejoDefaultBranch: repository.defaultBranch,
+      automaticDeploymentEnabled: true,
+      userId: account.account.id,
+    });
+    if (this.forgejo === undefined) throw new ProjectCommandError("forgejo_sync_unavailable");
+    return synchronizeForgejoDefaultBranch({
+      database: this.database,
+      client: this.forgejo,
+      projectId: tenant.project.id,
+      repositoryId: repository.repositoryId,
+      webhookDeliveryId: null,
+      configurationForProject: this.configurationForProject,
+    });
+  }
+
   async switchConfigurationToManual(request: Request, scope: ProjectRouteScope) {
     const { account, tenant } = await this.resolveProjectManager(request, scope);
     return this.configurationForProject(tenant.project.id).switchToManual(account.account.id);
@@ -310,6 +377,19 @@ export class ProjectDashboard {
 
   async syncConfiguration(request: Request, scope: ProjectRouteScope) {
     const { tenant } = await this.resolveProjectManager(request, scope);
+    const status = await this.database.projectConfigurationReadModel(tenant.project.id);
+    if (status.authority === "forgejo") {
+      if (this.forgejo === undefined) throw new ProjectCommandError("forgejo_sync_unavailable");
+      const result = await synchronizeForgejoDefaultBranch({
+        database: this.database,
+        client: this.forgejo,
+        projectId: tenant.project.id,
+        webhookDeliveryId: null,
+        configurationForProject: this.configurationForProject,
+      });
+      if (result === undefined) throw new ProjectCommandError("forgejo_sync_unavailable");
+      return result;
+    }
     if (this.github === undefined) throw new ProjectCommandError("github_sync_unavailable");
     const result = await synchronizeGitHubDefaultBranch({
       database: this.database,

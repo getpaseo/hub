@@ -36,10 +36,12 @@ import type {
   StartConnectionAttemptInput,
   SwitchProjectConfigurationToManualInput,
   SetProjectGitHubConfigurationSourceInput,
+  SetProjectForgejoConfigurationSourceInput,
   RecordConfigurationSyncAttemptInput,
   ConfigurationSyncAttemptRecord,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptForgejoEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   DurableProviderEvent,
@@ -58,6 +60,7 @@ import type {
   TenantRouteAccess,
   GitHubConnectionRecord,
   GitHubConfigurationTarget,
+  ForgejoConfigurationTarget,
   DiscordConnectionRecord,
   SlackConnectionRecord,
   LinearConnectionRecord,
@@ -160,6 +163,7 @@ class MemoryDatabase implements Database {
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
+  private readonly providerEventReceiptIdsByForgejoDelivery = new Map<string, string>();
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
@@ -193,6 +197,16 @@ class MemoryDatabase implements Database {
       githubRepositoryId: number;
       githubRepositoryFullName: string;
       githubDefaultBranch: string;
+      automaticDeploymentEnabled: boolean;
+    }
+  >();
+  private readonly forgejoConfigurationSources = new Map<
+    string,
+    {
+      forgejoConnectionId: string;
+      forgejoRepositoryId: number;
+      forgejoRepositoryFullName: string;
+      forgejoDefaultBranch: string;
       automaticDeploymentEnabled: boolean;
     }
   >();
@@ -1062,6 +1076,124 @@ class MemoryDatabase implements Database {
       input.projectId ?? null,
       reason,
     );
+  }
+
+  async acceptForgejoEvent(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance> {
+    return this.withAdvisoryLock(`forgejo-receipt:${input.connectionId}:${input.deliveryId}`, () =>
+      this.acceptForgejoEventLocked(input),
+    );
+  }
+
+  async listActiveTriggerDispatchTargets(input: {
+    organizationId: string;
+    provider: ConnectionProvider;
+    connectionId: string;
+    resourceId: string;
+  }): Promise<
+    readonly {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[]
+  > {
+    const seen = new Set<string>();
+    const targets: {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[] = [];
+    for (const [projectId, candidates] of this.projectTriggerRoutes.entries()) {
+      const project = this.projects.get(projectId);
+      if (
+        project?.status !== "active" ||
+        project.organizationId !== input.organizationId ||
+        project.activeConfigurationRevisionId === null
+      ) {
+        continue;
+      }
+      const match = candidates.find(
+        (route) =>
+          route.provider === input.provider &&
+          route.connectionId === input.connectionId &&
+          (route.resourceId === null || route.resourceId === input.resourceId),
+      );
+      if (match === undefined || seen.has(projectId)) continue;
+      seen.add(projectId);
+      targets.push({
+        projectId,
+        organizationId: project.organizationId,
+        configurationRevisionId: project.activeConfigurationRevisionId,
+        connectionId: match.connectionId,
+        resourceId: match.resourceId,
+      });
+    }
+    return targets;
+  }
+
+  private async acceptForgejoEventLocked(
+    input: AcceptForgejoEventInput,
+  ): Promise<ProviderEventAcceptance> {
+    const connection = await this.forgejo.findConnectionById(input.connectionId);
+    if (connection === undefined || connection.organizationId !== input.organizationId) {
+      return { status: "dropped", receiptId: input.deliveryId, reason: "forgejo_unbound" };
+    }
+    const existingId = this.providerEventReceiptIdsByForgejoDelivery.get(
+      forgejoDeliveryKey(input.connectionId, input.deliveryId),
+    );
+    if (existingId !== undefined) {
+      const receipt = this.providerEventReceipts.get(existingId);
+      if (receipt === undefined) throw new Error("provider receipt unavailable");
+      if (receipt.bodySha256 !== input.bodySha256) {
+        return { status: "conflict", receiptId: receipt.id };
+      }
+      if (receipt.droppedReason !== null) {
+        return { status: "dropped", receiptId: receipt.id, reason: receipt.droppedReason };
+      }
+      if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId: receipt.id };
+      return {
+        status: "accepted",
+        receiptId: receipt.id,
+        events: receipt.acceptedRoutes.map((route) => ({
+          providerEventReceiptId: receipt.id,
+          organizationId: receipt.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: receipt.deliveryId,
+          source: receipt.source,
+          payload: receipt.payload,
+          receivedAt: receipt.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        })),
+      };
+    }
+    const receipt = this.insertProviderEventReceipt({
+      organizationId: connection.organizationId,
+      provider: "forgejo",
+      connectionId: connection.id,
+      resourceId: String(input.repositoryId),
+      input: {
+        deliveryId: input.deliveryId,
+        source: input.source,
+        payload: input.payload,
+        receivedAt: input.receivedAt,
+        bodySha256: input.bodySha256,
+        ...(input.signatureHash === undefined ? {} : { signatureHash: input.signatureHash }),
+        ...(input.providerApplicationId === undefined
+          ? {}
+          : { providerApplicationId: input.providerApplicationId }),
+        ...(input.providerConfigurationVersion === undefined
+          ? {}
+          : { providerConfigurationVersion: input.providerConfigurationVersion }),
+        ...(input.repo === undefined ? {} : { repo: input.repo }),
+        ...(input.dropReason === undefined ? {} : { dropReason: input.dropReason }),
+      },
+    });
+    return { status: "accepted", events: [], receiptId: receipt.id };
   }
 
   async persistManualEvent(input: PersistManualEventInput) {
@@ -2717,6 +2849,7 @@ class MemoryDatabase implements Database {
     });
     this.configurationAuthorities.set(input.projectId, "manual");
     this.githubConfigurationSources.delete(input.projectId);
+    this.forgejoConfigurationSources.delete(input.projectId);
     return this.activateProjectConfigurationRevision(input.projectId, revision.id, input.routes);
   }
 
@@ -2726,11 +2859,28 @@ class MemoryDatabase implements Database {
     const project = this.projects.get(input.projectId);
     if (project?.status !== "active") throw new Error("project access denied");
     this.configurationAuthorities.set(input.projectId, "github");
+    this.forgejoConfigurationSources.delete(input.projectId);
     this.githubConfigurationSources.set(input.projectId, {
       githubConnectionId: input.githubConnectionId,
       githubRepositoryId: input.githubRepositoryId,
       githubRepositoryFullName: input.githubRepositoryFullName,
       githubDefaultBranch: input.githubDefaultBranch,
+      automaticDeploymentEnabled: input.automaticDeploymentEnabled,
+    });
+  }
+
+  async setProjectForgejoConfigurationSource(
+    input: SetProjectForgejoConfigurationSourceInput,
+  ): Promise<void> {
+    const project = this.projects.get(input.projectId);
+    if (project?.status !== "active") throw new Error("project access denied");
+    this.configurationAuthorities.set(input.projectId, "forgejo");
+    this.githubConfigurationSources.delete(input.projectId);
+    this.forgejoConfigurationSources.set(input.projectId, {
+      forgejoConnectionId: input.forgejoConnectionId,
+      forgejoRepositoryId: input.forgejoRepositoryId,
+      forgejoRepositoryFullName: input.forgejoRepositoryFullName,
+      forgejoDefaultBranch: input.forgejoDefaultBranch,
       automaticDeploymentEnabled: input.automaticDeploymentEnabled,
     });
   }
@@ -2741,10 +2891,10 @@ class MemoryDatabase implements Database {
     const attempt: ConfigurationSyncAttemptRecord = {
       id: randomUUID(),
       projectId: input.projectId,
-      githubConnectionId: input.githubConnectionId,
-      githubRepositoryId: input.githubRepositoryId,
-      forgejoConnectionId: null,
-      forgejoRepositoryId: null,
+      githubConnectionId: input.githubConnectionId ?? null,
+      githubRepositoryId: input.githubRepositoryId ?? null,
+      forgejoConnectionId: input.forgejoConnectionId ?? null,
+      forgejoRepositoryId: input.forgejoRepositoryId ?? null,
       webhookDeliveryId: input.webhookDeliveryId,
       commitSha: input.commitSha,
       outcome: input.outcome,
@@ -2767,6 +2917,7 @@ class MemoryDatabase implements Database {
       sourceState: memoryConfigurationSourceState(
         authority,
         this.githubConfigurationSources.get(projectId),
+        this.forgejoConfigurationSources.get(projectId),
       ),
     };
   }
@@ -2891,6 +3042,53 @@ class MemoryDatabase implements Database {
             },
           ];
     });
+  }
+
+  async findForgejoConfigurationTarget(
+    projectId: string,
+    repositoryId?: number,
+  ): Promise<ForgejoConfigurationTarget | undefined> {
+    const source = this.forgejoConfigurationSources.get(projectId);
+    if (
+      source === undefined ||
+      (repositoryId !== undefined && source.forgejoRepositoryId !== repositoryId)
+    ) {
+      return undefined;
+    }
+    const repository = (
+      await this.forgejo.listRepositoriesForConnection(source.forgejoConnectionId)
+    ).find(
+      (candidate) => candidate.repositoryId === source.forgejoRepositoryId && candidate.enrolled,
+    );
+    return repository === undefined
+      ? undefined
+      : {
+          ...repository,
+          projectId,
+          automaticDeploymentEnabled: source.automaticDeploymentEnabled,
+        };
+  }
+
+  async listForgejoConfigurationTargets(
+    organizationId: string,
+    connectionId: string,
+    repositoryId: number,
+  ): Promise<ForgejoConfigurationTarget[]> {
+    const matches: ForgejoConfigurationTarget[] = [];
+    for (const [projectId, source] of this.forgejoConfigurationSources) {
+      const project = this.projects.get(projectId);
+      if (
+        project?.organizationId !== organizationId ||
+        project.status !== "active" ||
+        source.forgejoConnectionId !== connectionId ||
+        source.forgejoRepositoryId !== repositoryId
+      ) {
+        continue;
+      }
+      const target = await this.findForgejoConfigurationTarget(projectId, repositoryId);
+      if (target !== undefined) matches.push(target);
+    }
+    return matches;
   }
 
   async listUnroutedProviderEventsForOrganization(organizationId: string) {
@@ -3179,6 +3377,7 @@ class MemoryDatabase implements Database {
       payload: unknown;
       receivedAt: Date;
       dropReason?: string;
+      bodySha256?: string | null;
     };
   }): ProviderEventReceiptRecord {
     const receipt: ProviderEventReceiptRecord = {
@@ -3197,12 +3396,20 @@ class MemoryDatabase implements Database {
       receivedAt: input.input.receivedAt,
       droppedReason: input.input.dropReason ?? null,
       acceptedRoutes: null,
+      bodySha256: input.input.bodySha256 ?? null,
     };
     this.providerEventReceipts.set(receipt.id, receipt);
-    this.providerEventReceiptIdsByDelivery.set(
-      triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
-      receipt.id,
-    );
+    if (receipt.provider === "forgejo" && receipt.connectionId !== null) {
+      this.providerEventReceiptIdsByForgejoDelivery.set(
+        forgejoDeliveryKey(receipt.connectionId, receipt.deliveryId),
+        receipt.id,
+      );
+    } else {
+      this.providerEventReceiptIdsByDelivery.set(
+        triggerDeliveryKey(receipt.organizationId, receipt.deliveryId),
+        receipt.id,
+      );
+    }
     if (receipt.signatureHash !== null) {
       this.providerEventReceiptIdsBySignature.set(receipt.signatureHash, receipt.id);
     }
@@ -3300,36 +3507,59 @@ interface MemoryCliAuthorization extends CliAuthorizationRecord {
 
 function memoryConfigurationSourceState(
   authority: "manual" | "github" | "forgejo",
-  github:
-    | {
-        githubConnectionId: string;
-        githubRepositoryId: number;
-        githubRepositoryFullName: string;
-        githubDefaultBranch: string;
-        automaticDeploymentEnabled: boolean;
-      }
-    | undefined,
+  github: MemoryGitHubConfigurationSource | undefined,
+  forgejo: MemoryForgejoConfigurationSource | undefined,
 ): ProjectConfigurationReadModel["sourceState"] {
   if (authority === "manual") {
     return { kind: "manual", formattingPreserved: false };
   }
   if (authority === "forgejo") {
-    return {
-      kind: "forgejo",
-      forgejoConnectionId: "unavailable",
-      forgejoRepositoryId: 0,
-      forgejoRepositoryFullName: "unavailable",
-      forgejoDefaultBranch: "main",
-      automaticDeploymentEnabled: false,
-    };
+    return memoryForgejoSourceState(forgejo);
   }
+  return memoryGitHubSourceState(github);
+}
+
+interface MemoryGitHubConfigurationSource {
+  githubConnectionId: string;
+  githubRepositoryId: number;
+  githubRepositoryFullName: string;
+  githubDefaultBranch: string;
+  automaticDeploymentEnabled: boolean;
+}
+
+interface MemoryForgejoConfigurationSource {
+  forgejoConnectionId: string;
+  forgejoRepositoryId: number;
+  forgejoRepositoryFullName: string;
+  forgejoDefaultBranch: string;
+  automaticDeploymentEnabled: boolean;
+}
+
+function memoryForgejoSourceState(
+  forgejo: MemoryForgejoConfigurationSource | undefined,
+): Extract<ProjectConfigurationReadModel["sourceState"], { kind: "forgejo" }> {
+  return {
+    kind: "forgejo",
+    forgejoConnectionId: forgejo === undefined ? "unavailable" : forgejo.forgejoConnectionId,
+    forgejoRepositoryId: forgejo === undefined ? 0 : forgejo.forgejoRepositoryId,
+    forgejoRepositoryFullName:
+      forgejo === undefined ? "unavailable" : forgejo.forgejoRepositoryFullName,
+    forgejoDefaultBranch: forgejo === undefined ? "main" : forgejo.forgejoDefaultBranch,
+    automaticDeploymentEnabled: forgejo === undefined ? false : forgejo.automaticDeploymentEnabled,
+  };
+}
+
+function memoryGitHubSourceState(
+  github: MemoryGitHubConfigurationSource | undefined,
+): Extract<ProjectConfigurationReadModel["sourceState"], { kind: "github" }> {
   return {
     kind: "github",
-    githubConnectionId: github?.githubConnectionId ?? "unavailable",
-    githubRepositoryId: github?.githubRepositoryId ?? 0,
-    githubRepositoryFullName: github?.githubRepositoryFullName ?? "unavailable",
-    githubDefaultBranch: github?.githubDefaultBranch ?? "main",
-    automaticDeploymentEnabled: github?.automaticDeploymentEnabled ?? false,
+    githubConnectionId: github === undefined ? "unavailable" : github.githubConnectionId,
+    githubRepositoryId: github === undefined ? 0 : github.githubRepositoryId,
+    githubRepositoryFullName:
+      github === undefined ? "unavailable" : github.githubRepositoryFullName,
+    githubDefaultBranch: github === undefined ? "main" : github.githubDefaultBranch,
+    automaticDeploymentEnabled: github === undefined ? false : github.automaticDeploymentEnabled,
   };
 }
 
@@ -3375,6 +3605,10 @@ function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
 
 function triggerDeliveryKey(organizationId: string, deliveryId: string): string {
   return `${organizationId}:${deliveryId}`;
+}
+
+function forgejoDeliveryKey(connectionId: string, deliveryId: string): string {
+  return `${connectionId}:${deliveryId}`;
 }
 
 function freezeEvidence<T>(value: T): T {
