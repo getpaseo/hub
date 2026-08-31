@@ -20,6 +20,10 @@ import {
   createForgejoItemSource,
   createForgejoItemTriggerProvider,
 } from "../../triggers/forgejo/items.js";
+import {
+  createForgejoCommentSource,
+  createForgejoCommentTriggerProvider,
+} from "../../triggers/forgejo/comments.js";
 import { createForgejoPushSource } from "../../triggers/forgejo/push.js";
 import { createForgejoTriggerProvider } from "../../triggers/forgejo/provider.js";
 import type { AcceptVerifiedForgejoDelivery } from "../../triggers/forgejo/webhook.js";
@@ -34,6 +38,7 @@ import { handleForgejoWebhookRequest } from "./hooks.js";
 import { createForgejoHydrationClient } from "./hydration-client.js";
 import { createForgejoHydrationReactionClient } from "../../triggers/forgejo/hydration-reactions.js";
 import { createForgejoItemReactionClient } from "../../triggers/forgejo/item-reactions.js";
+import { createForgejoCommentReactionClient } from "../../triggers/forgejo/comment-reactions.js";
 import {
   createDefaultForgejoHttp,
   handleForgejoInstancesRequest,
@@ -177,10 +182,17 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
           connectionFor: connectionContext,
           reactions: createForgejoItemReactionClient({ directory, http, secrets }),
         }),
+      ({ configurationStoreForProject }) =>
+        createForgejoCommentTriggerProvider({
+          configurationStoreForProject,
+          connectionFor: connectionContext,
+          reactions: createForgejoCommentReactionClient({ directory, http, secrets }),
+        }),
     ],
     sources: [
       createForgejoPushSource({ database }),
       createForgejoItemSource({ database }),
+      createForgejoCommentSource({ database }),
       createForgejoHydrationSource({
         store: hydrationStore,
         client: hydrationClient,

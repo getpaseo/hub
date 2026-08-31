@@ -19,6 +19,10 @@ const T08_OWNED_EVENT_NAMES = new Set([
   "forgejo.pull_request",
   "forgejo.issue_created",
   "forgejo.pull_request_created",
+  "forgejo.issue_comment",
+  "forgejo.issue_comment_created",
+  "forgejo.pull_request_comment_created",
+  "forgejo.pull_request_comment",
 ]);
 
 export interface ForgejoTriggerContext {
