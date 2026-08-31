@@ -1050,7 +1050,6 @@ export interface MigrateProjectTriggerInput {
   normalizedConfiguration: unknown;
   contentHash: string;
   sourceEvidence: unknown;
-  routes: readonly OrganizationTriggerRoute[];
 }
 
 export interface MigrateProjectTriggersInput {

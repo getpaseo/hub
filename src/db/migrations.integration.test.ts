@@ -20,7 +20,6 @@ import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
-import { OrganizationTriggerStore } from "../triggers/store.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
 
 const LEGACY_MIGRATIONS = join(process.cwd(), "src/db/migrations");
@@ -1079,7 +1078,7 @@ describe("database migration application", () => {
             name: "single",
             on: "slack.mention",
             max_runtime: "2h",
-            filters: { connection: "startup-slack", from_users: ["U1"] },
+            filters: { from_users: ["U1"] },
             steps: [
               {
                 id: "work",
@@ -1171,15 +1170,6 @@ describe("database migration application", () => {
       assert.notEqual(multi.runtimeProjectId, project.id);
       assert.notEqual(single.runtimeProjectId, multi.runtimeProjectId);
       assert.equal((await database.listProjectsForOrganization("organization-a")).length, 0);
-      const singleRevision = await database.findOrganizationTriggerRevision(
-        single.id,
-        single.activeRevisionId,
-      );
-      await new OrganizationTriggerStore(database, "organization-a").save({
-        triggerId: single.id,
-        yaml: singleRevision!.yaml,
-        userId: "project-user",
-      });
       const accepted = await database.acceptSlackEvent({
         teamId: "startup-team",
         deliveryId: "organization-trigger-adapter-route",
@@ -1194,6 +1184,109 @@ describe("database migration application", () => {
     } finally {
       await database.close();
     }
+  }, 120_000);
+
+  it("repairs implicit provider routes lost by the project trigger migration", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "restore_implicit_trigger_routes",
+      through: "0044_charming_clint_barton",
+    });
+    await poolQuery(
+      url,
+      `insert into organization (id, name, slug)
+         values ('route-repair-org', 'Route repair', 'route-repair');
+       insert into slack_connections
+         (id, organization_id, team_id, slug, team_name, bot_user_id, bot_access_token, scopes)
+         values ('10000000-0000-4000-8000-000000000001', 'route-repair-org',
+                 'route-repair-team', 'route-repair-slack', 'Route repair Slack',
+                 'route-repair-bot', 'test-token', '[]'::jsonb);
+       insert into discord_connections
+         (id, organization_id, guild_id, slug, guild_name)
+         values ('10000000-0000-4000-8000-000000000002', 'route-repair-org',
+                 'route-repair-guild', 'route-repair-discord', 'Route repair Discord');
+       insert into projects (id, organization_id, name, slug) values
+         ('20000000-0000-4000-8000-000000000001', 'route-repair-org',
+          'Slack runtime', 'route-repair-slack-runtime'),
+         ('20000000-0000-4000-8000-000000000002', 'route-repair-org',
+          'Discord runtime', 'route-repair-discord-runtime');
+       insert into project_configuration_revisions
+         (id, project_id, organization_id, version, source_kind, source_evidence,
+          normalized_configuration, content_hash, validated_at) values
+         ('30000000-0000-4000-8000-000000000001',
+          '20000000-0000-4000-8000-000000000001', 'route-repair-org', 1, 'manual', '{}',
+          '{"environments":[],"triggers":[{"name":"slack","on":"slack.mention"}]}',
+          'slack-runtime', now()),
+         ('30000000-0000-4000-8000-000000000002',
+          '20000000-0000-4000-8000-000000000002', 'route-repair-org', 1, 'manual', '{}',
+          '{"environments":[],"triggers":[{"name":"discord","on":"discord.mention"}]}',
+          'discord-runtime', now());
+       update projects set active_configuration_revision_id =
+         case id
+           when '20000000-0000-4000-8000-000000000001'
+             then '30000000-0000-4000-8000-000000000001'::uuid
+           else '30000000-0000-4000-8000-000000000002'::uuid
+         end
+         where organization_id = 'route-repair-org';
+       insert into organization_triggers
+         (id, organization_id, name, enabled, format, runtime_project_id) values
+         ('40000000-0000-4000-8000-000000000001', 'route-repair-org', 'slack', true,
+          'legacy_multistep', '20000000-0000-4000-8000-000000000001'),
+         ('40000000-0000-4000-8000-000000000002', 'route-repair-org', 'discord', true,
+          'legacy_multistep', '20000000-0000-4000-8000-000000000002');
+       insert into organization_trigger_revisions
+         (id, trigger_id, organization_id, version, yaml, normalized_configuration,
+          content_hash, source_kind, source_evidence) values
+         ('50000000-0000-4000-8000-000000000001',
+          '40000000-0000-4000-8000-000000000001', 'route-repair-org', 1, 'slack',
+          '{"environments":[],"triggers":[{"name":"slack","on":"slack.mention"}]}',
+          'slack-trigger', 'project_migration', '{}'),
+         ('50000000-0000-4000-8000-000000000002',
+          '40000000-0000-4000-8000-000000000002', 'route-repair-org', 1, 'discord',
+          '{"environments":[],"triggers":[{"name":"discord","on":"discord.mention"}]}',
+          'discord-trigger', 'project_migration', '{}');
+       update organization_triggers set active_revision_id =
+         case id
+           when '40000000-0000-4000-8000-000000000001'
+             then '50000000-0000-4000-8000-000000000001'::uuid
+           else '50000000-0000-4000-8000-000000000002'::uuid
+         end
+         where organization_id = 'route-repair-org'`,
+    );
+    const client = await createPostgresQueryRuntime(url);
+    try {
+      const migration = await readFile(
+        join(DRIZZLE_MIGRATIONS, "0045_restore_implicit_trigger_routes.sql"),
+        "utf8",
+      );
+      await applyMigration(client, migration);
+      await applyMigration(client, migration);
+    } finally {
+      await client.close();
+    }
+
+    const repaired = await poolQuery<{
+      provider: string;
+      organization_routes: number;
+      project_routes: number;
+    }>(
+      url,
+      `select provider,
+              count(*) filter (where route_kind = 'organization')::integer as organization_routes,
+              count(*) filter (where route_kind = 'project')::integer as project_routes
+       from (
+         select provider, 'organization' as route_kind from organization_trigger_routes
+         where organization_id = 'route-repair-org'
+         union all
+         select provider, 'project' from project_trigger_routes
+         where organization_id = 'route-repair-org'
+       ) routes
+       group by provider order by provider`,
+    );
+    assert.deepEqual(repaired.rows, [
+      { provider: "discord", organization_routes: 1, project_routes: 1 },
+      { provider: "slack", organization_routes: 1, project_routes: 1 },
+    ]);
   }, 120_000);
 
   it("rolls back every trigger when an atomic project migration fails", async () => {
@@ -1213,7 +1306,6 @@ describe("database migration application", () => {
         normalizedConfiguration: { environments: [], triggers: [] },
         contentHash: "valid",
         sourceEvidence: { legacyProjectId: project.id },
-        routes: [],
       };
       const input: MigrateProjectTriggersInput = {
         projectId: project.id,

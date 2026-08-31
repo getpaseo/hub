@@ -2827,13 +2827,50 @@ class PgDatabase implements Database {
         throw new Error("project configuration changed during trigger migration");
       }
 
+      const legacyRouteRows = await client.query<{
+        provider: ConnectionProvider;
+        connection_id: string;
+        resource_id: string | null;
+        trigger_name: string;
+      }>(
+        `select provider, connection_id::text, resource_id, trigger_name
+         from project_trigger_routes
+         where project_id = $1 and configuration_revision_id = $2
+         order by trigger_name, provider, connection_id, resource_id nulls first`,
+        [input.projectId, input.configurationRevisionId],
+      );
+      const configurations = input.triggers.map((candidate) =>
+        parseCompiledHubConfig(candidate.normalizedConfiguration),
+      );
+      const candidateRoutes = input.triggers.map((candidate, index) => {
+        const configuredEventName = configurations[index]!.triggers[0]?.on;
+        if (configuredEventName === undefined) {
+          throw new Error(`migrated trigger ${candidate.name} has no configured event`);
+        }
+        return legacyRouteRows.rows
+          .filter((route) => route.trigger_name === candidate.name)
+          .map((route) => ({
+            provider: route.provider,
+            connectionId: route.connection_id,
+            resourceId: route.resource_id,
+            configuredEventName,
+          }));
+      });
+      if (
+        candidateRoutes.reduce((total, routes) => total + routes.length, 0) !==
+        legacyRouteRows.rows.length
+      ) {
+        throw new Error("project trigger routes do not match migrated triggers");
+      }
+
       const names = await client.query<{ name: string }>(
         `select name from organization_triggers where organization_id = $1 for update`,
         [input.organizationId],
       );
       const occupied = new Set(names.rows.map(({ name }) => name));
       const created: OrganizationTriggerRecord[] = [];
-      for (const candidate of input.triggers) {
+      for (const [index, candidate] of input.triggers.entries()) {
+        const routes = candidateRoutes[index]!;
         const name = availableMigratedTriggerName(occupied, input.projectSlug, candidate.name);
         occupied.add(name);
         const runtimeProjectRows = await client.query<ProjectRow>(
@@ -2876,7 +2913,7 @@ class PgDatabase implements Database {
           ],
         );
         const revision = revisionRows.rows[0]!;
-        for (const route of candidate.routes) {
+        for (const route of routes) {
           await client.query(
             `insert into organization_trigger_routes (
                organization_id, trigger_id, trigger_revision_id, provider,
@@ -2910,8 +2947,8 @@ class PgDatabase implements Database {
           ],
         );
         const runtimeRevision = runtimeRevisionRows.rows[0]!;
-        const configuration = parseCompiledHubConfig(candidate.normalizedConfiguration);
-        for (const route of candidate.routes) {
+        const configuration = configurations[index]!;
+        for (const route of routes) {
           const configuredTriggerName =
             configuration.triggers.find(({ on }) => on === route.configuredEventName)?.name ??
             configuration.triggers[0]?.name ??

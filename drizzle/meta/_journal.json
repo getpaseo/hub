@@ -316,6 +316,13 @@
       "when": 1788029691057,
       "tag": "0044_charming_clint_barton",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1788178040836,
+      "tag": "0045_restore_implicit_trigger_routes",
+      "breakpoints": true
     }
   ]
 }

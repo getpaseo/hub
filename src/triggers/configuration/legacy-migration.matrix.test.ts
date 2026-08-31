@@ -122,23 +122,6 @@ describe("legacy migration compatibility matrix", () => {
     assert.doesNotMatch(trigger.yaml, /include:|partials:|steps:|environments:/u);
   });
 
-  it("carries the resolved provider route from the active normalized revision", () => {
-    const files = exhaustiveFiles();
-    const normalized = structuredClone(compileHubBundle(files).configuration);
-    normalized.triggers[0]!.filters = {
-      ...normalized.triggers[0]!.filters,
-      connectionId: "11111111-1111-4111-8111-111111111111",
-      resourceId: "T123",
-    };
-    const migrated = migrateLegacyBundle({ files, normalizedConfiguration: normalized });
-    assert.deepEqual(migrated[0]?.route, {
-      provider: "slack",
-      connectionId: "11111111-1111-4111-8111-111111111111",
-      resourceId: "T123",
-      configuredEventName: "slack.mention",
-    });
-  });
-
   it("explodes the checked-in real project fixture without dropping a workflow", () => {
     const files = fixtureBundle("src/config/fixtures/current-project");
     const migrated = migrateLegacyBundle({ files });

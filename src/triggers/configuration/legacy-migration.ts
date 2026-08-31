@@ -21,7 +21,6 @@ export type MigratedLegacyTrigger =
       yaml: string;
       compiled: ReturnType<typeof compileTriggerDocument>;
       legacySourceFile: string | null;
-      route: LegacyTriggerRoute | null;
       legacyStepIds: readonly string[];
     }
   | {
@@ -31,17 +30,9 @@ export type MigratedLegacyTrigger =
       normalized: SelfContainedLegacyTrigger;
       legacySourceFile: string | null;
       conversionBlockers: readonly string[];
-      route: LegacyTriggerRoute | null;
       authoredYaml: string;
       legacyStepIds: readonly string[];
     };
-
-export interface LegacyTriggerRoute {
-  provider: "github" | "slack" | "discord" | "linear";
-  connectionId: string;
-  resourceId: string | null;
-  configuredEventName: string;
-}
 
 export interface SelfContainedLegacyTrigger {
   trigger: CompiledTrigger;
@@ -65,7 +56,6 @@ export function migrateLegacyBundle(input: {
         ? dump(trigger, { noRefs: true, lineWidth: -1 })
         : (authoredByPath.get(sourceFile) ?? dump(trigger, { noRefs: true, lineWidth: -1 }));
     const converted = convertSingleRun(trigger, configuration);
-    const route = legacyRoute(trigger);
     return converted.success
       ? {
           format: "single_run" as const,
@@ -73,7 +63,6 @@ export function migrateLegacyBundle(input: {
           yaml: serializeTriggerDocument(converted.trigger),
           compiled: compileTriggerDocument(serializeTriggerDocument(converted.trigger)),
           legacySourceFile: sourceFile,
-          route,
           legacyStepIds: trigger.steps.map(({ id }) => id),
         }
       : {
@@ -83,7 +72,6 @@ export function migrateLegacyBundle(input: {
           normalized: { trigger, environments: configuration.environments },
           legacySourceFile: sourceFile,
           conversionBlockers: converted.blockers,
-          route,
           authoredYaml,
           legacyStepIds: trigger.steps.map(({ id }) => id),
         };
@@ -95,26 +83,6 @@ function serializeLegacyTrigger(snapshot: SelfContainedLegacyTrigger): string {
     { name: snapshot.trigger.name, legacy_multistep: snapshot },
     { noRefs: true, lineWidth: -1, sortKeys: false },
   );
-}
-
-function legacyRoute(trigger: CompiledTrigger): LegacyTriggerRoute | null {
-  const provider = trigger.on.split(".")[0];
-  const connectionId = trigger.filters?.connectionId;
-  if (
-    connectionId === undefined ||
-    (provider !== "github" &&
-      provider !== "slack" &&
-      provider !== "discord" &&
-      provider !== "linear")
-  ) {
-    return null;
-  }
-  return {
-    provider,
-    connectionId,
-    resourceId: trigger.filters?.resourceId ?? null,
-    configuredEventName: trigger.on,
-  };
 }
 
 type SingleRunConversion =
