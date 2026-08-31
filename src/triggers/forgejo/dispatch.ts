@@ -85,12 +85,18 @@ export function createForgejoClaimedHandoff(options: {
       );
       return;
     }
-    await dispatchForgejoClaimed({
+    const observation = await dispatchForgejoClaimed({
       delivery: input.delivery,
       receiptId: input.receiptId,
       connection,
       consumers: options.consumers ?? registry,
     });
+    const failed = [observation.workflow, observation.configSync, observation.hydration].find(
+      (entry) => entry.status === "failed",
+    );
+    if (failed !== undefined) {
+      throw new Error(failed.error ?? "forgejo_consumer_failed");
+    }
   };
 }
 

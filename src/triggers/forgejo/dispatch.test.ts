@@ -5,7 +5,7 @@ import {
   loadForgejoContractFixtures,
 } from "../../providers/forgejo/fake-server.js";
 import { isRecord } from "../../providers/forgejo/contract-test-read.js";
-import { dispatchForgejoClaimed } from "./dispatch.js";
+import { createForgejoClaimedHandoff, dispatchForgejoClaimed } from "./dispatch.js";
 import type { ForgejoVerifiedDelivery } from "./webhook.js";
 
 const CONNECTION = {
@@ -158,6 +158,21 @@ describe("Forgejo dual dispatch", () => {
     });
     assert.equal(observation.workflow.status, "succeeded");
     assert.equal(observation.configSync.status, "skipped");
+  });
+
+  it("rejects the claimed handoff when a required consumer fails", async () => {
+    const delivery = await verified("push-default-branch");
+    const handoff = createForgejoClaimedHandoff({
+      connectionFor: () => Promise.resolve(CONNECTION),
+      consumers: {
+        workflow: {
+          consume: async () => {
+            throw new Error("workflow_failed");
+          },
+        },
+      },
+    });
+    await assert.rejects(handoff({ delivery, receiptId: "receipt-failed" }), /workflow_failed/);
   });
 });
 

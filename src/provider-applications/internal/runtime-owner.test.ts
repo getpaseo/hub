@@ -55,6 +55,93 @@ describe("dynamic provider runtime", () => {
     assert.ok(trigger.eventNames.includes(eventName));
   });
 
+  it.each([
+    "forgejo.push",
+    "forgejo.issues",
+    "forgejo.issue_comment",
+    "forgejo.pull_request",
+  ] as const)("publishes Forgejo source %s through the activated runtime", async (eventName) => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration }) =>
+        downstreamRegistration(providerConfigurationId(configuration), [], []),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "forgejo")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+
+    const candidate = await runtime.prepare(
+      "forgejo",
+      providerConfiguration("forgejo", "F1"),
+      "https://hub.test",
+      providerIdentity("forgejo", "F1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+
+    assert.ok(trigger.eventNames.includes(eventName));
+  });
+
+  it("multiplexes Forgejo issue matching through the dynamic wrapper", async () => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: () => forgejoSplitRegistration(),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "forgejo")!;
+    await stable.sources[0]!.start(() => Promise.resolve());
+    const trigger = stable.triggerProviders[0]!({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      connectionsForProject: () => {
+        throw new Error("unused");
+      },
+    })!;
+    const candidate = await runtime.prepare(
+      "forgejo",
+      providerConfiguration("forgejo", "F1"),
+      "https://hub.test",
+      providerIdentity("forgejo", "F1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+    const matches = await trigger.match({
+      providerEventReceiptId: "receipt-1",
+      organizationId: "org-1",
+      projectId: "project-1",
+      configurationRevisionId: "rev-1",
+      source: "forgejo.issues",
+      deliveryId: "delivery-1",
+      receivedAt: new Date("2026-08-31T00:00:00.000Z"),
+      payload: {},
+    });
+    const names: string[] = [];
+    if (Array.isArray(matches)) {
+      for (const match of matches) {
+        const triggerName: unknown = Reflect.get(Object(match), "triggerName");
+        if (typeof triggerName === "string") names.push(triggerName);
+      }
+    }
+    assert.deepEqual(names, ["issue"]);
+  });
+
   it("publishes a started replacement and routes later callbacks through it", async () => {
     const started: string[] = [];
     const stopped: string[] = [];
@@ -809,6 +896,52 @@ function downstreamRegistration(
         return { kind: "file", content: id };
       },
     },
+  };
+}
+
+function forgejoSplitRegistration(): ProviderRegistration {
+  const push: TriggerProvider = {
+    name: "forgejo",
+    eventNames: ["forgejo.push"],
+    match: (external) =>
+      external.source === "forgejo.push"
+        ? Promise.resolve([
+            {
+              triggerName: "push",
+              triggerContext: { provider: "forgejo" },
+              outputContext: { provider: "forgejo" },
+              hubConfig: {},
+              invocation: { status: "accepted", prompt: "", inputs: {} },
+            },
+          ])
+        : Promise.resolve("no_trigger_for_source"),
+  };
+  const issues: TriggerProvider = {
+    name: "forgejo",
+    eventNames: ["forgejo.issues"],
+    match: (external) =>
+      external.source === "forgejo.issues"
+        ? Promise.resolve([
+            {
+              triggerName: "issue",
+              triggerContext: { provider: "forgejo" },
+              outputContext: { provider: "forgejo" },
+              hubConfig: {},
+              invocation: { status: "accepted", prompt: "", inputs: {} },
+            },
+          ])
+        : Promise.resolve("no_trigger_for_source"),
+  };
+  return {
+    connection: {
+      name: "forgejo",
+      status: () => ({ status: "connected" }),
+      actions: {},
+    },
+    triggerProviders: [() => push, () => issues],
+    sources: [{ start: () => Promise.resolve(), stop: () => Promise.resolve() }],
+    outputs: [],
+    requests: [],
   };
 }
 

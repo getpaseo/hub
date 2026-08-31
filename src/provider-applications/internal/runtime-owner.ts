@@ -15,7 +15,13 @@ import type {
   TriggerProviderResources,
 } from "../../providers/registration.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
-import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
+import type {
+  ExternalTrigger,
+  TriggerHandler,
+  TriggerProvider,
+  TriggerProviderResult,
+  TriggerSource,
+} from "../../triggers/index.js";
 import {
   PROVIDERS,
   type Provider,
@@ -27,6 +33,8 @@ import {
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
+import { FORGEJO_TRIGGER_EVENT_NAMES } from "../../triggers/forgejo/normalize.js";
+import type { ProviderEventDropReasonCode } from "../../triggers/drop-reason.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -543,38 +551,57 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   private dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
     const current = () => {
       const active = slot.active;
-      const trigger = active?.triggers[0];
-      if (active === undefined || trigger === undefined) {
+      if (active === undefined || active.triggers.length === 0) {
         throw unavailable(`${provider}_trigger_unavailable`);
       }
-      return { active, trigger };
+      return active;
     };
-    const invoke = <T>(operation: (trigger: TriggerProvider) => Promise<T>) => {
-      const selected = current();
-      return this.withLease(selected.active, () => operation(selected.trigger));
+    const invoke = <T>(
+      operation: (trigger: TriggerProvider) => Promise<T>,
+      triggerContext?: unknown,
+    ) => {
+      const active = current();
+      return this.withLease(active, async () => {
+        const targets = selectInnerTriggers(active.triggers, triggerContext);
+        const first = targets[0];
+        if (first === undefined) throw unavailable(`${provider}_trigger_unavailable`);
+        let last = await operation(first);
+        for (const trigger of targets.slice(1)) {
+          last = await operation(trigger);
+        }
+        return last;
+      });
     };
     return {
       name: provider,
       eventNames: eventNames(provider),
       match: async (external) => {
-        const selected = current();
-        return this.withLease(selected.active, () => selected.trigger.match(external));
+        const active = current();
+        return this.withLease(active, () => matchAllTriggers(active.triggers, external));
       },
       materializeLaunch: (input) =>
-        invoke((trigger) => trigger.materializeLaunch?.(input) ?? Promise.resolve({})),
+        invoke(
+          (trigger) => trigger.materializeLaunch?.(input) ?? Promise.resolve({}),
+          input.triggerContext,
+        ),
       materializeContext: (input) =>
-        invoke((trigger) => trigger.materializeContext?.(input) ?? Promise.resolve(undefined)),
+        invoke(
+          (trigger) => trigger.materializeContext?.(input) ?? Promise.resolve(undefined),
+          input.triggerContext,
+        ),
       onDispatchAccepted: (triggerContext, outputContext, reactionState) =>
         invoke(
           (trigger) =>
             trigger.onDispatchAccepted?.(triggerContext, outputContext, reactionState) ??
             Promise.resolve(),
+          triggerContext,
         ),
       onAgentExecutionStarted: (triggerContext, outputContext, reactionState) =>
         invoke(
           (trigger) =>
             trigger.onAgentExecutionStarted?.(triggerContext, outputContext, reactionState) ??
             Promise.resolve(),
+          triggerContext,
         ),
       onAgentExecutionCompleted: (triggerContext, outputContext, result, reactionState) =>
         invoke(
@@ -585,6 +612,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               result,
               reactionState,
             ) ?? Promise.resolve(),
+          triggerContext,
         ),
       onAgentExecutionFailed: (triggerContext, outputContext, reason, reactionState) =>
         invoke(
@@ -595,17 +623,20 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
               reason,
               reactionState,
             ) ?? Promise.resolve(),
+          triggerContext,
         ),
       onAgentExecutionTerminal: (executionId, triggerContext) =>
         invoke(
           (trigger) =>
             trigger.onAgentExecutionTerminal?.(executionId, triggerContext) ?? Promise.resolve(),
+          triggerContext,
         ),
       onMachineTerminated: (triggerContext, reason, reactionState) =>
         invoke(
           (trigger) =>
             trigger.onMachineTerminated?.(triggerContext, reason, reactionState) ??
             Promise.resolve(),
+          triggerContext,
         ),
     };
   }
@@ -741,8 +772,52 @@ function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
   if (provider === "linear") return ["linear.issue", "linear.comment"];
-  if (provider === "forgejo") return [];
+  if (provider === "forgejo") return [...FORGEJO_TRIGGER_EVENT_NAMES];
   return GITHUB_TRIGGER_SOURCE_NAMES;
+}
+
+function selectInnerTriggers(
+  triggers: readonly TriggerProvider[],
+  triggerContext: unknown,
+): readonly TriggerProvider[] {
+  const eventName = eventNameFromContext(triggerContext);
+  if (eventName === undefined) return triggers.slice(0, 1);
+  const matched = triggers.filter((trigger) =>
+    trigger.eventNames.some((name) => name === eventName),
+  );
+  if (matched.length > 0) return matched;
+  return triggers.slice(0, 1);
+}
+
+async function matchAllTriggers(
+  triggers: readonly TriggerProvider[],
+  external: ExternalTrigger,
+): Promise<TriggerProviderResult> {
+  const results = await Promise.all(triggers.map((trigger) => trigger.match(external)));
+  const matches = results.flatMap((result) => (typeof result === "string" ? [] : result));
+  if (matches.length > 0) return matches;
+  const reasons = results.filter(
+    (result): result is ProviderEventDropReasonCode => typeof result === "string",
+  );
+  return (
+    reasons.find((reason) => reason === "configuration_unavailable") ??
+    reasons.find((reason) => reason === "trigger_filters_rejected") ??
+    "no_trigger_for_source"
+  );
+}
+
+function eventNameFromContext(triggerContext: unknown): string | undefined {
+  if (!isObjectRecord(triggerContext)) return undefined;
+  const event = triggerContext["event"];
+  if (!isObjectRecord(event)) return undefined;
+  const forgejo = event["forgejo"];
+  if (!isObjectRecord(forgejo)) return undefined;
+  const eventName = forgejo["event_name"];
+  return typeof eventName === "string" ? eventName : undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
