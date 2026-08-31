@@ -168,6 +168,31 @@ describe("public API interface", () => {
       ).json(),
     );
     assert.deepEqual(
+      ConfigurationResourcesSchema.parse({
+        daemons: [],
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [],
+        forgejo: [
+          {
+            slug: "forgejo-bot",
+            instanceId: "11111111-1111-4111-8111-111111111111",
+            accountLogin: "t00user",
+            repositories: ["acme/widgets"],
+          },
+        ],
+      }).forgejo,
+      [
+        {
+          slug: "forgejo-bot",
+          instanceId: "11111111-1111-4111-8111-111111111111",
+          accountLogin: "t00user",
+          repositories: ["acme/widgets"],
+        },
+      ],
+    );
+    assert.deepEqual(
       SetupResourcesSchema.parse(
         await (
           await successApi.handle(

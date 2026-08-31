@@ -234,6 +234,15 @@ export const TriggerListSchema = z
   .strict()
   .openapi("TriggerList");
 
+const forgejoResourceSchema = z
+  .object({
+    slug: z.string(),
+    instanceId: z.string().uuid(),
+    accountLogin: z.string(),
+    repositories: z.array(z.string()),
+  })
+  .strict();
+
 export const ConfigurationResourcesSchema = z
   .object({
     daemons: z.array(z.object({ id: z.string().uuid(), slug: z.string() }).strict()),
@@ -250,16 +259,7 @@ export const ConfigurationResourcesSchema = z
     discord: z.array(z.object({ slug: z.string(), guildName: z.string() }).strict()),
     slack: z.array(z.object({ slug: z.string(), teamName: z.string() }).strict()),
     linear: z.array(z.object({ slug: z.string(), organizationName: z.string() }).strict()),
-    forgejo: z.array(
-      z
-        .object({
-          slug: z.string(),
-          instanceOrigin: z.string(),
-          userLogin: z.string(),
-          repositories: z.array(z.string()),
-        })
-        .strict(),
-    ),
+    forgejo: z.array(forgejoResourceSchema),
   })
   .strict()
   .openapi("ConfigurationResources");
@@ -278,15 +278,7 @@ export const SetupResourcesSchema = z
     ),
     discord: z.array(z.object({ guildId: z.string(), guildName: z.string() }).strict()),
     slack: z.array(z.object({ teamId: z.string(), teamName: z.string() }).strict()),
-    forgejo: z.array(
-      z
-        .object({
-          instanceOrigin: z.string(),
-          userLogin: z.string(),
-          repositories: z.array(z.string()),
-        })
-        .strict(),
-    ),
+    forgejo: z.array(forgejoResourceSchema),
   })
   .strict()
   .openapi("SetupResources");

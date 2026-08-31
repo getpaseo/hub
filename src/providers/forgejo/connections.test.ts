@@ -206,13 +206,10 @@ describe("Forgejo organization connections", () => {
 
     const resources = forgejoConfigurationResourceItems({
       connections: await directory.listConnectionsForOrganization("org-1"),
-      originByInstanceId: new Map([
-        [String(instance["id"]), "https://forgejo.example.test"],
-        [String(other["id"]), "https://other.example.test"],
-      ]),
       enrolledFullNamesByConnectionId: new Map(),
     });
-    assert.equal(resources[0]?.instanceOrigin, "https://forgejo.example.test");
+    assert.equal(resources[0]?.instanceId, instance["id"]);
+    assert.equal(resources[0]?.accountLogin, "t00user");
   });
 });
 

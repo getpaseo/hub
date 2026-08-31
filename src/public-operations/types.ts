@@ -47,8 +47,8 @@ export interface ConfigurationResources {
   linear: readonly { slug: string; organizationName: string }[];
   forgejo: readonly {
     slug: string;
-    instanceOrigin: string;
-    userLogin: string;
+    instanceId: string;
+    accountLogin: string;
     repositories: readonly string[];
   }[];
 }
@@ -67,8 +67,9 @@ export interface SetupResources {
   discord: readonly { guildId: string; guildName: string }[];
   slack: readonly { teamId: string; teamName: string }[];
   forgejo: readonly {
-    instanceOrigin: string;
-    userLogin: string;
+    slug: string;
+    instanceId: string;
+    accountLogin: string;
     repositories: readonly string[];
   }[];
 }

@@ -430,18 +430,17 @@ function forgejoLifecycleAction(suffix: string): ForgejoLifecycleRouteAction | u
 
 export function forgejoConfigurationResourceItems(input: {
   connections: readonly ForgejoConnectionRecord[];
-  originByInstanceId: ReadonlyMap<string, string>;
   enrolledFullNamesByConnectionId: ReadonlyMap<string, readonly string[]>;
 }): {
   slug: string;
-  instanceOrigin: string;
-  userLogin: string;
+  instanceId: string;
+  accountLogin: string;
   repositories: string[];
 }[] {
   return input.connections.map((connection) => ({
     slug: connection.slug,
-    instanceOrigin: input.originByInstanceId.get(connection.instanceId) ?? "",
-    userLogin: connection.forgejoUserLogin,
+    instanceId: connection.instanceId,
+    accountLogin: connection.forgejoUserLogin,
     repositories: [...(input.enrolledFullNamesByConnectionId.get(connection.id) ?? [])],
   }));
 }

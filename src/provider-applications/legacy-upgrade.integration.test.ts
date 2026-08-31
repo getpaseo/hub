@@ -109,7 +109,7 @@ describe("pre-provider-app connection upgrade", () => {
         });
 
         assert.deepEqual(failures, []);
-        assert.deepEqual(runtime.published, ["github", "slack", "discord", "linear"]);
+        assert.deepEqual(runtime.published, ["github", "slack", "discord", "linear", "forgejo"]);
         for (const provider of ["github", "slack", "discord"] as const) {
           assert.deepEqual(
             (await inventory.connectedIdentities(provider)).map(
@@ -119,6 +119,7 @@ describe("pre-provider-app connection upgrade", () => {
           );
         }
         assert.deepEqual(await inventory.connectedIdentities("linear"), []);
+        assert.deepEqual(await inventory.connectedIdentities("forgejo"), []);
 
         const changed = new RecordingRuntime();
         const changedFailures = await activateProviderApplicationsAtStartup({
