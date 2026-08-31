@@ -16,7 +16,7 @@ permissions:
 # companion PR creator commits it. Source-built jobs deliberately fail until it
 # is one exact 40-character SHA; mutable refs and repository variables are forbidden.
 env:
-  PASEO_E2E_COMMIT: ef9202c3d222ae78adb4f73587176e3503548647
+  PASEO_E2E_COMMIT: bb3a46346c7e781bc963ffb2e0fdbd3f5ed3efa3
 
 jobs:
   typecheck:
