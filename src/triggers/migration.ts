@@ -66,7 +66,6 @@ export async function migrateLegacyProjectTriggers(
                 }
               : {}),
           },
-          routes: trigger.route === null ? [] : [trigger.route],
         };
       });
       const created = await database.migrateProjectTriggers({

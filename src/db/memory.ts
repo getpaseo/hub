@@ -122,6 +122,7 @@ export interface MemoryDatabaseOptions {
     role: "owner" | "admin" | "member";
   }[];
   now?: () => Date;
+  slackConnections?: readonly SlackConnectionRecord[];
 }
 
 function usageKey(organizationId: string, meter: string, periodStart: Date): string {
@@ -209,6 +210,9 @@ class MemoryDatabase implements Database {
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
+    for (const connection of options.slackConnections ?? []) {
+      this.slackConnections.set(connection.teamId, connection);
+    }
   }
 
   private now(): Date {
@@ -2286,6 +2290,28 @@ class MemoryDatabase implements Database {
       }
       return parseCompiledHubConfig(candidate.normalizedConfiguration);
     });
+    const legacyRoutes = this.projectTriggerRoutes.get(input.projectId) ?? [];
+    const candidateRoutes = input.triggers.map((candidate, index) => {
+      const configuredEventName = compiledCandidates[index]!.triggers[0]?.on;
+      if (configuredEventName === undefined) {
+        throw new Error(`migrated trigger ${candidate.name} has no configured event`);
+      }
+      return legacyRoutes
+        .filter((route) => route.triggerName === candidate.name)
+        .map(
+          (route): OrganizationTriggerRoute => ({
+            provider: route.provider,
+            connectionId: route.connectionId,
+            resourceId: route.resourceId,
+            configuredEventName,
+          }),
+        );
+    });
+    if (
+      candidateRoutes.reduce((total, routes) => total + routes.length, 0) !== legacyRoutes.length
+    ) {
+      throw new Error("project trigger routes do not match migrated triggers");
+    }
     const created: OrganizationTriggerRecord[] = [];
     for (const [index, candidate] of input.triggers.entries()) {
       const name = this.availableMigratedTriggerName(
@@ -2327,7 +2353,8 @@ class MemoryDatabase implements Database {
       };
       this.organizationTriggers.set(trigger.id, trigger);
       this.organizationTriggerRevisions.set(revision.id, revision);
-      this.organizationTriggerRoutes.set(trigger.id, [...candidate.routes]);
+      const routes = candidateRoutes[index]!;
+      this.organizationTriggerRoutes.set(trigger.id, routes);
       const runtimeRevision = await this.insertProjectConfigurationRevision({
         projectId: runtimeProjectId,
         sourceKind: "manual",
@@ -2340,7 +2367,7 @@ class MemoryDatabase implements Database {
       await this.activateProjectConfigurationRevision(
         runtimeProjectId,
         runtimeRevision.id,
-        candidate.routes.map((route) => ({
+        routes.map((route) => ({
           provider: route.provider,
           connectionId: route.connectionId,
           resourceId: route.resourceId,

@@ -14,11 +14,25 @@ agents:
 
 describe("startup project trigger migration", () => {
   it("migrates mixed projects once and preserves the legacy execution lane across restart", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
-    await activeProject(database, "support", [
-      workflow("slack", "slack.mention", oneStep("slack.reply")),
-      workflow("route", "manual.run", twoSteps()),
-    ]);
+    const database = createMemoryDatabase({
+      organizationIds: ["org"],
+      slackConnections: [
+        slackConnection("slack-a", "team-a"),
+        slackConnection("slack-b", "team-b"),
+      ],
+    });
+    await activeProject(
+      database,
+      "support",
+      [
+        workflow("slack", "slack.mention", oneStep("slack.reply")),
+        workflow("route", "manual.run", twoSteps()),
+      ],
+      [
+        { provider: "slack", connectionId: "slack-a", resourceId: null, triggerName: "slack" },
+        { provider: "slack", connectionId: "slack-b", resourceId: null, triggerName: "slack" },
+      ],
+    );
 
     assert.deepEqual(await migrateLegacyProjectTriggers(database), {
       projects: 1,
@@ -39,6 +53,16 @@ describe("startup project trigger migration", () => {
       legacy.activeRevisionId,
     );
     assert.match(revision?.yaml ?? "", /legacy_multistep:/u);
+    for (const teamId of ["team-a", "team-b"]) {
+      const accepted = await database.acceptSlackEvent({
+        teamId,
+        deliveryId: `delivery-${teamId}`,
+        source: "slack.mention",
+        payload: {},
+        receivedAt: new Date(0),
+      });
+      assert.equal(accepted.status, "accepted");
+    }
     assert.deepEqual(await migrateLegacyProjectTriggers(database), {
       projects: 0,
       triggers: 0,
@@ -81,6 +105,30 @@ describe("startup project trigger migration", () => {
     assert.equal((await database.listOrganizationTriggers("org")).length, 0);
   });
 
+  it("keeps the old project active when a persisted route cannot be assigned", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await activeProject(
+      database,
+      "mismatched-route",
+      [workflow("expected", "slack.mention", oneStep())],
+      [
+        {
+          provider: "slack",
+          connectionId: "slack-a",
+          resourceId: null,
+          triggerName: "missing-workflow",
+        },
+      ],
+    );
+
+    await assert.rejects(
+      migrateLegacyProjectTriggers(database),
+      /project trigger routes do not match migrated triggers/u,
+    );
+    assert.equal((await database.listPendingProjectTriggerMigrations()).length, 1);
+    assert.equal((await database.listOrganizationTriggers("org")).length, 0);
+  });
+
   it("does not partially mutate the in-memory store when any candidate is invalid", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const project = await activeProject(database, "atomic", [
@@ -95,7 +143,6 @@ describe("startup project trigger migration", () => {
       normalizedConfiguration: pending.revision.normalizedConfiguration,
       contentHash: "valid",
       sourceEvidence: { legacyProjectId: project.id },
-      routes: [],
     };
 
     await assert.rejects(
@@ -120,6 +167,7 @@ async function activeProject(
   database: Database,
   slug: string,
   workflows: readonly HubBundleFile[],
+  routes: readonly import("../db/types.js").ProjectTriggerRoute[] = [],
 ): Promise<ProjectRecord> {
   const project = await database.createProject({
     organizationId: "org",
@@ -139,8 +187,22 @@ async function activeProject(
     normalizedConfiguration: bundle.configuration,
     contentHash: bundle.authoredHash,
   });
-  await database.activateProjectConfigurationRevision(project.id, revision.id);
+  await database.activateProjectConfigurationRevision(project.id, revision.id, routes);
   return project;
+}
+
+function slackConnection(id: string, teamId: string) {
+  return {
+    id,
+    organizationId: "org",
+    slug: id,
+    teamId,
+    teamName: teamId,
+    botUserId: "bot",
+    botAccessToken: "test-token",
+    scopes: [],
+    providerApplicationId: null,
+  };
 }
 
 function workflow(name: string, event: string, body: string): HubBundleFile {

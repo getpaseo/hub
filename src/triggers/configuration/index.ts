@@ -12,7 +12,6 @@ import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 export {
   migrateLegacyBundle,
-  type LegacyTriggerRoute,
   type MigratedLegacyTrigger,
   type SelfContainedLegacyTrigger,
 } from "./legacy-migration.js";
