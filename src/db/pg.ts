@@ -12,6 +12,7 @@ import { toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { createSqlForgejoDirectory } from "./forgejo-directory.js";
+import { createSqlForgejoHydrationStore } from "./forgejo-hydration.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import {
   toAgentExecutionRecord,
@@ -139,6 +140,7 @@ class PgDatabase implements Database {
   private readonly connections;
   private readonly triggerAcceptance;
   private readonly forgejo: ForgejoDirectory;
+  private readonly hydration;
 
   constructor(
     private readonly pool: DatabaseRuntime,
@@ -148,6 +150,7 @@ class PgDatabase implements Database {
     this.connections = new ConnectionRepository(this.pool, locks);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
     this.forgejo = createSqlForgejoDirectory(this.pool);
+    this.hydration = createSqlForgejoHydrationStore(this.pool);
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -4035,6 +4038,10 @@ class PgDatabase implements Database {
 
   forgejoDirectory(): ForgejoDirectory {
     return this.forgejo;
+  }
+
+  forgejoHydration() {
+    return this.hydration;
   }
 
   async listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]> {

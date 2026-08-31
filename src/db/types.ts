@@ -9,6 +9,7 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type { ForgejoDirectory } from "../providers/forgejo/instances.js";
+import type { ForgejoHydrationStore } from "../triggers/forgejo/hydration-store.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
@@ -1614,6 +1615,7 @@ export interface Database {
   projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel>;
   organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage>;
   forgejoDirectory(): ForgejoDirectory;
+  forgejoHydration(): ForgejoHydrationStore;
   listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]>;
   findGitHubRepositoryForOrganization(
     organizationId: string,

@@ -11,6 +11,11 @@ import {
   createForgejoClaimedHandoff,
   registerForgejoConfigSyncConsumer,
 } from "../../triggers/forgejo/dispatch.js";
+import {
+  createForgejoHydrationSource,
+  createForgejoHydrationTriggerProvider,
+  seedForgejoHydrationForRepository,
+} from "../../triggers/forgejo/hydration.js";
 import { createForgejoPushSource } from "../../triggers/forgejo/push.js";
 import { createForgejoTriggerProvider } from "../../triggers/forgejo/provider.js";
 import type { AcceptVerifiedForgejoDelivery } from "../../triggers/forgejo/webhook.js";
@@ -22,6 +27,7 @@ import { createForgejoConfigurationProvider } from "./configuration.js";
 import { handleForgejoConnectionsRequest } from "./connections.js";
 import { createForgejoAuthorityRegistration } from "./execution-authority.js";
 import { handleForgejoWebhookRequest } from "./hooks.js";
+import { createForgejoHydrationClient } from "./hydration-client.js";
 import {
   createDefaultForgejoHttp,
   handleForgejoInstancesRequest,
@@ -112,6 +118,25 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
       },
     }),
   );
+  const hydrationClient = createForgejoHydrationClient({ directory, http, secrets });
+  const hydrationStore = database.forgejoHydration();
+  const onEnrolled = async (input: {
+    connectionId: string;
+    organizationId: string;
+    repositories: { enrolled: boolean; repositoryId: number; ownerLogin: string; name: string }[];
+  }) => {
+    for (const repository of input.repositories) {
+      if (!repository.enrolled) continue;
+      await seedForgejoHydrationForRepository({
+        store: hydrationStore,
+        client: hydrationClient,
+        connectionId: input.connectionId,
+        repositoryId: repository.repositoryId,
+        owner: repository.ownerLogin,
+        repo: repository.name,
+      });
+    }
+  };
   const connectionContext = async (connectionId: string) => {
     const row = await directory.findConnectionById(connectionId);
     if (row === undefined) return undefined;
@@ -135,8 +160,23 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
           connectionFor: connectionContext,
         });
       },
+      ({ configurationStoreForProject }) =>
+        createForgejoHydrationTriggerProvider({ configurationStoreForProject }),
     ],
-    sources: [createForgejoPushSource({ database })],
+    sources: [
+      createForgejoPushSource({ database }),
+      createForgejoHydrationSource({
+        store: hydrationStore,
+        client: hydrationClient,
+        listTargets: (input) =>
+          database.listActiveTriggerDispatchTargets({
+            organizationId: input.organizationId,
+            provider: "forgejo",
+            connectionId: input.connectionId,
+            resourceId: String(input.repositoryId),
+          }),
+      }),
+    ],
     integration: {
       resolve() {
         return Promise.reject(new Error("forgejo_integration_unavailable"));
@@ -163,6 +203,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
               directory,
               http,
               secrets,
+              onEnrolled,
             });
           }
           return handleForgejoConnectionsRequest(rewritten, {
@@ -170,6 +211,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
             directory,
             http,
             secrets,
+            onEnrolled,
           });
         },
       },

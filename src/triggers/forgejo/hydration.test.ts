@@ -8,6 +8,7 @@ import {
   classifyForgejoTimelineRecord,
   createForgejoHydrationConsumer,
   createMemoryForgejoHydrationStore,
+  seedForgejoHydrationForRepository,
   type ForgejoHydrationClient,
 } from "./hydration.js";
 import type { ForgejoReconciliationSignal } from "./normalize.js";
@@ -126,6 +127,7 @@ describe("Forgejo hydration consumer", () => {
     const consumer = createForgejoHydrationConsumer({
       store,
       client: {
+        listSubjects: () => Promise.resolve([]),
         listTimeline: () => Promise.reject(new Error("Forgejo unavailable")),
         listReviews: () => Promise.resolve([]),
         listReviewComments: () => Promise.resolve([]),
@@ -156,10 +158,12 @@ describe("Forgejo hydration consumer", () => {
 function fakeClient(
   timeline: readonly unknown[],
   comments: readonly unknown[],
+  reviews: readonly unknown[] = [],
 ): ForgejoHydrationClient {
   return {
+    listSubjects: () => Promise.resolve([]),
     listTimeline: () => Promise.resolve(timeline),
-    listReviews: () => Promise.resolve([]),
+    listReviews: () => Promise.resolve(reviews),
     listReviewComments: () => Promise.resolve(comments),
   };
 }
@@ -216,3 +220,109 @@ function labelSignal(number: number): ForgejoReconciliationSignal {
     },
   };
 }
+
+function reviewSignal(number: number): ForgejoReconciliationSignal {
+  const signal = labelSignal(number);
+  return {
+    type: "incomplete_review",
+    rawFamily: "forgejo.pull_request_review",
+    expectedSemantic: undefined,
+    text: "",
+    labels: [],
+    context: {
+      ...signal.context,
+      event: "forgejo.pull_request_review",
+      action: "reviewed",
+      subject: {
+        kind: "pull_request",
+        id: number,
+        number,
+        html_url: `https://forgejo.example.test/t00org/t00repo/pulls/${String(number)}`,
+      },
+    },
+  };
+}
+
+describe("Forgejo hydration enrollment seed", () => {
+  it("seeds existing timeline ids so enrollment history is not emitted", async () => {
+    const timeline = readList(await readJson(join(fixturesRoot, "hydration/timeline-issue.json")));
+    const store = createMemoryForgejoHydrationStore();
+    await seedForgejoHydrationForRepository({
+      store,
+      client: {
+        listSubjects: (input) => Promise.resolve(input.kind === "issue" ? [3] : []),
+        listTimeline: () => Promise.resolve(timeline),
+        listReviews: () => Promise.resolve([]),
+        listReviewComments: () => Promise.resolve([]),
+      },
+      connectionId: "conn-1",
+      repositoryId: 1,
+      owner: "t00org",
+      repo: "t00repo",
+    });
+    const recovered: string[] = [];
+    const consumer = createForgejoHydrationConsumer({
+      store,
+      client: fakeClient(timeline, []),
+      onRecovered: (event) => {
+        recovered.push(event.semanticEvent);
+        return Promise.resolve();
+      },
+    });
+    await consumer.consume({ receiptId: "r1", delivery: testDelivery(), signal: labelSignal(3) });
+    assert.deepEqual(recovered, []);
+    assert.equal(
+      await store.getCursor({
+        connectionId: "conn-1",
+        repositoryId: 1,
+        subjectKind: "issue",
+        subjectId: 3,
+        recordKind: "timeline",
+      }),
+      3,
+    );
+  });
+});
+
+describe("Forgejo hydration review comments", () => {
+  it("recovers inline comments from reviews/{id}/comments after a seeded cursor", async () => {
+    const comments = readList(await readJson(join(fixturesRoot, "hydration/review-comments.json")));
+    const reviews = readList(await readJson(join(fixturesRoot, "hydration/reviews.json")));
+    const store = createMemoryForgejoHydrationStore();
+    await store.seedCursor(
+      {
+        connectionId: "conn-1",
+        repositoryId: 1,
+        subjectKind: "pull_request",
+        subjectId: 4,
+        recordKind: "timeline",
+      },
+      8,
+    );
+    await store.seedCursor(
+      {
+        connectionId: "conn-1",
+        repositoryId: 1,
+        subjectKind: "pull_request",
+        subjectId: 4,
+        recordKind: "review_comment",
+      },
+      0,
+    );
+    const recovered: string[] = [];
+    const consumer = createForgejoHydrationConsumer({
+      store,
+      client: fakeClient([], comments, reviews),
+      onRecovered: (event) => {
+        recovered.push(`${event.semanticEvent}:${String(event.sourceRecordId)}`);
+        return Promise.resolve();
+      },
+    });
+    await consumer.consume({
+      receiptId: "r4",
+      delivery: testDelivery(),
+      signal: reviewSignal(4),
+    });
+    assert.deepEqual(recovered, ["forgejo.pull_request_review_comment:7"]);
+  });
+});

@@ -115,6 +115,7 @@ import {
   createMemoryForgejoDirectory,
   type ForgejoDirectory,
 } from "../providers/forgejo/instances.js";
+import { createMemoryForgejoHydrationStore } from "../triggers/forgejo/hydration.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -225,6 +226,7 @@ class MemoryDatabase implements Database {
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
   private readonly forgejo = createMemoryForgejoDirectory();
+  private readonly hydration = createMemoryForgejoHydrationStore();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
@@ -2942,6 +2944,10 @@ class MemoryDatabase implements Database {
 
   forgejoDirectory(): ForgejoDirectory {
     return this.forgejo;
+  }
+
+  forgejoHydration() {
+    return this.hydration;
   }
 
   async listGitHubRepositories(organizationId: string) {

@@ -107,6 +107,11 @@ export async function enrollRepositories(input: {
   organizationId: string;
   connectionId: string;
   repositoryIds: readonly number[];
+  onEnrolled?: (input: {
+    connectionId: string;
+    organizationId: string;
+    repositories: ForgejoRepositoryRecord[];
+  }) => Promise<void>;
 }): Promise<{ connection: ForgejoConnectionRecord; repositories: ForgejoRepositoryRecord[] }> {
   const connection = await input.directory.findConnectionById(input.connectionId);
   if (connection === undefined || connection.organizationId !== input.organizationId) {
@@ -170,9 +175,17 @@ export async function enrollRepositories(input: {
       enrolled: enrolled.has(repository.repositoryId),
     });
   }
+  const repositories = await input.directory.listRepositoriesForConnection(connection.id);
+  if (input.onEnrolled !== undefined) {
+    await input.onEnrolled({
+      connectionId: connection.id,
+      organizationId: input.organizationId,
+      repositories,
+    });
+  }
   return {
     connection,
-    repositories: await input.directory.listRepositoriesForConnection(connection.id),
+    repositories,
   };
 }
 
@@ -183,6 +196,11 @@ export async function handleForgejoRepositoriesRequest(
     directory: ForgejoDirectory;
     http: ForgejoHttp;
     secrets: SecretEncryptionKeySource;
+    onEnrolled?: (input: {
+      connectionId: string;
+      organizationId: string;
+      repositories: ForgejoRepositoryRecord[];
+    }) => Promise<void>;
   },
 ): Promise<Response> {
   try {
@@ -215,6 +233,7 @@ export async function handleForgejoRepositoriesRequest(
         organizationId,
         connectionId: enroll[1],
         repositoryIds,
+        ...(options.onEnrolled === undefined ? {} : { onEnrolled: options.onEnrolled }),
       });
       return Response.json({ repositories: enrolled.repositories.map(publicRepository) });
     }

@@ -1,15 +1,41 @@
+import type {
+  TriggerHandler,
+  TriggerProvider,
+  TriggerProviderMatch,
+  TriggerSource,
+} from "../index.js";
+import { matchesInputFilters, parseInvocation } from "../invocation.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { ForgejoHydrationConsumer } from "./dispatch.js";
-import type { ForgejoReconciliationSignal } from "./normalize.js";
+import { registerForgejoHydrationConsumer } from "./dispatch.js";
+import {
+  matchForgejoTriggers,
+  readForgejoInvocationMessage,
+  readForgejoInvocationParserMessage,
+  readForgejoMention,
+} from "./matching.js";
+import type {
+  ForgejoBoundedContext,
+  ForgejoRawFamily,
+  ForgejoReconciliationSignal,
+  NormalizedForgejoEvent,
+} from "./normalize.js";
+import { FORGEJO_TRIGGER_SOURCE_NAMES } from "./normalize.js";
+import type { ForgejoTriggerContext } from "./provider.js";
+import type { ForgejoVerifiedDelivery } from "./webhook.js";
+import type {
+  ForgejoHydratedSourceRecordKind,
+  ForgejoHydrationCursorKey,
+  ForgejoHydrationRecordKind,
+  ForgejoHydrationStore,
+} from "./hydration-store.js";
 
-export type ForgejoHydrationRecordKind = "timeline" | "review" | "review_comment";
-
-export interface ForgejoHydrationCursorKey {
-  connectionId: string;
-  repositoryId: number;
-  subjectKind: "issue" | "pull_request";
-  subjectId: number;
-  recordKind: ForgejoHydrationRecordKind;
-}
+export type {
+  ForgejoHydratedSourceRecordKind,
+  ForgejoHydrationCursorKey,
+  ForgejoHydrationRecordKind,
+  ForgejoHydrationStore,
+};
 
 export interface ForgejoRecoveredHydrationEvent {
   semanticEvent:
@@ -17,7 +43,7 @@ export interface ForgejoRecoveredHydrationEvent {
     | "forgejo.pull_request_label_added"
     | "forgejo.pull_request_review"
     | "forgejo.pull_request_review_comment";
-  sourceRecordKind: "timeline" | "review" | "review_comment" | "label";
+  sourceRecordKind: ForgejoHydratedSourceRecordKind;
   sourceRecordId: number;
   subjectKind: "issue" | "pull_request";
   subjectId: number;
@@ -25,19 +51,13 @@ export interface ForgejoRecoveredHydrationEvent {
   reactionSubject: "issue" | "pull_request" | "review_comment" | null;
 }
 
-export interface ForgejoHydrationStore {
-  getCursor(key: ForgejoHydrationCursorKey): Promise<number | undefined>;
-  seedCursor(key: ForgejoHydrationCursorKey, cursorRecordId: number): Promise<void>;
-  insertRecoveredAndAdvance(input: {
-    key: ForgejoHydrationCursorKey;
-    organizationId: string;
-    sourceRecordKind: ForgejoRecoveredHydrationEvent["sourceRecordKind"];
-    sourceRecordId: number;
-    cursorRecordId: number;
-  }): Promise<"inserted" | "duplicate">;
-}
-
 export interface ForgejoHydrationClient {
+  listSubjects(input: {
+    connectionId: string;
+    owner: string;
+    repo: string;
+    kind: "issue" | "pull_request";
+  }): Promise<readonly number[]>;
   listTimeline(input: {
     connectionId: string;
     owner: string;
@@ -55,6 +75,7 @@ export interface ForgejoHydrationClient {
     owner: string;
     repo: string;
     index: number;
+    reviewId: number;
   }): Promise<readonly unknown[]>;
 }
 
@@ -142,16 +163,25 @@ export function createMemoryForgejoHydrationStore(): ForgejoHydrationStore {
   };
 }
 
+export interface ForgejoHydrationRecoveryInput {
+  receiptId: string;
+  delivery: ForgejoVerifiedDelivery;
+  signal: ForgejoReconciliationSignal;
+}
+
 export function createForgejoHydrationConsumer(options: {
   store: ForgejoHydrationStore;
   client: ForgejoHydrationClient;
-  onRecovered?: (event: ForgejoRecoveredHydrationEvent) => Promise<void>;
+  onRecovered?: (
+    event: ForgejoRecoveredHydrationEvent,
+    input: ForgejoHydrationRecoveryInput,
+  ) => Promise<void>;
 }): ForgejoHydrationConsumer {
   return {
     async consume(input) {
       const recovered = await hydrateSignal(options, input.signal, input.delivery.organizationId);
       if (options.onRecovered === undefined) return;
-      for (const event of recovered) await options.onRecovered(event);
+      for (const event of recovered) await options.onRecovered(event, input);
     },
   };
 }
@@ -269,12 +299,26 @@ async function hydrateReviewComments(input: {
     subjectId: input.subjectId,
     recordKind: "review_comment",
   };
-  const records = await input.options.client.listReviewComments({
+  const reviews = await input.options.client.listReviews({
     connectionId: input.connectionId,
     owner: input.owner,
     repo: input.repo,
     index: input.subjectId,
   });
+  const records: unknown[] = [];
+  for (const review of reviews) {
+    const reviewId = recordId(review);
+    if (reviewId === undefined) continue;
+    records.push(
+      ...(await input.options.client.listReviewComments({
+        connectionId: input.connectionId,
+        owner: input.owner,
+        repo: input.repo,
+        index: input.subjectId,
+        reviewId,
+      })),
+    );
+  }
   return scanRecords({
     key,
     organizationId: input.organizationId,
@@ -386,4 +430,457 @@ function numId(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+export const FORGEJO_HYDRATED_TRIGGER_EVENT_NAMES = [
+  "forgejo.issue_label_added",
+  "forgejo.pull_request_label_added",
+  "forgejo.pull_request_review",
+  "forgejo.pull_request_review_comment",
+] as const;
+
+export async function seedForgejoHydrationForRepository(input: {
+  store: ForgejoHydrationStore;
+  client: ForgejoHydrationClient;
+  connectionId: string;
+  repositoryId: number;
+  owner: string;
+  repo: string;
+}): Promise<void> {
+  const issues = await input.client.listSubjects({
+    connectionId: input.connectionId,
+    owner: input.owner,
+    repo: input.repo,
+    kind: "issue",
+  });
+  for (const subjectId of issues) {
+    await seedSubjectKind({ ...input, subjectKind: "issue", subjectId });
+  }
+  const pulls = await input.client.listSubjects({
+    connectionId: input.connectionId,
+    owner: input.owner,
+    repo: input.repo,
+    kind: "pull_request",
+  });
+  for (const subjectId of pulls) {
+    await seedSubjectKind({ ...input, subjectKind: "pull_request", subjectId });
+  }
+}
+
+export function createForgejoHydrationSource(options: {
+  store: ForgejoHydrationStore;
+  client: ForgejoHydrationClient;
+  listTargets: (input: {
+    organizationId: string;
+    connectionId: string;
+    repositoryId: number;
+  }) => Promise<
+    readonly {
+      projectId: string;
+      organizationId: string;
+      configurationRevisionId: string;
+      connectionId: string;
+      resourceId: string | null;
+    }[]
+  >;
+}): TriggerSource {
+  return {
+    async start(handler: TriggerHandler) {
+      registerForgejoHydrationConsumer(
+        createForgejoHydrationConsumer({
+          store: options.store,
+          client: options.client,
+          onRecovered: async (event, input) => {
+            const targets = await options.listTargets({
+              organizationId: input.delivery.organizationId,
+              connectionId: input.signal.context.connectionId,
+              repositoryId: input.signal.context.repository.id,
+            });
+            await Promise.all(
+              targets.map((target) => handler(hydratedTrigger(event, input, target))),
+            );
+          },
+        }),
+      );
+    },
+    async stop() {
+      return;
+    },
+  };
+}
+
+export function createForgejoHydrationTriggerProvider(options: {
+  configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
+}): TriggerProvider<"forgejo", ForgejoTriggerContext> {
+  return {
+    name: "forgejo",
+    eventNames: [...FORGEJO_HYDRATED_TRIGGER_EVENT_NAMES],
+    async match(externalTrigger) {
+      const event = readHydratedNormalizedEvent(externalTrigger.payload);
+      if (event === undefined) return "no_trigger_for_source";
+      const stored = await options
+        .configurationStoreForProject(externalTrigger.projectId)
+        .getRevision(externalTrigger.configurationRevisionId);
+      if (stored === undefined) return "configuration_unavailable";
+      return matchHydratedTriggers(stored, event, externalTrigger);
+    },
+    async materializeContext(launch) {
+      return launch.triggerContext.event;
+    },
+  };
+}
+
+async function seedSubjectKind(input: {
+  store: ForgejoHydrationStore;
+  client: ForgejoHydrationClient;
+  connectionId: string;
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  subjectKind: "issue" | "pull_request";
+  subjectId: number;
+}): Promise<void> {
+  const timeline = await input.client.listTimeline({
+    connectionId: input.connectionId,
+    owner: input.owner,
+    repo: input.repo,
+    index: input.subjectId,
+  });
+  await input.store.seedCursor(
+    {
+      connectionId: input.connectionId,
+      repositoryId: input.repositoryId,
+      subjectKind: input.subjectKind,
+      subjectId: input.subjectId,
+      recordKind: "timeline",
+    },
+    maxRecordId(timeline),
+  );
+  if (input.subjectKind !== "pull_request") return;
+  const reviews = await input.client.listReviews({
+    connectionId: input.connectionId,
+    owner: input.owner,
+    repo: input.repo,
+    index: input.subjectId,
+  });
+  await input.store.seedCursor(
+    {
+      connectionId: input.connectionId,
+      repositoryId: input.repositoryId,
+      subjectKind: "pull_request",
+      subjectId: input.subjectId,
+      recordKind: "review",
+    },
+    maxRecordId(reviews),
+  );
+  let commentMax = 0;
+  for (const review of reviews) {
+    const reviewId = recordId(review);
+    if (reviewId === undefined) continue;
+    const comments = await input.client.listReviewComments({
+      connectionId: input.connectionId,
+      owner: input.owner,
+      repo: input.repo,
+      index: input.subjectId,
+      reviewId,
+    });
+    const next = maxRecordId(comments);
+    if (next > commentMax) commentMax = next;
+  }
+  await input.store.seedCursor(
+    {
+      connectionId: input.connectionId,
+      repositoryId: input.repositoryId,
+      subjectKind: "pull_request",
+      subjectId: input.subjectId,
+      recordKind: "review_comment",
+    },
+    commentMax,
+  );
+}
+
+function hydratedTrigger(
+  event: ForgejoRecoveredHydrationEvent,
+  input: ForgejoHydrationRecoveryInput,
+  target: {
+    projectId: string;
+    organizationId: string;
+    configurationRevisionId: string;
+    connectionId: string;
+    resourceId: string | null;
+  },
+) {
+  return {
+    providerEventReceiptId: input.receiptId,
+    organizationId: target.organizationId,
+    projectId: target.projectId,
+    configurationRevisionId: target.configurationRevisionId,
+    source: event.semanticEvent,
+    deliveryId: input.delivery.deliveryId,
+    receivedAt: input.delivery.receivedAt,
+    payload: {
+      headers: {
+        "x-forgejo-delivery": input.delivery.deliveryId,
+        "x-forgejo-event": "hydrated",
+        "x-forgejo-event-type": event.semanticEvent,
+      },
+      raw: JSON.stringify({
+        hydration: {
+          semanticEvent: event.semanticEvent,
+          sourceRecordKind: event.sourceRecordKind,
+          sourceRecordId: event.sourceRecordId,
+          subjectKind: event.subjectKind,
+          subjectId: event.subjectId,
+          htmlUrl: event.htmlUrl,
+          reactionSubject: event.reactionSubject,
+          context: input.signal.context,
+        },
+      }),
+    },
+    connectionId: target.connectionId,
+    resourceId: target.resourceId,
+  };
+}
+
+function readHydratedNormalizedEvent(payload: unknown): NormalizedForgejoEvent | undefined {
+  const envelope = asRecord(payload);
+  const headers = asRecord(envelope?.["headers"]);
+  if (str(headers ?? {}, "x-forgejo-event") !== "hydrated") return undefined;
+  const raw = str(envelope ?? {}, "raw");
+  if (raw === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const hydration = asRecord(asRecord(parsed)?.["hydration"]);
+    if (hydration === undefined) return undefined;
+    return toNormalizedHydratedEvent(hydration);
+  } catch {
+    return undefined;
+  }
+}
+
+function toNormalizedHydratedEvent(
+  hydration: Record<string, unknown>,
+): NormalizedForgejoEvent | undefined {
+  const semantic = str(hydration, "semanticEvent");
+  const sourceRecordKind = str(hydration, "sourceRecordKind");
+  const sourceRecordId = num(hydration, "sourceRecordId");
+  const subjectKind = str(hydration, "subjectKind");
+  const subjectId = num(hydration, "subjectId");
+  const context = readBoundedContext(hydration["context"]);
+  if (
+    semantic === undefined ||
+    sourceRecordKind === undefined ||
+    sourceRecordId === undefined ||
+    subjectKind === undefined ||
+    subjectId === undefined ||
+    context === undefined
+  ) {
+    return undefined;
+  }
+  const rawFamily = hydratedRawFamily(semantic);
+  if (rawFamily === undefined) return undefined;
+  return {
+    identity: {
+      eventId: [
+        semantic,
+        context.connectionId,
+        String(context.repository.id),
+        subjectKind,
+        String(subjectId),
+        sourceRecordKind,
+        String(sourceRecordId),
+      ].join(":"),
+    },
+    receiptSource: rawFamily,
+    rawFamily,
+    semanticEvent: hydratedSemantic(semantic),
+    context,
+    text: "",
+    labels: [],
+    defaultBranchPush: false,
+  };
+}
+
+function readBoundedContext(value: unknown): ForgejoBoundedContext | undefined {
+  const row = asRecord(value);
+  if (row === undefined) return undefined;
+  const repository = readRepository(row["repository"]);
+  const actor = readActor(row["actor"]);
+  const connectionId = str(row, "connectionId");
+  const connectionSlug = str(row, "connectionSlug");
+  const deliveryId = str(row, "deliveryId");
+  const instanceId = str(row, "instanceId");
+  const rawFamily = readRawFamily(str(row, "event") ?? "");
+  if (
+    repository === undefined ||
+    actor === undefined ||
+    connectionId === undefined ||
+    connectionSlug === undefined ||
+    deliveryId === undefined ||
+    instanceId === undefined ||
+    rawFamily === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    deliveryId,
+    instanceId,
+    connectionId,
+    connectionSlug,
+    repository,
+    actor,
+    subject: readSubject(row["subject"]),
+    event: rawFamily,
+    action: str(row, "action") ?? null,
+    ref: str(row, "ref") ?? null,
+    htmlUrl: str(row, "htmlUrl") ?? null,
+  };
+}
+
+function readRepository(value: unknown): ForgejoBoundedContext["repository"] | undefined {
+  const repository = asRecord(value);
+  if (repository === undefined) return undefined;
+  const fullName = str(repository, "full_name");
+  const owner = str(repository, "owner");
+  const name = str(repository, "name");
+  const defaultBranch = str(repository, "default_branch");
+  const htmlUrl = str(repository, "html_url");
+  const id = num(repository, "id");
+  if (
+    fullName === undefined ||
+    owner === undefined ||
+    name === undefined ||
+    defaultBranch === undefined ||
+    htmlUrl === undefined ||
+    id === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    id,
+    full_name: fullName,
+    owner,
+    name,
+    default_branch: defaultBranch,
+    html_url: htmlUrl,
+  };
+}
+
+function readActor(value: unknown): ForgejoBoundedContext["actor"] | undefined {
+  const actor = asRecord(value);
+  if (actor === undefined) return undefined;
+  const id = num(actor, "id");
+  const login = str(actor, "login");
+  if (id === undefined || login === undefined) return undefined;
+  return { id, login };
+}
+
+function readRawFamily(value: string): ForgejoRawFamily | undefined {
+  return FORGEJO_TRIGGER_SOURCE_NAMES.find((name) => name === value);
+}
+
+function readSubject(value: unknown): ForgejoBoundedContext["subject"] {
+  const row = asRecord(value);
+  if (row === undefined) return null;
+  const kind = str(row, "kind");
+  if (kind !== "issue" && kind !== "pull_request" && kind !== "comment" && kind !== "commit") {
+    return null;
+  }
+  const rawId = row["id"];
+  const id = typeof rawId === "number" || typeof rawId === "string" ? rawId : undefined;
+  if (id === undefined) return null;
+  return {
+    kind,
+    id,
+    number: num(row, "number") ?? null,
+    html_url: str(row, "html_url") ?? null,
+  };
+}
+
+function hydratedRawFamily(semantic: string): NormalizedForgejoEvent["rawFamily"] | undefined {
+  if (semantic === "forgejo.issue_label_added") return "forgejo.issues";
+  if (semantic === "forgejo.pull_request_label_added") return "forgejo.pull_request";
+  if (semantic === "forgejo.pull_request_review") return "forgejo.pull_request_review";
+  if (semantic === "forgejo.pull_request_review_comment") {
+    return "forgejo.pull_request_review_comment";
+  }
+  return undefined;
+}
+
+function hydratedSemantic(semantic: string): NormalizedForgejoEvent["semanticEvent"] {
+  if (semantic === "forgejo.issue_label_added" || semantic === "forgejo.pull_request_label_added") {
+    return semantic;
+  }
+  return undefined;
+}
+
+async function matchHydratedTriggers(
+  stored: NonNullable<Awaited<ReturnType<ProjectConfigurationStore["getRevision"]>>>,
+  event: NormalizedForgejoEvent,
+  externalTrigger: {
+    connectionId?: string | null;
+    receivedAt: Date;
+  },
+) {
+  const found: TriggerProviderMatch<ForgejoTriggerContext>[] = [];
+  for (const match of matchForgejoTriggers(
+    stored.configuration,
+    event,
+    externalTrigger.connectionId,
+  )) {
+    const compiledTrigger = stored.configuration.triggers.find(
+      (candidate) => candidate.name === match.trigger.name,
+    );
+    if (compiledTrigger === undefined) {
+      throw new Error(`compiled trigger not found: ${match.trigger.name}`);
+    }
+    const triggerContext: ForgejoTriggerContext = {
+      provider: "forgejo",
+      target: {
+        connectionId: event.context.connectionId,
+        repositoryId: event.context.repository.id,
+        repository: event.context.repository.full_name,
+      },
+      event: {
+        forgejo: {
+          delivery_id: event.context.deliveryId,
+          event_name: event.rawFamily,
+          repository: {
+            full_name: event.context.repository.full_name,
+            id: event.context.repository.id,
+          },
+          actor: event.context.actor,
+          received_at: externalTrigger.receivedAt.toISOString(),
+          identity: event.identity,
+        },
+      },
+    };
+    const invocation = parseInvocation(
+      readForgejoInvocationMessage(event),
+      compiledTrigger.inputs,
+      readForgejoMention(event, compiledTrigger.filters),
+      readForgejoInvocationParserMessage(event, compiledTrigger.filters),
+    );
+    if (invocation.status === "accepted") {
+      if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
+      found.push({
+        triggerName: match.trigger.name,
+        triggerContext,
+        outputContext: triggerContext,
+        configurationRevisionId: stored.revision.id,
+        hubConfig: stored.configuration,
+        invocation,
+      });
+      continue;
+    }
+    found.push({
+      triggerName: match.trigger.name,
+      triggerContext,
+      outputContext: triggerContext,
+      configurationRevisionId: stored.revision.id,
+      hubConfig: stored.configuration,
+      invocation,
+    });
+  }
+  return found.length === 0 ? "trigger_filters_rejected" : found;
 }

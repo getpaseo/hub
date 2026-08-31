@@ -5,7 +5,11 @@ import type {
   ForgejoRepositoryIdentity,
   ForgejoUserIdentity,
 } from "./client.js";
-import type { ForgejoConnectionRecord, ForgejoInstanceRecord } from "../../db/types.js";
+import type {
+  ForgejoConnectionRecord,
+  ForgejoInstanceRecord,
+  ForgejoRepositoryRecord,
+} from "../../db/types.js";
 import {
   decryptSecret,
   encryptSecret,
@@ -171,6 +175,11 @@ export async function handleForgejoConnectionsRequest(
     directory: ForgejoDirectory;
     http: ForgejoHttp;
     secrets: SecretEncryptionKeySource;
+    onEnrolled?: (input: {
+      connectionId: string;
+      organizationId: string;
+      repositories: ForgejoRepositoryRecord[];
+    }) => Promise<void>;
   },
 ): Promise<Response> {
   try {
@@ -200,6 +209,7 @@ export async function handleForgejoConnectionsRequest(
         organizationId,
         connectionId: enroll[1],
         repositoryIds,
+        ...(options.onEnrolled === undefined ? {} : { onEnrolled: options.onEnrolled }),
       });
       return Response.json({
         connection: publicConnection(enrolled.connection),
