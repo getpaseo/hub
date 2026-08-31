@@ -37,6 +37,37 @@ Daemon environments may author `worktree.newBranch: "trigger-${{ paseo.execution
 
 The self-hosted Scalar reference is served with a restrictive Content Security Policy and does not require external fonts, scripts, telemetry, registries, or proxies.
 
+## Forgejo resources and configuration sources
+
+Forgejo is an approved-instance provider. An instance operator approves its canonical HTTPS
+origin, and an organization owner later selects that approved instance by `instanceId` when
+creating a connection. Organization-scoped callers cannot register an origin through the
+connection or configuration APIs.
+
+Every Forgejo item returned through `ConfigurationResources` or `SetupResources` has this
+public shape:
+
+```json
+{
+  "slug": "engineering-forgejo",
+  "instanceId": "<approved-instance-id>",
+  "accountLogin": "automation-user",
+  "repositories": ["acme/widgets"]
+}
+```
+
+`repositories` is limited to the connection's explicitly enrolled repositories. The public
+resource does not contain a Forgejo origin, a credential, a webhook callback, a webhook secret,
+or another organization's resources. Use `slug` to refer to the connection in authored
+configuration and `instanceId` only when choosing an already approved instance.
+
+A project can select an enrolled Forgejo repository as its configuration source. The resulting
+source kind is `forgejo`; Hub reads and records the bundle at the selected repository commit and
+keeps that source separate from GitHub and manual configuration. Repository-backed configuration
+is selected in the project configuration source controls, not by putting a provider origin or a
+PAT into YAML. See [Forgejo provider operations](forgejo.md) for setup, synchronization, and
+troubleshooting guidance.
+
 ## Plan catalog
 
 `GET /api/billing/plans` is unauthenticated and read-only. It returns the plan catalog mirrored

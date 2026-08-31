@@ -83,4 +83,35 @@ retries may continue while the process remains alive. A hard process crash canno
 revocation, so GitHub's upstream one-hour token expiry remains the unavoidable exposure
 boundary until a future persisted lease policy can provide stronger crash recovery.
 
+## Forgejo authority
+
+Forgejo authority is also opt-in and step-scoped. It uses a configured Forgejo connection and
+an execution PAT that an organization owner has explicitly configured for that connection:
+
+```yaml
+forgejo:
+  connection: acme-forgejo
+  repositories:
+    - acme/widgets
+  contents: write
+  issues: write
+```
+
+`connection` must identify an active connection in the execution project's organization. Each
+repository must be explicitly enrolled for that connection, and the requested `contents` and
+`issues` levels must be within the separately configured execution PAT. Both levels default to
+`read`; `write` requires the corresponding repository-limited Forgejo PAT capability. Hub never
+widens a repository list or a requested capability.
+
+For a Forgejo-triggered step, omitting `repositories` scopes the authority to the event's
+repository. For every other trigger source, `repositories` is required. A step cannot declare
+both `github` and `forgejo` authority.
+
+If the block is absent, Hub does not materialize Forgejo authority for the step. If it is present,
+only the running step receives `FORGEJO_TOKEN` and the associated Git credential setup; the token
+is not retained in authored configuration, durable launch data, logs, or diagnostics. Reserved
+Forgejo and Git environment keys cannot be authored alongside a `forgejo` block. Rotate or revoke
+the connection or execution PAT through the Forgejo connection lifecycle controls; Hub does not
+silently replace it.
+
 Public workflow-authority guidance lives in the Paseo repository under `public-docs/`.
