@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { DurableProviderEvent, ProviderEventAcceptance } from "../../db/types.js";
-import { NormalizedLinearAgentSessionEventSchema } from "./events.js";
+import {
+  NormalizedLinearAgentSessionEventSchema,
+  NormalizedLinearCommentEventSchema,
+} from "./events.js";
 import {
   createLinearWebhookSource,
   verifyLinearSignature,
@@ -166,6 +169,49 @@ describe("Linear webhook", () => {
     assert.equal(accepted[0]?.source, "linear.comment");
   });
 
+  it("hydrates a compact projectless team comment before matching", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    let issueReads = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      canHydrateIssue: async () => true,
+      resolveIssue: async () => {
+        issueReads += 1;
+        return projectlessIssueDetails();
+      },
+      accept: async (input) => {
+        accepted.push(input);
+        return { status: "duplicate", receiptId: input.deliveryId };
+      },
+    });
+    const envelope = commentEnvelope();
+
+    assert.equal(
+      (
+        await endpoint.handle(
+          request(
+            {
+              ...envelope,
+              data: { ...envelope.data, issue: compactProjectlessTeamIssue() },
+            },
+            "Comment",
+          ),
+        )
+      ).status,
+      200,
+    );
+    assert.equal(issueReads, 1);
+    assert.equal(accepted[0]?.projectId, undefined);
+    assert.equal(accepted[0]?.teamId, "team-1");
+    assert.deepEqual(
+      NormalizedLinearCommentEventSchema.parse(accepted[0]?.payload).issue,
+      projectlessIssueDetails(),
+    );
+  });
+
   it("hydrates and dispatches native Linear agent-session events", async () => {
     const accepted: Array<
       Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
@@ -205,6 +251,52 @@ describe("Linear webhook", () => {
     assert.equal(
       NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload).prompt,
       "<issue>Canonical Linear context</issue>",
+    );
+  });
+
+  it("hydrates a compact projectless team Agent Session before matching", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    let issueReads = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      canHydrateIssue: async () => true,
+      resolveIssue: async () => {
+        issueReads += 1;
+        return projectlessIssueDetails();
+      },
+      accept: async (input) => {
+        accepted.push(input);
+        return { status: "duplicate", receiptId: input.deliveryId };
+      },
+    });
+    const envelope = agentSessionEnvelope();
+
+    assert.equal(
+      (
+        await endpoint.handle(
+          request(
+            {
+              ...envelope,
+              agentSession: {
+                ...envelope.agentSession,
+                issue: compactProjectlessTeamIssue(),
+              },
+            },
+            "AgentSessionEvent",
+          ),
+        )
+      ).status,
+      200,
+    );
+    assert.equal(issueReads, 1);
+    assert.equal(accepted[0]?.projectId, undefined);
+    assert.equal(accepted[0]?.teamId, "team-1");
+    assert.deepEqual(
+      NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload).issue,
+      projectlessIssueDetails(),
     );
   });
 
@@ -388,6 +480,29 @@ function commentEnvelope() {
     webhookTimestamp: NOW,
     actor: { id: "user-1", name: "Operator" },
     data: { id: "comment-1", issueId: "issue-1", body: "Please investigate" },
+  };
+}
+
+function compactProjectlessTeamIssue() {
+  return {
+    id: "issue-1",
+    title: "Ship the feature",
+    project: null,
+    team: { id: "team-1" },
+  };
+}
+
+function projectlessIssueDetails() {
+  return {
+    id: "issue-1",
+    identifier: "ENG-42",
+    title: "Ship the feature",
+    description: "Useful context",
+    projectId: null,
+    teamId: "team-1",
+    stateId: "ready",
+    assigneeId: "user-2",
+    labelIds: ["label-1"],
   };
 }
 
