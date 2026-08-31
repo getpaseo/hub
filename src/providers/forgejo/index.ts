@@ -28,6 +28,7 @@ import { handleForgejoConnectionsRequest } from "./connections.js";
 import { createForgejoAuthorityRegistration } from "./execution-authority.js";
 import { handleForgejoWebhookRequest } from "./hooks.js";
 import { createForgejoHydrationClient } from "./hydration-client.js";
+import { createForgejoHydrationReactionClient } from "../../triggers/forgejo/hydration-reactions.js";
 import {
   createDefaultForgejoHttp,
   handleForgejoInstancesRequest,
@@ -161,7 +162,10 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
         });
       },
       ({ configurationStoreForProject }) =>
-        createForgejoHydrationTriggerProvider({ configurationStoreForProject }),
+        createForgejoHydrationTriggerProvider({
+          configurationStoreForProject,
+          reactions: createForgejoHydrationReactionClient({ directory, http, secrets }),
+        }),
     ],
     sources: [
       createForgejoPushSource({ database }),

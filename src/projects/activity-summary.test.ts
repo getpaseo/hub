@@ -164,4 +164,30 @@ describe("summarizeTrigger", () => {
       externalUrl: null,
     });
   });
+
+  it("summarizes a hydrated Forgejo label event with the native html url", () => {
+    const summary = summarizeTrigger("forgejo.issue_label_added", {
+      headers: {
+        "x-forgejo-delivery": "delivery-1",
+        "x-forgejo-event": "hydrated",
+        "x-forgejo-event-type": "forgejo.issue_label_added",
+      },
+      raw: JSON.stringify({
+        hydration: {
+          semanticEvent: "forgejo.issue_label_added",
+          htmlUrl: "https://forgejo.example.test/t00org/t00repo/issues/3",
+          context: {
+            actor: { id: 2, login: "t00bot" },
+            subject: { kind: "issue", id: 3, number: 3 },
+          },
+        },
+      }),
+    });
+    assert.deepEqual(summary, {
+      provider: "forgejo",
+      headline: "Label added to #3",
+      actor: "t00bot",
+      externalUrl: "https://forgejo.example.test/t00org/t00repo/issues/3",
+    });
+  });
 });

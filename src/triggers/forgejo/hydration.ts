@@ -2,6 +2,7 @@ import type {
   TriggerHandler,
   TriggerProvider,
   TriggerProviderMatch,
+  TriggerProviderReactionState,
   TriggerSource,
 } from "../index.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
@@ -23,6 +24,11 @@ import type {
 import { FORGEJO_TRIGGER_SOURCE_NAMES } from "./normalize.js";
 import type { ForgejoTriggerContext } from "./provider.js";
 import type { ForgejoVerifiedDelivery } from "./webhook.js";
+import type {
+  ForgejoHydrationReactionClient,
+  ForgejoHydrationReactionContent,
+  ForgejoHydrationReactionSubject,
+} from "./hydration-reactions.js";
 import type {
   ForgejoHydratedSourceRecordKind,
   ForgejoHydrationCursorKey,
@@ -509,23 +515,45 @@ export function createForgejoHydrationSource(options: {
   };
 }
 
+export interface ForgejoHydrationTriggerContext extends ForgejoTriggerContext {
+  reactionSubject: ForgejoHydrationReactionSubject | null;
+}
+
 export function createForgejoHydrationTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
-}): TriggerProvider<"forgejo", ForgejoTriggerContext> {
+  reactions?: ForgejoHydrationReactionClient;
+}): TriggerProvider<"forgejo", ForgejoHydrationTriggerContext> {
   return {
     name: "forgejo",
     eventNames: [...FORGEJO_HYDRATED_TRIGGER_EVENT_NAMES],
     async match(externalTrigger) {
-      const event = readHydratedNormalizedEvent(externalTrigger.payload);
-      if (event === undefined) return "no_trigger_for_source";
+      const hydrated = readHydratedEnvelope(externalTrigger.payload);
+      if (hydrated === undefined) return "no_trigger_for_source";
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return "configuration_unavailable";
-      return matchHydratedTriggers(stored, event, externalTrigger);
+      return matchHydratedTriggers(
+        stored,
+        hydrated.event,
+        hydrated.reactionSubject,
+        externalTrigger,
+      );
     },
     async materializeContext(launch) {
       return launch.triggerContext.event;
+    },
+    async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
+      return projectHydrationReaction(options.reactions, triggerContext, "eyes", reactionState);
+    },
+    async onAgentExecutionCompleted(triggerContext, _outputContext, _result, reactionState) {
+      return projectHydrationReaction(options.reactions, triggerContext, "+1", reactionState);
+    },
+    async onAgentExecutionFailed(triggerContext, _outputContext, _reason, reactionState) {
+      return projectHydrationReaction(options.reactions, triggerContext, "-1", reactionState);
+    },
+    async onMachineTerminated(triggerContext, _reason, reactionState) {
+      return projectHydrationReaction(options.reactions, triggerContext, "-1", reactionState);
     },
   };
 }
@@ -642,7 +670,12 @@ function hydratedTrigger(
   };
 }
 
-function readHydratedNormalizedEvent(payload: unknown): NormalizedForgejoEvent | undefined {
+function readHydratedEnvelope(payload: unknown):
+  | {
+      event: NormalizedForgejoEvent;
+      reactionSubject: ForgejoHydrationReactionSubject | null;
+    }
+  | undefined {
   const envelope = asRecord(payload);
   const headers = asRecord(envelope?.["headers"]);
   if (str(headers ?? {}, "x-forgejo-event") !== "hydrated") return undefined;
@@ -652,7 +685,9 @@ function readHydratedNormalizedEvent(payload: unknown): NormalizedForgejoEvent |
     const parsed: unknown = JSON.parse(raw);
     const hydration = asRecord(asRecord(parsed)?.["hydration"]);
     if (hydration === undefined) return undefined;
-    return toNormalizedHydratedEvent(hydration);
+    const event = toNormalizedHydratedEvent(hydration);
+    if (event === undefined) return undefined;
+    return { event, reactionSubject: readReactionSubject(hydration, event) };
   } catch {
     return undefined;
   }
@@ -817,12 +852,13 @@ function hydratedSemantic(semantic: string): NormalizedForgejoEvent["semanticEve
 async function matchHydratedTriggers(
   stored: NonNullable<Awaited<ReturnType<ProjectConfigurationStore["getRevision"]>>>,
   event: NormalizedForgejoEvent,
+  reactionSubject: ForgejoHydrationReactionSubject | null,
   externalTrigger: {
     connectionId?: string | null;
     receivedAt: Date;
   },
 ) {
-  const found: TriggerProviderMatch<ForgejoTriggerContext>[] = [];
+  const found: TriggerProviderMatch<ForgejoHydrationTriggerContext>[] = [];
   for (const match of matchForgejoTriggers(
     stored.configuration,
     event,
@@ -834,7 +870,7 @@ async function matchHydratedTriggers(
     if (compiledTrigger === undefined) {
       throw new Error(`compiled trigger not found: ${match.trigger.name}`);
     }
-    const triggerContext: ForgejoTriggerContext = {
+    const triggerContext: ForgejoHydrationTriggerContext = {
       provider: "forgejo",
       target: {
         connectionId: event.context.connectionId,
@@ -854,6 +890,7 @@ async function matchHydratedTriggers(
           identity: event.identity,
         },
       },
+      reactionSubject,
     };
     const invocation = parseInvocation(
       readForgejoInvocationMessage(event),
@@ -883,4 +920,41 @@ async function matchHydratedTriggers(
     });
   }
   return found.length === 0 ? "trigger_filters_rejected" : found;
+}
+
+function readReactionSubject(
+  hydration: Record<string, unknown>,
+  event: NormalizedForgejoEvent,
+): ForgejoHydrationReactionSubject | null {
+  const kind = str(hydration, "reactionSubject");
+  if (kind === "review_comment") {
+    const id = num(hydration, "sourceRecordId");
+    return id === undefined ? null : { kind, id };
+  }
+  if (kind !== "issue" && kind !== "pull_request") return null;
+  const id = event.context.subject?.number ?? num(hydration, "subjectId");
+  return id === undefined ? null : { kind, id };
+}
+
+async function projectHydrationReaction(
+  reactions: ForgejoHydrationReactionClient | undefined,
+  triggerContext: ForgejoHydrationTriggerContext,
+  content: ForgejoHydrationReactionContent,
+  _reactionState: TriggerProviderReactionState | undefined,
+): Promise<TriggerProviderReactionState> {
+  if (reactions === undefined || triggerContext.reactionSubject === null) return null;
+  const [owner, repo] = triggerContext.target.repository.split("/");
+  if (owner === undefined || repo === undefined) return null;
+  await reactions.create({
+    connectionId: triggerContext.target.connectionId,
+    owner,
+    repo,
+    subject: triggerContext.reactionSubject,
+    content,
+  });
+  return {
+    content,
+    kind: triggerContext.reactionSubject.kind,
+    id: triggerContext.reactionSubject.id,
+  };
 }

@@ -7,6 +7,7 @@ import {
   classifyForgejoReviewComment,
   classifyForgejoTimelineRecord,
   createForgejoHydrationConsumer,
+  createForgejoHydrationTriggerProvider,
   createMemoryForgejoHydrationStore,
   seedForgejoHydrationForRepository,
   type ForgejoHydrationClient,
@@ -324,5 +325,50 @@ describe("Forgejo hydration review comments", () => {
       signal: reviewSignal(4),
     });
     assert.deepEqual(recovered, ["forgejo.pull_request_review_comment:7"]);
+  });
+});
+
+describe("Forgejo hydration reactions", () => {
+  it("posts eyes on the issue for a recovered label and skips submitted reviews", async () => {
+    const posted: string[] = [];
+    const provider = createForgejoHydrationTriggerProvider({
+      configurationStoreForProject: () => {
+        throw new Error("unused");
+      },
+      reactions: {
+        create: (input) => {
+          posted.push(`${input.subject.kind}:${String(input.subject.id)}:${input.content}`);
+          return Promise.resolve();
+        },
+      },
+    });
+    const labelContext = {
+      provider: "forgejo" as const,
+      target: { connectionId: "conn-1", repositoryId: 1, repository: "t00org/t00repo" },
+      event: {
+        forgejo: {
+          delivery_id: "d1",
+          event_name: "forgejo.issues",
+          repository: { full_name: "t00org/t00repo", id: 1 },
+          actor: { id: 2, login: "t00bot" },
+          received_at: "2026-08-31T00:00:00.000Z",
+          identity: { eventId: "e1" },
+        },
+      },
+      reactionSubject: { kind: "issue" as const, id: 3 },
+    };
+    await provider.onDispatchAccepted?.(labelContext, labelContext);
+    await provider.onDispatchAccepted?.(
+      { ...labelContext, reactionSubject: null },
+      { ...labelContext, reactionSubject: null },
+    );
+    await provider.onDispatchAccepted?.(
+      {
+        ...labelContext,
+        reactionSubject: { kind: "review_comment", id: 7 },
+      },
+      labelContext,
+    );
+    assert.deepEqual(posted, ["issue:3:eyes", "review_comment:7:eyes"]);
   });
 });

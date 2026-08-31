@@ -197,6 +197,10 @@ function summarizeLinear(payload: unknown): TriggerSummary {
 
 function summarizeForgejo(source: string, payload: unknown): TriggerSummary {
   const envelope = asObject(payload);
+  const headers = asObject(envelope?.["headers"]);
+  if (headers?.["x-forgejo-event"] === "hydrated") {
+    return summarizeHydratedForgejo(source, envelope);
+  }
   const raw = typeof envelope?.["raw"] === "string" ? envelope["raw"] : undefined;
   const parsed = raw === undefined ? asObject(payload) : asObject(tryJson(raw));
   const sender = asObject(parsed?.["sender"]);
@@ -216,6 +220,25 @@ function summarizeForgejo(source: string, payload: unknown): TriggerSummary {
   };
 }
 
+function summarizeHydratedForgejo(
+  source: string,
+  envelope: Record<string, unknown> | undefined,
+): TriggerSummary {
+  const raw = typeof envelope?.["raw"] === "string" ? envelope["raw"] : undefined;
+  const hydration = asObject(asObject(tryJson(raw ?? ""))?.["hydration"]);
+  const context = asObject(hydration?.["context"]);
+  const subject = asObject(context?.["subject"]);
+  const actor = asObject(context?.["actor"]);
+  const number = subject?.["number"];
+  const family = source.slice("forgejo.".length);
+  return {
+    provider: "forgejo",
+    headline: forgejoHeadline(family, { issue: { number }, pull_request: { number } }),
+    actor: typeof actor?.["login"] === "string" ? actor["login"] : null,
+    externalUrl: typeof hydration?.["htmlUrl"] === "string" ? hydration["htmlUrl"] : null,
+  };
+}
+
 function forgejoHeadline(family: string, payload: Record<string, unknown> | undefined): string {
   if (family === "push") {
     const ref =
@@ -225,17 +248,33 @@ function forgejoHeadline(family: string, payload: Record<string, unknown> | unde
   const issue = asObject(payload?.["issue"]);
   const pull = asObject(payload?.["pull_request"]);
   const number = issue?.["number"] ?? pull?.["number"];
-  if (family === "issue_comment" || family === "pull_request_comment") {
-    return typeof number === "number" ? `Comment on #${String(number)}` : "Forgejo comment";
-  }
-  if (family === "issues") {
-    return typeof number === "number" ? `Issue #${String(number)}` : "Forgejo issue";
-  }
-  if (family === "pull_request") {
-    return typeof number === "number" ? `Pull request #${String(number)}` : "Forgejo pull request";
-  }
+  const numbered = typeof number === "number" ? number : undefined;
+  const headline = FORGEJO_NUMBERED_HEADLINES[family];
+  if (headline !== undefined) return headline(numbered);
   return `Forgejo ${family.replaceAll("_", " ")}`;
 }
+
+const FORGEJO_NUMBERED_HEADLINES: Record<string, (number: number | undefined) => string> = {
+  issue_comment: (number) =>
+    number === undefined ? "Forgejo comment" : `Comment on #${String(number)}`,
+  pull_request_comment: (number) =>
+    number === undefined ? "Forgejo comment" : `Comment on #${String(number)}`,
+  issues: (number) => (number === undefined ? "Forgejo issue" : `Issue #${String(number)}`),
+  issue_label_added: (number) =>
+    number === undefined ? "Forgejo issue label" : `Label added to #${String(number)}`,
+  pull_request_label_added: (number) =>
+    number === undefined
+      ? "Forgejo pull request label"
+      : `Label added to pull request #${String(number)}`,
+  pull_request_review: (number) =>
+    number === undefined
+      ? "Forgejo pull request review"
+      : `Review on pull request #${String(number)}`,
+  pull_request_review_comment: (number) =>
+    number === undefined ? "Forgejo review comment" : `Review comment on #${String(number)}`,
+  pull_request: (number) =>
+    number === undefined ? "Forgejo pull request" : `Pull request #${String(number)}`,
+};
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
