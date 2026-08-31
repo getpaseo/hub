@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import {
   assertResolvedAddressesAllowed,
   canonicalizeHttpsOrigin,
+  pinnedAddressLookup,
   rejectRedirectStatus,
   type DnsResolver,
 } from "./approved-origin.js";
@@ -72,5 +73,24 @@ describe("Forgejo approved origin SSRF contract", () => {
   it("rejects redirect statuses", () => {
     rejectRedirectStatus(200);
     assert.throws(() => rejectRedirectStatus(302), { code: "unsafe_redirect" });
+  });
+
+  it("pins subsequent lookups to the allowlisted addresses for the approved hostname", () => {
+    const lookup = pinnedAddressLookup("forgejo.example.test", ["203.0.113.10", "2001:db8::10"]);
+    lookup("forgejo.example.test", { all: true }, (error, addresses) => {
+      assert.equal(error, null);
+      assert.deepEqual(addresses, [
+        { address: "203.0.113.10", family: 4 },
+        { address: "2001:db8::10", family: 6 },
+      ]);
+    });
+    lookup("forgejo.example.test", {}, (error, address, family) => {
+      assert.equal(error, null);
+      assert.equal(address, "203.0.113.10");
+      assert.equal(family, 4);
+    });
+    lookup("evil.example.test", {}, (error) => {
+      assert.equal(error?.message, "Forgejo origin hostname drifted");
+    });
   });
 });

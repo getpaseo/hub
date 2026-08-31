@@ -1,9 +1,12 @@
 import type { ForgejoConnectionRecord, ForgejoInstanceRecord } from "../../db/types.js";
+import { logger } from "../../logger.js";
 import type { SecretEncryptionKeySource } from "../../secrets/authenticated-envelope.js";
+import type { TriggerHandler, TriggerSource } from "../../triggers/index.js";
 import type { ForgejoVerifiedDelivery } from "../../triggers/forgejo/webhook.js";
 import { type ForgejoDirectory, type ForgejoHttp } from "./instances.js";
 import { executeClaimed } from "./recovery-execute.js";
 import {
+  FORGEJO_HEALTH_INTERVAL_MS,
   FORGEJO_HEALTH_TIMEOUT_MS,
   forgejoWorkIdentity,
   type ForgejoClock,
@@ -76,6 +79,48 @@ export function createForgejoRecoveryCoordinator(options: {
         connectionId: input.connectionId,
       }),
   };
+}
+
+export function createForgejoRecoverySource(options: {
+  recovery: { tick: () => Promise<number> };
+  intervalMs?: number;
+  scheduleInterval?: (run: () => void, ms: number) => () => void;
+}): TriggerSource {
+  const intervalMs = options.intervalMs ?? FORGEJO_HEALTH_INTERVAL_MS;
+  const scheduleInterval = options.scheduleInterval ?? defaultRecoverySchedule;
+  let stopSchedule: (() => void) | undefined;
+  let inFlight = false;
+
+  const tickSafely = async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await options.recovery.tick();
+    } catch (error) {
+      logger.warn({ err: error }, "forgejo scheduled recovery tick failed");
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  return {
+    async start(_handler: TriggerHandler) {
+      await tickSafely();
+      stopSchedule = scheduleInterval(() => {
+        void tickSafely();
+      }, intervalMs);
+    },
+    async stop() {
+      stopSchedule?.();
+      stopSchedule = undefined;
+    },
+  };
+}
+
+function defaultRecoverySchedule(run: () => void, ms: number): () => void {
+  const timer = setInterval(run, ms);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 export function toHealthView(row: ForgejoRecoveryWorkRecord): ForgejoRecoveryHealthView {
@@ -244,13 +289,20 @@ async function runRecoveryTick(options: {
 }
 
 function withHealthTimeout(http: ForgejoHttp): ForgejoHttp {
+  const bindFetch = http.bindFetch;
+  const timed = (init: RequestInit | undefined): RequestInit => ({
+    ...init,
+    signal: AbortSignal.timeout(FORGEJO_HEALTH_TIMEOUT_MS),
+  });
   return {
     resolver: http.resolver,
-    fetch: (input, init) =>
-      http.fetch(input, {
-        ...init,
-        signal: AbortSignal.timeout(FORGEJO_HEALTH_TIMEOUT_MS),
-      }),
+    fetch: (input, init) => http.fetch(input, timed(init)),
+    ...(bindFetch === undefined
+      ? {}
+      : {
+          bindFetch: (origin, addresses, input, init) =>
+            bindFetch(origin, addresses, input, timed(init)),
+        }),
   };
 }
 

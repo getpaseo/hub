@@ -12,7 +12,7 @@ import {
   type ForgejoDirectory,
   type ForgejoHttp,
 } from "./instances.js";
-import { createForgejoRecoveryCoordinator } from "./recovery.js";
+import { createForgejoRecoveryCoordinator, createForgejoRecoverySource } from "./recovery.js";
 import {
   FORGEJO_HEALTH_INTERVAL_MS,
   FORGEJO_RETRY_INITIAL_MS,
@@ -100,6 +100,35 @@ describe("Forgejo health recovery", () => {
     clock.advance(FORGEJO_HEALTH_INTERVAL_MS);
     assert.equal(await coordinator.tick(), 0);
     assert.equal((await directory.findInstanceById(INSTANCE_ID))?.status, "identity_drifted");
+  });
+
+  it("ticks scheduled recovery on start and the frozen health interval without an operator request", async () => {
+    let ticks = 0;
+    let scheduled: (() => void) | undefined;
+    const source = createForgejoRecoverySource({
+      recovery: {
+        tick: async () => {
+          ticks += 1;
+          return 0;
+        },
+      },
+      intervalMs: FORGEJO_HEALTH_INTERVAL_MS,
+      scheduleInterval: (run, ms) => {
+        assert.equal(ms, FORGEJO_HEALTH_INTERVAL_MS);
+        scheduled = run;
+        return () => {
+          scheduled = undefined;
+        };
+      },
+    });
+    await source.start(async () => {});
+    assert.equal(ticks, 1);
+    assert.equal(typeof scheduled, "function");
+    scheduled?.();
+    await Promise.resolve();
+    assert.equal(ticks, 2);
+    await source.stop();
+    assert.equal(scheduled, undefined);
   });
 
   it("allows only one active claim and reclaims an expired lease", async () => {

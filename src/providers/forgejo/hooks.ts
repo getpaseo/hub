@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   ApprovedOriginError,
-  assertResolvedAddressesAllowed,
   rejectRedirectStatus,
   type CanonicalHttpsOrigin,
 } from "../../http/approved-origin.js";
@@ -18,6 +17,7 @@ import {
 } from "../../triggers/forgejo/webhook.js";
 import {
   ForgejoContractError,
+  dispatchForgejoHttp,
   forgejoErrorResponse,
   originFromInstance,
   readJsonObject,
@@ -459,23 +459,20 @@ async function forgejoHookRequest(
   token: string,
   init: { method?: string; body?: string; allowNotFound?: boolean } = {},
 ): Promise<Response> {
-  try {
-    await assertResolvedAddressesAllowed(origin, http.resolver);
-  } catch (error) {
-    if (error instanceof ApprovedOriginError) {
-      throw new ForgejoContractError("forgejo_origin_unapproved", 400, error.message);
-    }
-    throw error;
-  }
   const headers = new Headers({ accept: "application/json" });
   headers.set("authorization", `token ${token}`);
   if (init.body !== undefined) headers.set("content-type", "application/json");
-  const response = await http.fetch(new URL(path, `${origin.origin}/`).toString(), {
-    method: init.method ?? "GET",
-    headers,
-    redirect: "manual",
-    ...(init.body === undefined ? {} : { body: init.body }),
-  });
+  const response = await dispatchForgejoHttp(
+    http,
+    origin,
+    new URL(path, `${origin.origin}/`).toString(),
+    {
+      method: init.method ?? "GET",
+      headers,
+      redirect: "manual",
+      ...(init.body === undefined ? {} : { body: init.body }),
+    },
+  );
   try {
     rejectRedirectStatus(response.status);
   } catch (error) {

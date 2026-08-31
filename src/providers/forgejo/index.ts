@@ -50,7 +50,7 @@ import {
 } from "./instances.js";
 import { handleForgejoRepositoriesRequest } from "./repositories.js";
 import { createDatabaseForgejoLifecycleImpactSource, createForgejoLifecycle } from "./lifecycle.js";
-import { createForgejoRecoveryCoordinator } from "./recovery.js";
+import { createForgejoRecoveryCoordinator, createForgejoRecoverySource } from "./recovery.js";
 
 export const FORGEJO_REQUEST_NAMES = [
   "forgejo.instances",
@@ -228,6 +228,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
             resourceId: String(input.repositoryId),
           }),
       }),
+      createForgejoRecoverySource({ recovery }),
     ],
     integration: {
       resolve() {

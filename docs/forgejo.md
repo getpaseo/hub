@@ -102,11 +102,16 @@ only the event repository; every other trigger must name repositories explicitly
 The execution PAT is separate from the connection PAT and is configured explicitly through the
 connection lifecycle controls. Hub checks its scopes and repository boundary before materializing
 the authority for a step. This prevents a workflow from broadening access beyond the PAT that its
-organization owner supplied.
+organization owner supplied. Forgejo cannot mint a narrower token for a step that requested a
+subset of that PAT; the injected `FORGEJO_TOKEN` is the stored execution PAT after subset
+validation. Store a narrower execution PAT when a step must not inherit the broader credential.
 
 ## Health, rotation, and cleanup
 
 Instance, connection, repository, and hook health are visible in the Forgejo settings panels.
+Hub also runs bounded scheduled recovery on the frozen health interval without an operator
+request. On-demand instance health checks still tick the same coordinator. Automatic retry never
+claims `REMOTE_CLEANUP_PENDING` work; resume that cleanup with a one-time webhook-admin PAT.
 Use an instance health check after an origin, certificate, DNS, or Forgejo upgrade change. A
 connection can become degraded when its repository-limited PAT no longer works; rotate or replace
 that PAT, then recheck health. An identity-drifted or incompatible instance requires operator

@@ -1,13 +1,11 @@
-import {
-  rejectRedirectStatus,
-  assertResolvedAddressesAllowed,
-} from "../../http/approved-origin.js";
+import { rejectRedirectStatus } from "../../http/approved-origin.js";
 import {
   decryptSecret,
   type SecretEncryptionKeySource,
 } from "../../secrets/authenticated-envelope.js";
 import {
   ForgejoContractError,
+  dispatchForgejoHttp,
   originFromInstance,
   type ForgejoDirectory,
   type ForgejoHttp,
@@ -38,14 +36,15 @@ export function createForgejoHydrationReactionClient(options: {
   return {
     async create(input) {
       const resolved = await connectionContext(options, input.connectionId);
-      await assertResolvedAddressesAllowed(resolved.origin, options.http.resolver);
       const path = reactionPath(input.owner, input.repo, input.subject);
       const headers = new Headers({
         accept: "application/json",
         authorization: `token ${resolved.token}`,
         "content-type": "application/json",
       });
-      const response = await options.http.fetch(
+      const response = await dispatchForgejoHttp(
+        options.http,
+        resolved.origin,
         new URL(path, `${resolved.origin.origin}/`).toString(),
         {
           method: "POST",

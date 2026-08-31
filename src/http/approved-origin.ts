@@ -1,5 +1,9 @@
-import { isIP } from "node:net";
+import { Buffer } from "node:buffer";
+import https from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 import { Resolver } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
+import type { IncomingMessage } from "node:http";
 
 export type ApprovedOriginFailure =
   | "invalid_url"
@@ -107,10 +111,147 @@ export async function assertResolvedAddressesAllowed(
   return addresses;
 }
 
+export function pinnedAddressLookup(
+  expectedHostname: string,
+  addresses: readonly string[],
+): LookupFunction {
+  const entries: LookupAddress[] = addresses.map((address) => ({
+    address,
+    family: isIP(address) === 6 ? 6 : 4,
+  }));
+  return (hostname, options, callback) => {
+    if (hostname.toLowerCase() !== expectedHostname.toLowerCase()) {
+      callback(lookupFailure("Forgejo origin hostname drifted"), "", 0);
+      return;
+    }
+    const first = entries[0];
+    if (first === undefined) {
+      callback(lookupFailure("Forgejo origin did not resolve"), "", 0);
+      return;
+    }
+    if (options.all === true) {
+      callback(null, entries);
+      return;
+    }
+    callback(null, first.address, first.family);
+  };
+}
+
+export async function fetchPinnedHttps(
+  url: string,
+  init: RequestInit,
+  origin: CanonicalHttpsOrigin,
+  addresses: readonly string[],
+): Promise<Response> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== origin.hostname) {
+    throw new ApprovedOriginError("origin_drift", "Forgejo origin drifted");
+  }
+  return await requestPinnedHttps(parsed, init, origin, addresses);
+}
+
 export function rejectRedirectStatus(status: number): void {
   if (status >= 300 && status < 400) {
     throw new ApprovedOriginError("unsafe_redirect", "Forgejo responses must not redirect");
   }
+}
+
+function requestPinnedHttps(
+  parsed: URL,
+  init: RequestInit,
+  origin: CanonicalHttpsOrigin,
+  addresses: readonly string[],
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        hostname: parsed.hostname,
+        port: origin.port,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: requestMethod(init.method),
+        headers: requestHeaders(init.headers),
+        servername: origin.hostname,
+        lookup: pinnedAddressLookup(origin.hostname, addresses),
+      },
+      (incoming) => {
+        void collectIncoming(incoming).then(
+          (body) =>
+            resolve(
+              new Response(Uint8Array.from(body), {
+                status: incoming.statusCode ?? 0,
+                headers: incomingResponseHeaders(incoming),
+              }),
+            ),
+          reject,
+        );
+      },
+    );
+    request.on("error", reject);
+    attachAbort(init.signal ?? undefined, request, reject);
+    if (typeof init.body === "string") request.write(init.body);
+    request.end();
+  });
+}
+
+function requestMethod(method: RequestInit["method"]): string {
+  if (typeof method === "string" && method.length > 0) return method.toUpperCase();
+  return "GET";
+}
+
+function requestHeaders(headers: RequestInit["headers"]): Record<string, string> {
+  const resolved = new Headers(headers);
+  const record: Record<string, string> = {};
+  resolved.forEach((value, key) => {
+    record[key] = value;
+  });
+  return record;
+}
+
+function collectIncoming(incoming: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    incoming.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    incoming.on("end", () => resolve(Buffer.concat(chunks)));
+    incoming.on("error", reject);
+  });
+}
+
+function incomingResponseHeaders(incoming: IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(incoming.headers)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      for (const entry of value) headers.append(key, entry);
+      continue;
+    }
+    headers.set(key, value);
+  }
+  return headers;
+}
+
+function attachAbort(
+  signal: AbortSignal | undefined,
+  request: ReturnType<typeof https.request>,
+  reject: (error: unknown) => void,
+): void {
+  if (signal === undefined) return;
+  const abort = () => {
+    request.destroy();
+    reject(signal.reason ?? new ApprovedOriginError("origin_drift", "Forgejo request aborted"));
+  };
+  if (signal.aborted) {
+    abort();
+    return;
+  }
+  signal.addEventListener("abort", abort, { once: true });
+}
+
+function lookupFailure(message: string): NodeJS.ErrnoException {
+  const error: NodeJS.ErrnoException = new Error(message);
+  error.code = "ENOTFOUND";
+  return error;
 }
 
 function isBlockedAddress(address: string): boolean {

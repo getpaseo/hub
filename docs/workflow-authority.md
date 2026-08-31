@@ -101,7 +101,11 @@ forgejo:
 repository must be explicitly enrolled for that connection, and the requested `contents` and
 `issues` levels must be within the separately configured execution PAT. Both levels default to
 `read`; `write` requires the corresponding repository-limited Forgejo PAT capability. Hub never
-widens a repository list or a requested capability.
+widens a repository list or a requested capability. Forgejo personal access tokens cannot be
+attenuated to a narrower minted credential: after the step grant is shown to be a subset of the
+stored execution PAT's repository and capability evidence, Hub injects that same stored PAT as
+`FORGEJO_TOKEN`. Operators who need an exact narrower grant must store a correspondingly limited
+execution PAT. GitHub App installation tokens remain GitHub's short-lived, permission-scoped mint.
 
 For a Forgejo-triggered step, omitting `repositories` scopes the authority to the event's
 repository. For every other trigger source, `repositories` is required. A step cannot declare

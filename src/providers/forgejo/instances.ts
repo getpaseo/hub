@@ -3,6 +3,7 @@ import {
   ApprovedOriginError,
   assertResolvedAddressesAllowed,
   canonicalizeHttpsOrigin,
+  fetchPinnedHttps,
   nodeDnsResolver,
   rejectRedirectStatus,
   type CanonicalHttpsOrigin,
@@ -190,6 +191,12 @@ export interface ForgejoDirectory {
 export interface ForgejoHttp {
   fetch: typeof fetch;
   resolver: DnsResolver;
+  bindFetch?: (
+    origin: CanonicalHttpsOrigin,
+    addresses: readonly string[],
+    input: string,
+    init: RequestInit,
+  ) => Promise<Response>;
 }
 
 export interface InstanceProbe {
@@ -616,20 +623,36 @@ export async function forgejoRequest(
   path: string,
   token?: string,
 ): Promise<Response> {
-  await assertOriginAllowed(origin, http.resolver);
   const headers = new Headers({ accept: "application/json" });
   if (token !== undefined) headers.set("authorization", `token ${token}`);
-  const response = await http.fetch(new URL(path, `${origin.origin}/`).toString(), {
-    method: "GET",
-    headers,
-    redirect: "manual",
-  });
+  const response = await dispatchForgejoHttp(
+    http,
+    origin,
+    new URL(path, `${origin.origin}/`).toString(),
+    {
+      method: "GET",
+      headers,
+      redirect: "manual",
+    },
+  );
   try {
     rejectRedirectStatus(response.status);
   } catch (error) {
     throw mapOriginError(error);
   }
   return response;
+}
+
+export async function dispatchForgejoHttp(
+  http: ForgejoHttp,
+  origin: CanonicalHttpsOrigin,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const addresses = await allowedOriginAddresses(origin, http.resolver);
+  const bindFetch = http.bindFetch;
+  if (bindFetch !== undefined) return bindFetch(origin, addresses, url, init);
+  return http.fetch(url, init);
 }
 
 export function originFromInstance(instance: ForgejoInstanceRecord): CanonicalHttpsOrigin {
@@ -782,7 +805,11 @@ export function forgejoErrorResponse(error: unknown): Response {
 }
 
 export function createDefaultForgejoHttp(fetchImpl: typeof fetch = fetch): ForgejoHttp {
-  return { fetch: fetchImpl, resolver: nodeDnsResolver() };
+  return {
+    fetch: fetchImpl,
+    resolver: nodeDnsResolver(),
+    bindFetch: (origin, addresses, input, init) => fetchPinnedHttps(input, init, origin, addresses),
+  };
 }
 
 async function approveInstance(
@@ -974,15 +1001,22 @@ function capabilityNumber(record: Record<string, unknown>, key: string): number 
   return value;
 }
 
+async function allowedOriginAddresses(
+  origin: CanonicalHttpsOrigin,
+  resolver: DnsResolver,
+): Promise<readonly string[]> {
+  try {
+    return await assertResolvedAddressesAllowed(origin, resolver);
+  } catch (error) {
+    throw mapOriginError(error);
+  }
+}
+
 async function assertOriginAllowed(
   origin: CanonicalHttpsOrigin,
   resolver: DnsResolver,
 ): Promise<void> {
-  try {
-    await assertResolvedAddressesAllowed(origin, resolver);
-  } catch (error) {
-    throw mapOriginError(error);
-  }
+  await allowedOriginAddresses(origin, resolver);
 }
 
 function mapOriginError(error: unknown): ForgejoContractError {

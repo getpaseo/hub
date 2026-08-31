@@ -5,6 +5,7 @@ import { loadForgejoContractFixtures } from "./fake-server.js";
 import {
   compareForgejoVersion,
   createMemoryForgejoDirectory,
+  dispatchForgejoHttp,
   handleForgejoInstancesRequest,
   resolveApprovedOrigin,
   type ForgejoAccess,
@@ -121,6 +122,29 @@ describe("Forgejo instance approval", () => {
     const verified = instanceBody(await drifted.json());
     assert.equal(verified.status, "identity_drifted");
     assert.equal((await directory.findInstanceById(created.id))?.status, "identity_drifted");
+  });
+
+  it("binds outbound Forgejo fetches to the allowlisted resolved addresses", async () => {
+    const origin = resolveApprovedOrigin("https://forgejo.example.test", false);
+    let bound: readonly string[] | undefined;
+    const http: ForgejoHttp = {
+      resolver: { resolve: async () => ["203.0.113.10"] },
+      fetch: async () => {
+        throw new Error("unpinned fetch");
+      },
+      bindFetch: async (_origin, addresses) => {
+        bound = addresses;
+        return new Response("{}", { status: 200 });
+      },
+    };
+    const response = await dispatchForgejoHttp(
+      http,
+      origin,
+      "https://forgejo.example.test/api/v1/version",
+      { method: "GET" },
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(bound, ["203.0.113.10"]);
   });
 });
 

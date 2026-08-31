@@ -81,7 +81,7 @@ function storeOf(value: ForgejoAuthoritySnapshot | undefined): ForgejoExecutionA
 }
 
 describe("Forgejo execution authority mint", () => {
-  it("mints the execution PAT and daemon rewrite for an authorized grant", async () => {
+  it("injects the stored execution PAT when the step grant is a subset of PAT evidence", async () => {
     const keys = keySource();
     const granted = snapshot(keys);
     const authority = createForgejoAuthorityRegistration({
