@@ -3,6 +3,9 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
 
+const DAEMON_SESSION_PROTOCOL_HEADER = "x-paseo-session-protocol";
+const DAEMON_SESSION_PROTOCOL_VERSION = "1";
+
 interface Denial {
   type: "rpc_error";
   requestType: string;
@@ -35,6 +38,14 @@ export class HubFaultProxy {
   ) {
     this.server = createServer((request, response) => {
       void this.forwardHttp(request, response);
+    });
+    this.sockets.on("headers", (headers, request) => {
+      // The fault proxy terminates the daemon-side upgrade before it can observe the upstream
+      // response. Mirror Hub's opt-in negotiation acknowledgement so both sides agree whether
+      // the daemon session begins with a real hello or the legacy synthetic one.
+      if (request.headers[DAEMON_SESSION_PROTOCOL_HEADER] === DAEMON_SESSION_PROTOCOL_VERSION) {
+        headers.push(`${DAEMON_SESSION_PROTOCOL_HEADER}: ${DAEMON_SESSION_PROTOCOL_VERSION}`);
+      }
     });
     this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket, head));
   }
