@@ -184,7 +184,8 @@ function matchesLabels(
 }
 
 function matchesUserFilter(filter: TriggerFilter | undefined, actor: string): boolean {
-  return filter?.from_users?.includes(actor) === true;
+  const fromUsers = filter?.from_users;
+  return fromUsers?.includes("*") === true || fromUsers?.includes(actor) === true;
 }
 
 async function matchesTeamFilter(

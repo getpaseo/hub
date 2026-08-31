@@ -1,6 +1,5 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
-import { ProjectNavigation } from "./helpers/projects/navigation.js";
 
 // Each journey claims its own pristine embedded application: nothing here needs PostgreSQL, and
 // the fixture's primary is never navigated to, so neither should cost a container.
@@ -43,10 +42,9 @@ test("app setup hands off to a daemon, and the daemon that connects opens the da
     const slug = await session.connectDaemon();
     await handoff.expectConnected(slug);
 
-    // Onboarding ends inside the project instance setup already provisioned — the operator picks
-    // nothing off a list, and the handoff created nothing.
+    // Onboarding ends at the organization trigger list. There is no project to select or create.
     await handoff.leave("Continue");
-    await new ProjectNavigation(page).expectBreadcrumb("Paseo Hub", "Default", "Overview");
+    await expect(page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
   } finally {
     await session.close();
   }
@@ -62,11 +60,11 @@ test("an operator with no daemon yet does it later and stays out of onboarding",
     await session.surface.reachDaemonHandoff("Do this later");
     // Skipping arrives where connecting does. Nothing about the daemon was needed to get here.
     await handoff.leave("Do this later");
-    await new ProjectNavigation(page).expectBreadcrumb("Paseo Hub", "Default", "Overview");
+    await expect(page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
 
     // Skipping is as final as connecting: the phase lived in the tab, never in the database.
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Connect a daemon" })).toHaveCount(0);
   } finally {
     await session.close();

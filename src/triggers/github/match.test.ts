@@ -184,6 +184,20 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it("allows every actor only when the wildcard is explicit", () => {
+    const config = configFor({ from_users: ["*"] });
+    const event = createEvent({
+      payload: {
+        action: "created",
+        sender: { login: "stranger" },
+        issue: issue(),
+        comment: comment({ user: { login: "stranger" } }),
+      },
+    });
+
+    assert.equal(matchTriggers(config, event).length, 1);
+  });
+
   it.each([
     {
       name: "issues",

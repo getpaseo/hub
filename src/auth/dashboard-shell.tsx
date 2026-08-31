@@ -14,6 +14,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Zap,
 } from "lucide-react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +30,10 @@ import {
 } from "react";
 import { cn } from "../lib/utils.js";
 import { Page } from "../components/app/page.js";
+import {
+  SiteHeaderActionsProvider,
+  SiteHeaderActionsTarget,
+} from "../components/app/site-header-actions.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";
 import { Button } from "../components/ui/button.js";
 import {
@@ -115,7 +120,7 @@ export function DashboardShell({ account }: { account: ActiveAccount }) {
     mutationFn: createOrganizationCommand,
     onSuccess: (result) => {
       if (result.status === "ok" && result.data.organizationSlug !== undefined) {
-        window.location.assign(`/o/${result.data.organizationSlug}/projects`);
+        window.location.assign(`/o/${result.data.organizationSlug}/triggers`);
       }
     },
   });
@@ -124,7 +129,7 @@ export function DashboardShell({ account }: { account: ActiveAccount }) {
     mutationFn: ({ input }: { input: Parameters<typeof selectOrganization>[0]; slug: string }) =>
       selectOrganizationCommand(input),
     onSuccess: (result, variables) => {
-      if (result.status === "ok") window.location.assign(`/o/${variables.slug}/projects`);
+      if (result.status === "ok") window.location.assign(`/o/${variables.slug}/triggers`);
     },
   });
   const leave = useMutation({
@@ -192,26 +197,28 @@ function DashboardContent({
         onSelectOrganization={onSelectOrganization}
         onSignOut={onSignOut}
       />
-      <SidebarInset>
-        <SiteHeader
-          scope={instance ? "Instance" : (tenant?.organization.name ?? account.organization.name)}
-          {...(instance || tenant?.project == null ? {} : { project: tenant.project.name })}
-        />
-        <div className="flex flex-1 flex-col p-4 md:p-8">
-          <Page>
-            <ErrorSummary message={error} />
-            {transitioning ? (
-              <AccountTransition />
-            ) : (
-              <ActiveAccountProvider account={account}>
-                <div key={tenant?.project?.id ?? "organization"}>
-                  <Outlet />
-                </div>
-              </ActiveAccountProvider>
-            )}
-          </Page>
-        </div>
-      </SidebarInset>
+      <SiteHeaderActionsProvider>
+        <SidebarInset>
+          <SiteHeader
+            scope={instance ? "Instance" : (tenant?.organization.name ?? account.organization.name)}
+            {...(instance || tenant?.project == null ? {} : { project: tenant.project.name })}
+          />
+          <div className="flex flex-1 flex-col p-4 md:p-8">
+            <Page>
+              <ErrorSummary message={error} />
+              {transitioning ? (
+                <AccountTransition />
+              ) : (
+                <ActiveAccountProvider account={account}>
+                  <div key={tenant?.project?.id ?? "organization"}>
+                    <Outlet />
+                  </div>
+                </ActiveAccountProvider>
+              )}
+            </Page>
+          </div>
+        </SidebarInset>
+      </SiteHeaderActionsProvider>
     </>
   );
 }
@@ -329,7 +336,8 @@ function Destinations({
 // occasionally, so they sit behind Settings rather than competing with the three surfaces an
 // operator opens daily.
 const ORGANIZATION_DESTINATIONS = [
-  { section: "projects", label: "Projects", icon: FolderKanban },
+  { section: "triggers", label: "Triggers", icon: Zap, subtree: true },
+  { section: "activity", label: "Activity", icon: History },
   { section: "daemons", label: "Daemons", icon: Cpu },
   { section: "connections", label: "Connections", icon: Cable },
   { section: "settings", label: "Settings", icon: Settings, subtree: true },
@@ -475,7 +483,7 @@ function InstanceNavigationGroup({
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
-              to={`/o/${organization.slug}/projects`}
+              to={`/o/${organization.slug}/triggers`}
               label={`Back to ${organization.name}`}
               icon={ArrowLeft}
             />
@@ -509,7 +517,7 @@ function InstanceHeader() {
             <ShieldCheck aria-hidden="true" className="size-4" />
           </span>
           <span className="grid flex-1 leading-tight group-data-[collapsible=icon]:hidden">
-            <span className="truncate font-medium">Instance</span>
+            <span className="truncate">Instance</span>
             <span className="truncate text-xs text-muted-foreground">Administration</span>
           </span>
         </div>
@@ -529,7 +537,10 @@ function SiteHeader({ scope, project }: { scope: string; project?: string }) {
     <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
       <RestoringSidebarTrigger />
       <Separator orientation="vertical" className="mr-1 h-4" />
-      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
+      <nav
+        aria-label="Breadcrumb"
+        className="flex min-w-0 items-center gap-1.5 overflow-hidden text-sm"
+      >
         <span className="truncate text-muted-foreground">{scope}</span>
         {project === undefined ? null : (
           <>
@@ -555,11 +566,13 @@ function SiteHeader({ scope, project }: { scope: string; project?: string }) {
           </Fragment>
         ))}
       </nav>
+      <SiteHeaderActionsTarget />
     </header>
   );
 }
 
 function viewTrail(pathname: string): string[] {
+  if (/\/triggers\/[^/]+$/u.test(pathname)) return ["Triggers", "Trigger editor"];
   const section = routeSection(pathname);
   if (section === undefined) return ["Register daemon"];
   return "group" in section ? [section.group, section.label] : [section.label];
@@ -623,7 +636,7 @@ function OrganizationSwitcher({
                 <PaseoGlyph />
               </span>
               <span className="grid flex-1 text-left leading-tight">
-                <span className="truncate text-sm font-medium">{currentOrganization.name}</span>
+                <span className="truncate text-sm">{currentOrganization.name}</span>
                 <span className="truncate text-xs text-muted-foreground">
                   {ROLE_LABELS[currentRole] ?? currentRole}
                 </span>
@@ -763,6 +776,7 @@ const ROUTE_SECTIONS = [
   { suffix: "/configuration", label: "Configuration", projectSection: "configuration" },
   { suffix: "/activity", label: "Activity", projectSection: "activity" },
   { suffix: "/overview", label: "Overview", projectSection: "overview" },
+  { suffix: "/triggers", label: "Triggers" },
   { suffix: "/projects", label: "Projects" },
   { suffix: "/daemons", label: "Daemons" },
   { suffix: "/connections", label: "Connections" },
@@ -846,7 +860,7 @@ function AccountMenu({
           tooltip={email}
           className="data-[state=open]:bg-sidebar-accent"
         >
-          <span className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-accent text-xs font-medium">
+          <span className="flex aspect-square size-8 items-center justify-center rounded-md bg-sidebar-accent text-xs">
             {initials(name, email)}
           </span>
           <span className="grid flex-1 text-left leading-tight">

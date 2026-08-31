@@ -45,7 +45,7 @@ export function OrganizationSettingsLayout() {
               aria-current={active ? "page" : undefined}
               className={cn(
                 "rounded-md px-2.5 py-1.5 hover:bg-accent hover:text-accent-foreground",
-                active ? "bg-accent font-medium text-accent-foreground" : "text-muted-foreground",
+                active ? "bg-accent text-accent-foreground" : "text-muted-foreground",
               )}
             >
               {section.label}

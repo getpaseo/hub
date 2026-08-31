@@ -13,7 +13,7 @@ Hub exposes organization-scoped operator operations under `/api/v1`:
 
 Create a scoped API key in the Hub dashboard or approve `paseo hub login` in the browser, then send the resulting organization credential as `Authorization: Bearer <credential>`. CLI credentials carry all current operator scopes, are stored server-side only as verifiers, and can be revoked under Settings → API keys → CLI logins. They are not daemon credentials.
 
-CLI login starts anonymously at `POST /api/v1/cli-authorizations` and polls at `POST /api/v1/cli-authorizations/poll`. An authenticated owner or admin explicitly approves the active organization at `/cli-login`. The expiring grant is poll-throttled and discloses its durable credential exactly once. Daemons enroll only through the short-lived, single-use token issued by the authenticated enrollment-token operation.
+CLI login starts anonymously at `POST /api/v1/cli-authorizations` and polls at `POST /api/v1/cli-authorizations/poll`. An authenticated owner or admin explicitly approves the active organization at `/cli-login`. The expiring grant is poll-throttled and discloses its durable credential exactly once. Daemons enroll only through the short-lived, single-use token issued by the authenticated enrollment-token operation. A daemon may connect with no permissions and remain available for identity and presence only; only daemons that explicitly grant `hub.execute` are eligible workflow targets.
 
 The canonical, executable operation and schema reference is served by each Hub instance at `/api/reference`; its OpenAPI 3.1 document is `/api/openapi.json`. There are no unversioned operator aliases.
 
@@ -45,23 +45,32 @@ entitlement template (`granted` caps/flags/meters); that stays internal to `src/
 `src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
 Hub itself has no pricing page.
 
+It returns the plans that are for sale. The catalog also carries the internal record that
+authors the no-subscription entitlement floor; that one is withheld here and everywhere else a
+customer can see. Today the hosted offer is one plan:
+
 ```json
 {
   "plans": [
     {
-      "slug": "solo",
-      "name": "Solo",
-      "marketingFeatures": ["Unlimited seats", "2,000 executions / month", "Email support"],
+      "slug": "hosted",
+      "name": "Paseo Hub",
+      "marketingFeatures": [
+        "Unlimited daemons",
+        "GitHub, Linear, Slack, and Discord triggers",
+        "Versioned workflows and activity",
+        "Bring your own agents and inference"
+      ],
       "prices": {
-        "monthly": { "unitAmount": 2900, "currency": "usd" },
-        "annual": { "unitAmount": 29000, "currency": "usd" }
+        "monthly": { "unitAmount": 1500, "currency": "eur" },
+        "annual": null
       }
     }
   ]
 }
 ```
 
-`unitAmount` is in the smallest currency unit (cents for `usd`), matching Stripe's own `Price`
+`unitAmount` is in the smallest currency unit (cents for `eur`), matching Stripe's own `Price`
 convention. An interval is `null` when the plan has no active price at that interval. A
 self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
 catalog — the billing boundary means the route is never registered on an unconfigured instance.
