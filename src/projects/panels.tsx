@@ -21,6 +21,7 @@ import { Section } from "../components/app/section.js";
 import { StatusPill, statusLabel } from "../components/app/status-pill.js";
 import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
 import { TwoLine } from "../components/app/two-line.js";
+import { linearConnectionActionLabels } from "../connections/linear-actions.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { useConnectionReturn } from "../connections/result.js";
 import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
@@ -127,6 +128,9 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
+  const linearActions = linearConnectionActionLabels(
+    status.data.linear.status === "requiresReauthorization",
+  );
   const connectionActionLabel = (provider: ConnectionProviderName) => {
     if (
       (provider === "slack" || provider === "linear") &&
@@ -166,7 +170,9 @@ export function OrganizationConnectionsPanel() {
           size="sm"
           onClick={() => connectProvider(provider)}
         >
-          {connectionActionLabel(provider)} {providerLabel(provider)}
+          {provider === "linear"
+            ? linearActions.baseline
+            : `${connectionActionLabel(provider)} ${providerLabel(provider)}`}
         </Button>
         {provider === "linear" ? (
           <Button
@@ -175,7 +181,7 @@ export function OrganizationConnectionsPanel() {
             size="sm"
             onClick={() => connectProvider(provider, true)}
           >
-            Connect for Agent Sessions
+            {linearActions.agentSessions}
           </Button>
         ) : null}
       </div>
