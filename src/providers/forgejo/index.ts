@@ -41,11 +41,15 @@ import { createForgejoItemReactionClient } from "../../triggers/forgejo/item-rea
 import { createForgejoCommentReactionClient } from "../../triggers/forgejo/comment-reactions.js";
 import {
   createDefaultForgejoHttp,
+  ForgejoContractError,
+  forgejoErrorResponse,
   handleForgejoInstancesRequest,
+  requireOrganizationOwner,
   type ForgejoDirectory,
   type ForgejoHttp,
 } from "./instances.js";
 import { handleForgejoRepositoriesRequest } from "./repositories.js";
+import { createDatabaseForgejoLifecycleImpactSource, createForgejoLifecycle } from "./lifecycle.js";
 
 export const FORGEJO_REQUEST_NAMES = [
   "forgejo.instances",
@@ -83,7 +87,7 @@ export function createForgejoRegistration(
   const live = liveForgejoRegistration(options);
   const configurationProvider = options.configurationProvider ?? live?.configurationProvider;
   return {
-    connection: forgejoConnectionStatus(configured),
+    connection: forgejoConnectionStatus(configured, live?.disconnect),
     ...(live === undefined ? {} : { integration: live.integration }),
     triggerProviders: live?.triggerProviders ?? [],
     sources: live?.sources ?? [],
@@ -101,6 +105,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
       triggerProviders: ProviderRegistration["triggerProviders"];
       sources: ProviderRegistration["sources"];
       configurationProvider: ForgejoConfigurationProvider;
+      disconnect: (request: Request) => Promise<Response>;
     }
   | undefined {
   if (options.database === null || options.auth === null) return undefined;
@@ -109,6 +114,12 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
   const http = options.http ?? createDefaultForgejoHttp();
   const secrets = options.secrets ?? envSecretEncryptionKeySource();
   const access = createForgejoAccessResolver(options.auth);
+  const lifecycle = createForgejoLifecycle({
+    directory,
+    http,
+    secrets,
+    impactSource: createDatabaseForgejoLifecycleImpactSource(database),
+  });
   const authority = createForgejoAuthorityRegistration({
     store: createDatabaseForgejoAuthorityStore(database),
     keys: secrets,
@@ -163,6 +174,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
     });
   return {
     configurationProvider,
+    disconnect: (request) => handleForgejoDisconnectAction(request, { access, lifecycle }),
     triggerProviders: [
       ({ configurationStoreForProject }) => {
         configurationForProject = configurationStoreForProject;
@@ -240,6 +252,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
             http,
             secrets,
             onEnrolled,
+            lifecycle,
           });
         },
       },
@@ -270,16 +283,47 @@ export function rewriteForgejoRequest(request: Request): Request {
   return new Request(url, request);
 }
 
-function forgejoConnectionStatus(configured: boolean): ProviderConnectionRegistration {
+function forgejoConnectionStatus(
+  configured: boolean,
+  disconnect: (request: Request) => Promise<Response> = UNAVAILABLE,
+): ProviderConnectionRegistration {
   return {
     name: "forgejo",
     status: (connections: OrganizationConnectionUsage) =>
       forgejoStatus(configured, connections.forgejo),
     actions: {
       start: UNAVAILABLE,
-      disconnect: UNAVAILABLE,
+      disconnect,
     },
   };
+}
+
+async function handleForgejoDisconnectAction(
+  request: Request,
+  input: {
+    access: ReturnType<typeof createForgejoAccessResolver>;
+    lifecycle: ReturnType<typeof createForgejoLifecycle>;
+  },
+): Promise<Response> {
+  try {
+    const access = await input.access.resolve(request);
+    const organizationId = requireOrganizationOwner(access);
+    const connectionId = new URL(request.url).searchParams.get("connectionId");
+    if (
+      connectionId === null ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        connectionId,
+      )
+    ) {
+      throw new ForgejoContractError("forgejo_origin_invalid", 400, "connectionId is required");
+    }
+    const result = await input.lifecycle.disconnect({ organizationId, connectionId });
+    return Response.json(result, {
+      status: result.cleanupStatus === "complete" ? 200 : 202,
+    });
+  } catch (error) {
+    return forgejoErrorResponse(error);
+  }
 }
 
 function forgejoStatus(

@@ -38,6 +38,84 @@ const connectionSchema = z.object({
   repositories: z.array(repositorySchema),
 });
 
+const hookStatusSchema = z.enum([
+  "unconfigured",
+  "pending_verification",
+  "active",
+  "manual_pending",
+  "drifted",
+  "cleanup_failed",
+]);
+
+const lifecycleRepositorySchema = z.object({
+  repositoryId: z.number().int(),
+  fullName: z.string(),
+  enrolled: z.boolean(),
+});
+
+const lifecycleHookSchema = z.object({
+  repositoryId: z.number().int(),
+  fullName: z.string().nullable(),
+  managed: z.boolean(),
+  status: hookStatusSchema,
+});
+
+const lifecycleConfigurationSchema = z.object({
+  projectId: z.string(),
+  repositoryId: z.number().int(),
+  activeRevisionId: z.string().nullable(),
+});
+
+const lifecycleRouteSchema = z.object({
+  projectId: z.string(),
+  repositoryId: z.number().int(),
+  configurationRevisionId: z.string(),
+});
+
+const lifecycleWorkSchema = z.object({
+  projectId: z.string(),
+  configurationRevisionId: z.string(),
+  triggerRunId: z.string(),
+  stepRunId: z.string(),
+});
+
+const disconnectImpactSchema = z.object({
+  connectionId: z.string(),
+  repositories: z.array(lifecycleRepositorySchema),
+  hooks: z.array(lifecycleHookSchema),
+  configurationSources: z.array(lifecycleConfigurationSchema),
+  activeRevisions: z.array(z.object({ projectId: z.string(), revisionId: z.string() })),
+  triggerRoutes: z.array(lifecycleRouteSchema),
+  hydrationSignals: z.array(
+    z.object({ repositoryId: z.number().int(), effect: z.literal("future_hydration_disabled") }),
+  ),
+  work: z.object({
+    queued: z.array(lifecycleWorkSchema),
+    inFlight: z.array(lifecycleWorkSchema),
+    queuedEffect: z.literal("revalidates_before_execution"),
+    inFlightEffect: z.literal("already_minted_authority_is_not_recalled"),
+  }),
+  futureExecution: z.literal("blocked"),
+});
+
+export type ForgejoDisconnectImpact = z.infer<typeof disconnectImpactSchema>;
+
+const disconnectCleanupSchema = z.object({
+  repositoryId: z.number().int(),
+  fullName: z.string().nullable(),
+  managed: z.boolean(),
+  result: z.enum(["removed", "preserved_manual", "pending"]),
+});
+
+const disconnectResultSchema = z.object({
+  disconnected: z.literal(true),
+  impact: disconnectImpactSchema,
+  cleanupStatus: z.enum(["complete", "REMOTE_CLEANUP_PENDING"]),
+  cleanup: z.array(disconnectCleanupSchema),
+});
+
+export type ForgejoDisconnectResult = z.infer<typeof disconnectResultSchema>;
+
 export interface ForgejoInstanceList {
   instances: z.infer<typeof instanceSchema>[];
 }
@@ -122,14 +200,134 @@ export const enrollForgejoRepositories = createServerFn({ method: "POST" })
     return readConnectionList();
   });
 
-const hookStatusSchema = z.enum([
-  "unconfigured",
-  "pending_verification",
-  "active",
-  "manual_pending",
-  "drifted",
-  "cleanup_failed",
-]);
+export const rotateForgejoConnectionCredential = createServerFn({ method: "POST" })
+  .validator(
+    z
+      .object({
+        connectionId: z.string().min(1),
+        pat: z.string().min(1),
+        scopes: z.array(z.string().min(1)).min(1),
+        repositoryIds: z.array(z.number().int()).min(1),
+      })
+      .strict(),
+  )
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/credentials/connection/rotate`, {
+        method: "POST",
+        body: JSON.stringify({
+          pat: data.pat,
+          scopes: data.scopes,
+          repositories: data.repositoryIds,
+        }),
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
+  });
+
+export const revokeForgejoConnectionCredential = createServerFn({ method: "POST" })
+  .validator(z.object({ connectionId: z.string().min(1) }).strict())
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/credentials/connection/revoke`, {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
+  });
+
+export const configureForgejoExecutionCredential = createServerFn({ method: "POST" })
+  .validator(
+    z
+      .object({
+        connectionId: z.string().min(1),
+        pat: z.string().min(1),
+        scopes: z.array(z.string().min(1)).min(1),
+        repositories: z.array(z.string().min(1)).min(1),
+      })
+      .strict(),
+  )
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/credentials/execution`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
+  });
+
+export const revokeForgejoExecutionCredential = createServerFn({ method: "POST" })
+  .validator(z.object({ connectionId: z.string().min(1) }).strict())
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/credentials/execution/revoke`, {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
+  });
+
+export const rotateForgejoWebhookSecret = createServerFn({ method: "POST" })
+  .validator(
+    z.object({ connectionId: z.string().min(1), webhookAdminPat: z.string().min(1) }).strict(),
+  )
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/credentials/webhook_secret/rotate`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
+  });
+
+export const previewForgejoDisconnect = createServerFn({ method: "GET" })
+  .validator(z.object({ connectionId: z.string().min(1) }).strict())
+  .handler(
+    async ({ data }): Promise<Result<ForgejoDisconnectImpact>> =>
+      forgejoResult(
+        await handleProviderRequest(
+          "forgejo.connections",
+          forgejoApiRequest(`/connections/${data.connectionId}/impact`),
+        ),
+        (body) => disconnectImpactSchema.parse(body),
+      ),
+  );
+
+export const disconnectForgejoConnection = createServerFn({ method: "POST" })
+  .validator(
+    z
+      .object({ connectionId: z.string().min(1), webhookAdminPat: z.string().min(1).optional() })
+      .strict(),
+  )
+  .handler(
+    async ({ data }): Promise<Result<ForgejoDisconnectResult>> =>
+      forgejoResult(
+        await handleProviderRequest(
+          "forgejo.connections",
+          forgejoApiRequest(`/connections/${data.connectionId}/disconnect`, {
+            method: "POST",
+            body: JSON.stringify(
+              data.webhookAdminPat === undefined ? {} : { webhookAdminPat: data.webhookAdminPat },
+            ),
+          }),
+        ),
+        (body) => disconnectResultSchema.parse(body),
+      ),
+  );
 
 const hookViewSchema = z.object({
   repositoryId: z.number(),

@@ -313,6 +313,75 @@ async function reconcileRemoteHook(input: {
   return { id: current.id };
 }
 
+export async function reconcileForgejoManagedHookSecret(input: {
+  http: ForgejoHttp;
+  origin: CanonicalHttpsOrigin;
+  token: string;
+  repository: ForgejoRepositoryRecord;
+  hook: ForgejoRepositoryHookRecord;
+  secret: string;
+}): Promise<{ hookId: number; verified: boolean }> {
+  if (!input.hook.managed || input.hook.forgejoHookId === null) {
+    throw new ForgejoContractError(
+      "forgejo_scope_invalid",
+      409,
+      "Forgejo hook is not managed by Hub",
+    );
+  }
+  const remote = (
+    await listRemoteHooks({
+      http: input.http,
+      origin: input.origin,
+      token: input.token,
+      owner: input.repository.ownerLogin,
+      repo: input.repository.name,
+    })
+  ).find((candidate) => candidate.id === input.hook.forgejoHookId);
+  if (remote === undefined) {
+    throw new ForgejoContractError("not_found", 404, "managed Forgejo hook was not found");
+  }
+  const payload = hookPayload(remote.url, input.secret);
+  await forgejoHookJson(
+    input.http,
+    input.origin,
+    `/api/v1/repos/${encodeURIComponent(input.repository.ownerLogin)}/${encodeURIComponent(input.repository.name)}/hooks/${String(remote.id)}`,
+    input.token,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  const verified = await testRemoteHook({
+    http: input.http,
+    origin: input.origin,
+    token: input.token,
+    owner: input.repository.ownerLogin,
+    repo: input.repository.name,
+    hookId: remote.id,
+  });
+  return { hookId: remote.id, verified };
+}
+
+export async function removeForgejoManagedHook(input: {
+  http: ForgejoHttp;
+  origin: CanonicalHttpsOrigin;
+  token: string;
+  repository: ForgejoRepositoryRecord;
+  hook: ForgejoRepositoryHookRecord;
+}): Promise<void> {
+  if (!input.hook.managed || input.hook.forgejoHookId === null) {
+    throw new ForgejoContractError(
+      "forgejo_scope_invalid",
+      409,
+      "Forgejo hook is not managed by Hub",
+    );
+  }
+  await forgejoHookRequest(
+    input.http,
+    input.origin,
+    `/api/v1/repos/${encodeURIComponent(input.repository.ownerLogin)}/${encodeURIComponent(input.repository.name)}/hooks/${String(input.hook.forgejoHookId)}`,
+    input.token,
+    { method: "DELETE", allowNotFound: true },
+  );
+}
+
 async function testRemoteHook(input: {
   http: ForgejoHttp;
   origin: CanonicalHttpsOrigin;
@@ -388,7 +457,7 @@ async function forgejoHookRequest(
   origin: CanonicalHttpsOrigin,
   path: string,
   token: string,
-  init: { method?: string; body?: string } = {},
+  init: { method?: string; body?: string; allowNotFound?: boolean } = {},
 ): Promise<Response> {
   try {
     await assertResolvedAddressesAllowed(origin, http.resolver);
@@ -422,6 +491,7 @@ async function forgejoHookRequest(
       "Forgejo rejected the credential",
     );
   }
+  if (response.status === 404 && init.allowNotFound === true) return response;
   if (response.status !== 204 && (response.status < 200 || response.status >= 300)) {
     throw new ForgejoContractError(
       "forgejo_origin_unapproved",
@@ -430,6 +500,19 @@ async function forgejoHookRequest(
     );
   }
   return response;
+}
+
+function hookPayload(callbackUrl: string, secret: string) {
+  return {
+    type: "forgejo",
+    config: {
+      url: callbackUrl,
+      content_type: "json",
+      secret,
+    },
+    events: [...FORGEJO_HOOK_EVENTS],
+    active: true,
+  };
 }
 
 async function ensureWebhookSecret(

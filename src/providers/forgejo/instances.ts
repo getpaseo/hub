@@ -22,6 +22,9 @@ import {
 export const FORGEJO_MINIMUM_VERSION = "16.0.3";
 export const FORGEJO_PAT_MASK = "••••";
 
+export type ForgejoCredentialKind = "connection" | "execution" | "webhook_secret";
+export type ForgejoCredentialStatus = "active" | "rotating" | "revoked";
+
 export type ForgejoTypedErrorCode =
   | "forgejo_origin_unapproved"
   | "forgejo_origin_invalid"
@@ -82,7 +85,10 @@ export interface ForgejoCredentialRecord {
     scopes: readonly string[];
     repositoryIds: readonly number[];
   };
-  status: "active" | "rotating" | "revoked";
+  status: ForgejoCredentialStatus;
+  createdAt?: Date;
+  rotatedAt?: Date | null;
+  revokedAt?: Date | null;
 }
 
 export interface ForgejoWebhookSecretRecord {
@@ -95,7 +101,45 @@ export interface ForgejoWebhookSecretRecord {
   nonce: Buffer;
   ciphertext: Buffer;
   aadVersion: number;
-  status: "active" | "rotating" | "revoked";
+  status: ForgejoCredentialStatus;
+  createdAt?: Date;
+  rotatedAt?: Date | null;
+  revokedAt?: Date | null;
+}
+
+export interface ForgejoExecutionCredentialRecord {
+  id: string;
+  organizationId: string;
+  kind: "execution";
+  status: ForgejoCredentialStatus;
+  envelope: AuthenticatedEnvelope;
+  scopeEvidence: {
+    scopes: readonly string[];
+    repositories: readonly string[];
+  };
+  createdAt?: Date;
+  rotatedAt?: Date | null;
+  revokedAt?: Date | null;
+}
+
+export type ForgejoStoredExecutionCredentialRecord = ForgejoExecutionCredentialRecord & {
+  connectionId: string;
+};
+
+export type ForgejoStoredCredentialRecord =
+  | ForgejoCredentialRecord
+  | ForgejoStoredExecutionCredentialRecord
+  | ForgejoWebhookSecretRecord;
+
+export interface ForgejoCredentialState {
+  id: string;
+  connectionId: string;
+  kind: ForgejoCredentialKind;
+  keyId: number;
+  status: ForgejoCredentialStatus;
+  createdAt: Date | null;
+  rotatedAt: Date | null;
+  revokedAt: Date | null;
 }
 
 export interface ForgejoDirectory {
@@ -117,26 +161,29 @@ export interface ForgejoDirectory {
   findActiveExecutionCredential(
     connectionId: string,
   ): Promise<ForgejoExecutionCredentialRecord | undefined>;
+  insertExecutionCredential(record: ForgejoStoredExecutionCredentialRecord): Promise<void>;
   insertWebhookSecret(record: ForgejoWebhookSecretRecord): Promise<void>;
   findActiveWebhookSecret(connectionId: string): Promise<ForgejoWebhookSecretRecord | undefined>;
+  listWebhookSecretsForConnection(connectionId: string): Promise<ForgejoWebhookSecretRecord[]>;
+  listCredentialStatesForConnection(connectionId: string): Promise<ForgejoCredentialState[]>;
+  replaceActiveCredential(input: {
+    previousCredentialId: string | null;
+    previousStatus: "rotating" | "revoked";
+    rotatedAt: Date;
+    next: ForgejoStoredCredentialRecord;
+  }): Promise<void>;
+  updateCredentialState(input: {
+    credentialId: string;
+    status: ForgejoCredentialStatus;
+    rotatedAt?: Date;
+    revokedAt?: Date;
+  }): Promise<void>;
   upsertRepositoryHook(record: ForgejoRepositoryHookRecord): Promise<void>;
   findRepositoryHook(
     connectionId: string,
     repositoryId: number,
   ): Promise<ForgejoRepositoryHookRecord | undefined>;
   listRepositoryHooksForConnection(connectionId: string): Promise<ForgejoRepositoryHookRecord[]>;
-}
-
-export interface ForgejoExecutionCredentialRecord {
-  id: string;
-  organizationId: string;
-  kind: "execution";
-  status: "active" | "rotating" | "revoked";
-  envelope: AuthenticatedEnvelope;
-  scopeEvidence: {
-    scopes: readonly string[];
-    repositories: readonly string[];
-  };
 }
 
 export interface ForgejoHttp {
@@ -157,6 +204,7 @@ export function createMemoryForgejoDirectory(
     instances?: readonly ForgejoInstanceRecord[];
     connections?: readonly ForgejoConnectionRecord[];
     credentials?: readonly ForgejoCredentialRecord[];
+    executionCredentials?: readonly ForgejoStoredExecutionCredentialRecord[];
     repositories?: readonly ForgejoRepositoryRecord[];
     webhookSecrets?: readonly ForgejoWebhookSecretRecord[];
     hooks?: readonly ForgejoRepositoryHookRecord[];
@@ -164,11 +212,17 @@ export function createMemoryForgejoDirectory(
 ): ForgejoDirectory {
   const instances = new Map(seed.instances?.map((row) => [row.id, { ...row }]) ?? []);
   const connections = new Map(seed.connections?.map((row) => [row.id, { ...row }]) ?? []);
-  const credentials = new Map(seed.credentials?.map((row) => [row.id, cloneCredential(row)]) ?? []);
+  const credentials = new Map<string, ForgejoStoredCredentialRecord>();
+  for (const credential of seed.credentials ?? []) {
+    credentials.set(credential.id, cloneCredential(credential));
+  }
+  for (const credential of seed.executionCredentials ?? []) {
+    credentials.set(credential.id, cloneExecutionCredential(credential));
+  }
+  for (const credential of seed.webhookSecrets ?? []) {
+    credentials.set(credential.id, cloneWebhookSecret(credential));
+  }
   const repositories = new Map(seed.repositories?.map((row) => [row.id, { ...row }]) ?? []);
-  const webhookSecrets = new Map(
-    seed.webhookSecrets?.map((row) => [row.id, cloneWebhookSecret(row)]) ?? [],
-  );
   const hooks = new Map(seed.hooks?.map((row) => [row.id, cloneHook(row)]) ?? []);
   return {
     async insertInstance(record) {
@@ -251,7 +305,7 @@ export function createMemoryForgejoDirectory(
           candidate.kind === "connection" &&
           candidate.status === "active",
       );
-      return row === undefined ? undefined : cloneCredential(row);
+      return row === undefined || row.kind !== "connection" ? undefined : cloneCredential(row);
     },
     async upsertRepository(record) {
       const existing = [...repositories.values()].find(
@@ -279,8 +333,27 @@ export function createMemoryForgejoDirectory(
       }
       return rows;
     },
-    async findActiveExecutionCredential() {
-      return undefined;
+    async findActiveExecutionCredential(connectionId) {
+      const row = [...credentials.values()].find(
+        (candidate) =>
+          candidate.connectionId === connectionId &&
+          candidate.kind === "execution" &&
+          candidate.status === "active",
+      );
+      return row === undefined || row.kind !== "execution"
+        ? undefined
+        : cloneExecutionCredential(row);
+    },
+    async insertExecutionCredential(record) {
+      if (record.kind !== "execution") {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          400,
+          "only execution credentials may be persisted here",
+        );
+      }
+      assertNoActiveCredential(credentials, record.connectionId, record.kind);
+      credentials.set(record.id, cloneExecutionCredential(record));
     },
     async insertWebhookSecret(record) {
       if (record.kind !== "webhook_secret") {
@@ -290,8 +363,11 @@ export function createMemoryForgejoDirectory(
           "only webhook_secret credentials may be persisted here",
         );
       }
-      const duplicate = [...webhookSecrets.values()].some(
-        (row) => row.connectionId === record.connectionId && row.status === "active",
+      const duplicate = [...credentials.values()].some(
+        (row) =>
+          row.connectionId === record.connectionId &&
+          row.kind === "webhook_secret" &&
+          row.status === "active",
       );
       if (duplicate) {
         throw new ForgejoContractError(
@@ -300,13 +376,86 @@ export function createMemoryForgejoDirectory(
           "Forgejo credential already exists",
         );
       }
-      webhookSecrets.set(record.id, cloneWebhookSecret(record));
+      credentials.set(record.id, cloneWebhookSecret(record));
     },
     async findActiveWebhookSecret(connectionId) {
-      const row = [...webhookSecrets.values()].find(
-        (candidate) => candidate.connectionId === connectionId && candidate.status === "active",
+      const row = [...credentials.values()].find(
+        (candidate) =>
+          candidate.connectionId === connectionId &&
+          candidate.kind === "webhook_secret" &&
+          candidate.status === "active",
       );
-      return row === undefined ? undefined : cloneWebhookSecret(row);
+      return row === undefined || row.kind !== "webhook_secret"
+        ? undefined
+        : cloneWebhookSecret(row);
+    },
+    async listWebhookSecretsForConnection(connectionId) {
+      return [...credentials.values()]
+        .filter(
+          (candidate) =>
+            candidate.connectionId === connectionId && candidate.kind === "webhook_secret",
+        )
+        .filter(isWebhookSecretCredential)
+        .map(cloneWebhookSecret)
+        .sort(compareCredentialRecords);
+    },
+    async listCredentialStatesForConnection(connectionId) {
+      return [...credentials.values()]
+        .filter((candidate) => candidate.connectionId === connectionId)
+        .map(credentialState)
+        .sort(compareCredentialStates);
+    },
+    async replaceActiveCredential(input) {
+      const next = input.next;
+      if (next.status !== "active") {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          400,
+          "replacement credential must be active",
+        );
+      }
+      if (input.previousCredentialId !== null) {
+        const previous = credentials.get(input.previousCredentialId);
+        if (
+          previous === undefined ||
+          previous.connectionId !== next.connectionId ||
+          previous.kind !== next.kind ||
+          previous.status !== "active"
+        ) {
+          throw new ForgejoContractError(
+            "forgejo_credential_unavailable",
+            409,
+            "Forgejo credential is unavailable",
+          );
+        }
+        credentials.set(
+          previous.id,
+          cloneStoredCredential({
+            ...previous,
+            status: input.previousStatus,
+            rotatedAt: input.rotatedAt,
+            ...(input.previousStatus === "revoked" ? { revokedAt: input.rotatedAt } : {}),
+          }),
+        );
+      } else {
+        assertNoActiveCredential(credentials, next.connectionId, next.kind);
+      }
+      credentials.set(next.id, cloneStoredCredential(next));
+    },
+    async updateCredentialState(input) {
+      const current = credentials.get(input.credentialId);
+      if (current === undefined) {
+        throw new ForgejoContractError("not_found", 404, "Forgejo credential was not found");
+      }
+      credentials.set(
+        current.id,
+        cloneStoredCredential({
+          ...current,
+          status: input.status,
+          ...(input.rotatedAt === undefined ? {} : { rotatedAt: input.rotatedAt }),
+          ...(input.revokedAt === undefined ? {} : { revokedAt: input.revokedAt }),
+        }),
+      );
     },
     async upsertRepositoryHook(record) {
       const existing = [...hooks.values()].find(
@@ -866,6 +1015,13 @@ function cloneCredential(record: ForgejoCredentialRecord): ForgejoCredentialReco
       repositoryIds: [...record.scopeEvidence.repositoryIds],
     },
     status: record.status,
+    ...(record.createdAt === undefined ? {} : { createdAt: new Date(record.createdAt) }),
+    ...(record.rotatedAt === undefined
+      ? {}
+      : { rotatedAt: record.rotatedAt === null ? null : new Date(record.rotatedAt) }),
+    ...(record.revokedAt === undefined
+      ? {}
+      : { revokedAt: record.revokedAt === null ? null : new Date(record.revokedAt) }),
   };
 }
 
@@ -881,7 +1037,111 @@ function cloneWebhookSecret(record: ForgejoWebhookSecretRecord): ForgejoWebhookS
     ciphertext: Buffer.from(record.ciphertext),
     aadVersion: record.aadVersion,
     status: record.status,
+    ...(record.createdAt === undefined ? {} : { createdAt: new Date(record.createdAt) }),
+    ...(record.rotatedAt === undefined
+      ? {}
+      : { rotatedAt: record.rotatedAt === null ? null : new Date(record.rotatedAt) }),
+    ...(record.revokedAt === undefined
+      ? {}
+      : { revokedAt: record.revokedAt === null ? null : new Date(record.revokedAt) }),
   };
+}
+
+function cloneExecutionCredential(
+  record: ForgejoStoredExecutionCredentialRecord,
+): ForgejoStoredExecutionCredentialRecord {
+  return {
+    id: record.id,
+    organizationId: record.organizationId,
+    connectionId: record.connectionId,
+    kind: "execution",
+    status: record.status,
+    envelope: {
+      alg: record.envelope.alg,
+      keyId: record.envelope.keyId,
+      nonce: Buffer.from(record.envelope.nonce),
+      ciphertext: Buffer.from(record.envelope.ciphertext),
+      aadVersion: record.envelope.aadVersion,
+    },
+    scopeEvidence: {
+      scopes: [...record.scopeEvidence.scopes],
+      repositories: [...record.scopeEvidence.repositories],
+    },
+    ...(record.createdAt === undefined ? {} : { createdAt: new Date(record.createdAt) }),
+    ...(record.rotatedAt === undefined
+      ? {}
+      : { rotatedAt: record.rotatedAt === null ? null : new Date(record.rotatedAt) }),
+    ...(record.revokedAt === undefined
+      ? {}
+      : { revokedAt: record.revokedAt === null ? null : new Date(record.revokedAt) }),
+  };
+}
+
+function cloneStoredCredential(
+  record: ForgejoStoredCredentialRecord,
+): ForgejoStoredCredentialRecord {
+  if (record.kind === "connection") return cloneCredential(record);
+  if (record.kind === "webhook_secret") return cloneWebhookSecret(record);
+  return cloneExecutionCredential(record);
+}
+
+function isWebhookSecretCredential(
+  record: ForgejoStoredCredentialRecord,
+): record is ForgejoWebhookSecretRecord {
+  return record.kind === "webhook_secret";
+}
+
+function assertNoActiveCredential(
+  credentials: ReadonlyMap<string, ForgejoStoredCredentialRecord>,
+  connectionId: string,
+  kind: ForgejoCredentialKind,
+): void {
+  const existing = [...credentials.values()].some(
+    (candidate) =>
+      candidate.connectionId === connectionId &&
+      candidate.kind === kind &&
+      candidate.status === "active",
+  );
+  if (existing) {
+    throw new ForgejoContractError(
+      "forgejo_scope_invalid",
+      409,
+      "Forgejo credential already exists",
+    );
+  }
+}
+
+function credentialState(record: ForgejoStoredCredentialRecord): ForgejoCredentialState {
+  return {
+    id: record.id,
+    connectionId: record.connectionId,
+    kind: record.kind,
+    keyId: record.kind === "execution" ? record.envelope.keyId : record.keyId,
+    status: record.status,
+    createdAt: record.createdAt === undefined ? null : new Date(record.createdAt),
+    rotatedAt:
+      record.rotatedAt === undefined || record.rotatedAt === null
+        ? null
+        : new Date(record.rotatedAt),
+    revokedAt:
+      record.revokedAt === undefined || record.revokedAt === null
+        ? null
+        : new Date(record.revokedAt),
+  };
+}
+
+function compareCredentialRecords(
+  left: ForgejoWebhookSecretRecord,
+  right: ForgejoWebhookSecretRecord,
+): number {
+  return left.id.localeCompare(right.id);
+}
+
+function compareCredentialStates(
+  left: ForgejoCredentialState,
+  right: ForgejoCredentialState,
+): number {
+  return left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id);
 }
 
 function cloneHook(record: ForgejoRepositoryHookRecord): ForgejoRepositoryHookRecord {

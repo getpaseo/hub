@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import type { ForgejoRepositoryHookRecord } from "../../db/types.js";
 import { isDatabaseUnavailableError } from "../../db/errors.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import {
@@ -13,6 +14,7 @@ export const FORGEJO_DELIVERY_PATTERN = /^[0-9a-f-]{36}$/u;
 export const FORGEJO_SIGNATURE_PATTERN = /^[0-9a-f]{64}$/u;
 
 const ADMITTED_HOOK_STATUSES = new Set(["pending_verification", "active", "manual_pending"]);
+const ADMITTED_WEBHOOK_SECRET_STATUSES = new Set(["active", "rotating"]);
 
 export interface ForgejoVerifiedDelivery {
   connectionId: string;
@@ -70,24 +72,33 @@ export async function handleForgejoIngress(
     if (connection === undefined || !isAdmittedConnection(connection.status)) {
       return jsonError("unauthorized", 401);
     }
-    const secretRow = await options.directory.findActiveWebhookSecret(connectionId);
-    if (secretRow === undefined) return jsonError("unavailable", 503);
-    const secret = decryptSecret(
-      options.secrets,
-      {
-        alg: "aes-256-gcm",
-        keyId: secretRow.keyId,
-        nonce: secretRow.nonce,
-        ciphertext: secretRow.ciphertext,
-        aadVersion: 1,
-      },
-      {
-        organizationId: secretRow.organizationId,
-        credentialId: secretRow.id,
-        kind: "webhook_secret",
-      },
+    const secrets = (await options.directory.listWebhookSecretsForConnection(connectionId)).filter(
+      (secret) => ADMITTED_WEBHOOK_SECRET_STATUSES.has(secret.status),
     );
-    if (!verifyForgejoSignature(secret, body, headers.signature)) {
+    if (secrets.length === 0) return jsonError("unavailable", 503);
+    let signatureVerified = false;
+    for (const secretRow of secrets) {
+      const secret = decryptSecret(
+        options.secrets,
+        {
+          alg: "aes-256-gcm",
+          keyId: secretRow.keyId,
+          nonce: secretRow.nonce,
+          ciphertext: secretRow.ciphertext,
+          aadVersion: 1,
+        },
+        {
+          organizationId: secretRow.organizationId,
+          credentialId: secretRow.id,
+          kind: "webhook_secret",
+        },
+      );
+      if (verifyForgejoSignature(secret, body, headers.signature)) {
+        signatureVerified = true;
+        break;
+      }
+    }
+    if (!signatureVerified) {
       return jsonError("unauthorized", 401);
     }
     const repositoryId = repositoryIdFromBody(body);
@@ -100,18 +111,7 @@ export async function handleForgejoIngress(
       return jsonError("unconfigured", 400);
     }
     const receivedAt = options.now?.() ?? new Date();
-    if (hook.status === "pending_verification" || hook.status === "manual_pending") {
-      await options.directory.upsertRepositoryHook({
-        ...hook,
-        status: "active",
-        lastVerifiedAt: receivedAt,
-      });
-    } else if (hook.lastVerifiedAt === null) {
-      await options.directory.upsertRepositoryHook({
-        ...hook,
-        lastVerifiedAt: receivedAt,
-      });
-    }
+    await recordForgejoHookDelivery(options.directory, hook, receivedAt);
     const delivery: ForgejoVerifiedDelivery = {
       connectionId,
       organizationId: connection.organizationId,
@@ -128,6 +128,20 @@ export async function handleForgejoIngress(
   } catch (error) {
     if (isDatabaseUnavailableError(error)) return jsonError("unavailable", 503);
     return jsonError("unavailable", 503);
+  }
+}
+
+async function recordForgejoHookDelivery(
+  directory: ForgejoDirectory,
+  hook: ForgejoRepositoryHookRecord,
+  receivedAt: Date,
+): Promise<void> {
+  if (hook.status === "pending_verification" || hook.status === "manual_pending") {
+    await directory.upsertRepositoryHook({ ...hook, status: "active", lastVerifiedAt: receivedAt });
+    return;
+  }
+  if (hook.lastVerifiedAt === null) {
+    await directory.upsertRepositoryHook({ ...hook, lastVerifiedAt: receivedAt });
   }
 }
 

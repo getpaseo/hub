@@ -7,9 +7,13 @@ import type {
 } from "./types.js";
 import {
   ForgejoContractError,
+  type ForgejoCredentialState,
   type ForgejoCredentialRecord,
+  type ForgejoCredentialStatus,
   type ForgejoDirectory,
   type ForgejoExecutionCredentialRecord,
+  type ForgejoStoredCredentialRecord,
+  type ForgejoStoredExecutionCredentialRecord,
   type ForgejoWebhookSecretRecord,
 } from "../providers/forgejo/instances.js";
 import { FORGEJO_CREDENTIAL_ALG } from "../secrets/authenticated-envelope.js";
@@ -176,6 +180,20 @@ export function createSqlForgejoDirectory(runtime: QueryHandle): ForgejoDirector
       );
       return mapExecutionCredential(rows.rows[0]);
     },
+    async insertExecutionCredential(record) {
+      if (record.kind !== "execution") {
+        throw new ForgejoContractError(
+          "forgejo_scope_invalid",
+          400,
+          "only execution credentials may be persisted here",
+        );
+      }
+      try {
+        await insertStoredCredential(runtime, record);
+      } catch (error) {
+        throw mapUnique(error, undefined, "credential");
+      }
+    },
     async insertWebhookSecret(record) {
       if (record.kind !== "webhook_secret") {
         throw new ForgejoContractError(
@@ -214,6 +232,78 @@ export function createSqlForgejoDirectory(runtime: QueryHandle): ForgejoDirector
         [connectionId],
       );
       return mapWebhookSecret(rows.rows[0]);
+    },
+    async listWebhookSecretsForConnection(connectionId) {
+      const rows = await runtime.query<CredentialRow>(
+        `${CREDENTIAL_SELECT} where connection_id = $1 and kind = 'webhook_secret' order by created_at, id`,
+        [connectionId],
+      );
+      return rows.rows.flatMap((row) => {
+        const secret = mapWebhookSecret(row);
+        return secret === undefined ? [] : [secret];
+      });
+    },
+    async listCredentialStatesForConnection(connectionId) {
+      const rows = await runtime.query<CredentialRow>(
+        `${CREDENTIAL_SELECT} where connection_id = $1 order by kind, created_at, id`,
+        [connectionId],
+      );
+      return rows.rows.flatMap((row) => {
+        const state = mapCredentialState(row);
+        return state === undefined ? [] : [state];
+      });
+    },
+    async replaceActiveCredential(input) {
+      const values = credentialInsertValues(input.next);
+      try {
+        const result = await runtime.query<{ id: string }>(
+          `with predecessor as (
+             update forgejo_credentials
+             set status = $2,
+                 rotated_at = $3,
+                 revoked_at = case when $2 = 'revoked' then $3 else revoked_at end
+             where id = $1 and status = 'active'
+             returning id
+           )
+           insert into forgejo_credentials (
+             id, organization_id, connection_id, kind, alg, key_id, nonce, ciphertext,
+             aad_version, scope_evidence, status, rotated_at
+           )
+           select $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15
+           where ($1::uuid is null or exists (select 1 from predecessor))
+           returning id`,
+          [
+            input.previousCredentialId,
+            input.previousStatus,
+            input.rotatedAt,
+            ...values,
+            input.next.rotatedAt ?? null,
+          ],
+        );
+        if (result.rowCount === 0) {
+          throw new ForgejoContractError(
+            "forgejo_credential_unavailable",
+            409,
+            "Forgejo credential is unavailable",
+          );
+        }
+      } catch (error) {
+        if (error instanceof ForgejoContractError) throw error;
+        throw mapUnique(error, undefined, "credential");
+      }
+    },
+    async updateCredentialState(input) {
+      const result = await runtime.query(
+        `update forgejo_credentials
+         set status = $2,
+             rotated_at = coalesce($3, rotated_at),
+             revoked_at = coalesce($4, revoked_at)
+         where id = $1`,
+        [input.credentialId, input.status, input.rotatedAt ?? null, input.revokedAt ?? null],
+      );
+      if (result.rowCount === 0) {
+        throw new ForgejoContractError("not_found", 404, "Forgejo credential was not found");
+      }
     },
     async upsertRepositoryHook(record) {
       await runtime.query(
@@ -267,7 +357,7 @@ const CONNECTION_SELECT = `select id, organization_id, instance_id, slug, status
  from forgejo_connections`;
 
 const CREDENTIAL_SELECT = `select id, organization_id, connection_id, kind, alg, key_id, nonce,
-       ciphertext, aad_version, scope_evidence, status
+       ciphertext, aad_version, scope_evidence, status, created_at, rotated_at, revoked_at
  from forgejo_credentials`;
 
 const HOOK_SELECT = `select id, organization_id, connection_id, repository_id, forgejo_hook_id,
@@ -311,7 +401,10 @@ interface CredentialRow extends QueryRow {
   ciphertext: Buffer | Uint8Array;
   aad_version: number;
   scope_evidence: unknown;
-  status: "active" | "rotating" | "revoked";
+  status: ForgejoCredentialStatus;
+  created_at: Date;
+  rotated_at: Date | null;
+  revoked_at: Date | null;
 }
 
 interface RepositoryRow extends QueryRow {
@@ -420,6 +513,9 @@ function mapConnectionCredential(
     aadVersion: row.aad_version,
     scopeEvidence: { scopes, repositoryIds },
     status: row.status,
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at,
+    revokedAt: row.revoked_at,
   };
 }
 
@@ -444,6 +540,9 @@ function mapExecutionCredential(
       scopes: stringList(evidence["scopes"]),
       repositories: stringList(evidence["repositories"]),
     },
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at,
+    revokedAt: row.revoked_at,
   };
 }
 
@@ -460,7 +559,71 @@ function mapWebhookSecret(row: CredentialRow | undefined): ForgejoWebhookSecretR
     ciphertext: asBuffer(row.ciphertext),
     aadVersion: row.aad_version,
     status: row.status,
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at,
+    revokedAt: row.revoked_at,
   };
+}
+
+function mapCredentialState(row: CredentialRow): ForgejoCredentialState | undefined {
+  if (row.kind !== "connection" && row.kind !== "execution" && row.kind !== "webhook_secret") {
+    return undefined;
+  }
+  return {
+    id: row.id,
+    connectionId: row.connection_id,
+    kind: row.kind,
+    keyId: row.key_id,
+    status: row.status,
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+async function insertStoredCredential(
+  runtime: QueryHandle,
+  record: ForgejoStoredExecutionCredentialRecord,
+): Promise<void> {
+  const values = credentialInsertValues(record);
+  await runtime.query(
+    `insert into forgejo_credentials (
+       id, organization_id, connection_id, kind, alg, key_id, nonce, ciphertext,
+       aad_version, scope_evidence, status
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)`,
+    values,
+  );
+}
+
+function credentialInsertValues(record: ForgejoStoredCredentialRecord): unknown[] {
+  if (record.kind === "execution") {
+    return [
+      record.id,
+      record.organizationId,
+      record.connectionId,
+      record.kind,
+      record.envelope.alg,
+      record.envelope.keyId,
+      record.envelope.nonce,
+      record.envelope.ciphertext,
+      record.envelope.aadVersion,
+      JSON.stringify(record.scopeEvidence),
+      record.status,
+    ];
+  }
+  return [
+    record.id,
+    record.organizationId,
+    record.connectionId,
+    record.kind,
+    record.alg,
+    record.keyId,
+    record.nonce,
+    record.ciphertext,
+    record.aadVersion,
+    JSON.stringify(record.kind === "connection" ? record.scopeEvidence : {}),
+    record.status,
+  ];
 }
 
 function mapHook(row: HookRow | undefined): ForgejoRepositoryHookRecord | undefined {

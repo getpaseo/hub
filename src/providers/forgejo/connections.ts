@@ -38,6 +38,7 @@ import {
   persistVisibleRepositories,
   publicRepository,
 } from "./repositories.js";
+import { createForgejoLifecycle, type ForgejoLifecycle } from "./lifecycle.js";
 
 export const ALLOWED_CONNECTION_SCOPES = [
   "read:issue",
@@ -59,6 +60,28 @@ export interface CreateForgejoConnectionInput {
   scopes: readonly string[];
   limitedRepositoryIds: readonly number[] | "unscoped";
 }
+
+interface ForgejoConnectionsRequestOptions {
+  access: ForgejoAccessResolver;
+  directory: ForgejoDirectory;
+  http: ForgejoHttp;
+  secrets: SecretEncryptionKeySource;
+  onEnrolled?: (input: {
+    connectionId: string;
+    organizationId: string;
+    repositories: ForgejoRepositoryRecord[];
+  }) => Promise<void>;
+  lifecycle?: ForgejoLifecycle;
+}
+
+type ForgejoLifecycleRouteAction =
+  | "impact"
+  | "rotate_connection"
+  | "revoke_connection"
+  | "configure_execution"
+  | "revoke_execution"
+  | "rotate_webhook"
+  | "disconnect";
 
 export function maskForgejoPat(): typeof FORGEJO_PAT_MASK {
   return maskSecret();
@@ -170,22 +193,19 @@ export function createForgejoConnectionClient(input: {
 
 export async function handleForgejoConnectionsRequest(
   request: Request,
-  options: {
-    access: ForgejoAccessResolver;
-    directory: ForgejoDirectory;
-    http: ForgejoHttp;
-    secrets: SecretEncryptionKeySource;
-    onEnrolled?: (input: {
-      connectionId: string;
-      organizationId: string;
-      repositories: ForgejoRepositoryRecord[];
-    }) => Promise<void>;
-  },
+  options: ForgejoConnectionsRequestOptions,
 ): Promise<Response> {
   try {
     const access = await options.access.resolve(request);
     const organizationId = requireOrganizationOwner(access);
     const url = new URL(request.url);
+    const lifecycle =
+      options.lifecycle ??
+      createForgejoLifecycle({
+        directory: options.directory,
+        http: options.http,
+        secrets: options.secrets,
+      });
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/connections")) {
       return Response.json(await listOrganizationForgejo(organizationId, options.directory));
     }
@@ -198,6 +218,14 @@ export async function handleForgejoConnectionsRequest(
       );
       return Response.json(created, { status: 201 });
     }
+    const lifecycleResponse = await handleForgejoLifecycleRequest({
+      request,
+      pathname: url.pathname,
+      organizationId,
+      options,
+      lifecycle,
+    });
+    if (lifecycleResponse !== undefined) return lifecycleResponse;
     const enroll = /^\/connections\/([^/]+)\/enroll$/u.exec(url.pathname);
     if (request.method === "POST" && enroll !== null && enroll[1] !== undefined) {
       const body = await readJsonObject(request);
@@ -220,6 +248,152 @@ export async function handleForgejoConnectionsRequest(
     return Response.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     return forgejoErrorResponse(error);
+  }
+}
+
+async function handleForgejoLifecycleRequest(input: {
+  request: Request;
+  pathname: string;
+  organizationId: string;
+  options: ForgejoConnectionsRequestOptions;
+  lifecycle: ForgejoLifecycle;
+}): Promise<Response | undefined> {
+  const route = forgejoLifecycleRoute(input.pathname);
+  if (route === undefined) return undefined;
+  if (route.action === "impact") {
+    if (input.request.method !== "GET") return undefined;
+    return Response.json(
+      await input.lifecycle.previewDisconnect({
+        organizationId: input.organizationId,
+        connectionId: route.connectionId,
+      }),
+    );
+  }
+  if (input.request.method !== "POST") return undefined;
+  switch (route.action) {
+    case "rotate_connection":
+      return rotateConnectionCredentialResponse(input, route.connectionId);
+    case "revoke_connection":
+      return Response.json({
+        credential: await input.lifecycle.revokeConnectionCredential({
+          organizationId: input.organizationId,
+          connectionId: route.connectionId,
+        }),
+      });
+    case "configure_execution":
+      return configureExecutionCredentialResponse(input, route.connectionId);
+    case "revoke_execution":
+      return Response.json({
+        credential: await input.lifecycle.revokeExecutionCredential({
+          organizationId: input.organizationId,
+          connectionId: route.connectionId,
+        }),
+      });
+    case "rotate_webhook":
+      return rotateWebhookSecretResponse(input, route.connectionId);
+    case "disconnect":
+      return disconnectConnectionResponse(input, route.connectionId);
+    default:
+      return undefined;
+  }
+}
+
+async function rotateConnectionCredentialResponse(
+  input: {
+    request: Request;
+    organizationId: string;
+    options: ForgejoConnectionsRequestOptions;
+    lifecycle: ForgejoLifecycle;
+  },
+  connectionId: string,
+): Promise<Response> {
+  const credential = await rotateOrganizationConnectionCredential({
+    request: input.request,
+    organizationId: input.organizationId,
+    connectionId,
+    directory: input.options.directory,
+    http: input.options.http,
+    lifecycle: input.lifecycle,
+  });
+  return Response.json({ credential });
+}
+
+async function configureExecutionCredentialResponse(
+  input: { request: Request; organizationId: string; lifecycle: ForgejoLifecycle },
+  connectionId: string,
+): Promise<Response> {
+  const body = await readJsonObject(input.request);
+  return Response.json({
+    credential: await input.lifecycle.configureExecutionCredential({
+      organizationId: input.organizationId,
+      connectionId,
+      pat: readString(body, "pat"),
+      scopes: readStringList(body["scopes"], "execution scopes are invalid"),
+      repositories: readStringList(body["repositories"], "execution repositories are invalid"),
+    }),
+  });
+}
+
+async function rotateWebhookSecretResponse(
+  input: { request: Request; organizationId: string; lifecycle: ForgejoLifecycle },
+  connectionId: string,
+): Promise<Response> {
+  const body = await readJsonObject(input.request);
+  return Response.json(
+    await input.lifecycle.rotateWebhookSecret({
+      organizationId: input.organizationId,
+      connectionId,
+      webhookAdminPat: readString(body, "webhookAdminPat"),
+    }),
+  );
+}
+
+async function disconnectConnectionResponse(
+  input: { request: Request; organizationId: string; lifecycle: ForgejoLifecycle },
+  connectionId: string,
+): Promise<Response> {
+  const body = await readOptionalJsonObject(input.request);
+  const webhookAdminPat = readOptionalWebhookAdminPat(body);
+  const lifecycleInput: {
+    organizationId: string;
+    connectionId: string;
+    webhookAdminPat?: string;
+  } = { organizationId: input.organizationId, connectionId };
+  if (webhookAdminPat !== undefined) lifecycleInput.webhookAdminPat = webhookAdminPat;
+  const result = await input.lifecycle.disconnect(lifecycleInput);
+  return Response.json(result, { status: result.cleanupStatus === "complete" ? 200 : 202 });
+}
+
+function forgejoLifecycleRoute(
+  pathname: string,
+): { connectionId: string; action: ForgejoLifecycleRouteAction } | undefined {
+  const matched = /^\/connections\/([^/]+)\/(.+)$/u.exec(pathname);
+  if (matched === null) return undefined;
+  const connectionId = matched[1];
+  const suffix = matched[2];
+  if (connectionId === undefined || suffix === undefined) return undefined;
+  const action = forgejoLifecycleAction(suffix);
+  return action === undefined ? undefined : { connectionId, action };
+}
+
+function forgejoLifecycleAction(suffix: string): ForgejoLifecycleRouteAction | undefined {
+  switch (suffix) {
+    case "impact":
+      return "impact";
+    case "credentials/connection/rotate":
+      return "rotate_connection";
+    case "credentials/connection/revoke":
+      return "revoke_connection";
+    case "credentials/execution":
+      return "configure_execution";
+    case "credentials/execution/revoke":
+      return "revoke_execution";
+    case "credentials/webhook_secret/rotate":
+      return "rotate_webhook";
+    case "disconnect":
+      return "disconnect";
+    default:
+      return undefined;
   }
 }
 
@@ -348,6 +522,78 @@ async function createOrganizationConnection(
   };
 }
 
+async function rotateOrganizationConnectionCredential(input: {
+  request: Request;
+  organizationId: string;
+  connectionId: string;
+  directory: ForgejoDirectory;
+  http: ForgejoHttp;
+  lifecycle: ForgejoLifecycle;
+}) {
+  const body = await readJsonObject(input.request);
+  rejectDisallowedCredentialFields(body);
+  const parsed = parseConnectionCredentialBody(body);
+  const validated = validateConnectionCredential({
+    pat: parsed.pat,
+    scopes: parsed.scopes,
+    limitedRepositoryIds: parsed.limitedRepositoryIds,
+    oauth2: parsed.oauth2,
+    ...(parsed.password === undefined ? {} : { password: parsed.password }),
+  });
+  const connection = await requireOwnedConnection(input.directory, input);
+  if (connection.status === "disconnected") {
+    throw new ForgejoContractError(
+      "forgejo_credential_unavailable",
+      409,
+      "Forgejo connection is unavailable",
+    );
+  }
+  const instance = await input.directory.findInstanceById(connection.instanceId);
+  if (instance === undefined || instance.status !== "active") {
+    throw new ForgejoContractError(
+      "forgejo_origin_unapproved",
+      409,
+      "Forgejo instance is unavailable",
+    );
+  }
+  const visible = await listVisibleRepositories(input.http, instance, parsed.pat);
+  const identity = await bindForgejoIdentity({
+    http: input.http,
+    instance,
+    token: parsed.pat,
+    claimedUsername: connection.forgejoUserLogin,
+    repositories: visible,
+  });
+  if (identity.id !== connection.forgejoUserId || identity.login !== connection.forgejoUserLogin) {
+    throw new ForgejoContractError(
+      "forgejo_identity_mismatch",
+      403,
+      "rotated Forgejo PAT does not match the connected identity",
+    );
+  }
+  const enrolled = (await input.directory.listRepositoriesForConnection(connection.id)).filter(
+    (repository) => repository.enrolled,
+  );
+  const visibleIds = new Set(visible.map((repository) => repository.id));
+  const declaredIds = new Set(validated.repositoryIds);
+  for (const repository of enrolled) {
+    if (!visibleIds.has(repository.repositoryId) || !declaredIds.has(repository.repositoryId)) {
+      throw new ForgejoContractError(
+        "forgejo_scope_invalid",
+        400,
+        "rotated Forgejo PAT must retain every enrolled repository",
+      );
+    }
+  }
+  return input.lifecycle.rotateConnectionCredential({
+    organizationId: connection.organizationId,
+    connectionId: connection.id,
+    pat: parsed.pat,
+    scopes: validated.scopes,
+    repositoryIds: validated.repositoryIds,
+  });
+}
+
 async function listOrganizationForgejo(organizationId: string, directory: ForgejoDirectory) {
   const [connections, instances] = await Promise.all([
     directory.listConnectionsForOrganization(organizationId),
@@ -453,6 +699,23 @@ function parseCreateBody(body: Record<string, unknown>): CreateForgejoConnection
   };
 }
 
+function parseConnectionCredentialBody(body: Record<string, unknown>): Pick<
+  CreateForgejoConnectionInput,
+  "pat" | "scopes" | "limitedRepositoryIds"
+> & {
+  oauth2: boolean;
+  password: string | undefined;
+} {
+  const scopes = readStringList(body["scopes"], "Forgejo scopes are invalid");
+  return {
+    pat: readString(body, "pat"),
+    scopes,
+    limitedRepositoryIds: parseLimitedRepositoryIds(body["repositories"]),
+    oauth2: body["oauth2"] === true || body["grantType"] === "oauth2",
+    password: typeof body["password"] === "string" ? body["password"] : undefined,
+  };
+}
+
 function parseLimitedRepositoryIds(value: unknown): readonly number[] | "unscoped" {
   if (value === null) return "unscoped";
   if (value === undefined) return [];
@@ -475,6 +738,59 @@ function readIntegerList(value: unknown, message: string): number[] {
     ids.push(entry);
   }
   return ids;
+}
+
+function readStringList(value: unknown, message: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ForgejoContractError("forgejo_scope_invalid", 400, message);
+  }
+  const strings: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      throw new ForgejoContractError("forgejo_scope_invalid", 400, message);
+    }
+    strings.push(entry.trim());
+  }
+  return strings;
+}
+
+async function readOptionalJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const raw = await request.text();
+  if (raw.trim().length === 0) return {};
+  try {
+    return asJsonRecord(
+      JSON.parse(raw),
+      "forgejo_origin_invalid",
+      "request body must be an object",
+    );
+  } catch (error) {
+    if (error instanceof ForgejoContractError) throw error;
+    throw new ForgejoContractError(
+      "forgejo_origin_invalid",
+      400,
+      "request body must be valid JSON",
+    );
+  }
+}
+
+function readOptionalWebhookAdminPat(body: Record<string, unknown>): string | undefined {
+  const value = body["webhookAdminPat"];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0 || /\s/u.test(value)) {
+    throw new ForgejoContractError("forgejo_scope_invalid", 400, "webhook-admin PAT is invalid");
+  }
+  return value;
+}
+
+async function requireOwnedConnection(
+  directory: ForgejoDirectory,
+  input: { organizationId: string; connectionId: string },
+): Promise<ForgejoConnectionRecord> {
+  const connection = await directory.findConnectionById(input.connectionId);
+  if (connection === undefined || connection.organizationId !== input.organizationId) {
+    throw new ForgejoContractError("not_found", 404, "Forgejo connection was not found");
+  }
+  return connection;
 }
 
 function rejectDisallowedCredentialFields(body: Record<string, unknown>): void {

@@ -46,6 +46,30 @@ export interface ForgejoWebhookSetupView {
   }[];
 }
 
+export interface ForgejoDisconnectImpactView {
+  connectionId: string;
+  repositories: readonly { repositoryId: number; fullName: string; enrolled: boolean }[];
+  hooks: readonly { repositoryId: number; managed: boolean; status: string }[];
+  configurationSources: readonly { projectId: string; repositoryId: number }[];
+  activeRevisions: readonly { projectId: string; revisionId: string }[];
+  triggerRoutes: readonly { projectId: string; repositoryId: number }[];
+  hydrationSignals: readonly { repositoryId: number }[];
+  work: { queued: readonly { stepRunId: string }[]; inFlight: readonly { stepRunId: string }[] };
+  futureExecution: "blocked";
+}
+
+export interface ForgejoDisconnectResultView {
+  disconnected: true;
+  impact: ForgejoDisconnectImpactView;
+  cleanupStatus: "complete" | "REMOTE_CLEANUP_PENDING";
+  cleanup: readonly {
+    repositoryId: number;
+    fullName: string | null;
+    managed: boolean;
+    result: "removed" | "preserved_manual" | "pending";
+  }[];
+}
+
 export function ForgejoConnectionPanel({
   approvedInstances,
   connections,
@@ -54,6 +78,15 @@ export function ForgejoConnectionPanel({
   onConnect,
   onEnroll,
   onSetupHooks,
+  onRotateConnectionCredential,
+  onRevokeConnectionCredential,
+  onConfigureExecutionCredential,
+  onRevokeExecutionCredential,
+  onRotateWebhookSecret,
+  onPreviewDisconnect,
+  onDisconnect,
+  disconnectImpact,
+  disconnectResult,
 }: {
   approvedInstances: readonly ForgejoApprovedInstanceOption[];
   connections: readonly ForgejoConnectionView[];
@@ -71,6 +104,24 @@ export function ForgejoConnectionPanel({
     mode: "manual" | "automatic";
     adminPat?: string;
   }) => void;
+  onRotateConnectionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    repositoryIds: readonly number[];
+  }) => void;
+  onRevokeConnectionCredential: (input: { connectionId: string }) => void;
+  onConfigureExecutionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    scopes: readonly string[];
+    repositories: readonly string[];
+  }) => void;
+  onRevokeExecutionCredential: (input: { connectionId: string }) => void;
+  onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
+  onPreviewDisconnect: (input: { connectionId: string }) => void;
+  onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  disconnectImpact: ForgejoDisconnectImpactView | null;
+  disconnectResult: ForgejoDisconnectResultView | null;
 }) {
   const submitConnection = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -107,6 +158,15 @@ export function ForgejoConnectionPanel({
         canManage={canConnect}
         onEnroll={onEnroll}
         onSetupHooks={onSetupHooks}
+        onRotateConnectionCredential={onRotateConnectionCredential}
+        onRevokeConnectionCredential={onRevokeConnectionCredential}
+        onConfigureExecutionCredential={onConfigureExecutionCredential}
+        onRevokeExecutionCredential={onRevokeExecutionCredential}
+        onRotateWebhookSecret={onRotateWebhookSecret}
+        onPreviewDisconnect={onPreviewDisconnect}
+        onDisconnect={onDisconnect}
+        disconnectImpact={disconnectImpact}
+        disconnectResult={disconnectResult}
       />
     </section>
   );
@@ -186,6 +246,15 @@ function ConnectionList({
   canManage,
   onEnroll,
   onSetupHooks,
+  onRotateConnectionCredential,
+  onRevokeConnectionCredential,
+  onConfigureExecutionCredential,
+  onRevokeExecutionCredential,
+  onRotateWebhookSecret,
+  onPreviewDisconnect,
+  onDisconnect,
+  disconnectImpact,
+  disconnectResult,
 }: {
   connections: readonly ForgejoConnectionView[];
   canManage: boolean;
@@ -195,6 +264,24 @@ function ConnectionList({
     mode: "manual" | "automatic";
     adminPat?: string;
   }) => void;
+  onRotateConnectionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    repositoryIds: readonly number[];
+  }) => void;
+  onRevokeConnectionCredential: (input: { connectionId: string }) => void;
+  onConfigureExecutionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    scopes: readonly string[];
+    repositories: readonly string[];
+  }) => void;
+  onRevokeExecutionCredential: (input: { connectionId: string }) => void;
+  onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
+  onPreviewDisconnect: (input: { connectionId: string }) => void;
+  onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  disconnectImpact: ForgejoDisconnectImpactView | null;
+  disconnectResult: ForgejoDisconnectResultView | null;
 }) {
   if (connections.length === 0) {
     return (
@@ -213,6 +300,15 @@ function ConnectionList({
           canManage={canManage}
           onEnroll={onEnroll}
           onSetupHooks={onSetupHooks}
+          onRotateConnectionCredential={onRotateConnectionCredential}
+          onRevokeConnectionCredential={onRevokeConnectionCredential}
+          onConfigureExecutionCredential={onConfigureExecutionCredential}
+          onRevokeExecutionCredential={onRevokeExecutionCredential}
+          onRotateWebhookSecret={onRotateWebhookSecret}
+          onPreviewDisconnect={onPreviewDisconnect}
+          onDisconnect={onDisconnect}
+          disconnectImpact={disconnectImpact}
+          disconnectResult={disconnectResult}
         />
       ))}
     </ul>
@@ -224,6 +320,15 @@ function ConnectionCard({
   canManage,
   onEnroll,
   onSetupHooks,
+  onRotateConnectionCredential,
+  onRevokeConnectionCredential,
+  onConfigureExecutionCredential,
+  onRevokeExecutionCredential,
+  onRotateWebhookSecret,
+  onPreviewDisconnect,
+  onDisconnect,
+  disconnectImpact,
+  disconnectResult,
 }: {
   connection: ForgejoConnectionView;
   canManage: boolean;
@@ -233,6 +338,24 @@ function ConnectionCard({
     mode: "manual" | "automatic";
     adminPat?: string;
   }) => void;
+  onRotateConnectionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    repositoryIds: readonly number[];
+  }) => void;
+  onRevokeConnectionCredential: (input: { connectionId: string }) => void;
+  onConfigureExecutionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    scopes: readonly string[];
+    repositories: readonly string[];
+  }) => void;
+  onRevokeExecutionCredential: (input: { connectionId: string }) => void;
+  onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
+  onPreviewDisconnect: (input: { connectionId: string }) => void;
+  onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  disconnectImpact: ForgejoDisconnectImpactView | null;
+  disconnectResult: ForgejoDisconnectResultView | null;
 }) {
   const submitEnrollment = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -286,7 +409,299 @@ function ConnectionCard({
         </form>
       )}
       <HookSetup connection={connection} canManage={canManage} onSetupHooks={onSetupHooks} />
+      {canManage ? (
+        <CredentialLifecycleControls
+          connection={connection}
+          onRotateConnectionCredential={onRotateConnectionCredential}
+          onRevokeConnectionCredential={onRevokeConnectionCredential}
+          onConfigureExecutionCredential={onConfigureExecutionCredential}
+          onRevokeExecutionCredential={onRevokeExecutionCredential}
+          onRotateWebhookSecret={onRotateWebhookSecret}
+          onPreviewDisconnect={onPreviewDisconnect}
+          onDisconnect={onDisconnect}
+          disconnectImpact={disconnectImpact}
+          disconnectResult={disconnectResult}
+        />
+      ) : null}
     </li>
+  );
+}
+
+const EXECUTION_SCOPES = [
+  "read:issue",
+  "write:issue",
+  "read:repository",
+  "write:repository",
+] as const;
+
+function CredentialLifecycleControls({
+  connection,
+  onRotateConnectionCredential,
+  onRevokeConnectionCredential,
+  onConfigureExecutionCredential,
+  onRevokeExecutionCredential,
+  onRotateWebhookSecret,
+  onPreviewDisconnect,
+  onDisconnect,
+  disconnectImpact,
+  disconnectResult,
+}: {
+  connection: ForgejoConnectionView;
+  onRotateConnectionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    repositoryIds: readonly number[];
+  }) => void;
+  onRevokeConnectionCredential: (input: { connectionId: string }) => void;
+  onConfigureExecutionCredential: (input: {
+    connectionId: string;
+    pat: string;
+    scopes: readonly string[];
+    repositories: readonly string[];
+  }) => void;
+  onRevokeExecutionCredential: (input: { connectionId: string }) => void;
+  onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
+  onPreviewDisconnect: (input: { connectionId: string }) => void;
+  onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  disconnectImpact: ForgejoDisconnectImpactView | null;
+  disconnectResult: ForgejoDisconnectResultView | null;
+}) {
+  const enrolled = connection.repositories.filter((repository) => repository.enrolled);
+  const submitConnectionRotation = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onRotateConnectionCredential({
+      connectionId: connection.id,
+      pat: formString(form, "connectionPat"),
+      repositoryIds: enrolled.map((repository) => repository.repositoryId),
+    });
+    clearPasswordField(event.currentTarget, "connectionPat");
+  };
+  const submitExecutionCredential = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onConfigureExecutionCredential({
+      connectionId: connection.id,
+      pat: formString(form, "executionPat"),
+      scopes: formStrings(form, "executionScope"),
+      repositories: formStrings(form, "executionRepository"),
+    });
+    clearPasswordField(event.currentTarget, "executionPat");
+  };
+  const submitWebhookRotation = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onRotateWebhookSecret({
+      connectionId: connection.id,
+      webhookAdminPat: formString(form, "webhookAdminPat"),
+    });
+    clearPasswordField(event.currentTarget, "webhookAdminPat");
+  };
+  const submitDisconnect = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const webhookAdminPat = formString(form, "disconnectWebhookAdminPat");
+    onDisconnect(
+      webhookAdminPat.length === 0
+        ? { connectionId: connection.id }
+        : { connectionId: connection.id, webhookAdminPat },
+    );
+    clearPasswordField(event.currentTarget, "disconnectWebhookAdminPat");
+  };
+  return (
+    <div className="grid gap-3 border-t pt-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium">Credential lifecycle</p>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => onPreviewDisconnect({ connectionId: connection.id })}
+        >
+          Preview impact
+        </Button>
+      </div>
+      {connection.status === "disconnected" ? null : (
+        <>
+          <form
+            aria-label={`Rotate connection PAT for ${connection.slug}`}
+            className="grid gap-2"
+            onSubmit={submitConnectionRotation}
+          >
+            <Field>
+              <FieldLabel htmlFor={`forgejo-connection-pat-${connection.id}`}>
+                Replacement connection PAT
+              </FieldLabel>
+              <Input
+                id={`forgejo-connection-pat-${connection.id}`}
+                name="connectionPat"
+                type="password"
+                autoComplete="off"
+                required
+              />
+            </Field>
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" variant="outline" disabled={enrolled.length === 0}>
+                Rotate connection PAT
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onRevokeConnectionCredential({ connectionId: connection.id })}
+              >
+                Revoke connection PAT
+              </Button>
+            </div>
+          </form>
+          <form
+            aria-label={`Configure execution PAT for ${connection.slug}`}
+            className="grid gap-2"
+            onSubmit={submitExecutionCredential}
+          >
+            <Field>
+              <FieldLabel htmlFor={`forgejo-execution-pat-${connection.id}`}>
+                Execution PAT
+              </FieldLabel>
+              <Input
+                id={`forgejo-execution-pat-${connection.id}`}
+                name="executionPat"
+                type="password"
+                autoComplete="off"
+                required
+              />
+            </Field>
+            <div className="grid gap-1 text-xs">
+              {EXECUTION_SCOPES.map((scope) => (
+                <label key={scope} className="inline-flex items-center gap-2">
+                  <CheckboxInput
+                    id={`forgejo-execution-scope-${connection.id}-${scope}`}
+                    name="executionScope"
+                    value={scope}
+                    defaultChecked
+                  />
+                  {scope}
+                </label>
+              ))}
+            </div>
+            <div className="grid gap-1 text-xs">
+              {enrolled.map((repository) => (
+                <label key={repository.repositoryId} className="inline-flex items-center gap-2">
+                  <CheckboxInput
+                    id={`forgejo-execution-repository-${connection.id}-${String(repository.repositoryId)}`}
+                    name="executionRepository"
+                    value={repository.fullName}
+                    defaultChecked
+                  />
+                  {repository.fullName}
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" variant="outline" disabled={enrolled.length === 0}>
+                Save execution PAT
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onRevokeExecutionCredential({ connectionId: connection.id })}
+              >
+                Revoke execution PAT
+              </Button>
+            </div>
+          </form>
+          <form
+            aria-label={`Rotate webhook secret for ${connection.slug}`}
+            className="grid gap-2"
+            onSubmit={submitWebhookRotation}
+          >
+            <Field>
+              <FieldLabel htmlFor={`forgejo-webhook-rotation-pat-${connection.id}`}>
+                One-time webhook-admin PAT
+              </FieldLabel>
+              <Input
+                id={`forgejo-webhook-rotation-pat-${connection.id}`}
+                name="webhookAdminPat"
+                type="password"
+                autoComplete="off"
+                required
+              />
+            </Field>
+            <Button type="submit" variant="outline">
+              Rotate webhook secret
+            </Button>
+          </form>
+        </>
+      )}
+      <ImpactPreview impact={disconnectImpact} connectionId={connection.id} />
+      <CleanupResult result={disconnectResult} connectionId={connection.id} />
+      <form
+        aria-label={`Disconnect ${connection.slug}`}
+        className="grid gap-2 border-t pt-3"
+        onSubmit={submitDisconnect}
+      >
+        <Field>
+          <FieldLabel htmlFor={`forgejo-disconnect-admin-pat-${connection.id}`}>
+            One-time webhook-admin PAT
+          </FieldLabel>
+          <Input
+            id={`forgejo-disconnect-admin-pat-${connection.id}`}
+            name="disconnectWebhookAdminPat"
+            type="password"
+            autoComplete="off"
+          />
+        </Field>
+        <Button type="submit" variant="destructive">
+          Disconnect Forgejo
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+function ImpactPreview({
+  impact,
+  connectionId,
+}: {
+  impact: ForgejoDisconnectImpactView | null;
+  connectionId: string;
+}) {
+  if (impact === null || impact.connectionId !== connectionId) return null;
+  return (
+    <div className="grid gap-1 border-y py-2 text-xs" aria-live="polite">
+      <p>
+        {impact.repositories.length} repositories, {impact.hooks.length} hooks,{" "}
+        {impact.configurationSources.length} configuration sources, {impact.triggerRoutes.length}{" "}
+        routes
+      </p>
+      <p>
+        {impact.activeRevisions.length} active revisions, {impact.hydrationSignals.length} hydration
+        signals, {impact.work.queued.length} queued steps, {impact.work.inFlight.length} in-flight
+        steps
+      </p>
+      <p>Future execution: {impact.futureExecution}</p>
+    </div>
+  );
+}
+
+function CleanupResult({
+  result,
+  connectionId,
+}: {
+  result: ForgejoDisconnectResultView | null;
+  connectionId: string;
+}) {
+  if (result === null || result.impact.connectionId !== connectionId) return null;
+  return (
+    <div className="grid gap-1 border-y py-2 text-xs" aria-live="polite">
+      <p>Remote cleanup: {result.cleanupStatus.replaceAll("_", " ")}</p>
+      <ul aria-label="Forgejo remote cleanup results" className="grid gap-1">
+        {result.cleanup.map((cleanup) => (
+          <li key={cleanup.repositoryId}>
+            {cleanup.fullName ?? `Repository ${String(cleanup.repositoryId)}`}:{" "}
+            {cleanup.result.replaceAll("_", " ")}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -376,4 +791,17 @@ function HookSetup({
 function formString(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
+}
+
+function formStrings(form: FormData, name: string): string[] {
+  return form
+    .getAll(name)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function clearPasswordField(form: HTMLFormElement, name: string): void {
+  const field = form.elements.namedItem(name);
+  if (field instanceof HTMLInputElement) field.value = "";
 }

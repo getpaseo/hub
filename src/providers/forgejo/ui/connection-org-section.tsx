@@ -4,14 +4,25 @@ import { useServerFn } from "@tanstack/react-start";
 import { useActiveAccount } from "../../../auth/active-account.js";
 import { FORGEJO_PAT_MASK } from "../instances.js";
 import {
+  configureForgejoExecutionCredential,
   createForgejoConnection,
+  disconnectForgejoConnection,
   enrollForgejoRepositories,
   listForgejoConnections,
   listForgejoHooks,
+  previewForgejoDisconnect,
+  revokeForgejoConnectionCredential,
+  revokeForgejoExecutionCredential,
+  rotateForgejoConnectionCredential,
+  rotateForgejoWebhookSecret,
   setupForgejoHooks,
   type ForgejoHookSetup,
 } from "../functions.js";
-import { ForgejoConnectionPanel, type ForgejoConnectionView } from "./connection-panel.js";
+import {
+  ForgejoConnectionPanel,
+  type ForgejoConnectionView,
+  type ForgejoDisconnectImpactView,
+} from "./connection-panel.js";
 import { resultError } from "./result-error.js";
 
 export function ForgejoOrganizationConnectionSection() {
@@ -37,6 +48,43 @@ export function ForgejoOrganizationConnectionSection() {
       await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
     },
   });
+  const rotateConnectionCredential = useMutation({
+    mutationFn: useServerFn(rotateForgejoConnectionCredential),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const revokeConnectionCredential = useMutation({
+    mutationFn: useServerFn(revokeForgejoConnectionCredential),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const configureExecutionCredential = useMutation({
+    mutationFn: useServerFn(configureForgejoExecutionCredential),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const revokeExecutionCredential = useMutation({
+    mutationFn: useServerFn(revokeForgejoExecutionCredential),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const rotateWebhookSecret = useMutation({
+    mutationFn: useServerFn(rotateForgejoWebhookSecret),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
+  const previewDisconnect = useMutation({ mutationFn: useServerFn(previewForgejoDisconnect) });
+  const disconnect = useMutation({
+    mutationFn: useServerFn(disconnectForgejoConnection),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
   const query = useQuery({
     queryKey: ["forgejo", "connections"],
     queryFn: () => load(),
@@ -58,11 +106,28 @@ export function ForgejoOrganizationConnectionSection() {
     connect.data,
     enroll.data,
     setupHooks.data,
+    rotateConnectionCredential.data,
+    revokeConnectionCredential.data,
+    configureExecutionCredential.data,
+    revokeExecutionCredential.data,
+    rotateWebhookSecret.data,
+    previewDisconnect.data,
+    disconnect.data,
     query.error,
+    rotateConnectionCredential.error,
+    revokeConnectionCredential.error,
+    configureExecutionCredential.error,
+    revokeExecutionCredential.error,
+    rotateWebhookSecret.error,
+    previewDisconnect.error,
+    disconnect.error,
     ...hookQueries.map((entry) => entry.data),
     ...hookQueries.map((entry) => entry.error),
   );
   const data = query.data?.status === "ok" ? query.data.data : undefined;
+  const disconnectImpact: ForgejoDisconnectImpactView | null =
+    previewDisconnect.data?.status === "ok" ? previewDisconnect.data.data : null;
+  const disconnectResult = disconnect.data?.status === "ok" ? disconnect.data.data : null;
   return (
     <ForgejoConnectionPanel
       approvedInstances={(data?.approvedInstances ?? []).map((instance) => ({
@@ -116,6 +181,37 @@ export function ForgejoOrganizationConnectionSection() {
               : { connectionId: input.connectionId, mode: "manual" },
         })
       }
+      onRotateConnectionCredential={(input) =>
+        rotateConnectionCredential.mutate({
+          data: {
+            connectionId: input.connectionId,
+            pat: input.pat,
+            scopes: ["read:issue", "write:issue", "read:repository", "write:repository"],
+            repositoryIds: [...input.repositoryIds],
+          },
+        })
+      }
+      onRevokeConnectionCredential={(input) =>
+        revokeConnectionCredential.mutate({ data: { connectionId: input.connectionId } })
+      }
+      onConfigureExecutionCredential={(input) =>
+        configureExecutionCredential.mutate({
+          data: {
+            connectionId: input.connectionId,
+            pat: input.pat,
+            scopes: [...input.scopes],
+            repositories: [...input.repositories],
+          },
+        })
+      }
+      onRevokeExecutionCredential={(input) =>
+        revokeExecutionCredential.mutate({ data: { connectionId: input.connectionId } })
+      }
+      onRotateWebhookSecret={(input) => rotateWebhookSecret.mutate({ data: input })}
+      onPreviewDisconnect={(input) => previewDisconnect.mutate({ data: input })}
+      onDisconnect={(input) => disconnect.mutate({ data: input })}
+      disconnectImpact={disconnectImpact}
+      disconnectResult={disconnectResult}
     />
   );
 }
