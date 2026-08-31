@@ -53,6 +53,38 @@ describe("SQL Forgejo hydration store", () => {
       await bundle.runtime.close();
     }
   });
+
+  it("serializes overlapping recovered-event inserts onto one cursor advance", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hub-forgejo-hydration-"));
+    roots.push(root);
+    const bundle = await embeddedDatabaseRuntime(join(root, "database"));
+    try {
+      await bundle.runtime.migrate();
+      await seedConnection(bundle.runtime);
+      const store = createSqlForgejoHydrationStore(bundle.runtime);
+      await store.seedCursor(cursorKey, 2);
+      const outcomes = await Promise.all([
+        store.insertRecoveredAndAdvance({
+          key: cursorKey,
+          organizationId: "org_1",
+          sourceRecordKind: "label",
+          sourceRecordId: 3,
+          cursorRecordId: 3,
+        }),
+        store.insertRecoveredAndAdvance({
+          key: cursorKey,
+          organizationId: "org_1",
+          sourceRecordKind: "label",
+          sourceRecordId: 3,
+          cursorRecordId: 3,
+        }),
+      ]);
+      assert.deepEqual(new Set(outcomes), new Set(["inserted", "duplicate"]));
+      assert.equal(await store.getCursor(cursorKey), 3);
+    } finally {
+      await bundle.runtime.close();
+    }
+  });
 });
 
 async function seedConnection(runtime: QueryHandle): Promise<void> {

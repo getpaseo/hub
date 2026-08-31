@@ -113,6 +113,37 @@ describe("Forgejo hydration consumer", () => {
     assert.deepEqual(recovered, ["forgejo.issue_label_added:3"]);
   });
 
+  it("recovers a label once when overlapping scans race", async () => {
+    const timeline = readList(await readJson(join(fixturesRoot, "hydration/timeline-issue.json")));
+    const store = createMemoryForgejoHydrationStore();
+    await store.seedCursor(
+      {
+        connectionId: "conn-1",
+        repositoryId: 1,
+        subjectKind: "issue",
+        subjectId: 3,
+        recordKind: "timeline",
+      },
+      2,
+    );
+    const recovered: string[] = [];
+    const consumer = createForgejoHydrationConsumer({
+      store,
+      client: fakeClient(timeline, []),
+      onRecovered: (event) => {
+        recovered.push(`${event.semanticEvent}:${String(event.sourceRecordId)}`);
+        return Promise.resolve();
+      },
+    });
+    const delivery = testDelivery();
+    const signal = labelSignal(3);
+    await Promise.all([
+      consumer.consume({ receiptId: "r-a", delivery, signal }),
+      consumer.consume({ receiptId: "r-b", delivery, signal }),
+    ]);
+    assert.deepEqual(recovered, ["forgejo.issue_label_added:3"]);
+  });
+
   it("leaves the cursor unchanged when the timeline API fails", async () => {
     const store = createMemoryForgejoHydrationStore();
     await store.seedCursor(
