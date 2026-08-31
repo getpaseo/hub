@@ -116,6 +116,7 @@ import {
   type ForgejoDirectory,
 } from "../providers/forgejo/instances.js";
 import { createMemoryForgejoHydrationStore } from "../triggers/forgejo/hydration.js";
+import { createMemoryForgejoRecoveryStore } from "../providers/forgejo/recovery-store.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -227,6 +228,7 @@ class MemoryDatabase implements Database {
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
   private readonly forgejo = createMemoryForgejoDirectory();
   private readonly hydration = createMemoryForgejoHydrationStore();
+  private readonly recovery = createMemoryForgejoRecoveryStore();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
@@ -1032,6 +1034,26 @@ class MemoryDatabase implements Database {
     });
   }
 
+  async listAbandonedForgejoReceipts(): Promise<ProviderEventReceiptRecord[]> {
+    return [...this.providerEventReceipts.values()].filter(
+      (receipt) =>
+        receipt.provider === "forgejo" &&
+        receipt.droppedReason === null &&
+        receipt.acceptedRoutes === null,
+    );
+  }
+
+  async markForgejoReceiptDispatched(providerEventReceiptId: string): Promise<void> {
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+    if (receipt.acceptedRoutes !== null) return;
+    this.providerEventReceipts.set(providerEventReceiptId, {
+      ...receipt,
+      acceptedRoutes: [],
+    });
+  }
+
   async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findGitHubConnection(input.installationId);
     const reason = githubDropReason(input, binding);
@@ -1155,23 +1177,7 @@ class MemoryDatabase implements Database {
       if (receipt.droppedReason !== null) {
         return { status: "dropped", receiptId: receipt.id, reason: receipt.droppedReason };
       }
-      if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId: receipt.id };
-      return {
-        status: "accepted",
-        receiptId: receipt.id,
-        events: receipt.acceptedRoutes.map((route) => ({
-          providerEventReceiptId: receipt.id,
-          organizationId: receipt.organizationId,
-          projectId: route.projectId,
-          configurationRevisionId: route.configurationRevisionId,
-          deliveryId: receipt.deliveryId,
-          source: receipt.source,
-          payload: receipt.payload,
-          receivedAt: receipt.receivedAt,
-          connectionId: route.connectionId,
-          resourceId: route.resourceId,
-        })),
-      };
+      return { status: "duplicate", receiptId: receipt.id };
     }
     const receipt = this.insertProviderEventReceipt({
       organizationId: connection.organizationId,
@@ -2948,6 +2954,10 @@ class MemoryDatabase implements Database {
 
   forgejoHydration() {
     return this.hydration;
+  }
+
+  forgejoRecovery() {
+    return this.recovery;
   }
 
   async listGitHubRepositories(organizationId: string) {

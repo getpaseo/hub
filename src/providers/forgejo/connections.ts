@@ -72,6 +72,22 @@ interface ForgejoConnectionsRequestOptions {
     repositories: ForgejoRepositoryRecord[];
   }) => Promise<void>;
   lifecycle?: ForgejoLifecycle;
+  recovery?: {
+    recoverCleanup: (input: {
+      organizationId: string;
+      connectionId: string;
+      webhookAdminPat: string;
+    }) => Promise<number>;
+    healthForConnection: (connectionId: string) => Promise<
+      readonly {
+        workKind: string;
+        status: string;
+        typedCause: string | null;
+        nextAttemptAt: string | null;
+        remediation: string;
+      }[]
+    >;
+  };
 }
 
 type ForgejoLifecycleRouteAction =
@@ -226,6 +242,21 @@ export async function handleForgejoConnectionsRequest(
       lifecycle,
     });
     if (lifecycleResponse !== undefined) return lifecycleResponse;
+    const recover = /^\/connections\/([^/]+)\/recover-cleanup$/u.exec(url.pathname);
+    if (request.method === "POST" && recover !== null && recover[1] !== undefined) {
+      if (options.recovery === undefined) {
+        throw new ForgejoContractError("not_found", 404, "Forgejo recovery is unavailable");
+      }
+      const body = await readJsonObject(request);
+      const webhookAdminPat = readString(body, "webhookAdminPat");
+      const processed = await options.recovery.recoverCleanup({
+        organizationId,
+        connectionId: recover[1],
+        webhookAdminPat,
+      });
+      const health = await options.recovery.healthForConnection(recover[1]);
+      return Response.json({ processed, health });
+    }
     const enroll = /^\/connections\/([^/]+)\/enroll$/u.exec(url.pathname);
     if (request.method === "POST" && enroll !== null && enroll[1] !== undefined) {
       const body = await readJsonObject(request);

@@ -152,6 +152,7 @@ export interface ForgejoDirectory {
   updateConnection(record: ForgejoConnectionRecord): Promise<void>;
   findConnectionById(id: string): Promise<ForgejoConnectionRecord | undefined>;
   listConnectionsForOrganization(organizationId: string): Promise<ForgejoConnectionRecord[]>;
+  listConnections(): Promise<ForgejoConnectionRecord[]>;
   insertCredential(record: ForgejoCredentialRecord): Promise<void>;
   findActiveConnectionCredential(
     connectionId: string,
@@ -286,6 +287,16 @@ export function createMemoryForgejoDirectory(
       for (const row of connections.values()) {
         if (row.organizationId === organizationId) rows.push(cloneConnection(row));
       }
+      return rows;
+    },
+    async listConnections() {
+      const rows: ForgejoConnectionRecord[] = [];
+      for (const row of connections.values()) rows.push(cloneConnection(row));
+      rows.sort((left, right) => {
+        const slug = left.slug.localeCompare(right.slug);
+        if (slug !== 0) return slug;
+        return left.id.localeCompare(right.id);
+      });
       return rows;
     },
     async insertCredential(record) {
@@ -655,12 +666,29 @@ export function envelopeFromCredential(record: ForgejoCredentialRecord): Authent
   };
 }
 
+interface ForgejoInstanceRecovery {
+  tick: () => Promise<number>;
+  healthForInstance: (instanceId: string) => Promise<
+    readonly {
+      workKind: string;
+      status: string;
+      typedCause: string | null;
+      attemptCount: number;
+      lastSuccessAt: string | null;
+      lastFailureAt: string | null;
+      nextAttemptAt: string | null;
+      remediation: string;
+    }[]
+  >;
+}
+
 export async function handleForgejoInstancesRequest(
   request: Request,
   options: {
     access: ForgejoAccessResolver;
     directory: ForgejoDirectory;
     http: ForgejoHttp;
+    recovery?: ForgejoInstanceRecovery;
   },
 ): Promise<Response> {
   try {
@@ -668,8 +696,7 @@ export async function handleForgejoInstancesRequest(
     requireInstanceOperator(access);
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/instances")) {
-      const instances = await options.directory.listInstances();
-      return Response.json({ instances: instances.map(publicInstance) });
+      return listPublicInstances(options);
     }
     if (request.method === "POST" && (url.pathname === "/" || url.pathname === "/instances")) {
       const instance = await approveInstance(request, access.userId, options);
@@ -678,12 +705,64 @@ export async function handleForgejoInstancesRequest(
     const verify = /^\/instances\/([^/]+)\/verify$/u.exec(url.pathname);
     if (request.method === "POST" && verify !== null && verify[1] !== undefined) {
       const instance = await verifyExistingInstance(verify[1], options);
-      return Response.json({ instance: publicInstance(instance) });
+      return instanceHealthResponse(instance, options);
+    }
+    const healthPath = /^\/instances\/([^/]+)\/health$/u.exec(url.pathname);
+    if (request.method === "POST" && healthPath !== null && healthPath[1] !== undefined) {
+      return probeInstanceHealthResponse(healthPath[1], options);
     }
     return Response.json({ error: "not_found" }, { status: 404 });
   } catch (error) {
     return forgejoErrorResponse(error);
   }
+}
+
+async function listPublicInstances(options: {
+  directory: ForgejoDirectory;
+  recovery?: ForgejoInstanceRecovery;
+}): Promise<Response> {
+  const instances = await options.directory.listInstances();
+  const views = [];
+  for (const instance of instances) {
+    views.push({
+      ...publicInstance(instance),
+      health: await instanceHealth(options.recovery, instance.id),
+    });
+  }
+  return Response.json({ instances: views });
+}
+
+async function instanceHealthResponse(
+  instance: ForgejoInstanceRecord,
+  options: { recovery?: ForgejoInstanceRecovery },
+): Promise<Response> {
+  if (options.recovery !== undefined) await options.recovery.tick();
+  return Response.json({
+    instance: {
+      ...publicInstance(instance),
+      health: await instanceHealth(options.recovery, instance.id),
+    },
+  });
+}
+
+async function probeInstanceHealthResponse(
+  instanceId: string,
+  options: {
+    directory: ForgejoDirectory;
+    recovery?: ForgejoInstanceRecovery;
+  },
+): Promise<Response> {
+  const existing = await options.directory.findInstanceById(instanceId);
+  if (existing === undefined) {
+    throw new ForgejoContractError("not_found", 404, "Forgejo instance was not found");
+  }
+  const refreshed = (await options.directory.findInstanceById(existing.id)) ?? existing;
+  return instanceHealthResponse(refreshed, options);
+}
+
+async function instanceHealth(recovery: ForgejoInstanceRecovery | undefined, instanceId: string) {
+  if (recovery === undefined) return [];
+  return recovery.healthForInstance(instanceId);
 }
 
 export function forgejoErrorResponse(error: unknown): Response {

@@ -21,6 +21,13 @@ export interface ForgejoInstanceView {
     | "identity_drifted"
     | "revoked";
   lastHealthError: string | null;
+  health: readonly {
+    workKind: string;
+    status: string;
+    typedCause: string | null;
+    nextAttemptAt: string | null;
+    remediation: string;
+  }[];
 }
 
 export function ForgejoInstancePanel({
@@ -28,11 +35,13 @@ export function ForgejoInstancePanel({
   error,
   canApprove,
   onApprove,
+  onProbeHealth,
 }: {
   instances: readonly ForgejoInstanceView[];
   error: string | null;
   canApprove: boolean;
   onApprove: (input: { origin: string; allowPrivateNetwork: boolean }) => void;
+  onProbeHealth?: (instanceId: string) => void;
 }) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -95,10 +104,32 @@ export function ForgejoInstancePanel({
                 {instance.lastHealthError === null ? null : (
                   <p className="text-xs text-destructive">{instance.lastHealthError}</p>
                 )}
+                {instance.health.map((row) => (
+                  <p
+                    key={`${row.workKind}:${row.status}`}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {row.workKind.replaceAll("_", " ")}: {row.status.replaceAll("_", " ")}
+                    {row.typedCause === null ? "" : ` (${row.typedCause})`}
+                    {row.nextAttemptAt === null ? "" : ` next ${row.nextAttemptAt}`}
+                    {` · ${row.remediation.replaceAll("_", " ")}`}
+                  </p>
+                ))}
               </div>
-              <StatusPill tone={instanceTone(instance.status)}>
-                {instance.status.replaceAll("_", " ")}
-              </StatusPill>
+              <div className="flex items-center gap-2">
+                {onProbeHealth === undefined ? null : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => onProbeHealth(instance.id)}
+                  >
+                    Check health
+                  </Button>
+                )}
+                <StatusPill tone={instanceTone(instance.status)}>
+                  {instance.status.replaceAll("_", " ")}
+                </StatusPill>
+              </div>
             </li>
           ))}
         </ul>

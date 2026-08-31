@@ -50,6 +50,7 @@ import {
 } from "./instances.js";
 import { handleForgejoRepositoriesRequest } from "./repositories.js";
 import { createDatabaseForgejoLifecycleImpactSource, createForgejoLifecycle } from "./lifecycle.js";
+import { createForgejoRecoveryCoordinator } from "./recovery.js";
 
 export const FORGEJO_REQUEST_NAMES = [
   "forgejo.instances",
@@ -172,6 +173,17 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
       database,
       onClaimed,
     });
+  const recovery = createForgejoRecoveryCoordinator({
+    directory,
+    store: database.forgejoRecovery(),
+    http,
+    secrets,
+    receipts: {
+      listAbandoned: () => database.listAbandonedForgejoReceipts(),
+      markDispatched: (id) => database.markForgejoReceiptDispatched(id),
+    },
+    dispatch: onClaimed,
+  });
   return {
     configurationProvider,
     disconnect: (request) => handleForgejoDisconnectAction(request, { access, lifecycle }),
@@ -231,6 +243,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
             access,
             directory,
             http,
+            recovery,
           }),
       },
       {
@@ -253,6 +266,7 @@ function liveForgejoRegistration(options: CreateForgejoRegistrationOptions):
             secrets,
             onEnrolled,
             lifecycle,
+            recovery,
           });
         },
       },

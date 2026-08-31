@@ -85,6 +85,7 @@ export function ForgejoConnectionPanel({
   onRotateWebhookSecret,
   onPreviewDisconnect,
   onDisconnect,
+  onRecoverCleanup,
   disconnectImpact,
   disconnectResult,
 }: {
@@ -120,6 +121,7 @@ export function ForgejoConnectionPanel({
   onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
   onPreviewDisconnect: (input: { connectionId: string }) => void;
   onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  onRecoverCleanup: (input: { connectionId: string; webhookAdminPat: string }) => void;
   disconnectImpact: ForgejoDisconnectImpactView | null;
   disconnectResult: ForgejoDisconnectResultView | null;
 }) {
@@ -165,6 +167,7 @@ export function ForgejoConnectionPanel({
         onRotateWebhookSecret={onRotateWebhookSecret}
         onPreviewDisconnect={onPreviewDisconnect}
         onDisconnect={onDisconnect}
+        onRecoverCleanup={onRecoverCleanup}
         disconnectImpact={disconnectImpact}
         disconnectResult={disconnectResult}
       />
@@ -253,6 +256,7 @@ function ConnectionList({
   onRotateWebhookSecret,
   onPreviewDisconnect,
   onDisconnect,
+  onRecoverCleanup,
   disconnectImpact,
   disconnectResult,
 }: {
@@ -280,6 +284,7 @@ function ConnectionList({
   onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
   onPreviewDisconnect: (input: { connectionId: string }) => void;
   onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  onRecoverCleanup: (input: { connectionId: string; webhookAdminPat: string }) => void;
   disconnectImpact: ForgejoDisconnectImpactView | null;
   disconnectResult: ForgejoDisconnectResultView | null;
 }) {
@@ -307,6 +312,7 @@ function ConnectionList({
           onRotateWebhookSecret={onRotateWebhookSecret}
           onPreviewDisconnect={onPreviewDisconnect}
           onDisconnect={onDisconnect}
+          onRecoverCleanup={onRecoverCleanup}
           disconnectImpact={disconnectImpact}
           disconnectResult={disconnectResult}
         />
@@ -327,6 +333,7 @@ function ConnectionCard({
   onRotateWebhookSecret,
   onPreviewDisconnect,
   onDisconnect,
+  onRecoverCleanup,
   disconnectImpact,
   disconnectResult,
 }: {
@@ -354,6 +361,7 @@ function ConnectionCard({
   onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
   onPreviewDisconnect: (input: { connectionId: string }) => void;
   onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  onRecoverCleanup: (input: { connectionId: string; webhookAdminPat: string }) => void;
   disconnectImpact: ForgejoDisconnectImpactView | null;
   disconnectResult: ForgejoDisconnectResultView | null;
 }) {
@@ -419,6 +427,7 @@ function ConnectionCard({
           onRotateWebhookSecret={onRotateWebhookSecret}
           onPreviewDisconnect={onPreviewDisconnect}
           onDisconnect={onDisconnect}
+          onRecoverCleanup={onRecoverCleanup}
           disconnectImpact={disconnectImpact}
           disconnectResult={disconnectResult}
         />
@@ -443,6 +452,7 @@ function CredentialLifecycleControls({
   onRotateWebhookSecret,
   onPreviewDisconnect,
   onDisconnect,
+  onRecoverCleanup,
   disconnectImpact,
   disconnectResult,
 }: {
@@ -463,6 +473,7 @@ function CredentialLifecycleControls({
   onRotateWebhookSecret: (input: { connectionId: string; webhookAdminPat: string }) => void;
   onPreviewDisconnect: (input: { connectionId: string }) => void;
   onDisconnect: (input: { connectionId: string; webhookAdminPat?: string }) => void;
+  onRecoverCleanup: (input: { connectionId: string; webhookAdminPat: string }) => void;
   disconnectImpact: ForgejoDisconnectImpactView | null;
   disconnectResult: ForgejoDisconnectResultView | null;
 }) {
@@ -507,6 +518,15 @@ function CredentialLifecycleControls({
         : { connectionId: connection.id, webhookAdminPat },
     );
     clearPasswordField(event.currentTarget, "disconnectWebhookAdminPat");
+  };
+  const submitRecoverCleanup = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onRecoverCleanup({
+      connectionId: connection.id,
+      webhookAdminPat: formString(form, "recoverWebhookAdminPat"),
+    });
+    clearPasswordField(event.currentTarget, "recoverWebhookAdminPat");
   };
   return (
     <div className="grid gap-3 border-t pt-3">
@@ -633,26 +653,50 @@ function CredentialLifecycleControls({
       )}
       <ImpactPreview impact={disconnectImpact} connectionId={connection.id} />
       <CleanupResult result={disconnectResult} connectionId={connection.id} />
-      <form
-        aria-label={`Disconnect ${connection.slug}`}
-        className="grid gap-2 border-t pt-3"
-        onSubmit={submitDisconnect}
-      >
-        <Field>
-          <FieldLabel htmlFor={`forgejo-disconnect-admin-pat-${connection.id}`}>
-            One-time webhook-admin PAT
-          </FieldLabel>
-          <Input
-            id={`forgejo-disconnect-admin-pat-${connection.id}`}
-            name="disconnectWebhookAdminPat"
-            type="password"
-            autoComplete="off"
-          />
-        </Field>
-        <Button type="submit" variant="destructive">
-          Disconnect Forgejo
-        </Button>
-      </form>
+      {connection.status === "disconnected" ? (
+        <form
+          aria-label={`Resume remote cleanup for ${connection.slug}`}
+          className="grid gap-2 border-t pt-3"
+          onSubmit={submitRecoverCleanup}
+        >
+          <Field>
+            <FieldLabel htmlFor={`forgejo-recover-cleanup-pat-${connection.id}`}>
+              One-time webhook-admin PAT
+            </FieldLabel>
+            <Input
+              id={`forgejo-recover-cleanup-pat-${connection.id}`}
+              name="recoverWebhookAdminPat"
+              type="password"
+              autoComplete="off"
+              required
+            />
+          </Field>
+          <Button type="submit" variant="outline">
+            Resume remote cleanup
+          </Button>
+        </form>
+      ) : (
+        <form
+          aria-label={`Disconnect ${connection.slug}`}
+          className="grid gap-2 border-t pt-3"
+          onSubmit={submitDisconnect}
+        >
+          <Field>
+            <FieldLabel htmlFor={`forgejo-disconnect-admin-pat-${connection.id}`}>
+              One-time webhook-admin PAT
+            </FieldLabel>
+            <Input
+              id={`forgejo-disconnect-admin-pat-${connection.id}`}
+              name="disconnectWebhookAdminPat"
+              type="password"
+              autoComplete="off"
+            />
+          </Field>
+          <Button type="submit" variant="destructive">
+            Disconnect Forgejo
+          </Button>
+        </form>
+      )}
     </div>
   );
 }

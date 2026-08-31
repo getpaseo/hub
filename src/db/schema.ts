@@ -1302,6 +1302,43 @@ export const forgejoHydratedEvents = pgTable(
   ],
 );
 
+export const forgejoRecoveryWork = pgTable(
+  "forgejo_recovery_work",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id, {
+      onDelete: "cascade",
+    }),
+    workKind: text("work_kind").$type<ForgejoRecoveryWorkKind>().notNull(),
+    workIdentity: text("work_identity").notNull(),
+    status: text().$type<ForgejoRecoveryWorkStatus>().notNull(),
+    typedCause: text("typed_cause"),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    claimedBy: text("claimed_by"),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+    scope: jsonb().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("forgejo_recovery_work_identity_unique").on(table.workKind, table.workIdentity),
+    index("forgejo_recovery_work_due_idx")
+      .on(table.nextAttemptAt)
+      .where(sql`${table.status} in ('ready', 'retry_scheduled')`),
+    check(
+      "forgejo_recovery_work_kind_check",
+      sql`${table.workKind} in ('instance_health', 'connection_health', 'repository_health', 'hook_health', 'receipt_dispatch', 'hydration_signal', 'remote_cleanup')`,
+    ),
+    check(
+      "forgejo_recovery_work_status_check",
+      sql`${table.status} in ('ready', 'claimed', 'succeeded', 'retry_scheduled', 'failed_permanent', 'cancelled')`,
+    ),
+  ],
+);
+
 export type ForgejoInstanceStatus =
   | "pending_verification"
   | "active"
@@ -1319,6 +1356,21 @@ export type ForgejoRepositoryHookStatus =
   | "manual_pending"
   | "drifted"
   | "cleanup_failed";
+export type ForgejoRecoveryWorkKind =
+  | "instance_health"
+  | "connection_health"
+  | "repository_health"
+  | "hook_health"
+  | "receipt_dispatch"
+  | "hydration_signal"
+  | "remote_cleanup";
+export type ForgejoRecoveryWorkStatus =
+  | "ready"
+  | "claimed"
+  | "succeeded"
+  | "retry_scheduled"
+  | "failed_permanent"
+  | "cancelled";
 
 export const projectConfigurationSources = pgTable(
   "project_configuration_sources",

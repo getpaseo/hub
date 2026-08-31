@@ -10,6 +10,7 @@ import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type { ForgejoDirectory } from "../providers/forgejo/instances.js";
 import type { ForgejoHydrationStore } from "../triggers/forgejo/hydration-store.js";
+import type { ForgejoRecoveryStore } from "../providers/forgejo/recovery-store.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
@@ -1327,6 +1328,8 @@ export interface Database {
     providerEventReceiptId: string,
     reason: ProviderEventDropReasonCode,
   ): Promise<void>;
+  listAbandonedForgejoReceipts(): Promise<ProviderEventReceiptRecord[]>;
+  markForgejoReceiptDispatched(providerEventReceiptId: string): Promise<void>;
   acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
@@ -1616,6 +1619,7 @@ export interface Database {
   organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage>;
   forgejoDirectory(): ForgejoDirectory;
   forgejoHydration(): ForgejoHydrationStore;
+  forgejoRecovery(): ForgejoRecoveryStore;
   listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]>;
   findGitHubRepositoryForOrganization(
     organizationId: string,

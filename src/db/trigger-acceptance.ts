@@ -503,7 +503,10 @@ function replayOrConflictForgejo(
   if (receipt.bodySha256 !== bodySha256) {
     return { status: "conflict", receiptId: receipt.id };
   }
-  return replayProviderReceipt(receipt);
+  if (receipt.droppedReason !== null) {
+    return { status: "dropped", receiptId: receipt.id, reason: receipt.droppedReason };
+  }
+  return { status: "duplicate", receiptId: receipt.id };
 }
 
 function replayProviderReceipt(

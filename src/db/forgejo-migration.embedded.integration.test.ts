@@ -19,8 +19,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("Forgejo 0045 foundation migration", () => {
-  it("migrates an empty embedded database through 0045", async () => {
+describe("Forgejo 0045-0046 foundation migration", () => {
+  it("migrates an empty embedded database through 0046", async () => {
     const root = await mkdtemp(join(tmpdir(), "hub-forgejo-empty-"));
     roots.push(root);
     const bundle = await embeddedDatabaseRuntime(join(root, "database"));
@@ -39,6 +39,7 @@ describe("Forgejo 0045 foundation migration", () => {
           "forgejo_hydrated_events",
           "forgejo_hydration_cursors",
           "forgejo_instances",
+          "forgejo_recovery_work",
           "forgejo_repositories",
           "forgejo_repository_hooks",
         ],
@@ -50,8 +51,8 @@ describe("Forgejo 0045 foundation migration", () => {
       const journal = journalSchema.parse(
         JSON.parse(await readFile(join(process.cwd(), "drizzle/meta/_journal.json"), "utf8")),
       );
-      assert.equal(journal.entries.at(-1)?.idx, 45);
-      assert.match(journal.entries.at(-1)?.tag ?? "", /^0045_/);
+      assert.equal(journal.entries.at(-1)?.idx, 46);
+      assert.match(journal.entries.at(-1)?.tag ?? "", /^0046_/);
     } finally {
       await bundle.runtime.close();
     }

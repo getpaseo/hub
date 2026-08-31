@@ -15,6 +15,7 @@ import {
   revokeForgejoExecutionCredential,
   rotateForgejoConnectionCredential,
   rotateForgejoWebhookSecret,
+  recoverForgejoRemoteCleanup,
   setupForgejoHooks,
   type ForgejoHookSetup,
 } from "../functions.js";
@@ -85,6 +86,12 @@ export function ForgejoOrganizationConnectionSection() {
       await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
     },
   });
+  const recoverCleanup = useMutation({
+    mutationFn: useServerFn(recoverForgejoRemoteCleanup),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo"] });
+    },
+  });
   const query = useQuery({
     queryKey: ["forgejo", "connections"],
     queryFn: () => load(),
@@ -113,6 +120,7 @@ export function ForgejoOrganizationConnectionSection() {
     rotateWebhookSecret.data,
     previewDisconnect.data,
     disconnect.data,
+    recoverCleanup.data,
     query.error,
     rotateConnectionCredential.error,
     revokeConnectionCredential.error,
@@ -121,6 +129,7 @@ export function ForgejoOrganizationConnectionSection() {
     rotateWebhookSecret.error,
     previewDisconnect.error,
     disconnect.error,
+    recoverCleanup.error,
     ...hookQueries.map((entry) => entry.data),
     ...hookQueries.map((entry) => entry.error),
   );
@@ -210,6 +219,7 @@ export function ForgejoOrganizationConnectionSection() {
       onRotateWebhookSecret={(input) => rotateWebhookSecret.mutate({ data: input })}
       onPreviewDisconnect={(input) => previewDisconnect.mutate({ data: input })}
       onDisconnect={(input) => disconnect.mutate({ data: input })}
+      onRecoverCleanup={(input) => recoverCleanup.mutate({ data: input })}
       disconnectImpact={disconnectImpact}
       disconnectResult={disconnectResult}
     />

@@ -6,6 +6,18 @@ import { ALLOWED_CONNECTION_SCOPES } from "./connections.js";
 import { handleProviderRequest } from "../../server/runtime.js";
 import { FORGEJO_PAT_MASK } from "./instances.js";
 
+const healthViewSchema = z.object({
+  workKind: z.string(),
+  workIdentity: z.string().optional(),
+  status: z.string(),
+  typedCause: z.string().nullable(),
+  attemptCount: z.number().optional(),
+  lastSuccessAt: z.string().nullable().optional(),
+  lastFailureAt: z.string().nullable().optional(),
+  nextAttemptAt: z.string().nullable(),
+  remediation: z.string(),
+});
+
 const instanceSchema = z.object({
   id: z.string(),
   canonicalOrigin: z.string(),
@@ -19,6 +31,7 @@ const instanceSchema = z.object({
     "revoked",
   ]),
   lastHealthError: z.string().nullable().optional(),
+  health: z.array(healthViewSchema).optional(),
 });
 
 const repositorySchema = z.object({
@@ -147,6 +160,38 @@ export const approveForgejoInstance = createServerFn({ method: "POST" })
     );
     if (!response.ok) return forgejoFailure(response);
     return readInstanceList();
+  });
+
+export const probeForgejoInstanceHealth = createServerFn({ method: "POST" })
+  .validator(z.object({ instanceId: z.string().min(1) }).strict())
+  .handler(async ({ data }): Promise<Result<ForgejoInstanceList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.instances",
+      forgejoApiRequest(`/instances/${data.instanceId}/health`, { method: "POST" }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readInstanceList();
+  });
+
+export const recoverForgejoRemoteCleanup = createServerFn({ method: "POST" })
+  .validator(
+    z
+      .object({
+        connectionId: z.string().min(1),
+        webhookAdminPat: z.string().min(1),
+      })
+      .strict(),
+  )
+  .handler(async ({ data }): Promise<Result<ForgejoConnectionList>> => {
+    const response = await handleProviderRequest(
+      "forgejo.connections",
+      forgejoApiRequest(`/connections/${data.connectionId}/recover-cleanup`, {
+        method: "POST",
+        body: JSON.stringify({ webhookAdminPat: data.webhookAdminPat }),
+      }),
+    );
+    if (!response.ok) return forgejoFailure(response);
+    return readConnectionList();
   });
 
 export const listForgejoConnections = createServerFn({ method: "GET" }).handler(

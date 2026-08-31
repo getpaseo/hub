@@ -13,6 +13,7 @@ import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { createSqlForgejoDirectory } from "./forgejo-directory.js";
 import { createSqlForgejoHydrationStore } from "./forgejo-hydration.js";
+import { createSqlForgejoRecoveryStore } from "./forgejo-recovery.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import {
   toAgentExecutionRecord,
@@ -141,6 +142,7 @@ class PgDatabase implements Database {
   private readonly triggerAcceptance;
   private readonly forgejo: ForgejoDirectory;
   private readonly hydration;
+  private readonly recovery;
 
   constructor(
     private readonly pool: DatabaseRuntime,
@@ -151,6 +153,7 @@ class PgDatabase implements Database {
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
     this.forgejo = createSqlForgejoDirectory(this.pool);
     this.hydration = createSqlForgejoHydrationStore(this.pool);
+    this.recovery = createSqlForgejoRecoveryStore(this.pool);
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -211,6 +214,28 @@ class PgDatabase implements Database {
       set dropped_reason = coalesce(dropped_reason, $2)
       where id = $1`,
       [providerEventReceiptId, reason],
+    );
+    if (rows.rowCount === 0)
+      throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
+  }
+
+  async listAbandonedForgejoReceipts(): Promise<ProviderEventReceiptRecord[]> {
+    const rows = await query<ProviderEventReceiptRow>(
+      this.pool,
+      `select * from provider_event_receipts
+       where provider = 'forgejo' and dropped_reason is null and accepted_routes is null
+       order by received_at, id`,
+    );
+    return rows.rows.map(toProviderEventReceiptRecord);
+  }
+
+  async markForgejoReceiptDispatched(providerEventReceiptId: string): Promise<void> {
+    const rows = await query(
+      this.pool,
+      `update provider_event_receipts
+       set accepted_routes = coalesce(accepted_routes, '[]'::jsonb)
+       where id = $1`,
+      [providerEventReceiptId],
     );
     if (rows.rowCount === 0)
       throw new Error(`provider event receipt not found: ${providerEventReceiptId}`);
@@ -4042,6 +4067,10 @@ class PgDatabase implements Database {
 
   forgejoHydration() {
     return this.hydration;
+  }
+
+  forgejoRecovery() {
+    return this.recovery;
   }
 
   async listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]> {

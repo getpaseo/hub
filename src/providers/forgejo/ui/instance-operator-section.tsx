@@ -2,7 +2,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Section } from "../../../components/app/section.js";
-import { approveForgejoInstance, listForgejoInstances } from "../functions.js";
+import {
+  approveForgejoInstance,
+  listForgejoInstances,
+  probeForgejoInstanceHealth,
+} from "../functions.js";
 import { ForgejoInstancePanel } from "./instance-panel.js";
 import { resultError } from "./result-error.js";
 
@@ -15,11 +19,17 @@ export function ForgejoInstanceOperatorSection() {
       await queryClient.invalidateQueries({ queryKey: ["forgejo", "instances"] });
     },
   });
+  const probe = useMutation({
+    mutationFn: useServerFn(probeForgejoInstanceHealth),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["forgejo", "instances"] });
+    },
+  });
   const query = useQuery({
     queryKey: ["forgejo", "instances"],
     queryFn: () => load(),
   });
-  const error = resultError(query.data, approve.data, query.error);
+  const error = resultError(query.data, approve.data, probe.data, query.error);
   const instances = query.data?.status === "ok" ? query.data.data.instances : [];
   return (
     <Section
@@ -33,10 +43,12 @@ export function ForgejoInstanceOperatorSection() {
           reportedVersion: instance.reportedVersion,
           status: instance.status,
           lastHealthError: instance.lastHealthError ?? null,
+          health: instance.health ?? [],
         }))}
         error={error}
         canApprove
         onApprove={(input) => approve.mutate({ data: input })}
+        onProbeHealth={(instanceId) => probe.mutate({ data: { instanceId } })}
       />
     </Section>
   );

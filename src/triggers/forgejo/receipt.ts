@@ -40,6 +40,7 @@ export function createForgejoReceiptAcceptance(options: {
       if (acceptance.status === "accepted" && options.onClaimed !== undefined) {
         try {
           await options.onClaimed({ delivery, receiptId: acceptance.receiptId });
+          await options.database.markForgejoReceiptDispatched(acceptance.receiptId);
         } catch (error) {
           logger.warn(
             { err: error, deliveryId: delivery.deliveryId, receiptId: acceptance.receiptId },

@@ -95,6 +95,10 @@ export function createSqlForgejoDirectory(runtime: QueryHandle): ForgejoDirector
       );
       return rows.rows.map((row) => mapConnection(row)!);
     },
+    async listConnections() {
+      const rows = await runtime.query<ConnectionRow>(`${CONNECTION_SELECT} order by slug, id`);
+      return rows.rows.map((row) => mapConnection(row)!);
+    },
     async insertCredential(record) {
       if (record.kind !== "connection") {
         throw new ForgejoContractError(
