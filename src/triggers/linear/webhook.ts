@@ -124,11 +124,11 @@ async function handoffLinearEvent(
     const hasCompleteTeamRoute =
       eventTeamId(event) !== undefined &&
       hasExplicitNullLinearProject(verified.payload, verified.eventName);
-    if (
-      eventProjectId(event) === undefined &&
-      !hasCompleteTeamRoute &&
-      options.resolveIssue !== undefined
-    ) {
+    // Comment and Agent Session issue relations can be compact: their explicit projectless team
+    // route is sufficient for binding, but not for state, assignee, or label filters.
+    const needsIssueHydration =
+      eventProjectId(event) === undefined && (!hasCompleteTeamRoute || event.type !== "issue");
+    if (needsIssueHydration && options.resolveIssue !== undefined) {
       const source = linearEventSource(event);
       if (
         options.canHydrateIssue !== undefined &&
