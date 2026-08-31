@@ -180,6 +180,7 @@ export class HubE2E {
       status = await this.requireSource().connectWithCredential(
         this.requireProxy().origin,
         MACHINE_KEY,
+        ["hub.execute"],
       );
     } catch (error) {
       const enrollmentState = await this.requirePool().query<{

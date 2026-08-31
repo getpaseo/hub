@@ -1571,11 +1571,16 @@ export class PaseoHub {
     this.hubCredentials.set(alias, credential);
   }
 
-  async approveDaemon(alias: string, displayName: string): Promise<string> {
+  async approveDaemon(
+    alias: string,
+    displayName: string,
+    permissions: readonly string[] = [],
+  ): Promise<string> {
     const credential = this.requireHubCredential(alias);
     const result = await this.requireSourcePaseo().connectWithCredential(
       this.primary.origin,
       credential,
+      permissions,
     );
     const daemonId = z.string().uuid().parse(result["daemonId"]);
     await this.queryDatabase(this.primary, "update daemons set slug = $2 where id = $1", [

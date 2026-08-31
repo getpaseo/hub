@@ -87,18 +87,17 @@ export class SourcePaseo {
   async connectWithCredential(
     hubOrigin: string,
     credential: string,
+    permissions: readonly string[] = [],
   ): Promise<Record<string, unknown>> {
     this.rememberedHubOrigin = hubOrigin;
-    const result = await this.run([
-      "hub",
-      "connect",
-      hubOrigin,
-      "--api-key",
-      credential,
-      "--host",
-      this.paths.daemonHost,
-      "--json",
-    ]);
+    const result = await this.run(
+      sourceHubConnectArguments({
+        hubOrigin,
+        credential,
+        daemonHost: this.paths.daemonHost,
+        permissions,
+      }),
+    );
     await this.rememberActiveAuthority();
     return result;
   }
@@ -269,6 +268,25 @@ export class SourcePaseo {
     await stopProcess(this.daemon, true);
     this.daemon = undefined;
   }
+}
+
+export function sourceHubConnectArguments(input: {
+  hubOrigin: string;
+  credential: string;
+  daemonHost: string;
+  permissions?: readonly string[];
+}): string[] {
+  return [
+    "hub",
+    "connect",
+    input.hubOrigin,
+    "--api-key",
+    input.credential,
+    "--host",
+    input.daemonHost,
+    ...(input.permissions?.length ? ["--permission", ...input.permissions] : []),
+    "--json",
+  ];
 }
 
 export function resolvePaseoWorktree(): string {

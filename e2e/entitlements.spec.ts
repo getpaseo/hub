@@ -93,7 +93,7 @@ test.describe("metered usage", () => {
       await hub.signUpAs("owner", meterOwner);
       await hub.createOrganization("owner", "Acme");
       await hub.startDaemonRegistration("owner");
-      const daemonId = await hub.approveDaemon("owner", "Slice Three Runner");
+      const daemonId = await hub.approveDaemon("owner", "Slice Three Runner", ["hub.execute"]);
       await hub.setDaemonSlug(daemonId, "slice-three-runner");
       await hub.grantOperator("owner");
     });
