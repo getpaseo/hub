@@ -177,7 +177,7 @@ describe("GitHub registration", () => {
     assert.equal(registration.triggerProviders.length, 1);
     assert.deepEqual(
       registration.outputs.map((output) => output.type),
-      [],
+      ["github.reply"],
     );
     assert.deepEqual(
       registration.requests.map((request) => request.name),
@@ -430,7 +430,10 @@ describe("GitHub registration", () => {
 
     assert.equal(registration.sources.length, 1);
     assert.equal(registration.triggerProviders.length, 1);
-    assert.equal(registration.outputs.length, 0);
+    assert.deepEqual(
+      registration.outputs.map((output) => output.type),
+      ["github.reply"],
+    );
     assert.deepEqual(registration.connection.actions, {});
   });
 

@@ -13,6 +13,30 @@ import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Slack Phase 1 trigger provider", () => {
+  it("accepts the explicit wildcard without a pointless username lookup", async () => {
+    const database = createMemoryDatabase();
+    const wildcard = configuration();
+    wildcard.triggers[0]!.filters.from_users = ["*"];
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      wildcard,
+      { organizationId: "org-1" },
+    );
+    const client = new RecordingSlackClient();
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client,
+    });
+
+    const matched = await provider.match(
+      external(project.id, revision.id, { authorId: "U-ANYONE" }),
+    );
+
+    assert.notEqual(typeof matched, "string");
+    assert.deepEqual(client.userLookups, []);
+  });
+
   it("resolves the authored Slack username once before matching", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(

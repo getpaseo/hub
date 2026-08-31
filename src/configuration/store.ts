@@ -459,7 +459,7 @@ async function resolveCompiledConfiguration(
   configuration: CompiledHubConfig,
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
-    ({ status }) => status === "active",
+    ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
   );
   const resolutions = await Promise.all(
     configuration.environments.map(async (environment) =>
@@ -475,7 +475,8 @@ async function resolveCompiledConfiguration(
     ),
   );
   const daemonIssues = resolutions.flatMap(({ environment, daemon }) =>
-    environment.kind === "daemon" && daemon === undefined
+    environment.kind === "daemon" &&
+    (daemon === undefined || !daemon.permissions.includes("hub.execute"))
       ? [
           {
             path: [HUB_RESOURCE_PATH, "environments", environment.name, "daemon"],
@@ -503,6 +504,59 @@ async function resolveCompiledConfiguration(
   return {
     success: true,
     configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration)),
+  };
+}
+
+/** Organization-level seam used by the self-contained trigger store. */
+export async function resolveTriggerConfigurationForOrganization(
+  database: Database,
+  organizationId: string,
+  configuration: CompiledHubConfig,
+): Promise<
+  | {
+      success: true;
+      configuration: CompiledProjectConfiguration;
+      routes: readonly {
+        provider: ConnectionProvider;
+        connectionId: string;
+        resourceId: string | null;
+        configuredEventName: string;
+      }[];
+    }
+  | {
+      success: false;
+      configuration: CompiledHubConfig;
+      issues: readonly { path: readonly (string | number)[]; message: string }[];
+    }
+> {
+  const resolved = await resolveCompiledConfiguration(database, organizationId, configuration);
+  if (!resolved.success) {
+    return {
+      success: false,
+      configuration: resolved.configuration,
+      issues: resolved.issues,
+    };
+  }
+  const compiled = await compileTriggers(database, organizationId, resolved.configuration.triggers);
+  if (compiled.issues.length > 0) {
+    return {
+      success: false,
+      configuration: resolved.configuration,
+      issues: compiled.issues,
+    };
+  }
+  const eventByInternalName = new Map(
+    compiled.triggers.map((trigger) => [trigger.name, trigger.on] as const),
+  );
+  return {
+    success: true,
+    configuration: { ...resolved.configuration, triggers: compiled.triggers },
+    routes: compiled.routes.map((route) => ({
+      provider: route.provider,
+      connectionId: route.connectionId,
+      resourceId: route.resourceId,
+      configuredEventName: eventByInternalName.get(route.triggerName) ?? route.triggerName,
+    })),
   };
 }
 

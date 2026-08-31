@@ -170,7 +170,7 @@ export interface DaemonRecord {
   serverId: string;
   daemonPublicKey: string;
   credentialVerifier: string;
-  scopes: string[];
+  permissions: string[];
   registeredByApiKeyId: string | null;
   registeredByCliCredentialId: string | null;
   status: "active" | "revoked";
@@ -320,6 +320,38 @@ export interface ProjectConfigurationRevisionRecord {
   receivedAt: Date | null;
   createdAt: Date;
   validatedAt: Date | null;
+}
+
+export interface OrganizationTriggerRecord {
+  id: string;
+  organizationId: string;
+  name: string;
+  enabled: boolean;
+  format: "single_run" | "legacy_multistep";
+  /** Temporary workflow-engine adapter; never exposed as a product project. */
+  runtimeProjectId: string;
+  activeRevisionId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface OrganizationTriggerRevisionRecord {
+  id: string;
+  triggerId: string;
+  organizationId: string;
+  version: number;
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceKind: "manual" | "github" | "project_migration";
+  sourceEvidence: unknown;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface PendingProjectTriggerMigration {
+  project: ProjectRecord;
+  revision: ProjectConfigurationRevisionRecord;
 }
 
 export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
@@ -815,7 +847,7 @@ export interface EnrollDaemonInput {
   serverId: string;
   daemonPublicKey: string;
   credentialVerifier: string;
-  scopes: string[];
+  permissions: string[];
   now: Date;
 }
 
@@ -965,14 +997,9 @@ export interface SyncBillingPlanInput {
  * mirror. Enforcement never reads this — the subscription webhook re-stamps
  * `organization_entitlements` from the resolved plan's template.
  */
-export interface OrganizationSubscriptionRecord {
+export interface OrganizationBillingCustomerRecord {
   organizationId: string;
   stripeCustomerId: string;
-  stripeSubscriptionId: string;
-  planId: string | null;
-  status: string;
-  currentPeriodEnd: Date | null;
-  cancelAtPeriodEnd: boolean;
   updatedAt: Date;
 }
 
@@ -984,14 +1011,9 @@ export interface OrganizationSubscriptionRecord {
  * grandfathered (a transient status that leaves the last stamp untouched). The stamp reuses the
  * same idempotent logic as `stampOrganizationEntitlements`, so a replay is a no-op.
  */
-export interface ReconcileOrganizationSubscriptionInput {
+export interface ReconcileOrganizationBillingInput {
   organizationId: string;
   stripeCustomerId: string;
-  stripeSubscriptionId: string;
-  planId: string | null;
-  status: string;
-  currentPeriodEnd: Date | null;
-  cancelAtPeriodEnd: boolean;
   stamp?: Omit<StampOrganizationEntitlementsInput, "organizationId">;
 }
 
@@ -1011,6 +1033,46 @@ export interface ProjectTriggerRoute {
   connectionId: string;
   resourceId: string | null;
   triggerName: string;
+}
+
+export interface OrganizationTriggerRoute {
+  provider: ConnectionProvider;
+  connectionId: string;
+  resourceId: string | null;
+  configuredEventName: string;
+}
+
+export interface MigrateProjectTriggerInput {
+  name: string;
+  format: "single_run" | "legacy_multistep";
+  enabled: boolean;
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceEvidence: unknown;
+}
+
+export interface MigrateProjectTriggersInput {
+  projectId: string;
+  organizationId: string;
+  configurationRevisionId: string;
+  projectSlug: string;
+  triggers: readonly MigrateProjectTriggerInput[];
+}
+
+export interface SaveOrganizationTriggerInput {
+  organizationId: string;
+  triggerId?: string;
+  name: string;
+  enabled: boolean;
+  format: "single_run" | "legacy_multistep";
+  yaml: string;
+  normalizedConfiguration: unknown;
+  contentHash: string;
+  sourceKind: "manual" | "github";
+  sourceEvidence: unknown;
+  createdByUserId: string | null;
+  routes: readonly OrganizationTriggerRoute[];
 }
 
 export interface SwitchProjectConfigurationToManualInput {
@@ -1229,6 +1291,7 @@ export interface Database {
   ): Promise<DaemonWriteResult>;
   touchDaemon(id: string): Promise<void>;
   setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void>;
+  setDaemonPermissions(id: string, permissions: string[]): Promise<DaemonRecord | undefined>;
   revokeDaemon(id: string): Promise<boolean>;
   attachAgentToExecution(
     executionId: string,
@@ -1259,7 +1322,7 @@ export interface Database {
   beginAgentExecutionOutput(
     executionId: string,
     outputType: string,
-    maxOutputs: number,
+    maxOutputs: number | undefined,
     startedAt: Date,
   ): Promise<AgentExecutionOutputAttempt | undefined>;
   completeAgentExecutionOutput(
@@ -1348,19 +1411,30 @@ export interface Database {
    * re-stamps its entitlements in the same transaction. `src/billing/` only — the sole convergent
    * writer the subscription webhook drives.
    */
-  reconcileOrganizationSubscription(
-    input: ReconcileOrganizationSubscriptionInput,
-  ): Promise<OrganizationSubscriptionRecord>;
+  reconcileOrganizationBilling(
+    input: ReconcileOrganizationBillingInput,
+  ): Promise<OrganizationBillingCustomerRecord>;
   /** The organization's current subscription mirror, or undefined when it never subscribed. */
-  getOrganizationSubscription(
+  getOrganizationBillingCustomer(
     organizationId: string,
-  ): Promise<OrganizationSubscriptionRecord | undefined>;
+  ): Promise<OrganizationBillingCustomerRecord | undefined>;
   /**
    * Runs `fn` while holding a named advisory lock that serializes across processes, so a
    * per-organization critical section (re-read external state, then write) cannot interleave with
    * another instance handling the same organization. Released even if `fn` throws.
    */
   withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  listPendingProjectTriggerMigrations(): Promise<PendingProjectTriggerMigration[]>;
+  migrateProjectTriggers(input: MigrateProjectTriggersInput): Promise<OrganizationTriggerRecord[]>;
+  listOrganizationTriggers(organizationId: string): Promise<OrganizationTriggerRecord[]>;
+  findOrganizationTriggerRevision(
+    triggerId: string,
+    revisionId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined>;
+  findOrganizationTriggerMigrationRevision(
+    triggerId: string,
+  ): Promise<OrganizationTriggerRevisionRecord | undefined>;
+  saveOrganizationTrigger(input: SaveOrganizationTriggerInput): Promise<OrganizationTriggerRecord>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

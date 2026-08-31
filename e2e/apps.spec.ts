@@ -67,7 +67,7 @@ test("a first account continues to app setup, and skipping it is durable", async
     await surface.shoot(SHOTS, "apps-14-skip-dashboard.desktop");
     // Business as usual once the transition completes: reloading never returns here.
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
   } finally {
     await session.close();
   }

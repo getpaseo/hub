@@ -31,6 +31,7 @@ export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
+export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
 export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 
 export type MachineSource =
@@ -258,6 +259,155 @@ export const projectTriggerRoutes = pgTable(
   ],
 );
 
+/** Organization-owned trigger identity. Authored files and UI edits create immutable revisions. */
+export const organizationTriggers = pgTable(
+  "organization_triggers",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    enabled: boolean().default(true).notNull(),
+    format: text().$type<(typeof TRIGGER_FORMATS)[number]>().notNull(),
+    runtimeProjectId: uuid("runtime_project_id").references(() => projects.id),
+    activeRevisionId: uuid("active_revision_id").references(
+      (): AnyPgColumn => organizationTriggerRevisions.id,
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("organization_triggers_organization_name_unique").on(
+      table.organizationId,
+      table.name,
+    ),
+    uniqueIndex("organization_triggers_id_organization_unique").on(table.id, table.organizationId),
+    index("organization_triggers_organization_updated_idx").on(
+      table.organizationId,
+      table.updatedAt.desc(),
+    ),
+    check(
+      "organization_triggers_format_check",
+      sql`${table.format} in ('single_run', 'legacy_multistep')`,
+    ),
+  ],
+);
+
+export const organizationTriggerRevisions = pgTable(
+  "organization_trigger_revisions",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    triggerId: uuid("trigger_id").notNull(),
+    organizationId: text("organization_id").notNull(),
+    version: integer().notNull(),
+    yaml: text().notNull(),
+    normalizedConfiguration: jsonb("normalized_configuration").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sourceKind: text("source_kind").$type<"manual" | "github" | "project_migration">().notNull(),
+    sourceEvidence: jsonb("source_evidence").notNull(),
+    createdByUserId: text("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("organization_trigger_revisions_trigger_version_unique").on(
+      table.triggerId,
+      table.version,
+    ),
+    uniqueIndex("organization_trigger_revisions_id_trigger_organization_unique").on(
+      table.id,
+      table.triggerId,
+      table.organizationId,
+    ),
+    index("organization_trigger_revisions_trigger_created_idx").on(
+      table.triggerId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "organization_trigger_revisions_source_kind_check",
+      sql`${table.sourceKind} in ('manual', 'github', 'project_migration')`,
+    ),
+    foreignKey({
+      columns: [table.triggerId, table.organizationId],
+      foreignColumns: [organizationTriggers.id, organizationTriggers.organizationId],
+      name: "organization_trigger_revisions_trigger_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const organizationTriggerRoutes = pgTable(
+  "organization_trigger_routes",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    triggerId: uuid("trigger_id").notNull(),
+    triggerRevisionId: uuid("trigger_revision_id").notNull(),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    resourceId: text("resource_id"),
+    configuredEventName: text("configured_event_name").notNull(),
+  },
+  (table) => [
+    uniqueIndex("organization_trigger_routes_shape_unique").on(
+      table.triggerId,
+      table.triggerRevisionId,
+      table.provider,
+      table.connectionId,
+      table.resourceId,
+      table.configuredEventName,
+    ),
+    index("organization_trigger_routes_resource_idx").on(
+      table.organizationId,
+      table.provider,
+      table.connectionId,
+      table.resourceId,
+    ),
+    foreignKey({
+      columns: [table.triggerId, table.organizationId],
+      foreignColumns: [organizationTriggers.id, organizationTriggers.organizationId],
+      name: "organization_trigger_routes_trigger_organization_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.triggerRevisionId, table.triggerId, table.organizationId],
+      foreignColumns: [
+        organizationTriggerRevisions.id,
+        organizationTriggerRevisions.triggerId,
+        organizationTriggerRevisions.organizationId,
+      ],
+      name: "organization_trigger_routes_revision_trigger_organization_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+/** One row means the project's active revision was atomically exploded into organization triggers. */
+export const projectTriggerMigrations = pgTable(
+  "project_trigger_migrations",
+  {
+    projectId: uuid("project_id")
+      .primaryKey()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    configurationRevisionId: uuid("configuration_revision_id").notNull(),
+    migratedAt: timestamp("migrated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("project_trigger_migrations_organization_idx").on(table.organizationId),
+    foreignKey({
+      columns: [table.configurationRevisionId, table.projectId, table.organizationId],
+      foreignColumns: [
+        projectConfigurationRevisions.id,
+        projectConfigurationRevisions.projectId,
+        projectConfigurationRevisions.organizationId,
+      ],
+      name: "project_trigger_migrations_revision_project_organization_fk",
+    }),
+  ],
+);
+
 export const triggerRuns = pgTable(
   "trigger_runs",
   {
@@ -454,7 +604,7 @@ export const daemons = pgTable(
     serverId: text("server_id").notNull(),
     daemonPublicKey: text("daemon_public_key").notNull(),
     credentialVerifier: text("credential_verifier").notNull(),
-    scopes: jsonb().$type<string[]>().notNull(),
+    permissions: jsonb("scopes").$type<string[]>().notNull(),
     registeredByApiKeyId: uuid("registered_by_api_key_id"),
     registeredByCliCredentialId: uuid("registered_by_cli_credential_id").references(
       (): AnyPgColumn => organizationCliCredentials.id,
@@ -1242,15 +1392,10 @@ export const billingPlanPrices = pgTable(
 // from the subscription's price at webhook time — never dereferenced by enforcement, which reads
 // only `organization_entitlements`. `status` carries Stripe's own vocabulary verbatim, so no
 // check constraint drifts against it. Self-hosted instances never write here.
-export const organizationSubscriptions = pgTable("organization_subscriptions", {
+export const organizationBillingCustomers = pgTable("organization_billing_customers", {
   organizationId: text("organization_id")
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
   stripeCustomerId: text("stripe_customer_id").notNull(),
-  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
-  planId: text("plan_id"),
-  status: text().notNull(),
-  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
-  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
