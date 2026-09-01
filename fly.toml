@@ -1,5 +1,5 @@
 app = 'paseo-cloud'
-primary_region = 'sin'
+primary_region = 'ord'
 
 [build]
   dockerfile = 'Dockerfile'

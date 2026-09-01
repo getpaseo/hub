@@ -539,6 +539,42 @@ describe("database migration application", () => {
     assert.deepEqual(await historicalShape(url), before);
   });
 
+  it("opens an existing database without requiring access to the maintenance database", async () => {
+    const suffix = randomUUID().replaceAll("-", "");
+    const databaseName = `existing_${suffix}`;
+    const username = `runtime_${suffix}`;
+    const password = randomUUID();
+    const adminUrl = postgres.getConnectionUri();
+
+    await poolQuery(
+      adminUrl,
+      `create role ${quoteIdentifier(username)} login password ${quoteLiteral(password)}`,
+    );
+    await poolQuery(
+      adminUrl,
+      `create database ${quoteIdentifier(databaseName)} owner ${quoteIdentifier(username)}`,
+    );
+    await poolQuery(adminUrl, "revoke connect on database postgres from public");
+
+    try {
+      const url = new URL(adminUrl);
+      url.username = username;
+      url.password = password;
+      url.pathname = `/${databaseName}`;
+      const bundle = await postgresDatabaseRuntime(url.toString());
+      try {
+        const result = await bundle.runtime.query<{ database: string }>(
+          "select current_database() as database",
+        );
+        assert.equal(result.rows[0]?.database, databaseName);
+      } finally {
+        await bundle.runtime.close();
+      }
+    } finally {
+      await poolQuery(adminUrl, "grant connect on database postgres to public");
+    }
+  });
+
   it("keeps a pending enrollment token usable before the first daemon connects", async () => {
     const fixture = await createPendingEnrollmentDatabase(postgres);
     const database = await createDatabase(fixture.url);
@@ -2033,6 +2069,14 @@ function databaseUrl(postgres: StartedPostgreSqlContainer, prefix: string): stri
   const url = new URL(postgres.getConnectionUri());
   url.pathname = `/${prefix}_${randomUUID().replaceAll("-", "")}`;
   return url.toString();
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function quoteLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 async function poolQuery<Row extends QueryRow = QueryRow>(
