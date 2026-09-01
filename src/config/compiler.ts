@@ -851,8 +851,19 @@ function validateExpressionContract(
   const stepOrdinals = new Map(trigger.steps.map((step, ordinal) => [step.id, ordinal]));
   const valueNames = new Set(Object.keys(trigger.values));
   const visiting = new Set<string>();
+  const workspaceAffinityValues = new Set<string>();
 
-  for (const name of valueNames) validateValue(name, Number.POSITIVE_INFINITY, "declaration");
+  for (const step of trigger.steps) {
+    if (step.workspaceAffinity === undefined) continue;
+    compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity", "key"], () => {
+      for (const reference of expressionPathsInTemplate(step.workspaceAffinity!.key)) {
+        if (reference.namespace === "values") collectWorkspaceAffinityValue(reference.name);
+      }
+    });
+  }
+  for (const name of valueNames) {
+    if (!workspaceAffinityValues.has(name)) validateValue(name);
+  }
   for (const [ordinal, step] of trigger.steps.entries()) {
     if (step.condition !== undefined)
       compileAt(["triggers", triggerName, "steps", step.id, "if"], () =>
@@ -942,6 +953,16 @@ function validateExpressionContract(
     }
   }
 
+  function collectWorkspaceAffinityValue(name: string): void {
+    if (workspaceAffinityValues.has(name)) return;
+    workspaceAffinityValues.add(name);
+    const expression = trigger.values[name];
+    if (expression === undefined) return;
+    for (const reference of expressionPaths(expression)) {
+      if (reference.namespace === "values") collectWorkspaceAffinityValue(reference.name);
+    }
+  }
+
   function finiteTemplateValues(template: string, ordinal: number): readonly string[] | undefined {
     let results = [""];
     let cursor = 0;
@@ -1011,36 +1032,18 @@ function validateExpressionContract(
   function validateValue(
     name: string,
     ordinal = Number.POSITIVE_INFINITY,
-    mode: "declaration" | "ordinary" | "authority" | "affinity" = "ordinary",
+    mode: "ordinary" | "authority" | "affinity" = "ordinary",
   ): void {
     if (visiting.has(name)) throw new Error(`value dependency cycle includes ${name}`);
     const expression = trigger.values[name];
     if (expression === undefined) throw new Error(`value ${name} is unavailable`);
     visiting.add(name);
-    if (mode === "declaration") {
-      validateDeclaredValueExpression(expression, ordinal, `value ${name}`);
-    } else if (mode === "affinity") {
+    if (mode === "affinity") {
       validateWorkspaceAffinityExpression(expression, ordinal, `value ${name}`);
     } else {
       validateExpression(expression, ordinal, `value ${name}`, mode === "authority");
     }
     visiting.delete(name);
-  }
-
-  function validateDeclaredValueExpression(
-    expression: Expression,
-    ordinal: number,
-    path: string,
-  ): void {
-    for (const reference of expressionPaths(expression)) {
-      // The declaration pass permits carrying conversation identity so an affinity consumer can
-      // validate it under affinity rules. Ordinary consumers recurse with ordinary rules and still
-      // reject the provider-only path.
-      validateReference(reference, ordinal, path, false, false, true);
-      if (reference.namespace === "values") {
-        validateValue(reference.name, ordinal, "declaration");
-      }
-    }
   }
 
   function validateExpression(

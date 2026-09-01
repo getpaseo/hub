@@ -932,6 +932,31 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("rejects conversation-key value graphs without workspace-affinity consumers", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              on: "slack.mention",
+              filters: { from_users: ["U_ALLOWED"] },
+              values: {
+                provider_conversation: "${{ paseo.trigger.conversation_key }}",
+                conversation: "${{ values.provider_conversation }}",
+              },
+              steps: [step],
+            },
+          ],
+        }),
+      /conversation_key outside workspace_affinity\.key/iu,
+    );
+  });
+
   it("rejects the removed prompt inventory compatibility key", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
