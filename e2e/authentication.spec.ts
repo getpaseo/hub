@@ -41,3 +41,17 @@ test("disabled registration removes the signup path", async ({ hub }) => {
 test("disabled organization creation leaves invitation as the path forward", async ({ hub }) => {
   await hub.proveOrganizationCreationDisabled();
 });
+
+test("verifies signup email and recovers a forgotten password without account disclosure", async ({
+  hub,
+}) => {
+  await hub.provePasswordRecoveryJourney(
+    "recovering-user",
+    {
+      name: "Recovering User",
+      email: "recovering-user@example.com",
+      password: "original-user-password",
+    },
+    "replacement-user-password",
+  );
+});

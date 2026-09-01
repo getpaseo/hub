@@ -51,6 +51,7 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  accountEmailLink(email: string, kind: "verification" | "password-reset"): Promise<string>;
   /** Records a daemon enrollment token for this instance's organization. */
   issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
@@ -184,6 +185,8 @@ export class PaseoHub {
       data: account,
     });
     expect(response.status()).toBe(200);
+    const verificationLink = await this.primary.accountEmailLink(account.email, "verification");
+    expect((await this.requests.get(verificationLink)).ok()).toBe(true);
   }
 
   async verifyHttpContractMatrix(): Promise<void> {
@@ -260,6 +263,15 @@ export class PaseoHub {
     await user.signUp(account);
   }
 
+  async provePasswordRecoveryJourney(
+    alias: string,
+    account: Account,
+    replacementPassword: string,
+  ): Promise<void> {
+    await this.signUpAs(alias, account);
+    await this.requireUser(alias).completePasswordRecovery(account, replacementPassword);
+  }
+
   async createOrganization(alias: string, name: string): Promise<void> {
     await this.requireUser(alias).createOrganization(name);
   }
@@ -279,7 +291,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     const page = await context.newPage();
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     try {
       await user.completeBootstrapJourney(account, replacementPassword, organizationName);
     } finally {
@@ -300,7 +312,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.completeFirstRunJourney(account, () => application.failNextAccountSetup());
       const logs = plainLogs(application.logs());
       expect(logs).toContain("auth.setup_instance");
@@ -342,7 +354,7 @@ export class PaseoHub {
     });
     const page = await context.newPage();
     await allowClipboard(page, application.origin);
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     await user.claimInstance(input.account);
     const surface = new AppSetupSurface(page);
     await surface.expectOnboarding();
@@ -371,7 +383,7 @@ export class PaseoHub {
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
-        const joining = new HubUser(application.origin, memberContext, memberPage);
+        const joining = new HubUser(application, memberContext, memberPage);
         await joining.signUp(member);
         await joining.createOrganization("Member Organization");
         return { page: memberPage, close: () => memberContext.close() };
@@ -390,14 +402,10 @@ export class PaseoHub {
     const loserContext = await this.browser.newContext();
     try {
       const loserPage = await loserContext.newPage();
-      const losingUser = new HubUser(application.origin, loserContext, loserPage);
+      const losingUser = new HubUser(application, loserContext, loserPage);
       await losingUser.openFirstRunSetupForm();
 
-      const winningUser = new HubUser(
-        application.origin,
-        winnerContext,
-        await winnerContext.newPage(),
-      );
+      const winningUser = new HubUser(application, winnerContext, await winnerContext.newPage());
       await winningUser.openFirstRunSetupForm();
       await winningUser.completeFirstRunClaim(winner);
 
@@ -429,10 +437,10 @@ export class PaseoHub {
     });
     const ownerContext = await this.browser.newContext();
     const ownerPage = await ownerContext.newPage();
-    const owner = new HubUser(application.origin, ownerContext, ownerPage);
+    const owner = new HubUser(application, ownerContext, ownerPage);
     const memberContext = await this.browser.newContext();
     const memberPage = await memberContext.newPage();
-    const user = new HubUser(application.origin, memberContext, memberPage);
+    const user = new HubUser(application, memberContext, memberPage);
     try {
       await owner.completeBootstrapJourney(
         {
@@ -503,7 +511,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     const page = await context.newPage();
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     try {
       await user.signUp({
         name: "No Organization Owner",
@@ -1293,7 +1301,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Unconfigured");
       await user.expectNotConfiguredConnections();
@@ -1310,7 +1318,7 @@ export class PaseoHub {
     const context = await this.browser.newContext();
     try {
       const page = await context.newPage();
-      const user = new HubUser(application.origin, context, page);
+      const user = new HubUser(application, context, page);
       const navigation = new ProjectNavigation(page);
       const configuration = new ProjectConfiguration(page);
       await user.signUp(account);
@@ -1334,7 +1342,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Approval");
       await user.expectGitHubApprovalRequired();
@@ -1347,7 +1355,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("State boundaries");
       await user.expectForgedConnectionStateRejected();
@@ -1374,7 +1382,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Conflict Acme");
       await user.connectGitHub();
@@ -1394,7 +1402,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Stale Acme");
       const staleGitHub = await user.beginProviderConnection("github");
@@ -1422,7 +1430,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Redirect Acme");
       await user.createAnotherOrganization("Redirect Orbit");
@@ -1983,7 +1991,7 @@ export class PaseoHub {
       context = await this.browser.newContext();
       page = await context.newPage();
     }
-    const user = new HubUser(this.primary.origin, context, page);
+    const user = new HubUser(this.primary, context, page);
     this.users.set(alias, user);
     return user;
   }
@@ -2227,11 +2235,17 @@ export class PaseoHub {
     });
     expect(signUp.status()).toBe(200);
     expect(signUp.headers()["content-type"]).toBe(JSON_TYPE);
-    expect(signUp.headers()["set-cookie"]).toContain("better-auth.session_token=");
+    expect(signUp.headers()["set-cookie"]).toBeUndefined();
     expect(await signUp.json()).toEqual({
-      token: expect.any(String),
+      token: null,
       user: expect.objectContaining({ name: account.name, email: account.email }),
     });
+    const signedOutSession = await this.requests.get(`${application.origin}/api/auth/get-session`);
+    expect(await signedOutSession.text()).toBe("null");
+    const verificationLink = await application.accountEmailLink(account.email, "verification");
+    const verification = await this.requests.get(verificationLink, { maxRedirects: 0 });
+    expect(verification.status()).toBe(302);
+    expect(verification.headers()["set-cookie"]).toContain("better-auth.session_token=");
     const session = await this.requests.get(`${application.origin}/api/auth/get-session`);
     expect(session.status()).toBe(200);
     expect(await session.json()).toEqual({
@@ -2503,7 +2517,7 @@ class HubUser {
   private readonly navigation: ProjectNavigation;
 
   constructor(
-    private readonly origin: string,
+    private readonly application: BuiltApplication,
     private readonly context: BrowserContext,
     private readonly page: Page,
   ) {
@@ -2514,6 +2528,7 @@ class HubUser {
     this.email = account.email.toLowerCase();
     if (this.page.url() === "about:blank") await this.page.goto(this.origin);
     await this.submitSignUp(account);
+    await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
   }
 
@@ -2539,6 +2554,52 @@ class HubUser {
     await change.getByRole("button", { name: "Save password" }).click();
     await this.skipAppSetup();
     await this.expectActiveOrganization(organizationName);
+  }
+
+  async completePasswordRecovery(account: Account, replacementPassword: string): Promise<void> {
+    await this.signOut();
+    const requestReset = async (email: string) => {
+      await this.page.getByRole("button", { name: "Forgot password?" }).click();
+      const form = this.page.getByRole("form", { name: "Reset password" });
+      await form.getByLabel("Email").fill(email);
+      await form.getByRole("button", { name: "Send reset link" }).click();
+      await expect(this.page.getByRole("status")).toHaveText(
+        "If an account exists for that email, a password reset link is on its way.",
+      );
+    };
+    await requestReset("missing-account@example.test");
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await requestReset(account.email);
+
+    const link = await this.application.accountEmailLink(account.email, "password-reset");
+    await this.page.goto(link);
+    const reset = this.page.getByRole("form", { name: "Choose a new password" });
+    await reset.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await reset.getByLabel("Confirm new password").fill(replacementPassword);
+    await reset.getByRole("button", { name: "Save new password" }).click();
+    await expect(this.page.getByRole("heading", { name: "Password reset" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await signIn.getByLabel("Email").fill(account.email);
+    await signIn.getByLabel("Password").fill(account.password);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await expect(this.page.getByRole("alert")).toHaveText("The email or password is incorrect.");
+    await signIn.getByLabel("Password").fill(replacementPassword);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+
+    await this.signOut();
+    await this.page.goto(`${this.origin}/?auth=email-verification&error=TOKEN_EXPIRED`);
+    await expect(
+      this.page.getByRole("heading", { name: "Verification link expired" }),
+    ).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await this.page.goto(`${this.origin}/?auth=password-reset&error=INVALID_TOKEN`);
+    await expect(
+      this.page.getByRole("heading", { name: "Reset link invalid or expired" }),
+    ).toBeVisible();
+    await expectAccessible(this.page);
   }
 
   /**
@@ -2821,7 +2882,20 @@ class HubUser {
   async signUpForInvitation(account: Account): Promise<void> {
     this.email = account.email.toLowerCase();
     await this.submitInvitationSignUp(account);
+    await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
+  }
+
+  private async completeEmailVerification(email: string): Promise<void> {
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    const link = await this.application.accountEmailLink(email, "verification");
+    await this.page.goto(link);
+    await expect(this.page.getByRole("heading", { name: "Email verified" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Continue" }).click();
+  }
+
+  private get origin(): string {
+    return this.application.origin;
   }
 
   private async submitSignUp(account: Account): Promise<void> {

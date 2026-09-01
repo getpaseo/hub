@@ -22,6 +22,14 @@ const signUpSchema = credentialsSchema.extend({
   name: z.string().trim().min(1),
   invitation: z.string().min(1).optional(),
 });
+const emailSchema = z.object({
+  email: z.string().email(),
+  invitation: z.string().min(1).optional(),
+});
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  newPassword: z.string().min(PASSWORD_MIN_LENGTH),
+});
 const invitationSchema = z.object({ invitation: z.string().optional() });
 const initialOperatorSchema = credentialsSchema.strip();
 const createOrganizationSchema = z.object({ name: z.string().trim().min(1).max(100) });
@@ -94,13 +102,16 @@ export const accountState = createServerFn({ method: "GET" })
 
 export const signIn = createServerFn({ method: "POST" })
   .validator(credentialsSchema)
-  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+  .handler(async ({ data }): Promise<Result<{ state: "complete" | "verificationRequired" }>> => {
     try {
       const application = await getApplication();
       if (application.signInEmail === undefined) throw new Error("auth unavailable");
       await application.signInEmail(data, getRequest().headers);
-      return respondOk({});
+      return respondOk({ state: "complete" });
     } catch (error) {
+      if (isAPIError(error) && error.body?.code === "EMAIL_NOT_VERIFIED") {
+        return respondOk({ state: "verificationRequired" });
+      }
       if (isAPIError(error) && error.body?.code === "INVALID_EMAIL_OR_PASSWORD") {
         return respondWithFailure(
           error,
@@ -118,20 +129,72 @@ export const signIn = createServerFn({ method: "POST" })
 
 export const signUp = createServerFn({ method: "POST" })
   .validator(signUpSchema)
-  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+  .handler(async ({ data }): Promise<Result<{ state: "complete" | "verificationRequired" }>> => {
     try {
       const application = await getApplication();
       if (application.signUpEmail === undefined) throw new Error("auth unavailable");
-      await application.signUpEmail(
+      const state = await application.signUpEmail(
         { name: data.name, email: data.email, password: data.password },
         getRequest().headers,
         data.invitation,
       );
-      return respondOk({});
+      return respondOk({ state });
     } catch (error) {
       return respondWithFailure(error, accountContext("auth.sign_up"), {
         fallback:
           "Hub couldn't create the account. Check the invitation and registration settings, then submit again.",
+      });
+    }
+  });
+
+export const sendVerificationEmail = createServerFn({ method: "POST" })
+  .validator(emailSchema)
+  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+    try {
+      const application = await getApplication();
+      if (application.sendVerificationEmail === undefined) throw new Error("auth unavailable");
+      await application.sendVerificationEmail(data.email, getRequest().headers, data.invitation);
+      return respondOk({});
+    } catch (error) {
+      return respondWithFailure(error, accountContext("auth.email_verification.send"), {
+        fallback: "Hub couldn't send the verification email. Check your connection and try again.",
+      });
+    }
+  });
+
+export const requestPasswordReset = createServerFn({ method: "POST" })
+  .validator(emailSchema.pick({ email: true }))
+  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+    try {
+      const application = await getApplication();
+      if (application.requestPasswordReset === undefined) throw new Error("auth unavailable");
+      await application.requestPasswordReset(data.email, getRequest().headers);
+      return respondOk({});
+    } catch (error) {
+      reportFailure(error, accountContext("auth.password_reset.request"));
+      return respondOk({});
+    }
+  });
+
+export const resetPassword = createServerFn({ method: "POST" })
+  .validator(resetPasswordSchema)
+  .handler(async ({ data }): Promise<Result<Record<string, never>>> => {
+    try {
+      const application = await getApplication();
+      if (application.resetPassword === undefined) throw new Error("auth unavailable");
+      await application.resetPassword(data, getRequest().headers);
+      return respondOk({});
+    } catch (error) {
+      if (isAPIError(error) && error.body?.code === "INVALID_TOKEN") {
+        return respondWithFailure(
+          error,
+          accountContext("auth.password_reset.complete"),
+          { fallback: "This password reset link is invalid or has expired." },
+          { kind: "authentication" },
+        );
+      }
+      return respondWithFailure(error, accountContext("auth.password_reset.complete"), {
+        fallback: "Hub couldn't reset your password. Request a new link and try again.",
       });
     }
   });

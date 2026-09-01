@@ -73,12 +73,15 @@ export interface ApplicationRuntime {
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<void>;
+  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,
     invitationId?: string,
-  ): Promise<void>;
+  ): Promise<"complete" | "verificationRequired">;
+  sendVerificationEmail?(email: string, headers: Headers, invitationId?: string): Promise<void>;
+  requestPasswordReset?(email: string, headers: Headers): Promise<void>;
+  resetPassword?(data: { token: string; newPassword: string }, headers: Headers): Promise<void>;
   signOut?(headers: Headers): Promise<void>;
   changePassword?(
     data: { currentPassword: string; newPassword: string },
