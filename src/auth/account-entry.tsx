@@ -27,8 +27,10 @@ import { LoginForm } from "./login-form.js";
 import type { AccountState } from "./organization-contract.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutation.js";
+import { ForgotPasswordEntry, VerificationPendingEntry } from "./account-recovery.js";
 
 type EmptyResult = Result<Record<string, never>>;
+type AuthenticationResult = Result<{ state: "complete" | "verificationRequired" }>;
 type AccountCommandResult = Result<{
   state: "sessionExpired" | "organizationRequired" | "complete";
 }>;
@@ -44,6 +46,8 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const invitationId = account.invitation?.id;
   const invitationSignInRequested = readInvitationSignInRequest();
   const [mode, setMode] = useState<"signIn" | "signUp">(invitationContext ? "signUp" : "signIn");
+  const [forgotPassword, setForgotPassword] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState<string>();
   useEffect(() => {
     if (invitationContext && invitationId !== undefined) {
       setMode(invitationSignInRequested ? "signIn" : "signUp");
@@ -54,22 +58,38 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const signInMutation = useMutation({
     mutationFn: useServerFn(signIn) as (
       input: Parameters<typeof signIn>[0],
-    ) => Promise<EmptyResult>,
-    onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+    ) => Promise<AuthenticationResult>,
+    onSuccess: async (result, input) => {
+      if (result.status !== "ok") return;
+      if (result.data.state === "verificationRequired") {
+        setVerificationEmail(input.data.email);
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
   });
   const signUpMutation = useMutation({
     mutationFn: useServerFn(signUp) as (
       input: Parameters<typeof signUp>[0],
-    ) => Promise<EmptyResult>,
-    onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+    ) => Promise<AuthenticationResult>,
+    onSuccess: async (result, input) => {
+      if (result.status !== "ok") return;
+      if (result.data.state === "verificationRequired") {
+        setVerificationEmail(input.data.email);
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
   });
   const busy = signInMutation.isPending || signUpMutation.isPending;
   const toggle = useCallback(() => {
     setMode((current) => (current === "signIn" ? "signUp" : "signIn"));
+  }, []);
+  const showForgotPassword = useCallback(() => setForgotPassword(true), []);
+  const showSignIn = useCallback(() => {
+    setForgotPassword(false);
+    setVerificationEmail(undefined);
+    setMode("signIn");
   }, []);
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -103,14 +123,17 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
         "Hub did not receive the account-creation result. Check your connection and invitation before submitting again.";
     }
   }
-  let title = "Create an account";
-  let description = "Get your agent operations in one place.";
-  if (invitationSignup) {
-    title = `Join ${account.invitation?.organization.name}`;
-    description = `${account.invitation?.inviterName} invited you as ${account.invitation?.role}.`;
-  } else if (mode === "signIn") {
-    title = "Sign in to Paseo Hub";
-    description = "Your agent operations, in one place.";
+  const { title, description } = accountEntryPresentation(account, mode, invitationSignup);
+
+  if (forgotPassword) return <ForgotPasswordEntry onBack={showSignIn} />;
+  if (verificationEmail !== undefined) {
+    return (
+      <VerificationPendingEntry
+        email={verificationEmail}
+        {...(account.invitation?.id === undefined ? {} : { invitation: account.invitation.id })}
+        onBack={showSignIn}
+      />
+    );
   }
 
   return (
@@ -136,10 +159,28 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
           mode={mode}
           busy={busy}
           onToggle={toggle}
+          onForgotPassword={showForgotPassword}
         />
       </AuthCard>
     </AuthLayout>
   );
+}
+
+function accountEntryPresentation(
+  account: AccountState & { status: "signedOut" },
+  mode: "signIn" | "signUp",
+  invitationSignup: boolean,
+): { title: string; description: string } {
+  if (invitationSignup) {
+    return {
+      title: `Join ${account.invitation?.organization.name}`,
+      description: `${account.invitation?.inviterName} invited you as ${account.invitation?.role}.`,
+    };
+  }
+  if (mode === "signIn") {
+    return { title: "Sign in to Paseo Hub", description: "Your agent operations, in one place." };
+  }
+  return { title: "Create an account", description: "Get your agent operations in one place." };
 }
 
 function readInvitationSignInRequest(): boolean {
@@ -158,53 +199,99 @@ function SignedOutFooter({
   mode,
   busy,
   onToggle,
+  onForgotPassword,
 }: {
   registration: Extract<AccountState, { status: "signedOut" }>["registration"];
   invitationContext: boolean;
   mode: "signIn" | "signUp";
   busy: boolean;
   onToggle: () => void;
+  onForgotPassword: () => void;
 }) {
   if (invitationContext) {
     return (
-      <p className="text-center text-sm text-muted-foreground">
-        This invitation is bound to the invited email address.{" "}
-        {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto p-0"
-          disabled={busy}
-          onClick={onToggle}
-        >
-          {mode === "signIn" ? "Create an account" : "Sign in"}
-        </Button>
-      </p>
+      <div className="grid gap-2 text-center text-sm text-muted-foreground">
+        <p>
+          This invitation is bound to the invited email address.{" "}
+          {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            disabled={busy}
+            onClick={onToggle}
+          >
+            {mode === "signIn" ? "Create an account" : "Sign in"}
+          </Button>
+        </p>
+        {mode === "signIn" && (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            disabled={busy}
+            onClick={onForgotPassword}
+          >
+            Forgot password?
+          </Button>
+        )}
+      </div>
     );
   }
   if (registration === "open") {
     return (
-      <p className="text-center text-sm text-muted-foreground">
-        {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto p-0"
-          disabled={busy}
-          onClick={onToggle}
-        >
-          {mode === "signIn" ? "Create an account" : "Sign in"}
-        </Button>
-      </p>
+      <div className="grid gap-2 text-center text-sm text-muted-foreground">
+        <p>
+          {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            disabled={busy}
+            onClick={onToggle}
+          >
+            {mode === "signIn" ? "Create an account" : "Sign in"}
+          </Button>
+        </p>
+        {mode === "signIn" && (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            disabled={busy}
+            onClick={onForgotPassword}
+          >
+            Forgot password?
+          </Button>
+        )}
+      </div>
     );
   }
   const message =
     registration === "invite_only"
       ? "Accounts are created by invitation. Ask an organization owner to invite you."
       : "Paseo Hub isn't accepting new accounts.";
-  return <p className="text-center text-sm text-muted-foreground">{message}</p>;
+  return (
+    <div className="grid gap-2 text-center text-sm text-muted-foreground">
+      <p>{message}</p>
+      {mode === "signIn" && (
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto p-0"
+          disabled={busy}
+          onClick={onForgotPassword}
+        >
+          Forgot password?
+        </Button>
+      )}
+    </div>
+  );
 }
 
 export function InvitationEntry({

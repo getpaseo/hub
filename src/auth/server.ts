@@ -38,16 +38,20 @@ import {
 import { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import type { InvitationMailer } from "../invitations/index.js";
+import type { AccountMailer } from "./account-emails.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<void>;
+  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,
     invitationId?: string,
-  ): Promise<void>;
+  ): Promise<"complete" | "verificationRequired">;
+  sendVerificationEmail?(email: string, headers: Headers, invitationId?: string): Promise<void>;
+  requestPasswordReset?(email: string, headers: Headers): Promise<void>;
+  resetPassword?(data: { token: string; newPassword: string }, headers: Headers): Promise<void>;
   signOut?(headers: Headers): Promise<void>;
   changePassword?(
     data: { currentPassword: string; newPassword: string },
@@ -87,6 +91,8 @@ interface AuthServerOptions {
   onMembershipChanged?: (organizationId: string) => Promise<void>;
   /** Optional post-commit delivery for organization invitations. */
   invitationMailer?: InvitationMailer;
+  /** Optional account email delivery. Configured public instances require verification. */
+  accountMailer?: AccountMailer;
 }
 
 const sessionSchema = z.object({
@@ -114,6 +120,7 @@ const RAW_PRODUCT_PATHS = new Set([
   "/api/auth/sign-in/email",
   "/api/auth/sign-out",
   "/api/auth/change-password",
+  "/api/auth/verify-email",
 ]);
 
 export function createAuthServer(options: AuthServerOptions): AuthServer {
@@ -131,6 +138,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     provisioningEntitlements,
   });
   const appOnboarding = new InstanceAppOnboarding(options.database);
+  const accountMailer = options.accountMailer;
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -153,7 +161,24 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           },
         }),
     database: drizzleAdapter(database, { provider: "pg", schema: authSchema }),
-    emailAndPassword: { enabled: true, minPasswordLength: PASSWORD_MIN_LENGTH },
+    emailAndPassword: {
+      enabled: true,
+      minPasswordLength: PASSWORD_MIN_LENGTH,
+      requireEmailVerification: accountMailer !== undefined,
+      revokeSessionsOnPasswordReset: true,
+      ...(accountMailer === undefined
+        ? {}
+        : { sendResetPassword: (email) => accountMailer.sendPasswordReset(email) }),
+    },
+    ...(accountMailer === undefined
+      ? {}
+      : {
+          emailVerification: {
+            autoSignInAfterVerification: true,
+            sendVerificationEmail: (email: Parameters<AccountMailer["sendVerificationEmail"]>[0]) =>
+              accountMailer.sendVerificationEmail(email),
+          },
+        }),
     user: {
       additionalFields: {
         mustChangePassword: {
@@ -241,7 +266,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         if (rejected !== undefined) return Promise.resolve(rejected);
         return changePassword(request);
       }
-      if (!RAW_PRODUCT_PATHS.has(path)) {
+      if (!RAW_PRODUCT_PATHS.has(path) && !path.startsWith("/api/auth/reset-password/")) {
         return Promise.resolve(Response.json({ error: "not_found" }, { status: 404 }));
       }
       return auth.handler(request);
@@ -260,12 +285,35 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     async signInEmail(data, headers) {
       requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       await auth.api.signInEmail({ body: data, headers });
+      return "complete";
     },
     async signUpEmail(data, headers, invitationId) {
       requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
       await registration.withAdmission(data.email, invitationId, async () => {
-        await auth.api.signUpEmail({ body: data, headers });
+        await auth.api.signUpEmail({
+          body: { ...data, callbackURL: accountCallback(options.baseURL, invitationId) },
+          headers,
+        });
       });
+      return accountMailer === undefined ? "complete" : "verificationRequired";
+    },
+    async sendVerificationEmail(email, headers, invitationId) {
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
+      await auth.api.sendVerificationEmail({
+        body: { email, callbackURL: accountCallback(options.baseURL, invitationId) },
+        headers,
+      });
+    },
+    async requestPasswordReset(email, headers) {
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
+      await auth.api.requestPasswordReset({
+        body: { email, redirectTo: passwordResetCallback(options.baseURL) },
+        headers,
+      });
+    },
+    async resetPassword(data, headers) {
+      requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
+      await auth.api.resetPassword({ body: data, headers });
     },
     async claimInstance(operator, headers) {
       requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
@@ -349,6 +397,19 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
 
 function requestBrowserOrigin(request: Request, fallback: string): string {
   return headersBrowserOrigin(request.headers, fallback);
+}
+
+function accountCallback(baseURL: string, invitationId?: string): string {
+  const callback = new URL("/", baseURL);
+  callback.searchParams.set("auth", "email-verification");
+  if (invitationId !== undefined) callback.searchParams.set("invitation", invitationId);
+  return callback.toString();
+}
+
+function passwordResetCallback(baseURL: string): string {
+  const callback = new URL("/", baseURL);
+  callback.searchParams.set("auth", "password-reset");
+  return callback.toString();
 }
 
 function headersBrowserOrigin(headers: Headers, fallback: string): string {

@@ -54,6 +54,7 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { HubBundleFile } from "../../config/bundle.js";
+import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
 
 interface DiscordCommand {
   id: string;
@@ -101,6 +102,13 @@ interface AccountSetupFailureCommand {
 interface ProjectReadFailureCommand {
   id: string;
   type: "fail-next-project-read";
+}
+
+interface AccountEmailLinkCommand {
+  id: string;
+  type: "account-email-link";
+  email: string;
+  kind: BrowserAccountEmailKind;
 }
 
 /**
@@ -161,6 +169,7 @@ async function main(): Promise<void> {
   } = await composeFixtureBilling(database, entitlements.seatUsage);
   const authSecret = requiredEnvironment("PASEO_HUB_AUTH_SECRET");
   const accountSetupFaults = new BrowserAccountSetupFaults();
+  const accountEmails = new BrowserAccountEmails();
   const auth = browserAuthEnabled()
     ? accountSetupFaults.install(
         createAuthServer({
@@ -170,6 +179,7 @@ async function main(): Promise<void> {
           baseURL: publicBaseUrl,
           secret: authSecret,
           policy: readInstanceAuthPolicy(process.env),
+          accountMailer: accountEmails,
           ...billingAuthOptions(billing),
         }),
       )
@@ -330,6 +340,7 @@ async function main(): Promise<void> {
       billingCatalog,
       billingClient: billingFixtureClient,
       accountSetupFaults,
+      accountEmails,
       failNextProjectRead: () => {
         failNextProjectRead = true;
       },
@@ -508,6 +519,7 @@ interface CommandFixtures {
   billingCatalog: FixtureStripeCatalogSource | null;
   billingClient: FixtureStripeBillingClient | null;
   accountSetupFaults: BrowserAccountSetupFaults;
+  accountEmails: BrowserAccountEmails;
   failNextProjectRead(): void;
 }
 
@@ -518,11 +530,7 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
     process.send?.({ id: message.id, ok: true });
     return;
   }
-  if (isAccountSetupFailureCommand(message)) {
-    fixtures.accountSetupFaults.failNext();
-    process.send?.({ id: message.id, ok: true });
-    return;
-  }
+  if (acceptAccountFixtureCommand(message, fixtures)) return;
   if (isProjectReadFailureCommand(message)) {
     fixtures.failNextProjectRead();
     process.send?.({ id: message.id, ok: true });
@@ -564,6 +572,25 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+function acceptAccountFixtureCommand(message: unknown, fixtures: CommandFixtures): boolean {
+  if (isAccountSetupFailureCommand(message)) {
+    fixtures.accountSetupFaults.failNext();
+    process.send?.({ id: message.id, ok: true });
+    return true;
+  }
+  if (!isAccountEmailLinkCommand(message)) return false;
+  try {
+    process.send?.({
+      id: message.id,
+      ok: true,
+      data: fixtures.accountEmails.latestLink(message.email, message.kind),
+    });
+  } catch (error) {
+    sendCommandError(message.id, error);
+  }
+  return true;
 }
 
 async function acceptInstallUnroutedSlackFixture(
@@ -869,6 +896,17 @@ function isAccountSetupFailureCommand(value: unknown): value is AccountSetupFail
     value !== null &&
     Reflect.get(value, "type") === "fail-next-account-setup" &&
     typeof Reflect.get(value, "id") === "string"
+  );
+}
+
+function isAccountEmailLinkCommand(value: unknown): value is AccountEmailLinkCommand {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "account-email-link" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "email") === "string" &&
+    ["verification", "password-reset"].includes(String(Reflect.get(value, "kind")))
   );
 }
 

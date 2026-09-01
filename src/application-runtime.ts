@@ -174,6 +174,24 @@ async function createOwnedApplicationRuntime(
       }
       return options.auth.signUpEmail(data, headers, invitationId);
     },
+    sendVerificationEmail(email, headers, invitationId) {
+      if (options.database === null || options.auth?.sendVerificationEmail === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.sendVerificationEmail(email, headers, invitationId);
+    },
+    requestPasswordReset(email, headers) {
+      if (options.database === null || options.auth?.requestPasswordReset === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.requestPasswordReset(email, headers);
+    },
+    resetPassword(data, headers) {
+      if (options.database === null || options.auth?.resetPassword === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.resetPassword(data, headers);
+    },
     claimInstance(operator, headers) {
       if (options.database === null || options.auth?.claimInstance === undefined) {
         return Promise.reject(new Error("auth unavailable"));
