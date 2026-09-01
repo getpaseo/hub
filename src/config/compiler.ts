@@ -165,7 +165,6 @@ const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
 const WorkspaceAffinityKeySchema = z
   .string()
   .min(1)
-  .max(512)
   .refine((key) => key.trim().length > 0, "workspace affinity key must not be blank");
 
 const WorkspaceAffinitySchema = z.object({ key: WorkspaceAffinityKeySchema }).strict();

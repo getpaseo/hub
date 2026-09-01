@@ -43,6 +43,8 @@ thread:
 triggers:
   - name: respond-to-slack
     on: slack.mention
+    filters:
+      from_users: ["U0123456789"]
     max_runtime: 2h
     steps:
       - id: respond

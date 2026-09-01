@@ -715,6 +715,22 @@ describe("workflow compiler", () => {
     });
     assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
 
+    const renderedBoundedKey = "x".repeat(505) + "${{ true }}";
+    assert.ok(renderedBoundedKey.length > 512);
+    const compiledLongTemplate = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...conversationTrigger,
+          steps: [{ ...step, workspace_affinity: { key: renderedBoundedKey } }],
+        },
+      ],
+    });
+    assert.deepEqual(compiledLongTemplate.triggers[0]?.steps[0]?.workspaceAffinity, {
+      key: renderedBoundedKey,
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiledLongTemplate), compiledLongTemplate);
+
     assert.throws(
       () =>
         compileHubConfig({
