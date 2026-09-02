@@ -1242,9 +1242,31 @@ class PgDatabase implements Database {
             stepRun: toWorkflowStepRunRecord(step),
             run: toTriggerRunRecord(run),
             transitioned: false,
+            failedExecutionIds: [],
           };
         }
         const completedAt = new Date();
+        const failedExecutions = await client.query<{ id: string }>(
+          `update agent_executions
+           set status = 'failed', completed_at = $2::timestamptz,
+               result = jsonb_build_object('status', 'failed', 'reason', $3::text),
+               idle_deadline_at = null,
+               hub_action = case
+                 when daemon_id is null then null
+                 when coalesce((launch_intent ->> 'autoArchive')::boolean, false) then 'archive'
+                 else 'interrupt'
+               end,
+               hub_action_completed_at = case
+                 when daemon_id is null then $2::timestamptz
+                 else null::timestamptz
+               end
+           where workflow_step_run_id in (
+             select id from workflow_step_runs where trigger_run_id = $1
+           )
+             and status in ('spawning', 'running')
+           returning id`,
+          [triggerRunId, completedAt, failureReason],
+        );
         const updatedStep = await client.query<WorkflowStepRunRow>(
           `update workflow_step_runs
          set status = case when status in ('pending', 'running') then $2 else status end,
@@ -1268,6 +1290,7 @@ class PgDatabase implements Database {
           stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
           run: toTriggerRunRecord(updatedRun.rows[0]!),
           transitioned: true,
+          failedExecutionIds: failedExecutions.rows.map((execution) => execution.id),
         };
       });
     } catch (error) {

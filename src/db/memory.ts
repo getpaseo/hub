@@ -1063,8 +1063,36 @@ class MemoryDatabase implements Database {
           )
         : steps.find((candidate) => candidate.stepId === stepId)) ?? steps[0];
     if (run === undefined || step === undefined) return undefined;
-    if (run.status !== "running") return { stepRun: step, run, transitioned: false };
+    if (run.status !== "running") {
+      return { stepRun: step, run, transitioned: false, failedExecutionIds: [] };
+    }
     const now = this.options.now?.() ?? new Date();
+    const failedExecutionIds: string[] = [];
+    for (const candidate of steps) {
+      if (candidate.agentExecutionId === null) continue;
+      const execution = this.agentExecutions.get(candidate.agentExecutionId);
+      if (
+        execution === undefined ||
+        (execution.status !== "spawning" && execution.status !== "running")
+      ) {
+        continue;
+      }
+      let hubAction: AgentExecutionRecord["hubAction"] = null;
+      if (execution.daemonId !== null) {
+        hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+      }
+      this.agentExecutions.set(execution.id, {
+        ...execution,
+        status: "failed",
+        completedAt: now,
+        result: { status: "failed", reason: failureReason },
+        idleDeadlineAt: null,
+        hubAction,
+        hubActionCompletedAt: hubAction === null ? now : null,
+        hubActionReadyAt: null,
+      });
+      failedExecutionIds.push(execution.id);
+    }
     const updatedStep =
       step.status === "pending" || step.status === "running"
         ? { ...step, status, failureReason, completedAt: now }
@@ -1079,7 +1107,12 @@ class MemoryDatabase implements Database {
     this.workflowStepRuns.set(step.id, updatedStep);
     this.triggerRuns.set(run.id, updatedRun);
     this.workflowWakeups.delete(run.id);
-    return { stepRun: updatedStep, run: updatedRun, transitioned: true };
+    return {
+      stepRun: updatedStep,
+      run: updatedRun,
+      transitioned: true,
+      failedExecutionIds,
+    };
   }
 
   async recoverWorkflowWakeups(now: Date) {
@@ -3490,10 +3523,10 @@ function linearDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "linear_unbound";
+  if (isLinearAgentSessionStop(input)) return undefined;
   if (
     linearConnectionRequiresReauthorization(binding, input.receivedAt) ||
     (input.source === "linear.agent_session" &&
-      !isLinearAgentSessionStop(input) &&
       !hasRequiredLinearAgentSessionScopes(binding.scopes))
   ) {
     return "configuration_unavailable";

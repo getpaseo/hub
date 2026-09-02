@@ -229,7 +229,7 @@ export function createLinearTriggerProvider(
         }
       }
       if (matches.length === 0) return "trigger_filters_rejected";
-      if (event.type === "agent_session" && event.action === "created") {
+      if (shouldSupersedeLinearCommentRuns(event, matches)) {
         await supersedeLinearCommentRuns(options, externalTrigger, event);
       }
       return matches;
@@ -441,6 +441,17 @@ function promptForEvent(event: NormalizedLinearEvent): string {
   return event.issue.description === null
     ? event.issue.title
     : `${event.issue.title}\n\n${event.issue.description}`;
+}
+
+function shouldSupersedeLinearCommentRuns(
+  event: NormalizedLinearEvent,
+  matches: readonly TriggerProviderMatch<LinearTriggerContext, LinearOutputContext>[],
+): event is NormalizedLinearAgentSessionEvent {
+  return (
+    event.type === "agent_session" &&
+    event.action === "created" &&
+    matches.some((match) => match.invocation.status === "accepted")
+  );
 }
 
 function parserMessageForEvent(

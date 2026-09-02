@@ -371,6 +371,63 @@ describe("durable Hub action acknowledgement state", () => {
     await lifecycle.stop();
   });
 
+  it("stops a workflow execution created after the pending-work scan", async () => {
+    const database = createMemoryDatabase();
+    const connection = new AcknowledgementConnection();
+    const lifecycle = createLifecycle(database, connection);
+    const run = (
+      await database.createAcceptedTriggerRun({
+        organizationId: "org-stop-race",
+        projectId: "project-stop-race",
+        configurationRevisionId: "revision-stop-race",
+        providerEventReceiptId: "receipt-stop-race",
+        configuredTriggerName: "agent-session",
+        prompt: "raw",
+        inputs: {},
+        triggerContext: { provider: "test" },
+        outputContext: { provider: "linear", agentSessionId: "session-race" },
+        deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+        stepIds: ["step"],
+      })
+    ).run;
+    const step = (await database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await database.insertAgentExecution({
+      id: "00000000-0000-4000-8000-0000000000e3",
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+      machineId: null,
+      daemonId: DAEMON_ID,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      configurationRevisionId: run.configurationRevisionId,
+      workflowStepRunId: step.id,
+    });
+    await database.linkWorkflowStepRunExecution(step.id, execution.id);
+    await database.attachAgentToExecution(execution.id, DAEMON_ID, AGENT_ID);
+    await database.transitionAgentExecution(execution.id, "running");
+
+    // Model the interleaving where creation commits after the first pending scan. The run-level
+    // pass must atomically fail the now-linked execution before Stop can be acknowledged.
+    vi.spyOn(database, "findPendingAgentExecutions").mockResolvedValueOnce([]);
+    const result = await lifecycle.stopAgentExecutions({
+      projectId: run.projectId,
+      reason: "stopped_by_user",
+      matches: (work) => agentSessionIdOf(work.outputContext) === "session-race",
+    });
+
+    assert.deepEqual(result.executions, []);
+    assert.deepEqual(
+      result.runs.map((candidate) => candidate.id),
+      [run.id],
+    );
+    const failed = await database.findAgentExecutionById(execution.id);
+    assert.equal(failed?.status, "failed");
+    assert.deepEqual(failed?.result, { status: "failed", reason: "stopped_by_user" });
+    assert.equal(failed?.hubAction, "interrupt");
+    assert.deepEqual(connection.actions, ["interrupt"]);
+    await lifecycle.stop();
+  });
+
   it("stops a matching undispatched run behind more than 200 newer project runs", async () => {
     const database = createMemoryDatabase();
     const lifecycle = createLifecycle(database, new AcknowledgementConnection());

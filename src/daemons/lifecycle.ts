@@ -1186,8 +1186,9 @@ export class DaemonDispatchLifecycle {
    *   terminal notification the workflow engine's outbox delivers with `reason`.
    *
    * Executions are failed first: their terminal transition already settles their run, so the
-   * second pass only sees runs that had nothing dispatched. It queries active runs directly so
-   * an authoritative stop cannot miss older work in a busy project.
+   * second pass normally sees runs that had nothing dispatched. Run failure and any execution
+   * linked after the first scan are transitioned atomically, closing that handoff race. The pass
+   * queries active runs directly so an authoritative stop cannot miss older work in a busy project.
    *
    * `matches` selects on the work's output context or on its workflow run id, which is
    * resolved through the execution's step run (null outside a workflow run).
@@ -1229,15 +1230,33 @@ export class DaemonDispatchLifecycle {
     const failedRuns = await Promise.all(
       undispatched.map(async (run) => {
         const failed = await this.options.database.failWorkflowRun(run.id, "failed", input.reason);
-        return failed?.transitioned === true && failed.run.outcome === "accepted"
-          ? failed.run
-          : undefined;
+        if (failed?.transitioned !== true || failed.run.outcome !== "accepted") return undefined;
+        await this.finishStoppedWorkflowExecutions(failed.failedExecutionIds, input.reason);
+        return failed.run;
       }),
     );
     return {
       executions: stopped.filter((execution) => execution !== undefined),
       runs: failedRuns.filter((run) => run !== undefined),
     };
+  }
+
+  private async finishStoppedWorkflowExecutions(
+    executionIds: readonly string[],
+    reason: string,
+  ): Promise<void> {
+    await Promise.all(
+      executionIds.map(async (executionId) => {
+        const execution = await this.options.database.findAgentExecutionById(executionId);
+        if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
+        this.clearExecutionDeadline(executionId);
+        this.releaseExecutionResources(executionId);
+        this.startedExecutions.delete(executionId);
+        await this.notifyExecutionTerminal(execution);
+        await this.reconcileHubActionSafely(execution);
+        this.completionWatchersByExecution.get(executionId)?.(new DaemonDispatchFailure(reason));
+      }),
+    );
   }
 
   private async triggerRunIdOf(execution: AgentExecutionRecord): Promise<string | null> {

@@ -316,6 +316,15 @@ describe("ProjectConfigurationStore resource compilation", () => {
     if (expired.status === "dropped") {
       assert.equal(expired.reason, "configuration_unavailable");
     }
+    const expiredStop = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-expired-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expiredStop.status, "accepted");
   });
 
   it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {
