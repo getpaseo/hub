@@ -335,9 +335,9 @@ function linearConnectionUnavailable(
   ) {
     return true;
   }
+  if (isLinearAgentSessionStop({ source, payload })) return false;
   return (
     (source === "linear.agent_session" &&
-      !isLinearAgentSessionStop({ source, payload }) &&
       !hasRequiredLinearAgentSessionScopes(connection.scopes)) ||
     linearConnectionRequiresReauthorization(
       {
