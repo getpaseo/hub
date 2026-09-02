@@ -620,7 +620,11 @@ describe("Linear trigger provider", () => {
   it("reads the thread's authors for thread_with_app and fires only when the app wrote in it", async () => {
     const { project, revision, store } = await activeConfiguration(threadWithAppConfiguration());
     const client = new RecordingHistoryClient({ complete: true, comments: [] });
-    client.thread = { rootId: "root-comment", authorIds: ["operator", "app-user"] };
+    client.thread = {
+      rootId: "root-comment",
+      authorIds: ["operator", "app-user"],
+      agentSessionRootIds: [],
+    };
     const provider = createLinearTriggerProvider({
       configurationStoreForProject: () => store,
       client,
@@ -635,9 +639,56 @@ describe("Linear trigger provider", () => {
       { linearOrganizationId: "linear-org", commentId: "trigger-comment" },
     ]);
 
-    client.thread = { rootId: "root-comment", authorIds: ["operator", "reviewer"] };
+    client.thread = {
+      rootId: "root-comment",
+      authorIds: ["operator", "reviewer"],
+      agentSessionRootIds: [],
+    };
     assert.deepEqual(await matchedTriggerNames(provider, external(project.id, revision.id)), [
       "plain",
+    ]);
+  });
+
+  it("leaves a reply in an agent-session thread to the session rather than to thread_with_app", async () => {
+    const configuration = threadWithAppConfiguration();
+    const plain = configuration.triggers[1]!;
+    const replies = {
+      ...plain,
+      name: "replies",
+      filters: { ...plain.filters, replies_only: true },
+    };
+    const { project, revision, store } = await activeConfiguration({
+      ...configuration,
+      triggers: [...configuration.triggers, replies],
+    });
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    // The app's responses are comments in the session thread, so authorship alone would match.
+    client.thread = {
+      rootId: "root-comment",
+      authorIds: ["linear-bot", "operator", "app-user"],
+      agentSessionRootIds: ["root-comment"],
+    };
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+      connectionForLinearOrganization: async () => ({ appUserId: "app-user" }),
+    });
+
+    assert.deepEqual(await matchedTriggerNames(provider, external(project.id, revision.id)), [
+      "plain",
+      "replies",
+    ]);
+
+    // Another session on the same issue does not make this thread the session's.
+    client.thread = {
+      rootId: "root-comment",
+      authorIds: ["linear-bot", "operator", "app-user"],
+      agentSessionRootIds: ["other-session-root"],
+    };
+    assert.deepEqual(await matchedTriggerNames(provider, external(project.id, revision.id)), [
+      "in-app-thread",
+      "plain",
+      "replies",
     ]);
   });
 
@@ -825,6 +876,75 @@ describe("Linear trigger provider", () => {
       await provider.match(session(comments));
       assert.deepEqual(lookups, [expected]);
     }
+  });
+
+  it("stops the run a comment trigger started from the reply behind a session prompt", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      agentSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const replyRun = (
+      await database.createAcceptedTriggerRun(
+        linearCommentRun(project.id, revision.id, "reply-1", "receipt-reply-run"),
+      )
+    ).run;
+    const rootRun = (
+      await database.createAcceptedTriggerRun(
+        linearCommentRun(project.id, revision.id, "comment-1", "receipt-root-run"),
+      )
+    ).run;
+    const lookups: (readonly string[])[] = [];
+    const stops: Parameters<TriggerProviderExecutionControl["stopActive"]>[0][] = [];
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client: new RecordingHistoryClient({ complete: true, comments: [] }),
+      database: {
+        listTriggerRunsForLinearComments: (projectId, commentIds) => {
+          lookups.push(commentIds);
+          return database.listTriggerRunsForLinearComments(projectId, commentIds);
+        },
+        findProviderEventReceiptById: (id) => database.findProviderEventReceiptById(id),
+      },
+      executions: {
+        stopActive: async (input) => {
+          stops.push(input);
+          return { stopped: 1 };
+        },
+      },
+    });
+    const prompted = agentSessionEvent();
+    const session = (comments: { rootCommentId?: string; sourceCommentId?: string }) =>
+      externalAgentSession(project.id, revision.id, {
+        ...prompted,
+        agentSession: { ...prompted.agentSession, ...comments },
+      });
+
+    const matches = await provider.match(
+      session({ rootCommentId: "comment-1", sourceCommentId: "reply-1" }),
+    );
+    if (typeof matches === "string") throw new Error(`expected a match, got ${matches}`);
+    // Only the reply behind this prompt: the root's run was the created session's to supersede.
+    assert.deepEqual(lookups, [["reply-1"]]);
+    assert.equal(stops.length, 1);
+    assert.equal(stops[0]?.reason, "superseded_by_agent_session");
+    const supersedes = (triggerRunId: string) =>
+      stops[0]!.matches({ outputContext: replyRun.outputContext, triggerRunId });
+    assert.equal(supersedes(replyRun.id), true);
+    assert.equal(supersedes(rootRun.id), false);
+
+    // A prompt typed in the session panel has no comment behind it, and the thread root alone
+    // names nothing to supersede.
+    lookups.length = 0;
+    for (const comments of [{ rootCommentId: "comment-1" }, {}]) {
+      const promptedWithoutSource = await provider.match(session(comments));
+      if (typeof promptedWithoutSource === "string") {
+        throw new Error(`expected a match, got ${promptedWithoutSource}`);
+      }
+    }
+    assert.deepEqual(lookups, []);
+    assert.equal(stops.length, 1);
   });
 
   it("stops nothing when no comment run preceded the agent session", async () => {
