@@ -441,6 +441,16 @@ describe("trigger acceptance persistence", () => {
     if (expired.status !== "dropped") throw new Error("expected an expired-token drop");
     assert.equal(expired.reason, "configuration_unavailable");
 
+    const expiredStop = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-expired-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expiredStop.status, "accepted");
+
     await client.close();
     await database.close();
   }, 120_000);
