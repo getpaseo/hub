@@ -54,6 +54,31 @@ describe("public manual-run project resolution", () => {
       { status: "disabled" },
     );
   });
+
+  it("falls back to the active project when a matching trigger runtime is archived", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollTestDaemon(database, "org");
+    const legacy = await database.createProject({
+      organizationId: "org",
+      name: "Default",
+      slug: "default",
+      createdByUserId: null,
+    });
+    const trigger = await new OrganizationTriggerStore(database, "org").save({
+      yaml: triggerYaml(true),
+      userId: null,
+    });
+    await database.archiveProject("org", trigger.runtimeProjectId, "test-user");
+
+    assert.deepEqual(
+      await createDatabasePublicOperationRepository(database).resolveManualRunProject(
+        "org",
+        "deploy",
+        "default",
+      ),
+      { status: "resolved", id: legacy.id },
+    );
+  });
 });
 
 function triggerYaml(enabled: boolean): string {
