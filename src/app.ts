@@ -32,7 +32,11 @@ import type {
   DaemonDispatchLifecycleOptions,
   ExecutionDeadlineClock,
 } from "./daemons/lifecycle.js";
-import type { TriggerProviderFactory, TriggerProviderResources } from "./providers/registration.js";
+import type {
+  TriggerProviderExecutionControl,
+  TriggerProviderFactory,
+  TriggerProviderResources,
+} from "./providers/registration.js";
 import type { TriggerProvider, TriggerSource } from "./triggers/index.js";
 import {
   createManualTriggerSource,
@@ -126,6 +130,9 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
   const attachments = createAttachmentRegistry(options);
+  // Providers are created before the daemon module that depends on them, so execution control
+  // binds to the module lazily; it is only ever invoked while handling live events.
+  let executionDaemonModule: DaemonModule | null | undefined;
   const configuredProviders =
     options.database === null
       ? []
@@ -138,6 +145,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
                 throw new Error("no connection resolver registered");
               }),
             ...(attachments === undefined ? {} : { attachments }),
+            executions: executionControlFor(() => executionDaemonModule),
           }),
         );
   const providers = [manualProvider, ...configuredProviders, ...(options.providers ?? [])].filter(
@@ -145,6 +153,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   );
   const outputRegistry = options.outputRegistry ?? new OutputExecutorRegistry();
   const daemonModule = createAppDaemonModule(options, daemons, providers, outputRegistry);
+  executionDaemonModule = daemonModule;
   const capabilityServer = createAppExecutionCapabilityServer(
     options,
     daemonModule,
@@ -201,7 +210,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       ? {}
       : {
           onWorkflowDeadlineExceeded: async (recovery: WorkflowDeadlineRecovery) => {
-            await daemonModule.lifecycle.recoverWorkflowDeadlineExecutions(recovery.executionIds);
+            await daemonModule.lifecycle.recoverWorkflowDeadlineExecutions(
+              recovery.executionIds,
+              recovery.completedExecutionIds ?? [],
+            );
           },
           onWorkflowRunAccepted: (run: AcceptedTriggerRunRecord) =>
             daemonModule.lifecycle.notifyWorkflowRunAccepted(run),
@@ -417,6 +429,21 @@ function connectDaemonLifecycle(
       "daemon_revoked",
     ),
   );
+}
+
+function executionControlFor(
+  daemonModule: () => DaemonModule | null | undefined,
+): TriggerProviderExecutionControl {
+  return {
+    stopActive: async (input) => {
+      const current = daemonModule()?.lifecycle;
+      if (current === undefined) {
+        throw new Error("execution control is unavailable before the daemon module");
+      }
+      const stopped = await current.stopAgentExecutions(input);
+      return { stopped: stopped.executions.length + stopped.runs.length };
+    },
+  };
 }
 
 function createAppDaemonModule(

@@ -1,4 +1,6 @@
+import type { CompiledTriggerConfig } from "../../config/index.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import type { Database, LinearConnectionRecord } from "../../db/types.js";
 import {
   LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT,
   LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT,
@@ -6,25 +8,39 @@ import {
   type LinearAgentActivity,
   type LinearIssueComment,
 } from "../../providers/linear/client.js";
+import { OUTPUT_DELIVERY_FAILED_REASON } from "../../execution-capabilities/required-outputs.js";
 import { reportFailure } from "../../failures/index.js";
+import { logger } from "../../logger.js";
+import type { TriggerProviderExecutionControl } from "../../providers/registration.js";
 import type {
+  ExternalTrigger,
   TriggerProvider,
   TriggerProviderMatch,
   TriggerProviderReactionState,
 } from "../index.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
-import { NormalizedLinearEventSchema, type NormalizedLinearEvent } from "./events.js";
+import {
+  NormalizedLinearEventSchema,
+  type NormalizedLinearAgentSessionEvent,
+  type NormalizedLinearEvent,
+} from "./events.js";
 import {
   matchLinearTriggers,
   readLinearAgentSessionInvocationParserMessage,
   readLinearCommentInvocationParserMessage,
 } from "./match.js";
+import { LINEAR_REPLY_OUTPUT_TYPE } from "./reply.js";
 
 export interface LinearOutputContext {
   provider: "linear";
   linearOrganizationId: string;
   issueId: string;
   agentSessionId: string | null;
+  /**
+   * Linear threads are one level deep: a reply's parent must be the top-level comment, and
+   * Linear rejects a nested comment as parent. Null when the trigger was not a comment.
+   */
+  threadRootCommentId: string | null;
 }
 
 export interface LinearTriggerContext {
@@ -62,6 +78,7 @@ export interface LinearTriggerContext {
         type: "prompt";
         body: string;
         created_at: string;
+        signal?: "stop";
       } | null;
       prompt_context: string | null;
       trigger_thread_context:
@@ -97,23 +114,36 @@ export interface LinearMaterializedContext {
   };
 }
 
-export function createLinearTriggerProvider(options: {
+/** Failure reason of an execution ended by Linear's `stop` signal; not an error for the user. */
+export const LINEAR_STOPPED_BY_USER_REASON = "stopped_by_user";
+
+/** Failure reason of a comment-triggered run replaced by the agent session opened for its comment. */
+export const LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON = "superseded_by_agent_session";
+
+export interface LinearTriggerProviderOptions {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   client?: Pick<
     LinearApiClient,
-    "readIssueComments" | "readAgentSessionActivities" | "createAgentActivity"
+    "readIssueComments" | "readAgentSessionActivities" | "readCommentThread" | "createAgentActivity"
   >;
-}): TriggerProvider<
-  "linear",
-  LinearTriggerContext,
-  LinearOutputContext,
-  LinearMaterializedContext
-> {
+  /** The connection bound to a Linear workspace; its app user is what `thread_with_app` looks for. */
+  connectionForLinearOrganization?: (input: {
+    organizationId: string;
+    linearOrganizationId: string;
+  }) => Promise<Pick<LinearConnectionRecord, "appUserId"> | undefined>;
+  /** Finds the runs a comment trigger started, so a new agent session can supersede them. */
+  database?: Pick<Database, "listTriggerRunsForLinearComments">;
+  executions?: TriggerProviderExecutionControl;
+}
+
+export function createLinearTriggerProvider(
+  options: LinearTriggerProviderOptions,
+): TriggerProvider<"linear", LinearTriggerContext, LinearOutputContext, LinearMaterializedContext> {
   return {
     name: "linear",
     eventNames: ["linear.issue", "linear.comment", "linear.agent_session"],
     async match(externalTrigger) {
-      const event = NormalizedLinearEventSchema.parse(externalTrigger.payload);
+      const received = NormalizedLinearEventSchema.parse(externalTrigger.payload);
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
@@ -121,10 +151,21 @@ export function createLinearTriggerProvider(options: {
       if (!hasSourceTrigger(stored.configuration.triggers, externalTrigger.source)) {
         return "no_trigger_for_source";
       }
+      if (received.type === "agent_session" && received.agentActivity?.signal === "stop") {
+        await stopLinearAgentSession(options, externalTrigger.projectId, received);
+        return "agent_session_stopped";
+      }
+      const { event, appUserId } = await hydrateLinearCommentThread(
+        options,
+        externalTrigger,
+        received,
+        stored.configuration.triggers,
+      );
       const matched = matchLinearTriggers(
         stored.configuration,
         event,
         externalTrigger.connectionId,
+        appUserId,
       );
       if (matched.length === 0) return "trigger_filters_rejected";
 
@@ -143,6 +184,8 @@ export function createLinearTriggerProvider(options: {
           linearOrganizationId: event.organizationId,
           issueId: issue.id,
           agentSessionId: event.type === "agent_session" ? event.agentSession.id : null,
+          threadRootCommentId:
+            event.type === "comment" ? (event.comment.parentId ?? event.comment.id) : null,
         };
         const triggerContext: LinearTriggerContext = {
           provider: "linear",
@@ -183,7 +226,11 @@ export function createLinearTriggerProvider(options: {
           });
         }
       }
-      return matches.length === 0 ? "trigger_filters_rejected" : matches;
+      if (matches.length === 0) return "trigger_filters_rejected";
+      if (event.type === "agent_session" && event.action === "created") {
+        await supersedeLinearCommentRuns(options, externalTrigger.projectId, event);
+      }
+      return matches;
     },
     async materializeContext(launch): Promise<LinearMaterializedContext> {
       const { trigger_thread_context: locator, ...linear } = launch.triggerContext.event.linear;
@@ -280,6 +327,28 @@ export function createLinearTriggerProvider(options: {
         ephemeral: true,
       });
       return { phase: "accepted" };
+    },
+    async onAgentExecutionCompleted(triggerContext, _outputContext, result, reactionState) {
+      const agentSession = triggerContext.event.linear.agent_session;
+      if (agentSession === null || options.client === undefined) return reactionState;
+      if (linearAgentReactionPhase(reactionState) === "completed") return reactionState;
+      // Linear keeps the session `active` (then `stale`) until a response or error
+      // lands. A reply already closed it; otherwise close it explicitly. Unknown
+      // emissions are left alone rather than risking a false "no reply" notice.
+      if (
+        result.outputEmissions !== undefined &&
+        (result.outputEmissions[LINEAR_REPLY_OUTPUT_TYPE] ?? 0) === 0
+      ) {
+        await options.client.createAgentActivity({
+          linearOrganizationId: triggerContext.event.linear.organization.id,
+          agentSessionId: agentSession.id,
+          content: {
+            type: "response",
+            body: "Paseo finished this workflow without posting a reply.",
+          },
+        });
+      }
+      return { phase: "completed" };
     },
     async onAgentExecutionFailed(triggerContext, _outputContext, reason, reactionState) {
       return notifyLinearAgentFailure(options.client, triggerContext, reason, reactionState);
@@ -433,6 +502,9 @@ function buildLinearContext(
             type: event.agentActivity.type,
             body: event.agentActivity.body,
             created_at: event.agentActivity.createdAt,
+            ...(event.agentActivity.signal === undefined
+              ? {}
+              : { signal: event.agentActivity.signal }),
           }
         : null,
     prompt_context: event.type === "agent_session" ? event.promptContext : null,
@@ -460,14 +532,151 @@ function linearThreadContextLocator(
   };
 }
 
+/**
+ * `thread_with_app` needs two things the webhook does not carry: who wrote in the thread, and
+ * which Linear user the connection acts as. Both are read only when a configured trigger asks
+ * for them, and a failed read leaves the event as delivered so the filter fails closed while
+ * every other trigger still dispatches.
+ */
+async function hydrateLinearCommentThread(
+  options: Pick<LinearTriggerProviderOptions, "client" | "connectionForLinearOrganization">,
+  externalTrigger: ExternalTrigger,
+  event: NormalizedLinearEvent,
+  triggers: readonly Pick<CompiledTriggerConfig, "on" | "filters">[],
+): Promise<{ event: NormalizedLinearEvent; appUserId: string | undefined }> {
+  if (
+    event.type !== "comment" ||
+    event.action !== "create" ||
+    event.comment.parentId === null ||
+    !triggers.some(
+      (trigger) =>
+        trigger.on === "linear.comment_created" && trigger.filters?.thread_with_app === true,
+    )
+  ) {
+    return { event, appUserId: undefined };
+  }
+  const diagnostic = { linearOrganizationId: event.organizationId, commentId: event.comment.id };
+  let appUserId: string | undefined;
+  try {
+    const connection = await options.connectionForLinearOrganization?.({
+      organizationId: externalTrigger.organizationId,
+      linearOrganizationId: event.organizationId,
+    });
+    appUserId = connection?.appUserId;
+  } catch (error) {
+    logger.warn(
+      { err: error, ...diagnostic },
+      "Linear connection lookup failed; thread_with_app triggers will not match",
+    );
+  }
+  if (appUserId === undefined || event.threadAuthorIds !== undefined) return { event, appUserId };
+  try {
+    const thread = await options.client?.readCommentThread(diagnostic);
+    return {
+      event: thread === undefined ? event : { ...event, threadAuthorIds: thread.authorIds },
+      appUserId,
+    };
+  } catch (error) {
+    logger.warn(
+      { err: error, ...diagnostic },
+      "Linear comment thread read failed; thread_with_app triggers will not match",
+    );
+    return { event, appUserId };
+  }
+}
+
+/**
+ * A mention that opens an agent session also arrives as a comment, moments earlier. When a
+ * comment trigger already started a run from that comment, the session is the canonical
+ * handling: the comment run is stopped so the user is not answered twice. The mention may sit
+ * in a reply, so the comment that created the session is checked as well as the thread's root.
+ * A failure here is reported but does not hold back the session's own run.
+ */
+async function supersedeLinearCommentRuns(
+  options: Pick<LinearTriggerProviderOptions, "database" | "executions">,
+  projectId: string,
+  event: NormalizedLinearAgentSessionEvent,
+): Promise<void> {
+  const commentIds = [
+    ...new Set(
+      [event.agentSession.rootCommentId, event.agentSession.sourceCommentId].filter(
+        (id): id is string => id !== undefined,
+      ),
+    ),
+  ];
+  if (
+    commentIds.length === 0 ||
+    options.database === undefined ||
+    options.executions === undefined
+  ) {
+    return;
+  }
+  try {
+    const superseded = new Set(
+      (await options.database.listTriggerRunsForLinearComments(projectId, commentIds)).map(
+        (run) => run.id,
+      ),
+    );
+    if (superseded.size === 0) return;
+    await options.executions.stopActive({
+      projectId,
+      reason: LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON,
+      matches: (work) => work.triggerRunId !== null && superseded.has(work.triggerRunId),
+    });
+  } catch (error) {
+    reportFailure(
+      error,
+      {
+        operation: "linear.agent-session.supersede-comment-runs",
+        component: "triggers",
+        provider: "linear",
+      },
+      { diagnostic: { projectId, agentSessionId: event.agentSession.id, commentIds } },
+    );
+  }
+}
+
 function linearAgentReactionPhase(
   reactionState: TriggerProviderReactionState | undefined,
-): "accepted" | "failed" | undefined {
+): "accepted" | "completed" | "failed" | undefined {
   if (typeof reactionState !== "object" || reactionState === null || Array.isArray(reactionState)) {
     return undefined;
   }
   const phase = reactionState["phase"];
-  return phase === "accepted" || phase === "failed" ? phase : undefined;
+  return phase === "accepted" || phase === "completed" || phase === "failed" ? phase : undefined;
+}
+
+/**
+ * Linear's `stop` signal arrives as a prompt; it must not start a run. The session's pending
+ * executions and not-yet-dispatched runs are failed with a dedicated reason (so no error is
+ * posted for them), and Linear receives the `response` it expects to settle the session.
+ */
+async function stopLinearAgentSession(
+  options: {
+    client?: Pick<LinearApiClient, "createAgentActivity">;
+    executions?: TriggerProviderExecutionControl;
+  },
+  projectId: string,
+  event: NormalizedLinearAgentSessionEvent,
+): Promise<void> {
+  const agentSessionId = event.agentSession.id;
+  await options.executions?.stopActive({
+    projectId,
+    reason: LINEAR_STOPPED_BY_USER_REASON,
+    matches: (execution) => readLinearAgentSessionId(execution.outputContext) === agentSessionId,
+  });
+  await options.client?.createAgentActivity({
+    linearOrganizationId: event.organizationId,
+    agentSessionId,
+    content: { type: "response", body: "Stopped at your request." },
+  });
+}
+
+function readLinearAgentSessionId(outputContext: unknown): string | null {
+  if (typeof outputContext !== "object" || outputContext === null) return null;
+  const context = outputContext as Partial<LinearOutputContext>;
+  if (context.provider !== "linear") return null;
+  return typeof context.agentSessionId === "string" ? context.agentSessionId : null;
 }
 
 async function notifyLinearAgentFailure(
@@ -479,13 +688,20 @@ async function notifyLinearAgentFailure(
   const agentSession = triggerContext.event.linear.agent_session;
   if (agentSession === null || client === undefined) return reactionState;
   if (linearAgentReactionPhase(reactionState) === "failed") return reactionState;
+  // The stop handler already confirmed the stop; an error would contradict it.
+  if (reason === LINEAR_STOPPED_BY_USER_REASON) return { phase: "failed" };
   await client.createAgentActivity({
     linearOrganizationId: triggerContext.event.linear.organization.id,
     agentSessionId: agentSession.id,
-    content: {
-      type: "error",
-      body: `Paseo could not complete this workflow: ${reason.slice(0, 1_000)}`,
-    },
+    content: { type: "error", body: linearFailureBody(reason) },
   });
   return { phase: "failed" };
+}
+
+function linearFailureBody(reason: string): string {
+  // The reply itself is what failed; the internal reason would not help the user.
+  if (reason === OUTPUT_DELIVERY_FAILED_REASON) {
+    return "Paseo could not deliver its reply to this session.";
+  }
+  return `Paseo could not complete this workflow: ${reason.slice(0, 1_000)}`;
 }

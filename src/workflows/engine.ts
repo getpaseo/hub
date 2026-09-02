@@ -1112,6 +1112,7 @@ async function collectProviderMatches(
   return {
     matches,
     dropReason:
+      reasons.find((reason) => reason === "agent_session_stopped") ??
       reasons.find((reason) => reason === "configuration_unavailable") ??
       reasons.find((reason) => reason === "trigger_filters_rejected") ??
       "no_trigger_for_source",

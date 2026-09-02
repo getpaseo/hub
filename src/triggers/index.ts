@@ -95,6 +95,13 @@ export function isRejectedTriggerProviderMatch<TriggerContext, OutputContext>(
 export interface TriggerProviderLifecycleResult {
   status: "succeeded" | "failed";
   summary?: string;
+  /**
+   * Outputs delivered by the run's agent executions, keyed by output type
+   * (for example `linear.reply`) and summed across workflow steps. Absent when
+   * the caller could not read the executions; providers must treat that as
+   * "unknown", not as "nothing was emitted".
+   */
+  outputEmissions?: Readonly<Record<string, number>>;
 }
 
 export type TriggerProviderReactionState = JsonValue | null;

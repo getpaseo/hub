@@ -19,11 +19,17 @@ import type {
   WorkflowAgentCompletionInput,
 } from "../db/types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { completesAtIdleDeadline } from "../db/idle-completion.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
+import {
+  OUTPUT_DELIVERY_FAILED_REASON,
+  failedRequiredOutputDeliveries,
+  type RequiredOutputDeliveryFailure,
+} from "../execution-capabilities/required-outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
 import {
   notifyAgentExecutionCompleted,
@@ -94,6 +100,9 @@ const systemExecutionDeadlineClock: ExecutionDeadlineClock = {
   },
 };
 
+/** How many of a project's most recent runs a user stop inspects for undispatched work. */
+const STOP_RUN_SCAN_LIMIT = 200;
+
 export interface DaemonDispatchLifecycleOptions {
   database: Database;
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
@@ -131,7 +140,13 @@ export class DaemonSpawnAckTimeoutError extends Error {
 }
 
 export class AgentExecutionCompletionFailure extends Error {
-  constructor(readonly reason: "not_found" | "unauthorized" | "expired") {
+  constructor(
+    readonly reason:
+      | "not_found"
+      | "unauthorized"
+      | "expired"
+      | typeof OUTPUT_DELIVERY_FAILED_REASON,
+  ) {
     super(`agent execution completion failed: ${reason}`);
     this.name = "AgentExecutionCompletionFailure";
   }
@@ -255,7 +270,10 @@ export class DaemonDispatchLifecycle {
         provider,
         triggerContext: run.triggerContext,
         outputContext: run.outputContext,
-        result: { status: "succeeded" },
+        result: {
+          status: "succeeded",
+          outputEmissions: await this.readWorkflowRunOutputEmissions(run.id),
+        },
         reactionState: run.reactionState,
       });
     }
@@ -268,6 +286,24 @@ export class DaemonDispatchLifecycle {
         (run.status === "timed_out" ? "workflow_timed_out" : "workflow_failed"),
       reactionState: run.reactionState,
     });
+  }
+
+  /** Sums the outputs delivered by every agent execution of a workflow run, keyed by output type. */
+  private async readWorkflowRunOutputEmissions(
+    triggerRunId: string,
+  ): Promise<Readonly<Record<string, number>>> {
+    const emissions: Record<string, number> = {};
+    for (const step of await this.options.database.listWorkflowStepRunsForTriggerRun(
+      triggerRunId,
+    )) {
+      if (step.agentExecutionId === null) continue;
+      const execution = await this.options.database.findAgentExecutionById(step.agentExecutionId);
+      if (execution === undefined) continue;
+      for (const [outputType, count] of Object.entries(execution.outputEmissions)) {
+        emissions[outputType] = (emissions[outputType] ?? 0) + count;
+      }
+    }
+    return emissions;
   }
 
   private async claimFailedDurableDispatch(
@@ -876,6 +912,11 @@ export class DaemonDispatchLifecycle {
     if (await this.expireExecutionIfDeadlineElapsed(currentExecution)) {
       throw new AgentExecutionCompletionFailure("expired");
     }
+    const undelivered = failedRequiredOutputDeliveries(currentExecution);
+    if (undelivered.length > 0) {
+      await this.failUndeliveredExecution(currentExecution, undelivered);
+      throw new AgentExecutionCompletionFailure(OUTPUT_DELIVERY_FAILED_REASON);
+    }
 
     if (currentExecution.launchIntent?.outputSchema !== undefined) {
       validateStructuredOutput(currentExecution.launchIntent.outputSchema, input.output);
@@ -896,6 +937,31 @@ export class DaemonDispatchLifecycle {
       throw new AgentExecutionCompletionFailure("expired");
     }
     return execution;
+  }
+
+  /**
+   * `finish_execution` arrived while a required output had only failed
+   * deliveries. Recording a success here is what kept broken deliveries
+   * invisible: the execution, its step and its run end as failed instead, and
+   * the dispatch learns the reason.
+   */
+  private async failUndeliveredExecution(
+    execution: AgentExecutionRecord,
+    undelivered: readonly RequiredOutputDeliveryFailure[],
+  ): Promise<void> {
+    // The log line carries each output and its failed attempt count as diagnostics;
+    // error messages never reach the log.
+    this.report(new Error("required output not delivered"), "daemon.execution.output-delivery", {
+      executionId: execution.id,
+      outputs: undelivered,
+    });
+    this.clearExecutionDeadline(execution.id);
+    const failed = await this.failAgentExecution(execution.id, OUTPUT_DELIVERY_FAILED_REASON);
+    if (failed !== undefined) {
+      this.completionWatchersByExecution.get(execution.id)?.(
+        new DaemonDispatchFailure(OUTPUT_DELIVERY_FAILED_REASON),
+      );
+    }
   }
 
   async recoverAgentExecutionDeadlines(): Promise<void> {
@@ -931,12 +997,21 @@ export class DaemonDispatchLifecycle {
     await Promise.all(executions.map((execution) => this.reconcileHubActionSafely(execution)));
   }
 
-  async recoverWorkflowDeadlineExecutions(executionIds: readonly string[]): Promise<void> {
+  async recoverWorkflowDeadlineExecutions(
+    executionIds: readonly string[],
+    completedExecutionIds: readonly string[] = [],
+  ): Promise<void> {
     for (const executionId of executionIds) {
       this.clearExecutionDeadline(executionId);
       this.releaseExecutionResources(executionId);
       this.startedExecutions.delete(executionId);
       this.completionWatchersByExecution.get(executionId)?.(new DaemonDispatchFailure("timeout"));
+    }
+    for (const executionId of completedExecutionIds) {
+      this.clearExecutionDeadline(executionId);
+      this.releaseExecutionResources(executionId);
+      this.startedExecutions.delete(executionId);
+      this.completionWatchersByExecution.get(executionId)?.();
     }
     await this.recoverPendingHubActions();
   }
@@ -1091,6 +1166,87 @@ export class DaemonDispatchLifecycle {
     );
   }
 
+  /**
+   * Stops the project's work selected by `matches` (on its output context) at a user's request.
+   *
+   * Two kinds of work exist, and both are covered:
+   * - pending executions (`spawning`/`running`) are failed through the regular failure path,
+   *   which derives the hub action (the daemon agent is interrupted or archived) and lets the
+   *   provider's failure hook decide what, if anything, to post for `reason`;
+   * - accepted runs still `running` without a pending execution. That window is real: a run
+   *   is accepted, then a wakeup creates its execution later (`processWakeup`), and between two
+   *   steps of a multi-step workflow no execution exists at all. Left alone, such a run would
+   *   dispatch after the stop and post a response on a session the user already settled. They
+   *   are failed with `failWorkflowRun`, which refuses further step executions and queues the
+   *   terminal notification the workflow engine's outbox delivers with `reason`.
+   *
+   * Executions are failed first: their terminal transition already settles their run, so the
+   * second pass only sees runs that had nothing dispatched. The run scan reads the project's
+   * most recent {@link STOP_RUN_SCAN_LIMIT} runs; a run older than that has long passed its
+   * deadline.
+   *
+   * `matches` selects on the work's output context or on its workflow run id, which is
+   * resolved through the execution's step run (null outside a workflow run).
+   */
+  async stopAgentExecutions(input: {
+    projectId: string;
+    reason: string;
+    matches: (work: { outputContext: unknown; triggerRunId: string | null }) => boolean;
+  }): Promise<{ executions: AgentExecutionRecord[]; runs: AcceptedTriggerRunRecord[] }> {
+    const pending = (await this.options.database.findPendingAgentExecutions()).filter(
+      (execution) => execution.projectId === input.projectId,
+    );
+    const executions = (
+      await Promise.all(
+        pending.map(async (execution) =>
+          input.matches({
+            outputContext: execution.outputContext,
+            triggerRunId: await this.triggerRunIdOf(execution),
+          })
+            ? execution
+            : undefined,
+        ),
+      )
+    ).filter((execution) => execution !== undefined);
+    const stopped = await Promise.all(
+      executions.map(async (execution) => {
+        const failed = await this.failAgentExecution(execution.id, input.reason);
+        if (failed !== undefined) {
+          this.completionWatchersByExecution.get(execution.id)?.(
+            new DaemonDispatchFailure(input.reason),
+          );
+        }
+        return failed;
+      }),
+    );
+    const undispatched = (
+      await this.options.database.listTriggerRunsForProject(input.projectId, STOP_RUN_SCAN_LIMIT)
+    ).filter(
+      (run): run is AcceptedTriggerRunRecord =>
+        run.outcome === "accepted" &&
+        run.status === "running" &&
+        input.matches({ outputContext: run.outputContext, triggerRunId: run.id }),
+    );
+    const failedRuns = await Promise.all(
+      undispatched.map(async (run) => {
+        const failed = await this.options.database.failWorkflowRun(run.id, "failed", input.reason);
+        return failed?.transitioned === true && failed.run.outcome === "accepted"
+          ? failed.run
+          : undefined;
+      }),
+    );
+    return {
+      executions: stopped.filter((execution) => execution !== undefined),
+      runs: failedRuns.filter((run) => run !== undefined),
+    };
+  }
+
+  private async triggerRunIdOf(execution: AgentExecutionRecord): Promise<string | null> {
+    if (execution.workflowStepRunId === null) return null;
+    const step = await this.options.database.findWorkflowStepRunById(execution.workflowStepRunId);
+    return step?.triggerRunId ?? null;
+  }
+
   private async startAgentExecution(executionId: string): Promise<void> {
     const alreadyStarted = this.startedExecutions.has(executionId);
     this.startedExecutions.add(executionId);
@@ -1108,7 +1264,12 @@ export class DaemonDispatchLifecycle {
 
   private async completeAgentExecution(
     executionId: string,
-    options: { completedByAgent?: boolean; output?: unknown; deferHubAction?: boolean } = {},
+    options: {
+      completedByAgent?: boolean;
+      output?: unknown;
+      deferHubAction?: boolean;
+      deadlineCondition?: TransitionAgentExecutionFields["deadlineCondition"];
+    } = {},
   ): Promise<AgentExecutionRecord> {
     const existing = await this.options.database.findAgentExecutionById(executionId);
     if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
@@ -1125,6 +1286,9 @@ export class DaemonDispatchLifecycle {
             ? { status: "succeeded" }
             : { status: "succeeded", output: options.output },
         completedByAgent: options.completedByAgent === true,
+        ...(options.deadlineCondition === undefined
+          ? {}
+          : { deadlineCondition: options.deadlineCondition }),
       },
       {
         stepStatus: "succeeded",
@@ -1723,6 +1887,9 @@ export class DaemonDispatchLifecycle {
     }
 
     const wholeRunExpired = await this.isWholeRunDeadlineExpired(execution);
+    if (deadline.kind === "idle" && !wholeRunExpired && completesAtIdleDeadline(execution)) {
+      return this.completeExecutionAtIdleDeadline(executionId, deadline);
+    }
     const failure = deadlineFailure(execution, deadline, wholeRunExpired);
     const failed = await this.failAgentExecution(executionId, failure.reason, {
       deadlineCondition: {
@@ -1743,6 +1910,35 @@ export class DaemonDispatchLifecycle {
     if (current !== undefined && !isTerminalExecutionStatus(current.status)) {
       this.armExecutionDeadline(current);
     }
+    return false;
+  }
+
+  /** See `completesAtIdleDeadline`: a reply followed by silence is a completion, not a timeout. */
+  private async completeExecutionAtIdleDeadline(
+    executionId: string,
+    deadline: ExecutionDeadline,
+  ): Promise<boolean> {
+    const completed = await this.completeAgentExecution(executionId, {
+      deadlineCondition: {
+        kind: deadline.kind,
+        deadlineAt: deadline.at,
+        observedAt: new Date(this.now()),
+      },
+    });
+    if (completed.status === "succeeded") {
+      this.completionWatchersByExecution.get(executionId)?.();
+      return true;
+    }
+    if (isTerminalExecutionStatus(completed.status)) {
+      // The database settled the execution another way (for example the whole
+      // run expired in the same transaction); the dispatch must still learn
+      // its terminal outcome, otherwise its watcher never settles.
+      this.completionWatchersByExecution.get(executionId)?.(
+        new DaemonDispatchFailure(executionFailureReason(completed) ?? completed.status),
+      );
+      return true;
+    }
+    this.armExecutionDeadline(completed);
     return false;
   }
 

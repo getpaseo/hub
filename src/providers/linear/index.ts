@@ -19,10 +19,14 @@ import type {
   Database,
   LinearConnectionRecord,
 } from "../../db/types.js";
-import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { outputContextProvider } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { createLinearTriggerProvider } from "../../triggers/linear/provider.js";
-import { createLinearReplyExecutor } from "../../triggers/linear/reply.js";
+import {
+  LINEAR_REPLY_OUTPUT_TYPE,
+  createLinearReplyExecutor,
+  linearReplyOutputTool,
+} from "../../triggers/linear/reply.js";
 import { createLinearWebhookSource } from "../../triggers/linear/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
@@ -170,10 +174,14 @@ export function createLinearRegistration(
     },
     connection,
     triggerProviders: [
-      ({ configurationStoreForProject }) =>
+      ({ configurationStoreForProject, executions }) =>
         createLinearTriggerProvider({
           configurationStoreForProject,
           ...(api === undefined ? {} : { client: api }),
+          connectionForLinearOrganization: ({ organizationId, linearOrganizationId }) =>
+            database.findLinearConnectionForOrganization(organizationId, linearOrganizationId),
+          database,
+          ...(executions === undefined ? {} : { executions }),
         }),
     ],
     sources: [webhook],
@@ -182,8 +190,8 @@ export function createLinearRegistration(
         ? []
         : [
             {
-              type: "linear.reply",
-              tool: replyOutputTool,
+              type: LINEAR_REPLY_OUTPUT_TYPE,
+              tool: linearReplyOutputTool,
               available: outputContextProvider("linear"),
               execute: createLinearReplyExecutor({ client: api }),
             },

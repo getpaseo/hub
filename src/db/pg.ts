@@ -9,6 +9,7 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toDatabaseError } from "./errors.js";
+import { completesAtIdleDeadline } from "./idle-completion.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
@@ -620,6 +621,19 @@ class PgDatabase implements Database {
     return rows.rows.map(toTriggerRunRecord);
   }
 
+  async listTriggerRunsForLinearComments(projectId: string, commentIds: readonly string[]) {
+    if (commentIds.length === 0) return [];
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs
+       where project_id = $1
+         and trigger_context #>> '{event,linear,comment,id}' = any($2::text[])
+       order by created_at desc, configured_trigger_name, id desc`,
+      [projectId, [...commentIds]],
+    );
+    return rows.rows.map(toTriggerRunRecord);
+  }
+
   async findWorkflowStepRunById(id: string) {
     const rows = await query<WorkflowStepRunRow>(
       this.pool,
@@ -959,6 +973,23 @@ class PgDatabase implements Database {
               terminalRun,
             );
           }
+          if (
+            deadlineKind === "step_idle" &&
+            completesAtIdleDeadline(toAgentExecutionRecord(execution))
+          ) {
+            const completed = await completeWorkflowStepAtIdleDeadlineOnClient(
+              client,
+              execution,
+              step,
+              run,
+              observedAt,
+            );
+            const terminalRun = await findTriggerRunOnClient(client, run.id);
+            return transitionWithTerminalRun(
+              { execution: toAgentExecutionRecord(completed), transitioned: true },
+              terminalRun,
+            );
+          }
           if (deadlineKind !== undefined) {
             const updated = await timeoutWorkflowStepOnClient(
               client,
@@ -1280,6 +1311,22 @@ class PgDatabase implements Database {
                 run.id,
               ]);
               recoveries.push({ triggerRunId: run.id, executionIds: [] });
+            } else if (
+              deadlineKind === "step_idle" &&
+              completesAtIdleDeadline(toAgentExecutionRecord(execution))
+            ) {
+              const completed = await completeWorkflowStepAtIdleDeadlineOnClient(
+                client,
+                execution,
+                step,
+                run,
+                now,
+              );
+              recoveries.push({
+                triggerRunId: run.id,
+                executionIds: [],
+                completedExecutionIds: [completed.id],
+              });
             } else {
               const updated = await timeoutWorkflowStepOnClient(
                 client,
@@ -4052,6 +4099,7 @@ class PgDatabase implements Database {
               receipts.repo, receipts.received_at, receipts.dropped_reason
        from provider_event_receipts receipts
        where receipts.organization_id = $1
+         -- Keep in sync with UNROUTED_PROVIDER_EVENT_DROP_REASON_CODES (drop-reason.ts).
          and receipts.dropped_reason in (
            'no_project_route',
            'no_trigger_for_source',
@@ -5157,6 +5205,29 @@ async function timeoutWorkflowStepOnClient(
   }
   await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
   return updated;
+}
+
+async function completeWorkflowStepAtIdleDeadlineOnClient(
+  client: QueryHandle,
+  execution: AgentExecutionRow,
+  step: WorkflowStepRunRow,
+  run: TriggerRunRow,
+  observedAt: Date,
+): Promise<AgentExecutionRow> {
+  const input: WorkflowAgentCompletionInput = {
+    executionId: execution.id,
+    executionStatus: "succeeded",
+    stepStatus: "succeeded",
+    result: { status: "succeeded" },
+    observedAt,
+    hubAction:
+      execution.daemon_id !== null && execution.launch_intent?.autoArchive === true
+        ? "archive"
+        : null,
+  };
+  const transition = await transitionWorkflowAgentExecution(client, execution, input);
+  await finishWorkflowStepAndRun(client, step, run, input);
+  return transition?.execution ?? execution;
 }
 
 async function timeoutWorkflowRunOnClient(

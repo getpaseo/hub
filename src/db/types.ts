@@ -1138,7 +1138,10 @@ export interface TransitionTriggerRunResult {
 
 export interface WorkflowDeadlineRecovery {
   triggerRunId: string;
+  /** Executions failed by the deadline. */
   executionIds: readonly string[];
+  /** Executions completed at their idle deadline because they had already emitted an output. */
+  completedExecutionIds?: readonly string[];
 }
 
 export interface TerminateMachineFields {
@@ -1157,6 +1160,11 @@ export interface Database {
     providerEventReceiptId: string,
   ): Promise<TriggerRunRecord[]>;
   listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
+  /** Runs whose Linear trigger context names one of `commentIds` as the triggering comment, newest first. */
+  listTriggerRunsForLinearComments(
+    projectId: string,
+    commentIds: readonly string[],
+  ): Promise<TriggerRunRecord[]>;
   listProjectActivityRuns(
     projectId: string,
     limit: number,
