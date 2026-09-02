@@ -454,7 +454,124 @@ describe("trigger acceptance persistence", () => {
     await client.close();
     await database.close();
   }, 120_000);
+
+  it("routes Linear stops through matching active session work after routes change", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const organizationId = "linear-stop-route-org";
+    const projectId = "50000000-0000-4000-8000-000000000001";
+    const connectionId = "50000000-0000-4000-8000-000000000002";
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('${organizationId}', 'Linear Stop Route', 'linear-stop-route');
+      insert into projects (id, organization_id, name, slug)
+      values ('${projectId}', '${organizationId}', 'Default', 'default');
+      insert into linear_connections
+        (id, organization_id, linear_organization_id, provider_application_id, slug,
+         linear_organization_name, app_user_id, access_token, refresh_token, scopes)
+      values
+        ('${connectionId}', '${organizationId}', 'linear-stop-workspace', 'linear-app',
+         'linear-stop', 'Linear Stop', 'linear-app-user', 'linear-access-token',
+         'linear-refresh-token', '["read", "write", "app:assignable", "app:mentionable"]'::jsonb);
+    `);
+    await client.close();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-stop-session-config",
+    });
+    await database.activateProjectConfigurationRevision(projectId, revision.id, [
+      {
+        provider: "linear",
+        connectionId,
+        resourceId: "linear-project",
+        triggerName: "agent-session",
+      },
+    ]);
+    const started = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-started",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    assert.equal(started.status, "accepted");
+    if (started.status !== "accepted") throw new Error("expected accepted session event");
+    await database.createAcceptedLinearTriggerRun({
+      organizationId,
+      projectId,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: started.receiptId,
+      configuredTriggerName: "agent-session",
+      prompt: "Help",
+      inputs: {},
+      triggerContext: {},
+      outputContext: {
+        provider: "linear",
+        linearOrganizationId: "linear-stop-workspace",
+        issueId: "issue-1",
+        agentSessionId: "session-1",
+        threadRootCommentId: null,
+      },
+      deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+      stepIds: ["work"],
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    });
+    const replacement = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-stop-config-without-route",
+    });
+    await database.activateProjectConfigurationRevision(projectId, replacement.id, []);
+
+    const stopped = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:01:00.000Z"),
+    });
+    assert.equal(stopped.status, "accepted");
+    if (stopped.status !== "accepted") throw new Error("expected accepted stop event");
+    assert.deepEqual(
+      stopped.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
+
+    const unrelated = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "unrelated-linear-stop-session-stopped",
+      source: "linear.agent_session",
+      payload: stopPayload("session-2"),
+      receivedAt: new Date("2026-01-01T00:02:00.000Z"),
+    });
+    assert.equal(unrelated.status, "dropped");
+    if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
+    await database.close();
+  }, 120_000);
 });
+
+function stopPayload(agentSessionId: string) {
+  return {
+    type: "agent_session",
+    agentSession: { id: agentSessionId },
+    agentActivity: { signal: "stop" },
+  };
+}
 
 function input(organizationId: string, projectId: string) {
   return {
