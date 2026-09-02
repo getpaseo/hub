@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { BookOpen } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
+import { CopyField } from "../components/app/copy-field.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
@@ -28,6 +30,7 @@ import {
 } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
+import { daemonLoginCommand } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
@@ -39,10 +42,39 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Registered" },
   { header: "", align: "end" },
 ];
+const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
 const DAEMONS_EMPTY = {
-  title: "No daemons registered",
-  description: "Run paseo hub connect with this Hub URL to register one.",
+  title: "No daemons connected",
+  description:
+    "Hub runs your workflows on machines you own. Log in from the machine where your code lives and the CLI offers to connect it.",
+  action: <ConnectDaemonHint />,
 };
+
+/**
+ * The same handoff the operator saw during setup, for the operator who skipped it: the exact
+ * command with this Hub's address already in it, and the page that explains the rest.
+ */
+function ConnectDaemonHint() {
+  // The address the operator reached this Hub at is the address their daemon has to be told.
+  // An empty table is only reached after a client-side query settles, so there is no server
+  // render standing between this and a window.
+  const origin = typeof window === "undefined" ? undefined : window.location.origin;
+  return (
+    <>
+      {origin === undefined ? null : (
+        <div className="w-full text-left">
+          <CopyField label="Command" value={daemonLoginCommand(origin)} />
+        </div>
+      )}
+      <Button asChild variant="outline" size="sm">
+        <a href={DAEMON_DOCS_URL} target="_blank" rel="noreferrer">
+          <BookOpen aria-hidden="true" />
+          How to connect a daemon
+        </a>
+      </Button>
+    </>
+  );
+}
 
 export function DaemonsPanel({
   accountId,

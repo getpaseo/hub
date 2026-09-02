@@ -3650,7 +3650,14 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/daemons$/u);
     await expect(sidebar).toBeHidden();
     await expect(this.page.getByRole("heading", { name: "Daemons", exact: true })).toBeVisible();
-    await expect(this.page.getByText("No daemons registered", { exact: true })).toBeVisible();
+    await expect(this.page.getByText("No daemons connected", { exact: true })).toBeVisible();
+    await expect(
+      this.page.getByText(`paseo hub login ${this.origin}`, { exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByRole("link", { name: "How to connect a daemon" })).toHaveAttribute(
+      "href",
+      "https://paseo.sh/docs/hub/daemons",
+    );
     const width = await this.page.getByRole("main").evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: document.documentElement.clientWidth,
