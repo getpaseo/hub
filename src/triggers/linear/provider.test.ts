@@ -982,56 +982,59 @@ describe("Linear trigger provider", () => {
     assert.equal(stops, 0);
   });
 
-  it("suppresses a delayed comment run after its Agent Session was accepted", async () => {
-    const database = createMemoryDatabase();
-    const { project, store } = await createActiveProjectConfiguration(
-      database,
-      linearCommentAndSessionConfiguration(),
-      { organizationId: "hub-org" },
-    );
-    const provider = createLinearTriggerProvider({
-      configurationStoreForProject: () => store,
-      client: new RecordingHistoryClient({ complete: true, comments: [] }),
-      database,
-      executions: { stopActive: async () => ({ stopped: 0 }) },
-    });
-    const engine = new DurableWorkflowEngine({
-      database,
-      entitlements: null,
-      providers: [provider],
-    });
-    const comment = await persistLinearEvent(
-      database,
-      project.id,
-      "linear.comment",
-      "delayed-comment",
-      { ...event("2026-01-02T00:00:00.000Z"), occurredAt: undefined },
-    );
-    const created = agentSessionEvent({ action: "created" });
-    const session = await persistLinearEvent(
-      database,
-      project.id,
-      "linear.agent_session",
-      "session-before-comment-handler",
-      {
-        ...created,
-        agentSession: { ...created.agentSession, sourceCommentId: "trigger-comment" },
-      },
-    );
+  it.each(["created", "prompted"] as const)(
+    "suppresses a delayed comment run after its %s Agent Session was accepted",
+    async (action) => {
+      const database = createMemoryDatabase();
+      const { project, store } = await createActiveProjectConfiguration(
+        database,
+        linearCommentAndSessionConfiguration(),
+        { organizationId: "hub-org" },
+      );
+      const provider = createLinearTriggerProvider({
+        configurationStoreForProject: () => store,
+        client: new RecordingHistoryClient({ complete: true, comments: [] }),
+        database,
+        executions: { stopActive: async () => ({ stopped: 0 }) },
+      });
+      const engine = new DurableWorkflowEngine({
+        database,
+        entitlements: null,
+        providers: [provider],
+      });
+      const comment = await persistLinearEvent(
+        database,
+        project.id,
+        "linear.comment",
+        "delayed-comment",
+        { ...event("2026-01-02T00:00:00.000Z"), occurredAt: undefined },
+      );
+      const sessionEvent = agentSessionEvent({ action });
+      const session = await persistLinearEvent(
+        database,
+        project.id,
+        "linear.agent_session",
+        `${action}-session-before-comment-handler`,
+        {
+          ...sessionEvent,
+          agentSession: { ...sessionEvent.agentSession, sourceCommentId: "trigger-comment" },
+        },
+      );
 
-    await engine.enqueue(session);
-    await engine.enqueue(comment);
+      await engine.enqueue(session);
+      await engine.enqueue(comment);
 
-    assert.equal(
-      (await database.findTriggerRunsByProviderEventReceiptId(session.providerEventReceiptId))
-        .length,
-      1,
-    );
-    assert.deepEqual(
-      await database.findTriggerRunsByProviderEventReceiptId(comment.providerEventReceiptId),
-      [],
-    );
-  });
+      assert.equal(
+        (await database.findTriggerRunsByProviderEventReceiptId(session.providerEventReceiptId))
+          .length,
+        1,
+      );
+      assert.deepEqual(
+        await database.findTriggerRunsByProviderEventReceiptId(comment.providerEventReceiptId),
+        [],
+      );
+    },
+  );
 
   it("keeps the comment fallback when the Agent Session invocation is rejected", async () => {
     const database = createMemoryDatabase();
