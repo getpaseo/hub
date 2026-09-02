@@ -2,30 +2,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronRight } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
-import { EmptyState } from "../components/app/empty-state.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
-import { connectionResultCopy, useConnectionResult } from "../connections/result.js";
-import { cn } from "../lib/utils.js";
+import { useConnectionReturn } from "../connections/result.js";
+import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
 import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import type { Result } from "../contract/respond.js";
@@ -51,143 +42,7 @@ import {
   type OrganizationSnapshot,
   type ProjectSnapshot,
 } from "./panel-state.js";
-import {
-  archiveProject,
-  activityRunSnapshot,
-  createProject,
-  updateProjectSlug,
-} from "./functions.js";
-export function ProjectsPanel() {
-  const tenant = useRouteTenant();
-  const queryClient = useQueryClient();
-  const scope = { organizationSlug: tenant.organization.slug };
-  const snapshot = useOrganizationSnapshot();
-  const [connectionResult] = useConnectionResult();
-  const [creating, setCreating] = useState(false);
-  const create = useProjectCommand(createProject, queryClient, scope);
-  if (!snapshot.ok) return snapshot.element;
-  const data = snapshot.data;
-  const submitCreate = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    create.mutate({
-      data: {
-        ...scope,
-        name: formString(form, "name"),
-        slug: formString(form, "slug"),
-      },
-    });
-    setCreating(false);
-  };
-  return (
-    <>
-      <PageHeader title="Projects" description="Select a project to work in.">
-        {data.capabilities.manageResources ? (
-          <Button onClick={() => setCreating(true)}>New project</Button>
-        ) : null}
-      </PageHeader>
-      {connectionResult === undefined ? null : (
-        <Alert role="status" className="mb-6">
-          <AlertDescription>{connectionResultCopy(connectionResult)}</AlertDescription>
-        </Alert>
-      )}
-      <CommandError mutations={[create]} />
-      {data.projects.length === 0 ? (
-        <div className="rounded-lg border bg-card">
-          <EmptyState
-            title="No projects"
-            description="Create a project to route provider events at a daemon."
-          />
-        </div>
-      ) : (
-        <ul aria-label="Projects" className="grid gap-2">
-          {data.projects.map((project) => (
-            <li key={project.id}>
-              <ProjectCard
-                project={project}
-                to={`/o/${data.organization.slug}/projects/${project.slug}/overview`}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-      <Dialog open={creating} onOpenChange={setCreating}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
-          <form aria-label="Create project" className="grid gap-5" onSubmit={submitCreate}>
-            <LabeledInput label="Project name" name="name" required />
-            <LabeledInput
-              label="Project slug"
-              name="slug"
-              pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-              required
-            />
-            <DialogFooter>
-              <Button type="submit">Create project</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-/**
- * The project chooser row. Choosing a project is the whole job of that screen, so the
- * card itself is the target rather than the name inside a cell. Archived projects keep
- * their row but lose every affordance — their routes stop resolving once archived.
- */
-function ProjectCard({
-  project,
-  to,
-}: {
-  project: OrganizationSnapshot["projects"][number];
-  to: string;
-}) {
-  const card = "flex items-center gap-4 rounded-lg border bg-card px-4 py-3.5";
-  const body = (
-    <>
-      <span
-        aria-hidden="true"
-        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm text-link"
-      >
-        {monogram(project.name)}
-      </span>
-      <span className="grid min-w-0 flex-1 gap-0.5">
-        <span className="flex items-center gap-2">
-          <span className="truncate group-hover:text-link">{project.name}</span>
-          {project.status === "active" ? null : <StatusPill tone="neutral">Archived</StatusPill>}
-        </span>
-        <span className="truncate font-mono text-xs text-muted-foreground">{project.slug}</span>
-      </span>
-      <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
-        Created {formatDate(project.createdAt)}
-      </span>
-    </>
-  );
-  if (project.status !== "active") {
-    return <div className={cn(card, "opacity-60")}>{body}</div>;
-  }
-  return (
-    <Link
-      to={to as never}
-      className={cn(card, "group transition-colors hover:border-primary/60 hover:bg-accent/40")}
-    >
-      {body}
-      <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
-    </Link>
-  );
-}
-
-function monogram(name: string) {
-  const words = name.split(/\s+/).filter((word) => word.length > 0);
-  const letters =
-    words.length > 1 ? `${words[0]?.[0] ?? ""}${words[1]?.[0] ?? ""}` : name.slice(0, 2);
-  return letters.toUpperCase();
-}
-
+import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
 export function OrganizationConnectionsPanel() {
   const tenant = useRouteTenant();
   const { isInstanceOperator } = useActiveAccount();
@@ -199,7 +54,7 @@ export function OrganizationConnectionsPanel() {
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
     queryFn: () => loadStatus({ data: scope }),
   });
-  const [result, setResult] = useConnectionResult();
+  const [returned, setReturned] = useConnectionReturn();
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -209,9 +64,9 @@ export function OrganizationConnectionsPanel() {
     mutationFn: useServerFn(disconnectConnection) as (
       input: Parameters<typeof disconnectConnection>[0],
     ) => Promise<Result<{ result: ConnectionDisconnectResult }>>,
-    onSuccess: async (response) => {
+    onSuccess: async (response, variables) => {
       if (response.status !== "ok") return;
-      setResult(response.data.result);
+      setReturned({ provider: variables.data.provider, result: response.data.result });
       await Promise.all([
         invalidateOrganization(queryClient, scope.organizationSlug),
         queryClient.invalidateQueries({
@@ -256,10 +111,8 @@ export function OrganizationConnectionsPanel() {
   return (
     <>
       <PageHeader title="Connections" description="Organization provider connections." />
-      {result === undefined ? null : (
-        <Alert role="status" className="mb-6">
-          <AlertDescription>{connectionResultCopy(result)}</AlertDescription>
-        </Alert>
+      {returned === undefined ? null : (
+        <ConnectionReturnBanner copy={connectionReturnCopy(returned)} />
       )}
       <CommandError mutations={[connect, disconnect]} />
       <Section title="Connections">
@@ -718,6 +571,18 @@ function ActivityTable({
         </DataRow>
       ))}
     </DataTable>
+  );
+}
+
+function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
+  return (
+    <Alert
+      role="status"
+      className="mb-6"
+      {...(copy.tone === "error" ? { variant: "destructive" } : {})}
+    >
+      <AlertDescription>{copy.message}</AlertDescription>
+    </Alert>
   );
 }
 

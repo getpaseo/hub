@@ -10,9 +10,11 @@ import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { TriangleAlert } from "lucide-react";
 import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
+import { connectionReturnCopy } from "../connections/result-contract.js";
+import { useConnectionReturn } from "../connections/result.js";
 import { PROVIDER_GUIDES } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
-import { ProviderSection, ProviderSectionLoading, type SectionReturn } from "./provider-section.js";
+import { ProviderSection, ProviderSectionLoading } from "./provider-section.js";
 import type { Provider, ProviderApplicationOverview, ProviderApplicationSurface } from "./index.js";
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
@@ -43,13 +45,12 @@ function ProviderApplications({
   surface: ProviderApplicationSurface;
   organizationId: string;
 }) {
-  const [returned] = useState(readAppReturn);
+  const [returned] = useConnectionReturn();
   const [open, setOpen] = useState<Partial<Record<Provider, boolean>>>(() =>
     returned === undefined ? {} : { [returned.provider]: true },
   );
   const query = useProviderApplicationsOverview();
   const section = useRef<HTMLDivElement>(null);
-  useEffect(stripAppReturn, []);
   useEffect(() => {
     if (returned !== undefined) section.current?.scrollIntoView({ block: "start" });
   }, [returned]);
@@ -88,7 +89,7 @@ function ProviderApplications({
             open={open[guide.provider] ?? false}
             onOpenChange={(next) => setOpen((current) => ({ ...current, [guide.provider]: next }))}
             {...(returned?.provider === guide.provider
-              ? { returned: returned.outcome }
+              ? { returned: connectionReturnCopy(returned) }
               : { returned: undefined })}
           />
         </div>
@@ -234,103 +235,4 @@ export function AppsPanel() {
       </div>
     </>
   );
-}
-
-interface AppReturn {
-  provider: Provider;
-  outcome: SectionReturn;
-}
-
-/**
- * Every outcome a provider can send an operator back with. Each one says what happened and what
- * to do next; a cancellation is neutral because nothing about it is broken.
- */
-const RETURN_MESSAGES: Readonly<Record<string, SectionReturn>> = {
-  github_connected: { tone: "success", message: "GitHub connected." },
-  slack_connected: { tone: "success", message: "Slack connected." },
-  discord_connected: { tone: "success", message: "Discord connected." },
-  linear_connected: { tone: "success", message: "Linear connected." },
-  github_cancelled: {
-    tone: "success",
-    message: "Installation cancelled at GitHub. Nothing changed. Start again when you're ready.",
-  },
-  slack_cancelled: {
-    tone: "success",
-    message: "Installation cancelled at Slack. Nothing changed. Start again when you're ready.",
-  },
-  discord_cancelled: {
-    tone: "success",
-    message: "Authorization cancelled at Discord. Nothing changed. Start again when you're ready.",
-  },
-  linear_cancelled: {
-    tone: "success",
-    message: "Authorization cancelled at Linear. Nothing changed. Start again when you're ready.",
-  },
-  github_approval_required: {
-    tone: "error",
-    message:
-      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
-  },
-  slack_bot_failed: {
-    tone: "error",
-    message:
-      "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
-  },
-  provider_not_configured: {
-    tone: "error",
-    message: "There are no saved credentials to connect yet. Verify and save the app first.",
-  },
-  connection_invalid: {
-    tone: "error",
-    message:
-      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
-  },
-  connection_conflict: {
-    tone: "error",
-    message:
-      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
-  },
-};
-
-/**
- * Reads the outcome an install or authorization came back with. The identity itself is read from
- * the refreshed overview — the query only says which section to open and what happened.
- */
-function readAppReturn(): AppReturn | undefined {
-  if (typeof window === "undefined") return undefined;
-  const url = new URL(window.location.href);
-  const provider = url.searchParams.get("app");
-  const result = url.searchParams.get("result");
-  if (
-    provider !== "github" &&
-    provider !== "slack" &&
-    provider !== "discord" &&
-    provider !== "linear"
-  ) {
-    return undefined;
-  }
-  if (result === null) return undefined;
-  return {
-    provider,
-    outcome: RETURN_MESSAGES[result] ?? {
-      tone: "error",
-      message: `${providerName(provider)} ended the connection without saying why. Nothing was connected. Start the connection again from this page.`,
-    },
-  };
-}
-
-function providerName(provider: Provider): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "slack") return "Slack";
-  if (provider === "linear") return "Linear";
-  return "Discord";
-}
-
-/** Clear callback state after the router commits, so its initial URL cannot restore the query. */
-function stripAppReturn(): void {
-  const url = new URL(window.location.href);
-  if (!url.searchParams.has("app") && !url.searchParams.has("result")) return;
-  url.searchParams.delete("app");
-  url.searchParams.delete("result");
-  window.history.replaceState(window.history.state, "", url);
 }

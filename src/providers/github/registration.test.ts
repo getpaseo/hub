@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
-import type { OrganizationAccessValue } from "../../auth/organization-access.js";
+import {
+  ProductRequestError,
+  type OrganizationAccessValue,
+} from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createActiveProjectConfiguration,
@@ -413,6 +416,34 @@ describe("GitHub registration", () => {
     );
   });
 
+  it("returns a setup callback that carries no session to the connections landing", async () => {
+    const registration = createGitHubRegistration({
+      database: createMemoryDatabase(),
+      auth: new SignedOutAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: githubConfiguration(),
+      appAuth: githubAuth(),
+      connectionClient: new GitHubClientFake(),
+      reactionClient: {
+        createReaction: () => Promise.resolve({ id: 1 }),
+        deleteReaction: () => Promise.resolve(),
+      },
+    });
+
+    const response = await registration.connection.actions["setup"]!(
+      new Request(
+        "https://hub.test/api/integrations/github/setup?state=s&setup_action=install&installation_id=42",
+      ),
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get("location"),
+      "https://hub.test/connections?app=github&result=connection_unauthenticated",
+    );
+  });
+
   it("keeps provider runtime active without browser authentication", async () => {
     const registration = createGitHubRegistration({
       database: createMemoryDatabase(),
@@ -642,6 +673,13 @@ class RegistrationAuth implements AuthServer {
   }
   close(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+/** The browser that came back from GitHub carries no Hub session at all. */
+class SignedOutAuth extends RegistrationAuth {
+  override resolveAccount(): Promise<never> {
+    return Promise.reject(new ProductRequestError(401, "unauthenticated"));
   }
 }
 

@@ -1373,6 +1373,26 @@ export class PaseoHub {
     }
   }
 
+  async proveSignedOutConnectionReturn(account: Account): Promise<void> {
+    const application = await this.startApplication({ databaseProfile: "fresh" });
+    const context = await this.browser.newContext();
+    try {
+      const user = new HubUser(application, context, await context.newPage());
+      await user.signUp(account);
+      await user.createOrganization("Signed-out return");
+      const signedOut = await user.beginProviderConnection("github");
+      const stranger = await this.browser.newContext();
+      try {
+        const returning = new HubUser(application, stranger, await stranger.newPage());
+        await returning.expectSignedOutConnectionReturn(signedOut, account, "Signed-out return");
+      } finally {
+        await stranger.close();
+      }
+    } finally {
+      await context.close();
+    }
+  }
+
   async proveProviderConnectionConflicts(account: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -4517,7 +4537,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "That provider account is already connected to another organization. Disconnect it there before trying again.",
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("acme-inc");
@@ -4528,7 +4548,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "That provider account is already connected to another organization. Disconnect it there before trying again.",
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await this.expectNoProviderIdentity("Acme Guild");
@@ -4558,12 +4578,46 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(url);
   }
 
+  /**
+   * A return Hub cannot tie to the attempt that started it still belongs to Connections: that
+   * is the only surface that started anything, and the only one that can say what to do next.
+   */
   async expectUntrustedConnectionReturnUnavailable(url: string): Promise<void> {
     await this.page.goto(url);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
     await expect(this.page.getByRole("status")).toHaveText(
-      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
+      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
+    );
+  }
+
+  /**
+   * A provider return that reaches Hub in a browser with no session. A GitHub App whose setup
+   * URL points at a host the operator never signed in to produces exactly this. It has to come
+   * back to Connections once the person signs in, saying that nothing was connected and why,
+   * instead of blaming app credentials on an unrelated page.
+   */
+  async expectSignedOutConnectionReturn(
+    url: string,
+    account: Account,
+    organizationName: string,
+  ): Promise<void> {
+    await this.page.goto(url);
+    await expect(this.page).toHaveURL(
+      /\/connections\?app=github&result=connection_unauthenticated$/u,
+    );
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await signIn.getByLabel("Email").fill(account.email);
+    await signIn.getByLabel("Password").fill(account.password);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await this.page
+      .getByRole("list", { name: "Organizations" })
+      .getByRole("button", { name: organizationName })
+      .click();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
+    await expect(this.page.getByRole("status")).toHaveText(
+      "GitHub sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the GitHub app's callback and setup URLs, then start the connection again.",
     );
   }
 
@@ -4756,7 +4810,7 @@ class HubUser {
     await returned;
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByRole("status")).toHaveText(
-      "GitHub owner approval is required. Retry after approval.",
+      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
     );
   }
 

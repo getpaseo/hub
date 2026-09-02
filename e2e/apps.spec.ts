@@ -599,7 +599,7 @@ test("every way a provider can send the operator back is answered in that sectio
       {
         provider: "github" as const,
         result: "something_nobody_mapped",
-        copy: "GitHub ended the connection without saying why. Nothing was connected. Start the connection again from this page.",
+        copy: "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page.",
         focus: "error" as const,
       },
     ];

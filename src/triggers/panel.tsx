@@ -11,7 +11,6 @@ import { SiteHeaderActions } from "../components/app/site-header-actions.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
-import { connectionResultCopy, useConnectionResult } from "../connections/result.js";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { Field, FieldDescription, FieldLabel } from "../components/ui/field.js";
@@ -44,7 +43,6 @@ export function TriggersPanel() {
   const tenant = useRouteTenant();
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useTriggerSnapshot(scope.organizationSlug);
-  const [connectionResult] = useConnectionResult();
   const navigate = useNavigate();
   if (snapshot.isPending) return <div aria-busy="true">Loading triggers…</div>;
   if (snapshot.isError || snapshot.data.status === "error") {
@@ -67,11 +65,6 @@ export function TriggersPanel() {
           </Button>
         ) : null}
       </PageHeader>
-      {connectionResult === undefined ? null : (
-        <Alert role="status" className="mb-6">
-          <AlertDescription>{connectionResultCopy(connectionResult)}</AlertDescription>
-        </Alert>
-      )}
       <DataTable
         label="Triggers"
         columns={TRIGGER_COLUMNS}

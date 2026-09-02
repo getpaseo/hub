@@ -22,6 +22,7 @@ import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]js
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ShellTriggersRouteImport } from './routes/_shell/triggers'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
+import { Route as ShellConnectionsRouteImport } from './routes/_shell/connections'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
 import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
@@ -116,6 +117,11 @@ const ShellTriggersRoute = ShellTriggersRouteImport.update({
 const ShellOperatorRoute = ShellOperatorRouteImport.update({
   id: '/operator',
   path: '/operator',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellConnectionsRoute = ShellConnectionsRouteImport.update({
+  id: '/connections',
+  path: '/connections',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
@@ -302,6 +308,7 @@ export interface FileRoutesByFullPath {
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
+  '/connections': typeof ShellConnectionsRoute
   '/operator': typeof ShellOperatorRoute
   '/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
@@ -346,6 +353,7 @@ export interface FileRoutesByTo {
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
+  '/connections': typeof ShellConnectionsRoute
   '/operator': typeof ShellOperatorRoute
   '/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
@@ -391,6 +399,7 @@ export interface FileRoutesById {
   '/webhook': typeof WebhookRoute
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
+  '/_shell/connections': typeof ShellConnectionsRoute
   '/_shell/operator': typeof ShellOperatorRoute
   '/_shell/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
@@ -439,6 +448,7 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/apps'
     | '/cli-login'
+    | '/connections'
     | '/operator'
     | '/triggers'
     | '/api/$'
@@ -483,6 +493,7 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/apps'
     | '/cli-login'
+    | '/connections'
     | '/operator'
     | '/triggers'
     | '/api/$'
@@ -527,6 +538,7 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/_shell/apps'
     | '/_shell/cli-login'
+    | '/_shell/connections'
     | '/_shell/operator'
     | '/_shell/triggers'
     | '/api/$'
@@ -688,6 +700,13 @@ declare module '@tanstack/react-router' {
       path: '/operator'
       fullPath: '/operator'
       preLoaderRoute: typeof ShellOperatorRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/connections': {
+      id: '/_shell/connections'
+      path: '/connections'
+      fullPath: '/connections'
+      preLoaderRoute: typeof ShellConnectionsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/cli-login': {
@@ -958,6 +977,7 @@ const ShellOOrganizationSlugTriggersRouteWithChildren =
 interface ShellRouteChildren {
   ShellAppsRoute: typeof ShellAppsRoute
   ShellCliLoginRoute: typeof ShellCliLoginRoute
+  ShellConnectionsRoute: typeof ShellConnectionsRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellTriggersRoute: typeof ShellTriggersRoute
   ShellIndexRoute: typeof ShellIndexRoute
@@ -971,6 +991,7 @@ interface ShellRouteChildren {
 const ShellRouteChildren: ShellRouteChildren = {
   ShellAppsRoute: ShellAppsRoute,
   ShellCliLoginRoute: ShellCliLoginRoute,
+  ShellConnectionsRoute: ShellConnectionsRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellTriggersRoute: ShellTriggersRoute,
   ShellIndexRoute: ShellIndexRoute,
