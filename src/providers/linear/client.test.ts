@@ -205,6 +205,9 @@ describe("Linear connection client", () => {
     });
     assert.equal(requests[0]?.authorization, "Bearer access-token");
     const request = graphqlRequest(requests[0]?.body ?? "{}");
+    // The issue filter compares an ID; Linear rejects a String variable in that position.
+    assert.match(request.query, /\$issueId: ID!/u);
+    assert.match(request.query, /issue: \{ id: \{ eq: \$issueId \} \}/u);
     assert.match(request.query, /\$before: DateTimeOrDuration!/u);
     assert.match(request.query, /last: 49/u);
     assert.match(request.query, /orderBy: createdAt/u);
