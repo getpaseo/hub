@@ -10,6 +10,11 @@ import {
 } from "../entitlements/catalog.js";
 import { toDatabaseError } from "./errors.js";
 import { completesAtIdleDeadline } from "./idle-completion.js";
+import {
+  linearTriggerSuppressionKind,
+  type LinearTriggerSuppressionReason,
+  type RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
@@ -87,6 +92,8 @@ import type {
   PendingProjectTriggerMigration,
   SaveOrganizationTriggerInput,
   CreateAcceptedTriggerRunInput,
+  CreateAcceptedLinearTriggerRunInput,
+  CreateAcceptedLinearTriggerRunResult,
   CreateRejectedTriggerRunInput,
   AgentExecutionHubAcknowledgementInput,
   AcceptedTriggerRunRecord,
@@ -478,65 +485,160 @@ class PgDatabase implements Database {
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     try {
+      return await this.pool.transaction((client) =>
+        this.createAcceptedTriggerRunWithinTransaction(client, input),
+      );
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult> {
+    try {
       return await this.pool.transaction(async (client) => {
-        const inserted = await client.query<TriggerRunRow>(
-          `insert into trigger_runs
+        const { kind, externalId } = input.linearTrigger;
+        await client.query(
+          `insert into linear_trigger_controls
+             (organization_id, project_id, kind, external_id)
+           values ($1, $2, $3, $4)
+           on conflict (project_id, kind, external_id) do nothing`,
+          [input.organizationId, input.projectId, kind, externalId],
+        );
+        const controls = await client.query<LinearTriggerControlRow>(
+          `select suppression_reason, suppression_occurred_at
+           from linear_trigger_controls
+           where project_id = $1 and kind = $2 and external_id = $3
+           for update`,
+          [input.projectId, kind, externalId],
+        );
+        const control = controls.rows[0];
+        if (control === undefined) throw new Error("Linear trigger control unavailable");
+        if (
+          control.suppression_reason !== null &&
+          (kind === "comment" ||
+            (control.suppression_occurred_at !== null &&
+              input.linearTrigger.eventOccurredAt.getTime() <=
+                control.suppression_occurred_at.getTime()))
+        ) {
+          return { created: false, suppressionReason: control.suppression_reason };
+        }
+        return this.createAcceptedTriggerRunWithinTransaction(client, input);
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async recordLinearTriggerSuppressions(
+    input: RecordLinearTriggerSuppressionsInput,
+  ): Promise<void> {
+    if (input.externalIds.length === 0) return;
+    try {
+      await this.pool.transaction(async (client) => {
+        const receipt = await client.query(
+          `select 1 from provider_event_receipts
+           where id = $1 and organization_id = $2
+             and accepted_routes @> $3::jsonb`,
+          [
+            input.providerEventReceiptId,
+            input.organizationId,
+            JSON.stringify([{ projectId: input.projectId }]),
+          ],
+        );
+        if (receipt.rowCount === 0) {
+          throw new Error("Linear trigger suppression receipt route unavailable");
+        }
+        const kind = linearTriggerSuppressionKind(input.reason);
+        for (const externalId of new Set(input.externalIds)) {
+          await client.query(
+            `insert into linear_trigger_controls
+               (organization_id, project_id, kind, external_id, suppression_reason,
+                suppression_occurred_at, source_provider_event_receipt_id, updated_at)
+             values ($1, $2, $3, $4, $5, $6, $7, now())
+             on conflict (project_id, kind, external_id) do update set
+               suppression_reason = excluded.suppression_reason,
+               suppression_occurred_at = excluded.suppression_occurred_at,
+               source_provider_event_receipt_id = excluded.source_provider_event_receipt_id,
+               updated_at = now()
+             where linear_trigger_controls.suppression_occurred_at is null
+                or linear_trigger_controls.suppression_occurred_at <= excluded.suppression_occurred_at`,
+            [
+              input.organizationId,
+              input.projectId,
+              kind,
+              externalId,
+              input.reason,
+              input.eventOccurredAt,
+              input.providerEventReceiptId,
+            ],
+          );
+        }
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  private async createAcceptedTriggerRunWithinTransaction(
+    client: QueryHandle,
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
+    const inserted = await client.query<TriggerRunRow>(
+      `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
             prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
-          [
-            input.id ?? null,
-            input.organizationId,
-            input.projectId,
-            input.configurationRevisionId,
-            input.providerEventReceiptId,
-            input.configuredTriggerName,
-            input.prompt,
-            input.inputs,
-            input.triggerContext,
-            input.outputContext,
-            input.deadlineAt,
-            input.createdAt ?? new Date(),
-          ],
-        );
-        let run = inserted.rows[0];
-        const created = run !== undefined;
-        if (run === undefined) {
-          const existing = await client.query<TriggerRunRow>(
-            `select * from trigger_runs
+      [
+        input.id ?? null,
+        input.organizationId,
+        input.projectId,
+        input.configurationRevisionId,
+        input.providerEventReceiptId,
+        input.configuredTriggerName,
+        input.prompt,
+        input.inputs,
+        input.triggerContext,
+        input.outputContext,
+        input.deadlineAt,
+        input.createdAt ?? new Date(),
+      ],
+    );
+    let run = inserted.rows[0];
+    const created = run !== undefined;
+    if (run === undefined) {
+      const existing = await client.query<TriggerRunRow>(
+        `select * from trigger_runs
            where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-          );
-          run = existing.rows[0];
-        }
-        if (run === undefined) throw new Error("trigger run insert returned no row");
-        if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        for (const [ordinal, stepId] of input.stepIds.entries()) {
-          await client.query(
-            `insert into workflow_step_runs
+        [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
+      );
+      run = existing.rows[0];
+    }
+    if (run === undefined) throw new Error("trigger run insert returned no row");
+    if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+    for (const [ordinal, stepId] of input.stepIds.entries()) {
+      await client.query(
+        `insert into workflow_step_runs
              (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
            values ($1, $2, $3, 'pending', null, null, null)
            on conflict (trigger_run_id, ordinal) do nothing`,
-            [run.id, stepId, ordinal],
-          );
-        }
-        await client.query(
-          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+        [run.id, stepId, ordinal],
+      );
+    }
+    await client.query(
+      `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
          values ($1, $2, null)
          on conflict (trigger_run_id) do nothing`,
-          [run.id, input.createdAt ?? new Date()],
-        );
-        const record = toTriggerRunRecord(run);
-        if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        return { run: record, created };
-      });
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
+      [run.id, input.createdAt ?? new Date()],
+    );
+    const record = toTriggerRunRecord(run);
+    if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+    return { run: record, created };
   }
 
   async createRejectedTriggerRun(
@@ -4472,6 +4574,11 @@ interface TriggerRunRow extends QueryRow {
   rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
+}
+
+interface LinearTriggerControlRow extends QueryRow {
+  suppression_reason: LinearTriggerSuppressionReason | null;
+  suppression_occurred_at: Date | null;
 }
 
 interface ProjectActivityRunRow extends TriggerRunRow {

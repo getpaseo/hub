@@ -4,6 +4,11 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
+  LinearTriggerStart,
+  LinearTriggerSuppressionReason,
+  RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
+import type {
   EntitlementPatch,
   EntitlementTemplate,
   OverrideKey,
@@ -776,6 +781,18 @@ export interface CreateAcceptedTriggerRunInput {
   createdAt?: Date;
 }
 
+export interface CreateAcceptedLinearTriggerRunInput extends CreateAcceptedTriggerRunInput {
+  linearTrigger: LinearTriggerStart;
+}
+
+export type CreateAcceptedLinearTriggerRunResult =
+  | { run: AcceptedTriggerRunRecord; created: boolean; suppressionReason?: never }
+  | {
+      run?: never;
+      created: false;
+      suppressionReason: LinearTriggerSuppressionReason;
+    };
+
 export interface CreateRejectedTriggerRunInput {
   id?: string;
   organizationId: string;
@@ -1152,6 +1169,12 @@ export interface Database {
   createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
+  /** Atomically checks the Linear suppression row and creates the run only when still eligible. */
+  createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult>;
+  /** Durably records a Linear stop/supersession before existing work is scanned. */
+  recordLinearTriggerSuppressions(input: RecordLinearTriggerSuppressionsInput): Promise<void>;
   createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;

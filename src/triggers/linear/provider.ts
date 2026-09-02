@@ -2,6 +2,10 @@ import type { CompiledTriggerConfig } from "../../config/index.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { Database, LinearConnectionRecord } from "../../db/types.js";
 import {
+  LINEAR_STOPPED_BY_USER_REASON,
+  LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON,
+} from "../../db/linear-trigger-suppression.js";
+import {
   LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT,
   LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT,
   type LinearApiClient,
@@ -50,6 +54,7 @@ export interface LinearTriggerContext {
     linear: {
       event_type: "issue" | "comment" | "agent_session";
       action: "create" | "update" | "remove" | "created" | "prompted";
+      occurred_at: string | null;
       delivery_id: string;
       connection_id: string | null;
       organization: { id: string };
@@ -114,11 +119,7 @@ export interface LinearMaterializedContext {
   };
 }
 
-/** Failure reason of an execution ended by Linear's `stop` signal; not an error for the user. */
-export const LINEAR_STOPPED_BY_USER_REASON = "stopped_by_user";
-
-/** Failure reason of a comment-triggered run replaced by the agent session opened for its comment. */
-export const LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON = "superseded_by_agent_session";
+export { LINEAR_STOPPED_BY_USER_REASON, LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON };
 
 export interface LinearTriggerProviderOptions {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -132,7 +133,8 @@ export interface LinearTriggerProviderOptions {
     linearOrganizationId: string;
   }) => Promise<Pick<LinearConnectionRecord, "appUserId"> | undefined>;
   /** Receipt/run reads used to deduplicate session side effects. */
-  database?: Pick<Database, "findProviderEventReceiptById" | "listTriggerRunsForLinearComments">;
+  database?: Pick<Database, "findProviderEventReceiptById" | "listTriggerRunsForLinearComments"> &
+    Partial<Pick<Database, "recordLinearTriggerSuppressions">>;
   executions?: TriggerProviderExecutionControl;
 }
 
@@ -228,7 +230,7 @@ export function createLinearTriggerProvider(
       }
       if (matches.length === 0) return "trigger_filters_rejected";
       if (event.type === "agent_session" && event.action === "created") {
-        await supersedeLinearCommentRuns(options, externalTrigger.projectId, event);
+        await supersedeLinearCommentRuns(options, externalTrigger, event);
       }
       return matches;
     },
@@ -462,6 +464,7 @@ function buildLinearContext(
   return {
     event_type: event.type,
     action: event.action,
+    occurred_at: event.occurredAt ?? null,
     delivery_id: deliveryId,
     connection_id: connectionId ?? null,
     organization: { id: event.organizationId },
@@ -590,13 +593,15 @@ async function hydrateLinearCommentThread(
  * comment trigger already started a run from that comment, the session is the canonical
  * handling: the comment run is stopped so the user is not answered twice. The mention may sit
  * in a reply, so the comment that created the session is checked as well as the thread's root.
- * A failure here is reported but does not hold back the session's own run.
+ * The association is persisted before the scan so a delayed comment run cannot start afterward;
+ * a failure while stopping already-running work is reported but does not hold back the session.
  */
 async function supersedeLinearCommentRuns(
   options: Pick<LinearTriggerProviderOptions, "database" | "executions">,
-  projectId: string,
+  trigger: Pick<ExternalTrigger, "organizationId" | "projectId" | "providerEventReceiptId">,
   event: NormalizedLinearAgentSessionEvent,
 ): Promise<void> {
+  const projectId = trigger.projectId;
   const commentIds = [
     ...new Set(
       [event.agentSession.rootCommentId, event.agentSession.sourceCommentId].filter(
@@ -604,13 +609,16 @@ async function supersedeLinearCommentRuns(
       ),
     ),
   ];
-  if (
-    commentIds.length === 0 ||
-    options.database === undefined ||
-    options.executions === undefined
-  ) {
-    return;
-  }
+  if (commentIds.length === 0) return;
+  await options.database?.recordLinearTriggerSuppressions?.({
+    organizationId: trigger.organizationId,
+    projectId,
+    providerEventReceiptId: trigger.providerEventReceiptId,
+    reason: LINEAR_SUPERSEDED_BY_AGENT_SESSION_REASON,
+    externalIds: commentIds,
+    eventOccurredAt: new Date(event.occurredAt),
+  });
+  if (options.database === undefined || options.executions === undefined) return;
   try {
     const superseded = new Set(
       (await options.database.listTriggerRunsForLinearComments(projectId, commentIds)).map(
@@ -649,18 +657,28 @@ function linearAgentReactionPhase(
 /**
  * Linear's `stop` signal arrives as a prompt; it must not start a run. The session's pending
  * executions and not-yet-dispatched runs are failed with a dedicated reason (so no error is
- * posted for them), and Linear receives the `response` it expects to settle the session.
+ * posted for them). The stop is persisted before that scan so an older delivery cannot launch
+ * afterward, and Linear receives the `response` it expects to settle the session.
  */
 async function stopLinearAgentSession(
   options: {
     client?: Pick<LinearApiClient, "createAgentActivity">;
-    database?: Pick<Database, "findProviderEventReceiptById">;
+    database?: Pick<Database, "findProviderEventReceiptById"> &
+      Partial<Pick<Database, "recordLinearTriggerSuppressions">>;
     executions?: TriggerProviderExecutionControl;
   },
-  trigger: Pick<ExternalTrigger, "projectId" | "providerEventReceiptId">,
+  trigger: Pick<ExternalTrigger, "organizationId" | "projectId" | "providerEventReceiptId">,
   event: NormalizedLinearAgentSessionEvent,
 ): Promise<void> {
   const agentSessionId = event.agentSession.id;
+  await options.database?.recordLinearTriggerSuppressions?.({
+    organizationId: trigger.organizationId,
+    projectId: trigger.projectId,
+    providerEventReceiptId: trigger.providerEventReceiptId,
+    reason: LINEAR_STOPPED_BY_USER_REASON,
+    externalIds: [agentSessionId],
+    eventOccurredAt: new Date(event.occurredAt),
+  });
   await options.executions?.stopActive({
     projectId: trigger.projectId,
     reason: LINEAR_STOPPED_BY_USER_REASON,

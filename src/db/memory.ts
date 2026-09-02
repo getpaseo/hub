@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { completesAtIdleDeadline } from "./idle-completion.js";
 import { isLinearAgentSessionStop } from "./linear-event-acceptance.js";
+import {
+  linearTriggerSuppressionKey,
+  linearTriggerSuppressionKind,
+  type LinearTriggerSuppressionReason,
+  type RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import {
@@ -76,6 +82,8 @@ import type {
   SaveOrganizationTriggerInput,
   OrganizationTriggerRoute,
   CreateAcceptedTriggerRunInput,
+  CreateAcceptedLinearTriggerRunInput,
+  CreateAcceptedLinearTriggerRunResult,
   CreateRejectedTriggerRunInput,
   AcceptedTriggerRunRecord,
   RejectedTriggerRunRecord,
@@ -164,6 +172,14 @@ class MemoryDatabase implements Database {
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
+  private readonly linearTriggerControls = new Map<
+    string,
+    {
+      suppressionReason: LinearTriggerSuppressionReason | null;
+      suppressionOccurredAt: Date | null;
+      sourceProviderEventReceiptId: string | null;
+    }
+  >();
   private readonly triggerRunIdsByProviderEventReceipt = new Map<
     string,
     Map<string, Map<string, string>>
@@ -305,6 +321,67 @@ class MemoryDatabase implements Database {
       leasedBeforeClaim: false,
     });
     return { run, created: true };
+  }
+
+  async createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult> {
+    const { kind, externalId } = input.linearTrigger;
+    const key = linearTriggerSuppressionKey(input.projectId, kind, externalId);
+    return this.withAdvisoryLock(key, async () => {
+      const control = this.linearTriggerControls.get(key);
+      if (
+        control?.suppressionReason !== null &&
+        control?.suppressionReason !== undefined &&
+        (kind === "comment" ||
+          (control.suppressionOccurredAt !== null &&
+            input.linearTrigger.eventOccurredAt.getTime() <=
+              control.suppressionOccurredAt.getTime()))
+      ) {
+        return { created: false, suppressionReason: control.suppressionReason };
+      }
+      if (control === undefined) {
+        this.linearTriggerControls.set(key, {
+          suppressionReason: null,
+          suppressionOccurredAt: null,
+          sourceProviderEventReceiptId: null,
+        });
+      }
+      return this.createAcceptedTriggerRun(input);
+    });
+  }
+
+  async recordLinearTriggerSuppressions(
+    input: RecordLinearTriggerSuppressionsInput,
+  ): Promise<void> {
+    const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+    if (receipt.organizationId !== input.organizationId) {
+      throw new Error("Linear trigger suppression receipt organization mismatch");
+    }
+    if (!receipt.acceptedRoutes?.some((route) => route.projectId === input.projectId)) {
+      throw new Error("Linear trigger suppression receipt route unavailable");
+    }
+    const kind = linearTriggerSuppressionKind(input.reason);
+    for (const externalId of new Set(input.externalIds)) {
+      const key = linearTriggerSuppressionKey(input.projectId, kind, externalId);
+      await this.withAdvisoryLock(key, async () => {
+        const existing = this.linearTriggerControls.get(key);
+        if (
+          existing?.suppressionOccurredAt !== null &&
+          existing?.suppressionOccurredAt !== undefined &&
+          existing.suppressionOccurredAt.getTime() > input.eventOccurredAt.getTime()
+        ) {
+          return;
+        }
+        this.linearTriggerControls.set(key, {
+          suppressionReason: input.reason,
+          suppressionOccurredAt: input.eventOccurredAt,
+          sourceProviderEventReceiptId: input.providerEventReceiptId,
+        });
+      });
+    }
   }
 
   async createRejectedTriggerRun(
