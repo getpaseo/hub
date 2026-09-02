@@ -336,6 +336,12 @@ async function runTwoStepWorkflow<
       return { id: agentOptions.executionId };
     },
     controlExecution: async () => undefined,
+    getProviderSnapshot: async () => {
+      throw new Error("not used");
+    },
+    refreshProviderSnapshot: async () => {
+      throw new Error("not used");
+    },
   };
   const lifecycle = createDaemonDispatchLifecycle({
     database,

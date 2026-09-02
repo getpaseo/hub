@@ -4,6 +4,7 @@ import type {
   HubExecutionAgentSnapshot,
   HubExecutionAgentStreamEvent,
   HubExecutionControlAction,
+  HubProviderSnapshot,
 } from "../hub/protocol.js";
 
 export interface DaemonAgentSnapshot {
@@ -77,6 +78,8 @@ export type DaemonEventHandler = (event: DaemonEvent) => void | Promise<void>;
 export interface DaemonConnection {
   createAgent(options: DaemonCreateAgentOptions): Promise<DaemonAgentSnapshot>;
   controlExecution(options: DaemonExecutionControlOptions): Promise<void>;
+  getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
+  refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
   on(handler: DaemonEventHandler): () => void;
 }
 

@@ -40,14 +40,14 @@ export class OrganizationTriggers {
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
-    await this.page.getByLabel("When this happens").selectOption("slack.mention");
-    await this.page.getByLabel("Connection", { exact: true }).selectOption(input.connection);
+    await this.selectOption("When this happens", "slack.mention");
+    await this.selectOption("Connection", input.connection);
     await this.page.getByRole("button", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
-    await this.page.getByLabel("Run on daemon").selectOption(input.daemon);
+    await this.selectOption("Run on daemon", input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
-    await this.page.getByLabel("Agent ID", { exact: true }).fill(input.agent);
-    await this.page.getByLabel("Execution mode", { exact: true }).fill(input.mode);
+    await this.selectAgent(input.agent);
+    await this.selectOption("Execution mode", input.mode);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })
@@ -60,14 +60,14 @@ export class OrganizationTriggers {
     name: string;
     daemon: string;
     cwd: string;
-    agent: string;
+    agent?: string;
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
-    await this.page.getByLabel("When this happens").selectOption("manual.run");
-    await this.page.getByLabel("Run on daemon").selectOption(input.daemon);
+    await this.selectOption("When this happens", "manual.run");
+    await this.selectOption("Run on daemon", input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
-    await this.page.getByLabel("Agent ID", { exact: true }).fill(input.agent);
+    if (input.agent !== undefined) await this.selectAgent(input.agent);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
 
@@ -78,7 +78,7 @@ export class OrganizationTriggers {
 
   async switchToForm() {
     await this.page.getByRole("button", { name: "Form" }).click();
-    await expect(this.page.getByLabel("Agent ID", { exact: true })).toBeVisible();
+    await expect(this.page.getByLabel("Agent", { exact: true })).toBeVisible();
   }
 
   async replaceYaml(yaml: string) {
@@ -106,8 +106,14 @@ export class OrganizationTriggers {
     providerOptions: string;
     prompt: string;
   }) {
-    await expect(this.page.getByLabel("Agent ID", { exact: true })).toHaveValue(input.agent);
-    await expect(this.page.getByLabel("Execution mode", { exact: true })).toHaveValue(input.mode);
+    await expect(this.page.getByRole("combobox", { name: "Agent" })).toHaveAttribute(
+      "data-value",
+      input.agent,
+    );
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
+      "data-value",
+      input.mode,
+    );
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })
@@ -116,6 +122,33 @@ export class OrganizationTriggers {
       input.providerOptions,
     );
     await expect(this.page.getByLabel("Instructions", { exact: true })).toHaveValue(input.prompt);
+  }
+
+  async expectAgentSearch() {
+    const agent = this.page.getByRole("combobox", { name: "Agent" });
+    await agent.click();
+    const search = this.page.getByPlaceholder("Search models…");
+    await expect(search).toBeFocused();
+    await search.fill("gpt-5.4");
+    await expect(this.page.getByRole("option", { name: /GPT-5.4/u })).toBeVisible();
+    await expect(this.page.getByRole("option", { name: /Gateway Model v1/u })).toBeHidden();
+    await search.fill("");
+  }
+
+  async expectShadcnSelectors() {
+    await expect(
+      this.page.locator('#trigger-editor-form [data-slot="select-trigger"]'),
+    ).toHaveCount(6);
+    for (const name of [
+      "When this happens",
+      "Connection",
+      "Run on daemon",
+      "Agent",
+      "Execution mode",
+      "Thinking",
+    ]) {
+      await expect(this.page.getByRole("combobox", { name, exact: true })).toBeVisible();
+    }
   }
 
   async changePrompt(prompt: string) {
@@ -164,6 +197,24 @@ export class OrganizationTriggers {
   async captureInstructions(path: string) {
     await this.page.getByLabel("Instructions", { exact: true }).scrollIntoViewIfNeeded();
     await this.page.screenshot({ path });
+  }
+
+  async captureExpandedAgent(path: string) {
+    const agent = this.page.getByRole("combobox", { name: "Agent" });
+    await agent.scrollIntoViewIfNeeded();
+    await agent.click();
+    await expect(this.page.getByPlaceholder("Search models…")).toBeFocused();
+    await this.page.screenshot({ path });
+  }
+
+  private async selectAgent(agentId: string) {
+    await this.page.getByRole("combobox", { name: "Agent" }).click();
+    await this.page.locator(`[role="option"][data-value=${JSON.stringify(agentId)}]`).click();
+  }
+
+  private async selectOption(label: string, value: string) {
+    await this.page.getByRole("combobox", { name: label, exact: true }).click();
+    await this.page.locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
   }
 
   private yamlEditor() {

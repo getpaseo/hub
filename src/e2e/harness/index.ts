@@ -212,6 +212,10 @@ export class HubE2E {
     return { state: requiredString(status, "state") };
   }
 
+  requestProviderSnapshot(cwd = this.workspace): Promise<Record<string, unknown>> {
+    return this.requireProxy().requestProviderSnapshot(cwd);
+  }
+
   async deployCurrentProjectBundleWithSourceCli(): Promise<SourceCliBundleDeploymentEvidence> {
     const sourceFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
       left.path.localeCompare(right.path),
@@ -233,6 +237,8 @@ export class HubE2E {
     await this.requirePool().query("update daemons set slug = 'local' where id = $1", [
       connectedDaemonId,
     ]);
+    await this.requireSource().restart();
+    await this.daemonIsConnected();
     await this.seedCurrentProjectResources();
     await this.waitForBundleProviders(sourceFiles);
 

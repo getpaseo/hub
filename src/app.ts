@@ -73,6 +73,7 @@ export interface HubRuntimeOptions {
 
 export interface HubRuntime {
   daemonModule: DaemonModule | null;
+  connectionForDaemon(daemonId: string): import("./daemons/index.js").DaemonConnection | undefined;
   resourceCounts(): {
     recoveredExecutionSubscriptions: number;
   };
@@ -221,6 +222,8 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
 
   const hub: HubRuntime = {
     daemonModule,
+    connectionForDaemon: (daemonId) =>
+      options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId),
     resourceCounts: () => ({
       recoveredExecutionSubscriptions:
         daemonModule?.lifecycle.activeRecoveryObservationCount() ?? 0,

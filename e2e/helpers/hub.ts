@@ -1894,6 +1894,12 @@ export class PaseoHub {
     return this.seedDaemon(alias, slug);
   }
 
+  /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
+  async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
+    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox", true);
+    return daemon.slug;
+  }
+
   /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */
   async seedSlackConnection(alias: string, slug: string, teamName: string): Promise<void> {
     await this.queryDatabase(
@@ -2091,6 +2097,7 @@ export class PaseoHub {
     _alias: string,
     organizationName: string,
     _displayName: string,
+    providerCatalog = false,
   ): Promise<ContractDaemon> {
     const enrollmentToken = randomUUID();
     const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
@@ -2100,7 +2107,7 @@ export class PaseoHub {
        select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
       [randomUUID(), verifier, organizationName],
     );
-    const daemon = new ContractDaemon(this.primary, this.requests);
+    const daemon = new ContractDaemon(this.primary, this.requests, undefined, providerCatalog);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -5245,6 +5252,7 @@ class ContractDaemon {
     private readonly application: BuiltApplication,
     private readonly requests: APIRequestContext,
     friendlyName?: string,
+    private readonly providerCatalog = false,
   ) {
     const fallback = `daemon-${this.daemonId.slice(0, 8)}`;
     this.slug = friendlyName === undefined ? fallback : slugify(friendlyName, fallback);
@@ -5274,6 +5282,7 @@ class ContractDaemon {
       headers: {
         authorization: `Bearer ${this.credential}`,
         "x-paseo-daemon-id": this.daemonId,
+        ...(this.providerCatalog ? { "x-paseo-session-protocol": "1" } : {}),
       },
     });
     socket.on("message", (data) => this.acceptExecution(data));
@@ -5327,7 +5336,9 @@ class ContractDaemon {
   }
 
   private acceptExecution(data: RawData): void {
-    const envelope = ExecutionRequestSchema.safeParse(JSON.parse(readSocketData(data)));
+    const value: unknown = JSON.parse(readSocketData(data));
+    if (this.acceptHello(value) || this.acceptProviderRequest(value)) return;
+    const envelope = ExecutionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
     const capability = request.mcpServers?.["hub"];
@@ -5354,7 +5365,113 @@ class ContractDaemon {
       }),
     );
   }
+
+  private acceptHello(value: unknown): boolean {
+    const hello = z.object({ type: z.literal("hello") }).safeParse(value);
+    if (!hello.success) return false;
+    this.socket?.send(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: "status",
+          payload: {
+            status: "server_info",
+            serverId: `browser-${this.daemonId}`,
+            permissions: ["hub.execute"],
+            features: { providersSnapshot: true },
+          },
+        },
+      }),
+    );
+    return true;
+  }
+
+  private acceptProviderRequest(value: unknown): boolean {
+    const envelope = z
+      .object({
+        type: z.literal("session"),
+        message: z.discriminatedUnion("type", [
+          z.object({
+            type: z.literal("get_providers_snapshot_request"),
+            requestId: z.string(),
+            cwd: z.string().optional(),
+          }),
+          z.object({
+            type: z.literal("refresh_providers_snapshot_request"),
+            requestId: z.string(),
+          }),
+        ]),
+      })
+      .safeParse(value);
+    if (!envelope.success) return false;
+    const request = envelope.data.message;
+    const message =
+      request.type === "refresh_providers_snapshot_request"
+        ? {
+            type: "refresh_providers_snapshot_response",
+            payload: { requestId: request.requestId, acknowledged: true },
+          }
+        : {
+            type: "get_providers_snapshot_response",
+            payload: {
+              requestId: request.requestId,
+              ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+              entries: browserProviderSnapshot,
+              generatedAt: new Date().toISOString(),
+            },
+          };
+    this.socket?.send(JSON.stringify({ type: "session", message }));
+    return true;
+  }
 }
+
+const browserProviderSnapshot = [
+  {
+    provider: "pi",
+    status: "ready",
+    enabled: true,
+    label: "Pi",
+    models: [
+      {
+        provider: "pi",
+        id: "gateway/vendor/model-v1",
+        label: "Gateway Model v1",
+        isDefault: true,
+        thinkingOptions: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+        defaultThinkingOptionId: "high",
+      },
+      {
+        provider: "pi",
+        id: "gateway/vendor/model-v2",
+        label: "Gateway Model v2",
+        thinkingOptions: [{ id: "high", label: "High" }],
+      },
+    ],
+    modes: [{ id: "full-access", label: "Full access" }],
+    defaultModeId: "full-access",
+  },
+  {
+    provider: "codex",
+    status: "ready",
+    enabled: true,
+    label: "Codex",
+    models: [
+      {
+        provider: "codex",
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        isDefault: true,
+        thinkingOptions: [{ id: "high", label: "High", isDefault: true }],
+        defaultThinkingOptionId: "high",
+      },
+    ],
+    modes: [{ id: "full-access", label: "Full access" }],
+    defaultModeId: "full-access",
+  },
+] as const;
 
 type ExecutionCapability = { url: string; headers: Record<string, string> };
 

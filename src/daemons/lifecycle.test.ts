@@ -303,6 +303,14 @@ class AcknowledgementConnection implements DaemonConnection {
     throw new Error("not used");
   }
 
+  async getProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async refreshProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
   async controlExecution(options: DaemonExecutionControlOptions): Promise<void> {
     this.actions.push(options.action);
   }
