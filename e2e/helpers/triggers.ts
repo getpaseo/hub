@@ -60,14 +60,14 @@ export class OrganizationTriggers {
     name: string;
     daemon: string;
     cwd: string;
-    agent: string;
+    agent?: string;
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.selectOption("When this happens", "manual.run");
     await this.selectOption("Run on daemon", input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
-    await this.selectAgent(input.agent);
+    if (input.agent !== undefined) await this.selectAgent(input.agent);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
 
