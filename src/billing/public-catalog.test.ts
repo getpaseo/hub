@@ -8,9 +8,10 @@ import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-bill
 
 /**
  * The public catalog boundary. `free` is an internal entitlement record — the template a hosted
- * organization is stamped with before it pays and again after it cancels — not something a
- * customer can buy. Billing commits to that distinction here, so no consumer (the plans endpoint,
- * the billing overview, the picker) has to know the slug or re-derive the rule.
+ * organization is stamped with before its creation-time trial reconciles, on failure, and after
+ * cancellation — not something a customer can buy. Billing commits to that distinction here, so
+ * no consumer (the plans endpoint, the billing overview, the picker) has to know the slug or
+ * re-derive the rule.
  */
 
 const unusedCatalogSource: StripeCatalogSource = {
@@ -21,6 +22,7 @@ const unusedBillingClient: StripeBillingClient = {
   ensureCustomer: () => Promise.reject(new Error("unused")),
   listCustomerSubscriptions: () => Promise.reject(new Error("unused")),
   createCheckoutSession: () => Promise.reject(new Error("unused")),
+  createTrialSubscription: () => Promise.reject(new Error("unused")),
   changeSubscriptionPrice: () => Promise.reject(new Error("unused")),
   reportSeatQuantity: () => Promise.reject(new Error("unused")),
   createBillingPortalSession: () => Promise.reject(new Error("unused")),

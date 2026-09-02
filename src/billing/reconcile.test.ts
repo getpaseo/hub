@@ -155,6 +155,9 @@ class FakeBillingClient implements StripeBillingClient {
   async createCheckoutSession(): Promise<{ url: string }> {
     throw new Error("unused");
   }
+  async createTrialSubscription(): Promise<string> {
+    throw new Error("unused");
+  }
   async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
     const state = this.subscriptions.get(input.subscriptionId);
     if (state === undefined) throw new Error("unused");

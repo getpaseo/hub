@@ -25,6 +25,11 @@ import {
 } from "../../src/e2e/harness/browser-billing.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
+import {
+  SIGNUP_INTENT_COOKIE,
+  SIGNUP_INTENT_QUERY_PARAMETER,
+  type SignupIntent,
+} from "../../src/organizations/signup-intent.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { SHOTS } from "./app-evidence.js";
 import {
@@ -47,6 +52,8 @@ export interface BuiltApplication {
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
   cancelSubscription(organizationId: string): Promise<void>;
+  /** Arms one creation-time Stripe trial failure, exercising the Checkout fallback. */
+  failNextTrialCreation(): Promise<void>;
   /** The seat quantity billing last reported to the fixture Stripe for this organization. */
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
@@ -270,6 +277,20 @@ export class PaseoHub {
   ): Promise<void> {
     await this.signUpAs(alias, account);
     await this.requireUser(alias).completePasswordRecovery(account, replacementPassword);
+  }
+
+  async expectUnsupportedSignupPlanIgnored(alias: string, plan: string): Promise<void> {
+    const user = await this.user(alias);
+    await user.expectUnsupportedSignupPlanIgnored(plan);
+  }
+
+  async signUpAsWithPlanIntent(alias: string, account: Account, plan: SignupIntent): Promise<void> {
+    const user = await this.user(alias);
+    await user.signUp(account, plan);
+  }
+
+  async expectSignupPlanCookie(alias: string, plan: SignupIntent): Promise<void> {
+    await this.requireUser(alias).expectSignupPlanCookie(plan);
   }
 
   async createOrganization(alias: string, name: string): Promise<void> {
@@ -1004,6 +1025,10 @@ export class PaseoHub {
   async expectReportedSeatQuantity(alias: string, quantity: number): Promise<void> {
     const organizationId = await this.organizationIdForAlias(alias);
     await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
+  }
+
+  async failNextTrialCreation(): Promise<void> {
+    await this.primary.failNextTrialCreation();
   }
 
   async subscribeToPlan(alias: string, plan: string): Promise<void> {
@@ -2549,12 +2574,37 @@ class HubUser {
     this.navigation = new ProjectNavigation(page);
   }
 
-  async signUp(account: Account): Promise<void> {
+  async signUp(account: Account, plan?: SignupIntent): Promise<void> {
     this.email = account.email.toLowerCase();
-    if (this.page.url() === "about:blank") await this.page.goto(this.origin);
+    if (plan !== undefined) {
+      await this.page.goto(`${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${plan}`);
+    } else if (this.page.url() === "about:blank") {
+      await this.page.goto(this.origin);
+    }
     await this.submitSignUp(account);
     await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+  }
+
+  async expectUnsupportedSignupPlanIgnored(plan: string): Promise<void> {
+    await this.page.goto(
+      `${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${encodeURIComponent(plan)}`,
+    );
+    await expect(this.page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
+    await expect(
+      this.context
+        .cookies(this.origin)
+        .then((cookies) => cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)),
+    ).resolves.toBeUndefined();
+  }
+
+  async expectSignupPlanCookie(plan: SignupIntent): Promise<void> {
+    await expect
+      .poll(async () => {
+        const cookies = await this.context.cookies(this.origin);
+        return cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)?.value;
+      })
+      .toBe(plan);
   }
 
   async completeBootstrapJourney(
@@ -4304,11 +4354,11 @@ class HubUser {
     expect(
       await this.page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(viewport!.width);
-    const trial = this.page
-      .getByRole("dialog")
-      .getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` });
-    await trial.scrollIntoViewIfNeeded();
-    await expect(trial).toBeInViewport();
+    const action = this.page.getByRole("dialog").getByRole("button", {
+      name: new RegExp(`^(Start free trial with|Subscribe to) ${HOSTED_PLAN_NAME}$`, "u"),
+    });
+    await action.scrollIntoViewIfNeeded();
+    await expect(action).toBeInViewport();
     await expectAccessible(this.page);
   }
 

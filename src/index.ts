@@ -206,12 +206,13 @@ function createProductionAuthServer(
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
     ...(invitationMailer === undefined ? {} : { invitationMailer }),
     ...(accountMailer === undefined ? {} : { accountMailer }),
-    // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
-    // (billing null) keeps the createAuthServer default, which stamps unlimited.
+    // Hosted: new organizations are stamped with the Free floor, then synchronously moved onto
+    // their Stripe trial. Self-hosted keeps the unlimited default and never touches Stripe.
     ...(billing === null
       ? {}
       : {
           provisioningEntitlements: () => billing.provisioningEntitlement(),
+          onOrganizationCreated: (event) => billing.startSignup(event),
           onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
         }),
   });

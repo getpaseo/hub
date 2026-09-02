@@ -135,6 +135,7 @@ class BuiltApplications {
         deliverCommand(server, { type: "billing-product", product }),
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
+      failNextTrialCreation: () => deliverCommand(server, { type: "fail-next-billing-trial" }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
       accountEmailLink: async (email, kind) => {
         const link = await deliverCommandForData(server, {

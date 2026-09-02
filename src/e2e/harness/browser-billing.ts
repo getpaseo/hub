@@ -153,6 +153,12 @@ export function fixtureSubscriptionId(organizationId: string): string {
  */
 export class FixtureStripeBillingClient {
   private readonly subscriptions = new Map<string, FixtureSubscriptionState>();
+  private failNextTrial = false;
+
+  /** Test-only: make the next creation-time trial fail before Stripe records a subscription. */
+  failNextTrialCreation(): void {
+    this.failNextTrial = true;
+  }
 
   async ensureCustomer(input: { organizationId: string }): Promise<string> {
     return `cus_fixture_${input.organizationId}`;
@@ -176,23 +182,23 @@ export class FixtureStripeBillingClient {
     successUrl: string;
     trial: boolean;
   }): Promise<{ url: string }> {
-    const id = fixtureSubscriptionId(input.organizationId);
     // Idempotent initial subscription: if one already exists, checkout does not open a second or
     // rewrite its price. A price change must go through changeSubscriptionPrice.
-    if (!this.subscriptions.has(id)) {
-      this.subscriptions.set(id, {
-        id,
-        customerId: input.customerId,
-        organizationId: input.organizationId,
-        priceId: input.priceId,
-        quantity: input.quantity,
-        status: input.trial ? "trialing" : "active",
-        currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
-        trialEnd: input.trial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
-        cancelAtPeriodEnd: false,
-      });
-    }
+    this.createSubscription(input, input.trial);
     return { url: `/test/stripe-checkout?success=${encodeURIComponent(input.successUrl)}` };
+  }
+
+  async createTrialSubscription(input: {
+    organizationId: string;
+    customerId: string;
+    priceId: string;
+    quantity: number;
+  }): Promise<string> {
+    if (this.failNextTrial) {
+      this.failNextTrial = false;
+      throw new Error("fixture trial creation failed");
+    }
+    return this.createSubscription(input, true).id;
   }
 
   async changeSubscriptionPrice(input: { subscriptionId: string; priceId: string }): Promise<void> {
@@ -248,5 +254,27 @@ export class FixtureStripeBillingClient {
       if (state.id === subscriptionId) return state;
     }
     return undefined;
+  }
+
+  private createSubscription(
+    input: { organizationId: string; customerId: string; priceId: string; quantity: number },
+    trial: boolean,
+  ): FixtureSubscriptionState {
+    const id = fixtureSubscriptionId(input.organizationId);
+    const existing = this.subscriptions.get(id);
+    if (existing !== undefined) return existing;
+    const subscription = {
+      id,
+      customerId: input.customerId,
+      organizationId: input.organizationId,
+      priceId: input.priceId,
+      quantity: input.quantity,
+      status: trial ? "trialing" : "active",
+      currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
+      trialEnd: trial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
+      cancelAtPeriodEnd: false,
+    };
+    this.subscriptions.set(id, subscription);
+    return subscription;
   }
 }
