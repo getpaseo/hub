@@ -457,6 +457,35 @@ describe("agent execution PostgreSQL repository", () => {
     });
   });
 
+  it("fails a linked live execution in the same transaction as its workflow run", async () => {
+    const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+    try {
+      const failed = await fixture.database.failWorkflowRun(
+        fixture.run.id,
+        "failed",
+        "stopped_by_user",
+      );
+
+      assert.equal(failed?.transitioned, true);
+      assert.deepEqual(failed?.failedExecutionIds, [fixture.execution.id]);
+      assert.equal(
+        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.status,
+        "failed",
+      );
+      assert.deepEqual(
+        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.result,
+        { status: "failed", reason: "stopped_by_user" },
+      );
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+        "failed",
+      );
+      assert.equal((await fixture.database.findTriggerRunById(fixture.run.id))?.status, "failed");
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
   describe("finish without a delivered required output", () => {
     const BEFORE_IDLE = new Date("2026-08-05T12:00:04.000Z");
     const AFTER_IDLE = new Date("2026-08-05T12:00:08.000Z");
