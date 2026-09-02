@@ -906,9 +906,8 @@ export class DaemonDispatchLifecycle {
     if (isTerminalExecutionStatus(currentExecution.status)) {
       return currentExecution;
     }
-    if (await this.expireExecutionIfDeadlineElapsed(currentExecution)) {
-      throw new AgentExecutionCompletionFailure("expired");
-    }
+    const deadlineCompletion = await this.completionAtElapsedDeadline(currentExecution);
+    if (deadlineCompletion !== undefined) return deadlineCompletion;
     const undelivered = failedRequiredOutputDeliveries(currentExecution);
     if (undelivered.length > 0) {
       await this.failUndeliveredExecution(currentExecution, undelivered);
@@ -934,6 +933,15 @@ export class DaemonDispatchLifecycle {
       throw new AgentExecutionCompletionFailure("expired");
     }
     return execution;
+  }
+
+  private async completionAtElapsedDeadline(
+    execution: AgentExecutionRecord,
+  ): Promise<AgentExecutionRecord | undefined> {
+    if (!(await this.expireExecutionIfDeadlineElapsed(execution))) return undefined;
+    const settledExecution = await this.options.database.findAgentExecutionById(execution.id);
+    if (settledExecution?.status === "succeeded") return settledExecution;
+    throw new AgentExecutionCompletionFailure("expired");
   }
 
   /**

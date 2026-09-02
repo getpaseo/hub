@@ -630,6 +630,25 @@ describe("durable Hub action acknowledgement state", () => {
       await fixture.lifecycle.stop();
     });
 
+    it("returns success when finish_execution arrives after the idle timestamp", async () => {
+      const fixture = await dispatchedWorkflowExecution({ emitted: true });
+      fixture.clock.elapseWithoutRunningTimers(IDLE_TIMEOUT_MS);
+
+      const execution = await fixture.lifecycle.completeAgentExecutionFromCallback({
+        executionId: fixture.executionId,
+        token: deriveAgentExecutionCompletionToken("completion-secret", fixture.executionId),
+      });
+
+      assert.equal(execution.status, "succeeded");
+      assert.equal(execution.completedByAgentAt, null);
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+        "succeeded",
+      );
+      await fixture.connection.unsubscribed();
+      await fixture.lifecycle.stop();
+    });
+
     it("still settles the dispatch as an idle timeout when the agent never replied", async () => {
       const fixture = await dispatchedWorkflowExecution({ emitted: false });
 
@@ -933,6 +952,11 @@ class ManualDeadlineClock implements ExecutionDeadlineClock {
     return () => {
       this.timers.delete(id);
     };
+  }
+
+  /** Advances wall time while retaining due callbacks, reproducing a callback/idle-timer race. */
+  elapseWithoutRunningTimers(ms: number): void {
+    this.nowMs += ms;
   }
 
   /** Moves time forward and runs every deadline that became due, in order. */

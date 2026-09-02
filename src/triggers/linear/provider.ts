@@ -131,8 +131,8 @@ export interface LinearTriggerProviderOptions {
     organizationId: string;
     linearOrganizationId: string;
   }) => Promise<Pick<LinearConnectionRecord, "appUserId"> | undefined>;
-  /** Finds the runs a comment trigger started, so a new agent session can supersede them. */
-  database?: Pick<Database, "listTriggerRunsForLinearComments">;
+  /** Receipt/run reads used to deduplicate session side effects. */
+  database?: Pick<Database, "findProviderEventReceiptById" | "listTriggerRunsForLinearComments">;
   executions?: TriggerProviderExecutionControl;
 }
 
@@ -144,16 +144,16 @@ export function createLinearTriggerProvider(
     eventNames: ["linear.issue", "linear.comment", "linear.agent_session"],
     async match(externalTrigger) {
       const received = NormalizedLinearEventSchema.parse(externalTrigger.payload);
+      if (received.type === "agent_session" && received.agentActivity?.signal === "stop") {
+        await stopLinearAgentSession(options, externalTrigger, received);
+        return "agent_session_stopped";
+      }
       const stored = await options
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return "configuration_unavailable";
       if (!hasSourceTrigger(stored.configuration.triggers, externalTrigger.source)) {
         return "no_trigger_for_source";
-      }
-      if (received.type === "agent_session" && received.agentActivity?.signal === "stop") {
-        await stopLinearAgentSession(options, externalTrigger.projectId, received);
-        return "agent_session_stopped";
       }
       const { event, appUserId } = await hydrateLinearCommentThread(
         options,
@@ -654,22 +654,36 @@ function linearAgentReactionPhase(
 async function stopLinearAgentSession(
   options: {
     client?: Pick<LinearApiClient, "createAgentActivity">;
+    database?: Pick<Database, "findProviderEventReceiptById">;
     executions?: TriggerProviderExecutionControl;
   },
-  projectId: string,
+  trigger: Pick<ExternalTrigger, "projectId" | "providerEventReceiptId">,
   event: NormalizedLinearAgentSessionEvent,
 ): Promise<void> {
   const agentSessionId = event.agentSession.id;
   await options.executions?.stopActive({
-    projectId,
+    projectId: trigger.projectId,
     reason: LINEAR_STOPPED_BY_USER_REASON,
     matches: (execution) => readLinearAgentSessionId(execution.outputContext) === agentSessionId,
   });
+  if (!(await isLinearStopConfirmationRoute(options.database, trigger))) return;
   await options.client?.createAgentActivity({
     linearOrganizationId: event.organizationId,
     agentSessionId,
     content: { type: "response", body: "Stopped at your request." },
   });
+}
+
+/** The receipt snapshot gives one route ownership of the shared Linear confirmation. */
+async function isLinearStopConfirmationRoute(
+  database: Pick<Database, "findProviderEventReceiptById"> | undefined,
+  trigger: Pick<ExternalTrigger, "projectId" | "providerEventReceiptId">,
+): Promise<boolean> {
+  if (database === undefined) return true;
+  const receipt = await database.findProviderEventReceiptById(trigger.providerEventReceiptId);
+  const confirmationRoute = receipt?.acceptedRoutes?.[0];
+  if (confirmationRoute === undefined) throw new Error("Linear stop receipt route unavailable");
+  return confirmationRoute.projectId === trigger.projectId;
 }
 
 function readLinearAgentSessionId(outputContext: unknown): string | null {
