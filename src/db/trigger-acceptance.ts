@@ -6,6 +6,7 @@ import {
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
+import { isLinearAgentSessionStop } from "./linear-event-acceptance.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
@@ -75,7 +76,7 @@ export class ProviderEventAcceptanceRepository {
         input.dropReason ??
         ((provider === "github" && "status" in connection && connection.status === "suspended") ||
         (provider === "linear" &&
-          linearConnectionUnavailable(connection, input.receivedAt, input.source))
+          linearConnectionUnavailable(connection, input.receivedAt, input.source, input.payload))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
@@ -319,6 +320,7 @@ function linearConnectionUnavailable(
   connection: object,
   receivedAt: Date,
   source: string,
+  payload: unknown,
 ): boolean {
   if (!("scopes" in connection) || !isStringArray(connection.scopes)) return true;
   if (
@@ -335,6 +337,7 @@ function linearConnectionUnavailable(
   }
   return (
     (source === "linear.agent_session" &&
+      !isLinearAgentSessionStop({ source, payload }) &&
       !hasRequiredLinearAgentSessionScopes(connection.scopes)) ||
     linearConnectionRequiresReauthorization(
       {

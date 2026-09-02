@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { completesAtIdleDeadline } from "./idle-completion.js";
+import { isLinearAgentSessionStop } from "./linear-event-acceptance.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import {
@@ -3415,6 +3416,7 @@ function linearDropReason(
   if (
     linearConnectionRequiresReauthorization(binding, input.receivedAt) ||
     (input.source === "linear.agent_session" &&
+      !isLinearAgentSessionStop(input) &&
       !hasRequiredLinearAgentSessionScopes(binding.scopes))
   ) {
     return "configuration_unavailable";
