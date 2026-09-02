@@ -92,7 +92,7 @@ function plan(
     name: slug === "hub" ? "Paseo Hub" : slug,
     template,
     templateHash: `hash-${slug}`,
-    marketing: { features: [] },
+    marketing: { features: [], priceTooltips: { monthly: null, annual: null } },
     active: true,
     prices: [
       {
