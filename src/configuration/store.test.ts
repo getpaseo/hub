@@ -268,6 +268,15 @@ describe("ProjectConfigurationStore resource compilation", () => {
     if (baselineAgentSession.status === "dropped") {
       assert.equal(baselineAgentSession.reason, "configuration_unavailable");
     }
+    const baselineAgentSessionStop = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAgentSessionStop.status, "accepted");
 
     database.findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId
