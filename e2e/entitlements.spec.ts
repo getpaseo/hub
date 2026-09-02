@@ -112,7 +112,7 @@ test.describe("metered usage", () => {
         name: "deploy",
         daemon: "slice-three-runner",
         cwd: "/workspace",
-        agent: "opencode",
+        agent: "codex/gpt-5.4",
         prompt: "${{ paseo.prompt }}",
       });
       await triggers.save("deploy");

@@ -209,7 +209,7 @@ export class OrganizationTriggers {
 
   private async selectAgent(agentId: string) {
     await this.page.getByRole("combobox", { name: "Agent" }).click();
-    await this.page.getByRole("option").filter({ hasText: agentId }).click();
+    await this.page.locator(`[role="option"][data-value=${JSON.stringify(agentId)}]`).click();
   }
 
   private async selectOption(label: string, value: string) {
