@@ -137,6 +137,66 @@ describe("Linear trigger matching", () => {
     );
   });
 
+  it("fires thread_with_app only for replies in a thread the app commented in", () => {
+    const config = configuration();
+    const withFilters = (filters: Record<string, unknown>) => ({
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) => Object.assign({}, trigger, { filters })),
+    });
+    const scope = { project: "project-1", from_users: ["operator"] };
+    const threadWithApp = withFilters({ ...scope, thread_with_app: true });
+    const reply = {
+      ...commentEvent("continue", "root-comment"),
+      threadAuthorIds: ["operator", "app-user"],
+    };
+
+    assert.deepEqual(
+      matchLinearTriggers(threadWithApp, reply, undefined, "app-user").map(
+        (match) => match.trigger.name,
+      ),
+      ["comment"],
+    );
+    // A thread without the app, a root comment, an unread thread, and an unknown app user
+    // all fail closed.
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...reply, threadAuthorIds: ["operator", "reviewer"] },
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...reply, comment: { ...reply.comment, parentId: null } },
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        commentEvent("continue", "root-comment"),
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(matchLinearTriggers(threadWithApp, reply).length, 0);
+    assert.equal(matchLinearTriggers(threadWithApp, reply, undefined, null).length, 0);
+    // Unset or false leaves plain comment matching untouched.
+    assert.equal(matchLinearTriggers(withFilters(scope), reply).length, 1);
+    assert.equal(
+      matchLinearTriggers(withFilters({ ...scope, thread_with_app: false }), reply).length,
+      1,
+    );
+  });
+
   it("keeps triggers isolated to their configured Linear connection", () => {
     const connectionId = "11111111-1111-4111-8111-111111111111";
     const config = configuration();

@@ -215,6 +215,61 @@ describe("Linear connection client", () => {
     });
   });
 
+  it("reads a comment's thread root and the distinct authors who wrote in it", async () => {
+    const requests: string[] = [];
+    const connection = linearConnection();
+    let parent: unknown = {
+      id: "root-1",
+      user: { id: "user-1" },
+      botActor: null,
+      children: {
+        nodes: [
+          { user: { id: "app-user" }, botActor: null },
+          { user: null, botActor: { id: "bot-1" } },
+          { user: { id: "user-1" }, botActor: null },
+        ],
+      },
+    };
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json({
+          data: {
+            comment: {
+              id: "reply-2",
+              user: { id: "user-2" },
+              botActor: null,
+              parent,
+              children: { nodes: [] },
+            },
+          },
+        });
+      },
+    });
+
+    assert.deepEqual(
+      await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
+      { rootId: "root-1", authorIds: ["user-1", "app-user", "bot-1"] },
+    );
+    const request = graphqlRequest(requests[0] ?? "{}");
+    assert.match(request.query, /comment\(id: \$id\)/u);
+    assert.match(
+      request.query,
+      /parent \{[\s\S]*children\(first: 100\) \{ nodes \{ user \{ id \} botActor \{ id \} \} \}/u,
+    );
+    assert.deepEqual(request.variables, { id: "reply-2" });
+
+    // A root comment is its own thread root.
+    parent = null;
+    assert.deepEqual(
+      await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
+      { rootId: "reply-2", authorIds: ["user-2"] },
+    );
+  });
+
   it("reads bounded agent-session activity before the prompting activity", async () => {
     const requests: string[] = [];
     const api = createLinearApiClient({
@@ -321,6 +376,99 @@ describe("Linear connection client", () => {
       agentSessionId: "session-1",
       content: { type: "response", body: "Draft PR opened." },
     });
+  });
+
+  it("sends a select elicitation with its signal metadata", async () => {
+    const requests: string[] = [];
+    const connection = linearConnection();
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json({ data: { agentActivityCreate: { success: true } } });
+      },
+    });
+
+    await api.createAgentActivity({
+      linearOrganizationId: "linear-org",
+      agentSessionId: "session-1",
+      content: { type: "elicitation", body: "Which branch?" },
+      signal: "select",
+      signalMetadata: { options: [{ label: "main", value: "main" }] },
+    });
+
+    const request = graphqlRequest(requests[0] ?? "{}");
+    assert.match(request.query, /\$signal: AgentActivitySignal/u);
+    assert.match(request.query, /\$signalMetadata: JSONObject/u);
+    assert.match(request.query, /signalMetadata: \$signalMetadata/u);
+    assert.deepEqual(request.variables, {
+      agentSessionId: "session-1",
+      content: { type: "elicitation", body: "Which branch?" },
+      signal: "select",
+      signalMetadata: { options: [{ label: "main", value: "main" }] },
+    });
+  });
+
+  it("threads a comment under its parent only when a parent is given", async () => {
+    const requests: string[] = [];
+    const connection = linearConnection();
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json({ data: { commentCreate: { success: true } } });
+      },
+    });
+
+    await api.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      body: "Done.",
+      parentId: "root-comment",
+    });
+    await api.createComment({
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      body: "Done.",
+    });
+
+    const threaded = graphqlRequest(requests[0] ?? "{}");
+    assert.match(threaded.query, /\$parentId: String\b/u);
+    assert.match(threaded.query, /parentId: \$parentId/u);
+    assert.deepEqual(threaded.variables, {
+      issueId: "issue-1",
+      body: "Done.",
+      parentId: "root-comment",
+    });
+    assert.deepEqual(graphqlRequest(requests[1] ?? "{}").variables, {
+      issueId: "issue-1",
+      body: "Done.",
+    });
+  });
+
+  it("surfaces Linear's own message when it rejects a comment", async () => {
+    const connection = linearConnection();
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async () =>
+        json({ errors: [{ message: "Parent comment must be a top level comment." }] }),
+    });
+
+    await assert.rejects(
+      api.createComment({
+        linearOrganizationId: "linear-org",
+        issueId: "issue-1",
+        body: "Done.",
+        parentId: "nested-comment",
+      }),
+      { message: /Parent comment must be a top level comment\./u },
+    );
   });
 
   it("refreshes an expired token before calling the Linear GraphQL API", async () => {

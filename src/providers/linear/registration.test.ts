@@ -316,6 +316,7 @@ describe("Linear registration", () => {
       },
       readIssueComments: async () => ({ comments: [], complete: true }),
       readAgentSessionActivities: async () => ({ activities: [], complete: true }),
+      readCommentThread: async () => undefined,
       createComment: async () => {},
       createAgentActivity: async () => {},
     };

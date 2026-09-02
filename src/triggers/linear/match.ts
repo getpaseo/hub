@@ -75,15 +75,18 @@ function readLinearInvocationParserMessage(
  * Match Linear's entity-level webhooks onto the small set of workflow-facing events. A scope
  * transition is edge-triggered: an eligible issue creates one run when it enters scope rather
  * than another run for every later title, estimate, or description update.
+ *
+ * `appUserId` is the Linear user the connection acts as; only `thread_with_app` consults it.
  */
 export function matchLinearTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedLinearEvent,
   connectionId?: string | null,
+  appUserId?: string | null,
 ): MatchedLinearTrigger[] {
   return config.triggers.flatMap((trigger) => {
     if (!matchesLinearEvent(trigger.on, event)) return [];
-    if (!matchesTriggerFilter(trigger, event, connectionId)) return [];
+    if (!matchesTriggerFilter(trigger, event, connectionId, appUserId)) return [];
     return [{ event, trigger }];
   });
 }
@@ -138,6 +141,7 @@ function matchesTriggerFilter(
   trigger: MatchedTriggerDefinition,
   event: NormalizedLinearEvent,
   connectionId?: string | null,
+  appUserId?: string | null,
 ): boolean {
   if (trigger.on === "linear.issue_entered_scope") {
     return (
@@ -149,7 +153,9 @@ function matchesTriggerFilter(
   const issue = event.type === "issue" ? event.issue : event.issue;
   if (issue === null || !matchesIssueScope(issue, trigger.filters, connectionId)) return false;
   if (!matchesActor(event, trigger.filters?.from_users)) return false;
-  if (event.type === "comment" && !matchesComment(event, trigger.filters)) return false;
+  if (event.type === "comment" && !matchesComment(event, trigger.filters, appUserId)) {
+    return false;
+  }
   if (event.type === "agent_session" && !matchesText(event.parserMessage, trigger.filters)) {
     return false;
   }
@@ -208,9 +214,28 @@ function matchesOptionalId(allowed: readonly string[], value: string | null): bo
 function matchesComment(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
+  appUserId: string | null | undefined,
 ): boolean {
   if (filter?.replies_only === true && event.comment.parentId === null) return false;
+  if (filter?.thread_with_app === true && !isReplyInThreadWithApp(event, appUserId)) return false;
   return matchesText(event.comment.body, filter);
+}
+
+/**
+ * A reply in a thread the app already commented in. A root comment never qualifies, and an
+ * unread thread (`threadAuthorIds` absent) or an unknown app user fails closed: firing on a
+ * guess would bring back the double runs this filter exists to avoid.
+ */
+function isReplyInThreadWithApp(
+  event: NormalizedLinearCommentEvent,
+  appUserId: string | null | undefined,
+): boolean {
+  return (
+    event.comment.parentId !== null &&
+    typeof appUserId === "string" &&
+    event.threadAuthorIds !== undefined &&
+    event.threadAuthorIds.includes(appUserId)
+  );
 }
 
 function matchesText(body: string, filter: TriggerFilter | undefined): boolean {
