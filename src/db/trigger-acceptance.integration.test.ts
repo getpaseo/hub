@@ -114,6 +114,88 @@ describe("trigger acceptance persistence", () => {
     await database.close();
   }, 120_000);
 
+  it("lists the runs any of the given Linear comments started within one project, newest first", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const projectId = "60000000-0000-4000-8000-000000000001";
+    const otherProjectId = "60000000-0000-4000-8000-000000000002";
+
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('comment-runs-org', 'Comment Runs', 'comment-runs');
+      insert into projects (id, organization_id, name, slug)
+      values
+        ('${projectId}', 'comment-runs-org', 'Default', 'default'),
+        ('${otherProjectId}', 'comment-runs-org', 'Other', 'other');
+    `);
+    await client.close();
+    const revisions = new Map<string, string>();
+    for (const id of [projectId, otherProjectId]) {
+      const revision = await database.insertProjectConfigurationRevision({
+        projectId: id,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash: `comment-runs-config-${id}`,
+      });
+      await database.activateProjectConfigurationRevision(id, revision.id);
+      revisions.set(id, revision.id);
+    }
+    const run = async (
+      runProjectId: string,
+      deliveryId: string,
+      commentId: string | null,
+      createdAt: Date,
+    ) => {
+      const receipt = await database.persistManualEvent({
+        organizationId: "comment-runs-org",
+        projectId: runProjectId,
+        source: "manual.run",
+        deliveryId,
+        receivedAt: createdAt,
+        payload: {},
+      });
+      if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
+      return (
+        await database.createAcceptedTriggerRun({
+          organizationId: "comment-runs-org",
+          projectId: runProjectId,
+          configurationRevisionId: revisions.get(runProjectId)!,
+          providerEventReceiptId: receipt.event.providerEventReceiptId,
+          configuredTriggerName: commentId === null ? "agent-session" : "comment",
+          prompt: "raw",
+          inputs: {},
+          triggerContext: {
+            provider: "linear",
+            event: {
+              linear: {
+                comment:
+                  commentId === null ? null : { id: commentId, body: "raw", parent_id: null },
+              },
+            },
+          },
+          outputContext: { provider: "linear" },
+          deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+          stepIds: ["work"],
+          createdAt,
+        })
+      ).run;
+    };
+    const earlier = await run(projectId, "comment-1-earlier", "comment-1", new Date(1_000));
+    const later = await run(projectId, "comment-1-later", "comment-1", new Date(2_000));
+    const other = await run(projectId, "comment-2", "comment-2", new Date(3_000));
+    await run(projectId, "session", null, new Date(4_000));
+    await run(otherProjectId, "comment-1-elsewhere", "comment-1", new Date(5_000));
+
+    const ids = async (commentIds: readonly string[]) =>
+      (await database.listTriggerRunsForLinearComments(projectId, commentIds)).map((r) => r.id);
+    assert.deepEqual(await ids(["comment-1"]), [later.id, earlier.id]);
+    assert.deepEqual(await ids(["comment-2", "comment-1"]), [other.id, later.id, earlier.id]);
+    assert.deepEqual(await ids(["comment-3"]), []);
+    assert.deepEqual(await ids([]), []);
+    await database.close();
+  }, 120_000);
+
   it("durably drops Linear events until the connection has the required scopes", async () => {
     const database = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);

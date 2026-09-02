@@ -98,6 +98,34 @@ const IssueCommentHistoryResponseSchema = z.object({
   }),
 });
 
+const CommentAuthorSchema = z.object({
+  user: z
+    .object({ id: z.string().min(1) })
+    .nullable()
+    .optional(),
+  botActor: z
+    .object({ id: z.string().min(1).nullable().optional() })
+    .nullable()
+    .optional(),
+});
+
+const CommentRepliesSchema = z.object({ nodes: z.array(CommentAuthorSchema) });
+
+const CommentThreadResponseSchema = z.object({
+  data: z.object({
+    comment: CommentAuthorSchema.extend({
+      id: z.string().min(1),
+      parent: CommentAuthorSchema.extend({
+        id: z.string().min(1),
+        children: CommentRepliesSchema,
+      })
+        .nullable()
+        .optional(),
+      children: CommentRepliesSchema,
+    }).nullable(),
+  }),
+});
+
 const CommentResponseSchema = z.object({
   data: z.object({
     commentCreate: z.object({ success: z.literal(true) }),
@@ -192,6 +220,13 @@ export interface LinearIssueComment {
   author: { id: string; name?: string } | null;
 }
 
+export interface LinearCommentThread {
+  /** The thread root: the comment's parent when it is a reply, otherwise the comment itself. */
+  rootId: string;
+  /** Distinct authors of the root and its replies: `user.id`, or `botActor.id` without a user. */
+  authorIds: string[];
+}
+
 export interface LinearIssueCommentHistory {
   comments: LinearIssueComment[];
   complete: boolean;
@@ -219,8 +254,15 @@ export interface LinearAgentActivityHistory {
 }
 
 export interface LinearAgentActivityContent {
-  type: "thought" | "response" | "error";
+  type: "thought" | "response" | "error" | "elicitation";
   body: string;
+}
+
+/** Linear renders a `select` elicitation as a choice list built from `signalMetadata.options`. */
+export type LinearAgentActivitySignal = "select";
+
+export interface LinearAgentActivitySignalMetadata {
+  options: Array<{ label: string; value: string }>;
 }
 
 export interface LinearApiClient {
@@ -238,16 +280,25 @@ export interface LinearApiClient {
     agentSessionId: string;
     beforeCreatedAt: string;
   }): Promise<LinearAgentActivityHistory>;
+  /** The thread a comment belongs to; `undefined` when Linear no longer has the comment. */
+  readCommentThread(input: {
+    linearOrganizationId: string;
+    commentId: string;
+  }): Promise<LinearCommentThread | undefined>;
   createComment(input: {
     linearOrganizationId: string;
     issueId: string;
     body: string;
+    /** Top-level comment to reply under; Linear rejects a nested comment as parent. */
+    parentId?: string;
   }): Promise<void>;
   createAgentActivity(input: {
     linearOrganizationId: string;
     agentSessionId: string;
     content: LinearAgentActivityContent;
     ephemeral?: boolean;
+    signal?: LinearAgentActivitySignal;
+    signalMetadata?: LinearAgentActivitySignalMetadata;
   }): Promise<void>;
 }
 
@@ -548,13 +599,47 @@ export function createLinearApiClient(options: {
         complete: !result.data.agentSession.activities.pageInfo.hasPreviousPage,
       };
     },
+    async readCommentThread(input) {
+      const result = CommentThreadResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `query PaseoCommentThread($id: String!) {
+            comment(id: $id) {
+              id user { id } botActor { id }
+              parent {
+                id user { id } botActor { id }
+                children(first: 100) { nodes { user { id } botActor { id } } }
+              }
+              children(first: 100) { nodes { user { id } botActor { id } } }
+            }
+          }`,
+          variables: { id: input.commentId },
+        }),
+      );
+      const comment = result.data.comment;
+      if (comment === null) return undefined;
+      // Linear threads are one level deep: a reply's parent is the root, and the root's
+      // children are the whole thread.
+      const root = comment.parent ?? comment;
+      const authorIds = new Set<string>();
+      for (const author of [root, ...root.children.nodes]) {
+        const id = author.user?.id ?? author.botActor?.id ?? undefined;
+        if (id !== undefined) authorIds.add(id);
+      }
+      return { rootId: root.id, authorIds: [...authorIds] };
+    },
     async createComment(input) {
       const result = CommentResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
-          query: `mutation PaseoComment($issueId: String!, $body: String!) {
-            commentCreate(input: { issueId: $issueId, body: $body }) { success }
+          query: `mutation PaseoComment($issueId: String!, $body: String!, $parentId: String) {
+            commentCreate(input: { issueId: $issueId, body: $body, parentId: $parentId }) {
+              success
+            }
           }`,
-          variables: { issueId: input.issueId, body: input.body },
+          variables: {
+            issueId: input.issueId,
+            body: input.body,
+            ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
+          },
         }),
       );
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
@@ -566,17 +651,23 @@ export function createLinearApiClient(options: {
             $agentSessionId: String!
             $content: JSONObject!
             $ephemeral: Boolean
+            $signal: AgentActivitySignal
+            $signalMetadata: JSONObject
           ) {
             agentActivityCreate(input: {
               agentSessionId: $agentSessionId
               content: $content
               ephemeral: $ephemeral
+              signal: $signal
+              signalMetadata: $signalMetadata
             }) { success }
           }`,
           variables: {
             agentSessionId: input.agentSessionId,
             content: input.content,
             ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }),
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            ...(input.signalMetadata === undefined ? {} : { signalMetadata: input.signalMetadata }),
           },
         }),
       );
