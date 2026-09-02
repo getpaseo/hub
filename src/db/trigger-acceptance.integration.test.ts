@@ -196,6 +196,107 @@ describe("trigger acceptance persistence", () => {
     await database.close();
   }, 120_000);
 
+  it("persists Linear comment and stop suppression at run creation", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const organizationId = "linear-control-org";
+    const projectId = "61000000-0000-4000-8000-000000000001";
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('${organizationId}', 'Linear Control', 'linear-control');
+      insert into projects (id, organization_id, name, slug)
+      values ('${projectId}', '${organizationId}', 'Default', 'default');
+    `);
+    await client.close();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-control-config",
+    });
+    await database.activateProjectConfigurationRevision(projectId, revision.id);
+    const receipt = async (deliveryId: string, eventOccurredAt: Date) => {
+      const persisted = await database.persistManualEvent({
+        organizationId,
+        projectId,
+        source: "linear.agent_session",
+        deliveryId,
+        payload: {},
+        receivedAt: eventOccurredAt,
+      });
+      if (persisted.status !== "accepted") throw new Error("expected accepted receipt");
+      return persisted.event.providerEventReceiptId;
+    };
+    const runInput = (providerEventReceiptId: string, configuredTriggerName: string) => ({
+      organizationId,
+      projectId,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId,
+      configuredTriggerName,
+      prompt: "raw",
+      inputs: {},
+      triggerContext: {},
+      outputContext: { provider: "linear" },
+      deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+      stepIds: ["work"],
+    });
+    const commentReceipt = await receipt("linear-control-comment", new Date("2026-01-01"));
+    const sessionReceipt = await receipt("linear-control-session", new Date("2026-01-02"));
+    await database.recordLinearTriggerSuppressions({
+      organizationId,
+      projectId,
+      providerEventReceiptId: sessionReceipt,
+      reason: "superseded_by_agent_session",
+      externalIds: ["comment-1"],
+      eventOccurredAt: new Date("2026-01-02"),
+    });
+    const comment = await database.createAcceptedLinearTriggerRun({
+      ...runInput(commentReceipt, "comment"),
+      linearTrigger: {
+        kind: "comment",
+        externalId: "comment-1",
+      },
+    });
+    assert.deepEqual(comment, {
+      created: false,
+      suppressionReason: "superseded_by_agent_session",
+    });
+
+    const oldSessionReceipt = await receipt("linear-control-old-session", new Date("2026-01-03"));
+    const stopReceipt = await receipt("linear-control-stop", new Date("2026-01-04"));
+    await database.recordLinearTriggerSuppressions({
+      organizationId,
+      projectId,
+      providerEventReceiptId: stopReceipt,
+      reason: "stopped_by_user",
+      externalIds: ["session-1"],
+      eventOccurredAt: new Date("2026-01-04"),
+    });
+    const stopped = await database.createAcceptedLinearTriggerRun({
+      ...runInput(oldSessionReceipt, "old-session"),
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-03"),
+      },
+    });
+    assert.deepEqual(stopped, { created: false, suppressionReason: "stopped_by_user" });
+
+    const laterReceipt = await receipt("linear-control-later-session", new Date("2026-01-05"));
+    const later = await database.createAcceptedLinearTriggerRun({
+      ...runInput(laterReceipt, "later-session"),
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-05"),
+      },
+    });
+    assert.equal(later.created, true);
+    assert.equal("suppressionReason" in later, false);
+    await database.close();
+  }, 120_000);
+
   it("durably drops Linear events until the connection has the required scopes", async () => {
     const database = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);
