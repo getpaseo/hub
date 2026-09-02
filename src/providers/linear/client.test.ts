@@ -218,9 +218,19 @@ describe("Linear connection client", () => {
     });
   });
 
-  it("reads a comment's thread root and the distinct authors who wrote in it", async () => {
+  it("reads a comment's thread root, its distinct authors, and the issue's session roots", async () => {
     const requests: string[] = [];
     const connection = linearConnection();
+    let issue: unknown = {
+      agentSessions: {
+        nodes: [
+          { comment: { id: "session-root" } },
+          { comment: { id: "session-root" } },
+          { comment: null },
+          { comment: { id: "root-1" } },
+        ],
+      },
+    };
     let parent: unknown = {
       id: "root-1",
       user: { id: "user-1" },
@@ -271,6 +281,7 @@ describe("Linear connection client", () => {
                 nodes: [],
                 pageInfo: { hasNextPage: false, endCursor: null },
               },
+              issue,
             },
           },
         });
@@ -279,28 +290,38 @@ describe("Linear connection client", () => {
 
     assert.deepEqual(
       await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
-      { rootId: "root-1", authorIds: ["user-1", "bot-1", "app-user"] },
+      {
+        rootId: "root-1",
+        authorIds: ["user-1", "bot-1", "app-user"],
+        agentSessionRootIds: ["session-root", "root-1"],
+      },
     );
     const request = graphqlRequest(requests[0] ?? "{}");
     assert.match(request.query, /comment\(id: \$id\)/u);
     assert.match(request.query, /parent \{[\s\S]*children\(first: 100, after: \$after\)/u);
     assert.match(request.query, /pageInfo \{ hasNextPage endCursor \}/u);
+    assert.match(
+      request.query,
+      /issue \{ agentSessions\(first: 50\) \{ nodes \{ comment \{ id \} \} \} \}/u,
+    );
     assert.deepEqual(request.variables, { id: "reply-2", after: null });
     assert.deepEqual(graphqlRequest(requests[1] ?? "{}").variables, {
       id: "root-1",
       after: "cursor-100",
     });
 
-    // A root comment is its own thread root.
+    // A root comment is its own thread root; a comment without an issue has no sessions.
     parent = null;
+    issue = null;
     assert.deepEqual(
       await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
-      { rootId: "reply-2", authorIds: ["user-2"] },
+      { rootId: "reply-2", authorIds: ["user-2"], agentSessionRootIds: [] },
     );
     assert.deepEqual(graphqlRequest(requests[2] ?? "{}").variables, {
       id: "reply-2",
       after: null,
     });
+    assert.equal(requests.length, 3);
   });
 
   it("reads bounded agent-session activity before the prompting activity", async () => {

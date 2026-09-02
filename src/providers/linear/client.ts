@@ -128,6 +128,21 @@ const CommentThreadResponseSchema = z.object({
         .nullable()
         .optional(),
       children: CommentRepliesSchema,
+      issue: z
+        .object({
+          agentSessions: z.object({
+            nodes: z.array(
+              z.object({
+                comment: z
+                  .object({ id: z.string().min(1) })
+                  .nullable()
+                  .optional(),
+              }),
+            ),
+          }),
+        })
+        .nullable()
+        .optional(),
     }).nullable(),
   }),
 });
@@ -231,6 +246,12 @@ export interface LinearCommentThread {
   rootId: string;
   /** Distinct authors of the root and its replies: `user.id`, or `botActor.id` without a user. */
   authorIds: string[];
+  /**
+   * Root comments of the issue's agent-session threads. Linear materializes a session as a
+   * comment thread (bot root, human prompts, app responses), so one of these as `rootId` marks
+   * a thread the session already handles.
+   */
+  agentSessionRootIds: string[];
 }
 
 export interface LinearIssueCommentHistory {
@@ -608,6 +629,7 @@ export function createLinearApiClient(options: {
     async readCommentThread(input) {
       const accessToken = await accessTokenFor(input.linearOrganizationId);
       const authorIds = new Set<string>();
+      const agentSessionRootIds = new Set<string>();
       let commentId = input.commentId;
       let after: string | null = null;
       let rootId: string | undefined;
@@ -628,6 +650,7 @@ export function createLinearApiClient(options: {
                 nodes { user { id } botActor { id } }
                 pageInfo { hasNextPage endCursor }
               }
+              issue { agentSessions(first: 50) { nodes { comment { id } } } }
             }
           }`,
             variables: { id: commentId, after },
@@ -635,6 +658,11 @@ export function createLinearApiClient(options: {
         );
         const comment = result.data.comment;
         if (comment === null) return undefined;
+        for (const session of comment.issue?.agentSessions.nodes ?? []) {
+          if (session.comment !== undefined && session.comment !== null) {
+            agentSessionRootIds.add(session.comment.id);
+          }
+        }
         // Linear threads are one level deep: a reply's parent is the root, and the root's
         // children are the whole thread.
         const root = comment.parent ?? comment;
@@ -644,7 +672,11 @@ export function createLinearApiClient(options: {
           if (id !== undefined) authorIds.add(id);
         }
         if (!root.children.pageInfo.hasNextPage) {
-          return { rootId, authorIds: [...authorIds] };
+          return {
+            rootId,
+            authorIds: [...authorIds],
+            agentSessionRootIds: [...agentSessionRootIds],
+          };
         }
         after = root.children.pageInfo.endCursor;
         if (after === null) throw new Error("Linear comment thread page omitted its cursor");
