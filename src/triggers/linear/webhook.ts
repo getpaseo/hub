@@ -124,10 +124,10 @@ async function handoffLinearEvent(
     const hasCompleteTeamRoute =
       eventTeamId(event) !== undefined &&
       hasExplicitNullLinearProject(verified.payload, verified.eventName);
-    // Comment and Agent Session issue relations can be compact: their explicit projectless team
-    // route is sufficient for binding, but not for state, assignee, or label filters.
+    // Issue webhooks carry their filter fields directly. Comment and Agent Session issue
+    // relations can be compact even when they already identify a project or team.
     const needsIssueHydration =
-      eventProjectId(event) === undefined && (!hasCompleteTeamRoute || event.type !== "issue");
+      event.type !== "issue" || (eventProjectId(event) === undefined && !hasCompleteTeamRoute);
     if (needsIssueHydration && options.resolveIssue !== undefined) {
       const source = linearEventSource(event);
       if (
