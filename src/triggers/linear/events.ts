@@ -47,6 +47,12 @@ export const NormalizedLinearCommentEventSchema = z.object({
     parentId: LinearIdSchema.nullable(),
   }),
   issue: LinearIssueSchema.nullable(),
+  /**
+   * Author IDs of the thread root and its replies (`user.id`, or `botActor.id` for integration
+   * comments). The webhook does not carry them: the trigger provider fills them when a filter
+   * needs them, and leaves them absent when the thread was not or could not be read.
+   */
+  threadAuthorIds: z.array(LinearIdSchema).optional(),
   occurredAt: z.string().datetime().optional(),
 });
 
@@ -62,6 +68,10 @@ export const NormalizedLinearAgentSessionEventSchema = z.object({
     issueId: LinearIdSchema,
     status: z.string().min(1),
     url: z.string().url().optional(),
+    /** The root comment of the thread the session is attached to, when it was opened from one. */
+    rootCommentId: LinearIdSchema.optional(),
+    /** The comment that created the session: the root itself, or a reply that mentioned the app. */
+    sourceCommentId: LinearIdSchema.optional(),
   }),
   agentActivity: z
     .object({
@@ -69,6 +79,8 @@ export const NormalizedLinearAgentSessionEventSchema = z.object({
       type: z.literal("prompt"),
       body: z.string(),
       createdAt: z.string().datetime(),
+      /** Linear's `stop` signal asks the agent to abandon the turn instead of starting one. */
+      signal: z.literal("stop").optional(),
     })
     .nullable(),
   /** The canonical prompt given to the workflow. `created` uses Linear's promptContext. */
@@ -250,6 +262,15 @@ function normalizeAgentSessionEvent(
   const turn = normalizeAgentSessionTurn({ action, payload, session, issue, promptContext });
   if (turn === undefined) return undefined;
   const url = readString(session["url"]);
+  const rootCommentId = firstDefined(
+    readString(asRecord(session["comment"])?.["id"]),
+    readString(session["commentId"]),
+  );
+  const sourceCommentId = firstDefined(
+    readString(asRecord(session["sourceComment"])?.["id"]),
+    readString(session["sourceCommentId"]),
+    readString(payload["sourceCommentId"]),
+  );
   return NormalizedLinearAgentSessionEventSchema.parse({
     type: "agent_session",
     action,
@@ -262,6 +283,8 @@ function normalizeAgentSessionEvent(
       issueId,
       status,
       ...(url === undefined ? {} : { url }),
+      ...(rootCommentId === undefined ? {} : { rootCommentId }),
+      ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
     },
     agentActivity: turn.activity ?? null,
     prompt: turn.prompt,
@@ -367,17 +390,27 @@ function normalizePromptActivity(value: unknown):
       type: "prompt";
       body: string;
       createdAt: string;
+      signal?: "stop";
     }
   | undefined {
   const activity = asRecord(value);
   const content = asRecord(activity?.["content"]);
   if (activity === undefined || content?.["type"] !== "prompt") return undefined;
   const id = readString(activity["id"]);
-  const body = readString(content["body"]);
+  // Linear serializes the signal beside the content; older payloads nested it inside.
+  const signal = readStopSignal(activity["signal"]) ?? readStopSignal(content["signal"]);
+  // A stop prompt carries no user text, but the event still needs a non-empty prompt. The
+  // synthetic "Stop" body never reaches a run: the provider handles a `stop` signal before
+  // trigger matching and drops the event as `agent_session_stopped`.
+  const body = readString(content["body"]) ?? (signal === undefined ? undefined : "Stop");
   const createdAt = readDate(activity["createdAt"]);
   return id === undefined || body === undefined || createdAt === undefined
     ? undefined
-    : { id, type: "prompt", body, createdAt };
+    : { id, type: "prompt", body, createdAt, ...(signal === undefined ? {} : { signal }) };
+}
+
+function readStopSignal(value: unknown): "stop" | undefined {
+  return value === "stop" ? "stop" : undefined;
 }
 
 function issuePrompt(issue: NormalizedLinearIssue | null): string | undefined {
