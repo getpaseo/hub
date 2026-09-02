@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
+import type { BillingPlanPriceInterval } from "../../db/types.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 /**
  * Copy rules, not the product catalog. Where several plans are needed to pin generic behaviour
@@ -15,18 +16,31 @@ import {
   subscriptionSummary,
 } from "./presentation.js";
 
-const euros = (unitAmount: number) => ({ unitAmount, currency: "eur" });
+const euros = (unitAmount: number, interval: BillingPlanPriceInterval = "monthly") => ({
+  interval,
+  intervalCount: 1 as const,
+  unitAmount,
+  currency: "eur",
+  tooltip: null,
+});
 
 function plan(
   slug: string,
   name: string,
-  prices: Partial<PublicBillingPlan["prices"]>,
+  prices: Partial<Record<BillingPlanPriceInterval, ReturnType<typeof euros>>>,
 ): PublicBillingPlan {
   return {
     slug,
     name,
-    marketingFeatures: [],
-    prices: { monthly: null, annual: null, ...prices },
+    billing: {
+      model: "per_unit",
+      unit: {
+        key: "seat",
+        label: "seat",
+      },
+    },
+    features: [],
+    prices: Object.values(prices),
   };
 }
 
@@ -49,11 +63,11 @@ function subscription(
 it("prices a paid plan as a figure the customer can read at a glance", () => {
   assert.deepEqual(planPrice(euros(1500), "monthly"), {
     amount: "€15",
-    unit: "per user / month",
+    unit: "per seat / month",
   });
-  assert.deepEqual(planPrice(euros(15000), "annual"), {
+  assert.deepEqual(planPrice(euros(15000, "annual"), "annual"), {
     amount: "€150",
-    unit: "per user / year",
+    unit: "per seat / year",
   });
 });
 
@@ -127,12 +141,17 @@ it("disables a plan the catalog does not price at the selected interval", () => 
 
 it("hides the interval switch for a catalog that only charges monthly", () => {
   const plans = [
-    plan("free", "Free", { monthly: euros(0), annual: euros(0) }),
+    plan("free", "Free", { monthly: euros(0), annual: euros(0, "annual") }),
     plan("starter", "Starter", { monthly: euros(1500) }),
   ];
   assert.deepEqual(offeredIntervals(plans), ["monthly"]);
   assert.deepEqual(
-    offeredIntervals([plan("starter", "Starter", { monthly: euros(1500), annual: euros(15000) })]),
+    offeredIntervals([
+      plan("starter", "Starter", {
+        monthly: euros(1500),
+        annual: euros(15000, "annual"),
+      }),
+    ]),
     ["monthly", "annual"],
   );
   // A catalog with nothing priced still has to render at one interval.

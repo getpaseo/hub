@@ -4,7 +4,7 @@ import { handleBillingPlans } from "../../../server/runtime.js";
 // Public, unauthenticated, read-only — the contract the marketing site consumes. Registered in
 // the route tree but only answers on a billing-configured (hosted) instance; a self-hosted
 // instance has no billing surface, so the endpoint 404s as if it were never registered. See the
-// plan's "Stripe is the plan catalog's source of truth" section and docs/public-api.md.
+// billing catalog boundary in docs/billing.md.
 export const Route = createFileRoute("/api/billing/plans")({
   server: {
     handlers: {

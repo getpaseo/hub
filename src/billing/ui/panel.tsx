@@ -145,14 +145,14 @@ function PlanIdentity({
 
 /** What the organization is actually entitled to right now, in the plan author's own words. */
 function PlanIncludes({ plan }: { plan: PublicBillingPlan }) {
-  if (plan.marketingFeatures.length === 0) return null;
+  if (plan.features.length === 0) return null;
   return (
     <div className="border-t bg-muted/20 p-5 sm:p-6">
       <ul className="grid gap-2 text-sm sm:grid-cols-2 sm:gap-x-6">
-        {plan.marketingFeatures.map((feature) => (
-          <li key={feature} className="flex items-start gap-2">
+        {plan.features.map((feature) => (
+          <li key={feature.key} className="flex items-start gap-2">
             <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-            <span>{feature}</span>
+            <span title={feature.tooltip ?? undefined}>{feature.label}</span>
           </li>
         ))}
       </ul>

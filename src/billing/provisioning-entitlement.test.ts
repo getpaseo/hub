@@ -43,7 +43,10 @@ function freePlan(overrides: Partial<SyncBillingPlanInput> = {}): SyncBillingPla
       meters: { "executions.monthly": { limit: 0 } },
     },
     templateHash: "hash-free",
-    marketing: { features: ["1 seat"] },
+    marketing: {
+      features: [{ key: "feature-1", label: "1 seat", tooltip: null }],
+      priceTooltips: { monthly: null, annual: null },
+    },
     active: true,
     prices: [],
     ...overrides,

@@ -938,8 +938,15 @@ export interface ConsumeOrganizationUsageInput {
 
 export type BillingPlanPriceInterval = "monthly" | "annual";
 
+export interface BillingPlanMarketingFeature {
+  key: string;
+  label: string;
+  tooltip: string | null;
+}
+
 export interface BillingPlanMarketing {
-  features: readonly string[];
+  features: readonly BillingPlanMarketingFeature[];
+  priceTooltips: Record<BillingPlanPriceInterval, string | null>;
 }
 
 export interface BillingPlanPriceRecord {
@@ -956,7 +963,7 @@ export interface BillingPlanPriceRecord {
  * `template` and `marketing` are `unknown` at the storage boundary, matching
  * `OrganizationEntitlementsRecord` above — both were validated once by `src/billing/` before
  * `syncBillingPlan` was called. The public plans projection re-parses `marketing`
- * (`application-runtime.ts`) and never reads `template` at all; the (future) stamping path
+ * (`src/billing/public-catalog.ts`) and never reads `template` at all; entitlement stamping
  * re-parses `template`.
  */
 export interface BillingPlanRecord {

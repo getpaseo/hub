@@ -20,6 +20,7 @@ import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 import { selectActivePlanPrice } from "./plan-prices.js";
 import { publicBillingPlans, type PublicBillingPlan } from "./public-catalog.js";
+import { HUB_PLAN_PRESENTATIONS, type BillingPlanPresentations } from "./plan-presentation.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -36,7 +37,11 @@ export type {
 } from "./stripe-catalog-source.js";
 export type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js";
-export type { PublicBillingPlan, PublicBillingPlanPrice } from "./public-catalog.js";
+export type {
+  PublicBillingPlan,
+  PublicBillingPlanFeature,
+  PublicBillingPlanPrice,
+} from "./public-catalog.js";
 
 /**
  * The four Stripe events that mean "the plan catalog may have changed" — see the plan's
@@ -117,6 +122,8 @@ export interface ComposeBillingOptions {
   billingClient: StripeBillingClient;
   /** Reads an organization's live seat count for post-paid quantity reporting. */
   seatUsage: SeatUsageReader;
+  /** Hub-owned customer-facing plan copy. Production uses the built-in catalog. */
+  presentations?: BillingPlanPresentations;
 }
 
 export interface CreateCheckoutInput {
@@ -184,12 +191,13 @@ export class BillingRuntime {
     private readonly catalogSource: StripeCatalogSource,
     private readonly billingClient: StripeBillingClient,
     private readonly seatUsage: SeatUsageReader,
+    private readonly presentations: BillingPlanPresentations,
   ) {
     this.stripe = new StripeSDK(config.stripeSecretKey);
   }
 
   async syncCatalog(): Promise<void> {
-    await syncBillingCatalog(this.catalogSource, this.database);
+    await syncBillingCatalog(this.catalogSource, this.database, this.presentations);
   }
 
   /**
@@ -596,5 +604,6 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.catalogSource,
     options.billingClient,
     options.seatUsage,
+    options.presentations ?? HUB_PLAN_PRESENTATIONS,
   );
 }

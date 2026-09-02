@@ -2,13 +2,16 @@ import type { Database, SyncBillingPlanInput, SyncBillingPlanPriceInput } from "
 import { hashTemplate } from "../entitlements/catalog.js";
 import { reportFailure } from "../failures/index.js";
 import { parsePlanMetadata, type ParsedPlanTemplate } from "./plan-template.js";
+import {
+  HUB_PLAN_PRESENTATIONS,
+  type BillingPlanPresentation,
+  type BillingPlanPresentations,
+} from "./plan-presentation.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
   StripeCatalogSource,
 } from "./stripe-catalog-source.js";
-
-const MAX_MARKETING_FEATURES = 15;
 
 /**
  * Mirrors the Stripe plan catalog into `billing_plans`/`billing_plan_prices` as one reconciled
@@ -28,6 +31,7 @@ const MAX_MARKETING_FEATURES = 15;
 export async function syncBillingCatalog(
   source: StripeCatalogSource,
   database: Database,
+  presentations: BillingPlanPresentations = HUB_PLAN_PRESENTATIONS,
 ): Promise<void> {
   const [products, prices] = await Promise.all([source.listProducts(), source.listPrices()]);
   const pricesByProduct = groupPricesByProduct(prices);
@@ -61,8 +65,19 @@ export async function syncBillingCatalog(
       );
       continue;
     }
+    const presentation = presentations[result.data.slug];
+    if (presentation === undefined) {
+      reportFailure(
+        Object.assign(new Error("Billing plan has no Hub presentation"), {
+          code: "missing_plan_presentation",
+        }),
+        { operation: "billing.catalog.product.validate", component: "billing" },
+        { kind: "validation", diagnostic: { productId: product.id } },
+      );
+      continue;
+    }
     await database.syncBillingPlan(
-      planInput(product, result.data, pricesByProduct.get(product.id) ?? []),
+      planInput(product, result.data, pricesByProduct.get(product.id) ?? [], presentation),
     );
   }
   await database.deactivateBillingPlansExcept(products.map((product) => product.id));
@@ -83,14 +98,18 @@ function planInput(
   product: StripeCatalogProduct,
   parsed: ParsedPlanTemplate,
   productPrices: readonly StripeCatalogPrice[],
+  presentation: BillingPlanPresentation,
 ): SyncBillingPlanInput {
   return {
     id: product.id,
     slug: parsed.slug,
-    name: product.name,
+    name: presentation.name,
     template: parsed.template,
     templateHash: hashTemplate(parsed.template),
-    marketing: { features: product.marketingFeatures.slice(0, MAX_MARKETING_FEATURES) },
+    marketing: {
+      features: presentation.features.map((feature) => ({ ...feature })),
+      priceTooltips: { ...presentation.priceTooltips },
+    },
     active: product.active,
     prices: syncablePrices(product.id, productPrices),
   };

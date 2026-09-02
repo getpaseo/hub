@@ -15,6 +15,7 @@ import {
   offeredIntervals,
   planAction,
   planPrice,
+  priceForInterval,
   TRIAL_DAYS,
 } from "./presentation.js";
 
@@ -191,7 +192,7 @@ function PlanCard({
   pending: boolean;
   onChoose: (planSlug: string) => void;
 }) {
-  const price = plan.prices[interval];
+  const price = priceForInterval(plan, interval);
   const action = planAction({ planName: plan.name, price, isCurrent, trialEligible });
   const { amount, unit } = planPrice(price, interval);
   const choose = useCallback(() => onChoose(plan.slug), [onChoose, plan.slug]);
@@ -212,10 +213,10 @@ function PlanCard({
           isCurrent && "hidden sm:grid",
         )}
       >
-        {plan.marketingFeatures.map((feature) => (
-          <li key={feature} className="flex items-start gap-2">
+        {plan.features.map((feature) => (
+          <li key={feature.key} className="flex items-start gap-2">
             <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-            <span>{feature}</span>
+            <span title={feature.tooltip ?? undefined}>{feature.label}</span>
           </li>
         ))}
       </ul>

@@ -894,7 +894,6 @@ export class PaseoHub {
         ent_can_invite: "true",
         ent_executions_monthly_limit: "unlimited",
       },
-      marketingFeatures: [],
     });
     await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
 
@@ -908,7 +907,6 @@ export class PaseoHub {
       name: "Paseo Hub",
       active: true,
       metadata: { paseo_plan: "false" },
-      marketingFeatures: [],
     });
     await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
     // Nothing left to sell. The free record is still mirrored for entitlement stamping, so an
@@ -4188,7 +4186,7 @@ class HubUser {
   private async expectPickerShowsOnlyTheOffer(dialog: Locator): Promise<void> {
     await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([HOSTED_PLAN_NAME]);
     await expect(dialog).toContainText("€15");
-    await expect(dialog).toContainText("per user / month");
+    await expect(dialog).toContainText("per seat / month");
     await expect(dialog).not.toContainText("0 executions");
     await expect(dialog).not.toContainText("Choose your plan");
     await expect(dialog).not.toContainText("Recommended");
@@ -5242,11 +5240,18 @@ const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
 interface PublicBillingPlanExpectation {
   slug: string;
   name: string;
-  marketingFeatures: readonly string[];
-  prices: {
-    monthly: { unitAmount: number; currency: string } | null;
-    annual: { unitAmount: number; currency: string } | null;
+  billing: {
+    model: "per_unit";
+    unit: { key: "seat"; label: "seat" };
   };
+  features: readonly { key: string; label: string; tooltip: string | null }[];
+  prices: readonly {
+    interval: "monthly" | "annual";
+    intervalCount: 1;
+    unitAmount: number;
+    currency: string;
+    tooltip: string | null;
+  }[];
 }
 
 /**
@@ -5258,13 +5263,36 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
   {
     slug: "hosted",
     name: "Paseo Hub",
-    marketingFeatures: [
-      "Unlimited daemons",
-      "GitHub, Linear, Slack, and Discord triggers",
-      "Versioned workflows and activity",
-      "Bring your own agents and inference",
+    billing: {
+      model: "per_unit",
+      unit: {
+        key: "seat",
+        label: "seat",
+      },
+    },
+    features: [
+      {
+        key: "feature-1",
+        label: "Unlimited daemons",
+        tooltip: "Connect any number of development machines.",
+      },
+      {
+        key: "feature-2",
+        label: "GitHub, Linear, Slack, and Discord triggers",
+        tooltip: "Start agents from supported provider events.",
+      },
+      { key: "feature-3", label: "Versioned workflows and activity", tooltip: null },
+      { key: "feature-4", label: "Bring your own agents and inference", tooltip: null },
     ],
-    prices: { monthly: { unitAmount: 1500, currency: "eur" }, annual: null },
+    prices: [
+      {
+        interval: "monthly",
+        intervalCount: 1,
+        unitAmount: 1500,
+        currency: "eur",
+        tooltip: "€15 per seat, billed monthly.",
+      },
+    ],
   },
 ];
 /** The one plan the fixture catalog — and the live Stripe catalog — publishes. */
