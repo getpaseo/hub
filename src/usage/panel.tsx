@@ -13,6 +13,7 @@ import type { EntitlementChangeSource } from "../db/types.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { UsageDashboard, UsageMeasure } from "./dashboard.js";
 import { usageSnapshot } from "./functions.js";
+import { overLimit } from "./limits.js";
 
 type Snapshot = Awaited<ReturnType<UsageDashboard["snapshot"]>>;
 
@@ -120,7 +121,7 @@ const LIMITS_EMPTY = { title: "No limits" };
  * operator's to raise. Renders nothing while within the seat limit.
  */
 function SeatOverLimitBanner({ seats }: { seats: UsageMeasure }) {
-  if (seats.limit === null || seats.used <= seats.limit) return null;
+  if (!overLimit(seats)) return null;
   return (
     <Alert aria-label="Over limit" className="border-warning/40 bg-warning-surface">
       <TriangleAlert className="text-warning" />

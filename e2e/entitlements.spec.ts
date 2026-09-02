@@ -9,7 +9,6 @@ const owner = {
   password: "amara-entitlements-password",
 };
 const secondMember = "bela-entitlements@example.com";
-const thirdMember = "cyrus-entitlements@example.com";
 const meterOwner = {
   name: "Deo",
   email: "deo-entitlements@example.com",
@@ -67,9 +66,11 @@ test("an operator caps seats, a blocked invite explains itself, and the audit tr
     await hub.inviteMember("owner", secondMember, "member");
   });
 
-  await test.step("a third invite is refused with a message that names the limit", async () => {
-    await hub.expectInviteRefusedBySeatLimit("owner", thirdMember, { limit: 2, current: 2 });
-    await page.screenshot({ path: `${SLICE_2_DIR}/03-invite-refused.png`, fullPage: true });
+  await test.step("a third invite is locked, and the lock names the limit", async () => {
+    await hub.expectInviteLockedBySeatLimit("owner", { limit: 2, current: 2 });
+    await page.screenshot({ path: `${SLICE_2_DIR}/03-invite-locked.png`, fullPage: true });
+    // Self-hosted there is no plan to buy, so the lock leads to the page that names the limit.
+    await hub.followInviteLockToUsage("owner");
   });
 
   await test.step("the operator audit trail records who capped seats and why", async () => {

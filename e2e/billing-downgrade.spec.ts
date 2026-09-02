@@ -28,7 +28,6 @@ const invitees = [
   "three-downgrade@example.com",
   "four-downgrade@example.com",
 ];
-const sixthInvitee = "five-downgrade@example.com";
 
 test("losing the plan keeps every seat, warns that the org is over its limit, and blocks a new invite", async ({
   hub,
@@ -59,9 +58,9 @@ test("losing the plan keeps every seat, warns that the org is over its limit, an
     await page.screenshot({ path: `${DIR}/02-over-limit-banner.png`, fullPage: true });
   });
 
-  await test.step("a sixth invite is refused — the floor blocks growth past the cap", async () => {
-    await hub.expectInviteBlockedByPlan("owner", sixthInvitee);
-    await page.screenshot({ path: `${DIR}/03-invite-blocked.png`, fullPage: true });
+  await test.step("a sixth invite is locked — the floor blocks growth past the cap", async () => {
+    await hub.expectInviteLockedByPlan("owner");
+    await page.screenshot({ path: `${DIR}/03-invite-locked.png`, fullPage: true });
   });
 });
 

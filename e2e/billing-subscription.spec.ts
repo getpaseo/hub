@@ -14,7 +14,6 @@ const owner = {
   password: "nadia-billing-password",
 };
 const invitee = "teammate-billing@example.com";
-const afterCancelInvitee = "post-cancel-billing@example.com";
 
 const SLICE_6_DIR = "e2e/screenshots/slice-6";
 
@@ -35,11 +34,14 @@ test("subscribing lifts an unsubscribed org's invite limit, and replaying the we
   });
 
   await test.step("an organization on the one-seat floor cannot invite", async () => {
-    await hub.expectInviteBlockedByPlan("owner", invitee);
-    await page.screenshot({ path: `${SLICE_6_DIR}/02-invite-blocked.png`, fullPage: true });
+    await hub.expectInviteLockedByPlan("owner");
+    await page.screenshot({ path: `${SLICE_6_DIR}/02-invite-locked.png`, fullPage: true });
   });
 
   await test.step("open the upgrade dialog and choose a paid plan", async () => {
+    // The locked control is the paywall's entrance: following it lands on Billing with the offer
+    // already open, so the customer never has to go find what to buy.
+    await hub.followInviteLockToPlans("owner");
     await hub.expectCardlessTrialOffer("owner");
     await page.screenshot({ path: `${SLICE_6_DIR}/03-upgrade-dialog.png`, fullPage: true });
     await hub.choosePlan("owner", "Hosted");
@@ -73,7 +75,7 @@ test("subscribing lifts an unsubscribed org's invite limit, and replaying the we
     // canceled state and stamps the free floor, so paid entitlements do not outlive the
     // subscription.
     await hub.cancelSubscription("owner");
-    await hub.expectInviteBlockedByPlan("owner", afterCancelInvitee);
+    await hub.expectInviteLockedByPlan("owner");
     // Enforcement reverts to the zero-execution floor; the customer-facing page says only that
     // there is no subscription, and offers the plan again.
     await hub.expectNoSubscription("owner");
