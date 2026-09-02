@@ -4217,10 +4217,10 @@ class HubUser {
     // The card states what the trial entitles the organization to, unlabelled — the plan name
     // above it is the label.
     await expect(plan.getByRole("listitem")).toHaveText([
-      "Unlimited daemons",
-      "GitHub, Linear, Slack, and Discord triggers",
-      "Versioned workflows and activity",
-      "Bring your own agents and inference",
+      "Paseo operates Hub",
+      "Managed GitHub, Slack, and Discord triggers",
+      "Daemons run on your machines",
+      "Same projects, workflows, and activity",
     ]);
     // One public offer means nothing to change to, so the picker has no entry point here.
     await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
@@ -5262,7 +5262,7 @@ interface PublicBillingPlanExpectation {
 const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
   {
     slug: "hosted",
-    name: "Paseo Hub",
+    name: "Hosted",
     billing: {
       model: "per_unit",
       unit: {
@@ -5272,17 +5272,21 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
     },
     features: [
       {
-        key: "feature-1",
-        label: "Unlimited daemons",
-        tooltip: "Connect any number of development machines.",
+        key: "hub-operation",
+        label: "Paseo operates Hub",
+        tooltip: null,
       },
       {
-        key: "feature-2",
-        label: "GitHub, Linear, Slack, and Discord triggers",
-        tooltip: "Start agents from supported provider events.",
+        key: "managed-triggers",
+        label: "Managed GitHub, Slack, and Discord triggers",
+        tooltip: null,
       },
-      { key: "feature-3", label: "Versioned workflows and activity", tooltip: null },
-      { key: "feature-4", label: "Bring your own agents and inference", tooltip: null },
+      { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
+      {
+        key: "shared-model",
+        label: "Same projects, workflows, and activity",
+        tooltip: null,
+      },
     ],
     prices: [
       {
@@ -5290,13 +5294,14 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
         intervalCount: 1,
         unitAmount: 1500,
         currency: "eur",
-        tooltip: "€15 per seat, billed monthly.",
+        tooltip:
+          "Seats are Hub members and pending invitations. People who only trigger agents through GitHub, Slack, or Discord do not count as seats.",
       },
     ],
   },
 ];
 /** The one plan the fixture catalog — and the live Stripe catalog — publishes. */
-const HOSTED_PLAN_NAME = "Paseo Hub";
+const HOSTED_PLAN_NAME = "Hosted";
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const PROBLEM_TYPE = "application/problem+json";

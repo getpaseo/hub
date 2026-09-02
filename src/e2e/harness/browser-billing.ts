@@ -30,7 +30,7 @@ export interface FixtureBillingPrice {
  *   template to stamp; it is not an offer, and `BillingRuntime.publicCatalog` withholds it. Its
  *   zero execution limit is the enforcement floor a customer without a subscription lands on —
  *   E2E asserts it is never rendered as a plan.
- * - `hosted` is the one purchasable plan: Paseo Hub, €15 per seat per month, monthly only. There
+ * - `hosted` is the one purchasable plan: Hosted, €15 per seat per month, monthly only. There
  *   is no annual price, so the picker has no interval to switch between.
  *
  * Keep this in step with the live Stripe catalog. A test that needs several plans to exercise

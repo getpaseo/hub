@@ -50,7 +50,7 @@ never the entitlement template.
 
 The Stripe catalog carries a `free` product. It is not a tier Hub sells: it is where the
 entitlement floor is authored, so provisioning and cancellation have a real template to stamp
-instead of a constant in the code. Hosted Hub sells exactly one plan today — Paseo Hub, per seat,
+instead of a constant in the code. Hosted Hub sells exactly one plan today — Hosted, per seat,
 per month.
 
 `BillingRuntime.publicCatalog` is the boundary that keeps those two apart. It withholds the free
