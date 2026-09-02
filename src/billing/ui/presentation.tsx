@@ -35,9 +35,16 @@ export function offeredIntervals(
   plans: readonly PublicBillingPlan[],
 ): readonly BillingPlanPriceInterval[] {
   const offered = INTERVAL_ORDER.filter((interval) =>
-    plans.some((plan) => isPaidPrice(plan.prices[interval])),
+    plans.some((plan) => isPaidPrice(priceForInterval(plan, interval))),
   );
   return offered.length === 0 ? ["monthly"] : offered;
+}
+
+export function priceForInterval(
+  plan: PublicBillingPlan,
+  interval: BillingPlanPriceInterval,
+): PublicBillingPlanPrice | null {
+  return plan.prices.find((price) => price.interval === interval) ?? null;
 }
 
 /** The number of free trial days Stripe grants on a cardless checkout. */
@@ -59,7 +66,7 @@ export function planPrice(
   // Every column shows a figure, including the free tier: the plan's name already says "Free",
   // and repeating the word where the price goes costs the columns their shared baseline.
   if (price.unitAmount === 0) return { amount: formatAmount(price), unit: "forever" };
-  return { amount: formatAmount(price), unit: `per user / ${words.unit}` };
+  return { amount: formatAmount(price), unit: `per seat / ${words.unit}` };
 }
 
 /** A plan a customer pays for, as opposed to the mirrored Free tier. Only these carry a trial. */

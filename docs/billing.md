@@ -23,11 +23,10 @@ The coupling runs one direction: `billing` calls
 
 ## Plan catalog
 
-Stripe is the source of truth for plan data; Hub mirrors it into
-`billing_plans`/`billing_plan_prices` (`src/db/schema.ts:1098`) rather than fetching live. Sync
-runs on boot and on `product.created`/`product.updated`/`price.created`/`price.updated` webhooks
-(`syncBillingCatalog`, `src/billing/catalog-sync.ts:23`), always a full resync of every plan
-product — one code path to keep correct instead of an incremental one plus a full one.
+Stripe is the source of truth for prices and entitlement inputs. Hub owns the customer-facing
+plan name, features, and tooltips in `src/billing/plan-presentation.ts`. Catalog sync combines the
+two into `billing_plans`/`billing_plan_prices` rather than making either UI fetch Stripe live. It
+runs on boot and on `product.created`/`product.updated`/`price.created`/`price.updated` webhooks.
 
 Entitlement values live in product metadata as flat scalar keys (`ent_seats_max`,
 `ent_can_invite`, `ent_executions_monthly_limit`), not one JSON blob — Stripe's metadata limits
@@ -37,6 +36,9 @@ ingest gate: a dashboard typo rejects only that product's sync and keeps the las
 logged loudly — nothing ever stamps from an unvalidated template. `plan_version` is
 `hashTemplate()` (`src/entitlements/catalog.ts:260`) of the validated template, because Stripe
 carries no version counter of its own; an off-template organization is a hash mismatch.
+
+Catalog sync stores Hub's presentation with the mirrored price data in `billing_plans.marketing`.
+The public endpoint and Hub billing UI both read that combined record.
 
 Catalog sync uses Stripe's List API, not Search. Search has indexing lag, which would make the
 boot sync racy right after a dashboard edit.
@@ -48,7 +50,7 @@ never the entitlement template.
 
 The Stripe catalog carries a `free` product. It is not a tier Hub sells: it is where the
 entitlement floor is authored, so provisioning and cancellation have a real template to stamp
-instead of a constant in the code. Hosted Hub sells exactly one plan today — Paseo Hub, per user,
+instead of a constant in the code. Hosted Hub sells exactly one plan today — Hosted, per seat,
 per month.
 
 `BillingRuntime.publicCatalog` is the boundary that keeps those two apart. It withholds the free
@@ -57,6 +59,10 @@ every consumer — the plans endpoint, the billing overview, the picker. `subscr
 the other half: an organization stamped with the free record reports **no plan**, which is why the
 billing page reads as a paywall rather than advertising a zero-execution tier as the customer's
 own. No consumer knows the slug exists, and none should learn it.
+
+Every paid plan is seat-based today: checkout and reconciliation report members plus pending
+invitations as Stripe quantity. The public catalog commits that billing unit to its DTO instead of
+making consumers infer it from copy.
 
 Nothing about this is hardcoded to one plan. Publish a second product in Stripe and the picker
 lays out two columns; publish an annual price and the interval switch appears. What is fixed is

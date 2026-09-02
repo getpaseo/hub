@@ -22,7 +22,11 @@ import type { ProviderApplications } from "../provider-applications/index.js";
  * plans are an offer and what a consumer may see of them. Re-exported here so the rest of the app
  * names it without importing across the billing boundary.
  */
-export type { PublicBillingPlan, PublicBillingPlanPrice } from "../billing/index.js";
+export type {
+  PublicBillingPlan,
+  PublicBillingPlanFeature,
+  PublicBillingPlanPrice,
+} from "../billing/index.js";
 
 /** The dashboard billing section: the organization's current plan plus the catalog to upgrade
  * into. Only ever built on a billing-configured instance; the route guards on that. */

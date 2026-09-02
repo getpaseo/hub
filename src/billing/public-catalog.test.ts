@@ -48,7 +48,10 @@ const internalFreePlan: SyncBillingPlanInput = {
     meters: { "executions.monthly": { limit: 0 } },
   },
   templateHash: "hash-free",
-  marketing: { features: ["0 executions / month"] },
+  marketing: {
+    features: [{ key: "feature-1", label: "0 executions / month", tooltip: null }],
+    priceTooltips: { monthly: null, annual: null },
+  },
   active: true,
   prices: [
     {
@@ -72,7 +75,16 @@ const hostedPlan: SyncBillingPlanInput = {
     meters: { "executions.monthly": { limit: null } },
   },
   templateHash: "hash-hosted",
-  marketing: { features: ["Unlimited daemons"] },
+  marketing: {
+    features: [
+      {
+        key: "feature-1",
+        label: "Unlimited daemons",
+        tooltip: "Connect any number of development machines.",
+      },
+    ],
+    priceTooltips: { monthly: "€15 per seat, billed monthly.", annual: null },
+  },
   active: true,
   prices: [
     {
@@ -98,8 +110,29 @@ describe("BillingRuntime.publicCatalog", () => {
       {
         slug: "hosted",
         name: "Paseo Hub",
-        marketingFeatures: ["Unlimited daemons"],
-        prices: { monthly: { unitAmount: 1500, currency: "eur" }, annual: null },
+        billing: {
+          model: "per_unit",
+          unit: {
+            key: "seat",
+            label: "seat",
+          },
+        },
+        features: [
+          {
+            key: "feature-1",
+            label: "Unlimited daemons",
+            tooltip: "Connect any number of development machines.",
+          },
+        ],
+        prices: [
+          {
+            interval: "monthly",
+            intervalCount: 1,
+            unitAmount: 1500,
+            currency: "eur",
+            tooltip: "€15 per seat, billed monthly.",
+          },
+        ],
       },
     ]);
   });
@@ -125,7 +158,7 @@ describe("BillingRuntime.publicCatalog", () => {
     const [plan] = await billingOver(database).publicCatalog();
 
     assert.notEqual(plan, undefined);
-    assert.deepEqual(Object.keys(plan!).sort(), ["marketingFeatures", "name", "prices", "slug"]);
+    assert.deepEqual(Object.keys(plan!).sort(), ["billing", "features", "name", "prices", "slug"]);
   });
 
   it("prices an interval only from its exact lookup key, so a mismatched price reads unavailable", async () => {
@@ -146,6 +179,6 @@ describe("BillingRuntime.publicCatalog", () => {
 
     const [plan] = await billingOver(database).publicCatalog();
 
-    assert.deepEqual(plan?.prices, { monthly: null, annual: null });
+    assert.deepEqual(plan?.prices, []);
   });
 });

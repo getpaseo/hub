@@ -39,9 +39,6 @@ export function createStripeCatalogSource(stripeSecretKey: string): StripeCatalo
           name: product.name,
           active: product.active,
           metadata: product.metadata,
-          marketingFeatures: product.marketing_features.flatMap((feature) =>
-            feature.name === undefined ? [] : [feature.name],
-          ),
         });
       }
       return products;
