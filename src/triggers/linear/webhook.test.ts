@@ -139,7 +139,7 @@ describe("Linear webhook", () => {
     assert.equal(accepted[0]?.teamId, "team-1");
   });
 
-  it("hydrates a comment issue before project-scoped routing", async () => {
+  it("hydrates a compact project-scoped comment before matching", async () => {
     const accepted: Array<
       Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
     > = [];
@@ -155,8 +155,8 @@ describe("Linear webhook", () => {
         projectId: "project-1",
         teamId: "team-1",
         stateId: "ready",
-        assigneeId: null,
-        labelIds: [],
+        assigneeId: "user-2",
+        labelIds: ["label-1"],
       }),
       accept: async (input) => {
         accepted.push(input);
@@ -164,9 +164,35 @@ describe("Linear webhook", () => {
       },
     });
 
-    assert.equal((await endpoint.handle(request(commentEnvelope(), "Comment"))).status, 200);
+    const envelope = commentEnvelope();
+    assert.equal(
+      (
+        await endpoint.handle(
+          request(
+            {
+              ...envelope,
+              data: {
+                ...envelope.data,
+                issue: {
+                  id: "issue-1",
+                  title: "Ship the feature",
+                  projectId: "project-1",
+                  teamId: "team-1",
+                },
+              },
+            },
+            "Comment",
+          ),
+        )
+      ).status,
+      200,
+    );
     assert.equal(accepted[0]?.projectId, "project-1");
     assert.equal(accepted[0]?.source, "linear.comment");
+    const issue = NormalizedLinearCommentEventSchema.parse(accepted[0]?.payload).issue;
+    assert.equal(issue?.stateId, "ready");
+    assert.equal(issue?.assigneeId, "user-2");
+    assert.deepEqual(issue?.labelIds, ["label-1"]);
   });
 
   it("hydrates a compact projectless team comment before matching", async () => {
@@ -212,7 +238,7 @@ describe("Linear webhook", () => {
     );
   });
 
-  it("hydrates and dispatches native Linear agent-session events", async () => {
+  it("hydrates and dispatches compact project-scoped native Linear agent-session events", async () => {
     const accepted: Array<
       Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
     > = [];
@@ -230,7 +256,7 @@ describe("Linear webhook", () => {
         teamId: "team-1",
         stateId: "ready",
         assigneeId: "app-user",
-        labelIds: [],
+        labelIds: ["label-1"],
       }),
       accept: async (input) => {
         accepted.push(input);
@@ -248,10 +274,11 @@ describe("Linear webhook", () => {
     assert.equal(accepted[0]?.source, "linear.agent_session");
     assert.equal(accepted[0]?.projectId, "project-1");
     assert.equal(dispatched[0]?.source, "linear.agent_session");
-    assert.equal(
-      NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload).prompt,
-      "<issue>Canonical Linear context</issue>",
-    );
+    const event = NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload);
+    assert.equal(event.prompt, "<issue>Canonical Linear context</issue>");
+    assert.equal(event.issue?.stateId, "ready");
+    assert.equal(event.issue?.assigneeId, "app-user");
+    assert.deepEqual(event.issue?.labelIds, ["label-1"]);
   });
 
   it("hydrates a compact projectless team Agent Session before matching", async () => {
@@ -534,6 +561,7 @@ function agentSessionEnvelope() {
         title: "Ship the feature",
         description: "Useful context",
         url: "https://linear.app/acme/issue/ENG-42/ship-the-feature",
+        projectId: "project-1",
         teamId: "team-1",
         team: { id: "team-1", name: "Engineering", key: "ENG" },
       },
