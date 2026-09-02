@@ -1,10 +1,17 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop -- focused trigger screens bind one document */
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop -- focused trigger screens bind one document */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, ArrowLeft, Braces, Copy, FileText, LockKeyhole, Plus } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { SiteHeaderActions } from "../components/app/site-header-actions.js";
@@ -27,6 +34,11 @@ import {
   type TriggerFormValue,
 } from "./configuration/editor.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
+import { daemonProviderSnapshot } from "../daemons/functions.js";
+import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
+import { defaultAgentSelection, defaultMode, selectedProviderModel } from "./provider-catalog.js";
+import { AgentModelCombobox, type AgentModelOption } from "./agent-model-combobox.js";
+import { TriggerSelect, type TriggerSelectOption } from "./form-select.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -38,6 +50,14 @@ const TRIGGER_COLUMNS = [
   { header: "Last triggered", className: "hidden xl:table-cell" },
   { header: "Status" },
 ] as const;
+
+const EVENT_OPTIONS: TriggerSelectOption[] = [
+  { value: "slack.mention", label: "Slack mention (slack.mention)" },
+  { value: "discord.mention", label: "Discord mention (discord.mention)" },
+  { value: "github.issue_comment", label: "GitHub issue comment (github.issue_comment)" },
+  { value: "linear.issue_created", label: "Linear issue created (linear.issue_created)" },
+  { value: "manual.run", label: "Manual run (manual.run)" },
+];
 
 export function TriggersPanel() {
   const tenant = useRouteTenant();
@@ -440,11 +460,43 @@ function TriggerForm({
   const githubConnections = snapshot.connections.filter(
     (connection) => connection.provider === "github",
   );
+  const connectionOptions = connections.map((connection) => ({
+    value: connection.slug,
+    label: connection.label,
+  }));
+  const daemonOptions = snapshot.daemons.map((daemon) => ({
+    value: daemon.slug,
+    label: `${daemon.slug} (${daemon.presence})`,
+  }));
+  const githubConnectionOptions = [
+    { value: "", label: "Do not inject a GitHub token" },
+    ...githubConnections.map((connection) => ({
+      value: connection.slug,
+      label: connection.label,
+    })),
+  ];
   const githubEnabled = form.githubConnection !== "";
   const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
+  const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
+  const providerCatalog = useDaemonProviderCatalog(
+    snapshot.organization.slug,
+    selectedDaemon?.id,
+    form.cwd,
+  );
+  useEffect(() => {
+    if (
+      triggerId !== undefined ||
+      form.agent !== DEFAULT_NEW_TRIGGER_AGENT ||
+      providerCatalog.entries === undefined
+    )
+      return;
+    const defaults = defaultAgentSelection(providerCatalog.entries);
+    if (defaults === undefined) return;
+    onChange({ ...form, ...defaults });
+  }, [form, onChange, providerCatalog.entries, triggerId]);
   return (
     <div className="grid gap-5">
       <FormSection
@@ -476,40 +528,24 @@ function TriggerForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="trigger-event">When this happens</FieldLabel>
-            <select
+            <TriggerSelect
               id="trigger-event"
               value={form.event}
-              onChange={(event) => update("event", parseEditorEvent(event.target.value))}
-              className="h-9 rounded-md border bg-background px-3 text-sm"
-            >
-              <option value="slack.mention">Slack mention (slack.mention)</option>
-              <option value="discord.mention">Discord mention (discord.mention)</option>
-              <option value="github.issue_comment">
-                GitHub issue comment (github.issue_comment)
-              </option>
-              <option value="linear.issue_created">
-                Linear issue created (linear.issue_created)
-              </option>
-              <option value="manual.run">Manual run (manual.run)</option>
-            </select>
+              options={EVENT_OPTIONS}
+              onChange={(event) => update("event", parseEditorEvent(event))}
+            />
             <FieldDescription>Exactly one event launches this trigger.</FieldDescription>
           </Field>
           {form.event === "manual.run" ? null : (
             <Field>
               <FieldLabel htmlFor="trigger-connection">Connection</FieldLabel>
-              <select
+              <TriggerSelect
                 id="trigger-connection"
                 value={form.connection}
-                onChange={(event) => update("connection", event.target.value)}
-                className="h-9 rounded-md border bg-background px-3 text-sm"
+                options={connectionOptions}
+                onChange={(connection) => update("connection", connection)}
                 required
-              >
-                {connections.map((connection) => (
-                  <option key={connection.id} value={connection.slug}>
-                    {connection.label}
-                  </option>
-                ))}
-              </select>
+              />
               <FieldDescription>
                 The organization connection that receives the event.
               </FieldDescription>
@@ -558,19 +594,13 @@ function TriggerForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="trigger-daemon">Run on daemon</FieldLabel>
-            <select
+            <TriggerSelect
               id="trigger-daemon"
               value={form.daemon}
-              onChange={(event) => update("daemon", event.target.value)}
-              className="h-9 rounded-md border bg-background px-3 text-sm"
+              options={daemonOptions}
+              onChange={(daemon) => update("daemon", daemon)}
               required
-            >
-              {snapshot.daemons.map((daemon) => (
-                <option key={daemon.id} value={daemon.slug}>
-                  {daemon.slug} ({daemon.presence})
-                </option>
-              ))}
-            </select>
+            />
             <FieldDescription>
               The daemon owns compute, credentials, and sandboxing.
             </FieldDescription>
@@ -605,27 +635,27 @@ function TriggerForm({
         description="The AI coding agent model and task prompt instructions."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <ControlledInput
-            label="Agent ID"
-            value={form.agent}
-            onChange={(value) => update("agent", value)}
-            description="Full provider/model ID, for example codex/gpt-5.4."
-            required
-          />
-          <ControlledInput
-            label="Execution mode"
-            value={form.mode}
-            onChange={(value) => update("mode", value)}
-            description="Provider mode, for example full-access."
-            required
-          />
-          <ControlledInput
-            label="Thinking option ID"
-            value={form.thinkingOptionId}
-            onChange={(value) => update("thinkingOptionId", value)}
-            description="Leave blank to use the provider's default thinking option."
+          <ProviderCatalogFields
+            form={form}
+            entries={providerCatalog.entries}
+            onChange={onChange}
           />
         </div>
+        {providerCatalog.loading ? (
+          <p className="text-sm text-muted-foreground" aria-busy="true">
+            Loading providers from {form.daemon}…
+          </p>
+        ) : null}
+        {providerCatalog.error === undefined ? null : (
+          <Alert variant="destructive">
+            <AlertDescription className="flex items-center justify-between gap-3">
+              <span>{providerCatalog.error}</span>
+              <Button type="button" variant="outline" size="sm" onClick={providerCatalog.refresh}>
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
         <details className="rounded-md border bg-muted/20 p-3">
           <summary className="cursor-pointer text-sm">Advanced provider options (JSON)</summary>
           <Field className="mt-3">
@@ -653,19 +683,12 @@ function TriggerForm({
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="trigger-github-connection">GitHub connection</FieldLabel>
-              <select
+              <TriggerSelect
                 id="trigger-github-connection"
                 value={form.githubConnection}
-                onChange={(event) => update("githubConnection", event.target.value)}
-                className="h-9 rounded-md border bg-background px-3 text-sm"
-              >
-                <option value="">Do not inject a GitHub token</option>
-                {githubConnections.map((connection) => (
-                  <option key={connection.id} value={connection.slug}>
-                    {connection.label}
-                  </option>
-                ))}
-              </select>
+                options={githubConnectionOptions}
+                onChange={(connection) => update("githubConnection", connection)}
+              />
               <FieldDescription>
                 Mints a short-lived, restricted GH_TOKEN for this run.
               </FieldDescription>
@@ -873,6 +896,147 @@ function ControlledInput({
   );
 }
 
+function ProviderCatalogFields({
+  form,
+  entries,
+  onChange,
+}: {
+  form: TriggerFormValue;
+  entries: HubProviderSnapshotEntry[] | undefined;
+  onChange: (value: TriggerFormValue) => void;
+}) {
+  const selected = selectedProviderModel(entries, form.agent);
+  const agentOptions = (entries ?? []).flatMap((entry) =>
+    entry.status !== "ready" || !entry.enabled
+      ? []
+      : (entry.models ?? [])
+          .filter((model) => model.isSelectable !== false)
+          .map((model) => ({
+            value: `${entry.provider}/${model.id}`,
+            label: model.label,
+            providerLabel: entry.label ?? entry.provider,
+            keywords: [model.label, entry.label ?? entry.provider, model.id],
+          })),
+  ) satisfies AgentModelOption[];
+  const modes = selected.entry?.modes ?? [];
+  const modeKnown = modes.some((mode) => mode.id === form.mode);
+  const thinkingOptions = selected.model?.thinkingOptions ?? [];
+  const thinkingKnown = thinkingOptions.some((option) => option.id === form.thinkingOptionId);
+  const modeOptions = [
+    ...(!modeKnown && form.mode !== ""
+      ? [{ value: form.mode, label: `${form.mode} (unavailable)` }]
+      : []),
+    ...modes.map((mode) => ({ value: mode.id, label: mode.label })),
+  ];
+  const providerDefault = selected.model?.defaultThinkingOptionId
+    ? `Provider default (${selected.model.defaultThinkingOptionId})`
+    : "Provider default";
+  const thinkingSelectOptions = [
+    { value: "", label: providerDefault },
+    ...(!thinkingKnown && form.thinkingOptionId !== ""
+      ? [
+          {
+            value: form.thinkingOptionId,
+            label: `${form.thinkingOptionId} (unavailable)`,
+          },
+        ]
+      : []),
+    ...thinkingOptions.map((option) => ({ value: option.id, label: option.label })),
+  ];
+  return (
+    <>
+      <Field>
+        <FieldLabel htmlFor="trigger-agent">Agent</FieldLabel>
+        <AgentModelCombobox
+          options={agentOptions}
+          value={form.agent}
+          onSelect={(agent) => {
+            const next = selectedProviderModel(entries, agent);
+            onChange({
+              ...form,
+              agent,
+              mode: defaultMode(next.entry),
+              thinkingOptionId: "",
+            });
+          }}
+        />
+        <FieldDescription>Models reported by the selected daemon.</FieldDescription>
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="trigger-mode">Execution mode</FieldLabel>
+        <TriggerSelect
+          id="trigger-mode"
+          value={form.mode}
+          options={modeOptions}
+          placeholder="Select a mode"
+          onChange={(mode) => onChange({ ...form, mode })}
+          required
+        />
+        <FieldDescription>Modes reported for the selected provider.</FieldDescription>
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="trigger-thinking">Thinking</FieldLabel>
+        <TriggerSelect
+          id="trigger-thinking"
+          value={form.thinkingOptionId}
+          options={thinkingSelectOptions}
+          onChange={(thinkingOptionId) => onChange({ ...form, thinkingOptionId })}
+        />
+        <FieldDescription>Thinking options reported for the selected model.</FieldDescription>
+      </Field>
+    </>
+  );
+}
+
+function useDaemonProviderCatalog(
+  organizationSlug: string,
+  daemonId: string | undefined,
+  cwd: string,
+) {
+  const load = useServerFn(daemonProviderSnapshot);
+  const queryClient = useQueryClient();
+  const queryKey = ["daemon-provider-snapshot", organizationSlug, daemonId, cwd] as const;
+  const enabled = daemonId !== undefined && cwd.trim() !== "";
+  const query = useQuery({
+    queryKey,
+    enabled,
+    queryFn: () =>
+      load({
+        data: { organizationSlug, daemonId: daemonId!, cwd: cwd.trim(), refresh: true },
+      }),
+  });
+  const refresh = useMutation({
+    mutationFn: () =>
+      load({
+        data: { organizationSlug, daemonId: daemonId!, cwd: cwd.trim(), refresh: true },
+      }),
+    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
+  });
+  const result = query.data;
+  const providerErrors =
+    result?.status === "ok"
+      ? result.data.entries
+          .filter((entry) => entry.status === "error")
+          .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`)
+      : [];
+  return {
+    entries: result?.status === "ok" ? result.data.entries : undefined,
+    loading: (enabled && query.isPending) || refresh.isPending,
+    error: providerCatalogError(result, query.isError, providerErrors),
+    refresh: () => refresh.mutate(),
+  };
+}
+
+function providerCatalogError(
+  result: Result<HubProviderSnapshot> | undefined,
+  queryFailed: boolean,
+  providerErrors: string[],
+): string | undefined {
+  if (result?.status === "error") return result.error.message;
+  if (queryFailed) return "Hub couldn't load this daemon's providers.";
+  return providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
+}
+
 function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
   const slack = snapshot.connections.find(({ provider }) => provider === "slack");
   return {
@@ -883,7 +1047,7 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     allowedUsers: "*",
     daemon: snapshot.daemons[0]?.slug ?? "",
     cwd: "/workspace",
-    agent: "codex/gpt-5.4",
+    agent: DEFAULT_NEW_TRIGGER_AGENT,
     mode: "full-access",
     thinkingOptionId: "",
     providerOptions: "",
@@ -897,6 +1061,8 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
       "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };
 }
+
+const DEFAULT_NEW_TRIGGER_AGENT = "codex/gpt-5.4";
 
 function eventLabel(event: string): string {
   if (event === "slack.mention") return "Slack mention";

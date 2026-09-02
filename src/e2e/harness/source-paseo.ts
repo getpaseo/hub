@@ -95,6 +95,8 @@ export class SourcePaseo {
       hubOrigin,
       "--api-key",
       credential,
+      "--permission",
+      "hub.execute",
       "--host",
       this.paths.daemonHost,
       "--json",

@@ -14,7 +14,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
 }) => {
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "devbox");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
   await hub.seedSlackConnection("owner", "company-slack", "Acme Slack");
   const triggers = new OrganizationTriggers(page);
 
@@ -29,7 +29,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.configureSlackMention({
       name: "slack-help",
       connection: "company-slack",
-      daemon: "devbox",
+      daemon,
       cwd: "/workspace/acme",
       users: "U123, U456",
       agent: "pi/gateway/vendor/model-v1",
@@ -38,10 +38,13 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
       prompt: "Handle the Slack request.",
     });
     await triggers.expectMergeTagsAndAutosizing();
+    await triggers.expectAgentSearch();
+    await triggers.expectShadcnSelectors();
     await triggers.changePrompt("Handle the Slack request.");
     await page.evaluate(() => window.scrollTo({ top: 0 }));
     await triggers.capture(`${SHOTS}/02-configured-form.png`);
     await triggers.captureInstructions(`${SHOTS}/02b-agent-instructions.png`);
+    await triggers.captureExpandedAgent(`${SHOTS}/02c-expanded-model-combobox.png`);
   });
 
   await test.step("YAML mirrors the form and remains the canonical editable document", async () => {
@@ -54,7 +57,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
       "sandbox_mode: workspace-write",
     );
     await triggers.capture(`${SHOTS}/03-generated-yaml.png`);
-    await triggers.replaceYaml(advancedTriggerYaml);
+    await triggers.replaceYaml(advancedTriggerYaml(daemon));
     await triggers.save("slack-help");
     await triggers.expectOperationalList("slack-help");
     await triggers.capture(`${SHOTS}/04-saved-trigger-list.png`);
@@ -98,7 +101,8 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   });
 });
 
-const advancedTriggerYaml = `# survives form edits
+function advancedTriggerYaml(daemon: string) {
+  return `# survives form edits
 name: slack-help
 enabled: true
 on:
@@ -109,7 +113,7 @@ on:
       channels: [engineering]
 run:
   target:
-    daemon: devbox
+    daemon: ${daemon}
     cwd: /workspace/acme
     worktree:
       mode: branch-off
@@ -130,6 +134,7 @@ run:
       max: 5
   auto_archive: false
 `;
+}
 
 const legacyWorkflowYaml = `name: legacy-review
 on: slack.mention

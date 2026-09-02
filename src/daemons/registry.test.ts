@@ -187,6 +187,36 @@ describe("daemon socket generations", () => {
     });
   });
 
+  it("reads and refreshes provider capabilities through the Hub execution session", async () => {
+    const refresh = await daemon.pendingProviderRefresh();
+    assert.deepEqual(
+      { cwd: refresh.request["cwd"], providers: refresh.request["providers"] },
+      { cwd: "/workspace", providers: ["codex"] },
+    );
+    daemon.respondProviderRefresh(refresh);
+    await refresh.promise;
+
+    const snapshot = await daemon.pendingProviderSnapshot();
+    daemon.respondProviderSnapshot(snapshot);
+
+    assert.deepEqual((await snapshot.promise).entries, [
+      {
+        provider: "codex",
+        status: "ready",
+        enabled: true,
+        models: [
+          {
+            provider: "codex",
+            id: "gpt-5.4",
+            label: "GPT-5.4",
+            thinkingOptions: [{ id: "xhigh", label: "Extra high" }],
+          },
+        ],
+        modes: [{ id: "full-access", label: "Full access" }],
+      },
+    ]);
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 

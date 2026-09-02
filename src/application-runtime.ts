@@ -27,6 +27,7 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
+import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -146,6 +147,7 @@ async function createOwnedApplicationRuntime(
             (projectId) => application.configurationForProject(projectId),
           ),
     triggerDashboard: triggerDashboardFor(options),
+    daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -348,6 +350,16 @@ function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDas
   return options.database === null || options.auth === null
     ? null
     : new TriggerDashboard(options.database, options.auth);
+}
+
+function daemonProviderCatalogFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): DaemonProviderCatalog | null {
+  if (options.database === null || options.auth === null) return null;
+  return new DaemonProviderCatalog(options.database, options.auth, (daemonId) =>
+    hub.connectionForDaemon(daemonId),
+  );
 }
 
 function providerApplicationsFor(

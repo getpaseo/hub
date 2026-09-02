@@ -16,6 +16,7 @@ import type { TriggerDashboard } from "../triggers/dashboard.js";
 import type { PublicApi } from "../public-api/index.js";
 import type { UsageDashboard } from "../usage/dashboard.js";
 import type { ProviderApplications } from "../provider-applications/index.js";
+import type { DaemonProviderCatalog } from "../daemons/provider-catalog.js";
 
 /**
  * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
@@ -67,6 +68,7 @@ export interface ApplicationRuntime {
   billing: BillingRuntime | null;
   projectDashboard: ProjectDashboard | null;
   triggerDashboard?: TriggerDashboard | null;
+  daemonProviderCatalog?: DaemonProviderCatalog | null;
   /** Org-scoped, read-only limits and usage. Present whenever database + browser auth are; no
    * billing dependency, so it renders on self-hosted and hosted alike. */
   usageDashboard: UsageDashboard | null;

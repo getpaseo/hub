@@ -21,8 +21,10 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
   it("connects the source-built daemon through an enrollment token", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();
+    const providers = await hub.requestProviderSnapshot();
 
     assert.equal((await hub.status()).state, "connected");
+    assert.ok(Array.isArray(providers["entries"]));
     assert.match(
       enrollment.daemonId,
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
