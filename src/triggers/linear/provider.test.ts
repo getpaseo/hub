@@ -7,6 +7,7 @@ import type {
   LinearIssueCommentHistory,
 } from "../../providers/linear/client.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import type { ProviderEventReceiptRecord } from "../../db/types.js";
 import type { TriggerProviderExecutionControl } from "../../providers/registration.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { isAcceptedTriggerProviderMatch, type ExternalTrigger } from "../index.js";
@@ -786,6 +787,7 @@ describe("Linear trigger provider", () => {
           lookups.push(commentIds);
           return database.listTriggerRunsForLinearComments(projectId, commentIds);
         },
+        findProviderEventReceiptById: (id) => database.findProviderEventReceiptById(id),
       },
       executions: {
         stopActive: async (input) => {
@@ -945,6 +947,64 @@ describe("Linear trigger provider", () => {
     assert.equal(stops, 1);
     assert.equal(client.createdActivities.length, 1);
     assert.equal(client.createdActivities[0]?.content.type, "response");
+  });
+
+  it("stops an active session after the current revision removes its session trigger", async () => {
+    const { project, revision, store } = await activeConfiguration(linearCommentConfiguration());
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    let stops = 0;
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+      executions: {
+        stopActive: async () => {
+          stops += 1;
+          return { stopped: 1 };
+        },
+      },
+    });
+
+    const result = await provider.match(
+      externalAgentSession(project.id, revision.id, stopSignalEvent()),
+    );
+
+    assert.equal(result, "agent_session_stopped");
+    assert.equal(stops, 1);
+    assert.equal(client.createdActivities.length, 1);
+  });
+
+  it("posts one stop confirmation when a receipt routes to multiple projects", async () => {
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    const receipt = linearStopReceipt(["project-first", "project-second"]);
+    const stoppedProjects: string[] = [];
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => {
+        throw new Error("stop handling must not read the current trigger revision");
+      },
+      client,
+      database: {
+        findProviderEventReceiptById: async (id) => (id === receipt.id ? receipt : undefined),
+        listTriggerRunsForLinearComments: async () => [],
+      },
+      executions: {
+        stopActive: async (input) => {
+          stoppedProjects.push(input.projectId);
+          return { stopped: 1 };
+        },
+      },
+    });
+
+    const results = await Promise.all(
+      receipt.acceptedRoutes!.map((route) =>
+        provider.match(
+          externalAgentSession(route.projectId, route.configurationRevisionId, stopSignalEvent()),
+        ),
+      ),
+    );
+
+    assert.deepEqual(results, ["agent_session_stopped", "agent_session_stopped"]);
+    assert.deepEqual(stoppedProjects.sort(), ["project-first", "project-second"]);
+    assert.equal(client.createdActivities.length, 1);
   });
 
   it("does not confirm a stop it could not apply", async () => {
@@ -1343,6 +1403,31 @@ function stopSignalEvent(): NormalizedLinearAgentSessionEvent {
       signal: "stop",
     },
   });
+}
+
+function linearStopReceipt(projectIds: readonly string[]): ProviderEventReceiptRecord {
+  return {
+    id: "11111111-1111-4111-8111-111111111122",
+    organizationId: "hub-org",
+    provider: "linear",
+    connectionId: "linear-connection",
+    resourceId: "project-1",
+    deliveryId: "delivery-agent-session-1",
+    signatureHash: null,
+    providerApplicationId: null,
+    providerConfigurationVersion: null,
+    source: "linear.agent_session",
+    repo: null,
+    payload: stopSignalEvent(),
+    receivedAt: new Date("2026-01-02T00:01:00.000Z"),
+    droppedReason: null,
+    acceptedRoutes: projectIds.map((projectId, index) => ({
+      projectId,
+      configurationRevisionId: `revision-${index + 1}`,
+      connectionId: "linear-connection",
+      resourceId: "project-1",
+    })),
+  };
 }
 
 function agentSessionEvent(
