@@ -1,6 +1,7 @@
 import type { AuthServer } from "../../auth/server.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -320,9 +321,16 @@ async function completeAuthorization(
     });
   }
   if (state === null || code === null || client === undefined) {
-    return connectionResult(options.applicationBaseUrl, "/", "connection_unavailable");
+    return connectionCallbackFailure({
+      request,
+      error: new LinearCallbackError(),
+      provider: "linear",
+      phase: "authorization",
+      applicationBaseUrl: options.applicationBaseUrl,
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
+    });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -353,12 +361,20 @@ async function completeAuthorization(
     return connectionResult(callbackOrigin, attempt.returnRoute, "linear_connected", "linear");
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "linear",
       phase: "authorization",
       applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
+  }
+}
+
+class LinearCallbackError extends Error {
+  readonly code = "invalidInput";
+  constructor() {
+    super("invalid Linear callback");
   }
 }
 
