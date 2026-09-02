@@ -222,9 +222,13 @@ function matchesComment(
 }
 
 /**
- * A reply in a thread the app already commented in. A root comment never qualifies, and an
- * unread thread (`threadAuthorIds` absent) or an unknown app user fails closed: firing on a
- * guess would bring back the double runs this filter exists to avoid.
+ * A reply in a plain comment thread the app already commented in. A root comment never
+ * qualifies, and an unread thread (`threadAuthorIds` absent) or an unknown app user fails
+ * closed: firing on a guess would bring back the double runs this filter exists to avoid.
+ *
+ * An agent-session thread never qualifies either, even though the app's responses make it
+ * look like one: Linear delivers a reply there as a session prompt as well, and the session
+ * is the one handling it. `replies_only` on its own is not affected.
  */
 function isReplyInThreadWithApp(
   event: NormalizedLinearCommentEvent,
@@ -232,6 +236,7 @@ function isReplyInThreadWithApp(
 ): boolean {
   return (
     event.comment.parentId !== null &&
+    event.threadIsAgentSession !== true &&
     typeof appUserId === "string" &&
     event.threadAuthorIds !== undefined &&
     event.threadAuthorIds.includes(appUserId)

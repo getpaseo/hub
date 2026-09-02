@@ -126,13 +126,16 @@ describe("Linear event normalization", () => {
     const event = normalizeComment({ parentId: "root-comment" });
     if (event?.type !== "comment") throw new Error("expected a comment event");
     assert.equal(event.threadAuthorIds, undefined);
+    assert.equal(event.threadIsAgentSession, undefined);
 
     const hydrated = NormalizedLinearEventSchema.parse({
       ...event,
       threadAuthorIds: ["user-1", "app-user"],
+      threadIsAgentSession: true,
     });
     if (hydrated.type !== "comment") throw new Error("expected a comment event");
     assert.deepEqual(hydrated.threadAuthorIds, ["user-1", "app-user"]);
+    assert.equal(hydrated.threadIsAgentSession, true);
   });
 
   it("carries the root comment an agent session was opened from", () => {
@@ -180,6 +183,50 @@ describe("Linear event normalization", () => {
     );
     assert.equal(normalize({ ...envelope, sourceCommentId: "reply-3" }).sourceCommentId, "reply-3");
     assert.equal(normalize(envelope).sourceCommentId, undefined);
+  });
+
+  it("carries the comment a session prompt came from, wherever the activity places it", () => {
+    const normalize = (
+      agentActivity: Record<string, unknown>,
+      session: Record<string, unknown> = {},
+    ) => {
+      const envelope = agentSessionEnvelope({ action: "prompted", agentActivity });
+      const event = normalizeLinearEvent(
+        { ...envelope, agentSession: { ...envelope.agentSession, ...session } },
+        "AgentSessionEvent",
+        hydratedIssue(),
+      );
+      if (event?.type !== "agent_session") throw new Error("expected an agent session event");
+      return event;
+    };
+
+    const fromReply = normalize({ sourceCommentId: "reply-1" });
+    assert.equal(fromReply.agentSession.sourceCommentId, "reply-1");
+    assert.equal(fromReply.agentSession.rootCommentId, "comment-1");
+    // The activity itself stays as the workflow context has always seen it.
+    assert.deepEqual(fromReply.agentActivity, {
+      id: "activity-2",
+      type: "prompt",
+      body: "Please also add a regression test",
+      createdAt: "2026-01-02T00:01:00.000Z",
+    });
+    assert.equal(
+      normalize({ sourceComment: { id: "reply-2" } }).agentSession.sourceCommentId,
+      "reply-2",
+    );
+    assert.equal(
+      normalize({ content: { type: "prompt", body: "Again", sourceCommentId: "reply-3" } })
+        .agentSession.sourceCommentId,
+      "reply-3",
+    );
+    // A prompt typed in the session panel has no comment behind it. The session's own source
+    // comment opened the session and is not this turn's.
+    assert.equal(normalize({}).agentSession.sourceCommentId, undefined);
+    assert.equal(
+      normalize({}, { sourceCommentId: "comment-1", sourceComment: { id: "comment-1" } })
+        .agentSession.sourceCommentId,
+      undefined,
+    );
   });
 
   it("normalizes a created agent session around Linear's canonical prompt context", () => {
