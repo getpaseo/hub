@@ -7,9 +7,10 @@ import type {
   LinearIssueCommentHistory,
 } from "../../providers/linear/client.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import type { ProviderEventReceiptRecord } from "../../db/types.js";
+import type { Database, ProviderEventReceiptRecord } from "../../db/types.js";
 import type { TriggerProviderExecutionControl } from "../../providers/registration.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { DurableWorkflowEngine } from "../../workflows/engine.js";
 import { isAcceptedTriggerProviderMatch, type ExternalTrigger } from "../index.js";
 import type { NormalizedLinearAgentSessionEvent, NormalizedLinearCommentEvent } from "./events.js";
 import { createLinearTriggerProvider } from "./provider.js";
@@ -726,7 +727,7 @@ describe("Linear trigger provider", () => {
     const provider = createLinearTriggerProvider({
       configurationStoreForProject: () => store,
       client: new RecordingHistoryClient({ complete: true, comments: [] }),
-      database,
+      database: linearRunLookupDatabase(database),
       executions: {
         stopActive: async (input) => {
           stops.push(input);
@@ -840,7 +841,7 @@ describe("Linear trigger provider", () => {
     const provider = createLinearTriggerProvider({
       configurationStoreForProject: () => store,
       client: new RecordingHistoryClient({ complete: true, comments: [] }),
-      database,
+      database: linearRunLookupDatabase(database),
       executions: {
         stopActive: async () => {
           stops += 1;
@@ -859,6 +860,57 @@ describe("Linear trigger provider", () => {
       if (typeof matches === "string") throw new Error(`expected a match, got ${matches}`);
     }
     assert.equal(stops, 0);
+  });
+
+  it("suppresses a delayed comment run after its Agent Session was accepted", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      linearCommentAndSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client: new RecordingHistoryClient({ complete: true, comments: [] }),
+      database,
+      executions: { stopActive: async () => ({ stopped: 0 }) },
+    });
+    const engine = new DurableWorkflowEngine({
+      database,
+      entitlements: null,
+      providers: [provider],
+    });
+    const comment = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.comment",
+      "delayed-comment",
+      { ...event("2026-01-02T00:00:00.000Z"), occurredAt: undefined },
+    );
+    const created = agentSessionEvent({ action: "created" });
+    const session = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "session-before-comment-handler",
+      {
+        ...created,
+        agentSession: { ...created.agentSession, sourceCommentId: "trigger-comment" },
+      },
+    );
+
+    await engine.enqueue(session);
+    await engine.enqueue(comment);
+
+    assert.equal(
+      (await database.findTriggerRunsByProviderEventReceiptId(session.providerEventReceiptId))
+        .length,
+      1,
+    );
+    assert.deepEqual(
+      await database.findTriggerRunsByProviderEventReceiptId(comment.providerEventReceiptId),
+      [],
+    );
   });
 
   it("stops the session's executions instead of starting a run on Linear's stop signal", async () => {
@@ -947,6 +999,86 @@ describe("Linear trigger provider", () => {
     assert.equal(stops, 1);
     assert.equal(client.createdActivities.length, 1);
     assert.equal(client.createdActivities[0]?.content.type, "response");
+  });
+
+  it("does not start an older Agent Session delivery after its stop was acknowledged", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      agentSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+      database,
+      executions: { stopActive: async () => ({ stopped: 0 }) },
+    });
+    const engine = new DurableWorkflowEngine({
+      database,
+      entitlements: null,
+      providers: [provider],
+    });
+    const prompted = agentSessionEvent({
+      occurredAt: "2026-01-02T00:00:00.000Z",
+      agentActivity: {
+        id: "original-activity",
+        type: "prompt",
+        body: "Please investigate",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      },
+      prompt: "Please investigate",
+      parserMessage: "Please investigate",
+    });
+    const original = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "delayed-agent-session",
+      prompted,
+    );
+    const stop = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "stop-before-original-handler",
+      stopSignalEvent(),
+    );
+
+    await engine.enqueue(stop);
+    await engine.enqueue(original);
+
+    assert.equal(client.createdActivities.length, 1);
+    assert.equal(client.createdActivities[0]?.content.type, "response");
+    assert.deepEqual(
+      await database.findTriggerRunsByProviderEventReceiptId(original.providerEventReceiptId),
+      [],
+    );
+
+    const laterPrompt = agentSessionEvent({
+      occurredAt: "2026-01-02T00:02:00.000Z",
+      agentActivity: {
+        id: "later-activity",
+        type: "prompt",
+        body: "Please start again",
+        createdAt: "2026-01-02T00:02:00.000Z",
+      },
+      prompt: "Please start again",
+      parserMessage: "Please start again",
+    });
+    const later = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "prompt-after-stop",
+      laterPrompt,
+    );
+    await engine.enqueue(later);
+    assert.equal(
+      (await database.findTriggerRunsByProviderEventReceiptId(later.providerEventReceiptId)).length,
+      1,
+    );
   });
 
   it("stops an active session after the current revision removes its session trigger", async () => {
@@ -1302,6 +1434,41 @@ function agentSessionConfiguration() {
       },
     ],
   };
+}
+
+function linearCommentAndSessionConfiguration() {
+  const comment = linearCommentConfiguration();
+  const session = agentSessionConfiguration();
+  return { ...comment, triggers: [comment.triggers[0]!, session.triggers[0]!] };
+}
+
+function linearRunLookupDatabase(
+  database: Database,
+): Pick<Database, "findProviderEventReceiptById" | "listTriggerRunsForLinearComments"> {
+  return {
+    findProviderEventReceiptById: (id) => database.findProviderEventReceiptById(id),
+    listTriggerRunsForLinearComments: (projectId, commentIds) =>
+      database.listTriggerRunsForLinearComments(projectId, commentIds),
+  };
+}
+
+async function persistLinearEvent(
+  database: Database,
+  projectId: string,
+  source: "linear.comment" | "linear.agent_session",
+  deliveryId: string,
+  payload: NormalizedLinearCommentEvent | NormalizedLinearAgentSessionEvent,
+) {
+  const persisted = await database.persistManualEvent({
+    organizationId: "hub-org",
+    projectId,
+    source,
+    deliveryId,
+    payload,
+    receivedAt: new Date(payload.occurredAt ?? "2026-01-02T00:00:00.000Z"),
+  });
+  if (persisted.status !== "accepted") throw new Error("expected accepted Linear test event");
+  return persisted.event;
 }
 
 /** Accepts a freshly created native agent session so completion hooks can be exercised. */
