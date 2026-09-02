@@ -27,7 +27,7 @@ export function DataTable({
 }: {
   label: string;
   columns: readonly DataColumn[];
-  empty: { title: string; description?: string };
+  empty: { title: string; description?: string; action?: ReactNode };
   isEmpty: boolean;
   children: ReactNode;
 }) {
@@ -61,7 +61,9 @@ export function DataTable({
                 <EmptyState
                   title={empty.title}
                   {...(empty.description === undefined ? {} : { description: empty.description })}
-                />
+                >
+                  {empty.action}
+                </EmptyState>
               </TableCell>
             </TableRow>
           ) : (
