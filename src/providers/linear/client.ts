@@ -519,7 +519,7 @@ export function createLinearApiClient(options: {
     async readIssueComments(input) {
       const result = IssueCommentHistoryResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
-          query: `query PaseoIssueCommentHistory($issueId: String!, $before: DateTimeOrDuration!) {
+          query: `query PaseoIssueCommentHistory($issueId: ID!, $before: DateTimeOrDuration!) {
             comments(
               last: ${LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT}
               orderBy: createdAt
