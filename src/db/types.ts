@@ -1315,7 +1315,13 @@ export interface Database {
     failureReason: string,
     stepId?: string,
   ): Promise<
-    { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
+    | {
+        stepRun: WorkflowStepRunRecord;
+        run: TriggerRunRecord;
+        transitioned: boolean;
+        failedExecutionIds: readonly string[];
+      }
+    | undefined
   >;
   claimPendingWorkflowRunTerminalNotification(
     now: Date,

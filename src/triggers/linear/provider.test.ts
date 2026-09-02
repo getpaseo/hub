@@ -913,6 +913,58 @@ describe("Linear trigger provider", () => {
     );
   });
 
+  it("keeps the comment fallback when the Agent Session invocation is rejected", async () => {
+    const database = createMemoryDatabase();
+    const { project, store } = await createActiveProjectConfiguration(
+      database,
+      rejectedAgentSessionAndCommentConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client: new RecordingHistoryClient({ complete: true, comments: [] }),
+      database,
+      executions: { stopActive: async () => ({ stopped: 0 }) },
+    });
+    const engine = new DurableWorkflowEngine({
+      database,
+      entitlements: null,
+      providers: [provider],
+    });
+    const comment = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.comment",
+      "fallback-comment",
+      event("2026-01-02T00:00:00.000Z"),
+    );
+    const created = agentSessionEvent({ action: "created" });
+    const session = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "rejected-agent-session",
+      {
+        ...created,
+        agentSession: { ...created.agentSession, sourceCommentId: "trigger-comment" },
+      },
+    );
+
+    await engine.enqueue(session);
+    await engine.enqueue(comment);
+
+    const sessionRuns = await database.findTriggerRunsByProviderEventReceiptId(
+      session.providerEventReceiptId,
+    );
+    assert.equal(sessionRuns.length, 1);
+    assert.equal(sessionRuns[0]?.outcome, "rejected");
+    const commentRuns = await database.findTriggerRunsByProviderEventReceiptId(
+      comment.providerEventReceiptId,
+    );
+    assert.equal(commentRuns.length, 1);
+    assert.equal(commentRuns[0]?.outcome, "accepted");
+  });
+
   it("stops the session's executions instead of starting a run on Linear's stop signal", async () => {
     const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
     const client = new RecordingHistoryClient({ complete: true, comments: [] });
@@ -1440,6 +1492,23 @@ function linearCommentAndSessionConfiguration() {
   const comment = linearCommentConfiguration();
   const session = agentSessionConfiguration();
   return { ...comment, triggers: [comment.triggers[0]!, session.triggers[0]!] };
+}
+
+function rejectedAgentSessionAndCommentConfiguration() {
+  const configuration = linearCommentAndSessionConfiguration();
+  const session = configuration.triggers[1]!;
+  return {
+    ...configuration,
+    triggers: [
+      configuration.triggers[0]!,
+      {
+        ...session,
+        inputs: {
+          priority: { type: "string", required: true, choices: ["high", "low"] },
+        },
+      },
+    ],
+  };
 }
 
 function linearRunLookupDatabase(
