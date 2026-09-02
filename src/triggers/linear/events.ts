@@ -53,6 +53,12 @@ export const NormalizedLinearCommentEventSchema = z.object({
    * needs them, and leaves them absent when the thread was not or could not be read.
    */
   threadAuthorIds: z.array(LinearIdSchema).optional(),
+  /**
+   * Whether the thread root is the root comment of an agent session. Linear materializes a
+   * session as a comment thread, so a reply there is already delivered as a session prompt.
+   * Filled together with `threadAuthorIds`.
+   */
+  threadIsAgentSession: z.boolean().optional(),
   occurredAt: z.string().datetime().optional(),
 });
 
@@ -70,7 +76,11 @@ export const NormalizedLinearAgentSessionEventSchema = z.object({
     url: z.string().url().optional(),
     /** The root comment of the thread the session is attached to, when it was opened from one. */
     rootCommentId: LinearIdSchema.optional(),
-    /** The comment that created the session: the root itself, or a reply that mentioned the app. */
+    /**
+     * The comment behind this turn. For `created`, the comment that opened the session: the root
+     * itself, or a reply that mentioned the app. For `prompted`, the reply Linear turned into the
+     * prompt.
+     */
     sourceCommentId: LinearIdSchema.optional(),
   }),
   agentActivity: z
@@ -266,11 +276,6 @@ function normalizeAgentSessionEvent(
     readString(asRecord(session["comment"])?.["id"]),
     readString(session["commentId"]),
   );
-  const sourceCommentId = firstDefined(
-    readString(asRecord(session["sourceComment"])?.["id"]),
-    readString(session["sourceCommentId"]),
-    readString(payload["sourceCommentId"]),
-  );
   return NormalizedLinearAgentSessionEventSchema.parse({
     type: "agent_session",
     action,
@@ -284,7 +289,7 @@ function normalizeAgentSessionEvent(
       status,
       ...(url === undefined ? {} : { url }),
       ...(rootCommentId === undefined ? {} : { rootCommentId }),
-      ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
+      ...(turn.sourceCommentId === undefined ? {} : { sourceCommentId: turn.sourceCommentId }),
     },
     agentActivity: turn.activity ?? null,
     prompt: turn.prompt,
@@ -340,23 +345,28 @@ function normalizeAgentSessionTurn(input: {
   promptContext: string | undefined;
 }):
   | {
-      activity: ReturnType<typeof normalizePromptActivity>;
+      activity: NormalizedPromptActivity | undefined;
       actor: { id: string; name?: string } | undefined;
       prompt: string;
       parserMessage: string;
       occurredAt: string;
+      sourceCommentId: string | undefined;
     }
   | undefined {
   const activityData = asRecord(input.payload["agentActivity"]);
-  const activity = normalizePromptActivity(activityData);
+  const promptActivity = normalizePromptActivity(activityData);
   if (input.action === "prompted") {
-    if (activity === undefined) return undefined;
+    if (promptActivity === undefined) return undefined;
+    const { activity } = promptActivity;
     return {
       activity,
       actor: normalizeActor(activityData?.["user"]) ?? actorFromUserId(activityData ?? {}),
       prompt: activity.body,
       parserMessage: activity.body,
       occurredAt: activity.createdAt,
+      // The session's own source comment opened it and was handled when the session was created;
+      // this turn comes from the comment Linear attached to the prompt activity, if any.
+      sourceCommentId: promptActivity.sourceCommentId,
     };
   }
 
@@ -372,7 +382,7 @@ function normalizeAgentSessionTurn(input: {
     return undefined;
   }
   return {
-    activity,
+    activity: promptActivity?.activity,
     actor:
       normalizeActor(input.payload["actor"]) ??
       normalizeActor(input.session["creator"]) ??
@@ -381,18 +391,30 @@ function normalizeAgentSessionTurn(input: {
     prompt,
     parserMessage,
     occurredAt,
+    sourceCommentId: firstDefined(
+      readString(asRecord(input.session["sourceComment"])?.["id"]),
+      readString(input.session["sourceCommentId"]),
+      readString(input.payload["sourceCommentId"]),
+    ),
   };
 }
 
-function normalizePromptActivity(value: unknown):
-  | {
-      id: string;
-      type: "prompt";
-      body: string;
-      createdAt: string;
-      signal?: "stop";
-    }
-  | undefined {
+interface NormalizedPromptActivity {
+  id: string;
+  type: "prompt";
+  body: string;
+  createdAt: string;
+  signal?: "stop";
+}
+
+/**
+ * The prompt activity, and the comment Linear attached to it when the prompt came from a reply
+ * in the session thread. The webhook may carry that comment as `sourceCommentId`, as a nested
+ * `sourceComment`, or inside the content; a prompt typed in the session panel has none.
+ */
+function normalizePromptActivity(
+  value: unknown,
+): { activity: NormalizedPromptActivity; sourceCommentId: string | undefined } | undefined {
   const activity = asRecord(value);
   const content = asRecord(activity?.["content"]);
   if (activity === undefined || content?.["type"] !== "prompt") return undefined;
@@ -404,9 +426,15 @@ function normalizePromptActivity(value: unknown):
   // trigger matching and drops the event as `agent_session_stopped`.
   const body = readString(content["body"]) ?? (signal === undefined ? undefined : "Stop");
   const createdAt = readDate(activity["createdAt"]);
-  return id === undefined || body === undefined || createdAt === undefined
-    ? undefined
-    : { id, type: "prompt", body, createdAt, ...(signal === undefined ? {} : { signal }) };
+  if (id === undefined || body === undefined || createdAt === undefined) return undefined;
+  return {
+    activity: { id, type: "prompt", body, createdAt, ...(signal === undefined ? {} : { signal }) },
+    sourceCommentId: firstDefined(
+      readString(activity["sourceCommentId"]),
+      readString(asRecord(activity["sourceComment"])?.["id"]),
+      readString(content["sourceCommentId"]),
+    ),
+  };
 }
 
 function readStopSignal(value: unknown): "stop" | undefined {

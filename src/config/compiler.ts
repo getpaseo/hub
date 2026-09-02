@@ -102,10 +102,10 @@ const AuthoredTriggerFilterSchema = z
     /** Restrict a Linear comment trigger to replies rather than root comments. */
     replies_only: z.boolean().optional(),
     /**
-     * Restrict a Linear comment trigger to replies in a thread the connection's app user has
-     * already commented in. Agent sessions answer with activities rather than comments, so this
-     * selects the plain comment threads the app took part in without also firing for session
-     * threads, where a mention already emits an agent-session event.
+     * Restrict a Linear comment trigger to replies in a plain comment thread the connection's
+     * app user has already commented in. Agent-session threads are excluded even though the
+     * app's responses appear there as comments: a reply in one already arrives as a session
+     * prompt, so this selects the threads a comment trigger alone answers.
      */
     thread_with_app: z.boolean().optional(),
     channels: z.array(z.string().min(1)).optional(),

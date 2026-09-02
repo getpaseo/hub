@@ -197,6 +197,50 @@ describe("Linear trigger matching", () => {
     );
   });
 
+  it("never treats an agent-session thread as a thread with the app", () => {
+    const config = configuration();
+    const withFilters = (filters: Record<string, unknown>) => ({
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) => Object.assign({}, trigger, { filters })),
+    });
+    const scope = { project: "project-1", from_users: ["operator"] };
+    const threadWithApp = withFilters({ ...scope, thread_with_app: true });
+    // The app answered in the thread, so by authorship alone it would qualify.
+    const sessionReply = {
+      ...commentEvent("continue", "session-root"),
+      threadAuthorIds: ["linear-bot", "operator", "app-user"],
+      threadIsAgentSession: true,
+    };
+
+    assert.equal(matchLinearTriggers(threadWithApp, sessionReply, undefined, "app-user").length, 0);
+    assert.equal(
+      matchLinearTriggers(
+        withFilters({ ...scope, thread_with_app: true, replies_only: true }),
+        sessionReply,
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...sessionReply, threadIsAgentSession: false },
+        undefined,
+        "app-user",
+      ).length,
+      1,
+    );
+    // Only thread_with_app consults it: replies_only and plain scoping still fire.
+    assert.equal(
+      matchLinearTriggers(withFilters({ ...scope, replies_only: true }), sessionReply).length,
+      1,
+    );
+    assert.equal(matchLinearTriggers(withFilters(scope), sessionReply).length, 1);
+  });
+
   it("keeps triggers isolated to their configured Linear connection", () => {
     const connectionId = "11111111-1111-4111-8111-111111111111";
     const config = configuration();
