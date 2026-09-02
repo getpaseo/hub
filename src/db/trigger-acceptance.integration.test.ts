@@ -284,6 +284,16 @@ describe("trigger acceptance persistence", () => {
       assert.equal(agentSessionWithoutScopes.reason, "configuration_unavailable");
     }
 
+    const agentSessionStopWithoutScopes = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-stop-under-scoped",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(2),
+    });
+    assert.equal(agentSessionStopWithoutScopes.status, "accepted");
+
     await client.query(
       `update linear_connections
        set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb
