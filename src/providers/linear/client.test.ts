@@ -224,10 +224,10 @@ describe("Linear connection client", () => {
       botActor: null,
       children: {
         nodes: [
-          { user: { id: "app-user" }, botActor: null },
           { user: null, botActor: { id: "bot-1" } },
           { user: { id: "user-1" }, botActor: null },
         ],
+        pageInfo: { hasNextPage: true, endCursor: "cursor-100" },
       },
     };
     const api = createLinearApiClient({
@@ -236,6 +236,27 @@ describe("Linear connection client", () => {
       connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
       fetch: async (_url, init) => {
         requests.push(readableBody(init?.body));
+        const request = graphqlRequest(requests.at(-1) ?? "{}");
+        const variables = request.variables;
+        if (typeof variables !== "object" || variables === null || Array.isArray(variables)) {
+          throw new Error("expected GraphQL variables");
+        }
+        if (Reflect.get(variables, "after") === "cursor-100") {
+          return json({
+            data: {
+              comment: {
+                id: "root-1",
+                user: { id: "user-1" },
+                botActor: null,
+                parent: null,
+                children: {
+                  nodes: [{ user: { id: "app-user" }, botActor: null }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          });
+        }
         return json({
           data: {
             comment: {
@@ -243,7 +264,10 @@ describe("Linear connection client", () => {
               user: { id: "user-2" },
               botActor: null,
               parent,
-              children: { nodes: [] },
+              children: {
+                nodes: [],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
             },
           },
         });
@@ -252,15 +276,17 @@ describe("Linear connection client", () => {
 
     assert.deepEqual(
       await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
-      { rootId: "root-1", authorIds: ["user-1", "app-user", "bot-1"] },
+      { rootId: "root-1", authorIds: ["user-1", "bot-1", "app-user"] },
     );
     const request = graphqlRequest(requests[0] ?? "{}");
     assert.match(request.query, /comment\(id: \$id\)/u);
-    assert.match(
-      request.query,
-      /parent \{[\s\S]*children\(first: 100\) \{ nodes \{ user \{ id \} botActor \{ id \} \} \}/u,
-    );
-    assert.deepEqual(request.variables, { id: "reply-2" });
+    assert.match(request.query, /parent \{[\s\S]*children\(first: 100, after: \$after\)/u);
+    assert.match(request.query, /pageInfo \{ hasNextPage endCursor \}/u);
+    assert.deepEqual(request.variables, { id: "reply-2", after: null });
+    assert.deepEqual(graphqlRequest(requests[1] ?? "{}").variables, {
+      id: "root-1",
+      after: "cursor-100",
+    });
 
     // A root comment is its own thread root.
     parent = null;
@@ -268,6 +294,10 @@ describe("Linear connection client", () => {
       await api.readCommentThread({ linearOrganizationId: "linear-org", commentId: "reply-2" }),
       { rootId: "reply-2", authorIds: ["user-2"] },
     );
+    assert.deepEqual(graphqlRequest(requests[2] ?? "{}").variables, {
+      id: "reply-2",
+      after: null,
+    });
   });
 
   it("reads bounded agent-session activity before the prompting activity", async () => {
