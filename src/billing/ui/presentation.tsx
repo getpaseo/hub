@@ -5,6 +5,7 @@ import type {
   PublicBillingPlan,
   PublicBillingPlanPrice,
 } from "../../server/runtime.js";
+export { TRIAL_DAYS } from "../trial-policy.js";
 
 /**
  * Every word the billing surfaces render: prices, the button on each plan, and the one sentence
@@ -46,10 +47,6 @@ export function priceForInterval(
 ): PublicBillingPlanPrice | null {
   return plan.prices.find((price) => price.interval === interval) ?? null;
 }
-
-/** The number of free trial days Stripe grants on a cardless checkout. */
-export const TRIAL_DAYS = 14;
-
 export interface PlanPrice {
   /** The headline figure — "€15", "Free", or "—" when this interval has no price. */
   amount: string;

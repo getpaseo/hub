@@ -40,6 +40,11 @@ import { EntitlementDenied } from "../entitlements/catalog.js";
 import { entitlementDenialResponse } from "../entitlements/denial.js";
 import type { EntitlementsService } from "../entitlements/service.js";
 import type { InvitationMailer } from "../invitations/index.js";
+import {
+  signupIntentOrDefault,
+  signupIntentSchema,
+  type OrganizationCreatedEvent,
+} from "../organizations/signup-intent.js";
 
 const INVITATION_LIFETIME_HOURS = 48;
 
@@ -101,6 +106,9 @@ interface OrganizationAccessOptions {
   /** What a newly created organization is stamped with — unlimited self-hosted, the Free plan
    * on a billing-configured instance. Resolved per creation so a later Free-plan sync is seen. */
   provisioningEntitlements: ProvisioningEntitlementResolver;
+  /** Post-commit hook fired after an owner creates an organization. Awaited before responding,
+   * but never rolls back or fails creation if the injected integration fails. */
+  onOrganizationCreated?: (event: OrganizationCreatedEvent) => Promise<void>;
   /** Post-commit hook fired when an organization's seat count may have changed (invite, cancel,
    * accept, remove). The composition root wires billing's seat-quantity reporter here; undefined
    * self-hosted. Never blocks or fails the member action. */
@@ -142,7 +150,9 @@ interface TargetMemberRow extends QueryRow {
 }
 
 const organizationIdBody = z.object({ organizationId: z.string().min(1) }).strict();
-const createOrganizationBody = z.object({ name: z.string().trim().min(1).max(100) }).strict();
+const createOrganizationBody = z
+  .object({ name: z.string().trim().min(1).max(100), signupIntent: signupIntentSchema.optional() })
+  .strict();
 const createInvitationBody = z
   .object({ email: z.string().trim().email(), role: invitationRoleSchema })
   .strict();
@@ -329,10 +339,33 @@ export class OrganizationAccess {
       await activateSession(client, session, id);
       return created;
     });
+    await this.notifyOrganizationCreated({
+      organizationId: organization.id,
+      accountEmail: session.email,
+      accountName: session.name,
+      intent: signupIntentOrDefault(input.signupIntent),
+    });
     return Response.json(
       { organizationId: organization.id, organizationSlug: organization.slug },
       { status: 201 },
     );
+  }
+
+  private async notifyOrganizationCreated(event: OrganizationCreatedEvent): Promise<void> {
+    try {
+      await this.options.onOrganizationCreated?.(event);
+    } catch (error) {
+      // Last line of defence: hook integrations should own and report their expected failures.
+      reportFailure(
+        error,
+        {
+          operation: "organization.created.notify",
+          component: "auth",
+          organizationId: event.organizationId,
+        },
+        { kind: "upstreamUnavailable" },
+      );
+    }
   }
 
   private async selectOrganization(request: Request): Promise<Response> {

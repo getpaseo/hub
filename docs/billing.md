@@ -68,14 +68,23 @@ Nothing about this is hardcoded to one plan. Publish a second product in Stripe 
 lays out two columns; publish an annual price and the interval switch appears. What is fixed is
 that a customer only ever sees what Stripe says is for sale.
 
-## Free-tier provisioning
+## Organization provisioning and creation-time trials
 
-A hosted organization is provisioned with the free record's template resolved from the mirror
-(`BillingRuntime.provisioningEntitlement`), not the unlimited default self-hosted gets. If the
-mirror has no active free record yet — first boot before sync, or a Stripe account missing the
-product — provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails closed rather than
-open to unlimited and logs loudly so the gap gets noticed; every organization stamped from it
-re-stamps to the real template the moment it subscribes.
+A marketing entry may select the signup offer with `?plan=trial`. Hub validates that closed value
+at the page boundary, keeps it in the HTTP-only `paseo_signup_plan` cookie across account signup,
+and consumes it when the owner creates an organization. Billing owns the intent dispatch. Unknown
+values are ignored, and an absent value defaults to `trial`, so `https://hub.paseo.sh/` continues
+to start a trial until the marketing link adds the explicit parameter. A future hosted-free offer
+requires a new validated intent and billing branch, not changes to the organization-creation flow.
+
+A hosted organization is first provisioned with the free record's template resolved from the
+mirror (`BillingRuntime.provisioningEntitlement`), then its post-commit creation hook immediately
+starts and synchronously reconciles a Stripe-owned trial. The floor is the fail-closed state if
+Stripe cannot be reached during creation and the landing state after cancellation. If the mirror
+has no active free record yet — first boot before sync, or a Stripe account missing the product —
+provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails closed rather than open to
+unlimited and logs loudly so the gap gets noticed; every organization stamped from it re-stamps
+to the offered plan when trial creation or the fallback Checkout path succeeds.
 
 The billing view derives the current plan from what the organization was last _stamped_ with, not
 from a copied Stripe subscription. It reads Stripe only for the billing page, through a short,
@@ -103,12 +112,16 @@ change to; with one offer, the way out is Manage billing. Everything here is dri
 catalog, so a second product or an annual price restores the controls without a redesign — but
 nothing that has no meaning today is rendered today.
 
-The first subscribe starts a Stripe-owned 14-day trial: Checkout uses
-`payment_method_collection=if_required` and `trial_settings.end_behavior.missing_payment_method=cancel`,
-so it collects no card. Stripe subscription history determines eligibility; any former
-subscription receives ordinary paid Checkout. Customer, Checkout, and subscription metadata carry
-the organization id, and idempotency keys collapse concurrent Checkout attempts. During a trial,
-the Stripe portal remains available to add a card voluntarily.
+A new hosted organization's post-commit hook passes the stored signup intent to billing. Today's
+`trial` intent starts its Stripe-owned 14-day trial directly, with
+`trial_settings.end_behavior.missing_payment_method=cancel`, and reconciles it before the create
+request returns. No card or Checkout visit is required. The Subscribe → Checkout path remains for
+customers returning after cancellation and as the fallback when automatic trial creation failed;
+it uses `payment_method_collection=if_required` for a still-eligible first trial. Stripe
+subscription history determines eligibility, so any former subscription receives ordinary paid
+Checkout. Customer, Checkout, and subscription metadata carry the organization id, and
+idempotency keys collapse concurrent creation attempts. During a trial, the Stripe portal remains
+available to add a card voluntarily.
 
 The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes
 only the subscription id from the event, then — under a per-organization advisory lock that
