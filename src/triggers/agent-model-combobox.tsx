@@ -52,7 +52,7 @@ export function AgentModelCombobox({
           aria-controls={listId}
           aria-required="true"
           data-value={value}
-          className="w-full min-w-0 justify-between font-normal"
+          className="w-full min-w-0 justify-between"
         >
           <span className="truncate">{selectedLabel}</span>
           <ChevronsUpDownIcon className="size-4 shrink-0 opacity-50" />
