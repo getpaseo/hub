@@ -100,9 +100,6 @@ const systemExecutionDeadlineClock: ExecutionDeadlineClock = {
   },
 };
 
-/** How many of a project's most recent runs a user stop inspects for undispatched work. */
-const STOP_RUN_SCAN_LIMIT = 200;
-
 export interface DaemonDispatchLifecycleOptions {
   database: Database;
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
@@ -1181,9 +1178,8 @@ export class DaemonDispatchLifecycle {
    *   terminal notification the workflow engine's outbox delivers with `reason`.
    *
    * Executions are failed first: their terminal transition already settles their run, so the
-   * second pass only sees runs that had nothing dispatched. The run scan reads the project's
-   * most recent {@link STOP_RUN_SCAN_LIMIT} runs; a run older than that has long passed its
-   * deadline.
+   * second pass only sees runs that had nothing dispatched. It queries active runs directly so
+   * an authoritative stop cannot miss older work in a busy project.
    *
    * `matches` selects on the work's output context or on its workflow run id, which is
    * resolved through the execution's step run (null outside a workflow run).
@@ -1220,13 +1216,8 @@ export class DaemonDispatchLifecycle {
       }),
     );
     const undispatched = (
-      await this.options.database.listTriggerRunsForProject(input.projectId, STOP_RUN_SCAN_LIMIT)
-    ).filter(
-      (run): run is AcceptedTriggerRunRecord =>
-        run.outcome === "accepted" &&
-        run.status === "running" &&
-        input.matches({ outputContext: run.outputContext, triggerRunId: run.id }),
-    );
+      await this.options.database.listRunningTriggerRunsForProject(input.projectId)
+    ).filter((run) => input.matches({ outputContext: run.outputContext, triggerRunId: run.id }));
     const failedRuns = await Promise.all(
       undispatched.map(async (run) => {
         const failed = await this.options.database.failWorkflowRun(run.id, "failed", input.reason);

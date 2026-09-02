@@ -380,6 +380,19 @@ class MemoryDatabase implements Database {
       .slice(0, limit);
   }
 
+  async listRunningTriggerRunsForProject(projectId: string) {
+    return [...this.triggerRuns.values()]
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.projectId === projectId && run.outcome === "accepted" && run.status === "running",
+      )
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      );
+  }
+
   async listTriggerRunsForLinearComments(projectId: string, commentIds: readonly string[]) {
     const wanted = new Set(commentIds);
     return (await this.listTriggerRunsForProject(projectId, Number.POSITIVE_INFINITY)).filter(

@@ -621,6 +621,24 @@ class PgDatabase implements Database {
     return rows.rows.map(toTriggerRunRecord);
   }
 
+  async listRunningTriggerRunsForProject(projectId: string) {
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs
+       where project_id = $1
+         and outcome = 'accepted'
+         and status = 'running'
+       order by created_at desc, configured_trigger_name, id desc`,
+      [projectId],
+    );
+    return rows.rows
+      .map(toTriggerRunRecord)
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.outcome === "accepted" && run.status === "running",
+      );
+  }
+
   async listTriggerRunsForLinearComments(projectId: string, commentIds: readonly string[]) {
     if (commentIds.length === 0) return [];
     const rows = await query<TriggerRunRow>(

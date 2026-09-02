@@ -109,7 +109,13 @@ const CommentAuthorSchema = z.object({
     .optional(),
 });
 
-const CommentRepliesSchema = z.object({ nodes: z.array(CommentAuthorSchema) });
+const CommentRepliesSchema = z.object({
+  nodes: z.array(CommentAuthorSchema),
+  pageInfo: z.object({
+    hasNextPage: z.boolean(),
+    endCursor: z.string().min(1).nullable(),
+  }),
+});
 
 const CommentThreadResponseSchema = z.object({
   data: z.object({
@@ -600,32 +606,50 @@ export function createLinearApiClient(options: {
       };
     },
     async readCommentThread(input) {
-      const result = CommentThreadResponseSchema.parse(
-        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
-          query: `query PaseoCommentThread($id: String!) {
+      const accessToken = await accessTokenFor(input.linearOrganizationId);
+      const authorIds = new Set<string>();
+      let commentId = input.commentId;
+      let after: string | null = null;
+      let rootId: string | undefined;
+      for (;;) {
+        const result = CommentThreadResponseSchema.parse(
+          await graphql(request, accessToken, {
+            query: `query PaseoCommentThread($id: String!, $after: String) {
             comment(id: $id) {
               id user { id } botActor { id }
               parent {
                 id user { id } botActor { id }
-                children(first: 100) { nodes { user { id } botActor { id } } }
+                children(first: 100, after: $after) {
+                  nodes { user { id } botActor { id } }
+                  pageInfo { hasNextPage endCursor }
+                }
               }
-              children(first: 100) { nodes { user { id } botActor { id } } }
+              children(first: 100, after: $after) {
+                nodes { user { id } botActor { id } }
+                pageInfo { hasNextPage endCursor }
+              }
             }
           }`,
-          variables: { id: input.commentId },
-        }),
-      );
-      const comment = result.data.comment;
-      if (comment === null) return undefined;
-      // Linear threads are one level deep: a reply's parent is the root, and the root's
-      // children are the whole thread.
-      const root = comment.parent ?? comment;
-      const authorIds = new Set<string>();
-      for (const author of [root, ...root.children.nodes]) {
-        const id = author.user?.id ?? author.botActor?.id ?? undefined;
-        if (id !== undefined) authorIds.add(id);
+            variables: { id: commentId, after },
+          }),
+        );
+        const comment = result.data.comment;
+        if (comment === null) return undefined;
+        // Linear threads are one level deep: a reply's parent is the root, and the root's
+        // children are the whole thread.
+        const root = comment.parent ?? comment;
+        rootId ??= root.id;
+        for (const author of [root, ...root.children.nodes]) {
+          const id = author.user?.id ?? author.botActor?.id ?? undefined;
+          if (id !== undefined) authorIds.add(id);
+        }
+        if (!root.children.pageInfo.hasNextPage) {
+          return { rootId, authorIds: [...authorIds] };
+        }
+        after = root.children.pageInfo.endCursor;
+        if (after === null) throw new Error("Linear comment thread page omitted its cursor");
+        commentId = rootId;
       }
-      return { rootId: root.id, authorIds: [...authorIds] };
     },
     async createComment(input) {
       const result = CommentResponseSchema.parse(

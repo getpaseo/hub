@@ -371,6 +371,49 @@ describe("durable Hub action acknowledgement state", () => {
     await lifecycle.stop();
   });
 
+  it("stops a matching undispatched run behind more than 200 newer project runs", async () => {
+    const database = createMemoryDatabase();
+    const lifecycle = createLifecycle(database, new AcknowledgementConnection());
+    const projectId = "project-busy-stop";
+    const createRun = async (index: number, agentSessionId: string) =>
+      (
+        await database.createAcceptedTriggerRun({
+          organizationId: "org-busy-stop",
+          projectId,
+          configurationRevisionId: "revision-busy-stop",
+          providerEventReceiptId: `receipt-busy-stop-${index}`,
+          configuredTriggerName: `agent-session-${index}`,
+          prompt: "raw",
+          inputs: {},
+          triggerContext: { provider: "test" },
+          outputContext: { provider: "linear", agentSessionId },
+          deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+          stepIds: ["step"],
+          createdAt: new Date(index),
+        })
+      ).run;
+
+    const target = await createRun(0, "session-target");
+    const newer = await Promise.all(
+      Array.from({ length: 201 }, (_, index) => createRun(index + 1, "session-other")),
+    );
+
+    const result = await lifecycle.stopAgentExecutions({
+      projectId,
+      reason: "stopped_by_user",
+      matches: (work) => agentSessionIdOf(work.outputContext) === "session-target",
+    });
+
+    assert.deepEqual(result.executions, []);
+    assert.deepEqual(
+      result.runs.map((run) => run.id),
+      [target.id],
+    );
+    assert.equal((await database.findTriggerRunById(target.id))?.status, "failed");
+    assert.equal((await database.findTriggerRunById(newer.at(-1)!.id))?.status, "running");
+    await lifecycle.stop();
+  });
+
   it("hands a stopped undispatched run to the outbox with the stop reason", async () => {
     const database = createMemoryDatabase();
     const failures: string[] = [];

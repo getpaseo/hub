@@ -1160,6 +1160,8 @@ export interface Database {
     providerEventReceiptId: string,
   ): Promise<TriggerRunRecord[]>;
   listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
+  /** Accepted workflow runs that are still active in a project, newest first. */
+  listRunningTriggerRunsForProject(projectId: string): Promise<AcceptedTriggerRunRecord[]>;
   /** Runs whose Linear trigger context names one of `commentIds` as the triggering comment, newest first. */
   listTriggerRunsForLinearComments(
     projectId: string,
