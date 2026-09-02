@@ -1042,8 +1042,12 @@ export class PaseoHub {
     await this.requireUser(alias).expectPlanPickerFitsPhone();
   }
 
-  async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
-    await this.requireUser(alias).expectInviteBlockedByPlan(email);
+  async expectInviteLockedByPlan(alias: string): Promise<void> {
+    await this.requireUser(alias).expectInviteLockedByPlan();
+  }
+
+  async followInviteLockToPlans(alias: string): Promise<void> {
+    await this.requireUser(alias).followInviteLockToPlans();
   }
 
   async expectPendingInvitation(alias: string, email: string): Promise<void> {
@@ -1123,12 +1127,15 @@ export class PaseoHub {
     await this.requireUser(alias).expectMeterUsage(expected);
   }
 
-  async expectInviteRefusedBySeatLimit(
+  async expectInviteLockedBySeatLimit(
     alias: string,
-    email: string,
     expected: { limit: number; current: number },
   ): Promise<void> {
-    await this.requireUser(alias).expectInviteRefusedBySeatLimit(email, expected);
+    await this.requireUser(alias).expectInviteLockedBySeatLimit(expected);
+  }
+
+  async followInviteLockToUsage(alias: string): Promise<void> {
+    await this.requireUser(alias).followInviteLockToUsage();
   }
 
   async expectEntitlementsAudit(
@@ -3705,6 +3712,11 @@ class HubUser {
       .parse(await this.page.evaluate(() => navigator.clipboard.readText()));
   }
 
+  /** The invite control in its locked state: a link out to the remedy, not a disabled button. */
+  private lockedInvite(): Locator {
+    return this.page.getByRole("link", { name: "Invite member" });
+  }
+
   private async openInvitationForm(): Promise<Locator> {
     await this.page.getByRole("button", { name: "Invite member" }).click();
     const form = this.page.getByRole("form", { name: "Invite team member" });
@@ -4089,20 +4101,27 @@ class HubUser {
     );
   }
 
-  async expectInviteRefusedBySeatLimit(
-    email: string,
-    expected: { limit: number; current: number },
-  ): Promise<void> {
+  /**
+   * A full cap locks the invite control instead of letting an owner fill in a form the server
+   * will refuse, and the lock names the limit it hit.
+   */
+  async expectInviteLockedBySeatLimit(expected: { limit: number; current: number }): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    const form = await this.openInvitationForm();
-    await form.getByLabel("Invitee email").fill(email);
-    await form.getByRole("button", { name: "Create invitation" }).click();
-    await expect(form).toBeHidden();
-    const alert = this.page.getByRole("alert");
-    await expect(alert).toContainText("Seat limit reached");
-    await expect(alert).toContainText(`${expected.current} of ${expected.limit} seats`);
-    await expect(alert).toContainText("Usage page");
-    await expect(this.invitationRow(email)).toHaveCount(0);
+    await expect(this.lockedInvite()).toHaveAttribute(
+      "title",
+      `Seat limit reached — ${expected.current} of ${expected.limit} seats are in use. See the Usage page for its limits.`,
+    );
+    await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  /** Self-hosted there is nothing to buy, so the lock leads to the page that names the limit. */
+  async followInviteLockToUsage(): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    await this.lockedInvite().click();
+    await expect(
+      this.page.getByRole("heading", { name: "Usage", exact: true, level: 1 }),
+    ).toBeVisible();
   }
 
   async expectEntitlementsAudit(expected: {
@@ -4293,16 +4312,31 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
-  async expectInviteBlockedByPlan(email: string): Promise<void> {
+  async expectInviteLockedByPlan(): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    const form = await this.openInvitationForm();
-    await form.getByLabel("Invitee email").fill(email);
-    await form.getByRole("button", { name: "Create invitation" }).click();
-    await expect(form).toBeHidden();
-    const alert = this.page.getByRole("alert");
-    await expect(alert).toContainText("Inviting members isn't enabled");
-    await expect(this.invitationRow(email)).toHaveCount(0);
+    await expect(this.lockedInvite()).toHaveAttribute(
+      "title",
+      "Inviting members isn't enabled for this organization. See the plans available to this organization.",
+    );
+    await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expectAccessible(this.page);
+  }
+
+  /** Hosted, the lock is the paywall's entrance: it lands on Billing with the offer already open. */
+  async followInviteLockToPlans(): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    await this.lockedInvite().click();
+    // The open picker is modal, so the page behind it is out of the accessibility tree: the URL
+    // is what says where the lock landed.
+    await expect(this.page).toHaveURL(/\/settings\/billing\?plans=true$/u);
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expectAccessible(this.page);
+    await this.page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
   }
 
   async expectPendingInvitation(email: string): Promise<void> {

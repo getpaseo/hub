@@ -18,7 +18,7 @@ import { NO_SUBSCRIPTION, subscriptionSummary, type SubscriptionSummary } from "
 
 type PortalResult = Awaited<ReturnType<typeof billingPortal>>;
 
-export function BillingPanel() {
+export function BillingPanel({ openPlans }: { openPlans: boolean }) {
   const tenant = useRouteTenant();
   const load = useServerFn(billingOverview);
   const query = useQuery({
@@ -39,7 +39,13 @@ export function BillingPanel() {
       </Alert>
     );
   }
-  return <BillingContent overview={query.data.data} slug={tenant.organization.slug} />;
+  return (
+    <BillingContent
+      overview={query.data.data}
+      slug={tenant.organization.slug}
+      openPlans={openPlans}
+    />
+  );
 }
 
 /**
@@ -47,9 +53,21 @@ export function BillingPanel() {
  * out to Stripe. The bands share a card so the page reads as a single object rather than a stack
  * of unrelated boxes, and each band owns its own padding so nothing collides.
  */
-function BillingContent({ overview, slug }: { overview: BillingOverviewView; slug: string }) {
+function BillingContent({
+  overview,
+  slug,
+  openPlans,
+}: {
+  overview: BillingOverviewView;
+  slug: string;
+  openPlans: boolean;
+}) {
   const { subscription, plans, canManage } = overview;
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const action = planPickerAction({ canManage, subscription, plans });
+  // The picker only opens on arrival when there is one to open: a member who follows the link
+  // from a locked control lands on the page and reads it, rather than facing a dialog offering
+  // a purchase they cannot make.
+  const [dialogOpen, setDialogOpen] = useState(openPlans && action !== null);
   const openDialog = useCallback(() => setDialogOpen(true), []);
   const closeDialog = useCallback(() => setDialogOpen(false), []);
   const summary = subscriptionSummary(subscription);
@@ -67,11 +85,7 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
       </PageHeader>
       <Section title="Plan">
         <div className="overflow-hidden rounded-xl border bg-card text-card-foreground">
-          <PlanIdentity
-            summary={summary}
-            action={planPickerAction({ canManage, subscription, plans })}
-            onOpenPicker={openDialog}
-          />
+          <PlanIdentity summary={summary} action={action} onOpenPicker={openDialog} />
           {currentPlan !== undefined && <PlanIncludes plan={currentPlan} />}
           {canManage && subscription.manageable && <PortalBand slug={slug} />}
         </div>

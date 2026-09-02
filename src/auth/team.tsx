@@ -33,6 +33,8 @@ import { useActiveAccount } from "./active-account.js";
 import { cancelInvitation, changeMemberRole, createInvitation, removeMember } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationPending } from "./account-mutation.js";
+import type { UsageLimitsView } from "../usage/dashboard.js";
+import { atLimit, LockedAction, useOrganizationLimits } from "../entitlements/ui/index.js";
 
 type AccountCommandResult = Result<{
   state: "sessionExpired" | "organizationRequired" | "complete";
@@ -82,6 +84,8 @@ export function Team() {
   const [inviting, setInviting] = useState(false);
   const invite = useCallback(() => setInviting(true), []);
   const busy = useAccountMutationPending();
+  const limits = useOrganizationLimits(account.capabilities.manageMembers);
+  const limit = limits === undefined ? null : inviteLimit(limits);
   const activeAccount = useMemo(() => ({ ...account, busy }), [account, busy]);
 
   return (
@@ -92,10 +96,13 @@ export function Team() {
         description={`People with access to ${account.organization.name}.`}
       >
         {account.capabilities.manageMembers && (
-          <Button type="button" onClick={invite} disabled={busy}>
-            <Plus aria-hidden="true" />
-            Invite member
-          </Button>
+          <LockedAction
+            limit={limit}
+            label="Invite member"
+            icon={Plus}
+            onPress={invite}
+            busy={busy}
+          />
         )}
       </PageHeader>
       <Section title="Members">
@@ -115,6 +122,18 @@ export function Team() {
       )}
     </>
   );
+}
+
+/**
+ * The limit the organization has run into, or null while it may still invite. The flag is
+ * reported ahead of the seat cap: an organization with invitations turned off is not short of
+ * seats.
+ */
+function inviteLimit(limits: UsageLimitsView): string | null {
+  if (!limits.canInviteMembers) return "Inviting members isn't enabled for this organization.";
+  const { seats } = limits;
+  if (!atLimit(seats)) return null;
+  return `Seat limit reached — ${seats.used} of ${seats.limit} seats are in use.`;
 }
 
 function InvitationDialog({
