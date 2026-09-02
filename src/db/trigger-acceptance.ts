@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   hasRequiredLinearAgentSessionScopes,
   linearConnectionRequiresReauthorization,
@@ -6,7 +6,7 @@ import {
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
-import { isLinearAgentSessionStop } from "./linear-event-acceptance.js";
+import { isLinearAgentSessionStop, linearAgentSessionStopId } from "./linear-event-acceptance.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
@@ -95,7 +95,7 @@ export class ProviderEventAcceptanceRepository {
         return { status: "dropped", receiptId: receipt.id, reason: dropReason };
       }
 
-      const routes = await transaction
+      const currentRoutes = await transaction
         .select({
           projectId: schema.projectTriggerRoutes.projectId,
           revisionId: schema.projectTriggerRoutes.configurationRevisionId,
@@ -129,7 +129,18 @@ export class ProviderEventAcceptanceRepository {
           ),
         );
 
-      const selectedRoutes = selectFirstRoutePerProject(routes);
+      const stopSessionId = provider === "linear" ? linearAgentSessionStopId(input) : undefined;
+      const cancellationRoutes =
+        stopSessionId === undefined
+          ? []
+          : await findLinearStopRoutes(
+              transaction,
+              connection.organizationId,
+              connection.id,
+              String(externalId),
+              stopSessionId,
+            );
+      const selectedRoutes = selectFirstRoutePerProject([...currentRoutes, ...cancellationRoutes]);
       if (selectedRoutes.length === 0) {
         const reason = "no_project_route";
         await transaction
@@ -314,6 +325,39 @@ export class ProviderEventAcceptanceRepository {
       .delete(schema.providerEventReceipts)
       .where(eq(schema.providerEventReceipts.id, providerEventReceiptId));
   }
+}
+
+async function findLinearStopRoutes(
+  transaction: HubTransaction,
+  organizationId: string,
+  connectionId: string,
+  linearOrganizationId: string,
+  agentSessionId: string,
+) {
+  const runs = await transaction
+    .select({
+      projectId: schema.triggerRuns.projectId,
+      revisionId: schema.triggerRuns.configurationRevisionId,
+    })
+    .from(schema.triggerRuns)
+    .innerJoin(
+      schema.projects,
+      and(
+        eq(schema.projects.id, schema.triggerRuns.projectId),
+        eq(schema.projects.organizationId, organizationId),
+        eq(schema.projects.status, "active"),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.triggerRuns.organizationId, organizationId),
+        eq(schema.triggerRuns.status, "running"),
+        sql`${schema.triggerRuns.outputContext} ->> 'provider' = 'linear'`,
+        sql`${schema.triggerRuns.outputContext} ->> 'linearOrganizationId' = ${linearOrganizationId}`,
+        sql`${schema.triggerRuns.outputContext} ->> 'agentSessionId' = ${agentSessionId}`,
+      ),
+    );
+  return runs.map((run) => Object.assign({}, run, { connectionId, resourceId: null }));
 }
 
 function linearConnectionUnavailable(

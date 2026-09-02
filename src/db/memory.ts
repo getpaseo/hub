@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { completesAtIdleDeadline } from "./idle-completion.js";
-import { isLinearAgentSessionStop } from "./linear-event-acceptance.js";
+import { isLinearAgentSessionStop, linearAgentSessionStopId } from "./linear-event-acceptance.js";
 import {
   linearTriggerSuppressionKey,
   linearTriggerSuppressionKind,
@@ -3340,7 +3340,7 @@ class MemoryDatabase implements Database {
       };
     }
     const provider = providerForInput(input);
-    const routes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
+    const currentRoutes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
       ([projectId, candidates]) => {
         const project = this.projects.get(projectId);
         return project?.status === "active" && project.activeConfigurationRevisionId !== null
@@ -3351,10 +3351,44 @@ class MemoryDatabase implements Database {
                   route.connectionId === connectionId &&
                   (route.resourceId === null || candidateResourceIds.includes(route.resourceId)),
               )
-              .map((route) => Object.assign({}, route, { projectId }))
+              .map((route) => ({
+                projectId,
+                configurationRevisionId: project.activeConfigurationRevisionId!,
+                connectionId: route.connectionId,
+                resourceId: route.resourceId,
+              }))
           : [];
       },
     );
+    const stopSessionId =
+      provider === "linear" && "linearOrganizationId" in input
+        ? linearAgentSessionStopId(input)
+        : undefined;
+    const cancellationRoutes =
+      stopSessionId === undefined || !("linearOrganizationId" in input)
+        ? []
+        : Array.from(this.triggerRuns.values()).flatMap((run) => {
+            const project = this.projects.get(run.projectId);
+            return run.outcome === "accepted" &&
+              run.status === "running" &&
+              run.organizationId === organizationId &&
+              project?.status === "active" &&
+              matchesLinearSessionOutput(
+                run.outputContext,
+                input.linearOrganizationId,
+                stopSessionId,
+              )
+              ? [
+                  {
+                    projectId: run.projectId,
+                    configurationRevisionId: run.configurationRevisionId,
+                    connectionId,
+                    resourceId: null,
+                  },
+                ]
+              : [];
+          });
+    const routes = [...currentRoutes, ...cancellationRoutes];
     if (routes.length === 0) {
       this.providerEventReceipts.set(receipt.id, {
         ...receipt,
@@ -3371,7 +3405,7 @@ class MemoryDatabase implements Database {
       providerEventReceiptId: receipt.id,
       organizationId,
       projectId: route.projectId,
-      configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId!,
+      configurationRevisionId: route.configurationRevisionId,
       deliveryId: input.deliveryId,
       source: input.source,
       payload: input.payload,
@@ -3467,6 +3501,23 @@ class MemoryDatabase implements Database {
 
     return execution;
   }
+}
+
+function matchesLinearSessionOutput(
+  outputContext: unknown,
+  linearOrganizationId: string,
+  agentSessionId: string,
+): boolean {
+  if (!isRecord(outputContext)) return false;
+  return (
+    outputContext["provider"] === "linear" &&
+    outputContext["linearOrganizationId"] === linearOrganizationId &&
+    outputContext["agentSessionId"] === agentSessionId
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function emptyHubActionAcknowledgements(): AgentExecutionHubAcknowledgements {
