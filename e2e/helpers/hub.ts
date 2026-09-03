@@ -1063,6 +1063,14 @@ export class PaseoHub {
     await this.requireUser(alias).expectNoSecondTrialOffer();
   }
 
+  async expectTrialReminder(alias: string): Promise<void> {
+    await this.requireUser(alias).expectTrialReminder();
+  }
+
+  async expectNoTrialReminder(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoTrialReminder();
+  }
+
   async expectPlanPickerFitsPhone(alias: string): Promise<void> {
     await this.requireUser(alias).expectPlanPickerFitsPhone();
   }
@@ -3906,13 +3914,11 @@ class HubUser {
     const identity = this.page.getByText(this.accountEmail, { exact: true });
     await expect(identity).toBeVisible();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
     await this.tabThroughOrganizationDestinations();
-    await this.page.keyboard.press("Tab");
-    await expect(account).toBeFocused();
+    await this.tabThroughSidebarFooter();
 
     await expect(organization).toContainText("Owner");
     await organization.focus();
@@ -3935,15 +3941,13 @@ class HubUser {
     await this.openOrganizationSection("Team");
     await this.page.reload();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
     await this.tabThroughOrganizationDestinations();
-    await this.page.keyboard.press("Tab");
-    await expect(account).toBeFocused();
+    await this.tabThroughSidebarFooter();
 
     await invite.focus();
     await this.page.keyboard.press("Enter");
@@ -4014,6 +4018,18 @@ class HubUser {
       await this.page.keyboard.press("Tab");
       await expect(this.page.getByRole("link", { name: destination, exact: true })).toBeFocused();
     }
+  }
+
+  /**
+   * The footer's stops after the destinations: Help, then the account menu. A trial reminder
+   * precedes Help when the organization is trialing, which this harness never is — the browser
+   * fixtures that configure billing do not drive the sidebar by keyboard.
+   */
+  private async tabThroughSidebarFooter(): Promise<void> {
+    await this.page.keyboard.press("Tab");
+    await expect(this.page.getByRole("button", { name: "Help", exact: true })).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(this.page.getByRole("button", { name: this.accountEmail })).toBeFocused();
   }
 
   async navigateToConnectionsFromMobileSidebar(): Promise<void> {
@@ -4268,6 +4284,23 @@ class HubUser {
     await expect(plan.getByRole("button", { name: "Choose a plan" })).toHaveCount(0);
     await expect(plan).not.toContainText("run workflows");
     await expectAccessible(this.page);
+  }
+
+  /**
+   * The sidebar's ambient countdown. The day count is Stripe's to decide, so this pins the
+   * sentence rather than a number — what matters is that it is there and reads as days left.
+   */
+  async expectTrialReminder(): Promise<void> {
+    await expect(this.trialReminder()).toBeVisible();
+  }
+
+  /** No trial, no countdown. A paid, free, or cancelled organization is told nothing. */
+  async expectNoTrialReminder(): Promise<void> {
+    await expect(this.trialReminder()).toHaveCount(0);
+  }
+
+  private trialReminder(): Locator {
+    return this.page.getByRole("link", { name: /^\d+ days? left in trial$/u });
   }
 
   /** The picker offering the cardless trial, exactly: a badge, the offer, and the action. */

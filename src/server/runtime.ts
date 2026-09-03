@@ -47,6 +47,15 @@ export interface BillingCheckoutInput {
 }
 
 /**
+ * A countdown, and nothing more. `null` is every state that is not a running trial — paid, free,
+ * cancelled, and every self-hosted instance alike — so a consumer decides visibility on the one
+ * field and can never render a trial the organization is not on.
+ */
+export interface OrganizationTrialView {
+  daysLeft: number | null;
+}
+
+/**
  * Thrown when a member without the manage-resources capability tries to open checkout or the
  * billing portal — the `authorizeReference` intent, wired to `OrganizationAccess`. Lives here
  * (a composition root) so both `application-runtime.ts` (the thrower) and the billing UI server
@@ -111,6 +120,9 @@ export interface ApplicationRuntime {
   billingCheckout(request: Request, input: BillingCheckoutInput): Promise<{ url: string }>;
   /** A Stripe billing-portal URL, or null when the organization has no subscription to manage. */
   billingPortal(request: Request, organizationSlug: string): Promise<{ url: string | null }>;
+  /** Days left in the organization's trial, or null when it is not on one. Self-hosted always
+   * answers null, so the dashboard shell can render a countdown without knowing billing exists. */
+  organizationTrial(request: Request, organizationSlug: string): Promise<OrganizationTrialView>;
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
@@ -185,6 +197,13 @@ export async function handleBillingPortal(
   organizationSlug: string,
 ): Promise<{ url: string | null }> {
   return (await getApplication()).billingPortal(request, organizationSlug);
+}
+
+export async function handleOrganizationTrial(
+  request: Request,
+  organizationSlug: string,
+): Promise<OrganizationTrialView> {
+  return (await getApplication()).organizationTrial(request, organizationSlug);
 }
 
 export async function handleProviderRequest(name: string, request: Request): Promise<Response> {

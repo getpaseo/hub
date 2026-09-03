@@ -22,6 +22,7 @@ import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-bill
 import { selectActivePlanPrice } from "./plan-prices.js";
 import { publicBillingPlans, type PublicBillingPlan } from "./public-catalog.js";
 import { HUB_PLAN_PRESENTATIONS, type BillingPlanPresentations } from "./plan-presentation.js";
+import { trialDaysRemaining } from "./trial-policy.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -423,6 +424,15 @@ export class BillingRuntime {
   /** An organization may use the cardless trial only if it has never had a Stripe subscription. */
   private trialEligible(subscriptions: readonly StripeSubscriptionState[]): boolean {
     return subscriptions.length === 0;
+  }
+
+  /**
+   * Days left in this organization's trial, or null when it is not on one. The whole answer for
+   * an ambient countdown: a caller receives a number and never learns that a subscription, a
+   * status vocabulary, or Stripe are involved.
+   */
+  async trialRemaining(organizationId: string): Promise<number | null> {
+    return trialDaysRemaining(await this.subscriptionSnapshot(organizationId));
   }
 
   async handleWebhook(request: Request): Promise<Response> {
