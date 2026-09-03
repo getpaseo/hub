@@ -1,6 +1,7 @@
 import { useCallback, useId, useState } from "react";
-import { CheckIcon, ChevronsUpDownIcon, Loader2Icon } from "lucide-react";
+import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
 import { cn } from "../lib/utils.js";
+import { LoadingLine, Spinner } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
 import {
   Command,
@@ -57,7 +58,7 @@ export function RepositoryCombobox({
         >
           <span className="truncate">{selected?.fullName ?? placeholder}</span>
           {loading ? (
-            <Loader2Icon className="size-4 shrink-0 animate-spin opacity-50" />
+            <Spinner className="opacity-50" />
           ) : (
             <ChevronsUpDownIcon className="size-4 shrink-0 opacity-50" />
           )}
@@ -68,9 +69,8 @@ export function RepositoryCombobox({
           <CommandInput placeholder="Search repositories…" />
           <CommandList id={listId}>
             {loading ? (
-              <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
-                <Loader2Icon className="size-4 animate-spin" />
-                Loading repositories…
+              <div className="flex justify-center py-6">
+                <LoadingLine>Loading repositories…</LoadingLine>
               </div>
             ) : (
               <>

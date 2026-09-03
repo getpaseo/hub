@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
+import { Skeleton } from "../ui/skeleton.js";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table.js";
 import { EmptyState } from "./empty-state.js";
 
@@ -32,6 +33,79 @@ export function DataTable({
   children: ReactNode;
 }) {
   return (
+    <TableShell label={label} columns={columns}>
+      {isEmpty ? (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={columns.length} className="p-0">
+            <EmptyState
+              title={empty.title}
+              {...(empty.description === undefined ? {} : { description: empty.description })}
+            >
+              {empty.action}
+            </EmptyState>
+          </TableCell>
+        </TableRow>
+      ) : (
+        children
+      )}
+    </TableShell>
+  );
+}
+
+/**
+ * The same table before its rows are known: real columns, placeholder cells. The page the
+ * reader is waiting for is already the page on screen, so nothing moves when the data lands.
+ */
+export function DataTableSkeleton({
+  label,
+  columns,
+  rows = 3,
+}: {
+  label: string;
+  columns: readonly DataColumn[];
+  rows?: number;
+}) {
+  return (
+    <div aria-busy="true">
+      <TableShell label={label} columns={columns}>
+        {Array.from({ length: rows }, (_, row) => (
+          <TableRow key={row} className="border-border/60 hover:bg-transparent">
+            {columns.map((column, index) => (
+              <DataCell
+                key={column.header === "" ? `actions-${String(index)}` : column.header}
+                {...(column.align === undefined ? {} : { align: column.align })}
+              >
+                <Skeleton className={cn("h-4", placeholderWidth(columns, index))} />
+              </DataCell>
+            ))}
+          </TableRow>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
+/**
+ * The identifying column carries the long value, the rest are short facts, and a trailing
+ * action column is a button-sized square.
+ */
+function placeholderWidth(columns: readonly DataColumn[], index: number): string {
+  const column = columns[index];
+  if (column?.header === "" && index === columns.length - 1) return "ml-auto size-8";
+  return index === 0 ? "w-48" : "w-16";
+}
+
+/** The bordered card and quiet header row both the table and its skeleton are drawn in. */
+function TableShell({
+  label,
+  columns,
+  children,
+}: {
+  label: string;
+  columns: readonly DataColumn[];
+  children: ReactNode;
+}) {
+  return (
     <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
       <Table aria-label={label}>
         <TableHeader>
@@ -54,22 +128,7 @@ export function DataTable({
             ))}
           </TableRow>
         </TableHeader>
-        <TableBody>
-          {isEmpty ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={columns.length} className="p-0">
-                <EmptyState
-                  title={empty.title}
-                  {...(empty.description === undefined ? {} : { description: empty.description })}
-                >
-                  {empty.action}
-                </EmptyState>
-              </TableCell>
-            </TableRow>
-          ) : (
-            children
-          )}
-        </TableBody>
+        <TableBody>{children}</TableBody>
       </Table>
     </div>
   );

@@ -9,9 +9,10 @@ import {
   type ChangeEvent,
   type FormEvent,
   type FocusEvent,
+  type ReactNode,
 } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
-import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { StatusPill } from "../components/app/status-pill.js";
@@ -110,6 +111,23 @@ const CLI_COLUMNS = [
   { header: "", align: "end" as const },
 ];
 
+/** The second table on the page, under its own heading, in both its loaded and pending states. */
+function CliLoginsSection({ children }: { children: ReactNode }) {
+  return (
+    <section className="mt-10 grid gap-4" aria-labelledby="cli-logins-heading">
+      <div>
+        <h2 id="cli-logins-heading" className="text-lg">
+          CLI logins
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          Durable terminal credentials created through browser approval.
+        </p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function ApiKeys() {
   const account = useActiveAccount();
   const queryClient = useQueryClient();
@@ -194,7 +212,20 @@ export function ApiKeys() {
       </>
     );
   }
-  if (snapshot.isPending) return <p aria-busy="true">Loading API keys…</p>;
+  if (snapshot.isPending) {
+    return (
+      <>
+        <PageHeader
+          title="API keys"
+          description={`Machine access for ${account.organization.name}.`}
+        />
+        <DataTableSkeleton label="API keys" columns={TABLE_COLUMNS} />
+        <CliLoginsSection>
+          <DataTableSkeleton label="CLI logins" columns={CLI_COLUMNS} rows={1} />
+        </CliLoginsSection>
+      </>
+    );
+  }
   if (snapshot.isError || snapshot.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -257,15 +288,7 @@ export function ApiKeys() {
           />
         ))}
       </DataTable>
-      <section className="mt-10 grid gap-4" aria-labelledby="cli-logins-heading">
-        <div>
-          <h2 id="cli-logins-heading" className="text-lg">
-            CLI logins
-          </h2>
-          <p className="text-muted-foreground text-sm">
-            Durable terminal credentials created through browser approval.
-          </p>
-        </div>
+      <CliLoginsSection>
         <DataTable
           label="CLI logins"
           columns={CLI_COLUMNS}
@@ -281,7 +304,7 @@ export function ApiKeys() {
             />
           ))}
         </DataTable>
-      </section>
+      </CliLoginsSection>
       <ApiKeyDialog
         open={creating}
         onOpenChange={close}

@@ -52,7 +52,7 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu.js";
 import { Separator } from "../components/ui/separator.js";
-import { Skeleton } from "../components/ui/skeleton.js";
+import { PanelSkeleton } from "../components/app/loading.js";
 import {
   Sidebar,
   SidebarContent,
@@ -79,7 +79,12 @@ import { FormField } from "./form-field.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutation.js";
 import { useTenantContextMutationPending } from "./tenant-mutation.js";
-import { RouteTenantProvider, useOptionalRouteTenant } from "../projects/context.js";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import {
+  RouteTenantProvider,
+  useOptionalRouteTenant,
+  useRouteTenantStatus,
+} from "../projects/context.js";
 import { SidebarHelp } from "./sidebar-help.js";
 import { TrialNotice } from "./trial-notice.js";
 
@@ -208,15 +213,7 @@ function DashboardContent({
           <div className="flex flex-1 flex-col p-4 md:p-8">
             <Page>
               <ErrorSummary message={error} />
-              {transitioning ? (
-                <AccountTransition />
-              ) : (
-                <ActiveAccountProvider account={account}>
-                  <div key={tenant?.project?.id ?? "organization"}>
-                    <Outlet />
-                  </div>
-                </ActiveAccountProvider>
-              )}
+              <PageContent account={account} tenant={tenant} transitioning={transitioning} />
             </Page>
           </div>
         </SidebarInset>
@@ -241,12 +238,40 @@ function useAccountCommand<TInput, TResult extends Result<unknown>>(
   );
 }
 
-function AccountTransition() {
+/**
+ * The page slot. Switching organization and resolving the tenant behind a URL both replace what
+ * is inside it and nothing else — the sidebar and site header stay put, because the app is not
+ * going anywhere while a read is in flight.
+ */
+function PageContent({
+  account,
+  tenant,
+  transitioning,
+}: {
+  account: ActiveAccount;
+  tenant: RouteTenant | undefined;
+  transitioning: boolean;
+}) {
+  const status = useRouteTenantStatus();
+  // One name for the slot, whichever read is in flight: switching organization and resolving the
+  // tenant behind a URL are the same wait to someone listening to the page.
+  if (transitioning || status.state === "pending") {
+    return <PanelSkeleton label="Loading account context" />;
+  }
+  if (status.state === "failed") {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>{status.title}</AlertTitle>
+        <AlertDescription>{status.message}</AlertDescription>
+      </Alert>
+    );
+  }
   return (
-    <section aria-label="Loading account context" aria-busy="true" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-64 w-full" />
-    </section>
+    <ActiveAccountProvider account={account}>
+      <div key={tenant?.project?.id ?? "organization"}>
+        <Outlet />
+      </div>
+    </ActiveAccountProvider>
   );
 }
 

@@ -2,7 +2,13 @@ import { useCallback, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { TriangleAlert } from "lucide-react";
-import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
+import {
+  DataCell,
+  DataRow,
+  DataTable,
+  DataTableSkeleton,
+  type DataColumn,
+} from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
@@ -47,6 +53,10 @@ type OverrideTarget =
   | { kind: "canInviteMembers"; key: OverrideKey; hasOverride: boolean; value: boolean }
   | { kind: "executionsMonthly"; key: OverrideKey; hasOverride: boolean; limit: number | null };
 
+const PICKER_TITLE = "Organization";
+const PICKER_DESCRIPTION = "Pick an organization to manage its entitlements.";
+const AUDIT_TITLE = "Audit trail";
+const AUDIT_DESCRIPTION = "Every provisioning, plan stamp, and override, most recent first.";
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "Entitlement" },
   { header: "Granted" },
@@ -96,7 +106,7 @@ function OrganizationPicker({
   const load = useServerFn(operatorOrganizations);
   const query = useQuery({ queryKey: ["operator", "organizations"], queryFn: () => load() });
 
-  if (query.isPending) return <OperatorLoading />;
+  if (query.isPending) return <OrganizationPickerLoading />;
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -110,7 +120,7 @@ function OrganizationPicker({
     );
   }
   return (
-    <Section title="Organization" description="Pick an organization to manage its entitlements.">
+    <Section title={PICKER_TITLE} description={PICKER_DESCRIPTION}>
       <Select {...(slug === null ? {} : { value: slug })} onValueChange={onSelect}>
         <SelectTrigger aria-label="Manage organization" className="w-full max-w-sm">
           <SelectValue placeholder="Select an organization" />
@@ -134,7 +144,7 @@ function OperatorOrganization({ slug }: { slug: string }) {
     queryFn: () => load({ data: { organizationSlug: slug } }),
   });
 
-  if (query.isPending) return <OperatorLoading />;
+  if (query.isPending) return <OperatorOrganizationLoading />;
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -274,10 +284,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
           </DataRow>
         </DataTable>
       </Section>
-      <Section
-        title="Audit trail"
-        description="Every provisioning, plan stamp, and override, most recent first."
-      >
+      <Section title={AUDIT_TITLE} description={AUDIT_DESCRIPTION}>
         <AuditTrail history={snapshot.history} />
       </Section>
       {target !== null && <OverrideDialog target={target} slug={slug} onClose={closeEditor} />}
@@ -559,11 +566,23 @@ function meterUsageLabel(usage: Snapshot["usage"]): string {
   return usage.limit === null ? String(usage.used) : `${usage.used}/${usage.limit}`;
 }
 
-function OperatorLoading() {
+function OrganizationPickerLoading() {
   return (
-    <section aria-label="Loading operator console" aria-busy="true" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-48 w-full" />
-    </section>
+    <Section title={PICKER_TITLE} description={PICKER_DESCRIPTION}>
+      <Skeleton aria-busy="true" className="h-9 w-full max-w-sm" />
+    </Section>
+  );
+}
+
+function OperatorOrganizationLoading() {
+  return (
+    <>
+      <Section title="Entitlements">
+        <DataTableSkeleton label="Entitlements" columns={ENTITLEMENT_COLUMNS} />
+      </Section>
+      <Section title={AUDIT_TITLE} description={AUDIT_DESCRIPTION}>
+        <DataTableSkeleton label="Audit trail" columns={AUDIT_COLUMNS} rows={2} />
+      </Section>
+    </>
   );
 }

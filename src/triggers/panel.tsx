@@ -5,8 +5,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, ArrowLeft, Braces, Copy, FileText, LockKeyhole, Plus } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
+import { LoadingLine } from "../components/app/loading.js";
+import { Skeleton } from "../components/ui/skeleton.js";
 import { SiteHeaderActions } from "../components/app/site-header-actions.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { StatusPill } from "../components/app/status-pill.js";
@@ -51,12 +53,22 @@ const EVENT_OPTIONS: TriggerSelectOption[] = [
   { value: "manual.run", label: "Manual run (manual.run)" },
 ];
 
+const TRIGGERS_DESCRIPTION = "Launch agents on your compute when organization events arrive.";
+const TRIGGER_EDITOR_DESCRIPTION = "One event launches one agent on your compute.";
+
 export function TriggersPanel() {
   const tenant = useRouteTenant();
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useTriggerSnapshot(scope.organizationSlug);
   const navigate = useNavigate();
-  if (snapshot.isPending) return <div aria-busy="true">Loading triggers…</div>;
+  if (snapshot.isPending) {
+    return (
+      <>
+        <PageHeader title="Triggers" description={TRIGGERS_DESCRIPTION} />
+        <DataTableSkeleton label="Triggers" columns={TRIGGER_COLUMNS} />
+      </>
+    );
+  }
   if (snapshot.isError || snapshot.data.status === "error") {
     return <TriggerLoadError result={snapshot.data} />;
   }
@@ -65,10 +77,7 @@ export function TriggersPanel() {
     `/o/${scope.organizationSlug}/triggers/${triggerId}` as never;
   return (
     <>
-      <PageHeader
-        title="Triggers"
-        description="Launch agents on your compute when organization events arrive."
-      >
+      <PageHeader title="Triggers" description={TRIGGERS_DESCRIPTION}>
         {data.canManage ? (
           <Button asChild>
             <Link to={triggerPath("new")}>
@@ -188,7 +197,7 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
       await navigate({ to: `/o/${organizationSlug}/triggers` as never });
     },
   });
-  if (snapshot.isPending) return <div aria-busy="true">Loading trigger…</div>;
+  if (snapshot.isPending) return <TriggerEditorSkeleton />;
   if (snapshot.isError || snapshot.data.status === "error") {
     return <TriggerLoadError result={snapshot.data} />;
   }
@@ -309,7 +318,7 @@ function TriggerEditor({
           label: editor.form.enabled ? "Enabled" : "Disabled",
           tone: editor.form.enabled ? "success" : "neutral",
         }}
-        description="One event launches one agent on your compute."
+        description={TRIGGER_EDITOR_DESCRIPTION}
       >
         <EnabledSwitch
           checked={editor.form.enabled}
@@ -656,9 +665,7 @@ function TriggerForm({
             />
           </div>
           {providerCatalog.loading ? (
-            <p className="text-sm text-muted-foreground" aria-busy="true">
-              Loading providers from {form.daemon}…
-            </p>
+            <LoadingLine>{`Loading providers from ${form.daemon}…`}</LoadingLine>
           ) : null}
           {providerCatalog.error === undefined ? null : (
             <Alert variant="destructive">
@@ -750,6 +757,64 @@ function TriggerForm({
           </div>
         </FormSection>
       )}
+    </div>
+  );
+}
+
+/**
+ * The trigger editor before the snapshot arrives. The back link, the numbered sections, and
+ * their headings are the same every time, so they render for real; only the trigger's own
+ * name, state, and field values are placeholders.
+ */
+function TriggerEditorSkeleton() {
+  return (
+    <div aria-busy="true">
+      <Button variant="ghost" size="sm" className="mb-4 -ml-3" disabled>
+        <ArrowLeft className="size-4" /> Triggers
+      </Button>
+      <header className="mb-6 grid gap-2">
+        <Skeleton className="h-7 w-56" />
+        <p className="text-sm text-muted-foreground">{TRIGGER_EDITOR_DESCRIPTION}</p>
+      </header>
+      <div className="grid gap-5">
+        {EDITOR_SECTIONS.map((section) => (
+          <FormSection key={section.number} {...section}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FieldSkeleton />
+              <FieldSkeleton />
+            </div>
+          </FormSection>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The three sections every trigger has, whatever event or daemon it ends up pointing at. */
+const EDITOR_SECTIONS = [
+  {
+    number: "1",
+    title: "Trigger details",
+    description: "Identification and system handle for this trigger.",
+  },
+  {
+    number: "2",
+    title: "Event & access",
+    description: "When this event fires and who is authorized to invoke it.",
+  },
+  {
+    number: "3",
+    title: "Run target",
+    description: "The local machine compute and repository working directory.",
+  },
+] as const;
+
+function FieldSkeleton() {
+  return (
+    <div className="grid gap-2">
+      <Skeleton className="h-4 w-28" />
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="h-3 w-48" />
     </div>
   );
 }
