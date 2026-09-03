@@ -229,6 +229,7 @@ async function main(): Promise<void> {
     billingOverview: () => Promise.reject(new Error("billing is not configured")),
     billingCheckout: () => Promise.reject(new Error("billing is not configured")),
     billingPortal: () => Promise.reject(new Error("billing is not configured")),
+    organizationTrial: () => Promise.resolve({ daysLeft: null }),
     providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
     async stop() {
       await hub?.stop();

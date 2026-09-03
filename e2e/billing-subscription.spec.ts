@@ -37,6 +37,8 @@ test("a new organization starts trialing, replay is a no-op, and cancellation ex
     await hub.createOrganization("owner", "Acme");
     await hub.expectCurrentPlan("owner", "Hosted");
     await hub.expectActiveTrial("owner");
+    // The countdown is ambient: the owner reads it from the sidebar without opening billing.
+    await hub.expectTrialReminder("owner");
     await hub.expectReportedSeatQuantity("owner", 1);
     await page.screenshot({ path: `${SLICE_6_DIR}/01-hosted-trial.png`, fullPage: true });
   });
@@ -65,6 +67,8 @@ test("a new organization starts trialing, replay is a no-op, and cancellation ex
     // Enforcement reverts to the zero-execution floor; the customer-facing page says only that
     // there is no subscription, and offers the plan again.
     await hub.expectNoSubscription("owner");
+    // And the countdown goes with it, rather than counting down a trial nobody is on.
+    await hub.expectNoTrialReminder("owner");
     await page.screenshot({ path: `${SLICE_6_DIR}/03-cancel-reverts.png`, fullPage: true });
     // The trial was consumed by the cancelled subscription, so the paywall now sells the plan
     // instead of promising another 14 free days.

@@ -21,6 +21,14 @@ The coupling runs one direction: `billing` calls
 `entitlements.stamp(organizationId, template, provenance)`. `src/entitlements/` never imports
 `src/billing/`.
 
+A surface that needs one billing-derived fact but is not the billing surface asks for that fact
+alone, through `src/server/capabilities.ts`. Both probes there follow the same shape: the answer
+is a boolean or a number resolved by the composition root, never a subscription, a status, or a
+plan, and the self-hosted answer is a truthful "no" rather than an error. That is what lets the
+dashboard shell gate the Billing nav entry and count down a trial while still deleting cleanly
+with `src/billing/`. Widening one of these into a view is how the boundary gets lost — a surface
+that needs the subscription needs the billing page.
+
 ## Plan catalog
 
 Stripe is the source of truth for prices and entitlement inputs. Hub owns the customer-facing

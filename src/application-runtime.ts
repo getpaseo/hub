@@ -338,6 +338,17 @@ async function createOwnedApplicationRuntime(
       });
       return { url: portal?.url ?? null };
     },
+    // Unlike the rest of the billing surface this one answers rather than refuses when billing is
+    // absent: the dashboard sidebar asks it on every organization, hosted or not, and "no trial"
+    // is the truthful answer on a self-hosted instance.
+    organizationTrial: async (request, organizationSlug) => {
+      const { billing, database } = options;
+      if (billing === null || database === null) return { daysLeft: null };
+      const { tenant } = await resolveRouteTenant(requireAuth(options), database, request, {
+        organizationSlug,
+      });
+      return { daysLeft: await billing.trialRemaining(tenant.organization.id) };
+    },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),

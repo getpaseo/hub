@@ -80,6 +80,8 @@ import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutation.js";
 import { useTenantContextMutationPending } from "./tenant-mutation.js";
 import { RouteTenantProvider, useOptionalRouteTenant } from "../projects/context.js";
+import { SidebarHelp } from "./sidebar-help.js";
+import { TrialNotice } from "./trial-notice.js";
 
 type RouteTenant = NonNullable<ReturnType<typeof useOptionalRouteTenant>>;
 
@@ -301,6 +303,8 @@ function AppSidebar({
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <TrialNotice organizationSlug={organization.slug} />
+          <SidebarHelp />
           <SidebarMenuItem>
             <AccountMenu
               email={account.account.email}
