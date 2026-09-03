@@ -3281,7 +3281,12 @@ class HubUser {
         .getByRole("menu")
         .getByRole("menuitem", { name: destinationOrganization, exact: true })
         .click();
-      await expect(this.page.getByRole("alert")).toHaveText(
+      await expect(
+        this.page.getByRole("alert").filter({
+          hasText:
+            "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
+        }),
+      ).toHaveText(
         "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(switcher).toContainText("Acme");
