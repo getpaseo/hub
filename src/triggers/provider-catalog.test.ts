@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
-import { defaultAgentSelection, defaultMode, selectedProviderModel } from "./provider-catalog.js";
+import { selectedProviderModel } from "./provider-catalog.js";
 
 const entries: HubProviderSnapshotEntry[] = [
   {
@@ -28,22 +28,10 @@ const entries: HubProviderSnapshotEntry[] = [
 ];
 
 describe("trigger provider catalog", () => {
-  it("selects daemon defaults without hard-coding a provider", () => {
-    expect(defaultAgentSelection(entries)).toEqual({
-      agent: "codex/gpt-5.4",
-      mode: "full-access",
-      thinkingOptionId: "",
-    });
-  });
-
   it("resolves aliases to the model-specific thinking catalog", () => {
     expect(selectedProviderModel(entries, "codex/latest").model?.thinkingOptions).toEqual([
       { id: "xhigh", label: "Extra high" },
     ]);
-  });
-
-  it("uses the first reported mode when the provider has no explicit default", () => {
-    expect(defaultMode({ ...entries[0]!, defaultModeId: null })).toBe("read-only");
   });
 
   it("leaves configured values that are absent from the snapshot unresolved", () => {

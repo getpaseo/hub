@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
@@ -7,6 +8,28 @@ const owner = {
   email: "trigger-owner@example.com",
   password: "trigger-owner-password",
 };
+
+test("requires daemon setup before trigger configuration", async ({ hub, page }) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const triggers = new OrganizationTriggers(page);
+
+  await triggers.open();
+  await expect(page.getByRole("alert")).toContainText("Add a daemon first");
+  await expect(page.getByRole("link", { name: "Go to Daemons" })).toHaveAttribute(
+    "href",
+    /\/o\/[^/]+\/daemons$/u,
+  );
+  await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
+  await triggers.startNew();
+  await expect(page.getByText("No daemons available", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Run on daemon" })).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Agent & instructions" })).toBeHidden();
+  await page.screenshot({ path: `${SHOTS}/00-no-daemons.png`, fullPage: true });
+  await page.getByRole("link", { name: "Go to Daemons" }).click();
+  await expect(page).toHaveURL(/\/daemons$/u);
+  await expect(page.getByRole("heading", { name: "Daemons", level: 1 })).toBeVisible();
+});
 
 test("creates a trigger visually, preserves advanced YAML through the form, and explains legacy workflows", async ({
   hub,
@@ -26,6 +49,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
 
   await test.step("the common setup stays in one small form", async () => {
     await triggers.startNew();
+    await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
     await triggers.configureSlackMention({
       name: "slack-help",
       connection: "company-slack",
@@ -34,6 +58,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
       users: "U123, U456",
       agent: "pi/gateway/vendor/model-v1",
       mode: "full-access",
+      thinking: "high",
       providerOptions: '{"sandbox_mode":"workspace-write"}',
       prompt: "Handle the Slack request.",
     });

@@ -89,13 +89,12 @@ test.describe("metered usage", () => {
     const reason = "Trial cap on monthly executions";
     const app = projectApp(page);
     const triggers = new OrganizationTriggers(page);
+    let daemonSlug = "";
 
     await test.step("sign up, create an organization, register a daemon, become an operator", async () => {
       await hub.signUpAs("owner", meterOwner);
       await hub.createOrganization("owner", "Acme");
-      await hub.startDaemonRegistration("owner");
-      const daemonId = await hub.approveDaemon("owner", "Slice Three Runner");
-      await hub.setDaemonSlug(daemonId, "slice-three-runner");
+      daemonSlug = await hub.connectProviderDaemon("owner", "Acme");
       await hub.grantOperator("owner");
     });
 
@@ -110,8 +109,11 @@ test.describe("metered usage", () => {
       await triggers.startNew();
       await triggers.configureManual({
         name: "deploy",
-        daemon: "slice-three-runner",
+        daemon: daemonSlug,
         cwd: "/workspace",
+        agent: "codex/gpt-5.4",
+        mode: "full-access",
+        thinking: "high",
         prompt: "${{ paseo.prompt }}",
       });
       await triggers.save("deploy");

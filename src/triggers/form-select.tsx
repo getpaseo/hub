@@ -30,12 +30,14 @@ export function TriggerSelect({
   required?: boolean;
   onChange: (value: string) => void;
 }) {
+  const hasEmptyOption = options.some((option) => option.value === "");
   const change = useCallback(
     (nextValue: string) => onChange(nextValue === EMPTY_VALUE ? "" : nextValue),
     [onChange],
   );
+  const selectedValue = value === "" && hasEmptyOption ? EMPTY_VALUE : value;
   return (
-    <Select value={value === "" ? EMPTY_VALUE : value} onValueChange={change}>
+    <Select value={selectedValue} onValueChange={change}>
       <SelectTrigger id={id} className="w-full" aria-required={required} data-value={value}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>

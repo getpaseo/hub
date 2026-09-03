@@ -205,6 +205,7 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
 }
 
 function validateFormValue(value: TriggerFormValue): void {
+  if (value.daemon.trim().length === 0) throw new Error("Daemon is required.");
   if (!value.cwd.trim().startsWith("/")) {
     throw new Error("Working directory must be an absolute path.");
   }

@@ -20,7 +20,8 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("heading", { name: "Trigger details" })).toBeVisible();
     await expect(this.page.getByRole("heading", { name: "Event & access" })).toBeVisible();
     await expect(this.page.getByRole("heading", { name: "Run target" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Agent & instructions" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Agent & instructions" })).toBeHidden();
+    await expect(this.page.getByLabel("Working directory")).toBeHidden();
     const topbar = this.page.locator("header.sticky");
     await expect(topbar.getByRole("button", { name: "Form" })).toBeEnabled();
     await expect(topbar.getByRole("button", { name: "YAML" })).toBeVisible();
@@ -36,6 +37,7 @@ export class OrganizationTriggers {
     users: string;
     agent: string;
     mode: string;
+    thinking: string;
     providerOptions: string;
     prompt: string;
   }) {
@@ -45,9 +47,26 @@ export class OrganizationTriggers {
     await this.page.getByRole("button", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
     await this.selectOption("Run on daemon", input.daemon);
+    await expect(this.page.getByRole("combobox", { name: "Agent" })).toHaveAttribute(
+      "data-value",
+      "",
+    );
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
+      "data-value",
+      "",
+    );
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.selectAgent(input.agent);
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
+      "data-value",
+      "",
+    );
+    await expect(this.page.getByRole("combobox", { name: "Thinking" })).toHaveAttribute(
+      "data-value",
+      "",
+    );
     await this.selectOption("Execution mode", input.mode);
+    await this.selectOption("Thinking", input.thinking);
     await this.page
       .locator("summary")
       .filter({ hasText: "Advanced provider options (JSON)" })
@@ -60,14 +79,18 @@ export class OrganizationTriggers {
     name: string;
     daemon: string;
     cwd: string;
-    agent?: string;
+    agent: string;
+    mode: string;
+    thinking: string;
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.selectOption("When this happens", "manual.run");
     await this.selectOption("Run on daemon", input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
-    if (input.agent !== undefined) await this.selectAgent(input.agent);
+    await this.selectAgent(input.agent);
+    await this.selectOption("Execution mode", input.mode);
+    await this.selectOption("Thinking", input.thinking);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
 

@@ -4,14 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { AlertTriangle, ArrowLeft, Braces, Copy, FileText, LockKeyhole, Plus } from "lucide-react";
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { SiteHeaderActions } from "../components/app/site-header-actions.js";
@@ -27,7 +20,6 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
-  createTriggerYaml,
   mergeTriggerForm,
   parseEditorEvent,
   projectTriggerForm,
@@ -36,7 +28,7 @@ import {
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
-import { defaultAgentSelection, defaultMode, selectedProviderModel } from "./provider-catalog.js";
+import { selectedProviderModel } from "./provider-catalog.js";
 import { AgentModelCombobox, type AgentModelOption } from "./agent-model-combobox.js";
 import { TriggerSelect, type TriggerSelectOption } from "./form-select.js";
 
@@ -85,6 +77,17 @@ export function TriggersPanel() {
           </Button>
         ) : null}
       </PageHeader>
+      {data.daemons.length === 0 ? (
+        <Alert className="mb-5">
+          <AlertTitle>Add a daemon first</AlertTitle>
+          <AlertDescription className="flex items-center justify-between gap-3">
+            <span>Triggers need a daemon to run.</span>
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/o/${scope.organizationSlug}/daemons` as never}>Go to Daemons</Link>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <DataTable
         label="Triggers"
         columns={TRIGGER_COLUMNS}
@@ -375,7 +378,7 @@ function useTriggerEditorState(
   onSave: (yaml: string) => void,
 ) {
   const initialForm = trigger?.draft ?? defaultForm(snapshot);
-  const initialYaml = trigger?.yaml ?? createTriggerYaml(initialForm);
+  const initialYaml = trigger?.yaml ?? "";
   const initialProjection = projectTriggerForm(initialYaml);
   const [mode, setMode] = useState<EditorMode>(
     trigger === null || (initialProjection.status === "editable" && !legacy) ? "form" : "yaml",
@@ -486,17 +489,6 @@ function TriggerForm({
     selectedDaemon?.id,
     form.cwd,
   );
-  useEffect(() => {
-    if (
-      triggerId !== undefined ||
-      form.agent !== DEFAULT_NEW_TRIGGER_AGENT ||
-      providerCatalog.entries === undefined
-    )
-      return;
-    const defaults = defaultAgentSelection(providerCatalog.entries);
-    if (defaults === undefined) return;
-    onChange({ ...form, ...defaults });
-  }, [form, onChange, providerCatalog.entries, triggerId]);
   return (
     <div className="grid gap-5">
       <FormSection
@@ -591,150 +583,173 @@ function TriggerForm({
         title="Run target"
         description="The local machine compute and repository working directory."
       >
-        <div className="grid gap-4 sm:grid-cols-2">
+        {snapshot.daemons.length === 0 ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">No daemons available</p>
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/o/${snapshot.organization.slug}/daemons` as never}>Go to Daemons</Link>
+            </Button>
+          </div>
+        ) : (
           <Field>
             <FieldLabel htmlFor="trigger-daemon">Run on daemon</FieldLabel>
             <TriggerSelect
               id="trigger-daemon"
               value={form.daemon}
               options={daemonOptions}
-              onChange={(daemon) => update("daemon", daemon)}
+              placeholder="Select a daemon"
+              onChange={(daemon) =>
+                onChange({
+                  ...form,
+                  daemon,
+                  agent: "",
+                  mode: "",
+                  thinkingOptionId: "",
+                  providerOptions: "",
+                })
+              }
               required
             />
             <FieldDescription>
               The daemon owns compute, credentials, and sandboxing.
             </FieldDescription>
           </Field>
-          <ControlledInput
-            label="Working directory"
-            value={form.cwd}
-            onChange={(value) => update("cwd", value)}
-            description="Absolute path on the daemon."
-            required
-          />
-          <ControlledInput
-            label="Maximum runtime"
-            value={form.maxRuntime}
-            onChange={(value) => update("maxRuntime", value)}
-            description="Hard deadline for the agent, for example 2h."
-            required
-          />
-          <ControlledInput
-            label="Idle timeout"
-            value={form.idleTimeout}
-            onChange={(value) => update("idleTimeout", value)}
-            description="Stop an unresponsive agent, for example 10m."
-            required
-          />
-        </div>
+        )}
+        {selectedDaemon === undefined ? null : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <ControlledInput
+              label="Working directory"
+              value={form.cwd}
+              onChange={(value) => update("cwd", value)}
+              description="Absolute path on the daemon."
+              required
+            />
+            <ControlledInput
+              label="Maximum runtime"
+              value={form.maxRuntime}
+              onChange={(value) => update("maxRuntime", value)}
+              description="Hard deadline for the agent, for example 2h."
+              required
+            />
+            <ControlledInput
+              label="Idle timeout"
+              value={form.idleTimeout}
+              onChange={(value) => update("idleTimeout", value)}
+              description="Stop an unresponsive agent, for example 10m."
+              required
+            />
+          </div>
+        )}
       </FormSection>
 
-      <FormSection
-        number="4"
-        title="Agent & instructions"
-        description="The AI coding agent model and task prompt instructions."
-      >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <ProviderCatalogFields
-            form={form}
-            entries={providerCatalog.entries}
-            onChange={onChange}
-          />
-        </div>
-        {providerCatalog.loading ? (
-          <p className="text-sm text-muted-foreground" aria-busy="true">
-            Loading providers from {form.daemon}…
-          </p>
-        ) : null}
-        {providerCatalog.error === undefined ? null : (
-          <Alert variant="destructive">
-            <AlertDescription className="flex items-center justify-between gap-3">
-              <span>{providerCatalog.error}</span>
-              <Button type="button" variant="outline" size="sm" onClick={providerCatalog.refresh}>
-                Retry
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-        <details className="rounded-md border bg-muted/20 p-3">
-          <summary className="cursor-pointer text-sm">Advanced provider options (JSON)</summary>
-          <Field className="mt-3">
-            <FieldLabel htmlFor="trigger-provider-options" className="sr-only">
-              Advanced provider options (JSON)
-            </FieldLabel>
-            <Textarea
-              id="trigger-provider-options"
-              value={form.providerOptions}
-              onChange={(event) => update("providerOptions", event.target.value)}
-              rows={5}
-              placeholder={'{"sandbox_mode":"workspace-write"}'}
-            />
-            <FieldDescription>
-              Passed to the provider on your daemon. YAML-only agent fields remain untouched.
-            </FieldDescription>
-          </Field>
-        </details>
-        <details
-          className="rounded-md border bg-muted/20 p-3"
-          open={githubExpanded}
-          onToggle={(event) => setGithubExpanded(event.currentTarget.open)}
+      {selectedDaemon === undefined ? null : (
+        <FormSection
+          number="4"
+          title="Agent & instructions"
+          description="The AI coding agent model and task prompt instructions."
         >
-          <summary className="cursor-pointer text-sm">GitHub access</summary>
-          <div className="mt-3 grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="trigger-github-connection">GitHub connection</FieldLabel>
-              <TriggerSelect
-                id="trigger-github-connection"
-                value={form.githubConnection}
-                options={githubConnectionOptions}
-                onChange={(connection) => update("githubConnection", connection)}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <ProviderCatalogFields
+              form={form}
+              entries={providerCatalog.entries}
+              onChange={onChange}
+            />
+          </div>
+          {providerCatalog.loading ? (
+            <p className="text-sm text-muted-foreground" aria-busy="true">
+              Loading providers from {form.daemon}…
+            </p>
+          ) : null}
+          {providerCatalog.error === undefined ? null : (
+            <Alert variant="destructive">
+              <AlertDescription className="flex items-center justify-between gap-3">
+                <span>{providerCatalog.error}</span>
+                <Button type="button" variant="outline" size="sm" onClick={providerCatalog.refresh}>
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+          <details className="rounded-md border bg-muted/20 p-3">
+            <summary className="cursor-pointer text-sm">Advanced provider options (JSON)</summary>
+            <Field className="mt-3">
+              <FieldLabel htmlFor="trigger-provider-options" className="sr-only">
+                Advanced provider options (JSON)
+              </FieldLabel>
+              <Textarea
+                id="trigger-provider-options"
+                value={form.providerOptions}
+                onChange={(event) => update("providerOptions", event.target.value)}
+                rows={5}
+                placeholder={'{"sandbox_mode":"workspace-write"}'}
               />
               <FieldDescription>
-                Mints a short-lived, restricted GH_TOKEN for this run.
+                Passed to the provider on your daemon. YAML-only agent fields remain untouched.
               </FieldDescription>
             </Field>
-            {githubEnabled ? (
-              <>
-                <ControlledInput
-                  label="GitHub repositories"
-                  value={form.githubRepositories}
-                  onChange={(value) => update("githubRepositories", value)}
-                  description="Comma-separated owner/repository names."
-                  required
+          </details>
+          <details
+            className="rounded-md border bg-muted/20 p-3"
+            open={githubExpanded}
+            onToggle={(event) => setGithubExpanded(event.currentTarget.open)}
+          >
+            <summary className="cursor-pointer text-sm">GitHub access</summary>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="trigger-github-connection">GitHub connection</FieldLabel>
+                <TriggerSelect
+                  id="trigger-github-connection"
+                  value={form.githubConnection}
+                  options={githubConnectionOptions}
+                  onChange={(connection) => update("githubConnection", connection)}
                 />
-                <ControlledInput
-                  label="GitHub token lifetime"
-                  value={form.githubDuration}
-                  onChange={(value) => update("githubDuration", value)}
-                  description="At most 1h."
-                  required
-                />
-                <Field>
-                  <FieldLabel htmlFor="trigger-github-permissions">
-                    GitHub permissions (JSON)
-                  </FieldLabel>
-                  <Textarea
-                    id="trigger-github-permissions"
-                    value={form.githubPermissions}
-                    onChange={(event) => update("githubPermissions", event.target.value)}
-                    rows={4}
-                    placeholder={'{"contents":"write","pull_requests":"write"}'}
+                <FieldDescription>
+                  Mints a short-lived, restricted GH_TOKEN for this run.
+                </FieldDescription>
+              </Field>
+              {githubEnabled ? (
+                <>
+                  <ControlledInput
+                    label="GitHub repositories"
+                    value={form.githubRepositories}
+                    onChange={(value) => update("githubRepositories", value)}
+                    description="Comma-separated owner/repository names."
+                    required
                   />
-                  <FieldDescription>
-                    Defaults to read-only repository contents when empty.
-                  </FieldDescription>
-                </Field>
-              </>
-            ) : null}
+                  <ControlledInput
+                    label="GitHub token lifetime"
+                    value={form.githubDuration}
+                    onChange={(value) => update("githubDuration", value)}
+                    description="At most 1h."
+                    required
+                  />
+                  <Field>
+                    <FieldLabel htmlFor="trigger-github-permissions">
+                      GitHub permissions (JSON)
+                    </FieldLabel>
+                    <Textarea
+                      id="trigger-github-permissions"
+                      value={form.githubPermissions}
+                      onChange={(event) => update("githubPermissions", event.target.value)}
+                      rows={4}
+                      placeholder={'{"contents":"write","pull_requests":"write"}'}
+                    />
+                    <FieldDescription>
+                      Defaults to read-only repository contents when empty.
+                    </FieldDescription>
+                  </Field>
+                </>
+              ) : null}
+            </div>
+          </details>
+          <PromptEditor value={form.prompt} onChange={(prompt) => update("prompt", prompt)} />
+          <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+            <LockKeyhole className="size-4 shrink-0 text-link" />
+            Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing stay
+            on your compute.
           </div>
-        </details>
-        <PromptEditor value={form.prompt} onChange={(prompt) => update("prompt", prompt)} />
-        <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-          <LockKeyhole className="size-4 shrink-0 text-link" />
-          Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing stay
-          on your compute.
-        </div>
-      </FormSection>
+        </FormSection>
+      )}
     </div>
   );
 }
@@ -928,11 +943,7 @@ function ProviderCatalogFields({
       : []),
     ...modes.map((mode) => ({ value: mode.id, label: mode.label })),
   ];
-  const providerDefault = selected.model?.defaultThinkingOptionId
-    ? `Provider default (${selected.model.defaultThinkingOptionId})`
-    : "Provider default";
   const thinkingSelectOptions = [
-    { value: "", label: providerDefault },
     ...(!thinkingKnown && form.thinkingOptionId !== ""
       ? [
           {
@@ -951,11 +962,10 @@ function ProviderCatalogFields({
           options={agentOptions}
           value={form.agent}
           onSelect={(agent) => {
-            const next = selectedProviderModel(entries, agent);
             onChange({
               ...form,
               agent,
-              mode: defaultMode(next.entry),
+              mode: "",
               thinkingOptionId: "",
             });
           }}
@@ -974,16 +984,20 @@ function ProviderCatalogFields({
         />
         <FieldDescription>Modes reported for the selected provider.</FieldDescription>
       </Field>
-      <Field>
-        <FieldLabel htmlFor="trigger-thinking">Thinking</FieldLabel>
-        <TriggerSelect
-          id="trigger-thinking"
-          value={form.thinkingOptionId}
-          options={thinkingSelectOptions}
-          onChange={(thinkingOptionId) => onChange({ ...form, thinkingOptionId })}
-        />
-        <FieldDescription>Thinking options reported for the selected model.</FieldDescription>
-      </Field>
+      {thinkingOptions.length === 0 ? null : (
+        <Field>
+          <FieldLabel htmlFor="trigger-thinking">Thinking</FieldLabel>
+          <TriggerSelect
+            id="trigger-thinking"
+            value={form.thinkingOptionId}
+            options={thinkingSelectOptions}
+            placeholder="Select a thinking option"
+            onChange={(thinkingOptionId) => onChange({ ...form, thinkingOptionId })}
+            required
+          />
+          <FieldDescription>Thinking options reported for the selected model.</FieldDescription>
+        </Field>
+      )}
     </>
   );
 }
@@ -1045,10 +1059,10 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     event: slack === undefined ? "manual.run" : "slack.mention",
     connection: slack?.slug ?? "",
     allowedUsers: "*",
-    daemon: snapshot.daemons[0]?.slug ?? "",
+    daemon: "",
     cwd: "/workspace",
-    agent: DEFAULT_NEW_TRIGGER_AGENT,
-    mode: "full-access",
+    agent: "",
+    mode: "",
     thinkingOptionId: "",
     providerOptions: "",
     maxRuntime: "2h",
@@ -1061,8 +1075,6 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
       "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };
 }
-
-const DEFAULT_NEW_TRIGGER_AGENT = "codex/gpt-5.4";
 
 function eventLabel(event: string): string {
   if (event === "slack.mention") return "Slack mention";
