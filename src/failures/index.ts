@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Logger } from "pino";
 import { respondError, type Err } from "../contract/respond.js";
 import { errorForLog, logger as defaultLogger, redact } from "../logger.js";
+import type { ConnectionProvider } from "../db/types.js";
 import { withReference } from "./reference.js";
 
 export { withReference } from "./reference.js";
@@ -24,7 +25,8 @@ export type FailureKind =
 export interface FailureContext {
   operation: string;
   component: string;
-  provider?: "github" | "slack" | "discord" | "linear" | "stripe";
+  /** A `ConnectionProvider` (e.g. `"slack"`) or a billing provider (`"stripe"`). */
+  provider?: ConnectionProvider | "stripe";
   requestId?: string;
   status?: number;
   organizationSlug?: string;

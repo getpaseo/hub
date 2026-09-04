@@ -18,6 +18,7 @@ import {
   readSlackPromptBody,
 } from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
+import { reactionPhase, type ReactionPhase } from "../reactions.js";
 
 export interface SlackAttachmentLocator {
   id: string;
@@ -94,8 +95,6 @@ export interface SlackOutputContext {
   threadTs: string;
   messageTs: string;
 }
-
-type SlackReactionPhase = "accepted" | "started";
 
 export function createSlackTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -239,11 +238,11 @@ export function createSlackTriggerProvider(options: {
       };
     },
     async onDispatchAccepted(_triggerContext, _outputContext, reactionState) {
-      if (slackReactionPhase(reactionState) !== undefined) return reactionState;
+      if (reactionPhase(reactionState) !== undefined) return reactionState;
       return { phase: "accepted" };
     },
     async onAgentExecutionStarted(context, _outputContext, reactionState) {
-      if (slackReactionPhase(reactionState) === "started") return reactionState;
+      if (reactionPhase(reactionState) === "started") return reactionState;
       await replaceReaction(options.client, context.target, "eyes", "hourglass_flowing_sand");
       return { phase: "started" };
     },
@@ -306,9 +305,9 @@ async function removeReactionForPhase(
   client: SlackBotClient,
   target: SlackOutputContext,
   reactionState: TriggerProviderReactionState | undefined,
-  fallbackPhase?: SlackReactionPhase,
+  fallbackPhase?: ReactionPhase,
 ): Promise<void> {
-  const phase = slackReactionPhase(reactionState) ?? fallbackPhase;
+  const phase = reactionPhase(reactionState) ?? fallbackPhase;
   if (phase === "accepted") {
     await removeReactionSafely(client, target, "eyes");
     return;
@@ -319,16 +318,6 @@ async function removeReactionForPhase(
   }
   await removeReactionSafely(client, target, "eyes");
   await removeReactionSafely(client, target, "hourglass_flowing_sand");
-}
-
-function slackReactionPhase(
-  reactionState: TriggerProviderReactionState | undefined,
-): SlackReactionPhase | undefined {
-  if (typeof reactionState !== "object" || reactionState === null || Array.isArray(reactionState)) {
-    return undefined;
-  }
-  const phase = reactionState["phase"];
-  return phase === "accepted" || phase === "started" ? phase : undefined;
 }
 
 function buildSlackMergeData(
