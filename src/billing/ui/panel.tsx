@@ -4,12 +4,12 @@ import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Check } from "lucide-react";
+import { CardSkeleton } from "../../components/app/loading.js";
 import { PageHeader } from "../../components/app/page.js";
 import { Section } from "../../components/app/section.js";
 import { StatusPill } from "../../components/app/status-pill.js";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
-import { Skeleton } from "../../components/ui/skeleton.js";
 import { useRouteTenant } from "../../projects/context.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 import { billingOverview, billingPortal } from "./functions.js";
@@ -26,7 +26,7 @@ export function BillingPanel({ openPlans }: { openPlans: boolean }) {
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <BillingLoading />;
+  if (query.isPending) return <BillingLoading name={tenant.organization.name} />;
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -205,11 +205,13 @@ function redirectTo(url: string): void {
   window.location.assign(url);
 }
 
-function BillingLoading() {
+function BillingLoading({ name }: { name: string }) {
   return (
-    <section aria-label="Loading billing" aria-busy="true" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-48 w-full" />
-    </section>
+    <>
+      <PageHeader title="Billing" description={`Plan and billing for ${name}.`} />
+      <Section title="Plan">
+        <CardSkeleton lines={4} />
+      </Section>
+    </>
   );
 }

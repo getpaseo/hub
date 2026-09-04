@@ -1,5 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createConnection, createServer as createNetServer } from "node:net";
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -66,7 +67,7 @@ export class SourcePaseo {
     const ownsRoot = options.root === undefined;
     const root = options.root ?? (await mkdtemp(join(tmpdir(), "paseo-source-e2e-")));
     try {
-      const packagesRoot = await packagePaseoArtifacts(resolvePaseoWorktree(), root);
+      const packagesRoot = await packagePaseoArtifacts(resolvePaseoWorktree());
       const paseoHome = options.paseoHome ?? join(root, "paseo-home");
       const daemonHost = options.daemonHost ?? `127.0.0.1:${await availablePort()}`;
       await mkdir(paseoHome, { recursive: true });
@@ -281,7 +282,48 @@ export function resolvePaseoWorktree(): string {
   return resolve(configured);
 }
 
-export async function packagePaseoArtifacts(paseoRoot: string, root: string): Promise<string> {
+/**
+ * The packed source artifacts, built once per process and shared by every daemon it starts.
+ *
+ * Packing the six workspaces and installing the tarballs costs tens of seconds, and the source
+ * checkout cannot change while a suite runs, so each test after the first was paying to rebuild
+ * a byte-identical directory. On a loaded runner that repeat was enough to exhaust the 120s
+ * start budget in `beforeEach`. The tree is only ever read once built — the daemon writes to
+ * `PASEO_HOME`, which stays per-test — so one copy serves them all.
+ *
+ * The promise is what's memoized, so concurrent starts wait on one build instead of racing.
+ */
+const packagedArtifacts = new Map<string, Promise<string>>();
+
+/**
+ * Names a tree an earlier process already built. Playwright workers each get their own module
+ * instance, so the in-process memo cannot help the first daemon in a worker — and that one pays
+ * the build inside the test's own timeout. `globalSetup` builds ahead of the workers and passes
+ * the path down through here.
+ */
+const PREBUILT = "PASEO_E2E_PACKAGES";
+
+export function packagePaseoArtifacts(paseoRoot: string): Promise<string> {
+  const prebuilt = process.env[PREBUILT];
+  if (prebuilt !== undefined && prebuilt !== "") return Promise.resolve(prebuilt);
+  const built = packagedArtifacts.get(paseoRoot) ?? buildPaseoArtifacts(paseoRoot);
+  packagedArtifacts.set(paseoRoot, built);
+  return built;
+}
+
+/**
+ * Builds the artifacts and publishes them to every process this one goes on to spawn. Returns
+ * nothing to clean up: the tree is removed when the process that built it exits.
+ */
+export async function prebuildPaseoArtifacts(paseoRoot: string): Promise<string> {
+  const packages = await packagePaseoArtifacts(paseoRoot);
+  process.env[PREBUILT] = packages;
+  return packages;
+}
+
+async function buildPaseoArtifacts(paseoRoot: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "paseo-packaged-"));
+  removeWhenTheProcessExits(root);
   const packages = join(root, "paseo-packages");
   const tarballs = join(root, "paseo-tarballs");
   await Promise.all([mkdir(packages), mkdir(tarballs)]);
@@ -302,6 +344,13 @@ export async function packagePaseoArtifacts(paseoRoot: string, root: string): Pr
     .map((file) => join(tarballs, file));
   await runCommand("npm", ["install", "--ignore-scripts", ...tarballsToInstall], packages, {});
   return packages;
+}
+
+/** The shared tree outlives every harness that borrows it, so the process owns its removal. */
+function removeWhenTheProcessExits(directory: string): void {
+  process.once("exit", () => {
+    rmSync(directory, { recursive: true, force: true });
+  });
 }
 
 export function sourceEnvironment(paseoHome: string): NodeJS.ProcessEnv {

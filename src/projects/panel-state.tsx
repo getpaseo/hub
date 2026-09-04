@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
-import { Skeleton } from "../components/ui/skeleton.js";
+import { PanelSkeleton } from "../components/app/loading.js";
 import type { Result } from "../contract/respond.js";
 import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
@@ -18,14 +18,14 @@ import { organizationSnapshot, projectSnapshot } from "./functions.js";
 export type OrganizationSnapshot = Awaited<ReturnType<ProjectDashboard["organizationSnapshot"]>>;
 export type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapshot"]>>;
 
-export function useOrganizationSnapshot() {
+export function useOrganizationSnapshot(pending?: ReactNode) {
   const tenant = useRouteTenant();
   const load = useServerFn(organizationSnapshot);
   const query = useQuery({
     queryKey: ["organization", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
-  return queryState<OrganizationSnapshot>(query, "Organization unavailable");
+  return queryState<OrganizationSnapshot>(query, "Organization unavailable", pending);
 }
 
 export function useProjectSnapshot() {
@@ -39,24 +39,17 @@ export function useProjectSnapshot() {
   return queryState<ProjectSnapshot>(query, "Project unavailable");
 }
 
+/**
+ * The two states a panel renders instead of its content. `pending` is the panel's own skeleton;
+ * without one it falls back to the generic panel shape, which is right only where the surface
+ * cannot yet say what it is.
+ */
 export function queryState<T>(
   query: { isPending: boolean; isError: boolean; data: Result<T> | undefined },
   title: string,
+  pending?: ReactNode,
 ): { ok: true; data: T } | { ok: false; element: ReactNode } {
-  if (query.isPending)
-    return {
-      ok: false,
-      element: (
-        <section
-          aria-label={`Loading ${title.toLowerCase()}`}
-          aria-busy="true"
-          className="grid gap-5"
-        >
-          <Skeleton className="h-12 w-64" />
-          <Skeleton className="h-72 w-full" />
-        </section>
-      ),
-    };
+  if (query.isPending) return { ok: false, element: pending ?? <PanelSkeleton /> };
   if (query.isError || query.data?.status !== "ok")
     return {
       ok: false,

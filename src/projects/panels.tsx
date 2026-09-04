@@ -6,7 +6,13 @@ import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
-import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import {
+  DataCell,
+  DataRow,
+  DataTable,
+  DataTableSkeleton,
+  type DataColumn,
+} from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
@@ -43,12 +49,31 @@ import {
   type ProjectSnapshot,
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
+const CONNECTION_COLUMNS: readonly DataColumn[] = [
+  { header: "Connection" },
+  { header: "Provider" },
+  { header: "Status" },
+  { header: "" },
+];
+const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
+
+function ConnectionsLoading() {
+  return (
+    <>
+      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
+      <Section title="Connections">
+        <DataTableSkeleton label="Connections" columns={CONNECTION_COLUMNS} />
+      </Section>
+    </>
+  );
+}
+
 export function OrganizationConnectionsPanel() {
   const tenant = useRouteTenant();
   const { isInstanceOperator } = useActiveAccount();
   const queryClient = useQueryClient();
   const scope = { organizationSlug: tenant.organization.slug };
-  const snapshot = useOrganizationSnapshot();
+  const snapshot = useOrganizationSnapshot(<ConnectionsLoading />);
   const loadStatus = useServerFn(connectionStatus);
   const statusQuery = useQuery({
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
@@ -76,7 +101,11 @@ export function OrganizationConnectionsPanel() {
     },
   });
   if (!snapshot.ok) return snapshot.element;
-  const status = queryState<ConnectionStatus>(statusQuery, "Connections unavailable");
+  const status = queryState<ConnectionStatus>(
+    statusQuery,
+    "Connections unavailable",
+    <ConnectionsLoading />,
+  );
   if (!status.ok) return status.element;
   const data = snapshot.data;
   const connectProvider = (provider: "github" | "discord" | "slack" | "linear") => {
@@ -110,7 +139,7 @@ export function OrganizationConnectionsPanel() {
   };
   return (
     <>
-      <PageHeader title="Connections" description="Organization provider connections." />
+      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
       {returned === undefined ? null : (
         <ConnectionReturnBanner copy={connectionReturnCopy(returned)} />
       )}
@@ -118,12 +147,7 @@ export function OrganizationConnectionsPanel() {
       <Section title="Connections">
         <DataTable
           label="Connections"
-          columns={[
-            { header: "Connection" },
-            { header: "Provider" },
-            { header: "Status" },
-            { header: "" },
-          ]}
+          columns={CONNECTION_COLUMNS}
           isEmpty={rows.length === 0}
           empty={{ title: "No connections" }}
         >

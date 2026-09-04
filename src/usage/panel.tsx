@@ -1,14 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { TriangleAlert } from "lucide-react";
-import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
+import {
+  DataCell,
+  DataRow,
+  DataTable,
+  DataTableSkeleton,
+  type DataColumn,
+} from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { Badge } from "../components/ui/badge.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 import type { EntitlementChangeSource } from "../db/types.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { UsageDashboard, UsageMeasure } from "./dashboard.js";
@@ -17,6 +22,10 @@ import { overLimit } from "./limits.js";
 
 type Snapshot = Awaited<ReturnType<UsageDashboard["snapshot"]>>;
 
+const LIMITS_TITLE = "Limits";
+const LIMITS_DESCRIPTION = "What this organization is allowed, and how much is in use.";
+const HISTORY_TITLE = "History";
+const HISTORY_DESCRIPTION = "Every change to this organization's limits, most recent first.";
 const LIMIT_COLUMNS: readonly DataColumn[] = [
   { header: "Resource" },
   { header: "Limit" },
@@ -49,7 +58,7 @@ export function OrganizationUsagePanel() {
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <UsageLoading />;
+  if (query.isPending) return <UsageLoading name={tenant.organization.name} />;
   if (query.isError || query.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -74,10 +83,7 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
         description={`Limits and usage for ${snapshot.organization.name}.`}
       />
       <SeatOverLimitBanner seats={limits.seats} />
-      <Section
-        title="Limits"
-        description="What this organization is allowed, and how much is in use."
-      >
+      <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
         <DataTable label="Limits" columns={LIMIT_COLUMNS} isEmpty={false} empty={LIMITS_EMPTY}>
           <DataRow>
             <DataCell>Seats</DataCell>
@@ -102,10 +108,7 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
           </DataRow>
         </DataTable>
       </Section>
-      <Section
-        title="History"
-        description="Every change to this organization's limits, most recent first."
-      >
+      <Section title={HISTORY_TITLE} description={HISTORY_DESCRIPTION}>
         <History history={snapshot.history} />
       </Section>
     </>
@@ -181,11 +184,16 @@ function measureUsage(measure: UsageMeasure): string {
   return measure.limit === null ? String(measure.used) : `${measure.used}/${measure.limit}`;
 }
 
-function UsageLoading() {
+function UsageLoading({ name }: { name: string }) {
   return (
-    <section aria-label="Loading usage" aria-busy="true" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-48 w-full" />
-    </section>
+    <>
+      <PageHeader title="Usage" description={`Limits and usage for ${name}.`} />
+      <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
+        <DataTableSkeleton label="Limits" columns={LIMIT_COLUMNS} />
+      </Section>
+      <Section title={HISTORY_TITLE} description={HISTORY_DESCRIPTION}>
+        <DataTableSkeleton label="History" columns={HISTORY_COLUMNS} rows={2} />
+      </Section>
+    </>
   );
 }

@@ -162,12 +162,31 @@ function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
   );
 }
 
+/**
+ * The approval card before the request is known. The card and its heading are the same for every
+ * code, so only the organization being granted access and the decision buttons are placeholders.
+ */
 function Loading() {
   return (
-    <section aria-label="Loading CLI login" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-64 w-full" />
-    </section>
+    <Centered>
+      <div aria-busy="true">
+        <AuthCard
+          title="Approve CLI login"
+          description="Grant this terminal durable access to one organization."
+        >
+          <div className="grid gap-1 rounded-md border px-3 py-2.5">
+            <span className="text-muted-foreground text-sm">Organization receiving access</span>
+            <Skeleton className="h-5 w-40" />
+          </div>
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-3/4" />
+          <div className="flex justify-end gap-2">
+            <Skeleton className="h-9 w-20" />
+            <Skeleton className="h-9 w-40" />
+          </div>
+        </AuthCard>
+      </div>
+    </Centered>
   );
 }
 

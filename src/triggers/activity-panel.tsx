@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
@@ -16,6 +16,7 @@ const ACTIVITY_COLUMNS = [
   { header: "Received" },
 ];
 const EMPTY_ACTIVITY = { title: "No activity" };
+const ACTIVITY_DESCRIPTION = "Agent runs launched by organization triggers.";
 
 export function TriggerActivityPanel() {
   const tenant = useRouteTenant();
@@ -25,7 +26,14 @@ export function TriggerActivityPanel() {
     queryKey: ["triggers", organizationSlug],
     queryFn: () => load({ data: { organizationSlug } }),
   });
-  if (snapshot.isPending) return <div aria-busy="true">Loading activity…</div>;
+  if (snapshot.isPending) {
+    return (
+      <>
+        <PageHeader title="Activity" description={ACTIVITY_DESCRIPTION} />
+        <DataTableSkeleton label="Trigger activity" columns={ACTIVITY_COLUMNS} />
+      </>
+    );
+  }
   if (snapshot.isError || snapshot.data.status === "error") {
     return (
       <Alert variant="destructive">
@@ -40,7 +48,7 @@ export function TriggerActivityPanel() {
   const activity = snapshot.data.data.activity;
   return (
     <>
-      <PageHeader title="Activity" description="Agent runs launched by organization triggers." />
+      <PageHeader title="Activity" description={ACTIVITY_DESCRIPTION} />
       <DataTable
         label="Trigger activity"
         columns={ACTIVITY_COLUMNS}

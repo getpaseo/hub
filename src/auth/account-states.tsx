@@ -32,7 +32,16 @@ export function LoadingEntry() {
       className="flex min-h-svh flex-col items-center justify-center gap-6 bg-background p-6"
     >
       <ProductMark />
-      <Skeleton className="h-1 w-40" />
+      {/* The card whichever screen wins will be, held open at its own size so the mark
+          does not jump up the page when the account resolves. */}
+      <div className="grid w-full max-w-sm gap-6 rounded-lg border bg-card p-6 shadow-sm">
+        <div className="grid gap-2">
+          <Skeleton className="h-5 w-44" />
+          <Skeleton className="h-4 w-60 max-w-full" />
+        </div>
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </div>
     </main>
   );
 }

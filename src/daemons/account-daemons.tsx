@@ -4,7 +4,13 @@ import { BookOpen } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { CopyField } from "../components/app/copy-field.js";
-import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
+import {
+  DataCell,
+  DataRow,
+  DataTable,
+  DataTableSkeleton,
+  type DataColumn,
+} from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { StatusPill } from "../components/app/status-pill.js";
@@ -20,7 +26,6 @@ import {
 import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
 import { Field, FieldLabel } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 import {
   daemonList,
   renameDaemon,
@@ -42,6 +47,7 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Registered" },
   { header: "", align: "end" },
 ];
+const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization.";
 const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
 const DAEMONS_EMPTY = {
   title: "No daemons connected",
@@ -164,11 +170,7 @@ export function DaemonsPanel({
   const busy = rename.isPending || revoke.isPending;
   return (
     <>
-      <PageHeader
-        id="daemons-heading"
-        title="Daemons"
-        description="Stable daemon identities registered to this organization."
-      />
+      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
       {message === undefined ? null : (
         <Alert variant="destructive" className="mb-6">
           <AlertDescription>{message}</AlertDescription>
@@ -350,10 +352,10 @@ function DaemonStatus({ daemon }: { daemon: BrowserDaemon }) {
 
 function DaemonLoading() {
   return (
-    <section aria-label="Loading daemons" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-64 w-full" />
-    </section>
+    <>
+      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
+      <DataTableSkeleton label="Daemons" columns={DAEMON_COLUMNS} />
+    </>
   );
 }
 
