@@ -67,10 +67,10 @@ export function FailureAlert({
  */
 export function WarningAlert({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <Alert className="border-warning/40 bg-warning-surface text-warning">
+    <Alert variant="warning">
       <TriangleAlert aria-hidden="true" />
       {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
-      <AlertDescription className="text-warning/90">{children}</AlertDescription>
+      <AlertDescription>{children}</AlertDescription>
     </Alert>
   );
 }

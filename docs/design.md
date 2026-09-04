@@ -102,7 +102,7 @@ background only.
 | Card                    | p-6. `rounded-xl border bg-card`. Title `text-sm` foreground, description `text-sm muted-foreground`, gap-1 between them, gap-4 to the body.     |
 | Page column             | `max-w-5xl`, inset p-4 on phones and p-8 from `md`. Owned by the shell; screens never pad themselves.                                            |
 | Section                 | mb-8 between sections, gap-3 inside. Owned by `Section`.                                                                                         |
-| Field                   | gap-2 label to control, gap-1.5 control to description. Fields in a form: gap-4.                                                                 |
+| Field                   | gap-2 between label, control, and description. Fields in a form: gap-4.                                                                          |
 
 ## Emphasis without weight
 
