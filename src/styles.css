@@ -1,45 +1,44 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:is(.dark *));
-
 /*
- * Palette ported from the Paseo app (packages/app/src/styles/theme.ts) so the hub
- * reads as the same product. Light mirrors `lightSemanticColors`; dark mirrors
- * `paseoDarkColors`, the green-tinted default theme.
+ * The one place tokens are defined. `docs/design.md` is the contract; this file is its
+ * implementation, and `src/typography-policy.test.ts` enforces the parts a regex can see.
  *
- * Naming trap: Paseo's `accent` is the brand CTA colour, while shadcn's `--accent`
- * is the subtle hover surface. They are different concepts. Paseo `accent` maps to
- * `--primary` here; `--accent` stays a surface. Do not collide the two again.
+ * Both ramps are Linear's measured palette: four neutral surfaces above the page, four text
+ * steps, two border steps. Nothing here is a hue except `--link` and `--ring`, which stay Paseo
+ * green so the product still signs its name somewhere. `--primary` is the one place that hue is
+ * a surface rather than text: a dark teal fill under a pale mint label, dark enough that the
+ * label clears AA at every size the filled button is drawn.
  *
- * A brand colour needs two values, not one. `--primary` is the fill behind
- * `--primary-foreground`; `--link` is the same brand read as text on a surface. On
- * dark, one value cannot do both — the fill that carries white text sits at 2.8:1 as
- * text. `--link` is Paseo's `accentBright` for exactly this reason.
+ * The app renders dark (`<html class="dark">`). The light column is kept correct so switching
+ * is a one-line change, not a re-derivation.
  */
 
 :root {
-  --radius: 0.5rem;
-
   --background: #ffffff;
-  --foreground: #1a1a1e;
-  --card: #ffffff;
-  --card-foreground: #1a1a1e;
+  --foreground: #282a30;
+  --card: #f8f8f8;
+  --card-foreground: #282a30;
   --popover: #ffffff;
-  --popover-foreground: #1a1a1e;
-  --primary: #20744a;
-  --primary-foreground: #ffffff;
+  --popover-foreground: #282a30;
+  --primary: #1d5c50;
+  --primary-foreground: #eefaf4;
   --link: #20744a;
-  --secondary: #f4f4f5;
-  --secondary-foreground: #1a1a1e;
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --accent: #f4f4f5;
-  --accent-foreground: #1a1a1e;
+  --secondary: #f0f0f0;
+  --secondary-foreground: #282a30;
+  --muted: #f4f4f4;
+  --muted-foreground: #6f6e77;
+  --extra-muted-foreground: #86848d;
+  --accent: #f0f0f0;
+  --accent-foreground: #282a30;
   --destructive: #b04138;
   --destructive-foreground: #ffffff;
-  --border: #e4e4e7;
-  --input: #e4e4e7;
+  --border: #e9e8ea;
+  --input: #e4e2e4;
   --ring: #20744a;
+
+  /* The only shadow in the system. Floating layers only: menus, popovers, dialogs, sheets. */
+  --shadow-floating: 0 2px 4px rgb(0 0 0 / 10%);
 
   /* Status signals. Pills pair the foreground with the matching 10%-alpha surface. */
   --success: #166534;
@@ -57,37 +56,41 @@
   --chart-4: #9333ea;
   --chart-5: #0891b2;
 
-  --sidebar: #f4f4f5;
-  --sidebar-foreground: #1a1a1e;
-  --sidebar-primary: #20744a;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e9e9ec;
-  --sidebar-accent-foreground: #1a1a1e;
-  --sidebar-border: #e4e4e7;
-  --sidebar-ring: #20744a;
+  /* The sidebar is the page, not a tinted panel. */
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
 .dark {
-  --background: #181b1a;
-  --foreground: #fafafa;
-  --card: #1e2120;
-  --card-foreground: #fafafa;
-  --popover: #1e2120;
-  --popover-foreground: #fafafa;
-  --primary: #20744a;
-  --primary-foreground: #ffffff;
+  --background: #08090a;
+  --foreground: #f7f8f8;
+  --card: #0f1011;
+  --card-foreground: #f7f8f8;
+  --popover: #141516;
+  --popover-foreground: #f7f8f8;
+  --primary: #1b4f4a;
+  --primary-foreground: #bfe6da;
   --link: #7ccba0;
-  --secondary: #272a29;
-  --secondary-foreground: #fafafa;
-  --muted: #272a29;
-  --muted-foreground: #a1a5a4;
-  --accent: #272a29;
-  --accent-foreground: #fafafa;
+  --secondary: #191a1b;
+  --secondary-foreground: #f7f8f8;
+  --muted: #141516;
+  --muted-foreground: #8a8f98;
+  --extra-muted-foreground: #62666d;
+  --accent: #191a1b;
+  --accent-foreground: #f7f8f8;
   --destructive: #e8837a;
-  --destructive-foreground: #ffffff;
-  --border: #252b2a;
-  --input: #2f3534;
+  --destructive-foreground: #08090a;
+  --border: #23252a;
+  --input: #34343a;
   --ring: #7ccba0;
+
+  --shadow-floating: 0 7px 32px rgb(0 0 0 / 35%);
 
   --success: #4ade80;
   --success-surface: rgb(74 222 128 / 12%);
@@ -103,23 +106,47 @@
   --chart-3: #d4a44a;
   --chart-4: #b07ad0;
   --chart-5: #4aabb8;
+}
 
-  --sidebar: #141716;
-  --sidebar-foreground: #fafafa;
-  --sidebar-primary: #20744a;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #1c1f1e;
-  --sidebar-accent-foreground: #fafafa;
-  --sidebar-border: #252b2a;
-  --sidebar-ring: #7ccba0;
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
+  /*
+   * Tailwind's size names remapped to Linear's density. Use the name for the role, not the
+   * pixel: `text-sm` is the UI size and the `<body>` default, `text-xs` is meta, `text-xl` is
+   * the page title. See docs/design.md for the full role table.
+   */
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 15px;
+  --text-base--line-height: 24px;
+  --text-lg: 17px;
+  --text-lg--line-height: 24px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 32px;
+  --text-3xl--line-height: 36px;
+
+  /*
+   * One weight. Clearing the namespace deletes every stock weight utility, so the rule cannot
+   * be broken by accident: the only elevated weight left is the title one, and it belongs on
+   * the single title of a surface. See docs/design.md.
+   */
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-title: 500;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 }
 
 @theme inline {
-  /* Matches Paseo's BORDER_RADIUS scale: sm 4, md 6, lg 8, xl 12. */
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -133,6 +160,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-extra-muted-foreground: var(--extra-muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -161,16 +189,40 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --shadow-floating: var(--shadow-floating);
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background font-sans text-sm text-foreground;
+    /* Linear's glyph alternates: single-storey `a` off, disambiguated `l`. Not spacing. */
+    font-feature-settings: "cv01", "ss03";
     font-synthesis-weight: none;
     text-rendering: optimizeLegibility;
+  }
+
+  /* The UA default for `th` is bold, and no weight utility survives to override it. */
+  th {
+    font-weight: 400;
+  }
+
+  /* Linear's focus ring. One pixel, two pixel offset, everywhere, no exceptions. */
+  :focus-visible {
+    outline: 1px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /*
+   * One selection colour, for the whole document rather than per control. Selecting is how a
+   * value gets copied when the clipboard is unavailable, and the browser's default is a blue
+   * nobody here chose — on a near-black surface it is the loudest thing on the page.
+   */
+  ::selection {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
   }
 }

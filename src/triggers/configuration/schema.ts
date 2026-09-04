@@ -14,7 +14,8 @@ const WorktreeTargetSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("checkout-pr"), prNumber: z.number().int().positive() }),
 ]);
 
-const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
+/** A trigger or choice name: the document's own alphabet, shared with the form that writes one. */
+export const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
 const CONNECTION_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const InputValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);

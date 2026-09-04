@@ -1,17 +1,45 @@
-import type { StatusTone } from "../../components/app/status-pill.js";
+import { Check } from "lucide-react";
+import { formatAbsolute } from "../../components/app/relative-time.js";
+import { statusLabel, type StatusTone } from "../../components/app/status-pill.js";
+import { cn } from "../../lib/utils.js";
 import type { BillingPlanPriceInterval } from "../../db/types.js";
 import type {
   BillingOverviewView,
   PublicBillingPlan,
+  PublicBillingPlanFeature,
   PublicBillingPlanPrice,
 } from "../../server/runtime.js";
 export { TRIAL_DAYS } from "../trial-policy.js";
 
 /**
  * Every word the billing surfaces render: prices, the button on each plan, and the one sentence
- * that says what happens next. Pure and React-free, so the copy is unit-testable and the panel
- * and plan dialog only have to lay it out. Nothing here reaches for the DOM or the network.
+ * that says what happens next. The copy is pure and unit-testable; nothing here reaches for the
+ * DOM or the network. The one piece of markup is the feature list, which the panel and the plan
+ * dialog both render and which is billing's alone — a plan's own words about what it includes.
  */
+
+/**
+ * What a plan includes, in the plan author's words. `className` places the list in its parent:
+ * the panel runs it in two columns beside a wide card, the picker in one column down a narrow one.
+ */
+export function FeatureList({
+  features,
+  className,
+}: {
+  features: readonly PublicBillingPlanFeature[];
+  className?: string;
+}) {
+  return (
+    <ul className={cn("grid content-start gap-2 text-sm", className)}>
+      {features.map((feature) => (
+        <li key={feature.key} className="flex items-start gap-2">
+          <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span title={feature.tooltip ?? undefined}>{feature.label}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 const INTERVAL_WORDS: Record<
   BillingPlanPriceInterval,
@@ -122,7 +150,7 @@ export function subscriptionSummary(
     status:
       subscription.status === null
         ? null
-        : { tone: statusTone(subscription.status), label: statusText(subscription.status) },
+        : { tone: statusTone(subscription.status), label: statusLabel(subscription.status) },
     detail: subscriptionDetail(subscription),
   };
 }
@@ -136,11 +164,11 @@ function subscriptionDetail(subscription: BillingOverviewView["subscription"]): 
   // card stays silent rather than filling the gap with a pitch.
   if (subscription.planName === null) return null;
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
-    return `Cancels on ${formatDate(subscription.currentPeriodEnd)}.`;
+    return `Cancels on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
   }
-  if (subscription.trialEnd !== null) return `Trial ends ${formatDate(subscription.trialEnd)}.`;
+  if (subscription.trialEnd !== null) return `Trial ends ${formatAbsolute(subscription.trialEnd)}.`;
   if (subscription.currentPeriodEnd !== null) {
-    return `Renews on ${formatDate(subscription.currentPeriodEnd)}.`;
+    return `Renews on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
   }
   return "Active subscription.";
 }
@@ -153,23 +181,8 @@ function formatAmount(price: PublicBillingPlanPrice): string {
   }).format(price.unitAmount / 100);
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
-
 function statusTone(status: string): StatusTone {
   if (status === "active" || status === "trialing") return "success";
   if (status === "past_due" || status === "unpaid" || status === "incomplete") return "warning";
   return "neutral";
-}
-
-function statusText(status: string): string {
-  return status
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }

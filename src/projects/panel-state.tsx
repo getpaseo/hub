@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
 import { PanelSkeleton } from "../components/app/loading.js";
 import type { Result } from "../contract/respond.js";
 import { useRouteTenant } from "./context.js";
@@ -53,14 +53,7 @@ export function queryState<T>(
   if (query.isError || query.data?.status !== "ok")
     return {
       ok: false,
-      element: (
-        <Alert variant="destructive">
-          <AlertTitle>{title}</AlertTitle>
-          <AlertDescription>
-            {query.data?.status === "error" ? query.data.error.message : `${title}.`}
-          </AlertDescription>
-        </Alert>
-      ),
+      element: <FailureAlert title={title} error={query.data} fallback={`${title}.`} />,
     };
   return { ok: true, data: query.data.data };
 }
@@ -90,13 +83,12 @@ export function CommandError({
   );
   if (failed === undefined) return null;
   return (
-    <Alert variant="destructive" className="mb-5">
-      <AlertDescription>
-        {failed.data?.status === "error"
-          ? failed.data.error.message
-          : "Hub did not receive the project action result. Check your connection and reload the current project state."}
-      </AlertDescription>
-    </Alert>
+    <FailureAlert
+      standalone
+      title="The last action didn't complete"
+      error={failed.data}
+      fallback="Hub did not receive the project action result. Check your connection and reload the current project state."
+    />
   );
 }
 
@@ -121,10 +113,4 @@ export async function invalidateOrganization(
 export function projectScope(tenant: ReturnType<typeof useRouteTenant>) {
   if (tenant.project === null) throw new Error("project route has no project context");
   return { organizationSlug: tenant.organization.slug, projectSlug: tenant.project.slug };
-}
-
-export function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(
-    new Date(value),
-  );
 }

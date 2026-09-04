@@ -8,6 +8,7 @@ import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtim
  * otherwise is how obsolete tiers end up on a screenshot.
  */
 
+import { formatAbsolute } from "../../components/app/relative-time.js";
 import {
   intervalLabel,
   offeredIntervals,
@@ -185,7 +186,9 @@ it("leads with the trial end date while a trial is running", () => {
     }),
   );
   assert.deepEqual(summary.status, { tone: "success", label: "Trialing" });
-  assert.equal(summary.detail, "Trial ends September 11, 2026.");
+  // The trial end wins over the period end, and the date is the app's one absolute formatter —
+  // a billing date and the same instant in a tooltip read as the same string.
+  assert.equal(summary.detail, `Trial ends ${formatAbsolute("2026-09-11T00:00:00.000Z")}.`);
 });
 
 it("leads with the cancellation date once a subscription is set to end", () => {
@@ -200,13 +203,14 @@ it("leads with the cancellation date once a subscription is set to end", () => {
       manageable: true,
     }),
   );
-  assert.equal(summary.detail, "Cancels on October 1, 2026.");
+  // A pending cancellation outranks the trial, and it dates from the period end, not the trial end.
+  assert.equal(summary.detail, `Cancels on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
 });
 
 it("warns on a payment problem and stays neutral on an unrecognised status", () => {
   assert.deepEqual(
     subscriptionSummary(subscription({ planName: "Paseo Hub", status: "past_due" })).status,
-    { tone: "warning", label: "Past Due" },
+    { tone: "warning", label: "Past due" },
   );
   assert.deepEqual(
     subscriptionSummary(subscription({ planName: "Paseo Hub", status: "paused" })).status,

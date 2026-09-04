@@ -39,7 +39,7 @@ describe("data table skeleton", () => {
 
     assert.match(markup, /aria-busy="true"/u);
     assert.equal(markup.match(/data-slot="skeleton"/gu)?.length, 2 * COLUMNS.length);
-    assert.equal(markup.match(/h-14/gu)?.length, 2 * COLUMNS.length);
+    assert.equal(markup.match(/h-11/gu)?.length, 2 * COLUMNS.length);
   });
 
   it("says nothing about having no records, which it does not yet know", () => {

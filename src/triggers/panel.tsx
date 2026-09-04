@@ -1,23 +1,31 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop -- focused trigger screens bind one document */
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- focused trigger screens bind one document, and a row's link, timestamp, and action are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ArrowLeft, Braces, Copy, FileText, LockKeyhole, Plus } from "lucide-react";
-import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowLeft, Braces, FileText, LockKeyhole, Plus } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+
+import { Card } from "../components/app/card.js";
+import { Combobox, type ComboboxOption } from "../components/app/combobox.js";
+import { CheckboxField } from "../components/app/checkbox-field.js";
+import { CopyButton } from "../components/app/copy-field.js";
 import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
-import { PageHeader } from "../components/app/page.js";
-import { LoadingLine } from "../components/app/loading.js";
-import { Skeleton } from "../components/ui/skeleton.js";
-import { SiteHeaderActions } from "../components/app/site-header-actions.js";
+import { Disclosure } from "../components/app/disclosure.js";
+import { FailureAlert, WarningAlert } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { FieldSkeleton, FormField } from "../components/app/form-field.js";
+import { LoadingLine, Spinner } from "../components/app/loading.js";
+import { PageHeader, PageHeaderSkeleton } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
-import { StatusPill } from "../components/app/status-pill.js";
-import { ProviderGlyph } from "../connections/provider-glyph.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { Section } from "../components/app/section.js";
+import { SegmentedControl, type SegmentedOption } from "../components/app/segmented-control.js";
+import { StatusPill, statusLabel } from "../components/app/status-pill.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import { Field, FieldDescription, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
 import { Textarea } from "../components/ui/textarea.js";
+import { SiteHeaderActions } from "../shell/site-header-actions.js";
+import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
@@ -25,17 +33,25 @@ import {
   mergeTriggerForm,
   parseEditorEvent,
   projectTriggerForm,
+  triggerFormErrors,
+  type TriggerFieldErrors,
   type TriggerFormValue,
 } from "./configuration/editor.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { selectedProviderModel } from "./provider-catalog.js";
-import { AgentModelCombobox, type AgentModelOption } from "./agent-model-combobox.js";
-import { TriggerSelect, type TriggerSelectOption } from "./form-select.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
+
+/** Every form value the operator types into a control, i.e. everything but the event and the switch. */
+type TriggerTextField = Exclude<
+  {
+    [Key in keyof TriggerFormValue]: TriggerFormValue[Key] extends string ? Key : never;
+  }[keyof TriggerFormValue],
+  "event"
+>;
 
 const TRIGGER_COLUMNS = [
   { header: "Trigger" },
@@ -45,13 +61,20 @@ const TRIGGER_COLUMNS = [
   { header: "Status" },
 ] as const;
 
-const EVENT_OPTIONS: TriggerSelectOption[] = [
-  { value: "slack.mention", label: "Slack mention (slack.mention)" },
-  { value: "discord.mention", label: "Discord mention (discord.mention)" },
-  { value: "github.issue_comment", label: "GitHub issue comment (github.issue_comment)" },
-  { value: "linear.issue_created", label: "Linear issue created (linear.issue_created)" },
-  { value: "manual.run", label: "Manual run (manual.run)" },
-];
+/** The event names the form supports, and how each one reads in a sentence. */
+const EVENT_LABELS: Record<string, string> = {
+  "slack.mention": "Slack mention",
+  "discord.mention": "Discord mention",
+  "github.issue_comment": "GitHub issue comment",
+  "linear.issue_created": "Linear issue created",
+  "manual.run": "Manual run",
+};
+
+// The picker names the event, with its identifier underneath: an operator matching a trigger to
+// a YAML document needs the identifier, and a table scanning past it does not.
+const EVENT_OPTIONS: readonly ComboboxOption[] = Object.entries(EVENT_LABELS).map(
+  ([value, label]) => ({ value, label, detail: value, keywords: [value] }),
+);
 
 const TRIGGERS_DESCRIPTION = "Launch agents on your compute when organization events arrive.";
 const TRIGGER_EDITOR_DESCRIPTION = "One event launches one agent on your compute.";
@@ -81,101 +104,97 @@ export function TriggersPanel() {
         {data.canManage ? (
           <Button asChild>
             <Link to={triggerPath("new")}>
-              <Plus className="size-4" /> New trigger
+              <Plus aria-hidden="true" /> New trigger
             </Link>
           </Button>
         ) : null}
       </PageHeader>
-      {data.daemons.length === 0 ? (
-        <Alert className="mb-5">
-          <AlertTitle>Add a daemon first</AlertTitle>
-          <AlertDescription className="flex items-center justify-between gap-3">
-            <span>Triggers need a daemon to run.</span>
+      <div className="grid gap-6">
+        {data.daemons.length === 0 ? (
+          <WarningAlert title="Add a daemon first">
+            <p>Triggers need a daemon to run.</p>
             <Button asChild variant="outline" size="sm">
               <Link to={`/o/${scope.organizationSlug}/daemons` as never}>Go to Daemons</Link>
             </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
-      <DataTable
-        label="Triggers"
-        columns={TRIGGER_COLUMNS}
-        isEmpty={data.triggers.length === 0}
-        empty={{
-          title: "No triggers",
-          description: "Connect a provider and daemon, then create your first trigger.",
-        }}
-      >
-        {data.triggers.map((trigger) => (
-          <DataRow
-            key={trigger.id}
-            onSelect={() => {
-              void navigate({ to: triggerPath(trigger.id) });
-            }}
-          >
-            <DataCell>
-              <span className="flex min-w-52 items-center gap-3">
-                <span
-                  className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
-                  aria-label={`${trigger.provider} provider`}
-                >
-                  <ProviderGlyph provider={trigger.provider} />
-                </span>
-                <span className="min-w-0">
-                  <Link
-                    to={triggerPath(trigger.id)}
-                    className="block truncate hover:underline"
-                    onClick={(event) => event.stopPropagation()}
+          </WarningAlert>
+        ) : null}
+        <DataTable
+          label="Triggers"
+          columns={TRIGGER_COLUMNS}
+          isEmpty={data.triggers.length === 0}
+          empty={{
+            title: "No triggers",
+            description: "Connect a provider and daemon, then create your first trigger.",
+          }}
+        >
+          {data.triggers.map((trigger) => (
+            <DataRow
+              key={trigger.id}
+              onSelect={() => {
+                void navigate({ to: triggerPath(trigger.id) });
+              }}
+            >
+              <DataCell>
+                <span className="flex min-w-52 items-center gap-3">
+                  <span
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
+                    role="img"
+                    aria-label={`${trigger.provider} provider`}
                   >
-                    {trigger.name}
-                  </Link>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {trigger.format === "legacy_multistep"
-                      ? "Legacy YAML"
-                      : (trigger.draft?.agent ?? "Advanced YAML")}
+                    <ProviderGlyph provider={trigger.provider} />
                   </span>
+                  <TwoLine
+                    primary={
+                      <Link
+                        to={triggerPath(trigger.id)}
+                        className="hover:underline"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {trigger.name}
+                      </Link>
+                    }
+                    secondary={
+                      trigger.format === "legacy_multistep"
+                        ? "Legacy YAML"
+                        : (trigger.draft?.agent ?? "Advanced YAML")
+                    }
+                  />
                 </span>
-              </span>
-            </DataCell>
-            <DataCell muted className="hidden whitespace-nowrap md:table-cell">
-              <span className="block text-foreground">{eventLabel(trigger.event)}</span>
-              {trigger.draft?.connection === "" ||
-              trigger.draft?.connection === undefined ? null : (
-                <span className="block text-xs">{trigger.draft.connection}</span>
-              )}
-            </DataCell>
-            <DataCell muted className="hidden whitespace-nowrap lg:table-cell">
-              {trigger.draft === null ? (
-                "Advanced configuration"
-              ) : (
-                <>
-                  <span className="block text-foreground">{trigger.draft.daemon}</span>
-                  <span className="block max-w-48 truncate font-mono text-xs">
-                    {trigger.draft.cwd}
-                  </span>
-                </>
-              )}
-            </DataCell>
-            <DataCell muted className="hidden whitespace-nowrap xl:table-cell">
-              {trigger.lastTriggered === null ? (
-                "Never"
-              ) : (
-                <>
-                  <span className="block text-foreground">
-                    <RelativeTime value={trigger.lastTriggered.receivedAt} />
-                  </span>
-                  <span className="block text-xs capitalize">{trigger.lastTriggered.status}</span>
-                </>
-              )}
-            </DataCell>
-            <DataCell>
-              <StatusPill tone={trigger.enabled ? "success" : "neutral"}>
-                {trigger.enabled ? "Enabled" : "Disabled"}
-              </StatusPill>
-            </DataCell>
-          </DataRow>
-        ))}
-      </DataTable>
+              </DataCell>
+              <DataCell className="hidden whitespace-nowrap md:table-cell">
+                <TwoLine
+                  primary={eventLabel(trigger.event)}
+                  {...(trigger.draft?.connection === "" || trigger.draft?.connection === undefined
+                    ? {}
+                    : { secondary: trigger.draft.connection })}
+                />
+              </DataCell>
+              <DataCell className="hidden whitespace-nowrap lg:table-cell">
+                {trigger.draft === null ? (
+                  <span className="text-muted-foreground">Advanced configuration</span>
+                ) : (
+                  <TwoLine mono primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
+                )}
+              </DataCell>
+              <DataCell className="hidden whitespace-nowrap xl:table-cell">
+                {trigger.lastTriggered === null ? (
+                  <span className="text-muted-foreground">Never</span>
+                ) : (
+                  <TwoLine
+                    primary={<RelativeTime value={trigger.lastTriggered.receivedAt} />}
+                    secondary={statusLabel(trigger.lastTriggered.status)}
+                  />
+                )}
+              </DataCell>
+              <DataCell>
+                <StatusPill tone={trigger.enabled ? "success" : "neutral"}>
+                  {trigger.enabled ? "Enabled" : "Disabled"}
+                </StatusPill>
+              </DataCell>
+            </DataRow>
+          ))}
+        </DataTable>
+      </div>
     </>
   );
 }
@@ -205,12 +224,11 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const trigger = triggerId === "new" ? null : data.triggers.find(({ id }) => id === triggerId);
   if (trigger === undefined) {
     return (
-      <Alert>
-        <AlertTitle>Trigger not found</AlertTitle>
-        <AlertDescription>
-          This trigger no longer exists. Return to the trigger list and choose another one.
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Trigger not found"
+        error={null}
+        fallback="This trigger no longer exists. Return to the trigger list and choose another one."
+      />
     );
   }
   const returnToList = () => {
@@ -247,14 +265,11 @@ function useTriggerSnapshot(organizationSlug: string) {
 
 function TriggerLoadError({ result }: { result: Result<TriggerSnapshot> | undefined }) {
   return (
-    <Alert variant="destructive">
-      <AlertTitle>Triggers unavailable</AlertTitle>
-      <AlertDescription>
-        {result?.status === "error"
-          ? result.error.message
-          : "Hub couldn't load this organization's triggers."}
-      </AlertDescription>
-    </Alert>
+    <FailureAlert
+      title="Triggers unavailable"
+      error={result}
+      fallback="Hub couldn't load this organization's triggers."
+    />
   );
 }
 
@@ -276,41 +291,48 @@ function TriggerEditor({
   const legacy = trigger?.format === "legacy_multistep";
   const editor = useTriggerEditorState(trigger, snapshot, legacy, onSave);
   const title = trigger === null ? "New trigger" : trigger.name;
-  const submitLabel = triggerSubmitLabel(saving, trigger === null);
-  const footerSubmitLabel = editor.mode === "yaml" && !saving ? "Save YAML" : submitLabel;
+  const submitLabel = triggerSubmitLabel(editor.mode, trigger === null);
+  // Saving is refused only for what the reader cannot act on here: a request in flight, a
+  // read-only role, a legacy document. A half-filled form is something they can act on, so the
+  // button stays live and pressing it says which fields are in the way.
   const saveDisabled = saving || !snapshot.canManage || legacy;
+  // Nor is the YAML view a dead segment. A form that cannot serialise yet is a form with fields
+  // to fix, and pressing YAML marks them instead of doing nothing at all. Only the legacy
+  // document has a mode that is genuinely unreachable, and its own alert says why.
+  const modeOptions: readonly SegmentedOption[] = [
+    { value: "form", label: "Form", icon: FileText, disabled: legacy || !editor.canEditAsForm },
+    { value: "yaml", label: "YAML", icon: Braces },
+  ];
+  const modeSwitch = (
+    <SegmentedControl
+      label="Editor mode"
+      value={editor.mode}
+      options={modeOptions}
+      onChange={(value) => editor.switchMode(value === "yaml" ? "yaml" : "form")}
+    />
+  );
   return (
     <>
+      {/* From `sm` up these live in the site header; the phone renders them in the page, where
+          the mode switch sits above the form and the buttons are pinned within thumb reach. */}
       <SiteHeaderActions>
-        <div
-          className="inline-flex rounded-md border bg-background p-0.5 shadow-xs"
-          aria-label="Editor mode"
-        >
-          <ModeButton
-            active={editor.mode === "form"}
-            disabled={legacy}
-            onClick={() => editor.switchMode("form")}
-            icon="form"
-          >
-            Form
-          </ModeButton>
-          <ModeButton
-            active={editor.mode === "yaml"}
-            onClick={() => editor.switchMode("yaml")}
-            icon="yaml"
-          >
-            YAML
-          </ModeButton>
-        </div>
+        {modeSwitch}
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Discard
         </Button>
-        <Button type="submit" form="trigger-editor-form" size="sm" disabled={saveDisabled}>
+        <Button
+          type="submit"
+          form="trigger-editor-form"
+          size="sm"
+          disabled={saveDisabled}
+          aria-busy={saving}
+        >
+          {saving ? <Spinner /> : null}
           {submitLabel}
         </Button>
       </SiteHeaderActions>
-      <Button variant="ghost" size="sm" className="mb-4 -ml-3" onClick={onCancel}>
-        <ArrowLeft className="size-4" /> Triggers
+      <Button variant="ghost" size="sm" className="mb-4 -ml-2.5" onClick={onCancel}>
+        <ArrowLeft aria-hidden="true" /> Triggers
       </Button>
       <PageHeader
         title={title}
@@ -319,67 +341,78 @@ function TriggerEditor({
           tone: editor.form.enabled ? "success" : "neutral",
         }}
         description={TRIGGER_EDITOR_DESCRIPTION}
-      >
-        <EnabledSwitch
-          checked={editor.form.enabled}
-          onChange={(enabled) => editor.setForm({ ...editor.form, enabled })}
-        />
-      </PageHeader>
-      <TriggerCompatibilityAlert
-        legacy={legacy}
-        advanced={editor.mode === "yaml" && editor.yamlOnly}
       />
-      {saveError === undefined && editor.error === undefined ? null : (
-        <Alert variant="destructive" className="mb-5">
-          <AlertDescription>{editor.error ?? saveError}</AlertDescription>
-        </Alert>
-      )}
-      <form id="trigger-editor-form" className="grid gap-5" onSubmit={editor.submit}>
-        {editor.mode === "yaml" ? (
-          <div className="relative h-[68vh] min-h-96 overflow-hidden rounded-lg border bg-card">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="absolute top-3 right-3 z-10"
-              onClick={() => void navigator.clipboard.writeText(editor.yaml)}
-            >
-              <Copy /> Copy YAML
-            </Button>
-            <CodeEditor
-              value={editor.yaml}
-              language="yaml"
-              readOnly={!snapshot.canManage || legacy}
-              label="Trigger YAML"
-              onChange={editor.setYaml}
-            />
-          </div>
-        ) : (
-          <TriggerForm
-            form={editor.form}
-            triggerId={trigger?.id}
-            snapshot={snapshot}
-            onChange={editor.setForm}
+      <div className="grid gap-6">
+        <TriggerCompatibilityAlert
+          legacy={legacy}
+          advanced={editor.mode === "yaml" && editor.yamlOnly}
+          reason={editor.mode === "yaml" ? editor.blocked : undefined}
+        />
+        {saveError === undefined ? null : (
+          <FailureAlert
+            title="Trigger not saved"
+            error={saveError}
+            fallback="Hub couldn't save this trigger."
           />
         )}
-        <div className="flex justify-end gap-2 border-t pt-4">
-          <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saveDisabled}>
-            {footerSubmitLabel}
-          </Button>
-        </div>
-      </form>
+        {editor.mode === "form" ? <TriggerRefusalSummary errors={editor.errors} /> : null}
+        <div className="sm:hidden">{modeSwitch}</div>
+        {/*
+          The document decides what is missing, not the browser. Left to constraint validation an
+          empty required input opens a native bubble on the first field and stops there, in the
+          platform's own type, saying nothing about the daemon or the agent — which are comboboxes
+          it cannot see at all. One refusal, one summary, one mark per field.
+        */}
+        <form id="trigger-editor-form" noValidate className="grid gap-6" onSubmit={editor.submit}>
+          {editor.mode === "yaml" ? (
+            <div className="grid h-160 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border bg-card">
+              <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                <span className="truncate font-mono text-xs">trigger.yaml</span>
+                <CopyButton label="Trigger YAML" value={editor.yaml} />
+              </div>
+              <CodeEditor
+                value={editor.yaml}
+                language="yaml"
+                readOnly={!snapshot.canManage || legacy}
+                label="Trigger YAML"
+                onChange={editor.setYaml}
+              />
+            </div>
+          ) : (
+            <TriggerForm
+              form={editor.form}
+              errors={editor.errors}
+              triggerId={trigger?.id}
+              snapshot={snapshot}
+              onChange={editor.setForm}
+            />
+          )}
+          <FormActions pinned>
+            <Button type="button" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saveDisabled} aria-busy={saving}>
+              {saving ? <Spinner /> : null}
+              {submitLabel}
+            </Button>
+          </FormActions>
+        </form>
+      </div>
     </>
   );
 }
 
-function triggerSubmitLabel(saving: boolean, creating: boolean) {
-  if (saving) return "Saving…";
+function triggerSubmitLabel(mode: EditorMode, creating: boolean) {
+  if (mode === "yaml") return "Save YAML";
   return creating ? "Create trigger" : "Save changes";
 }
 
+/**
+ * The editor holds one trigger in two representations and keeps them convertible. Whether a
+ * conversion is possible is a fact about the document, not an accident discovered when the reader
+ * clicks: the unavailable mode is disabled and the reason is on screen, so neither switching nor
+ * saving can fail with a surprise.
+ */
 function useTriggerEditorState(
   trigger: BrowserTrigger | null,
   snapshot: TriggerSnapshot,
@@ -388,7 +421,7 @@ function useTriggerEditorState(
 ) {
   const initialForm = trigger?.draft ?? defaultForm(snapshot);
   const initialYaml = trigger?.yaml ?? "";
-  const initialProjection = projectTriggerForm(initialYaml);
+  const initialProjection = useMemo(() => projectTriggerForm(initialYaml), [initialYaml]);
   const [mode, setMode] = useState<EditorMode>(
     trigger === null || (initialProjection.status === "editable" && !legacy) ? "form" : "yaml",
   );
@@ -396,43 +429,45 @@ function useTriggerEditorState(
   const [form, setForm] = useState<TriggerFormValue>(
     initialProjection.status === "editable" ? initialProjection.value : initialForm,
   );
-  const [error, setError] = useState<string>();
+  // What the mode the reader is *not* in would receive. In form mode that is the YAML the form
+  // serialises to; in YAML mode it is the form the document projects onto.
+  const other = useMemo(
+    () => (mode === "form" ? mergeTriggerForm(yaml, form) : projectTriggerForm(yaml)),
+    [mode, yaml, form],
+  );
+  const blocked = other.status === "ok" || other.status === "editable" ? undefined : other.reason;
+  // Nothing is marked wrong until the reader asks for something the form cannot do yet: a blank
+  // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
+  // the marks stay and follow what they type.
+  const [refused, setRefused] = useState(false);
+  const errors = useMemo(() => triggerFormErrors(form), [form]);
+  const refuse = () => setRefused(true);
   const switchMode = (next: EditorMode) => {
-    setError(undefined);
     if (next === mode) return;
-    if (next === "yaml") {
-      try {
-        setYaml(mergeTriggerForm(yaml, form));
-        setMode("yaml");
-        window.scrollTo({ top: 0 });
-      } catch (cause) {
-        setError(message(cause));
-      }
+    if (other.status === "ok") setYaml(other.yaml);
+    else if (other.status === "editable") setForm(other.value);
+    else {
+      refuse();
       return;
     }
-    const projection = projectTriggerForm(yaml);
-    if (projection.status === "yaml_only") {
-      setError(projection.reason);
-      return;
-    }
-    setForm(projection.value);
-    setMode("form");
+    setMode(next);
     window.scrollTo({ top: 0 });
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    try {
-      onSave(mode === "form" ? mergeTriggerForm(yaml, form) : yaml);
-      setError(undefined);
-    } catch (cause) {
-      setError(message(cause));
-    }
+    if (mode === "yaml") onSave(yaml);
+    else if (other.status === "ok") onSave(other.yaml);
+    else refuse();
   };
   return {
     mode,
     yaml,
     form,
-    error,
+    errors: refused ? errors : NO_FIELD_ERRORS,
+    // Legacy workflows are explained by their own alert; repeating the schema error underneath it
+    // would say the same thing twice in less useful words.
+    blocked: legacy ? undefined : blocked,
+    canEditAsForm: mode === "form" || other.status === "editable",
     yamlOnly: initialProjection.status === "yaml_only",
     setYaml,
     setForm,
@@ -441,28 +476,95 @@ function useTriggerEditorState(
   };
 }
 
-function TriggerCompatibilityAlert({ legacy, advanced }: { legacy: boolean; advanced: boolean }) {
-  if (!legacy && !advanced) return null;
+const NO_FIELD_ERRORS: TriggerFieldErrors = {};
+
+/**
+ * Everything standing between this form and a saved trigger, said once at the top.
+ *
+ * The marks beside the fields are only useful to a reader who can already see them: the field
+ * in the way may be three sections below the button that was pressed, it is always off screen on
+ * a phone, and one of them — the daemon, when the organization has none — has no control on the
+ * page to be marked at all. The summary takes the keyboard when it arrives, so pressing a button
+ * that cannot do anything yet always answers in the same place.
+ */
+function TriggerRefusalSummary({ errors }: { errors: TriggerFieldErrors }) {
+  const reasons = Object.values(errors);
+  const [first] = reasons;
+  if (first === undefined) return null;
   return (
-    <Alert className="mb-5">
-      <AlertTriangle className="size-4" />
-      <AlertTitle>{legacy ? "Legacy multi-step workflow" : "Advanced trigger"}</AlertTitle>
-      <AlertDescription>
-        {legacy
-          ? "This workflow remains runnable. Copy this YAML and use the migration guide to replace it with one self-contained trigger per event. Form editing is disabled."
-          : "This YAML uses features the form cannot represent. Edit it directly; Hub will preserve every advanced field."}
-      </AlertDescription>
-    </Alert>
+    <FailureAlert
+      title="This trigger is not ready to save"
+      error={reasons.length === 1 ? first : "Fix these fields and submit again."}
+      fallback="This trigger is missing something the document needs."
+      details={
+        reasons.length === 1 ? undefined : (
+          <ul className="grid gap-1">
+            {reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        )
+      }
+      focusOnArrival
+    />
   );
+}
+
+/**
+ * Why the form view is not available for this document, said once. The `reason` is the schema's
+ * own words about the YAML on screen, which is also the reason the Form segment above is
+ * disabled — a control that cannot be pressed is explained on the page, not in a tooltip.
+ */
+function TriggerCompatibilityAlert({
+  legacy,
+  advanced,
+  reason,
+}: {
+  legacy: boolean;
+  advanced: boolean;
+  reason: string | undefined;
+}) {
+  if (!legacy && !advanced && reason === undefined) return null;
+  return (
+    <WarningAlert title={compatibilityTitle(legacy, advanced)}>
+      {legacy ? (
+        <p>
+          This workflow remains runnable. Copy this YAML and use the migration guide to replace it
+          with one self-contained trigger per event. Form editing is disabled.
+        </p>
+      ) : (
+        <p>
+          {advanced
+            ? "This YAML uses features the form cannot represent. Edit it directly; Hub will preserve every advanced field."
+            : "This YAML cannot be edited as a form until it parses against the trigger schema."}
+        </p>
+      )}
+      {legacy || reason === undefined ? null : <p>{reason}</p>}
+    </WarningAlert>
+  );
+}
+
+function compatibilityTitle(legacy: boolean, advanced: boolean): string {
+  if (legacy) return "Legacy multi-step workflow";
+  return advanced ? "Advanced trigger" : "Form editing unavailable";
+}
+
+/** The error slot a field carries, absent while that field is fine. */
+function fieldError(errors: TriggerFieldErrors, key: keyof TriggerFormValue) {
+  const error = errors[key];
+  return error === undefined ? {} : { error };
 }
 
 function TriggerForm({
   form,
+  errors,
   triggerId,
   snapshot,
   onChange,
 }: {
   form: TriggerFormValue;
+  /** What each field still needs, once the reader has asked for something it blocks. */
+  errors: TriggerFieldErrors;
   triggerId: string | undefined;
   snapshot: TriggerSnapshot;
   onChange: (value: TriggerFormValue) => void;
@@ -478,7 +580,8 @@ function TriggerForm({
   }));
   const daemonOptions = snapshot.daemons.map((daemon) => ({
     value: daemon.slug,
-    label: `${daemon.slug} (${daemon.presence})`,
+    label: daemon.slug,
+    detail: daemon.presence,
   }));
   const githubConnectionOptions = [
     { value: "", label: "Do not inject a GitHub token" },
@@ -489,9 +592,11 @@ function TriggerForm({
   ];
   const githubEnabled = form.githubConnection !== "";
   const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
+  const [optionsExpanded, setOptionsExpanded] = useState(false);
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
+  const text = (key: TriggerTextField) => (value: string) => update(key, value);
   const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
@@ -499,168 +604,214 @@ function TriggerForm({
     form.cwd,
   );
   return (
-    <div className="grid gap-5">
-      <FormSection
-        number="1"
+    <div>
+      <Section
         title="Trigger details"
         description="Identification and system handle for this trigger."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <ControlledInput
+          <FormField
+            id="trigger-name"
             label="Trigger name"
-            value={form.name}
-            onChange={(value) => update("name", value)}
             description="Lowercase identifier with hyphens, for example slack-triage."
+            kind="text"
+            name="name"
+            value={form.name}
+            onChange={text("name")}
             required
+            {...fieldError(errors, "name")}
           />
-          <Field>
-            <FieldLabel htmlFor="trigger-id">Trigger ID</FieldLabel>
-            <Input id="trigger-id" value={triggerId ?? "Assigned when saved"} disabled />
-            <FieldDescription>Immutable identifier within this organization.</FieldDescription>
-          </Field>
+          <FormField
+            id="trigger-id"
+            label="Trigger ID"
+            description="Immutable identifier within this organization."
+            kind="text"
+            name="id"
+            value={triggerId ?? "Assigned when saved"}
+            disabled
+          />
         </div>
-      </FormSection>
+        <CheckboxField
+          id="trigger-enabled"
+          label="Enabled"
+          description="A disabled trigger keeps its configuration and stops responding to events."
+          checked={form.enabled}
+          onChange={(checked) => update("enabled", checked)}
+        />
+      </Section>
 
-      <FormSection
-        number="2"
+      <Section
         title="Event & access"
         description="When this event fires and who is authorized to invoke it."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="trigger-event">When this happens</FieldLabel>
-            <TriggerSelect
-              id="trigger-event"
-              value={form.event}
-              options={EVENT_OPTIONS}
-              onChange={(event) => update("event", parseEditorEvent(event))}
-            />
-            <FieldDescription>Exactly one event launches this trigger.</FieldDescription>
-          </Field>
-          {form.event === "manual.run" ? null : (
-            <Field>
-              <FieldLabel htmlFor="trigger-connection">Connection</FieldLabel>
-              <TriggerSelect
-                id="trigger-connection"
-                value={form.connection}
-                options={connectionOptions}
-                onChange={(connection) => update("connection", connection)}
-                required
+          <FormField
+            id="trigger-event"
+            label="When this happens"
+            description="Exactly one event launches this trigger."
+          >
+            {(control) => (
+              <Combobox
+                {...control}
+                value={form.event}
+                options={EVENT_OPTIONS}
+                placeholder="Select an event"
+                empty="No events found."
+                onChange={(option) => update("event", parseEditorEvent(option.value))}
               />
-              <FieldDescription>
-                The organization connection that receives the event.
-              </FieldDescription>
-            </Field>
+            )}
+          </FormField>
+          {form.event === "manual.run" ? null : (
+            <FormField
+              id="trigger-connection"
+              label="Connection"
+              description="The organization connection that receives the event."
+              required
+              {...fieldError(errors, "connection")}
+            >
+              {(control) => (
+                <Combobox
+                  {...control}
+                  required
+                  value={form.connection}
+                  options={connectionOptions}
+                  placeholder="Select a connection"
+                  empty="No connections found."
+                  onChange={(option) => update("connection", option.value)}
+                />
+              )}
+            </FormField>
           )}
         </div>
         {form.event === "manual.run" ? null : (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel>Who can trigger it?</FieldLabel>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={everyone ? "default" : "outline"}
-                  onClick={() => update("allowedUsers", "*")}
-                >
-                  Everyone
-                </Button>
-                <Button
-                  type="button"
-                  variant={!everyone ? "default" : "outline"}
-                  onClick={() => update("allowedUsers", "")}
-                >
-                  Specific people
-                </Button>
-              </div>
-            </Field>
+            <FormField
+              id="trigger-audience"
+              label="Who can trigger it?"
+              description="Everyone the connection can see, or a named list."
+            >
+              {() => (
+                <SegmentedControl
+                  label="Who can trigger it?"
+                  value={everyone ? "everyone" : "specific"}
+                  options={AUDIENCE_OPTIONS}
+                  onChange={(value) => update("allowedUsers", value === "everyone" ? "*" : "")}
+                />
+              )}
+            </FormField>
             {everyone ? null : (
-              <ControlledInput
+              <FormField
+                id="trigger-allowed-users"
                 label="User IDs"
-                value={form.allowedUsers}
-                onChange={(value) => update("allowedUsers", value)}
                 description="Comma-separated provider user IDs."
+                kind="text"
+                name="allowedUsers"
+                value={form.allowedUsers}
+                onChange={text("allowedUsers")}
                 required
+                {...fieldError(errors, "allowedUsers")}
               />
             )}
           </div>
         )}
-      </FormSection>
+      </Section>
 
-      <FormSection
-        number="3"
+      <Section
         title="Run target"
         description="The local machine compute and repository working directory."
       >
         {snapshot.daemons.length === 0 ? (
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">No daemons available</p>
-            <Button asChild variant="outline" size="sm">
-              <Link to={`/o/${snapshot.organization.slug}/daemons` as never}>Go to Daemons</Link>
-            </Button>
-          </div>
+          <Card
+            title="No daemons available"
+            description="A trigger runs on a daemon connected to this organization."
+            action={
+              <Button asChild variant="outline" size="sm">
+                <Link to={`/o/${snapshot.organization.slug}/daemons` as never}>Go to Daemons</Link>
+              </Button>
+            }
+          >
+            {null}
+          </Card>
         ) : (
-          <Field>
-            <FieldLabel htmlFor="trigger-daemon">Run on daemon</FieldLabel>
-            <TriggerSelect
-              id="trigger-daemon"
-              value={form.daemon}
-              options={daemonOptions}
-              placeholder="Select a daemon"
-              onChange={(daemon) =>
-                onChange({
-                  ...form,
-                  daemon,
-                  agent: "",
-                  mode: "",
-                  thinkingOptionId: "",
-                  providerOptions: "",
-                })
-              }
-              required
-            />
-            <FieldDescription>
-              The daemon owns compute, credentials, and sandboxing.
-            </FieldDescription>
-          </Field>
+          <FormField
+            id="trigger-daemon"
+            label="Run on daemon"
+            description="The daemon owns compute, credentials, and sandboxing."
+            required
+            {...fieldError(errors, "daemon")}
+          >
+            {(control) => (
+              <Combobox
+                {...control}
+                required
+                value={form.daemon}
+                options={daemonOptions}
+                placeholder="Select a daemon"
+                empty="No daemons found."
+                onChange={(option) =>
+                  onChange({
+                    ...form,
+                    daemon: option.value,
+                    agent: "",
+                    mode: "",
+                    thinkingOptionId: "",
+                    providerOptions: "",
+                  })
+                }
+              />
+            )}
+          </FormField>
         )}
         {selectedDaemon === undefined ? null : (
           <div className="grid gap-4 sm:grid-cols-2">
-            <ControlledInput
+            <FormField
+              id="trigger-cwd"
               label="Working directory"
-              value={form.cwd}
-              onChange={(value) => update("cwd", value)}
               description="Absolute path on the daemon."
+              kind="text"
+              name="cwd"
+              value={form.cwd}
+              onChange={text("cwd")}
               required
+              {...fieldError(errors, "cwd")}
             />
-            <ControlledInput
+            <FormField
+              id="trigger-max-runtime"
               label="Maximum runtime"
-              value={form.maxRuntime}
-              onChange={(value) => update("maxRuntime", value)}
               description="Hard deadline for the agent, for example 2h."
+              kind="text"
+              name="maxRuntime"
+              value={form.maxRuntime}
+              onChange={text("maxRuntime")}
               required
+              {...fieldError(errors, "maxRuntime")}
             />
-            <ControlledInput
+            <FormField
+              id="trigger-idle-timeout"
               label="Idle timeout"
-              value={form.idleTimeout}
-              onChange={(value) => update("idleTimeout", value)}
               description="Stop an unresponsive agent, for example 10m."
+              kind="text"
+              name="idleTimeout"
+              value={form.idleTimeout}
+              onChange={text("idleTimeout")}
               required
+              {...fieldError(errors, "idleTimeout")}
             />
           </div>
         )}
-      </FormSection>
+      </Section>
 
       {selectedDaemon === undefined ? null : (
-        <FormSection
-          number="4"
+        <Section
           title="Agent & instructions"
           description="The AI coding agent model and task prompt instructions."
         >
           <div className="grid gap-4 sm:grid-cols-2">
             <ProviderCatalogFields
               form={form}
+              errors={errors}
               entries={providerCatalog.entries}
+              loading={providerCatalog.loading}
               onChange={onChange}
             />
           </div>
@@ -668,124 +819,136 @@ function TriggerForm({
             <LoadingLine>{`Loading providers from ${form.daemon}…`}</LoadingLine>
           ) : null}
           {providerCatalog.error === undefined ? null : (
-            <Alert variant="destructive">
-              <AlertDescription className="flex items-center justify-between gap-3">
-                <span>{providerCatalog.error}</span>
-                <Button type="button" variant="outline" size="sm" onClick={providerCatalog.refresh}>
-                  Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
+            <FailureAlert
+              title="Providers unavailable"
+              error={providerCatalog.error}
+              fallback="Hub couldn't load this daemon's providers."
+              onRetry={providerCatalog.refresh}
+            />
           )}
-          <details className="rounded-md border bg-muted/20 p-3">
-            <summary className="cursor-pointer text-sm">Advanced provider options (JSON)</summary>
-            <Field className="mt-3">
-              <FieldLabel htmlFor="trigger-provider-options" className="sr-only">
-                Advanced provider options (JSON)
-              </FieldLabel>
-              <Textarea
-                id="trigger-provider-options"
-                value={form.providerOptions}
-                onChange={(event) => update("providerOptions", event.target.value)}
-                rows={5}
-                placeholder={'{"sandbox_mode":"workspace-write"}'}
-              />
-              <FieldDescription>
-                Passed to the provider on your daemon. YAML-only agent fields remain untouched.
-              </FieldDescription>
-            </Field>
-          </details>
-          <details
-            className="rounded-md border bg-muted/20 p-3"
-            open={githubExpanded}
-            onToggle={(event) => setGithubExpanded(event.currentTarget.open)}
+          <Disclosure
+            id="trigger-provider-options"
+            open={optionsExpanded}
+            onOpenChange={setOptionsExpanded}
+            title="Advanced provider options"
+            description="Fields the form does not model, passed through to the provider."
           >
-            <summary className="cursor-pointer text-sm">GitHub access</summary>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2">
-              <Field>
-                <FieldLabel htmlFor="trigger-github-connection">GitHub connection</FieldLabel>
-                <TriggerSelect
-                  id="trigger-github-connection"
-                  value={form.githubConnection}
-                  options={githubConnectionOptions}
-                  onChange={(connection) => update("githubConnection", connection)}
-                />
-                <FieldDescription>
-                  Mints a short-lived, restricted GH_TOKEN for this run.
-                </FieldDescription>
-              </Field>
+            <FormField
+              id="trigger-provider-options-json"
+              label="Provider options (JSON)"
+              description="Passed to the provider on your daemon. YAML-only agent fields remain untouched."
+              kind="multiline"
+              name="providerOptions"
+              value={form.providerOptions}
+              onChange={text("providerOptions")}
+              placeholder={'{"sandbox_mode":"workspace-write"}'}
+              {...fieldError(errors, "providerOptions")}
+            />
+          </Disclosure>
+          <Disclosure
+            id="trigger-github"
+            open={githubExpanded}
+            onOpenChange={setGithubExpanded}
+            title="GitHub access"
+            description="Give the run a short-lived token scoped to the repositories you name."
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                id="trigger-github-connection"
+                label="GitHub connection"
+                description="Mints a short-lived, restricted GH_TOKEN for this run."
+              >
+                {(control) => (
+                  <Combobox
+                    {...control}
+                    value={form.githubConnection}
+                    options={githubConnectionOptions}
+                    placeholder="Select a GitHub connection"
+                    empty="No GitHub connections found."
+                    onChange={(option) => update("githubConnection", option.value)}
+                  />
+                )}
+              </FormField>
               {githubEnabled ? (
                 <>
-                  <ControlledInput
+                  <FormField
+                    id="trigger-github-repositories"
                     label="GitHub repositories"
-                    value={form.githubRepositories}
-                    onChange={(value) => update("githubRepositories", value)}
                     description="Comma-separated owner/repository names."
+                    kind="text"
+                    name="githubRepositories"
+                    value={form.githubRepositories}
+                    onChange={text("githubRepositories")}
                     required
                   />
-                  <ControlledInput
+                  <FormField
+                    id="trigger-github-duration"
                     label="GitHub token lifetime"
-                    value={form.githubDuration}
-                    onChange={(value) => update("githubDuration", value)}
                     description="At most 1h."
+                    kind="text"
+                    name="githubDuration"
+                    value={form.githubDuration}
+                    onChange={text("githubDuration")}
                     required
                   />
-                  <Field>
-                    <FieldLabel htmlFor="trigger-github-permissions">
-                      GitHub permissions (JSON)
-                    </FieldLabel>
-                    <Textarea
-                      id="trigger-github-permissions"
-                      value={form.githubPermissions}
-                      onChange={(event) => update("githubPermissions", event.target.value)}
-                      rows={4}
-                      placeholder={'{"contents":"write","pull_requests":"write"}'}
-                    />
-                    <FieldDescription>
-                      Defaults to read-only repository contents when empty.
-                    </FieldDescription>
-                  </Field>
+                  <FormField
+                    id="trigger-github-permissions"
+                    label="GitHub permissions (JSON)"
+                    description="Defaults to read-only repository contents when empty."
+                    kind="multiline"
+                    name="githubPermissions"
+                    value={form.githubPermissions}
+                    onChange={text("githubPermissions")}
+                    placeholder={'{"contents":"write","pull_requests":"write"}'}
+                    {...fieldError(errors, "githubPermissions")}
+                  />
                 </>
               ) : null}
             </div>
-          </details>
-          <PromptEditor value={form.prompt} onChange={(prompt) => update("prompt", prompt)} />
-          <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-            <LockKeyhole className="size-4 shrink-0 text-link" />
-            Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing stay
-            on your compute.
-          </div>
-        </FormSection>
+          </Disclosure>
+          <PromptEditor
+            value={form.prompt}
+            {...fieldError(errors, "prompt")}
+            onChange={(prompt) => update("prompt", prompt)}
+          />
+          <Card>
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-link" />
+              Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing
+              stay on your compute.
+            </p>
+          </Card>
+        </Section>
       )}
     </div>
   );
 }
 
+const AUDIENCE_OPTIONS: readonly SegmentedOption[] = [
+  { value: "everyone", label: "Everyone" },
+  { value: "specific", label: "Specific people" },
+];
+
 /**
- * The trigger editor before the snapshot arrives. The back link, the numbered sections, and
- * their headings are the same every time, so they render for real; only the trigger's own
- * name, state, and field values are placeholders.
+ * The trigger editor before the snapshot arrives. The back link, the section headings, and the
+ * page description are the same every time, so they render for real; only the trigger's own name
+ * and field values are placeholders.
  */
 function TriggerEditorSkeleton() {
   return (
     <div aria-busy="true">
-      <Button variant="ghost" size="sm" className="mb-4 -ml-3" disabled>
-        <ArrowLeft className="size-4" /> Triggers
+      <Button variant="ghost" size="sm" className="mb-4 -ml-2.5" disabled>
+        <ArrowLeft aria-hidden="true" /> Triggers
       </Button>
-      <header className="mb-6 grid gap-2">
-        <Skeleton className="h-7 w-56" />
-        <p className="text-sm text-muted-foreground">{TRIGGER_EDITOR_DESCRIPTION}</p>
-      </header>
-      <div className="grid gap-5">
-        {EDITOR_SECTIONS.map((section) => (
-          <FormSection key={section.number} {...section}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FieldSkeleton />
-              <FieldSkeleton />
-            </div>
-          </FormSection>
-        ))}
-      </div>
+      <PageHeaderSkeleton description={TRIGGER_EDITOR_DESCRIPTION} />
+      {EDITOR_SECTIONS.map((section) => (
+        <Section key={section.title} title={section.title} description={section.description}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FieldSkeleton />
+            <FieldSkeleton />
+          </div>
+        </Section>
+      ))}
     </div>
   );
 }
@@ -793,112 +956,28 @@ function TriggerEditorSkeleton() {
 /** The three sections every trigger has, whatever event or daemon it ends up pointing at. */
 const EDITOR_SECTIONS = [
   {
-    number: "1",
     title: "Trigger details",
     description: "Identification and system handle for this trigger.",
   },
   {
-    number: "2",
     title: "Event & access",
     description: "When this event fires and who is authorized to invoke it.",
   },
   {
-    number: "3",
     title: "Run target",
     description: "The local machine compute and repository working directory.",
   },
 ] as const;
 
-function FieldSkeleton() {
-  return (
-    <div className="grid gap-2">
-      <Skeleton className="h-4 w-28" />
-      <Skeleton className="h-9 w-full" />
-      <Skeleton className="h-3 w-48" />
-    </div>
-  );
-}
-
-function FormSection({
-  number,
-  title,
-  description,
-  children,
-}: {
-  number: string;
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section
-      aria-labelledby={`trigger-section-${number}`}
-      className="overflow-hidden rounded-lg border bg-card"
-    >
-      <header className="flex items-start gap-3 border-b bg-muted/20 px-5 py-4">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
-          {number}
-        </span>
-        <div>
-          <h2 id={`trigger-section-${number}`} className="text-sm">
-            {title}
-          </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-        </div>
-      </header>
-      <div className="grid gap-5 p-5">{children}</div>
-    </section>
-  );
-}
-
-function ModeButton({
-  active,
-  disabled,
-  onClick,
-  icon,
-  children,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  icon: "form" | "yaml";
-  children: string;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-sm px-3 text-xs transition-colors [&_svg]:size-3.5 ${active ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"} disabled:opacity-40`}
-    >
-      {icon === "form" ? <FileText /> : <Braces />}
-      {children}
-    </button>
-  );
-}
-
-function EnabledSwitch({
-  checked,
+function PromptEditor({
+  value,
+  error,
   onChange,
 }: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
+  value: string;
+  error?: string;
+  onChange: (value: string) => void;
 }) {
-  return (
-    <label className="flex cursor-pointer items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        className="peer sr-only"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span className="relative h-5 w-9 rounded-full bg-muted transition-colors peer-checked:bg-primary after:absolute after:top-0.5 after:left-0.5 after:size-4 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-4" />
-      {checked ? "Enabled" : "Disabled"}
-    </label>
-  );
-}
-
-function PromptEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const element = textarea.current;
@@ -918,20 +997,28 @@ function PromptEditor({ value, onChange }: { value: string; onChange: (value: st
     });
   };
   return (
-    <Field>
-      <FieldLabel htmlFor="trigger-prompt">Instructions</FieldLabel>
-      <Textarea
-        ref={textarea}
+    <div className="grid gap-2">
+      <FormField
         id="trigger-prompt"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        rows={8}
-        className="min-h-48 resize-none overflow-hidden font-mono text-xs leading-6"
+        label="Instructions"
         required
-      />
+        {...(error === undefined ? {} : { error })}
+      >
+        {(control) => (
+          <Textarea
+            {...control}
+            ref={textarea}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            rows={8}
+            spellCheck={false}
+            className="min-h-48 resize-none overflow-hidden font-mono text-xs"
+          />
+        )}
+      </FormField>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">Insert merge tag:</span>
-        {["${{ paseo.prompt }}", "${{ paseo.context }}"].map((mergeTag) => (
+        {MERGE_TAGS.map((mergeTag) => (
           <Button
             key={mergeTag}
             type="button"
@@ -944,45 +1031,23 @@ function PromptEditor({ value, onChange }: { value: string; onChange: (value: st
           </Button>
         ))}
       </div>
-    </Field>
+    </div>
   );
 }
 
-function ControlledInput({
-  label,
-  value,
-  description,
-  required,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  description?: string;
-  required?: boolean;
-  onChange: (value: string) => void;
-}) {
-  const id = `trigger-${label.toLowerCase().replaceAll(" ", "-")}`;
-  return (
-    <Field>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        required={required}
-      />
-      {description === undefined ? null : <FieldDescription>{description}</FieldDescription>}
-    </Field>
-  );
-}
+const MERGE_TAGS = ["${{ paseo.prompt }}", "${{ paseo.context }}"] as const;
 
 function ProviderCatalogFields({
   form,
+  errors,
   entries,
+  loading,
   onChange,
 }: {
   form: TriggerFormValue;
+  errors: TriggerFieldErrors;
   entries: HubProviderSnapshotEntry[] | undefined;
+  loading: boolean;
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
@@ -994,74 +1059,81 @@ function ProviderCatalogFields({
           .map((model) => ({
             value: `${entry.provider}/${model.id}`,
             label: model.label,
-            providerLabel: entry.label ?? entry.provider,
+            detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
             keywords: [model.label, entry.label ?? entry.provider, model.id],
           })),
-  ) satisfies AgentModelOption[];
-  const modes = selected.entry?.modes ?? [];
-  const modeKnown = modes.some((mode) => mode.id === form.mode);
-  const thinkingOptions = selected.model?.thinkingOptions ?? [];
-  const thinkingKnown = thinkingOptions.some((option) => option.id === form.thinkingOptionId);
-  const modeOptions = [
-    ...(!modeKnown && form.mode !== ""
-      ? [{ value: form.mode, label: `${form.mode} (unavailable)` }]
-      : []),
-    ...modes.map((mode) => ({ value: mode.id, label: mode.label })),
-  ];
-  const thinkingSelectOptions = [
-    ...(!thinkingKnown && form.thinkingOptionId !== ""
-      ? [
-          {
-            value: form.thinkingOptionId,
-            label: `${form.thinkingOptionId} (unavailable)`,
-          },
-        ]
-      : []),
-    ...thinkingOptions.map((option) => ({ value: option.id, label: option.label })),
-  ];
+  ) satisfies ComboboxOption[];
+  const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
+    value: mode.id,
+    label: mode.label,
+  }));
+  const thinkingOptions = (selected.model?.thinkingOptions ?? []).map((option) => ({
+    value: option.id,
+    label: option.label,
+  }));
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="trigger-agent">Agent</FieldLabel>
-        <AgentModelCombobox
-          options={agentOptions}
-          value={form.agent}
-          onSelect={(agent) => {
-            onChange({
-              ...form,
-              agent,
-              mode: "",
-              thinkingOptionId: "",
-            });
-          }}
-        />
-        <FieldDescription>Models reported by the selected daemon.</FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="trigger-mode">Execution mode</FieldLabel>
-        <TriggerSelect
-          id="trigger-mode"
-          value={form.mode}
-          options={modeOptions}
-          placeholder="Select a mode"
-          onChange={(mode) => onChange({ ...form, mode })}
-          required
-        />
-        <FieldDescription>Modes reported for the selected provider.</FieldDescription>
-      </Field>
-      {thinkingOptions.length === 0 ? null : (
-        <Field>
-          <FieldLabel htmlFor="trigger-thinking">Thinking</FieldLabel>
-          <TriggerSelect
-            id="trigger-thinking"
-            value={form.thinkingOptionId}
-            options={thinkingSelectOptions}
-            placeholder="Select a thinking option"
-            onChange={(thinkingOptionId) => onChange({ ...form, thinkingOptionId })}
+      <FormField
+        id="trigger-agent"
+        label="Agent"
+        description="Models reported by the selected daemon."
+        required
+        {...fieldError(errors, "agent")}
+      >
+        {(control) => (
+          <Combobox
+            {...control}
             required
+            loading={loading}
+            value={form.agent}
+            options={agentOptions}
+            placeholder="Select a model"
+            searchPlaceholder="Search models…"
+            empty="No models found."
+            onChange={(option) =>
+              onChange({ ...form, agent: option.value, mode: "", thinkingOptionId: "" })
+            }
           />
-          <FieldDescription>Thinking options reported for the selected model.</FieldDescription>
-        </Field>
+        )}
+      </FormField>
+      <FormField
+        id="trigger-mode"
+        label="Execution mode"
+        description="Modes reported for the selected provider."
+        required
+        {...fieldError(errors, "mode")}
+      >
+        {(control) => (
+          <Combobox
+            {...control}
+            required
+            value={form.mode}
+            options={modeOptions}
+            placeholder="Select a mode"
+            empty="No modes found."
+            onChange={(option) => onChange({ ...form, mode: option.value })}
+          />
+        )}
+      </FormField>
+      {thinkingOptions.length === 0 ? null : (
+        <FormField
+          id="trigger-thinking"
+          label="Thinking"
+          description="Thinking options reported for the selected model."
+          required
+        >
+          {(control) => (
+            <Combobox
+              {...control}
+              required
+              value={form.thinkingOptionId}
+              options={thinkingOptions}
+              placeholder="Select a thinking option"
+              empty="No thinking options found."
+              onChange={(option) => onChange({ ...form, thinkingOptionId: option.value })}
+            />
+          )}
+        </FormField>
       )}
     </>
   );
@@ -1142,14 +1214,5 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
 }
 
 function eventLabel(event: string): string {
-  if (event === "slack.mention") return "Slack mention";
-  if (event === "discord.mention") return "Discord mention";
-  if (event === "github.issue_comment") return "GitHub issue comment";
-  if (event === "linear.issue_created") return "Linear issue created";
-  if (event === "manual.run") return "Manual run";
-  return event;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "The trigger is invalid.";
+  return EVENT_LABELS[event] ?? event;
 }

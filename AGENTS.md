@@ -28,3 +28,9 @@ The goal is to make sophisticated agent workflows easy to assemble while keeping
 # Project Status
 
 This is a project in early-development, take advantage of not needing to implement back compat shims, do clear cuts and hard refactors.
+
+# UI work
+
+`docs/design.md` is the visual contract for every `.tsx` file, `src/styles.css`, and everything under
+`src/components`. It is loaded with this file. Follow it; `src/typography-policy.test.ts` enforces the
+mechanical parts.

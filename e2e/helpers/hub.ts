@@ -2919,7 +2919,8 @@ class HubUser {
       origin: this.origin,
     });
     await dialog.getByRole("button", { name: "Copy API key" }).click();
-    await expect(dialog.getByRole("status")).toHaveText("API key copied.");
+    // `CopyField` announces the copy in its own words, the same on every surface that copies.
+    await expect(dialog.getByRole("status")).toHaveText("Copied Generated API key");
     await expect(this.page.evaluate(() => navigator.clipboard.readText())).resolves.toMatch(
       /^paseo_pk_/u,
     );
@@ -3314,9 +3315,16 @@ class HubUser {
       const form = await this.openInvitationForm();
       await form.getByLabel("Invitee email").fill(invitationEmail);
       await form.getByRole("button", { name: "Create invitation" }).click();
-      await expect(this.page.getByRole("alert")).toHaveText(
-        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
+      // The dialog answers for itself and keeps what was typed, so the address is one press
+      // away from being submitted again rather than gone.
+      await expect(form.getByRole("alert")).toHaveText(
+        "Invitation not sentHub did not create the invitation. Check your connection and submit it again.",
       );
+      await expect(form.getByLabel("Invitee email")).toHaveValue(invitationEmail);
+      // The page behind a modal is out of the accessibility tree, so the team and the
+      // organization it belongs to are checked once the dialog is dismissed.
+      await this.page.keyboard.press("Escape");
+      await expect(form).toBeHidden();
       await expect(this.invitationRow(invitationEmail)).toHaveCount(0);
       await expect(switcher).toContainText("Acme");
     } finally {
@@ -3368,16 +3376,14 @@ class HubUser {
       await expect(this.page.getByRole("region", { name: "Loading account context" })).toHaveCount(
         0,
       );
-      await expect(this.page.getByRole("button", { name: "Invite member" })).toBeDisabled();
-      await switcher.click();
-      const menu = this.page.getByRole("menu");
-      await expect(menu).toBeVisible();
-      await expect(
-        menu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
-      ).toBeDisabled();
-      await expect(menu.getByRole("menuitem", { name: "Acme", exact: true })).toBeDisabled();
-      await this.page.keyboard.press("Escape");
-      await expect(menu).toBeHidden();
+      // The dialog stays open and busy until the invitation exists, so the request is dismissed
+      // before the organization it belongs to can be examined behind it.
+      await expect(form).toHaveAttribute("aria-busy", "true");
+      await expect(form.getByLabel("Invitee email")).toBeDisabled();
+      await this.page.getByRole("button", { name: "Close" }).click();
+      await expect(form).toBeHidden();
+      await this.expectTenantControlsLocked(destinationOrganization);
+      await expect(switcher).toContainText("Acme");
     } finally {
       releaseInvitation();
       await delivered;
@@ -3488,7 +3494,8 @@ class HubUser {
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
     await expect(daemon.getByText(daemonId.slice(0, 8), { exact: true })).toBeVisible();
     await expect(daemon.getByText(state, { exact: true })).toBeVisible();
-    await expect(daemon.getByText(/\w{3} \d{1,2}, \d{4}/u).first()).toBeVisible();
+    // Timestamps read as "3m ago"; the absolute instant is the tooltip `RelativeTime` puts on it.
+    await expect(daemon.locator("time").first()).toHaveAttribute("title", /\w{3} \d{1,2}, \d{4}/u);
   }
 
   private daemonRow(displayName: string): Locator {
@@ -3785,6 +3792,11 @@ class HubUser {
   /** The invite control in its locked state: a link out to the remedy, not a disabled button. */
   private lockedInvite(): Locator {
     return this.page.getByRole("link", { name: "Invite member" });
+  }
+
+  /** The visible sentence beside the locked control, which also describes it to a reader. */
+  private lockedInviteReason(): Locator {
+    return this.lockedInvite().locator("xpath=following-sibling::span");
   }
 
   private async openInvitationForm(): Promise<Locator> {
@@ -4185,8 +4197,9 @@ class HubUser {
    */
   async expectInviteLockedBySeatLimit(expected: { limit: number; current: number }): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    await expect(this.lockedInvite()).toHaveAttribute(
-      "title",
+    // The reason is on the page, not in a tooltip: a touch device never hovers, and the lock is
+    // useless without the sentence that says what to do about it.
+    await expect(this.lockedInviteReason()).toHaveText(
       `Seat limit reached — ${expected.current} of ${expected.limit} seats are in use. See the Usage page for its limits.`,
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
@@ -4409,8 +4422,7 @@ class HubUser {
 
   async expectInviteLockedByPlan(): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    await expect(this.lockedInvite()).toHaveAttribute(
-      "title",
+    await expect(this.lockedInviteReason()).toHaveText(
       "Inviting members isn't enabled for this organization. See the plans available to this organization.",
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
@@ -4456,7 +4468,7 @@ class HubUser {
   async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    const banner = this.page.getByRole("alert", { name: "Over limit" });
+    const banner = this.overLimitBanner();
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(`You have ${expected.used} seats in use`);
     await expect(banner).toContainText(`your limit is ${expected.limit}`);
@@ -4466,7 +4478,13 @@ class HubUser {
   async expectNoOverLimitBanner(): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    await expect(this.page.getByRole("alert", { name: "Over limit" })).toHaveCount(0);
+    await expect(this.overLimitBanner()).toHaveCount(0);
+  }
+
+  /** The banner is found by what it says. Its title is the accessible name of the warning; an
+   * `aria-label` repeating it in different words would be a second name for one thing. */
+  private overLimitBanner(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "You're over your seat limit" });
   }
 
   /** Assert the granted / override / effective cells of one entitlement row after a re-stamp — on

@@ -7,6 +7,7 @@ import {
   patchTriggerYaml,
   projectTriggerForm,
   splitAgentId,
+  triggerFormErrors,
 } from "./editor.js";
 
 const ADVANCED = `# keep this heading
@@ -116,9 +117,10 @@ describe("trigger form YAML bridge", () => {
   test("keeps advanced YAML added before a new trigger's first save", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);
-    const yaml = mergeTriggerForm(ADVANCED, { ...projection.value, prompt: "Changed." });
-    expect(yaml).toContain("# keep this heading");
-    const value = TriggerDocumentSchema.parse(parseDocument(yaml).toJS());
+    const merged = mergeTriggerForm(ADVANCED, { ...projection.value, prompt: "Changed." });
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("# keep this heading");
+    const value = TriggerDocumentSchema.parse(parseDocument(merged.yaml).toJS());
     expect(value.run.prompt).toBe("Changed.");
     expect(value.run.target.worktree).toBeDefined();
     expect(value.run.outputs).toBeDefined();
@@ -198,15 +200,115 @@ describe("trigger form YAML bridge", () => {
     const projection = projectTriggerForm(initial);
     if (projection.status !== "editable") throw new Error(projection.reason);
 
-    expect(mergeTriggerForm(initial, { ...projection.value, name: "release" })).toContain(
-      "name: release",
-    );
+    const merged = mergeTriggerForm(initial, { ...projection.value, name: "release" });
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("name: release");
   });
 
   test("splits only the first slash in a full agent ID", () => {
     expect(splitAgentId("pi/gateway/vendor/model-v1")).toEqual({
       provider: "pi",
       model: "gateway/vendor/model-v1",
+    });
+  });
+
+  test("reports the missing field instead of throwing when the form is half filled", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+
+    expect(mergeTriggerForm("", { ...projection.value, daemon: "" })).toEqual({
+      status: "incomplete",
+      reason: "Daemon is required.",
+    });
+    expect(mergeTriggerForm("", { ...projection.value, agent: "" })).toEqual({
+      status: "incomplete",
+      reason: "Agent is required.",
+    });
+    expect(mergeTriggerForm("", { ...projection.value, providerOptions: "{" })).toEqual({
+      status: "incomplete",
+      reason: "Provider options must be valid JSON.",
+    });
+  });
+
+  test("serialises a complete new trigger that has no document yet", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+
+    const merged = mergeTriggerForm("", projection.value);
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("daemon: office");
+  });
+});
+
+describe("what the form still needs", () => {
+  function editable() {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    return projection.value;
+  }
+
+  test("finds nothing wrong with a document that already parses", () => {
+    expect(triggerFormErrors(editable())).toEqual({});
+  });
+
+  test("names the field, not just the problem", () => {
+    expect(triggerFormErrors({ ...editable(), daemon: "" })).toEqual({
+      daemon: "Daemon is required.",
+    });
+    expect(triggerFormErrors({ ...editable(), cwd: "workspace" })).toEqual({
+      cwd: "Working directory must be an absolute path.",
+    });
+    expect(triggerFormErrors({ ...editable(), agent: "" })).toEqual({
+      agent: "Agent is required.",
+    });
+    expect(triggerFormErrors({ ...editable(), providerOptions: "{" })).toEqual({
+      providerOptions: "Provider options must be valid JSON.",
+    });
+    expect(triggerFormErrors({ ...editable(), prompt: "  " })).toEqual({
+      prompt: "Instructions are required.",
+    });
+  });
+
+  test("holds the name to the document's own alphabet", () => {
+    expect(triggerFormErrors({ ...editable(), name: "" }).name).toBe("Trigger name is required.");
+    expect(triggerFormErrors({ ...editable(), name: "Slack Triage" }).name).toBe(
+      "Use lowercase letters, digits, and hyphens, starting with a letter.",
+    );
+    expect(triggerFormErrors({ ...editable(), name: "slack-triage" }).name).toBeUndefined();
+  });
+
+  test("asks for a connection only when an event arrives on one", () => {
+    expect(triggerFormErrors({ ...editable(), connection: "" }).connection).toBe(
+      "Connection is required.",
+    );
+    expect(
+      triggerFormErrors({ ...editable(), event: "manual.run", connection: "", allowedUsers: "" })
+        .connection,
+    ).toBeUndefined();
+  });
+
+  test("reads GitHub permissions only when a GitHub connection is chosen", () => {
+    expect(
+      triggerFormErrors({ ...editable(), githubConnection: "", githubPermissions: "{" })
+        .githubPermissions,
+    ).toBeUndefined();
+    expect(
+      triggerFormErrors({ ...editable(), githubConnection: "company", githubPermissions: "{" })
+        .githubPermissions,
+    ).toBe("GitHub permissions must be valid JSON.");
+    expect(
+      triggerFormErrors({
+        ...editable(),
+        githubConnection: "company",
+        githubPermissions: '{"a":1}',
+      }).githubPermissions,
+    ).toBe('GitHub permissions map a scope to "read", "write", or "admin".');
+  });
+
+  test("reports the topmost problem when the document cannot be written at all", () => {
+    expect(mergeTriggerForm("", { ...editable(), name: "", daemon: "" })).toEqual({
+      status: "incomplete",
+      reason: "Trigger name is required.",
     });
   });
 });

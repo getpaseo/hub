@@ -97,6 +97,15 @@ export class AppSection {
     return this.page.getByRole("status", { name: `${this.provider} status` });
   }
 
+  /**
+   * The notice that the instance environment owns these credentials. It is told politely rather
+   * than as an alarm, so it is a status; the section's own result region is one too, which is
+   * why this one is found by the heading it carries.
+   */
+  environmentNotice(): Locator {
+    return this.body().getByRole("status").filter({ hasText: "Managed by environment" });
+  }
+
   async expectStatus(status: AppStatus): Promise<void> {
     await expect(this.header()).toContainText(status);
   }

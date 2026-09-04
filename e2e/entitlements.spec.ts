@@ -154,7 +154,7 @@ test.describe("metered usage", () => {
         await page.reload();
         await expect(deployRows).toHaveCount(2);
         await expect(
-          deployRows.first().getByRole("cell", { name: "failed", exact: true }),
+          deployRows.first().getByRole("cell", { name: "Failed", exact: true }),
         ).toBeVisible();
       }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
       await page.screenshot({ path: `${SLICE_3_DIR}/02-execution-denied.png`, fullPage: true });

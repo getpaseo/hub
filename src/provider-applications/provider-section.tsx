@@ -1,21 +1,21 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- each section owns callbacks bound to its own provider, the glyph and pill are the disclosure header's own slots, and the server functions are typed through the provider-applications boundary */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronDown, ExternalLink, TriangleAlert } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApplicationField } from "../components/app/application-field.js";
+import { Card, CardSkeleton } from "../components/app/card.js";
+import { FormField } from "../components/app/form-field.js";
 import { CopyBlock, CopyField } from "../components/app/copy-field.js";
 import { Disclosure } from "../components/app/disclosure.js";
+import { FailureAlert, NoticeAlert, WarningAlert } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
 import { RelativeTime } from "../components/app/relative-time.js";
+import { Section } from "../components/app/section.js";
+import { SegmentedControl, type SegmentedOption } from "../components/app/segmented-control.js";
+import { StatusLine } from "../components/app/status-line.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "../components/ui/collapsible.js";
 import { FieldSet } from "../components/ui/field.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
@@ -93,14 +93,13 @@ export function ProviderSection({
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
   const [outcome, setOutcome] = useState<Outcome | undefined>(returned);
   const result = useRef<HTMLDivElement>(null);
-  const error = useRef<HTMLDivElement>(null);
   const replace = useRef<HTMLButtonElement>(null);
   const fields = guideFields(activeGuide, callbackOrigin);
   // Every transition the operator caused ends here: the section says what happened, and the
-  // keyboard lands on it rather than on the document body a disabled form left behind.
+  // keyboard lands on it rather than on the document body a disabled form left behind. A
+  // failure takes the keyboard onto the alert itself, so only a success needs the region.
   useEffect(() => {
-    if (outcome?.tone === "error") error.current?.focus();
-    else if (outcome !== undefined) result.current?.focus();
+    if (outcome?.tone === "success") result.current?.focus();
   }, [outcome]);
   useEffect(() => {
     if (replacing) document.getElementById(`${activeGuide.provider}-${fields[0]?.name}`)?.focus();
@@ -258,7 +257,7 @@ export function ProviderSection({
         {/* One node for the whole life of the section. A save moves the section from setup to
             saved, and focus that had just landed on a node the phase change unmounts is focus
             dropped on the floor. */}
-        <ResultRegion ref={result} errorRef={error} guide={activeGuide} outcome={outcome} />
+        <ResultRegion ref={result} guide={activeGuide} outcome={outcome} />
         {guide.provider === "slack" &&
         (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
           <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
@@ -291,6 +290,22 @@ export function ProviderSection({
  */
 type SectionPhase = "blocked" | "guiding" | "replacing" | "saved";
 
+const TRANSPORT_QUESTION = "How should Slack reach Hub?";
+
+/** What the chosen transport asks of the operator, said once, under the control that picks it. */
+const SLACK_TRANSPORTS: readonly SegmentedOption[] = [
+  {
+    value: "socket",
+    label: "Socket Mode",
+    hint: "Connect from this Hub to Slack. No public address or HTTPS needed.",
+  },
+  {
+    value: "webhook",
+    label: "Webhooks",
+    hint: "Let Slack send events to a public HTTPS address.",
+  },
+];
+
 function SlackTransportChoice({
   value,
   onChange,
@@ -298,40 +313,18 @@ function SlackTransportChoice({
   value: "socket" | "webhook";
   onChange: (value: "socket" | "webhook") => void;
 }) {
+  const choose = useCallback(
+    (next: string) => onChange(next === "webhook" ? "webhook" : "socket"),
+    [onChange],
+  );
   return (
-    <fieldset className="grid gap-3">
-      <legend className="text-sm">How should Slack reach Hub?</legend>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {(
-          [
-            [
-              "socket",
-              "Socket Mode",
-              "Connect from this Hub to Slack. No public address or HTTPS needed.",
-            ],
-            ["webhook", "Webhooks", "Let Slack send events to a public HTTPS address."],
-          ] as const
-        ).map(([transport, label, description]) => (
-          <label
-            key={transport}
-            aria-label={label}
-            className="flex cursor-pointer gap-3 rounded-lg border p-4 has-checked:border-primary"
-          >
-            <input
-              type="radio"
-              name="slack-transport"
-              value={transport}
-              checked={value === transport}
-              onChange={() => onChange(transport)}
-            />
-            <span className="grid gap-1">
-              <span>{label}</span>
-              <span className="text-sm text-muted-foreground">{description}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-    </fieldset>
+    <SegmentedControl
+      label={TRANSPORT_QUESTION}
+      description={TRANSPORT_QUESTION}
+      value={value}
+      options={SLACK_TRANSPORTS}
+      onChange={choose}
+    />
   );
 }
 
@@ -390,21 +383,8 @@ function SectionBody({
       ) : (
         <>
           <SummaryPanel label={`${guide.name} app`} rows={summaryRows(guide, view, origin)} />
-          <Actions>
-            <ConnectAction
-              guide={guide}
-              view={view}
-              busy={busy}
-              pending={connecting}
-              onConnect={onConnect}
-            />
-            {guide.provider === "slack" &&
-            view.identifiers["transport"] === "socket" &&
-            view.deliveryStatus?.state === "actionNeeded" ? (
-              <Button type="button" variant="outline" disabled={busy} onClick={onRetry}>
-                Retry
-              </Button>
-            ) : null}
+          {/* `FormActions` puts the last child on the right, so the filled connect button is last. */}
+          <FormActions>
             {view.managedByEnvironment ? null : (
               <Button
                 ref={replaceRef}
@@ -416,7 +396,21 @@ function SectionBody({
                 Replace credentials
               </Button>
             )}
-          </Actions>
+            {guide.provider === "slack" &&
+            view.identifiers["transport"] === "socket" &&
+            view.deliveryStatus?.state === "actionNeeded" ? (
+              <Button type="button" variant="outline" disabled={busy} onClick={onRetry}>
+                Retry
+              </Button>
+            ) : null}
+            <ConnectAction
+              guide={guide}
+              view={view}
+              busy={busy}
+              pending={connecting}
+              onConnect={onConnect}
+            />
+          </FormActions>
         </>
       )}
       <SetupSteps guide={guide} origin={origin} />
@@ -437,11 +431,8 @@ export function ProviderSectionLoading({ guide, open }: { guide: ProviderGuide; 
         description={guide.summary}
         status={<Skeleton className="h-5 w-24 rounded-full" />}
       >
-        <div className="grid gap-3">
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-9 w-40" />
-        </div>
+        {/* The page being waited for is a card of instructions beside a card of fields. */}
+        <CardSkeleton />
       </Disclosure>
     </div>
   );
@@ -482,14 +473,14 @@ function summaryRows(
     label: guide.summaryLabels.connections,
     value:
       view.connections.length === 0 ? (
-        <span className="text-muted-foreground">None yet</span>
+        "None yet"
       ) : (
-        <ul className="grid gap-0.5">
+        <ul className="grid gap-1">
           {view.connections.map((connection) => (
-            <li key={connection.id}>
+            <li key={connection.id} className="flex flex-wrap items-center gap-1.5">
               {connection.name}
               {connection.status === "actionNeeded" ? (
-                <span className="text-warning"> · needs attention</span>
+                <StatusPill tone="warning">Needs attention</StatusPill>
               ) : null}
             </li>
           ))}
@@ -518,15 +509,11 @@ function eventState(
     if (socketState !== undefined) return socketState;
   }
   if (guide.provider === "github" && !isSecureOrigin(origin)) {
-    return <span className="text-muted-foreground">Needs a public HTTPS address</span>;
+    return "Needs a public HTTPS address";
   }
-  if (!view.eventsConfigured) return <span className="text-muted-foreground">Not set up</span>;
-  if (view.connections.length === 0) {
-    return <span className="text-muted-foreground">Waiting for a connection</span>;
-  }
-  if (view.lastEventAt === null) {
-    return <span className="text-muted-foreground">Waiting for the first event</span>;
-  }
+  if (!view.eventsConfigured) return "Not set up";
+  if (view.connections.length === 0) return "Waiting for a connection";
+  if (view.lastEventAt === null) return "Waiting for the first event";
   return (
     <>
       Last received <RelativeTime value={view.lastEventAt} />
@@ -580,67 +567,67 @@ function PasteForm({
 }) {
   const groups = guideGroups(guide, origin).filter((group) => group.fields.length > 0);
   return (
-    <form
-      id={id}
-      aria-label={`Set up ${guide.name}`}
-      aria-busy={busy}
-      onSubmit={onSubmit}
-      className="grid gap-4 rounded-lg border bg-muted/30 p-4 lg:sticky lg:top-6"
+    <Card
+      className="lg:sticky lg:top-6"
+      title={replacing ? "Replace credentials" : guide.formTitle}
+      {...(replacing
+        ? {
+            description:
+              "Rotating secrets for the same app keeps your connections. Setting up a different app does not.",
+          }
+        : {})}
     >
-      <div className="grid gap-1">
-        <h3>{replacing ? "Replace credentials" : guide.formTitle}</h3>
-        {replacing ? (
-          <p className="text-sm text-muted-foreground">
-            Rotating secrets for the same app keeps your connections. Setting up a different app
-            does not.
-          </p>
-        ) : null}
-      </div>
-      {groups.map((group, index) => (
-        <FieldSet key={group.id} className="gap-4" disabled={busy}>
-          {group.title === undefined || index === 0 ? null : (
-            <p className="border-t pt-4 text-sm text-muted-foreground">{group.title} — optional</p>
-          )}
-          {group.fields.map((field) => (
-            <ApplicationField
-              key={field.name}
-              id={`${guide.provider}-${field.name}`}
-              name={field.name}
-              label={field.label}
-              kind={field.kind}
-              {...(field.description === undefined ? {} : { description: field.description })}
-              {...(errors[field.name] === undefined ? {} : { error: errors[field.name] })}
-              {...storedDefault(
-                field.identifier === undefined ? undefined : view.identifiers[field.identifier],
-              )}
-            />
-          ))}
-        </FieldSet>
-      ))}
-      <Actions>
-        <Button type="submit" disabled={busy}>
-          {pendingLabel ?? guide.actions.save}
-        </Button>
-        {replacing ? (
-          <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
-            Cancel
+      <form
+        id={id}
+        aria-label={`Set up ${guide.name}`}
+        aria-busy={busy}
+        onSubmit={onSubmit}
+        className="grid gap-4"
+      >
+        {groups.map((group, index) => (
+          <FieldSet key={group.id} className="gap-4" disabled={busy}>
+            {group.title === undefined || index === 0 ? null : (
+              <p className="border-t pt-4 text-sm text-muted-foreground">
+                {group.title} — optional
+              </p>
+            )}
+            {group.fields.map((field) => (
+              <FormField
+                key={field.name}
+                id={`${guide.provider}-${field.name}`}
+                name={field.name}
+                label={field.label}
+                kind={field.kind}
+                {...(field.description === undefined ? {} : { description: field.description })}
+                {...(errors[field.name] === undefined ? {} : { error: errors[field.name] })}
+                {...storedDefault(
+                  field.identifier === undefined ? undefined : view.identifiers[field.identifier],
+                )}
+              />
+            ))}
+          </FieldSet>
+        ))}
+        <FormActions>
+          {replacing ? (
+            <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>
+              Cancel
+            </Button>
+          ) : null}
+          <Button type="submit" disabled={busy}>
+            {pendingLabel ?? guide.actions.save}
           </Button>
-        ) : null}
-      </Actions>
-      {guide.saveHint === undefined ? null : (
-        <p className="text-sm text-muted-foreground">{guide.saveHint}</p>
-      )}
-    </form>
+        </FormActions>
+        {guide.saveHint === undefined ? null : (
+          <p className="text-sm text-muted-foreground">{guide.saveHint}</p>
+        )}
+      </form>
+    </Card>
   );
 }
 
 /** Keeps an absent identifier absent rather than present-and-undefined. */
 function storedDefault(value: string | undefined): { defaultValue?: string } {
   return value === undefined ? {} : { defaultValue: value };
-}
-
-function Actions({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-2 sm:flex-row-reverse sm:justify-end">{children}</div>;
 }
 
 function ConnectAction({
@@ -676,12 +663,10 @@ function ConnectAction({
  */
 function ResultRegion({
   ref,
-  errorRef,
   guide,
   outcome,
 }: {
   ref: React.RefObject<HTMLDivElement | null>;
-  errorRef: React.RefObject<HTMLDivElement | null>;
   guide: ProviderGuide;
   outcome: Outcome | undefined;
 }) {
@@ -693,43 +678,40 @@ function ResultRegion({
       aria-label={`${guide.name} status`}
       className={cn("grid gap-2 outline-none", outcome === undefined ? "sr-only" : "")}
     >
-      <OutcomeMessage ref={errorRef} guide={guide} outcome={outcome} />
+      <OutcomeMessage guide={guide} outcome={outcome} />
     </div>
   );
 }
 
+/** Success and failure are the same event class, so they are the same two shapes every screen uses. */
 function OutcomeMessage({
-  ref,
   guide,
   outcome,
 }: {
-  ref: React.RefObject<HTMLDivElement | null>;
   guide: ProviderGuide;
   outcome: Outcome | undefined;
 }) {
   if (outcome === undefined) return null;
-  if (outcome.tone === "success") return <p className="text-sm">{outcome.message}</p>;
+  if (outcome.tone === "success") return <StatusLine>{outcome.message}</StatusLine>;
   return (
-    <Alert ref={ref} tabIndex={-1} variant="destructive">
-      <TriangleAlert />
-      <AlertTitle>{guide.name} setup didn't finish</AlertTitle>
-      <AlertDescription>{outcome.message}</AlertDescription>
-    </Alert>
+    <FailureAlert
+      title={`${guide.name} setup didn't finish`}
+      error={outcome.message}
+      fallback={unreachable(guide.name)}
+      focusOnArrival
+    />
   );
 }
 
 function EnvironmentNotice({ guide }: { guide: ProviderGuide }) {
   return (
-    <Alert>
-      <AlertTitle>Managed by environment</AlertTitle>
-      <AlertDescription>
-        <p>
-          These credentials come from <VariableList names={guide.environmentVariables} />. Change
-          them where you set Hub's environment and restart Hub; they cannot be edited here.
-          Connecting {guide.name} still works from this page.
-        </p>
-      </AlertDescription>
-    </Alert>
+    <NoticeAlert tone="neutral" title="Managed by environment">
+      <p>
+        These credentials come from <VariableList names={guide.environmentVariables} />. Change them
+        where you set Hub's environment and restart Hub; they cannot be edited here. Connecting{" "}
+        {guide.name} still works from this page.
+      </p>
+    </NoticeAlert>
   );
 }
 
@@ -754,13 +736,7 @@ function VariableList({ names }: { names: readonly string[] }) {
 
 /** Slack's plain-HTTP state is terminal: the requirement and nothing to press. */
 function HttpsGate({ guide, origin }: { guide: ProviderGuide; origin: string }) {
-  return (
-    <Alert className="border-warning/40 bg-warning-surface">
-      <TriangleAlert />
-      <AlertTitle>HTTPS required</AlertTitle>
-      <AlertDescription>{guide.httpsRequirement(origin)}</AlertDescription>
-    </Alert>
-  );
+  return <WarningAlert title="HTTPS required">{guide.httpsRequirement(origin)}</WarningAlert>;
 }
 
 /**
@@ -770,24 +746,22 @@ function HttpsGate({ guide, origin }: { guide: ProviderGuide; origin: string }) 
 function SetupSteps({ guide, origin }: { guide: ProviderGuide; origin: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border">
-      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm text-muted-foreground outline-none hover:bg-accent/40 focus-visible:ring-[3px] focus-visible:ring-ring/50">
-        Setup steps
-        <ChevronDown
-          aria-hidden="true"
-          className={cn("size-4 shrink-0 transition-transform", open ? "rotate-180" : "")}
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="border-t px-3 py-4">
-        <Instructions guide={guide} origin={origin} />
-      </CollapsibleContent>
-    </Collapsible>
+    // Its own id, never the provider's: the surface addresses a section by `data-provider`, and
+    // two nodes answering to the same provider is one section too many.
+    <Disclosure
+      id={`${guide.provider}-setup-steps`}
+      open={open}
+      onOpenChange={setOpen}
+      title="Setup steps"
+    >
+      <Instructions guide={guide} origin={origin} />
+    </Disclosure>
   );
 }
 
 function Instructions({ guide, origin }: { guide: ProviderGuide; origin: string }) {
   return (
-    <div className="grid min-w-0 gap-6">
+    <div className="grid min-w-0">
       {guideGroups(guide, origin).map((group) => (
         <InstructionGroup key={group.id} guide={guide} group={group} origin={origin} />
       ))}
@@ -805,15 +779,10 @@ function InstructionGroup({
   origin: string;
 }) {
   return (
-    <section className="grid min-w-0 gap-3">
-      {group.title === undefined ? null : (
-        <div className="grid gap-1 border-t pt-5">
-          <h3>{group.title}</h3>
-          {group.description === undefined ? null : (
-            <p className="text-sm text-muted-foreground">{group.description}</p>
-          )}
-        </div>
-      )}
+    <Section
+      {...(group.title === undefined ? {} : { title: group.title })}
+      {...(group.description === undefined ? {} : { description: group.description })}
+    >
       {group.unavailable === undefined ? (
         <ol className="grid list-decimal gap-4 pl-5 text-sm marker:text-muted-foreground">
           {group.steps.map((step) => (
@@ -823,13 +792,9 @@ function InstructionGroup({
           ))}
         </ol>
       ) : (
-        <Alert className="border-warning/40 bg-warning-surface">
-          <TriangleAlert />
-          <AlertTitle>Not available at this address</AlertTitle>
-          <AlertDescription>{group.unavailable}</AlertDescription>
-        </Alert>
+        <WarningAlert title="Not available at this address">{group.unavailable}</WarningAlert>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -846,6 +811,11 @@ function StepBody({
     const url = guide.urls.find((candidate) => candidate.key === key);
     return url === undefined ? [] : [url];
   });
+  const attachments =
+    step.permissions !== undefined ||
+    step.events !== undefined ||
+    urls.length > 0 ||
+    step.manifest === true;
   return (
     <>
       <span>
@@ -853,42 +823,37 @@ function StepBody({
           <Segment key={`${segment.kind}:${segment.value}`} segment={segment} />
         ))}
       </span>
-      {step.permissions === undefined ? null : (
-        <dl className="mt-3 grid gap-x-4 gap-y-1.5 sm:grid-cols-[max-content_1fr]">
-          {step.permissions.map((permission) => (
-            <div key={permission.name} className="contents">
-              <dt className="text-foreground">{permission.name}</dt>
-              <dd>{permission.access}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-      {step.events === undefined ? null : (
-        <ul className="mt-3 flex flex-wrap gap-1.5">
-          {step.events.map((event) => (
-            <li
-              key={event}
-              className="rounded-md border bg-background px-2 py-0.5 text-xs text-foreground"
-            >
-              {event}
-            </li>
-          ))}
-        </ul>
-      )}
-      {urls.length === 0 ? null : (
+      {/* One offset from the sentence, then gap between whatever the step attaches to itself. A
+          list item cannot be a grid without losing its number, so the grid is this wrapper. */}
+      {attachments ? (
         <div className="mt-3 grid gap-3">
+          {step.permissions === undefined ? null : (
+            <SummaryPanel
+              label={`${guide.name} permissions`}
+              rows={permissionRows(step.permissions)}
+            />
+          )}
+          {step.events === undefined ? null : (
+            <ul className="flex flex-wrap gap-1.5">
+              {step.events.map((event) => (
+                <li key={event}>
+                  <StatusPill tone="neutral" dot={false}>
+                    {event}
+                  </StatusPill>
+                </li>
+              ))}
+            </ul>
+          )}
           {urls.map((url) => (
             <CopyField key={url.key} label={url.label} value={guideUrl(origin, url.path)} />
           ))}
-        </div>
-      )}
-      {step.manifest === true ? (
-        <div className="mt-3">
-          <CopyBlock
-            label="App manifest"
-            value={slackManifest(origin, guide.transport ?? "socket")}
-            action="Copy manifest"
-          />
+          {step.manifest === true ? (
+            <CopyBlock
+              label="App manifest"
+              value={slackManifest(origin, guide.transport ?? "socket")}
+              action="Copy manifest"
+            />
+          ) : null}
         </div>
       ) : null}
     </>
@@ -903,20 +868,20 @@ function Segment({ segment }: { segment: StepSegment }) {
   }
   if (segment.kind === "link") {
     return (
-      <a
-        href={segment.href}
-        target="_blank"
-        rel="noreferrer"
-        // Underlined always, not on hover: an inline link in a paragraph has to be
-        // distinguishable without colour.
-        className="inline-flex items-center gap-1 text-link underline underline-offset-4"
-      >
-        {segment.value}
-        <ExternalLink aria-hidden="true" className="size-3" />
-      </a>
+      <Button asChild variant="link">
+        <a href={segment.href} target="_blank" rel="noreferrer">
+          {segment.value}
+          <ExternalLink aria-hidden="true" className="size-3" />
+        </a>
+      </Button>
     );
   }
   return <span>{segment.value}</span>;
+}
+
+/** Each portal control the step names, with the one value it has to be set to. */
+function permissionRows(permissions: NonNullable<GuideStep["permissions"]>): readonly SummaryRow[] {
+  return permissions.map((permission) => ({ label: permission.name, value: permission.access }));
 }
 
 function stepKey(step: GuideStep): string {

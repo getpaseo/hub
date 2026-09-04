@@ -1,10 +1,10 @@
 import { CircleQuestionMark } from "lucide-react";
+import { Button } from "../components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover.js";
 import { SidebarMenuButton, SidebarMenuItem } from "../components/ui/sidebar.js";
 
 const DISCORD_INVITE = "https://discord.gg/jz8T2uahpH";
 const SUPPORT_EMAIL = "hello@paseo.sh";
-const LINK = "underline underline-offset-4 hover:text-link";
 
 /**
  * The two places a Hub user can reach a human. Kept as its own component because it is the only
@@ -12,19 +12,21 @@ const LINK = "underline underline-offset-4 hover:text-link";
  */
 export function HelpChannels() {
   return (
-    <div className="grid gap-2 text-sm">
+    <div className="grid gap-2 text-muted-foreground">
       <p>
         Join the{" "}
-        <a href={DISCORD_INVITE} target="_blank" rel="noreferrer" className={LINK}>
-          Paseo Discord
-        </a>{" "}
+        <Button asChild variant="link">
+          <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
+            Paseo Discord
+          </a>
+        </Button>{" "}
         and ask in #paseo-hub.
       </p>
       <p>
         Or email{" "}
-        <a href={`mailto:${SUPPORT_EMAIL}`} className={LINK}>
-          {SUPPORT_EMAIL}
-        </a>
+        <Button asChild variant="link">
+          <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
+        </Button>
         .
       </p>
     </div>
@@ -41,11 +43,7 @@ export function SidebarHelp() {
     <SidebarMenuItem>
       <Popover>
         <PopoverTrigger asChild>
-          <SidebarMenuButton
-            size="sm"
-            tooltip="Help"
-            className="text-muted-foreground data-[state=open]:bg-sidebar-accent"
-          >
+          <SidebarMenuButton tooltip="Help">
             <CircleQuestionMark aria-hidden="true" />
             <span>Help</span>
           </SidebarMenuButton>

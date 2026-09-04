@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { TriangleAlert } from "lucide-react";
 import {
   DataCell,
   DataRow,
@@ -8,12 +7,11 @@ import {
   DataTableSkeleton,
   type DataColumn,
 } from "../components/app/data-table.js";
+import { FailureAlert, WarningAlert } from "../components/app/failure-alert.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
-import { Badge } from "../components/ui/badge.js";
 import type { EntitlementChangeSource } from "../db/types.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { UsageDashboard, UsageMeasure } from "./dashboard.js";
@@ -61,14 +59,11 @@ export function OrganizationUsagePanel() {
   if (query.isPending) return <UsageLoading name={tenant.organization.name} />;
   if (query.isError || query.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Usage unavailable</AlertTitle>
-        <AlertDescription>
-          {query.data?.status === "error"
-            ? query.data.error.message
-            : "Hub did not receive the usage snapshot. Check your connection and reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Usage unavailable"
+        error={query.data}
+        fallback="Hub did not receive the usage snapshot. Check your connection and reload the page."
+      />
     );
   }
   return <UsageContent snapshot={query.data.data} />;
@@ -126,19 +121,15 @@ const LIMITS_EMPTY = { title: "No limits" };
 function SeatOverLimitBanner({ seats }: { seats: UsageMeasure }) {
   if (!overLimit(seats)) return null;
   return (
-    <Alert aria-label="Over limit" className="border-warning/40 bg-warning-surface">
-      <TriangleAlert className="text-warning" />
-      <AlertTitle>You're over your seat limit</AlertTitle>
-      <AlertDescription>
-        <p>
-          You have {seats.used} seats in use, but your limit is {seats.limit}.
-        </p>
-        <p>
-          Your existing seats are kept — nothing was removed. You can't add more until you're within
-          the limit.
-        </p>
-      </AlertDescription>
-    </Alert>
+    <WarningAlert standalone title="You're over your seat limit">
+      <p>
+        You have {seats.used} seats in use, but your limit is {seats.limit}.
+      </p>
+      <p>
+        Your existing seats are kept — nothing was removed. You can't add more until you're within
+        the limit.
+      </p>
+    </WarningAlert>
   );
 }
 
@@ -152,9 +143,7 @@ function History({ history }: { history: Snapshot["history"] }) {
     >
       {history.map((entry) => (
         <DataRow key={entry.id}>
-          <DataCell>
-            <Badge variant={sourceBadgeVariant(entry.source)}>{SOURCE_LABELS[entry.source]}</Badge>
-          </DataCell>
+          <DataCell>{SOURCE_LABELS[entry.source]}</DataCell>
           <DataCell muted className="max-w-xs">
             <span className="block truncate" title={entry.reason ?? undefined}>
               {entry.reason ?? "—"}
@@ -168,12 +157,6 @@ function History({ history }: { history: Snapshot["history"] }) {
       ))}
     </DataTable>
   );
-}
-
-function sourceBadgeVariant(source: EntitlementChangeSource): "default" | "secondary" | "outline" {
-  if (source === "override") return "default";
-  if (source === "plan_stamp") return "secondary";
-  return "outline";
 }
 
 function limitLabel(limit: number | null): string {
