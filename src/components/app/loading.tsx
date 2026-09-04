@@ -3,6 +3,7 @@ import { Loader2Icon } from "lucide-react";
 import { cn } from "../../lib/utils.js";
 import { DataTableSkeleton, type DataColumn } from "./data-table.js";
 import { PageHeaderSkeleton } from "./page.js";
+import { TabNavSkeleton } from "./tab-nav.js";
 
 /**
  * Pending states.
@@ -55,9 +56,17 @@ const GENERIC_COLUMNS: readonly DataColumn[] = [
  * records, so that is the shape held open. The label names the slot that is waiting, not the
  * page that will fill it, which is still unknown.
  */
-export function PanelSkeleton({ label = "Loading" }: { label?: string }) {
+export function PanelSkeleton({
+  label = "Loading",
+  tabs = false,
+}: {
+  label?: string;
+  /** The page being waited for carries a tab strip, so hold that rail open too. */
+  tabs?: boolean;
+}) {
   return (
     <section aria-label={label} aria-busy="true">
+      {tabs ? <TabNavSkeleton /> : null}
       <PageHeaderSkeleton />
       {/* Its own name, not the panel's. `Table` derives a landmark called "<label> table", so
           reusing the panel's label here would put two regions under one name. */}

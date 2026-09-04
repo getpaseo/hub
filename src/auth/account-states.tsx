@@ -5,7 +5,7 @@ import {
   AuthLayout,
   ProductMark,
 } from "../components/app/auth-layout.js";
-import { FormActions } from "../components/app/form-actions.js";
+import { AuthActions } from "../components/app/auth-form.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 
@@ -78,11 +78,11 @@ export function UnavailableInvitation({ message }: { message: string | undefined
             <AlertDescription>{message}</AlertDescription>
           </Alert>
         )}
-        <FormActions>
-          <Button asChild>
+        <AuthActions>
+          <Button asChild size="lg">
             <a href="/">Continue to Paseo Hub</a>
           </Button>
-        </FormActions>
+        </AuthActions>
       </AuthCard>
     </AuthLayout>
   );

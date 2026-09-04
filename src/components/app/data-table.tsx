@@ -107,8 +107,11 @@ function TableShell({
   children: ReactNode;
 }) {
   return (
+    // Every table is `tabular-nums`. A count, a limit, and a duration all sit in columns here,
+    // and figuring out which cells hold digits is not a decision a caller should be making one
+    // screen at a time. Proportional digits cost nothing on prose and misalign every column.
     <div className="min-w-0 overflow-hidden rounded-xl border bg-card">
-      <Table aria-label={label}>
+      <Table aria-label={label} className="tabular-nums">
         <TableHeader>
           <TableRow>
             {columns.map((column, index) => (

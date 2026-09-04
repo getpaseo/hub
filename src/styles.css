@@ -215,4 +215,14 @@
     outline: 1px solid var(--ring);
     outline-offset: 2px;
   }
+
+  /*
+   * One selection colour, for the whole document rather than per control. Selecting is how a
+   * value gets copied when the clipboard is unavailable, and the browser's default is a blue
+   * nobody here chose — on a near-black surface it is the loudest thing on the page.
+   */
+  ::selection {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
 }

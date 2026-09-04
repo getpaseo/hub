@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Lock, type LucideIcon } from "lucide-react";
+import { useId } from "react";
 import { Button } from "../../components/ui/button.js";
 import { useRouteTenant } from "../../projects/context.js";
 import { billingConfigured } from "../../server/capabilities.js";
@@ -48,6 +49,12 @@ export function useEntitlementRemedy(enabled = true): EntitlementRemedy {
   return { href: `${base}/usage`, clause: "See the Usage page for its limits." };
 }
 
+/**
+ * The action, or the way to get it back. At a limit the button becomes a link to wherever this
+ * deployment raises limits, and the reason is written under it: a padlock alone says something
+ * is closed without saying what closed it, and a `title` says it only to a mouse that hovers —
+ * never to a thumb, and never to anyone reading the page rather than pointing at it.
+ */
 export function LockedAction({
   limit,
   label,
@@ -62,6 +69,7 @@ export function LockedAction({
   busy?: boolean;
 }) {
   const remedy = useEntitlementRemedy(limit !== null);
+  const reason = useId();
 
   if (limit === null) {
     return (
@@ -72,11 +80,19 @@ export function LockedAction({
     );
   }
   return (
-    <Button asChild>
-      <Link to={remedy.href as never} title={`${limit} ${remedy.clause}`}>
-        <Lock aria-hidden="true" />
-        {label}
-      </Link>
-    </Button>
+    <span className="grid justify-items-start gap-1.5 sm:justify-items-end">
+      <Button asChild>
+        <Link to={remedy.href as never} aria-describedby={reason}>
+          <Lock aria-hidden="true" />
+          {label}
+        </Link>
+      </Button>
+      <span
+        id={reason}
+        className="max-w-72 text-xs text-balance text-muted-foreground sm:text-right"
+      >
+        {limit} {remedy.clause}
+      </span>
+    </span>
   );
 }

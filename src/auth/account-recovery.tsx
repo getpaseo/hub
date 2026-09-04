@@ -2,9 +2,8 @@ import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
-import { AuthForm } from "../components/app/auth-form.js";
+import { AuthActions, AuthForm } from "../components/app/auth-form.js";
 import { failureMessage } from "../components/app/failure-alert.js";
-import { FormActions } from "../components/app/form-actions.js";
 import { StatusLine } from "../components/app/status-line.js";
 import { Button } from "../components/ui/button.js";
 import { ErrorSummary } from "./account-states.js";
@@ -54,11 +53,11 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
             <StatusLine>
               If an account exists for that email, a password reset link is on its way.
             </StatusLine>
-            <FormActions>
-              <Button type="button" onClick={onBack}>
+            <AuthActions>
+              <Button type="button" size="lg" onClick={onBack}>
                 Back to sign in
               </Button>
-            </FormActions>
+            </AuthActions>
           </>
         ) : (
           <AuthForm
@@ -122,14 +121,20 @@ export function VerificationPendingEntry({
             ? "If this address still needs verification, a new link is on its way."
             : undefined}
         </StatusLine>
-        <FormActions>
-          <Button type="button" variant="ghost" disabled={resend.isPending} onClick={onBack}>
-            Back to sign in
-          </Button>
-          <Button type="button" disabled={resend.isPending} onClick={resendEmail}>
+        <AuthActions>
+          <Button type="button" size="lg" disabled={resend.isPending} onClick={resendEmail}>
             Resend verification email
           </Button>
-        </FormActions>
+          <Button
+            type="button"
+            size="lg"
+            variant="outline"
+            disabled={resend.isPending}
+            onClick={onBack}
+          >
+            Back to sign in
+          </Button>
+        </AuthActions>
       </AuthCard>
     </AuthLayout>
   );
@@ -151,11 +156,11 @@ export function EmailVerificationResult({ error }: { error?: string }) {
   return (
     <AuthLayout>
       <AuthCard titleId="email-verification-heading" title={title} description={description}>
-        <FormActions>
-          <Button type="button" onClick={leaveAuthCallback}>
+        <AuthActions>
+          <Button type="button" size="lg" onClick={leaveAuthCallback}>
             {failed ? "Back to sign in" : "Continue"}
           </Button>
-        </FormActions>
+        </AuthActions>
       </AuthCard>
     </AuthLayout>
   );
@@ -203,11 +208,11 @@ export function PasswordResetEntry({
           title="Reset link invalid or expired"
           description="Request a new password reset link from the sign-in screen."
         >
-          <FormActions>
-            <Button type="button" onClick={leaveAuthCallback}>
+          <AuthActions>
+            <Button type="button" size="lg" onClick={leaveAuthCallback}>
               Back to sign in
             </Button>
-          </FormActions>
+          </AuthActions>
         </AuthCard>
       </AuthLayout>
     );
@@ -220,11 +225,11 @@ export function PasswordResetEntry({
           title="Password reset"
           description="Your new password is ready. You can use it to sign in."
         >
-          <FormActions>
-            <Button type="button" onClick={leaveAuthCallback}>
+          <AuthActions>
+            <Button type="button" size="lg" onClick={leaveAuthCallback}>
               Back to sign in
             </Button>
-          </FormActions>
+          </AuthActions>
         </AuthCard>
       </AuthLayout>
     );

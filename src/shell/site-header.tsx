@@ -1,5 +1,5 @@
 import { useRouterState } from "@tanstack/react-router";
-import { Fragment, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { cn } from "../lib/utils.js";
 import { Separator } from "../components/ui/separator.js";
@@ -23,24 +23,11 @@ export function SiteHeader({ scope, project }: { scope: string; project?: string
         className="flex min-w-0 items-center gap-1.5 overflow-hidden text-sm"
       >
         <span className="truncate text-muted-foreground">{scope}</span>
-        {project === undefined ? null : (
-          <>
-            <CrumbSeparator compact />
-            <span className="hidden truncate text-muted-foreground sm:inline">{project}</span>
-          </>
-        )}
+        {project === undefined ? null : <Crumb context>{project}</Crumb>}
         {trail.map((entry, index) => (
-          <Fragment key={entry}>
-            <CrumbSeparator />
-            <span
-              className={cn(
-                "truncate",
-                index < trail.length - 1 && "hidden text-muted-foreground sm:inline",
-              )}
-            >
-              {entry}
-            </span>
-          </Fragment>
+          <Crumb key={entry} context={index < trail.length - 1}>
+            {entry}
+          </Crumb>
         ))}
       </nav>
       <SiteHeaderActionsTarget />
@@ -48,14 +35,26 @@ export function SiteHeader({ scope, project }: { scope: string; project?: string
   );
 }
 
-/** The quietest mark on the page: a rule between crumbs, missable by design. */
-function CrumbSeparator({ compact = false }: { compact?: boolean }) {
+/**
+ * One crumb, including the rule that leads into it. The separator belongs to the crumb after it
+ * rather than sitting between two of them, which is what keeps a hidden crumb from leaving its
+ * rule behind: on a phone the trail is one crumb, not "Paseo Hub / / API keys".
+ *
+ * `context` is a crumb that only says where the last one sits, so it is the muted one and it is
+ * the one a phone drops.
+ */
+function Crumb({ context = false, children }: { context?: boolean; children: string }) {
   return (
     <span
-      aria-hidden="true"
-      className={cn("text-extra-muted-foreground", compact && "hidden sm:inline")}
+      className={cn(
+        "flex min-w-0 items-center gap-1.5",
+        context && "hidden text-muted-foreground sm:flex",
+      )}
     >
-      /
+      <span aria-hidden="true" className="text-extra-muted-foreground">
+        /
+      </span>
+      <span className="truncate">{children}</span>
     </span>
   );
 }
@@ -90,6 +89,7 @@ const ROUTE_SECTIONS = [
   { suffix: "/connections", label: "Connections" },
   { suffix: "/apps", label: "Apps" },
   { suffix: "/operator", label: "Operator" },
+  { suffix: "/cli-login", label: "CLI login" },
 ] as const;
 
 /** Which surface a pathname is, for the breadcrumb and for the project switcher's target. */
@@ -100,6 +100,8 @@ export function routeSection(pathname: string) {
 function viewTrail(pathname: string): string[] {
   if (/\/triggers\/[^/]+$/u.test(pathname)) return ["Triggers", "Trigger editor"];
   const section = routeSection(pathname);
-  if (section === undefined) return ["Register daemon"];
+  // A path this list does not know is a path with nothing true to say about it. The scope crumb
+  // still stands on its own, and the page's own `<h1>` says what the surface is.
+  if (section === undefined) return [];
   return "group" in section ? [section.group, section.label] : [section.label];
 }

@@ -111,7 +111,7 @@ export function CodeBlock({ label, children }: { label?: string; children: strin
   return (
     <pre
       {...scrollable}
-      className="max-h-48 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs break-all whitespace-pre-wrap sm:max-h-64"
+      className="max-h-48 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs break-all whitespace-pre-wrap [scrollbar-color:var(--input)_transparent] [scrollbar-width:thin] sm:max-h-64"
     >
       {children}
     </pre>
@@ -171,7 +171,13 @@ export function CopyField({
   return (
     <Field className="min-w-0 gap-2">
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <div className="flex min-h-8 items-center gap-1 rounded-md border border-input bg-transparent py-1 pr-1 pl-2.5">
+      {/*
+        The box is the control, so the box carries the ring: the input inside it is borderless
+        and drawing a 2px-offset outline around it would land the ring inside the border it is
+        meant to be announcing. The copy button keeps its own ring, which is why this asks for a
+        focused input rather than for focus anywhere within.
+      */}
+      <div className="flex min-h-8 items-center gap-1 rounded-md border border-input bg-transparent py-1 pr-1 pl-2.5 has-[input:focus-visible]:outline-1 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-ring">
         {focusOnMount ? (
           <input
             ref={field}

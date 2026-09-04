@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
 import { Skeleton } from "../ui/skeleton.js";
+import { FieldSkeleton } from "./form-field.js";
 
 /**
  * The frame for every surface reached before the dashboard: sign-in, the organization
@@ -80,8 +81,10 @@ export function AuthCard({
 
 /**
  * The card before the account resolves, and before anything knows which pre-auth screen wins.
- * It is the same box as `AuthCard` so the product mark above it does not jump up the page when
- * the answer arrives.
+ * It is the sign-in card's own box — title, two fields, the full-width submit, and the two
+ * quiet lines under it — because that is the screen this resolves to almost every time. Being
+ * the same box is the entire job: a shorter placeholder pulls the product mark up the page and
+ * drops it again the moment the answer arrives.
  */
 export function AuthCardSkeleton() {
   return (
@@ -90,8 +93,15 @@ export function AuthCardSkeleton() {
         <Skeleton className="h-6 w-44" />
         <Skeleton className="h-5 w-60 max-w-full" />
       </div>
-      <Skeleton className="h-8 w-full" />
-      <Skeleton className="h-8 w-full" />
+      <div className="flex flex-col gap-4">
+        <FieldSkeleton description={false} />
+        <FieldSkeleton description={false} />
+        <Skeleton className="h-10 w-full" />
+      </div>
+      <div className="grid justify-items-center gap-2">
+        <Skeleton className="h-10 w-full max-w-72" />
+        <Skeleton className="h-5 w-32" />
+      </div>
     </div>
   );
 }

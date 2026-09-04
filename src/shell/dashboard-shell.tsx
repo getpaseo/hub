@@ -51,7 +51,7 @@ import {
   ProjectSwitcher,
   type RouteTenant,
 } from "./switchers.js";
-import { SiteHeader } from "./site-header.js";
+import { routeSection, SiteHeader } from "./site-header.js";
 import { SiteHeaderActionsProvider } from "./site-header-actions.js";
 
 type ActiveAccount = ActiveAccountState;
@@ -207,10 +207,16 @@ function PageContent({
   transitioning: boolean;
 }) {
   const status = useRouteTenantStatus();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   // One name for the slot, whichever read is in flight: switching organization and resolving the
   // tenant behind a URL are the same wait to someone listening to the page.
   if (transitioning || status.state === "pending") {
-    return <PanelSkeleton label="Loading account context" />;
+    // The URL already says whether the page arriving here is one of the settings sections, and
+    // those carry a tab strip above their own header. Holding that rail open is the difference
+    // between a page that fills in and a page that drops when the tenant resolves.
+    const section = routeSection(pathname);
+    const tabs = section !== undefined && "group" in section;
+    return <PanelSkeleton label="Loading account context" tabs={tabs} />;
   }
   if (status.state === "failed") {
     return <FailureAlert title={status.title} error={status.message} fallback={status.message} />;

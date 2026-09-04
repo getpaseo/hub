@@ -37,23 +37,29 @@ export function AuthForm({
     <form method="post" aria-label={label} aria-busy={busy} onSubmit={onSubmit}>
       <FieldSet disabled={busy}>
         {children}
-        <div className="grid gap-2">
-          <Button type="submit" size="lg" className="w-full">
+        <AuthActions>
+          <Button type="submit" size="lg">
             {submitLabel}
           </Button>
           {secondaryLabel === undefined || onSecondary === undefined ? null : (
-            <Button
-              type="button"
-              size="lg"
-              variant="outline"
-              className="w-full"
-              onClick={onSecondary}
-            >
+            <Button type="button" size="lg" variant="outline" onClick={onSecondary}>
               {secondaryLabel}
             </Button>
           )}
-        </div>
+        </AuthActions>
       </FieldSet>
     </form>
   );
+}
+
+/**
+ * The way on from a pre-auth card that has no form left to submit — a link was sent, a password
+ * was reset, an invitation was refused. The dashboard's `FormActions` is a right-aligned row
+ * that reads as a toolbar under a form; a card that is the whole screen is one column, and the
+ * thing to press is the width of that column, exactly as it is inside `AuthForm`.
+ *
+ * Children are `Button`s at `size="lg"`, most important first; the column stretches them.
+ */
+export function AuthActions({ children }: { children: ReactNode }) {
+  return <div className="grid gap-2 [&>*]:w-full">{children}</div>;
 }

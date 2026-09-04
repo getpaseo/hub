@@ -8,6 +8,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "reac
 
 import { Card } from "../components/app/card.js";
 import { Combobox, type ComboboxOption } from "../components/app/combobox.js";
+import { CheckboxField } from "../components/app/checkbox-field.js";
 import { CopyButton } from "../components/app/copy-field.js";
 import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { Disclosure } from "../components/app/disclosure.js";
@@ -19,11 +20,9 @@ import { PageHeader, PageHeaderSkeleton } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
 import { SegmentedControl, type SegmentedOption } from "../components/app/segmented-control.js";
-import { StatusLine } from "../components/app/status-line.js";
 import { StatusPill, statusLabel } from "../components/app/status-pill.js";
 import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import { CheckboxInput } from "../components/ui/checkbox.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { SiteHeaderActions } from "../shell/site-header-actions.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
@@ -34,6 +33,8 @@ import {
   mergeTriggerForm,
   parseEditorEvent,
   projectTriggerForm,
+  triggerFormErrors,
+  type TriggerFieldErrors,
   type TriggerFormValue,
 } from "./configuration/editor.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
@@ -290,20 +291,31 @@ function TriggerEditor({
   const editor = useTriggerEditorState(trigger, snapshot, legacy, onSave);
   const title = trigger === null ? "New trigger" : trigger.name;
   const submitLabel = triggerSubmitLabel(editor.mode, trigger === null);
-  const saveDisabled = saving || !snapshot.canManage || legacy || !editor.canSubmit;
+  // Saving is refused only for what the reader cannot act on here: a request in flight, a
+  // read-only role, a legacy document. A half-filled form is something they can act on, so the
+  // button stays live and pressing it says which fields are in the way.
+  const saveDisabled = saving || !snapshot.canManage || legacy;
+  // Nor is the YAML view a dead segment. A form that cannot serialise yet is a form with fields
+  // to fix, and pressing YAML marks them instead of doing nothing at all. Only the legacy
+  // document has a mode that is genuinely unreachable, and its own alert says why.
   const modeOptions: readonly SegmentedOption[] = [
     { value: "form", label: "Form", icon: FileText, disabled: legacy || !editor.canEditAsForm },
-    { value: "yaml", label: "YAML", icon: Braces, disabled: !editor.canEditAsYaml },
+    { value: "yaml", label: "YAML", icon: Braces },
   ];
+  const modeSwitch = (
+    <SegmentedControl
+      label="Editor mode"
+      value={editor.mode}
+      options={modeOptions}
+      onChange={(value) => editor.switchMode(value === "yaml" ? "yaml" : "form")}
+    />
+  );
   return (
     <>
+      {/* From `sm` up these live in the site header; the phone renders them in the page, where
+          the mode switch sits above the form and the buttons are pinned within thumb reach. */}
       <SiteHeaderActions>
-        <SegmentedControl
-          label="Editor mode"
-          value={editor.mode}
-          options={modeOptions}
-          onChange={(value) => editor.switchMode(value === "yaml" ? "yaml" : "form")}
-        />
+        {modeSwitch}
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Discard
         </Button>
@@ -333,6 +345,7 @@ function TriggerEditor({
         <TriggerCompatibilityAlert
           legacy={legacy}
           advanced={editor.mode === "yaml" && editor.yamlOnly}
+          reason={editor.mode === "yaml" ? editor.blocked : undefined}
         />
         {saveError === undefined ? null : (
           <FailureAlert
@@ -341,8 +354,15 @@ function TriggerEditor({
             fallback="Hub couldn't save this trigger."
           />
         )}
-        <StatusLine>{editor.blocked}</StatusLine>
-        <form id="trigger-editor-form" className="grid gap-6" onSubmit={editor.submit}>
+        {editor.mode === "form" ? <TriggerRefusalSummary errors={editor.errors} /> : null}
+        <div className="sm:hidden">{modeSwitch}</div>
+        {/*
+          The document decides what is missing, not the browser. Left to constraint validation an
+          empty required input opens a native bubble on the first field and stops there, in the
+          platform's own type, saying nothing about the daemon or the agent — which are comboboxes
+          it cannot see at all. One refusal, one summary, one mark per field.
+        */}
+        <form id="trigger-editor-form" noValidate className="grid gap-6" onSubmit={editor.submit}>
           {editor.mode === "yaml" ? (
             <div className="grid h-160 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border bg-card">
               <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
@@ -360,12 +380,13 @@ function TriggerEditor({
           ) : (
             <TriggerForm
               form={editor.form}
+              errors={editor.errors}
               triggerId={trigger?.id}
               snapshot={snapshot}
               onChange={editor.setForm}
             />
           )}
-          <FormActions>
+          <FormActions pinned>
             <Button type="button" variant="ghost" onClick={onCancel}>
               Cancel
             </Button>
@@ -414,11 +435,20 @@ function useTriggerEditorState(
     [mode, yaml, form],
   );
   const blocked = other.status === "ok" || other.status === "editable" ? undefined : other.reason;
+  // Nothing is marked wrong until the reader asks for something the form cannot do yet: a blank
+  // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
+  // the marks stay and follow what they type.
+  const [refused, setRefused] = useState(false);
+  const errors = useMemo(() => triggerFormErrors(form), [form]);
+  const refuse = () => setRefused(true);
   const switchMode = (next: EditorMode) => {
     if (next === mode) return;
     if (other.status === "ok") setYaml(other.yaml);
     else if (other.status === "editable") setForm(other.value);
-    else return;
+    else {
+      refuse();
+      return;
+    }
     setMode(next);
     window.scrollTo({ top: 0 });
   };
@@ -426,17 +456,17 @@ function useTriggerEditorState(
     event.preventDefault();
     if (mode === "yaml") onSave(yaml);
     else if (other.status === "ok") onSave(other.yaml);
+    else refuse();
   };
   return {
     mode,
     yaml,
     form,
+    errors: refused ? errors : NO_FIELD_ERRORS,
     // Legacy workflows are explained by their own alert; repeating the schema error underneath it
     // would say the same thing twice in less useful words.
     blocked: legacy ? undefined : blocked,
     canEditAsForm: mode === "form" || other.status === "editable",
-    canEditAsYaml: mode === "yaml" || other.status === "ok",
-    canSubmit: mode === "yaml" || other.status === "ok",
     yamlOnly: initialProjection.status === "yaml_only",
     setYaml,
     setForm,
@@ -445,24 +475,95 @@ function useTriggerEditorState(
   };
 }
 
-function TriggerCompatibilityAlert({ legacy, advanced }: { legacy: boolean; advanced: boolean }) {
-  if (!legacy && !advanced) return null;
+const NO_FIELD_ERRORS: TriggerFieldErrors = {};
+
+/**
+ * Everything standing between this form and a saved trigger, said once at the top.
+ *
+ * The marks beside the fields are only useful to a reader who can already see them: the field
+ * in the way may be three sections below the button that was pressed, it is always off screen on
+ * a phone, and one of them — the daemon, when the organization has none — has no control on the
+ * page to be marked at all. The summary takes the keyboard when it arrives, so pressing a button
+ * that cannot do anything yet always answers in the same place.
+ */
+function TriggerRefusalSummary({ errors }: { errors: TriggerFieldErrors }) {
+  const reasons = Object.values(errors);
+  const [first] = reasons;
+  if (first === undefined) return null;
   return (
-    <WarningAlert title={legacy ? "Legacy multi-step workflow" : "Advanced trigger"}>
-      {legacy
-        ? "This workflow remains runnable. Copy this YAML and use the migration guide to replace it with one self-contained trigger per event. Form editing is disabled."
-        : "This YAML uses features the form cannot represent. Edit it directly; Hub will preserve every advanced field."}
+    <FailureAlert
+      title="This trigger is not ready to save"
+      error={reasons.length === 1 ? first : "Fix these fields and submit again."}
+      fallback="This trigger is missing something the document needs."
+      details={
+        reasons.length === 1 ? undefined : (
+          <ul className="grid gap-1">
+            {reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        )
+      }
+      focusOnArrival
+    />
+  );
+}
+
+/**
+ * Why the form view is not available for this document, said once. The `reason` is the schema's
+ * own words about the YAML on screen, which is also the reason the Form segment above is
+ * disabled — a control that cannot be pressed is explained on the page, not in a tooltip.
+ */
+function TriggerCompatibilityAlert({
+  legacy,
+  advanced,
+  reason,
+}: {
+  legacy: boolean;
+  advanced: boolean;
+  reason: string | undefined;
+}) {
+  if (!legacy && !advanced && reason === undefined) return null;
+  return (
+    <WarningAlert title={compatibilityTitle(legacy, advanced)}>
+      {legacy ? (
+        <p>
+          This workflow remains runnable. Copy this YAML and use the migration guide to replace it
+          with one self-contained trigger per event. Form editing is disabled.
+        </p>
+      ) : (
+        <p>
+          {advanced
+            ? "This YAML uses features the form cannot represent. Edit it directly; Hub will preserve every advanced field."
+            : "This YAML cannot be edited as a form until it parses against the trigger schema."}
+        </p>
+      )}
+      {legacy || reason === undefined ? null : <p>{reason}</p>}
     </WarningAlert>
   );
 }
 
+function compatibilityTitle(legacy: boolean, advanced: boolean): string {
+  if (legacy) return "Legacy multi-step workflow";
+  return advanced ? "Advanced trigger" : "Form editing unavailable";
+}
+
+/** The error slot a field carries, absent while that field is fine. */
+function fieldError(errors: TriggerFieldErrors, key: keyof TriggerFormValue) {
+  const error = errors[key];
+  return error === undefined ? {} : { error };
+}
+
 function TriggerForm({
   form,
+  errors,
   triggerId,
   snapshot,
   onChange,
 }: {
   form: TriggerFormValue;
+  /** What each field still needs, once the reader has asked for something it blocks. */
+  errors: TriggerFieldErrors;
   triggerId: string | undefined;
   snapshot: TriggerSnapshot;
   onChange: (value: TriggerFormValue) => void;
@@ -517,6 +618,7 @@ function TriggerForm({
             value={form.name}
             onChange={text("name")}
             required
+            {...fieldError(errors, "name")}
           />
           <FormField
             id="trigger-id"
@@ -528,19 +630,13 @@ function TriggerForm({
             disabled
           />
         </div>
-        <FormField
+        <CheckboxField
           id="trigger-enabled"
           label="Enabled"
           description="A disabled trigger keeps its configuration and stops responding to events."
-        >
-          {(control) => (
-            <CheckboxInput
-              {...control}
-              checked={form.enabled}
-              onChange={(event) => update("enabled", event.target.checked)}
-            />
-          )}
-        </FormField>
+          checked={form.enabled}
+          onChange={(checked) => update("enabled", checked)}
+        />
       </Section>
 
       <Section
@@ -570,6 +666,7 @@ function TriggerForm({
               label="Connection"
               description="The organization connection that receives the event."
               required
+              {...fieldError(errors, "connection")}
             >
               {(control) => (
                 <Combobox
@@ -611,6 +708,7 @@ function TriggerForm({
                 value={form.allowedUsers}
                 onChange={text("allowedUsers")}
                 required
+                {...fieldError(errors, "allowedUsers")}
               />
             )}
           </div>
@@ -639,6 +737,7 @@ function TriggerForm({
             label="Run on daemon"
             description="The daemon owns compute, credentials, and sandboxing."
             required
+            {...fieldError(errors, "daemon")}
           >
             {(control) => (
               <Combobox
@@ -673,6 +772,7 @@ function TriggerForm({
               value={form.cwd}
               onChange={text("cwd")}
               required
+              {...fieldError(errors, "cwd")}
             />
             <FormField
               id="trigger-max-runtime"
@@ -683,6 +783,7 @@ function TriggerForm({
               value={form.maxRuntime}
               onChange={text("maxRuntime")}
               required
+              {...fieldError(errors, "maxRuntime")}
             />
             <FormField
               id="trigger-idle-timeout"
@@ -693,6 +794,7 @@ function TriggerForm({
               value={form.idleTimeout}
               onChange={text("idleTimeout")}
               required
+              {...fieldError(errors, "idleTimeout")}
             />
           </div>
         )}
@@ -706,6 +808,7 @@ function TriggerForm({
           <div className="grid gap-4 sm:grid-cols-2">
             <ProviderCatalogFields
               form={form}
+              errors={errors}
               entries={providerCatalog.entries}
               loading={providerCatalog.loading}
               onChange={onChange}
@@ -738,6 +841,7 @@ function TriggerForm({
               value={form.providerOptions}
               onChange={text("providerOptions")}
               placeholder={'{"sandbox_mode":"workspace-write"}'}
+              {...fieldError(errors, "providerOptions")}
             />
           </Disclosure>
           <Disclosure
@@ -795,12 +899,17 @@ function TriggerForm({
                     value={form.githubPermissions}
                     onChange={text("githubPermissions")}
                     placeholder={'{"contents":"write","pull_requests":"write"}'}
+                    {...fieldError(errors, "githubPermissions")}
                   />
                 </>
               ) : null}
             </div>
           </Disclosure>
-          <PromptEditor value={form.prompt} onChange={(prompt) => update("prompt", prompt)} />
+          <PromptEditor
+            value={form.prompt}
+            {...fieldError(errors, "prompt")}
+            onChange={(prompt) => update("prompt", prompt)}
+          />
           <Card>
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-link" />
@@ -859,7 +968,15 @@ const EDITOR_SECTIONS = [
   },
 ] as const;
 
-function PromptEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function PromptEditor({
+  value,
+  error,
+  onChange,
+}: {
+  value: string;
+  error?: string;
+  onChange: (value: string) => void;
+}) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const element = textarea.current;
@@ -880,7 +997,12 @@ function PromptEditor({ value, onChange }: { value: string; onChange: (value: st
   };
   return (
     <div className="grid gap-2">
-      <FormField id="trigger-prompt" label="Instructions" required>
+      <FormField
+        id="trigger-prompt"
+        label="Instructions"
+        required
+        {...(error === undefined ? {} : { error })}
+      >
         {(control) => (
           <Textarea
             {...control}
@@ -916,11 +1038,13 @@ const MERGE_TAGS = ["${{ paseo.prompt }}", "${{ paseo.context }}"] as const;
 
 function ProviderCatalogFields({
   form,
+  errors,
   entries,
   loading,
   onChange,
 }: {
   form: TriggerFormValue;
+  errors: TriggerFieldErrors;
   entries: HubProviderSnapshotEntry[] | undefined;
   loading: boolean;
   onChange: (value: TriggerFormValue) => void;
@@ -953,6 +1077,7 @@ function ProviderCatalogFields({
         label="Agent"
         description="Models reported by the selected daemon."
         required
+        {...fieldError(errors, "agent")}
       >
         {(control) => (
           <Combobox
@@ -975,6 +1100,7 @@ function ProviderCatalogFields({
         label="Execution mode"
         description="Modes reported for the selected provider."
         required
+        {...fieldError(errors, "mode")}
       >
         {(control) => (
           <Combobox

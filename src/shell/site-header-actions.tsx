@@ -19,20 +19,16 @@ export function SiteHeaderActionsProvider({ children }: { children: ReactNode })
 }
 
 /**
- * Where a route's own controls land in the chrome. The slot shrinks and scrolls rather than
- * pushing the header wider than the window: a route that puts a mode switch and two buttons up
- * here does not fit a phone beside the breadcrumb, and a page that scrolls sideways as a whole
- * takes every other surface with it.
+ * Where a route's own controls land in the chrome, from `sm` up. A phone header holds the
+ * sidebar trigger and the breadcrumb and nothing else: a mode switch and two buttons do not fit
+ * beside them, and the slot that tried scrolled its own primary action off the right edge with
+ * no sign it was there. Below `sm` this renders nothing, and the route puts the same controls in
+ * the page — which is where a thumb reaches them anyway.
  */
 export function SiteHeaderActionsTarget() {
   const target = useContext(SiteHeaderActionsContext);
   if (target === null) throw new Error("site header actions require their provider");
-  return (
-    <div
-      ref={target}
-      className="ml-auto flex min-w-0 shrink items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    />
-  );
+  return <div ref={target} className="ml-auto hidden shrink-0 items-center gap-2 sm:flex" />;
 }
 
 export function SiteHeaderActions({ children }: { children: ReactNode }) {

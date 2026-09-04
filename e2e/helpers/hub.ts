@@ -3315,9 +3315,16 @@ class HubUser {
       const form = await this.openInvitationForm();
       await form.getByLabel("Invitee email").fill(invitationEmail);
       await form.getByRole("button", { name: "Create invitation" }).click();
-      await expect(this.page.getByRole("alert")).toHaveText(
-        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
+      // The dialog answers for itself and keeps what was typed, so the address is one press
+      // away from being submitted again rather than gone.
+      await expect(form.getByRole("alert")).toHaveText(
+        "Invitation not sentHub did not create the invitation. Check your connection and submit it again.",
       );
+      await expect(form.getByLabel("Invitee email")).toHaveValue(invitationEmail);
+      // The page behind a modal is out of the accessibility tree, so the team and the
+      // organization it belongs to are checked once the dialog is dismissed.
+      await this.page.keyboard.press("Escape");
+      await expect(form).toBeHidden();
       await expect(this.invitationRow(invitationEmail)).toHaveCount(0);
       await expect(switcher).toContainText("Acme");
     } finally {
@@ -3369,16 +3376,14 @@ class HubUser {
       await expect(this.page.getByRole("region", { name: "Loading account context" })).toHaveCount(
         0,
       );
-      await expect(this.page.getByRole("button", { name: "Invite member" })).toBeDisabled();
-      await switcher.click();
-      const menu = this.page.getByRole("menu");
-      await expect(menu).toBeVisible();
-      await expect(
-        menu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
-      ).toBeDisabled();
-      await expect(menu.getByRole("menuitem", { name: "Acme", exact: true })).toBeDisabled();
-      await this.page.keyboard.press("Escape");
-      await expect(menu).toBeHidden();
+      // The dialog stays open and busy until the invitation exists, so the request is dismissed
+      // before the organization it belongs to can be examined behind it.
+      await expect(form).toHaveAttribute("aria-busy", "true");
+      await expect(form.getByLabel("Invitee email")).toBeDisabled();
+      await this.page.getByRole("button", { name: "Close" }).click();
+      await expect(form).toBeHidden();
+      await this.expectTenantControlsLocked(destinationOrganization);
+      await expect(switcher).toContainText("Acme");
     } finally {
       releaseInvitation();
       await delivered;
@@ -3789,6 +3794,11 @@ class HubUser {
     return this.page.getByRole("link", { name: "Invite member" });
   }
 
+  /** The visible sentence beside the locked control, which also describes it to a reader. */
+  private lockedInviteReason(): Locator {
+    return this.lockedInvite().locator("xpath=following-sibling::span");
+  }
+
   private async openInvitationForm(): Promise<Locator> {
     await this.page.getByRole("button", { name: "Invite member" }).click();
     const form = this.page.getByRole("form", { name: "Invite team member" });
@@ -4187,8 +4197,9 @@ class HubUser {
    */
   async expectInviteLockedBySeatLimit(expected: { limit: number; current: number }): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    await expect(this.lockedInvite()).toHaveAttribute(
-      "title",
+    // The reason is on the page, not in a tooltip: a touch device never hovers, and the lock is
+    // useless without the sentence that says what to do about it.
+    await expect(this.lockedInviteReason()).toHaveText(
       `Seat limit reached — ${expected.current} of ${expected.limit} seats are in use. See the Usage page for its limits.`,
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
@@ -4411,8 +4422,7 @@ class HubUser {
 
   async expectInviteLockedByPlan(): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    await expect(this.lockedInvite()).toHaveAttribute(
-      "title",
+    await expect(this.lockedInviteReason()).toHaveText(
       "Inviting members isn't enabled for this organization. See the plans available to this organization.",
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);

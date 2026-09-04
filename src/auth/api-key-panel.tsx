@@ -1,7 +1,7 @@
 import { KeyRound } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { EmptyState } from "../components/app/empty-state.js";
@@ -9,6 +9,7 @@ import { FailureAlert, WarningAlert, failureMessage } from "../components/app/fa
 import { FormActions } from "../components/app/form-actions.js";
 import { FormDialog } from "../components/app/form-dialog.js";
 import { CopyField } from "../components/app/copy-field.js";
+import { CheckboxField } from "../components/app/checkbox-field.js";
 import { FormField } from "../components/app/form-field.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
@@ -16,7 +17,6 @@ import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { Button } from "../components/ui/button.js";
-import { CheckboxInput } from "../components/ui/checkbox.js";
 import {
   Dialog,
   DialogContent,
@@ -535,11 +535,7 @@ function scopeLabel(scope: ApiKeyScope): string {
   return SCOPE_OPTIONS.find((option) => option.value === scope)?.label ?? scope;
 }
 
-/**
- * A scope, its consequence, and the box that grants it. The description wraps rather than
- * truncating, which is why this is not `TwoLine`: a scope nobody can read in full is a scope
- * granted blind.
- */
+/** A scope, its consequence, and the box that grants it. */
 function ScopeOption({
   option,
   onChange,
@@ -547,18 +543,14 @@ function ScopeOption({
   option: (typeof SCOPE_OPTIONS)[number];
   onChange: (checked: boolean) => void;
 }) {
-  const id = `api-key-scope-${option.value}`;
-  const handleChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked),
-    [onChange],
-  );
   return (
-    <label htmlFor={id} className="flex cursor-pointer items-start gap-3">
-      <CheckboxInput id={id} name="scopes" value={option.value} onChange={handleChange} />
-      <span className="grid gap-0.5">
-        <span>{option.label}</span>
-        <span className="text-xs text-muted-foreground">{option.description}</span>
-      </span>
-    </label>
+    <CheckboxField
+      id={`api-key-scope-${option.value}`}
+      name="scopes"
+      value={option.value}
+      label={option.label}
+      description={option.description}
+      onChange={onChange}
+    />
   );
 }

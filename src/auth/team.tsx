@@ -6,6 +6,7 @@ import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
 import { FormDialog } from "../components/app/form-dialog.js";
 import { Section } from "../components/app/section.js";
 import { StatusLine } from "../components/app/status-line.js";
@@ -26,6 +27,7 @@ import { useActiveAccount } from "./active-account.js";
 import { cancelInvitation, changeMemberRole, createInvitation, removeMember } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationPending } from "./account-mutation.js";
+import { INVITATION_MUTATION_KEY } from "./tenant-mutation.js";
 import type { UsageLimitsView } from "../usage/dashboard.js";
 import { atLimit, LockedAction, useOrganizationLimits } from "../entitlements/ui/index.js";
 
@@ -40,6 +42,9 @@ import {
   type InvitationRole,
   type OrganizationRole,
 } from "./organization-contract.js";
+
+const INVITE_FAILURE =
+  "Hub did not create the invitation. Check your connection and submit it again.";
 
 const EMPTY_INVITATIONS: NonNullable<ActiveAccountState["team"]["invitations"]> = [];
 const INVITATION_ROLE_LABELS = {
@@ -140,13 +145,19 @@ function InvitationDialog({
 }) {
   const [role, setRole] = useState<InvitationRole>(INVITATION_ROLES[1]);
   const queryClient = useQueryClient();
+  // The dialog owns this request. It stays open until the invitation exists, so a refusal — a
+  // duplicate address, a seat that just went — is answered where the address was typed, with the
+  // address still in the field, instead of closing and reporting itself at the top of the page.
   const create = useMutation({
-    mutationKey: ACCOUNT_MUTATION_KEY,
+    mutationKey: INVITATION_MUTATION_KEY,
     mutationFn: useServerFn(createInvitation) as (
       input: Parameters<typeof createInvitation>[0],
     ) => Promise<AccountCommandResult>,
     onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+      if (result.status !== "ok") return;
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
+      setRole(INVITATION_ROLES[1]);
+      onOpenChange(false);
     },
   });
 
@@ -157,15 +168,17 @@ function InvitationDialog({
       create.mutate({
         data: { email: formValue(data, "email"), role: invitationRole(data) },
       });
-      setRole(INVITATION_ROLES[1]);
-      onOpenChange(false);
     },
-    [create, onOpenChange],
+    [create],
   );
 
   const selectRole = useCallback((value: string): void => {
     setRole(invitationRoleSchema.parse(value));
   }, []);
+
+  // A transport failure has no words of its own worth showing; the fallback names what did not
+  // happen instead of reporting the browser's own network wording to the reader.
+  const failed = create.isError || create.data?.status === "error";
 
   const roleControl = useCallback(
     (control: FieldControl) => (
@@ -193,13 +206,21 @@ function InvitationDialog({
       description="Create a role-bound invitation link for a teammate."
       label="Invite team member"
       submitLabel="Create invitation"
-      busy={busy}
+      busy={busy || create.isPending}
       onSubmit={submit}
     >
       <FormField label="Invitee email" name="email" id="invite-email" kind="email" required />
       <FormField id="invite-role" label="Role">
         {roleControl}
       </FormField>
+      {failed ? (
+        <FailureAlert
+          title="Invitation not sent"
+          error={create.isError ? null : create.data}
+          fallback={INVITE_FAILURE}
+          focusOnArrival
+        />
+      ) : null}
     </FormDialog>
   );
 }

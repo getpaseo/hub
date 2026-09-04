@@ -4,7 +4,7 @@ import { useCallback, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
 import { AuthForm } from "../components/app/auth-form.js";
 import { failureMessage } from "../components/app/failure-alert.js";
-import { FormActions } from "../components/app/form-actions.js";
+import { AuthActions } from "../components/app/auth-form.js";
 import { Button } from "../components/ui/button.js";
 import { formValue } from "./account-actions.js";
 import { ErrorSummary } from "./account-states.js";
@@ -80,11 +80,11 @@ function Welcome({ onBegin }: { onBegin: () => void }) {
         title="Welcome to Paseo Hub"
         description="Set up an account to start operating Paseo Hub."
       >
-        <FormActions>
-          <Button type="button" onClick={onBegin}>
+        <AuthActions>
+          <Button type="button" size="lg" onClick={onBegin}>
             Set up Paseo Hub
           </Button>
-        </FormActions>
+        </AuthActions>
       </AuthCard>
     </AuthLayout>
   );
