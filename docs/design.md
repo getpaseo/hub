@@ -129,6 +129,7 @@ missing app component.
 | `Page`, `PageHeader`, `PageHeaderSkeleton`                              | Lay out a screen: the column, the one `h1`, its description, status, and actions.   |
 | `Section`                                                               | Group content under a quiet heading with an optional trailing action.               |
 | `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Title and description optional.                  |
+| `Steps`                                                                 | Number a run of cards in order and join them with a rail.                           |
 | `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records.                                                                       |
 | `TwoLine`                                                               | Show a primary fact over a muted secondary one, in a cell or a row.                 |
 | `SummaryPanel`                                                          | Show labelled facts as a description list.                                          |

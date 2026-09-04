@@ -22,9 +22,11 @@ test("requires daemon setup before trigger configuration", async ({ hub, page })
   );
   await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
   await triggers.startNew();
-  await expect(page.getByText("No daemons available", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("No daemon is connected to this organization yet", { exact: false }),
+  ).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Run on daemon" })).toBeHidden();
-  await expect(page.getByRole("heading", { name: "Agent & instructions" })).toBeHidden();
+  await expect(page.getByText("Choose a daemon first", { exact: false })).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/00-no-daemons.png`, fullPage: true });
   await page.getByRole("link", { name: "Go to Daemons" }).click();
   await expect(page).toHaveURL(/\/daemons$/u);
@@ -66,6 +68,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.expectAgentSearch();
     await triggers.expectComboboxes();
     await triggers.changePrompt("Handle the Slack request.");
+    await triggers.expectDisclosureRailsAtPhoneWidth();
     await page.evaluate(() => window.scrollTo({ top: 0 }));
     await triggers.capture(`${SHOTS}/02-configured-form.png`);
     await triggers.captureInstructions(`${SHOTS}/02b-agent-instructions.png`);
