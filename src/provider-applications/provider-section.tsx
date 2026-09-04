@@ -698,7 +698,7 @@ function OutcomeMessage({
       title={`${guide.name} setup didn't finish`}
       error={outcome.message}
       fallback={unreachable(guide.name)}
-      focusOnMount
+      focusOnArrival
     />
   );
 }

@@ -39,7 +39,7 @@ export function FailureAlert({
   fallback,
   details,
   onRetry,
-  focusOnMount = false,
+  focusOnArrival = false,
 }: {
   title: string;
   error: Failure;
@@ -49,22 +49,26 @@ export function FailureAlert({
   details?: ReactNode;
   onRetry?: () => void;
   /**
-   * Take the keyboard when this alert arrives. Submitting disables the form, which blurs the
-   * button that was pressed, so without this the keyboard lands on the document body. The alert
-   * carries the focus itself; a focusable wrapper around it is a second node with no name.
+   * Take the keyboard every time this alert arrives, including when it arrives carrying a
+   * different failure than the one already on screen. Submitting disables the form, which blurs
+   * the button that was pressed, so without this the keyboard lands on the document body — and a
+   * second failed attempt leaves it there, because React reuses the alert rather than remounting
+   * it. The alert carries the focus itself; a focusable wrapper around it is a second node with
+   * no name.
    */
-  focusOnMount?: boolean;
+  focusOnArrival?: boolean;
 }) {
   const alert = useRef<HTMLDivElement>(null);
+  const message = failureMessage(error, fallback);
   useEffect(() => {
-    if (focusOnMount) alert.current?.focus();
-  }, [focusOnMount]);
+    if (focusOnArrival) alert.current?.focus();
+  }, [focusOnArrival, title, message]);
   return (
-    <Alert ref={alert} variant="destructive" {...(focusOnMount ? { tabIndex: -1 } : {})}>
+    <Alert ref={alert} variant="destructive" {...(focusOnArrival ? { tabIndex: -1 } : {})}>
       <TriangleAlert aria-hidden="true" />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
-        <p>{failureMessage(error, fallback)}</p>
+        <p>{message}</p>
         {details}
         {onRetry === undefined ? null : (
           <Button type="button" size="sm" variant="outline" onClick={onRetry}>

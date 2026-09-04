@@ -144,7 +144,7 @@ export class OrganizationTriggers {
   async expectAgentSearch() {
     const agent = this.page.getByRole("combobox", { name: "Agent" });
     await agent.click();
-    const search = this.page.getByPlaceholder("Select a model…");
+    const search = this.page.getByPlaceholder("Search models…");
     await expect(search).toBeFocused();
     await search.fill("gpt-5.4");
     await expect(this.page.getByRole("option", { name: /GPT-5.4/u })).toBeVisible();
@@ -217,7 +217,7 @@ export class OrganizationTriggers {
     const agent = this.page.getByRole("combobox", { name: "Agent" });
     await agent.scrollIntoViewIfNeeded();
     await agent.click();
-    await expect(this.page.getByPlaceholder("Select a model…")).toBeFocused();
+    await expect(this.page.getByPlaceholder("Search models…")).toBeFocused();
     await this.page.screenshot({ path });
   }
 

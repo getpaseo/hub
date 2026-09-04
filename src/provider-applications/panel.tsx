@@ -144,7 +144,7 @@ export function AppSetupEntry({
       <div className="grid min-w-0 gap-6">
         {failed ? <ExitFailure error={finish.data} onRetry={done} /> : null}
         <ProviderApplications surface="appSetup" organizationId={organizationId} />
-        <FormActions>
+        <FormActions pinned>
           <Button
             variant={connected > 0 ? "default" : "ghost"}
             disabled={finish.isPending}
@@ -175,7 +175,7 @@ function ExitFailure({ error, onRetry }: { error: Failure; onRetry: () => void }
       error={error}
       fallback="Hub didn't get the request, so nothing changed. Check your connection, then try again."
       onRetry={onRetry}
-      focusOnMount
+      focusOnArrival
     />
   );
 }
