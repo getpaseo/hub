@@ -18,7 +18,7 @@ import { FieldSkeleton, FormField } from "../components/app/form-field.js";
 import { LoadingLine, Spinner } from "../components/app/loading.js";
 import { PageHeader, PageHeaderSkeleton } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
-import { Section } from "../components/app/section.js";
+import { Steps } from "../components/app/steps.js";
 import { SegmentedControl, type SegmentedOption } from "../components/app/segmented-control.js";
 import { StatusPill, statusLabel } from "../components/app/status-pill.js";
 import { TwoLine } from "../components/app/two-line.js";
@@ -598,17 +598,15 @@ function TriggerForm({
     onChange({ ...form, [key]: value });
   const text = (key: TriggerTextField) => (value: string) => update(key, value);
   const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
+  const noDaemons = snapshot.daemons.length === 0;
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
     selectedDaemon?.id,
     form.cwd,
   );
   return (
-    <div>
-      <Section
-        title="Trigger details"
-        description="Identification and system handle for this trigger."
-      >
+    <div className="grid gap-6">
+      <Card>
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField
             id="trigger-name"
@@ -638,288 +636,297 @@ function TriggerForm({
           checked={form.enabled}
           onChange={(checked) => update("enabled", checked)}
         />
-      </Section>
+      </Card>
 
-      <Section
-        title="Event & access"
-        description="When this event fires and who is authorized to invoke it."
-      >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField
-            id="trigger-event"
-            label="When this happens"
-            description="Exactly one event launches this trigger."
-          >
-            {(control) => (
-              <Combobox
-                {...control}
-                value={form.event}
-                options={EVENT_OPTIONS}
-                placeholder="Select an event"
-                empty="No events found."
-                onChange={(option) => update("event", parseEditorEvent(option.value))}
-              />
-            )}
-          </FormField>
-          {form.event === "manual.run" ? null : (
-            <FormField
-              id="trigger-connection"
-              label="Connection"
-              description="The organization connection that receives the event."
-              required
-              {...fieldError(errors, "connection")}
-            >
+      {/*
+        The four decisions a trigger is made of, in the order the run makes them: what arrives,
+        who may send it, where it lands, what runs there. A step whose decision does not exist —
+        a manual run has no audience — is not rendered, and `Steps` renumbers the rest.
+      */}
+      <Steps>
+        <Card title={EDITOR_STEPS.event.title} description={EDITOR_STEPS.event.description}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField id="trigger-event" label="When this happens">
               {(control) => (
                 <Combobox
                   {...control}
-                  required
-                  value={form.connection}
-                  options={connectionOptions}
-                  placeholder="Select a connection"
-                  empty="No connections found."
-                  onChange={(option) => update("connection", option.value)}
+                  value={form.event}
+                  options={EVENT_OPTIONS}
+                  placeholder="Select an event"
+                  empty="No events found."
+                  onChange={(option) => update("event", parseEditorEvent(option.value))}
                 />
               )}
             </FormField>
-          )}
-        </div>
-        {form.event === "manual.run" ? null : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField
-              id="trigger-audience"
-              label="Who can trigger it?"
-              description="Everyone the connection can see, or a named list."
-            >
-              {() => (
-                <SegmentedControl
-                  label="Who can trigger it?"
-                  value={everyone ? "everyone" : "specific"}
-                  options={AUDIENCE_OPTIONS}
-                  onChange={(value) => update("allowedUsers", value === "everyone" ? "*" : "")}
-                />
-              )}
-            </FormField>
-            {everyone ? null : (
+            {form.event === "manual.run" ? null : (
               <FormField
-                id="trigger-allowed-users"
-                label="User IDs"
-                description="Comma-separated provider user IDs."
-                kind="text"
-                name="allowedUsers"
-                value={form.allowedUsers}
-                onChange={text("allowedUsers")}
+                id="trigger-connection"
+                label="Connection"
+                description="The organization connection that receives the event."
                 required
-                {...fieldError(errors, "allowedUsers")}
-              />
-            )}
-          </div>
-        )}
-      </Section>
-
-      <Section
-        title="Run target"
-        description="The local machine compute and repository working directory."
-      >
-        {snapshot.daemons.length === 0 ? (
-          <Card
-            title="No daemons available"
-            description="A trigger runs on a daemon connected to this organization."
-            action={
-              <Button asChild variant="outline" size="sm">
-                <Link to={`/o/${snapshot.organization.slug}/daemons` as never}>Go to Daemons</Link>
-              </Button>
-            }
-          >
-            {null}
-          </Card>
-        ) : (
-          <FormField
-            id="trigger-daemon"
-            label="Run on daemon"
-            description="The daemon owns compute, credentials, and sandboxing."
-            required
-            {...fieldError(errors, "daemon")}
-          >
-            {(control) => (
-              <Combobox
-                {...control}
-                required
-                value={form.daemon}
-                options={daemonOptions}
-                placeholder="Select a daemon"
-                empty="No daemons found."
-                onChange={(option) =>
-                  onChange({
-                    ...form,
-                    daemon: option.value,
-                    agent: "",
-                    mode: "",
-                    thinkingOptionId: "",
-                    providerOptions: "",
-                  })
-                }
-              />
-            )}
-          </FormField>
-        )}
-        {selectedDaemon === undefined ? null : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField
-              id="trigger-cwd"
-              label="Working directory"
-              description="Absolute path on the daemon."
-              kind="text"
-              name="cwd"
-              value={form.cwd}
-              onChange={text("cwd")}
-              required
-              {...fieldError(errors, "cwd")}
-            />
-            <FormField
-              id="trigger-max-runtime"
-              label="Maximum runtime"
-              description="Hard deadline for the agent, for example 2h."
-              kind="text"
-              name="maxRuntime"
-              value={form.maxRuntime}
-              onChange={text("maxRuntime")}
-              required
-              {...fieldError(errors, "maxRuntime")}
-            />
-            <FormField
-              id="trigger-idle-timeout"
-              label="Idle timeout"
-              description="Stop an unresponsive agent, for example 10m."
-              kind="text"
-              name="idleTimeout"
-              value={form.idleTimeout}
-              onChange={text("idleTimeout")}
-              required
-              {...fieldError(errors, "idleTimeout")}
-            />
-          </div>
-        )}
-      </Section>
-
-      {selectedDaemon === undefined ? null : (
-        <Section
-          title="Agent & instructions"
-          description="The AI coding agent model and task prompt instructions."
-        >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <ProviderCatalogFields
-              form={form}
-              errors={errors}
-              entries={providerCatalog.entries}
-              loading={providerCatalog.loading}
-              onChange={onChange}
-            />
-          </div>
-          {providerCatalog.loading ? (
-            <LoadingLine>{`Loading providers from ${form.daemon}…`}</LoadingLine>
-          ) : null}
-          {providerCatalog.error === undefined ? null : (
-            <FailureAlert
-              title="Providers unavailable"
-              error={providerCatalog.error}
-              fallback="Hub couldn't load this daemon's providers."
-              onRetry={providerCatalog.refresh}
-            />
-          )}
-          <Disclosure
-            id="trigger-provider-options"
-            open={optionsExpanded}
-            onOpenChange={setOptionsExpanded}
-            title="Advanced provider options"
-            description="Fields the form does not model, passed through to the provider."
-          >
-            <FormField
-              id="trigger-provider-options-json"
-              label="Provider options (JSON)"
-              description="Passed to the provider on your daemon. YAML-only agent fields remain untouched."
-              kind="multiline"
-              name="providerOptions"
-              value={form.providerOptions}
-              onChange={text("providerOptions")}
-              placeholder={'{"sandbox_mode":"workspace-write"}'}
-              {...fieldError(errors, "providerOptions")}
-            />
-          </Disclosure>
-          <Disclosure
-            id="trigger-github"
-            open={githubExpanded}
-            onOpenChange={setGithubExpanded}
-            title="GitHub access"
-            description="Give the run a short-lived token scoped to the repositories you name."
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField
-                id="trigger-github-connection"
-                label="GitHub connection"
-                description="Mints a short-lived, restricted GH_TOKEN for this run."
+                {...fieldError(errors, "connection")}
               >
                 {(control) => (
                   <Combobox
                     {...control}
-                    value={form.githubConnection}
-                    options={githubConnectionOptions}
-                    placeholder="Select a GitHub connection"
-                    empty="No GitHub connections found."
-                    onChange={(option) => update("githubConnection", option.value)}
+                    required
+                    value={form.connection}
+                    options={connectionOptions}
+                    placeholder="Select a connection"
+                    empty="No connections found."
+                    onChange={(option) => update("connection", option.value)}
                   />
                 )}
               </FormField>
-              {githubEnabled ? (
-                <>
-                  <FormField
-                    id="trigger-github-repositories"
-                    label="GitHub repositories"
-                    description="Comma-separated owner/repository names."
-                    kind="text"
-                    name="githubRepositories"
-                    value={form.githubRepositories}
-                    onChange={text("githubRepositories")}
-                    required
+            )}
+          </div>
+        </Card>
+
+        {form.event === "manual.run" ? null : (
+          <Card title={EDITOR_STEPS.access.title} description={EDITOR_STEPS.access.description}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField id="trigger-audience" label="Audience">
+                {() => (
+                  <SegmentedControl
+                    label="Audience"
+                    value={everyone ? "everyone" : "specific"}
+                    options={AUDIENCE_OPTIONS}
+                    onChange={(value) => update("allowedUsers", value === "everyone" ? "*" : "")}
                   />
-                  <FormField
-                    id="trigger-github-duration"
-                    label="GitHub token lifetime"
-                    description="At most 1h."
-                    kind="text"
-                    name="githubDuration"
-                    value={form.githubDuration}
-                    onChange={text("githubDuration")}
-                    required
-                  />
-                  <FormField
-                    id="trigger-github-permissions"
-                    label="GitHub permissions (JSON)"
-                    description="Defaults to read-only repository contents when empty."
-                    kind="multiline"
-                    name="githubPermissions"
-                    value={form.githubPermissions}
-                    onChange={text("githubPermissions")}
-                    placeholder={'{"contents":"write","pull_requests":"write"}'}
-                    {...fieldError(errors, "githubPermissions")}
-                  />
-                </>
-              ) : null}
+                )}
+              </FormField>
+              {everyone ? null : (
+                <FormField
+                  id="trigger-allowed-users"
+                  label="User IDs"
+                  description="Comma-separated provider user IDs."
+                  kind="text"
+                  name="allowedUsers"
+                  value={form.allowedUsers}
+                  onChange={text("allowedUsers")}
+                  required
+                  {...fieldError(errors, "allowedUsers")}
+                />
+              )}
             </div>
-          </Disclosure>
-          <PromptEditor
-            value={form.prompt}
-            {...fieldError(errors, "prompt")}
-            onChange={(prompt) => update("prompt", prompt)}
-          />
-          <Card>
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-link" />
-              Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing
-              stay on your compute.
-            </p>
           </Card>
-        </Section>
-      )}
+        )}
+
+        <Card
+          title={EDITOR_STEPS.target.title}
+          description={noDaemons ? NO_DAEMON_DESCRIPTION : EDITOR_STEPS.target.description}
+          {...(noDaemons
+            ? {
+                action: (
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/o/${snapshot.organization.slug}/daemons` as never}>
+                      Go to Daemons
+                    </Link>
+                  </Button>
+                ),
+              }
+            : {})}
+        >
+          {noDaemons ? null : (
+            <>
+              <FormField
+                id="trigger-daemon"
+                label="Run on daemon"
+                required
+                {...fieldError(errors, "daemon")}
+              >
+                {(control) => (
+                  <Combobox
+                    {...control}
+                    required
+                    value={form.daemon}
+                    options={daemonOptions}
+                    placeholder="Select a daemon"
+                    empty="No daemons found."
+                    onChange={(option) =>
+                      onChange({
+                        ...form,
+                        daemon: option.value,
+                        agent: "",
+                        mode: "",
+                        thinkingOptionId: "",
+                        providerOptions: "",
+                      })
+                    }
+                  />
+                )}
+              </FormField>
+              {selectedDaemon === undefined ? null : (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    id="trigger-cwd"
+                    label="Working directory"
+                    description="Absolute path on the daemon."
+                    kind="text"
+                    name="cwd"
+                    value={form.cwd}
+                    onChange={text("cwd")}
+                    required
+                    {...fieldError(errors, "cwd")}
+                  />
+                  <FormField
+                    id="trigger-max-runtime"
+                    label="Maximum runtime"
+                    description="Hard deadline for the agent, for example 2h."
+                    kind="text"
+                    name="maxRuntime"
+                    value={form.maxRuntime}
+                    onChange={text("maxRuntime")}
+                    required
+                    {...fieldError(errors, "maxRuntime")}
+                  />
+                  <FormField
+                    id="trigger-idle-timeout"
+                    label="Idle timeout"
+                    description="Stop an unresponsive agent, for example 10m."
+                    kind="text"
+                    name="idleTimeout"
+                    value={form.idleTimeout}
+                    onChange={text("idleTimeout")}
+                    required
+                    {...fieldError(errors, "idleTimeout")}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </Card>
+
+        {/*
+          The agent step keeps its place while it waits: its models are the selected daemon's own
+          answer, so before there is a daemon the step says what it is waiting for rather than
+          disappearing and taking the shape of the trigger with it.
+        */}
+        <Card
+          title={EDITOR_STEPS.agent.title}
+          description={
+            selectedDaemon === undefined ? NO_AGENT_DESCRIPTION : EDITOR_STEPS.agent.description
+          }
+        >
+          {selectedDaemon === undefined ? null : (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <ProviderCatalogFields
+                  form={form}
+                  errors={errors}
+                  entries={providerCatalog.entries}
+                  loading={providerCatalog.loading}
+                  onChange={onChange}
+                />
+              </div>
+              {providerCatalog.loading ? (
+                <LoadingLine>{`Loading providers from ${form.daemon}…`}</LoadingLine>
+              ) : null}
+              {providerCatalog.error === undefined ? null : (
+                <FailureAlert
+                  title="Providers unavailable"
+                  error={providerCatalog.error}
+                  fallback="Hub couldn't load this daemon's providers."
+                  onRetry={providerCatalog.refresh}
+                />
+              )}
+              <PromptEditor
+                value={form.prompt}
+                {...fieldError(errors, "prompt")}
+                onChange={(prompt) => update("prompt", prompt)}
+              />
+              <Disclosure
+                id="trigger-provider-options"
+                open={optionsExpanded}
+                onOpenChange={setOptionsExpanded}
+                title="Advanced provider options"
+                description="Fields the form does not model, passed through to the provider."
+              >
+                <FormField
+                  id="trigger-provider-options-json"
+                  label="Provider options (JSON)"
+                  description="Passed to the provider on your daemon. YAML-only agent fields remain untouched."
+                  kind="multiline"
+                  name="providerOptions"
+                  value={form.providerOptions}
+                  onChange={text("providerOptions")}
+                  placeholder={'{"sandbox_mode":"workspace-write"}'}
+                  {...fieldError(errors, "providerOptions")}
+                />
+              </Disclosure>
+              <Disclosure
+                id="trigger-github"
+                open={githubExpanded}
+                onOpenChange={setGithubExpanded}
+                title="GitHub access"
+                description="Give the run a short-lived token scoped to the repositories you name."
+              >
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    id="trigger-github-connection"
+                    label="GitHub connection"
+                    description="Mints a short-lived, restricted GH_TOKEN for this run."
+                  >
+                    {(control) => (
+                      <Combobox
+                        {...control}
+                        value={form.githubConnection}
+                        options={githubConnectionOptions}
+                        placeholder="Select a GitHub connection"
+                        empty="No GitHub connections found."
+                        onChange={(option) => update("githubConnection", option.value)}
+                      />
+                    )}
+                  </FormField>
+                  {githubEnabled ? (
+                    <>
+                      <FormField
+                        id="trigger-github-repositories"
+                        label="GitHub repositories"
+                        description="Comma-separated owner/repository names."
+                        kind="text"
+                        name="githubRepositories"
+                        value={form.githubRepositories}
+                        onChange={text("githubRepositories")}
+                        required
+                      />
+                      <FormField
+                        id="trigger-github-duration"
+                        label="GitHub token lifetime"
+                        description="At most 1h."
+                        kind="text"
+                        name="githubDuration"
+                        value={form.githubDuration}
+                        onChange={text("githubDuration")}
+                        required
+                      />
+                      <FormField
+                        id="trigger-github-permissions"
+                        label="GitHub permissions (JSON)"
+                        description="Defaults to read-only repository contents when empty."
+                        kind="multiline"
+                        name="githubPermissions"
+                        value={form.githubPermissions}
+                        onChange={text("githubPermissions")}
+                        placeholder={'{"contents":"write","pull_requests":"write"}'}
+                        {...fieldError(errors, "githubPermissions")}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              </Disclosure>
+            </>
+          )}
+        </Card>
+      </Steps>
+
+      <Card>
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-link" />
+          Hub launches the agent on your daemon. Keys, provider configuration, and sandboxing stay
+          on your compute.
+        </p>
+      </Card>
     </div>
   );
 }
@@ -930,9 +937,9 @@ const AUDIENCE_OPTIONS: readonly SegmentedOption[] = [
 ];
 
 /**
- * The trigger editor before the snapshot arrives. The back link, the section headings, and the
- * page description are the same every time, so they render for real; only the trigger's own name
- * and field values are placeholders.
+ * The trigger editor before the snapshot arrives. The back link, the step titles, and the page
+ * description are the same every time, so they render for real; only the trigger's own name and
+ * field values are placeholders.
  */
 function TriggerEditorSkeleton() {
   return (
@@ -941,33 +948,57 @@ function TriggerEditorSkeleton() {
         <ArrowLeft aria-hidden="true" /> Triggers
       </Button>
       <PageHeaderSkeleton description={TRIGGER_EDITOR_DESCRIPTION} />
-      {EDITOR_SECTIONS.map((section) => (
-        <Section key={section.title} title={section.title} description={section.description}>
+      <div className="grid gap-6">
+        <Card>
           <div className="grid gap-4 sm:grid-cols-2">
             <FieldSkeleton />
             <FieldSkeleton />
           </div>
-        </Section>
-      ))}
+        </Card>
+        <Steps>
+          {Object.values(EDITOR_STEPS).map((step) => (
+            <Card key={step.title} title={step.title} description={step.description}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FieldSkeleton />
+                <FieldSkeleton />
+              </div>
+            </Card>
+          ))}
+        </Steps>
+      </div>
     </div>
   );
 }
 
-/** The three sections every trigger has, whatever event or daemon it ends up pointing at. */
-const EDITOR_SECTIONS = [
-  {
-    title: "Trigger details",
-    description: "Identification and system handle for this trigger.",
+/**
+ * The four decisions a trigger is made of, named once. The form renders them as steps and the
+ * skeleton stands in for them, so a reader waiting for a snapshot already sees the shape of the
+ * trigger they are about to fill in.
+ */
+const EDITOR_STEPS = {
+  event: {
+    title: "The event",
+    description: "What arrives, and the connection it arrives on.",
   },
-  {
-    title: "Event & access",
-    description: "When this event fires and who is authorized to invoke it.",
+  access: {
+    title: "Who can invoke it",
+    description: "Everyone the connection can see, or a named list.",
   },
-  {
-    title: "Run target",
-    description: "The local machine compute and repository working directory.",
+  target: {
+    title: "Where it runs",
+    description: "The daemon owns compute, credentials, and sandboxing.",
   },
-] as const;
+  agent: {
+    title: "What runs there",
+    description: "The agent, its model, and the instructions it is given.",
+  },
+} as const;
+
+/** What the step says while the decision above it is still missing. */
+const NO_DAEMON_DESCRIPTION =
+  "No daemon is connected to this organization yet, and a trigger runs on a daemon.";
+const NO_AGENT_DESCRIPTION =
+  "Choose a daemon first. The agents you can run are the ones it reports.";
 
 function PromptEditor({
   value,

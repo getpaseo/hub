@@ -17,10 +17,12 @@ export class OrganizationTriggers {
     await this.page.getByRole("link", { name: "New trigger" }).click();
     await expect(this.page).toHaveURL(/\/triggers\/new$/u);
     await expect(this.page.getByRole("heading", { name: "New trigger", level: 1 })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Trigger details" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Event & access" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Run target" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Agent & instructions" })).toBeHidden();
+    await expect(this.page.getByRole("heading", { name: "The event" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Where it runs" })).toBeVisible();
+    // The last step keeps its place and says what it is waiting for, so the shape of the
+    // trigger is on screen before a daemon is chosen; only its controls are absent.
+    await expect(this.page.getByRole("heading", { name: "What runs there" })).toBeVisible();
+    await expect(this.page.getByRole("combobox", { name: "Agent" })).toBeHidden();
     await expect(this.page.getByLabel("Working directory")).toBeHidden();
     const topbar = this.page.locator("header.sticky");
     await expect(topbar.getByRole("radio", { name: "Form" })).toBeEnabled();
@@ -43,6 +45,9 @@ export class OrganizationTriggers {
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.selectOption("When this happens", "slack.mention");
+    // An event that arrives on a connection is an event someone sends, so the step asking who
+    // may send it joins the run; a manual run has no audience and no step.
+    await expect(this.page.getByRole("heading", { name: "Who can invoke it" })).toBeVisible();
     await this.selectOption("Connection", input.connection);
     await this.page.getByRole("radio", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
@@ -202,6 +207,29 @@ export class OrganizationTriggers {
     const row = this.page.getByRole("row").filter({ hasText: name });
     await expect(row.getByLabel("slack provider")).toBeVisible();
     await expect(row).toContainText("Never");
+  }
+
+  /**
+   * A disclosure with no brand mark starts its title on the same rail as its own description.
+   * The compact header is a grid, and the column a mark would have occupied is still a gap when
+   * there is no mark: the title used to sit 12px right of every other line in the card, on
+   * phones only, because from `sm` the header is a flex row where an absent mark takes no space.
+   */
+  async expectDisclosureRailsAtPhoneWidth() {
+    const viewport = this.page.viewportSize();
+    await this.page.setViewportSize({ width: 420, height: 900 });
+    for (const name of ["Advanced provider options", "GitHub access"]) {
+      const header = this.page.getByRole("button", { name, exact: false }).first();
+      await header.scrollIntoViewIfNeeded();
+      const rails = await header.evaluate((element: HTMLElement) =>
+        Array.from(element.querySelectorAll("span > span"), (line) =>
+          Math.round(line.getBoundingClientRect().left),
+        ),
+      );
+      expect(rails.length).toBeGreaterThan(1);
+      expect(new Set(rails).size).toBe(1);
+    }
+    if (viewport !== null) await this.page.setViewportSize(viewport);
   }
 
   async capture(path: string) {
