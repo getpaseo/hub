@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { HubE2E } from "./harness/index.js";
+import { prebuildPaseoArtifacts, resolvePaseoWorktree } from "./harness/source-paseo.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 const describeHubE2E = process.env["RUN_HUB_E2E"] === "1" ? describe : describe.skip;
 
 describeHubE2E("Paseo Hub cross-repository contract", () => {
   let hub: HubE2E;
+
+  beforeAll(async () => {
+    await prebuildPaseoArtifacts(resolvePaseoWorktree());
+  }, 600_000);
 
   beforeEach(async () => {
     hub = await HubE2E.start();
