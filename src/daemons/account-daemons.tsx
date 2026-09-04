@@ -48,8 +48,6 @@ const DAEMONS_EMPTY = {
   title: "No daemons connected",
   description:
     "Hub runs your workflows on machines you own. Log in from the machine where your code lives and the CLI offers to connect it.",
-  // A command is a value, and a centred value is a value nobody can scan.
-  align: "start",
   action: <ConnectDaemonHint />,
 } as const;
 

@@ -128,9 +128,10 @@ missing app component.
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `Page`, `PageHeader`, `PageHeaderSkeleton`                              | Lay out a screen: the column, the one `h1`, its description, status, and actions.   |
 | `Section`                                                               | Group content under a quiet heading with an optional trailing action.               |
-| `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Title and description optional.                  |
+| `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Icon, title, description, and action optional.   |
 | `Steps`                                                                 | Number a run of cards in order and join them with a rail.                           |
-| `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records.                                                                       |
+| `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records at page level, in columns.                                             |
+| `RecordList`, `RecordRow`                                               | List a card's own few records, with no header row to repeat the card's subject.     |
 | `TwoLine`                                                               | Show a primary fact over a muted secondary one, in a cell or a row.                 |
 | `SummaryPanel`                                                          | Show labelled facts as a description list.                                          |
 | `StatTile`, `StatGrid`                                                  | Show a figure with a label.                                                         |
@@ -161,6 +162,12 @@ Rules for the roster:
 
 - A component owns its spacing to its neighbours. Callers never add `mb-*` or `mt-*` to a shared
   component; if the rhythm is wrong, fix it in the component.
+- Every alert is one anatomy, owned by `Alert`: a tone glyph, a title, the message under it, and
+  at most one control at the far edge, centred against the whole message. A caller passes those
+  four things and never assembles them, because three callers assembling them is how two of them
+  ended up with different spacing between a title and the line under it.
+- A list with nothing in it is the empty state alone on the background. `DataTable` renders it
+  instead of the table: column headers over a hollow body promise records that are not coming.
 - An alert standing in a page stack takes `standalone`. `PageHeader` and `Section` each own their
   bottom margin and nothing owns the distance after an alert, so a banner between them has to own
   it itself. Inside a form, a dialog, or a section, leave it off — the container's gap already

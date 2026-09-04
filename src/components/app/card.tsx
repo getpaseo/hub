@@ -10,12 +10,15 @@ import { Skeleton } from "../ui/skeleton.js";
  * optional: a card with neither is just the box.
  */
 export function Card({
+  icon,
   title,
   description,
   action,
   children,
   className,
 }: {
+  /** A glyph identifying what the card is about, beside its title. */
+  icon?: ReactNode;
   title?: string;
   description?: string;
   /** A single trailing link or button belonging to the card, not to its body. */
@@ -29,12 +32,19 @@ export function Card({
   return (
     <section className={cn("grid min-w-0 gap-4 rounded-xl border bg-card p-6", className)}>
       {titled ? (
-        <div className="flex min-w-0 items-start justify-between gap-4">
-          <div className="grid min-w-0 gap-1">
-            {title === undefined ? null : <h2 className="text-sm text-foreground">{title}</h2>}
-            {description === undefined ? null : (
-              <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="flex min-w-0 items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {icon === undefined ? null : (
+              <span aria-hidden="true" className="flex shrink-0 items-center [&>svg]:size-4">
+                {icon}
+              </span>
             )}
+            <div className="grid min-w-0 gap-1">
+              {title === undefined ? null : <h2 className="text-sm text-foreground">{title}</h2>}
+              {description === undefined ? null : (
+                <p className="text-sm text-muted-foreground">{description}</p>
+              )}
+            </div>
           </div>
           {action === undefined ? null : <div className="shrink-0">{action}</div>}
         </div>

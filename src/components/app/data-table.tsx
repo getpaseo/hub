@@ -15,9 +15,11 @@ export interface DataColumn {
 }
 
 /**
- * The one table shell: bordered card, quiet header row, one body-row height, and a built-in
- * empty row spanning the full width. Every list of records on the dashboard goes through here,
- * so members and daemons cannot drift apart.
+ * The one table shell: bordered card, quiet header row, one body-row height, and — when there is
+ * nothing to list — the empty state instead of the table. Column headers over no rows are a
+ * promise the screen cannot keep, so an empty list drops the card and says what is missing where
+ * the records would have been. Every list of records on the dashboard goes through here, so
+ * members and daemons cannot drift apart.
  */
 export function DataTable({
   label,
@@ -28,27 +30,23 @@ export function DataTable({
 }: {
   label: string;
   columns: readonly DataColumn[];
-  empty: { title: string; description?: string; align?: "center" | "start"; action?: ReactNode };
+  empty: { title: string; description?: string; action?: ReactNode };
   isEmpty: boolean;
   children: ReactNode;
 }) {
+  if (isEmpty) {
+    return (
+      <EmptyState
+        title={empty.title}
+        {...(empty.description === undefined ? {} : { description: empty.description })}
+      >
+        {empty.action}
+      </EmptyState>
+    );
+  }
   return (
     <TableShell label={label} columns={columns}>
-      {isEmpty ? (
-        <TableRow>
-          <TableCell colSpan={columns.length} className="p-0">
-            <EmptyState
-              title={empty.title}
-              {...(empty.description === undefined ? {} : { description: empty.description })}
-              {...(empty.align === undefined ? {} : { align: empty.align })}
-            >
-              {empty.action}
-            </EmptyState>
-          </TableCell>
-        </TableRow>
-      ) : (
-        children
-      )}
+      {children}
     </TableShell>
   );
 }

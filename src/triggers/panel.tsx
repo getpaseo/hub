@@ -111,11 +111,15 @@ export function TriggersPanel() {
       </PageHeader>
       <div className="grid gap-6">
         {data.daemons.length === 0 ? (
-          <WarningAlert title="Add a daemon first">
+          <WarningAlert
+            title="Add a daemon first"
+            action={
+              <Button asChild variant="outline" size="sm">
+                <Link to={`/o/${scope.organizationSlug}/daemons` as never}>Go to Daemons</Link>
+              </Button>
+            }
+          >
             <p>Triggers need a daemon to run.</p>
-            <Button asChild variant="outline" size="sm">
-              <Link to={`/o/${scope.organizationSlug}/daemons` as never}>Go to Daemons</Link>
-            </Button>
           </WarningAlert>
         ) : null}
         <DataTable

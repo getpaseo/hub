@@ -47,10 +47,9 @@ export interface ConnectionReturn {
   reference?: string;
 }
 
-export interface ConnectionReturnCopy {
-  tone: "success" | "error";
-  message: string;
-}
+export type ConnectionReturnCopy =
+  | { tone: "success"; message: string }
+  | { tone: "error"; title: string; message: string };
 
 /**
  * Where a callback lands when the attempt that started it cannot be read, so neither the
@@ -129,6 +128,14 @@ export function connectionReturnCopy(value: ConnectionReturn): ConnectionReturnC
   return { ...copy, message: withReference(copy.message, value.reference) };
 }
 
+/**
+ * A return that connected nothing is a failed request, and it is headed the way every other
+ * failure on the dashboard is: the thing that did not happen, then why, then what to do next.
+ */
+function failed(name: string, message: string): ConnectionReturnCopy {
+  return { tone: "error", title: `${name} wasn't connected`, message };
+}
+
 const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => ConnectionReturnCopy>> = {
   github_connected: connected,
   discord_connected: connected,
@@ -142,38 +149,38 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
   slack_cancelled: (name) => cancelled("Installation", name),
   discord_cancelled: (name) => cancelled("Authorization", name),
   linear_cancelled: (name) => cancelled("Authorization", name),
-  github_approval_required: () => ({
-    tone: "error",
-    message:
+  github_approval_required: (name) =>
+    failed(
+      name,
       "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
-  }),
-  slack_bot_failed: () => ({
-    tone: "error",
-    message:
+    ),
+  slack_bot_failed: (name) =>
+    failed(
+      name,
       "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
-  }),
-  provider_not_configured: () => ({
-    tone: "error",
-    message: "There are no saved credentials to connect yet. Verify and save the app first.",
-  }),
-  connection_invalid: () => ({
-    tone: "error",
-    message:
+    ),
+  provider_not_configured: (name) =>
+    failed(name, "There are no saved credentials to connect yet. Verify and save the app first."),
+  connection_invalid: (name) =>
+    failed(
+      name,
       "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
-  }),
-  connection_conflict: () => ({
-    tone: "error",
-    message:
+    ),
+  connection_conflict: (name) =>
+    failed(
+      name,
       "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
-  }),
-  connection_unauthenticated: (name) => ({
-    tone: "error",
-    message: `${name} sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the ${name} app's callback and setup URLs, then start the connection again.`,
-  }),
-  connection_unavailable: (name) => ({
-    tone: "error",
-    message: `Hub couldn't finish the ${name} connection. Nothing was connected. Start the connection again from this page.`,
-  }),
+    ),
+  connection_unauthenticated: (name) =>
+    failed(
+      name,
+      `${name} sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the ${name} app's callback and setup URLs, then start the connection again.`,
+    ),
+  connection_unavailable: (name) =>
+    failed(
+      name,
+      `Hub couldn't finish the ${name} connection. Nothing was connected. Start the connection again from this page.`,
+    ),
 };
 
 function connected(name: string): ConnectionReturnCopy {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "vitest";
-import { DataTable, DataTableSkeleton, type DataColumn } from "./data-table.js";
+import { DataCell, DataRow, DataTable, DataTableSkeleton, type DataColumn } from "./data-table.js";
 
 const COLUMNS: readonly DataColumn[] = [
   { header: "Trigger" },
@@ -21,8 +21,12 @@ describe("data table skeleton", () => {
   it("draws the same shell and columns as the table it stands in for", () => {
     const skeleton = renderToStaticMarkup(<DataTableSkeleton label="Triggers" columns={COLUMNS} />);
     const loaded = renderToStaticMarkup(
-      <DataTable label="Triggers" columns={COLUMNS} isEmpty empty={EMPTY}>
-        {null}
+      <DataTable label="Triggers" columns={COLUMNS} isEmpty={false} empty={EMPTY}>
+        <DataRow>
+          {COLUMNS.map((column) => (
+            <DataCell key={column.header}>{column.header}</DataCell>
+          ))}
+        </DataRow>
       </DataTable>,
     );
 
@@ -46,5 +50,17 @@ describe("data table skeleton", () => {
     const markup = renderToStaticMarkup(<DataTableSkeleton label="Triggers" columns={COLUMNS} />);
 
     assert.doesNotMatch(markup, /No triggers/u);
+  });
+
+  it("drops the table entirely when there is nothing to list", () => {
+    const markup = renderToStaticMarkup(
+      <DataTable label="Triggers" columns={COLUMNS} isEmpty empty={EMPTY}>
+        {null}
+      </DataTable>,
+    );
+
+    assert.match(markup, /No triggers/u);
+    assert.doesNotMatch(markup, /<table/u);
+    assert.doesNotMatch(markup, /Trigger</u);
   });
 });
