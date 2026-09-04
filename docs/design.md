@@ -160,6 +160,10 @@ Rules for the roster:
 
 - A component owns its spacing to its neighbours. Callers never add `mb-*` or `mt-*` to a shared
   component; if the rhythm is wrong, fix it in the component.
+- An alert standing in a page stack takes `standalone`. `PageHeader` and `Section` each own their
+  bottom margin and nothing owns the distance after an alert, so a banner between them has to own
+  it itself. Inside a form, a dialog, or a section, leave it off — the container's gap already
+  spaces it.
 - Every skeleton lives next to the component it mirrors and shares its box.
 - Every component has one visual result. If a caller passes `className` to change how it looks, the
   component is missing a prop or the caller is wrong. `className` is for placement in a grid only.

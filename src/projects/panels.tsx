@@ -615,12 +615,9 @@ function ActivityTable({
  */
 function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
   return (
-    // The banner owns the distance to the table under it; no caller spaces it.
-    <div className="mb-6">
-      <NoticeAlert tone={copy.tone === "success" ? "success" : "neutral"}>
-        {copy.message}
-      </NoticeAlert>
-    </div>
+    <NoticeAlert standalone tone={copy.tone === "success" ? "success" : "neutral"}>
+      {copy.message}
+    </NoticeAlert>
   );
 }
 

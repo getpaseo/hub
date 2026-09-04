@@ -82,15 +82,13 @@ export function CommandError({
     (mutation) => mutation.isError || mutation.data?.status === "error",
   );
   if (failed === undefined) return null;
-  // The banner owns the distance to the surface it interrupts; no caller spaces it.
   return (
-    <div className="mb-6">
-      <FailureAlert
-        title="The last action didn't complete"
-        error={failed.data}
-        fallback="Hub did not receive the project action result. Check your connection and reload the current project state."
-      />
-    </div>
+    <FailureAlert
+      standalone
+      title="The last action didn't complete"
+      error={failed.data}
+      fallback="Hub did not receive the project action result. Check your connection and reload the current project state."
+    />
   );
 }
 

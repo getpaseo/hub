@@ -141,25 +141,19 @@ function TableShell({
 
 /**
  * A record row. Cells align to the column rails established by `DataTable`. Pass `onSelect` to
- * make the row a keyboard-operable button into a detail view — and only then does the row light
- * up under the pointer, because a hover fill on a row that goes nowhere promises a click.
+ * let the whole row take the click that its first cell's link already takes — and only then does
+ * the row light up under the pointer, because a hover fill on a row that goes nowhere promises a
+ * click.
+ *
+ * The row is a pointer shortcut, not a control: a row carrying `role="button"` and `tabIndex`
+ * around a link and a kebab is two focusable things inside a third, which is the
+ * `nested-interactive` failure. The keyboard and a screen reader use the link in the row, so
+ * `onSelect` requires one.
  */
 export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) {
   if (onSelect === undefined) return <TableRow>{children}</TableRow>;
   return (
-    <TableRow
-      data-navigates="true"
-      className="cursor-pointer"
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onSelect();
-      }}
-    >
+    <TableRow data-navigates="true" className="cursor-pointer" onClick={onSelect}>
       {children}
     </TableRow>
   );

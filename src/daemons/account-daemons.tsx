@@ -160,13 +160,12 @@ export function DaemonsPanel({
     <>
       <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
       {revokeFailed ? (
-        <div className="mb-6">
-          <FailureAlert
-            title="The daemon wasn't revoked"
-            error={revoke.data}
-            fallback="Hub did not receive the daemon revocation result. Check your connection and reload its current status."
-          />
-        </div>
+        <FailureAlert
+          standalone
+          title="The daemon wasn't revoked"
+          error={revoke.data}
+          fallback="Hub did not receive the daemon revocation result. Check your connection and reload its current status."
+        />
       ) : null}
       <DataTable
         label="Daemons"

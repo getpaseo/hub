@@ -199,7 +199,7 @@ export class OrganizationTriggers {
   }
 
   async expectOperationalList(name: string) {
-    const row = this.page.getByRole("button").filter({ hasText: name });
+    const row = this.page.getByRole("row").filter({ hasText: name });
     await expect(row.getByLabel("slack provider")).toBeVisible();
     await expect(row).toContainText("Never");
   }

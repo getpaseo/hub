@@ -284,7 +284,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
 function OverLimitBanner({ overages }: { overages: Snapshot["overages"] }) {
   if (overages.length === 0) return null;
   return (
-    <WarningAlert title="This organization is over its limits">
+    <WarningAlert standalone title="This organization is over its limits">
       {overages.map((overage) => (
         <p key={overage.entitlement}>
           {`${overage.current} seats in use, but the effective limit is ${overage.limit}.`}

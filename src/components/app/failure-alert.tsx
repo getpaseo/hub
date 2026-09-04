@@ -6,6 +6,19 @@ import { Alert, AlertDescription, AlertTitle } from "../ui/alert.js";
 import { Button } from "../ui/button.js";
 
 /**
+ * An alert inside a form, a dialog, or a section is spaced by that container's own gap. One
+ * standing in a page stack has no gap to inherit — `PageHeader` and `Section` each own their
+ * bottom margin and nothing owns the distance after an alert — so it owns that distance itself.
+ * Three screens used to wrap it in a spacing div and two forgot, which is what a missing prop
+ * looks like.
+ */
+const PAGE_STACK_GAP = "mb-6";
+
+function standaloneClass(standalone: boolean): string | undefined {
+  return standalone ? PAGE_STACK_GAP : undefined;
+}
+
+/**
  * Everything a failed request can hand a screen. A query gives back a `Result` that may or may
  * not have failed, or nothing at all when the transport itself failed; a thrown error gives an
  * `Error`; a hand-built message gives a string.
@@ -40,6 +53,7 @@ export function FailureAlert({
   details,
   onRetry,
   focusOnArrival = false,
+  standalone = false,
 }: {
   title: string;
   error: Failure;
@@ -57,6 +71,8 @@ export function FailureAlert({
    * no name.
    */
   focusOnArrival?: boolean;
+  /** Set when the alert stands in a page stack rather than inside a form, dialog, or section. */
+  standalone?: boolean;
 }) {
   const alert = useRef<HTMLDivElement>(null);
   const message = failureMessage(error, fallback);
@@ -64,7 +80,12 @@ export function FailureAlert({
     if (focusOnArrival) alert.current?.focus();
   }, [focusOnArrival, title, message]);
   return (
-    <Alert ref={alert} variant="destructive" {...(focusOnArrival ? { tabIndex: -1 } : {})}>
+    <Alert
+      ref={alert}
+      variant="destructive"
+      className={standaloneClass(standalone)}
+      {...(focusOnArrival ? { tabIndex: -1 } : {})}
+    >
       <TriangleAlert aria-hidden="true" />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
@@ -89,15 +110,22 @@ export function FailureAlert({
 export function NoticeAlert({
   tone,
   title,
+  standalone = false,
   children,
 }: {
   tone: "neutral" | "success";
   title?: string;
+  /** Set when the alert stands in a page stack rather than inside a form, dialog, or section. */
+  standalone?: boolean;
   children: ReactNode;
 }) {
   const Icon = tone === "success" ? CircleCheck : Info;
   return (
-    <Alert role="status" variant={tone === "success" ? "success" : "default"}>
+    <Alert
+      role="status"
+      variant={tone === "success" ? "success" : "default"}
+      className={standaloneClass(standalone)}
+    >
       <Icon aria-hidden="true" />
       {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
       <AlertDescription>{children}</AlertDescription>
@@ -109,9 +137,18 @@ export function NoticeAlert({
  * Something the reader should know before they act, that does not stop them acting. Warnings
  * are the same shape as failures so the two read as one system; only the colour differs.
  */
-export function WarningAlert({ title, children }: { title?: string; children: ReactNode }) {
+export function WarningAlert({
+  title,
+  standalone = false,
+  children,
+}: {
+  title?: string;
+  /** Set when the alert stands in a page stack rather than inside a form, dialog, or section. */
+  standalone?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <Alert variant="warning">
+    <Alert variant="warning" className={standaloneClass(standalone)}>
       <TriangleAlert aria-hidden="true" />
       {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
       <AlertDescription>{children}</AlertDescription>
