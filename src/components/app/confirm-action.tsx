@@ -20,7 +20,7 @@ export interface Confirmation {
   confirmLabel: string;
   cancelLabel: string;
   onConfirm: () => void;
-  /** Renders the confirmed action in destructive red inside the dialog. */
+  /** Renders the confirmed action in destructive red inside the dialog. Opt in. */
   destructive?: boolean;
 }
 
@@ -122,10 +122,10 @@ function ConfirmBody({ confirmation, busy }: { confirmation: Confirmation; busy:
     confirmLabel,
     cancelLabel,
     onConfirm,
-    destructive = true,
+    destructive = false,
   } = confirmation;
   return (
-    <AlertDialogContent className="sm:max-w-sm">
+    <AlertDialogContent>
       <AlertDialogHeader>
         <AlertDialogTitle>{title}</AlertDialogTitle>
         <AlertDialogDescription>{description}</AlertDialogDescription>

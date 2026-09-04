@@ -1,8 +1,8 @@
 import { Loader2Icon } from "lucide-react";
 
 import { cn } from "../../lib/utils.js";
-import { Skeleton } from "../ui/skeleton.js";
 import { DataTableSkeleton, type DataColumn } from "./data-table.js";
+import { PageHeaderSkeleton } from "./page.js";
 
 /**
  * Pending states.
@@ -10,7 +10,8 @@ import { DataTableSkeleton, type DataColumn } from "./data-table.js";
  * A surface waiting on the data it exists to show draws itself as a skeleton: the parts that are
  * already known — titles, section labels, table columns — are rendered for real, and only what
  * the request decides is a placeholder. The reader is looking at the page they asked for from the
- * first frame, and nothing moves when the data lands.
+ * first frame, and nothing moves when the data lands. Each of those skeletons lives beside the
+ * component it stands in for, which is why only the whole-panel one is here.
  *
  * A surface waiting on one small fact inside an otherwise finished page shows a spinner instead.
  * Never a bare line of text: "Loading…" reserves no space, so the page jumps when it resolves.
@@ -30,30 +31,6 @@ export function LoadingLine({ children }: { children: string }) {
       <Spinner />
       {children}
     </p>
-  );
-}
-
-/**
- * A page title and its description before either is known. Matches `PageHeader`'s block, so a
- * surface that cannot name itself until its data arrives still reserves the right space.
- */
-export function PageHeaderSkeleton() {
-  return (
-    <header className="mb-6 grid gap-2">
-      <Skeleton className="h-7 w-48" />
-      <Skeleton className="h-4 w-80 max-w-full" />
-    </header>
-  );
-}
-
-/** A bordered card that is about to hold prose, fields, or a summary. */
-export function CardSkeleton({ lines = 3 }: { lines?: number }) {
-  return (
-    <div aria-busy="true" className="grid gap-3 rounded-lg border bg-card p-5">
-      {Array.from({ length: lines }, (_, line) => (
-        <Skeleton key={line} className={cn("h-4", line === 0 ? "w-40" : "w-full")} />
-      ))}
-    </div>
   );
 }
 

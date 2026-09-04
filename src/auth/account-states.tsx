@@ -1,8 +1,12 @@
 import { useEffect, useRef } from "react";
-import { AuthCard, AuthLayout, ProductMark } from "../components/app/auth-layout.js";
+import {
+  AuthCard,
+  AuthCardSkeleton,
+  AuthLayout,
+  ProductMark,
+} from "../components/app/auth-layout.js";
 import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 
 export function ErrorSummary({ message }: { message: string | undefined }) {
   const alert = useRef<HTMLDivElement>(null);
@@ -34,13 +38,8 @@ export function LoadingEntry() {
       <ProductMark />
       {/* The card whichever screen wins will be, held open at its own size so the mark
           does not jump up the page when the account resolves. */}
-      <div className="grid w-full max-w-sm gap-6 rounded-lg border bg-card p-6 shadow-sm">
-        <div className="grid gap-2">
-          <Skeleton className="h-5 w-44" />
-          <Skeleton className="h-4 w-60 max-w-full" />
-        </div>
-        <Skeleton className="h-9 w-full" />
-        <Skeleton className="h-9 w-full" />
+      <div className="w-full max-w-sm">
+        <AuthCardSkeleton />
       </div>
     </main>
   );

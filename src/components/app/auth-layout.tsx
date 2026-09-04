@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
+import { Skeleton } from "../ui/skeleton.js";
 
 /**
  * The frame for every surface reached before the dashboard: sign-in, the organization
@@ -56,11 +57,11 @@ export function AuthCard({
   useEffect(() => heading.current?.focus(), []);
   return (
     <section
-      className="grid gap-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="grid gap-6 rounded-xl border bg-card p-6"
       {...(titleId === undefined ? {} : { "aria-labelledby": titleId })}
     >
       <div className="grid gap-1.5">
-        <h1 ref={heading} id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
+        <h1 ref={heading} id={titleId} tabIndex={-1} className="text-base font-title outline-none">
           {title}
         </h1>
         {description === undefined ? null : (
@@ -74,6 +75,24 @@ export function AuthCard({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * The card before the account resolves, and before anything knows which pre-auth screen wins.
+ * It is the same box as `AuthCard` so the product mark above it does not jump up the page when
+ * the answer arrives.
+ */
+export function AuthCardSkeleton() {
+  return (
+    <div aria-busy="true" className="grid gap-6 rounded-xl border bg-card p-6">
+      <div className="grid gap-1.5">
+        <Skeleton className="h-6 w-44" />
+        <Skeleton className="h-5 w-60 max-w-full" />
+      </div>
+      <Skeleton className="h-8 w-full" />
+      <Skeleton className="h-8 w-full" />
+    </div>
   );
 }
 

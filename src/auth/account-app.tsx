@@ -5,7 +5,7 @@ import { accountState } from "./functions.js";
 import { DaemonHandoffEntry } from "../daemons/handoff.js";
 import { AccountEntry, InvitationEntry, OrganizationGate } from "./account-entry.js";
 import { FailedEntry, LoadingEntry, UnavailableInvitation } from "./account-states.js";
-import { DashboardShell } from "./dashboard-shell.js";
+import { DashboardShell } from "../shell/dashboard-shell.js";
 import { InstanceSetupEntry } from "./instance-setup-entry.js";
 import { AppSetupEntry } from "../provider-applications/panel.js";
 import { PasswordChangeEntry } from "./password-change.js";

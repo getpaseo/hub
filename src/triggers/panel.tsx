@@ -9,7 +9,7 @@ import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/a
 import { PageHeader } from "../components/app/page.js";
 import { LoadingLine } from "../components/app/loading.js";
 import { Skeleton } from "../components/ui/skeleton.js";
-import { SiteHeaderActions } from "../components/app/site-header-actions.js";
+import { SiteHeaderActions } from "../shell/site-header-actions.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { StatusPill } from "../components/app/status-pill.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";

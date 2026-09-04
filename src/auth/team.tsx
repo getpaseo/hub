@@ -28,7 +28,7 @@ import {
 } from "../components/ui/select.js";
 import type { ActiveAccountState, TeamMember } from "./organization-contract.js";
 import { formValue, invitationRole } from "./account-actions.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { useActiveAccount } from "./active-account.js";
 import { cancelInvitation, changeMemberRole, createInvitation, removeMember } from "./functions.js";
 import type { Result } from "../contract/respond.js";
@@ -182,7 +182,7 @@ function InvitationDialog({
           <DialogDescription>Create a role-bound invitation link for a teammate.</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} aria-label="Invite team member" className="grid gap-6">
-          <FormField label="Invitee email" name="email" id="invite-email" type="email" />
+          <FormField label="Invitee email" name="email" id="invite-email" kind="email" required />
           <Field>
             <FieldLabel htmlFor="invite-role">Role</FieldLabel>
             <Select name="role" value={role} onValueChange={selectRole} required>

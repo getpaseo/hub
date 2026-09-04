@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button.js";
 import { Field, FieldSet } from "../components/ui/field.js";
 import { formValue } from "./account-actions.js";
 import { ErrorSummary } from "./account-states.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { setUpInstance } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 
@@ -105,16 +105,18 @@ function AccountSetupForm({
               label="Email"
               name="email"
               id="operator-email"
-              type="email"
+              kind="email"
               autoComplete="email"
+              required
             />
             <FormField
               label="Password"
               name="password"
               id="operator-password"
-              type="password"
+              kind="password"
               autoComplete="new-password"
               minLength={12}
+              required
             />
             <Field>
               <Button type="submit" disabled={busy}>

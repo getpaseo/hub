@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { ChevronDown, ExternalLink, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApplicationField } from "../components/app/application-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { CopyBlock, CopyField } from "../components/app/copy-field.js";
 import { Disclosure } from "../components/app/disclosure.js";
 import { RelativeTime } from "../components/app/relative-time.js";
@@ -602,7 +602,7 @@ function PasteForm({
             <p className="border-t pt-4 text-sm text-muted-foreground">{group.title} — optional</p>
           )}
           {group.fields.map((field) => (
-            <ApplicationField
+            <FormField
               key={field.name}
               id={`${guide.provider}-${field.name}`}
               name={field.name}

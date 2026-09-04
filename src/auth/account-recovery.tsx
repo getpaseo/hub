@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button.js";
 import { Field, FieldSet } from "../components/ui/field.js";
 import { ErrorSummary } from "./account-states.js";
 import { formValue } from "./account-actions.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { requestPasswordReset, resetPassword, sendVerificationEmail } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 
@@ -60,8 +60,9 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
                 label="Email"
                 name="email"
                 id="forgot-password-email"
-                type="email"
+                kind="email"
                 autoComplete="email"
+                required
               />
               <Field>
                 <Button type="submit" disabled={request.isPending}>
@@ -235,17 +236,19 @@ export function PasswordResetEntry({
               label="New password"
               name="newPassword"
               id="reset-password-new"
-              type="password"
+              kind="password"
               autoComplete="new-password"
               minLength={12}
+              required
             />
             <FormField
               label="Confirm new password"
               name="confirmPassword"
               id="reset-password-confirm"
-              type="password"
+              kind="password"
               autoComplete="new-password"
               minLength={12}
+              required
             />
             <Field>
               <Button type="submit" disabled={reset.isPending}>

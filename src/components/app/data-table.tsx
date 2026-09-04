@@ -15,9 +15,9 @@ export interface DataColumn {
 }
 
 /**
- * The one table shell: bordered card, quiet header row, generous cell rhythm, and a
- * built-in empty row spanning the full width. Every list of records on the dashboard
- * goes through here, so members and daemons cannot drift apart.
+ * The one table shell: bordered card, quiet header row, one body-row height, and a built-in
+ * empty row spanning the full width. Every list of records on the dashboard goes through here,
+ * so members and daemons cannot drift apart.
  */
 export function DataTable({
   label,
@@ -28,18 +28,19 @@ export function DataTable({
 }: {
   label: string;
   columns: readonly DataColumn[];
-  empty: { title: string; description?: string; action?: ReactNode };
+  empty: { title: string; description?: string; align?: "center" | "start"; action?: ReactNode };
   isEmpty: boolean;
   children: ReactNode;
 }) {
   return (
     <TableShell label={label} columns={columns}>
       {isEmpty ? (
-        <TableRow className="hover:bg-transparent">
+        <TableRow>
           <TableCell colSpan={columns.length} className="p-0">
             <EmptyState
               title={empty.title}
               {...(empty.description === undefined ? {} : { description: empty.description })}
+              {...(empty.align === undefined ? {} : { align: empty.align })}
             >
               {empty.action}
             </EmptyState>
@@ -69,7 +70,7 @@ export function DataTableSkeleton({
     <div aria-busy="true">
       <TableShell label={label} columns={columns}>
         {Array.from({ length: rows }, (_, row) => (
-          <TableRow key={row} className="border-border/60 hover:bg-transparent">
+          <TableRow key={row}>
             {columns.map((column, index) => (
               <DataCell
                 key={column.header === "" ? `actions-${String(index)}` : column.header}
@@ -106,15 +107,14 @@ function TableShell({
   children: ReactNode;
 }) {
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
+    <div className="min-w-0 overflow-hidden rounded-xl border bg-card">
       <Table aria-label={label}>
         <TableHeader>
-          <TableRow className="hover:bg-transparent">
+          <TableRow>
             {columns.map((column, index) => (
               <TableHead
                 key={column.header === "" ? `actions-${String(index)}` : column.header}
                 className={cn(
-                  "h-9 px-4 text-xs text-muted-foreground",
                   // The identifying column absorbs the spare width; everything after it
                   // shrinks to its content, so columns stay next to each other instead of
                   // drifting apart on a wide screen.
@@ -135,14 +135,16 @@ function TableShell({
 }
 
 /**
- * A record row. Cells align to the column rails established by `DataTable`. Pass
- * `onSelect` to make the row a keyboard-operable button into a detail view.
+ * A record row. Cells align to the column rails established by `DataTable`. Pass `onSelect` to
+ * make the row a keyboard-operable button into a detail view — and only then does the row light
+ * up under the pointer, because a hover fill on a row that goes nowhere promises a click.
  */
 export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) {
-  if (onSelect === undefined) return <TableRow className="border-border/60">{children}</TableRow>;
+  if (onSelect === undefined) return <TableRow>{children}</TableRow>;
   return (
     <TableRow
-      className="cursor-pointer border-border/60 hover:bg-muted/40"
+      data-navigates="true"
+      className="cursor-pointer"
       role="button"
       tabIndex={0}
       onClick={onSelect}
@@ -167,16 +169,12 @@ export function DataCell({
   children: ReactNode;
   align?: "start" | "end";
   muted?: boolean;
+  /** Column width or wrapping only. Never used to change how a cell reads. */
   className?: string;
 }) {
   return (
     <TableCell
-      className={cn(
-        "h-14 px-4",
-        align === "end" && "text-right",
-        muted && "text-muted-foreground",
-        className,
-      )}
+      className={cn(align === "end" && "text-right", muted && "text-muted-foreground", className)}
     >
       {children}
     </TableCell>

@@ -14,7 +14,7 @@ import {
 import { Input } from "../components/ui/input.js";
 import { formValue } from "./account-actions.js";
 import { ErrorSummary } from "./account-states.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import {
   acceptInvitation,
   createOrganization,
@@ -472,7 +472,13 @@ export function OrganizationGate({
         onSubmit={createSubmit}
         confirmLabel="Create organization"
       >
-        <FormField label="Organization name" name="name" id="organization-name" />
+        <FormField
+          kind="text"
+          label="Organization name"
+          name="name"
+          id="organization-name"
+          required
+        />
       </OrganizationDialog>
     </AuthLayout>
   );

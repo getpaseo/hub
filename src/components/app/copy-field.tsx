@@ -73,6 +73,30 @@ function Announcement({ message }: { message: string }) {
   );
 }
 
+/**
+ * The one code treatment: a fixed-width block that wraps. An unwrapped `pre` is as wide as its
+ * longest line, and that width propagates out through the parent's grid tracks until the whole
+ * body is wider than the phone and the section clips the parts that no longer fit. `break-all`
+ * is what makes a bare URL a wrappable line rather than one long word.
+ *
+ * Pass `label` when the block is long enough to scroll: it names the region and makes it
+ * reachable with the keyboard, which a bare `pre` with an overflow is not.
+ */
+export function CodeBlock({ label, children }: { label?: string; children: string }) {
+  const scrollable =
+    label === undefined
+      ? {}
+      : { role: "textbox", "aria-readonly": true, "aria-label": label, tabIndex: 0 };
+  return (
+    <pre
+      {...scrollable}
+      className="max-h-48 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs break-all whitespace-pre-wrap sm:max-h-64"
+    >
+      {children}
+    </pre>
+  );
+}
+
 export function CopyField({ label, value }: { label: string; value: string }) {
   const { state, copy, announcement } = useCopy(label, value);
   const text = useRef<HTMLSpanElement>(null);
@@ -92,9 +116,9 @@ export function CopyField({ label, value }: { label: string; value: string }) {
     select();
   }, [copy, select]);
   return (
-    <Field className="min-w-0">
+    <Field className="min-w-0 gap-2">
       <FieldLabel>{label}</FieldLabel>
-      <div className="flex items-start gap-1 rounded-md border bg-background px-3 py-2">
+      <div className="flex min-h-8 items-center gap-1 rounded-md border border-input bg-transparent py-1 pr-1 pl-2.5">
         <span ref={text} className="min-w-0 flex-1 font-mono text-xs break-all">
           {value}
         </span>
@@ -120,26 +144,14 @@ export function CopyBlock({
 }) {
   const { state, copy, announcement } = useCopy(label, value);
   return (
-    <Field className="min-w-0">
+    <Field className="min-w-0 gap-2">
       <div className="flex items-center justify-between gap-2">
         <FieldLabel>{label}</FieldLabel>
         <CopyButton label={label} copied={state === "copied"} onCopy={copy}>
           {action}
         </CopyButton>
       </div>
-      {/* Wrapping is what keeps the block inside its card. An unwrapped `pre` is as wide as its
-          longest line, and that width propagates out through the section's grid tracks until the
-          whole body is wider than the phone and the section clips the parts that no longer fit.
-          `break-all` is what makes a bare URL a wrappable line rather than one long word. */}
-      <pre
-        aria-readonly="true"
-        aria-label={`${label} value`}
-        className="max-h-48 overflow-auto rounded-md border bg-muted p-3 font-mono text-xs break-all whitespace-pre-wrap sm:max-h-64"
-        role="textbox"
-        tabIndex={0}
-      >
-        {value}
-      </pre>
+      <CodeBlock label={`${label} value`}>{value}</CodeBlock>
       {state === "manual" ? (
         <FieldDescription>Select the value and copy it.</FieldDescription>
       ) : null}

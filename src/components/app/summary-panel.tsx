@@ -20,6 +20,7 @@ export function SummaryPanel({
   /** Identifies which summary this is, e.g. "GitHub app". */
   label: string;
   rows: readonly SummaryRow[];
+  /** Placement in a parent grid only. Never used to change how the panel looks. */
   className?: string;
 }) {
   return (
@@ -30,12 +31,12 @@ export function SummaryPanel({
       // A one-pixel gap over the border colour is the divider. No extra element, and the rows
       // reflow into one column on a phone without the rules ending up in the wrong places.
       className={cn(
-        "grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-2",
+        "grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2",
         className,
       )}
     >
       {rows.map((row) => (
-        <div key={row.label} className="grid content-start gap-1 bg-card px-3 py-2.5">
+        <div key={row.label} className="grid content-start gap-1 bg-card px-4 py-3">
           <dt className="text-xs text-muted-foreground">{row.label}</dt>
           <dd className="min-w-0 text-sm break-words">{row.value}</dd>
         </div>

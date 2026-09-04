@@ -7,8 +7,8 @@ export function Checkbox({ className }: { className?: string }) {
     <span
       aria-hidden="true"
       className={cn(
-        "grid size-4 shrink-0 place-items-center rounded-sm border border-input bg-background text-primary shadow-xs",
-        "peer-focus-visible:ring-[3px] peer-focus-visible:ring-ring/50 peer-checked:bg-primary peer-checked:text-primary-foreground",
+        "grid size-4 shrink-0 place-items-center rounded-sm border border-input bg-background text-primary transition-colors duration-150",
+        "peer-focus-visible:outline peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring peer-checked:border-primary peer-checked:bg-primary peer-checked:text-primary-foreground",
         className,
       )}
     >

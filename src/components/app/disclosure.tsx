@@ -40,16 +40,15 @@ export function Disclosure({
     <Collapsible
       open={open}
       onOpenChange={onOpenChange}
-      className="min-w-0 rounded-lg border bg-card"
+      className="min-w-0 rounded-xl border bg-card"
       data-provider={id}
     >
       <CollapsibleTrigger
         id={headerId}
         aria-controls={bodyId}
         className={cn(
-          "grid w-full min-h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-lg px-4 py-3 text-left sm:flex sm:gap-3",
-          "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-          "hover:bg-accent/40",
+          "grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-xl px-4 py-3 text-left sm:flex sm:gap-3",
+          "hover:bg-accent",
         )}
       >
         {media === undefined ? null : (
@@ -58,7 +57,9 @@ export function Disclosure({
           </span>
         )}
         <span className="contents sm:grid sm:min-w-0 sm:flex-1 sm:gap-0.5">
-          <span className="col-start-2 row-start-1 truncate sm:col-auto sm:row-auto">{title}</span>
+          <span className="col-start-2 row-start-1 truncate text-sm sm:col-auto sm:row-auto">
+            {title}
+          </span>
           {description === undefined ? null : (
             <span className="col-span-3 row-start-2 text-sm text-muted-foreground sm:col-auto sm:row-auto">
               {description}
@@ -86,7 +87,7 @@ export function Disclosure({
         id={bodyId}
         role="region"
         aria-labelledby={headerId}
-        className="min-w-0 overflow-hidden border-t px-4 py-5 data-[state=closed]:hidden"
+        className="min-w-0 overflow-hidden border-t px-4 py-4 data-[state=closed]:hidden"
       >
         {children}
       </CollapsibleContent>

@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Check } from "lucide-react";
-import { CardSkeleton } from "../../components/app/loading.js";
+import { CardSkeleton } from "../../components/app/card.js";
 import { PageHeader } from "../../components/app/page.js";
 import { Section } from "../../components/app/section.js";
 import { StatusPill } from "../../components/app/status-pill.js";

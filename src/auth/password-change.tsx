@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button.js";
 import { Field, FieldSet } from "../components/ui/field.js";
 import { ErrorSummary } from "./account-states.js";
 import { formValue } from "./account-actions.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { changePassword, signOut } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import type { AccountState } from "./organization-contract.js";
@@ -74,24 +74,27 @@ export function PasswordChangeEntry({
               label="Current password"
               name="currentPassword"
               id="current-password"
-              type="password"
+              kind="password"
               autoComplete="current-password"
+              required
             />
             <FormField
               label="New password"
               name="newPassword"
               id="new-password"
-              type="password"
+              kind="password"
               autoComplete="new-password"
               minLength={12}
+              required
             />
             <FormField
               label="Confirm new password"
               name="confirmPassword"
               id="confirm-password"
-              type="password"
+              kind="password"
               autoComplete="new-password"
               minLength={12}
+              required
             />
             <Field>
               <Button type="submit" disabled={busy}>

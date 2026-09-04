@@ -1,7 +1,7 @@
 import { Button } from "../components/ui/button.js";
 import { Field, FieldSet } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import type { FormEvent } from "react";
 
 export function LoginForm({
@@ -41,23 +41,32 @@ export function LoginForm({
       <FieldSet className="gap-4" disabled={busy}>
         <Input type="hidden" name="mode" value={mode} />
         {mode === "signUp" && (
-          <FormField label="Name" name="name" id={`${prefix}-name`} autoComplete="name" />
+          <FormField
+            kind="text"
+            label="Name"
+            name="name"
+            id={`${prefix}-name`}
+            autoComplete="name"
+            required
+          />
         )}
         <FormField
           label="Email"
           name="email"
           id={`${prefix}-email`}
-          type="email"
+          kind="email"
           autoComplete="email"
           {...emailProps}
+          required
         />
         <FormField
           label="Password"
           name="password"
           id={`${prefix}-password`}
-          type="password"
+          kind="password"
           autoComplete={mode === "signIn" ? "current-password" : "new-password"}
           minLength={12}
+          required
         />
         <Field>
           <Button type="submit" disabled={busy}>
