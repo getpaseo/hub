@@ -22,6 +22,7 @@ test("requires daemon setup before trigger configuration", async ({ hub, page })
   );
   await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
   await triggers.startNew();
+  await triggers.exploreEventQualifiers();
   await expect(
     page.getByText("No daemon is connected to this organization yet", { exact: false }),
   ).toBeVisible();
@@ -128,6 +129,50 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.capture(`${SHOTS}/07-legacy-workflow-warning.png`);
   });
 });
+
+for (const scenario of [
+  { event: "github.issue_label_added", name: "issue-label" },
+  { event: "github.pull_request_label_added", name: "pr-label" },
+]) {
+  test(`saves, reloads, and requires a label for ${scenario.event}`, async ({ hub, page }) => {
+    await hub.signUpAs("owner", owner);
+    await hub.createOrganization("owner", "Acme");
+    const daemon = await hub.connectProviderDaemon("owner", "Acme");
+    await hub.connectGitHub("owner");
+    const triggers = new OrganizationTriggers(page);
+
+    await test.step("reject an otherwise complete form with an empty or blank label", async () => {
+      await triggers.open();
+      await triggers.startNew();
+      await triggers.configureLabelAdded({ ...scenario, daemon });
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.changeAddedLabel("   ");
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.capture(`${SHOTS}/${scenario.name}-required.png`);
+    });
+
+    await test.step("save through the form and verify persisted YAML after reload", async () => {
+      await triggers.changeAddedLabel("ready-for-review");
+      await triggers.save(scenario.name);
+      await triggers.openTrigger(scenario.name);
+      await triggers.expectPersistedLabel(scenario.event, "ready-for-review");
+    });
+
+    await test.step("reject clearing a saved label without changing the saved trigger", async () => {
+      await triggers.changeAddedLabel("");
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.expectPersistedLabel(scenario.event, "ready-for-review");
+    });
+
+    await test.step("edit the label and verify the new value survives another reload", async () => {
+      await triggers.changeAddedLabel("ready-to-ship");
+      await triggers.save(scenario.name);
+      await triggers.openTrigger(scenario.name);
+      await triggers.expectPersistedLabel(scenario.event, "ready-to-ship");
+      await triggers.capture(`${SHOTS}/${scenario.name}-persisted.png`);
+    });
+  });
+}
 
 function advancedTriggerYaml(daemon: string) {
   return `# survives form edits

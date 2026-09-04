@@ -210,7 +210,7 @@
     font-weight: 400;
   }
 
-  /* Linear's focus ring. One pixel, two pixel offset, everywhere, no exceptions. */
+  /* Default focus ring. Composite controls may own focus styling in their primitives. */
   :focus-visible {
     outline: 1px solid var(--ring);
     outline-offset: 2px;

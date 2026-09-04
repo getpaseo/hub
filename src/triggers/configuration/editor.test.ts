@@ -1,7 +1,9 @@
+import { EDITOR_EVENTS } from "./events.js";
 import { describe, expect, test } from "vitest";
 import { parseDocument } from "yaml";
 import { TriggerDocumentSchema } from "./schema.js";
 import {
+  changeTriggerEvent,
   createTriggerYaml,
   mergeTriggerForm,
   patchTriggerYaml,
@@ -9,6 +11,11 @@ import {
   splitAgentId,
   triggerFormErrors,
 } from "./editor.js";
+
+import {
+  GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES,
+  GITHUB_TRIGGER_SOURCE_NAMES,
+} from "../github/classification.js";
 
 const ADVANCED = `# keep this heading
 name: answer
@@ -148,6 +155,7 @@ describe("trigger form YAML bridge", () => {
       event: "manual.run",
       connection: "",
       allowedUsers: "*",
+      qualifiers: {},
       daemon: "office",
       cwd: "/workspace",
       agent: "codex/gpt-5.4",
@@ -183,6 +191,7 @@ describe("trigger form YAML bridge", () => {
       event: "manual.run",
       connection: "",
       allowedUsers: "*",
+      qualifiers: {},
       daemon: "office",
       cwd: "/workspace",
       agent: "opencode",
@@ -312,3 +321,108 @@ describe("what the form still needs", () => {
     });
   });
 });
+
+test.each([
+  "github.pull_request_created",
+  "github.issue_created",
+  "linear.issue_assigned",
+  "linear.comment_created",
+  "linear.issue_entered_scope",
+])("edits supported event %s", (event) => {
+  expect(projectTriggerForm(ADVANCED.replace("slack.mention", event)).status).toBe("editable");
+});
+
+test("round trips the added label separately from existing item labels", () => {
+  const yaml = ADVANCED.replace("slack.mention", "github.pull_request_label_added").replace(
+    "channels: [engineering]",
+    "label: ready\n      labels: [bug]",
+  );
+  const projection = projectTriggerForm(yaml);
+  expect(projection.status).toBe("editable");
+  if (projection.status !== "editable") throw new Error("not editable");
+  expect(projection.value.qualifiers.label).toBe("ready");
+  const patched = patchTriggerYaml(yaml, { ...projection.value, qualifiers: { label: "review" } });
+  expect(
+    TriggerDocumentSchema.parse(parseDocument(patched).toJS()).on["github.pull_request_label_added"]
+      ?.filters,
+  ).toEqual({
+    from_users: ["*"],
+    label: "review",
+    labels: ["bug"],
+  });
+  expect(() => patchTriggerYaml(patched, { ...projection.value, qualifiers: {} })).toThrow(
+    "Added label is required.",
+  );
+});
+
+test("offers every supported GitHub semantic event and webhook source", () => {
+  for (const event of [...GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES, ...GITHUB_TRIGGER_SOURCE_NAMES]) {
+    expect(EDITOR_EVENTS).toContain(event);
+  }
+});
+
+test("creates a qualified event and removes the qualifier when changing event kind", () => {
+  const initial = projectTriggerForm(ADVANCED);
+  if (initial.status !== "editable") throw new Error(initial.reason);
+  const yaml = createTriggerYaml({
+    ...initial.value,
+    event: "github.issue_label_added",
+    qualifiers: { label: "ready" },
+  });
+  const projection = projectTriggerForm(yaml);
+  if (projection.status !== "editable") throw new Error(projection.reason);
+  expect(projection.value.qualifiers.label).toBe("ready");
+  const changed = patchTriggerYaml(yaml, {
+    ...projection.value,
+    event: "github.pull_request_created",
+  });
+  expect(
+    TriggerDocumentSchema.parse(parseDocument(changed).toJS()).on["github.pull_request_created"]
+      ?.filters,
+  ).toEqual({ from_users: ["*"] });
+});
+
+test("event changes carry compatible qualifiers and reset provider-bound values", () => {
+  const projection = projectTriggerForm(
+    ADVANCED.replace("slack.mention", "github.issue_label_added").replace(
+      "channels: [engineering]",
+      "label: ready",
+    ),
+  );
+  if (projection.status !== "editable") throw new Error(projection.reason);
+  const initial = { ...projection.value, qualifiers: { label: "ready" } };
+  const pr = changeTriggerEvent(initial, "github.pull_request_label_added");
+  expect(pr.qualifiers).toEqual({ label: "ready" });
+  expect(pr.connection).toBe(initial.connection);
+  const created = changeTriggerEvent(pr, "github.issue_created");
+  expect(created.qualifiers).toEqual({});
+  const slack = changeTriggerEvent(pr, "slack.mention");
+  expect(slack.qualifiers).toEqual({});
+  expect(slack.connection).toBe("");
+});
+
+test.each(["github.issue_label_added", "github.pull_request_label_added"])(
+  "requires an added label for %s",
+  (event) => {
+    const projection = projectTriggerForm(
+      ADVANCED.replace("slack.mention", event).replace("channels: [engineering]", "label: ready"),
+    );
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(triggerFormErrors({ ...projection.value, qualifiers: { label: "  " } })).toEqual({
+      "qualifiers.label": "Added label is required.",
+    });
+    expect(triggerFormErrors({ ...projection.value, qualifiers: {} })).toEqual({
+      "qualifiers.label": "Added label is required.",
+    });
+  },
+);
+
+test.each(["github.issue_label_added", "github.pull_request_label_added"])(
+  "rejects YAML without an added label for %s",
+  (event) => {
+    const missing = ADVANCED.replace("slack.mention", event);
+    expect(TriggerDocumentSchema.safeParse(parseDocument(missing).toJS()).success).toBe(false);
+    const blank = missing.replace("channels: [engineering]", 'label: "   "');
+    expect(TriggerDocumentSchema.safeParse(parseDocument(blank).toJS()).success).toBe(false);
+  },
+);

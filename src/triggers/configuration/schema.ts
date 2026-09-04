@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
 
 type JsonPrimitive = string | number | boolean | null;
@@ -120,6 +121,19 @@ export const TriggerDocumentSchema = z
   })
   .strict()
   .superRefine((trigger, context) => {
+    for (const [event, definition] of Object.entries(trigger.on)) {
+      if (!isEditorEvent(event)) continue;
+      for (const qualifier of eventDefinition(event).qualifiers) {
+        const value = definition.filters?.[qualifier.key];
+        if (qualifier.required && (value === undefined || value.trim().length === 0)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["on", event, "filters", qualifier.key],
+            message: `${qualifier.label} is required.`,
+          });
+        }
+      }
+    }
     if (Object.keys(trigger.on).length === 0) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

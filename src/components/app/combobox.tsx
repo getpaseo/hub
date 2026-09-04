@@ -16,6 +16,7 @@ export interface ComboboxOption {
   keywords?: readonly string[];
   /** The quiet second line under the label. */
   detail?: string;
+  icon?: ReactNode;
   disabled?: boolean;
 }
 
@@ -103,13 +104,14 @@ export function Combobox<T extends ComboboxOption>({
         >
           <span
             className={cn(
-              "truncate",
+              "flex min-w-0 items-center gap-2",
               comboboxSelection(options, value) === undefined &&
                 value === "" &&
                 "text-extra-muted-foreground",
             )}
           >
-            {comboboxLabel(options, value, placeholder, loading)}
+            {comboboxSelection(options, value)?.icon}
+            <span className="truncate">{comboboxLabel(options, value, placeholder, loading)}</span>
           </span>
           {loading ? (
             <Spinner className="opacity-50" />
@@ -145,6 +147,7 @@ export function Combobox<T extends ComboboxOption>({
                       aria-hidden="true"
                       className={cn(option.value === value ? "opacity-100" : "opacity-0")}
                     />
+                    {option.icon}
                     {renderOption === undefined ? (
                       <span className="grid min-w-0 gap-0.5">
                         <span className="truncate">{option.label}</span>

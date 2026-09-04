@@ -2,19 +2,13 @@ import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
-export const EDITOR_EVENTS = [
-  "slack.mention",
-  "discord.mention",
-  "github.issue_comment",
-  "linear.issue_created",
-  "manual.run",
-] as const;
-
-export type EditorEvent = (typeof EDITOR_EVENTS)[number];
-
-export function parseEditorEvent(value: string): EditorEvent {
-  return isEditorEvent(value) ? value : "manual.run";
-}
+import {
+  eventDefinition,
+  isEditorEvent,
+  type EditorEvent,
+  type QualifierValues,
+  type QualifierKey,
+} from "./events.js";
 
 export interface TriggerFormValue {
   name: string;
@@ -22,6 +16,7 @@ export interface TriggerFormValue {
   event: EditorEvent;
   connection: string;
   allowedUsers: string;
+  qualifiers: QualifierValues;
   daemon: string;
   cwd: string;
   agent: string;
@@ -78,6 +73,7 @@ function toFormValue(
     event,
     connection: definition.connection ?? "",
     allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
+    qualifiers: readQualifiers(event, definition.filters),
     daemon: trigger.run.target.daemon,
     cwd: trigger.run.target.cwd,
     agent: joinAgentId(agent.provider, agent.model),
@@ -121,6 +117,16 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   } else {
     setIfChanged(document, ["on", value.event, "connection"], value.connection);
     setIfChanged(document, ["on", value.event, "filters", "from_users"], users(value.allowedUsers));
+  }
+
+  const qualifiers = authoredQualifiers(value);
+  const ownedKeys = new Set(
+    [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
+      (qualifier) => qualifier.key,
+    ),
+  );
+  for (const key of ownedKeys) {
+    setOptional(document, ["on", value.event, "filters", key], qualifiers[key]);
   }
 
   setIfChanged(document, ["run", "target", "daemon"], value.daemon);
@@ -183,7 +189,13 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const definition =
     value.event === "manual.run"
       ? {}
-      : { connection: value.connection, filters: { from_users: users(value.allowedUsers) } };
+      : {
+          connection: value.connection,
+          filters: {
+            from_users: users(value.allowedUsers),
+            ...authoredQualifiers(value),
+          },
+        };
   return stringify(
     {
       name: value.name,
@@ -240,7 +252,9 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
 }
 
 /** What is wrong with each field, keyed by the field that has to change. */
-export type TriggerFieldErrors = Partial<Record<keyof TriggerFormValue, string>>;
+export type TriggerFieldErrors = Partial<
+  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
+>;
 
 /**
  * Every reason this form cannot become a trigger document, addressed to the field that owns it.
@@ -261,6 +275,12 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
     if (value.connection.trim().length === 0) errors.connection = "Connection is required.";
     if (value.allowedUsers.trim().length === 0) {
       errors.allowedUsers = "Name at least one user ID, or let everyone trigger it.";
+    }
+  }
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const selection = value.qualifiers[qualifier.key];
+    if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
+      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
     }
   }
   if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
@@ -381,6 +401,44 @@ function blankToUndefined(value: string): string | undefined {
   return normalized.length === 0 ? undefined : normalized;
 }
 
-function isEditorEvent(value: string): value is EditorEvent {
-  return EDITOR_EVENTS.some((event) => event === value);
+/** Provider-bound state and qualifier compatibility belong to the form model. */
+export function changeTriggerEvent(value: TriggerFormValue, event: EditorEvent): TriggerFormValue {
+  const previous = eventDefinition(value.event);
+  const next = eventDefinition(event);
+  const sameProvider = previous.provider === next.provider;
+  const qualifiers: QualifierValues = {};
+  if (sameProvider) {
+    for (const qualifier of next.qualifiers) {
+      if (
+        previous.qualifiers.some(
+          (candidate) => candidate.key === qualifier.key && candidate.kind === qualifier.kind,
+        )
+      ) {
+        const selection = value.qualifiers[qualifier.key];
+        if (selection !== undefined) qualifiers[qualifier.key] = selection;
+      }
+    }
+  }
+  return { ...value, event, qualifiers, connection: sameProvider ? value.connection : "" };
+}
+
+function readQualifiers(
+  event: EditorEvent,
+  filters: TriggerDocument["on"][string]["filters"],
+): QualifierValues {
+  const values: QualifierValues = {};
+  for (const qualifier of eventDefinition(event).qualifiers) {
+    const value = filters?.[qualifier.key];
+    if (value !== undefined) values[qualifier.key] = value;
+  }
+  return values;
+}
+
+function authoredQualifiers(value: TriggerFormValue): QualifierValues {
+  const filters: QualifierValues = {};
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const selection = value.qualifiers[qualifier.key];
+    if (selection !== undefined) filters[qualifier.key] = selection.trim();
+  }
+  return filters;
 }
