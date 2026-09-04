@@ -51,10 +51,7 @@ export interface SectionReturn {
   message: string;
 }
 
-interface Outcome {
-  tone: "success" | "error";
-  message: string;
-}
+type Outcome = SectionReturn;
 
 type SaveResponse = Result<ProviderApplicationSaveResult>;
 type ConnectResponse = Result<{ url: string }>;

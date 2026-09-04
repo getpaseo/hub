@@ -5,21 +5,17 @@ import { useServerFn } from "@tanstack/react-start";
 import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
-import { Card } from "../components/app/card.js";
+import { Card, CardSkeleton } from "../components/app/card.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { CodeBlock } from "../components/app/copy-field.js";
-import {
-  DataCell,
-  DataRow,
-  DataTable,
-  DataTableSkeleton,
-  type DataColumn,
-} from "../components/app/data-table.js";
+import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
 import { FormActions } from "../components/app/form-actions.js";
 import { FormField } from "../components/app/form-field.js";
-import { NoticeAlert } from "../components/app/failure-alert.js";
+import { FailureAlert, NoticeAlert } from "../components/app/failure-alert.js";
+import { EmptyState } from "../components/app/empty-state.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime, formatAbsolute } from "../components/app/relative-time.js";
+import { RecordList, RecordRow } from "../components/app/record-list.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill, statusLabel } from "../components/app/status-pill.js";
@@ -53,20 +49,18 @@ import {
   type ProjectSnapshot,
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
-const CONNECTION_COLUMNS: readonly DataColumn[] = [
-  { header: "Connection" },
-  { header: "Provider" },
-  { header: "Status" },
-  { header: "" },
-];
 const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
+const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
 
 function ConnectionsLoading() {
   return (
     <>
       <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
-      <Section title="Connections">
-        <DataTableSkeleton label="Connections" columns={CONNECTION_COLUMNS} />
+      <Section>
+        {CONNECTION_PROVIDERS.map((provider) => (
+          <CardSkeleton key={provider} lines={2} />
+        ))}
       </Section>
     </>
   );
@@ -112,7 +106,7 @@ export function OrganizationConnectionsPanel() {
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: "github" | "discord" | "slack" | "linear") => {
+  const connectProvider = (provider: ConnectionProviderName) => {
     connect.mutate(
       { data: { ...scope, provider } },
       {
@@ -124,7 +118,7 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
-  const connectionActionLabel = (provider: "github" | "discord" | "slack" | "linear") => {
+  const connectionActionLabel = (provider: ConnectionProviderName) => {
     if (
       (provider === "slack" || provider === "linear") &&
       status.data[provider].status === "requiresReauthorization"
@@ -141,6 +135,41 @@ export function OrganizationConnectionsPanel() {
     }
     return "Connect";
   };
+  const providerAction = (provider: ConnectionProviderName): ReactNode => {
+    if (!data.capabilities.manageResources) return undefined;
+    // An app nobody has given Hub credentials for cannot be connected from here, and only an
+    // instance operator can change that. Everyone else is told nothing about instance
+    // credentials: a state they cannot act on is not news, and a card with only a name on it is
+    // the page talking about work they cannot do.
+    if (status.data[provider].status === "notConfigured") {
+      if (!isInstanceOperator) return undefined;
+      return (
+        <Button variant="outline" size="sm" asChild>
+          <Link to={"/apps" as never}>Set up the {providerLabel(provider)} app</Link>
+        </Button>
+      );
+    }
+    return (
+      <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
+        {connectionActionLabel(provider)} {providerLabel(provider)}
+      </Button>
+    );
+  };
+  // A provider block that can neither be acted on nor list anything says only its own name.
+  // That is every provider for someone who cannot connect one, and four of them is the whole
+  // page talking about work the reader cannot do.
+  const shown = CONNECTION_PROVIDERS.map((provider) => ({
+    provider,
+    connections: rows.filter((connection) => connection.provider === provider),
+    action: providerAction(provider),
+  })).filter((block) => block.action !== undefined || block.connections.length > 0);
+  // Whose problem the empty page is: an instance with no provider apps is the operator's, an
+  // organization that has connected nothing is its owners'.
+  const nothingToConnect = CONNECTION_PROVIDERS.every(
+    (provider) => status.data[provider].status === "notConfigured",
+  )
+    ? "This Hub has no provider apps set up yet. Ask whoever runs it to add one."
+    : "An organization owner connects the providers this organization can use.";
   return (
     <>
       <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
@@ -148,25 +177,68 @@ export function OrganizationConnectionsPanel() {
         <ConnectionReturnBanner copy={connectionReturnCopy(returned)} />
       )}
       <CommandError mutations={[connect, disconnect]} />
-      <Section title="Connections">
-        <DataTable
-          label="Connections"
-          columns={CONNECTION_COLUMNS}
-          isEmpty={rows.length === 0}
-          empty={{ title: "No connections" }}
-        >
-          {rows.map((connection) => (
-            <DataRow key={`${connection.provider}-${connection.id}`}>
-              <DataCell>
-                <TwoLine primary={connection.name} secondary={connection.externalId} mono />
-              </DataCell>
-              <DataCell>
-                <span className="inline-flex items-center gap-2">
-                  <ProviderGlyph provider={connection.provider} />
-                  {providerLabel(connection.provider)}
-                </span>
-              </DataCell>
-              <DataCell>
+      <Section>
+        {shown.length === 0 ? (
+          <EmptyState title="No connections" description={nothingToConnect} />
+        ) : (
+          shown.map(({ provider, connections, action }) => (
+            <ProviderConnections
+              key={provider}
+              provider={provider}
+              connections={connections}
+              canManage={data.capabilities.manageResources}
+              busy={busy}
+              action={action}
+              onRevoke={(connectionId) =>
+                disconnect.mutate({ data: { ...scope, provider, connectionId } })
+              }
+            />
+          ))
+        )}
+      </Section>
+      <Section
+        title="Known unrouted events"
+        description="Events received for this organization that were not routed to a workflow."
+      >
+        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
+      </Section>
+    </>
+  );
+}
+
+/**
+ * One integration, top to bottom: what it is, the one way to connect it, and the accounts it is
+ * already connected to. A provider with nothing connected is the same card without a list, so
+ * the page reads as the same four blocks whatever state the organization is in.
+ */
+function ProviderConnections({
+  provider,
+  connections,
+  canManage,
+  busy,
+  action,
+  onRevoke,
+}: {
+  provider: ConnectionProviderName;
+  connections: readonly ConnectionRecord[];
+  canManage: boolean;
+  busy: boolean;
+  action: ReactNode;
+  onRevoke: (connectionId: string) => void;
+}) {
+  const label = providerLabel(provider);
+  return (
+    <Card
+      icon={<ProviderGlyph provider={provider} />}
+      title={label}
+      {...(action === undefined ? {} : { action })}
+    >
+      {connections.length === 0 ? null : (
+        <RecordList label={`${label} connections`}>
+          {connections.map((connection) => (
+            <RecordRow
+              key={connection.id}
+              status={
                 <StatusPill
                   tone={
                     connection.status === "suspended" ||
@@ -177,9 +249,9 @@ export function OrganizationConnectionsPanel() {
                 >
                   {connectionStatusLabel(connection.status)}
                 </StatusPill>
-              </DataCell>
-              <DataCell align="end">
-                {data.capabilities.manageResources ? (
+              }
+              actions={
+                canManage ? (
                   <RowActions label={`Actions for ${connection.name}`}>
                     <ConfirmMenuItem
                       busy={busy}
@@ -189,56 +261,18 @@ export function OrganizationConnectionsPanel() {
                       description="Projects using this credential will stop receiving new events."
                       confirmLabel="Revoke connection"
                       cancelLabel="Cancel"
-                      onConfirm={() =>
-                        disconnect.mutate({
-                          data: {
-                            ...scope,
-                            provider: connection.provider,
-                            connectionId: connection.id,
-                          },
-                        })
-                      }
+                      onConfirm={() => onRevoke(connection.id)}
                     />
                   </RowActions>
-                ) : null}
-              </DataCell>
-            </DataRow>
+                ) : undefined
+              }
+            >
+              <TwoLine primary={connection.name} secondary={connection.externalId} mono />
+            </RecordRow>
           ))}
-        </DataTable>
-        {data.capabilities.manageResources ? (
-          <div className="grid gap-2 sm:grid-cols-4">
-            {(["github", "discord", "slack", "linear"] as const).map((provider) => (
-              <div
-                key={provider}
-                className="flex items-center justify-between gap-2 rounded-md border p-3"
-              >
-                <span className="inline-flex items-center gap-2 text-sm">
-                  <ProviderGlyph provider={provider} />
-                  {providerLabel(provider)}
-                </span>
-                {status.data[provider].status === "notConfigured" ? (
-                  <UnconfiguredProvider provider={provider} operator={isInstanceOperator} />
-                ) : (
-                  <Button
-                    disabled={busy}
-                    variant="outline"
-                    onClick={() => connectProvider(provider)}
-                  >
-                    {connectionActionLabel(provider)} {providerLabel(provider)}
-                  </Button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </Section>
-      <Section
-        title="Known unrouted events"
-        description="Events received for this organization that were not routed to a workflow."
-      >
-        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
-      </Section>
-    </>
+        </RecordList>
+      )}
+    </Card>
   );
 }
 
@@ -609,17 +643,30 @@ function ActivityTable({
 }
 
 /**
- * What the provider sent the operator back with. A return is an announcement about the round trip
- * they just took, not a failure of the page they landed on, so both tones read as one live region
- * and the banner owns the distance to the table below it.
+ * What the provider sent the operator back with. A round trip that connected nothing is a failed
+ * request — the operator pressed Connect and came back to a page that looks unchanged — so it is
+ * reported as one rather than as news. Success is still an announcement. Either way the banner
+ * owns the distance to the table below it.
  */
 function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
+  if (copy.tone === "error") {
+    return (
+      <FailureAlert
+        standalone
+        title={copy.title}
+        error={copy.message}
+        fallback="Hub couldn't finish the connection. Start it again from this page."
+      />
+    );
+  }
   return (
-    <NoticeAlert standalone tone={copy.tone === "success" ? "success" : "neutral"}>
+    <NoticeAlert standalone tone="success">
       {copy.message}
     </NoticeAlert>
   );
 }
+
+type ConnectionRecord = ReturnType<typeof connectionRows>[number];
 
 function connectionRows(data: OrganizationSnapshot) {
   return [
@@ -657,26 +704,7 @@ function connectionRows(data: OrganizationSnapshot) {
     })),
   ];
 }
-/**
- * An operator can do something about an app that is not set up, so they get the way to do it.
- * A member cannot, and learns nothing about instance credentials either way.
- */
-function UnconfiguredProvider({
-  provider,
-  operator,
-}: {
-  provider: "github" | "discord" | "slack" | "linear";
-  operator: boolean;
-}) {
-  if (!operator) return <StatusPill tone="neutral">Not configured</StatusPill>;
-  return (
-    <Button variant="link" asChild>
-      <Link to={"/apps" as never}>Set up the {providerLabel(provider)} app</Link>
-    </Button>
-  );
-}
-
-function providerLabel(provider: "github" | "discord" | "slack" | "linear") {
+function providerLabel(provider: ConnectionProviderName) {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
   return provider === "slack" ? "Slack" : "Linear";

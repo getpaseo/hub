@@ -2,7 +2,7 @@ import { CircleCheck, Info, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 
 import type { Result } from "../../contract/respond.js";
-import { Alert, AlertDescription, AlertTitle } from "../ui/alert.js";
+import { Alert } from "../ui/alert.js";
 import { Button } from "../ui/button.js";
 
 /**
@@ -13,6 +13,12 @@ import { Button } from "../ui/button.js";
  * looks like.
  */
 const PAGE_STACK_GAP = "mb-6";
+
+// One element per glyph, created once: an alert's icon never changes, and a fresh element on
+// every render is a new prop identity for no reason.
+const WARNING_GLYPH = <TriangleAlert />;
+const SUCCESS_GLYPH = <CircleCheck />;
+const NEUTRAL_GLYPH = <Info />;
 
 function standaloneClass(standalone: boolean): string | undefined {
   return standalone ? PAGE_STACK_GAP : undefined;
@@ -83,20 +89,18 @@ export function FailureAlert({
     <Alert
       ref={alert}
       variant="destructive"
+      icon={WARNING_GLYPH}
+      title={title}
       className={standaloneClass(standalone)}
       {...(focusOnArrival ? { tabIndex: -1 } : {})}
     >
-      <TriangleAlert aria-hidden="true" />
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>
-        <p>{message}</p>
-        {details}
-        {onRetry === undefined ? null : (
-          <Button type="button" size="sm" variant="outline" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </AlertDescription>
+      <p>{message}</p>
+      {details}
+      {onRetry === undefined ? null : (
+        <Button type="button" size="sm" variant="outline" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
     </Alert>
   );
 }
@@ -119,39 +123,46 @@ export function NoticeAlert({
   standalone?: boolean;
   children: ReactNode;
 }) {
-  const Icon = tone === "success" ? CircleCheck : Info;
   return (
     <Alert
       role="status"
       variant={tone === "success" ? "success" : "default"}
+      icon={tone === "success" ? SUCCESS_GLYPH : NEUTRAL_GLYPH}
       className={standaloneClass(standalone)}
+      {...(title === undefined ? {} : { title })}
     >
-      <Icon aria-hidden="true" />
-      {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
-      <AlertDescription>{children}</AlertDescription>
+      {children}
     </Alert>
   );
 }
 
 /**
- * Something the reader should know before they act, that does not stop them acting. Warnings
- * are the same shape as failures so the two read as one system; only the colour differs.
+ * Something the reader should know before they act, that does not stop them acting. Every alert
+ * on the dashboard is the same shape — glyph, title, message, optional trailing control — and
+ * only the colour and the glyph say which kind it is.
  */
 export function WarningAlert({
   title,
+  action,
   standalone = false,
   children,
 }: {
   title?: string;
+  /** The way out of the warning, at the far edge: a link to the page that resolves it. */
+  action?: ReactNode;
   /** Set when the alert stands in a page stack rather than inside a form, dialog, or section. */
   standalone?: boolean;
   children: ReactNode;
 }) {
   return (
-    <Alert variant="warning" className={standaloneClass(standalone)}>
-      <TriangleAlert aria-hidden="true" />
-      {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
-      <AlertDescription>{children}</AlertDescription>
+    <Alert
+      variant="warning"
+      icon={WARNING_GLYPH}
+      className={standaloneClass(standalone)}
+      {...(title === undefined ? {} : { title })}
+      {...(action === undefined ? {} : { action })}
+    >
+      {children}
     </Alert>
   );
 }

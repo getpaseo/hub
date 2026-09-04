@@ -6,7 +6,7 @@ import {
   ProductMark,
 } from "../components/app/auth-layout.js";
 import { AuthActions } from "../components/app/auth-form.js";
-import { Alert, AlertDescription } from "../components/ui/alert.js";
+import { Alert } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 
 /**
@@ -26,7 +26,7 @@ export function ErrorSummary({ message }: { message: string | undefined }) {
   }, [message]);
   return message === undefined ? null : (
     <Alert ref={alert} tabIndex={-1} variant="destructive">
-      <AlertDescription>{message}</AlertDescription>
+      {message}
     </Alert>
   );
 }
@@ -57,9 +57,7 @@ export function FailedEntry({ message }: { message: string }) {
   return (
     <AuthLayout>
       <AuthCard titleId="account-failed-heading" title="Sign in to Paseo Hub">
-        <Alert variant="destructive">
-          <AlertDescription>{message}</AlertDescription>
-        </Alert>
+        <Alert variant="destructive">{message}</Alert>
       </AuthCard>
     </AuthLayout>
   );
@@ -73,11 +71,7 @@ export function UnavailableInvitation({ message }: { message: string | undefined
         title="Invitation unavailable"
         description="This link is invalid, expired, already used, or belongs to another account."
       >
-        {message === undefined ? null : (
-          <Alert variant="destructive">
-            <AlertDescription>{message}</AlertDescription>
-          </Alert>
-        )}
+        {message === undefined ? null : <Alert variant="destructive">{message}</Alert>}
         <AuthActions>
           <Button asChild size="lg">
             <a href="/">Continue to Paseo Hub</a>

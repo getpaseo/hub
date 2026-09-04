@@ -4536,7 +4536,7 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Connections", exact: true, level: 1 }),
     ).toBeVisible();
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await expect(this.page.getByText(/does not deploy a/u)).toHaveCount(0);
     const widths = await this.page.getByRole("main").evaluate((main) => ({
       document: document.documentElement.scrollWidth,
@@ -4678,15 +4678,26 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(forged.toString());
   }
 
+  /**
+   * A round trip that connected nothing is reported as a failed request, headed by the provider
+   * the operator was trying to connect. Both halves are asserted: a banner with only the title
+   * has stopped saying what to do next.
+   */
+  private async expectConnectionFailure(message: string): Promise<void> {
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText(/ wasn't connected/u);
+    await expect(alert).toContainText(message);
+  }
+
   async expectGitHubConnectionConflict(): Promise<void> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
+    await this.expectConnectionFailure(
       "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await this.expectNoProviderIdentity("acme-inc");
   }
 
@@ -4694,10 +4705,10 @@ class HubUser {
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
+    await this.expectConnectionFailure(
       "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await this.expectNoProviderIdentity("Acme Guild");
   }
 
@@ -4733,7 +4744,7 @@ class HubUser {
     await this.page.goto(url);
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
     await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
-    await expect(this.page.getByRole("status")).toHaveText(
+    await this.expectConnectionFailure(
       "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
     );
   }
@@ -4763,7 +4774,7 @@ class HubUser {
       .click();
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
     await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
-    await expect(this.page.getByRole("status")).toHaveText(
+    await this.expectConnectionFailure(
       "GitHub sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the GitHub app's callback and setup URLs, then start the connection again.",
     );
   }
@@ -4803,12 +4814,10 @@ class HubUser {
     const connectionsUrl = this.page.url();
     const github = this.connectionRow("GitHub");
     const discord = this.connectionRow("Discord");
-    await expect(github.getByRole("cell").first()).toContainText(expected.github);
-    await expect(github.getByRole("cell").first()).toContainText(
-      `installation ${expected.installationId}`,
-    );
-    await expect(discord.getByRole("cell").first()).toContainText(expected.discord);
-    await expect(discord.getByRole("cell").first()).toContainText(`guild ${expected.guildId}`);
+    await expect(github).toContainText(expected.github);
+    await expect(github).toContainText(`installation ${expected.installationId}`);
+    await expect(discord).toContainText(expected.discord);
+    await expect(discord).toContainText(`guild ${expected.guildId}`);
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByText(/ephemeral|state|code=/u)).toHaveCount(0);
     await expectAccessible(this.page);
@@ -4934,10 +4943,19 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
   }
 
+  /**
+   * An instance with no provider credentials, seen by someone who cannot supply them. The page
+   * says so once and offers nothing: four provider blocks with no action are four ways to say
+   * the same thing to a reader who can do nothing about any of them.
+   */
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
-    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(4);
-    await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
+    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await expect(this.page.getByText(/no provider apps set up yet/u)).toBeVisible();
+    await expect(this.page.getByRole("button", { name: /Connect|Revoke|Set up the/u })).toHaveCount(
+      0,
+    );
+    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(0);
     await expectAccessible(this.page);
   }
 
@@ -4945,7 +4963,7 @@ class HubUser {
     await this.openOrganizationSection("Connections");
     await this.requestGitHubApproval();
     await this.requestGitHubApproval();
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
   }
 
   private async requestGitHubApproval(): Promise<void> {
@@ -4956,7 +4974,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await returned;
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
+    await this.expectConnectionFailure(
       "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
     );
   }
@@ -5183,11 +5201,14 @@ class HubUser {
     await this.page.reload();
   }
 
+  /** Every connection a provider card lists. Each provider owns its own list on the page. */
   private connectionRow(provider: string): Locator {
-    return this.page
-      .getByRole("table", { name: "Connections" })
-      .getByRole("row")
-      .filter({ has: this.page.getByRole("cell", { name: provider, exact: true }) });
+    return this.page.getByRole("list", { name: `${provider} connections` }).getByRole("listitem");
+  }
+
+  /** No provider lists any connection, whatever the reason there is nothing to list. */
+  private async expectNoConnections(): Promise<void> {
+    await expect(this.page.getByRole("list", { name: /^\w+ connections$/u })).toHaveCount(0);
   }
 
   private async chooseOption(select: Locator, option: string): Promise<void> {
