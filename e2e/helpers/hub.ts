@@ -4307,13 +4307,13 @@ class HubUser {
   async expectCardlessTrialOffer(): Promise<void> {
     await this.openPlanDialog();
     const dialog = this.page.getByRole("dialog");
-    await expect(dialog).toContainText("14 days free · No card required");
+    await expect(dialog).toContainText("7 days free · No card required");
     await expect(
       dialog.getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` }),
     ).toHaveText("Start free trial");
     await this.expectPickerShowsOnlyTheOffer(dialog);
     // Nothing frames or hedges the offer: no heading, no sales sentence, no post-trial footnote.
-    await expect(dialog).not.toContainText("14 days free, then");
+    await expect(dialog).not.toContainText("7 days free, then");
     await expect(dialog).not.toContainText("Nothing is charged");
     await expectAccessible(this.page);
   }

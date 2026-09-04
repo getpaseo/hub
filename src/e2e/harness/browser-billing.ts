@@ -271,7 +271,7 @@ export class FixtureStripeBillingClient {
       quantity: input.quantity,
       status: trial ? "trialing" : "active",
       currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
-      trialEnd: trial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
+      trialEnd: trial ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
       cancelAtPeriodEnd: false,
     };
     this.subscriptions.set(id, subscription);

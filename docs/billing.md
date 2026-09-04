@@ -121,7 +121,7 @@ catalog, so a second product or an annual price restores the controls without a 
 nothing that has no meaning today is rendered today.
 
 A new hosted organization's post-commit hook passes the stored signup intent to billing. Today's
-`trial` intent starts its Stripe-owned 14-day trial directly, with
+`trial` intent starts its Stripe-owned 7-day trial directly, with
 `trial_settings.end_behavior.missing_payment_method=cancel`, and reconciles it before the create
 request returns. No card or Checkout visit is required. The Subscribe → Checkout path remains for
 customers returning after cancellation and as the fallback when automatic trial creation failed;
