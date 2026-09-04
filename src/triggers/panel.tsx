@@ -30,8 +30,8 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
+  changeTriggerEvent,
   mergeTriggerForm,
-  parseEditorEvent,
   projectTriggerForm,
   triggerFormErrors,
   type TriggerFieldErrors,
@@ -40,6 +40,13 @@ import {
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
+import { EventFields } from "./event-fields.js";
+import {
+  EDITOR_EVENTS,
+  eventDefinition,
+  isEditorEvent,
+  parseEditorEvent,
+} from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
@@ -61,20 +68,16 @@ const TRIGGER_COLUMNS = [
   { header: "Status" },
 ] as const;
 
-/** The event names the form supports, and how each one reads in a sentence. */
-const EVENT_LABELS: Record<string, string> = {
-  "slack.mention": "Slack mention",
-  "discord.mention": "Discord mention",
-  "github.issue_comment": "GitHub issue comment",
-  "linear.issue_created": "Linear issue created",
-  "manual.run": "Manual run",
-};
-
-// The picker names the event, with its identifier underneath: an operator matching a trigger to
-// a YAML document needs the identifier, and a table scanning past it does not.
-const EVENT_OPTIONS: readonly ComboboxOption[] = Object.entries(EVENT_LABELS).map(
-  ([value, label]) => ({ value, label, detail: value, keywords: [value] }),
-);
+const EVENT_OPTIONS: readonly ComboboxOption[] = EDITOR_EVENTS.map((value) => {
+  const { label, provider } = eventDefinition(value);
+  return {
+    value,
+    label,
+    detail: value,
+    keywords: [label, value],
+    icon: <ProviderGlyph provider={provider} />,
+  };
+});
 
 const TRIGGERS_DESCRIPTION = "Launch agents on your compute when organization events arrive.";
 const TRIGGER_EDITOR_DESCRIPTION = "One event launches one agent on your compute.";
@@ -573,7 +576,7 @@ function TriggerForm({
   snapshot: TriggerSnapshot;
   onChange: (value: TriggerFormValue) => void;
 }) {
-  const provider = form.event.split(".")[0];
+  const { provider } = eventDefinition(form.event);
   const connections = snapshot.connections.filter((connection) => connection.provider === provider);
   const githubConnections = snapshot.connections.filter(
     (connection) => connection.provider === "github",
@@ -658,7 +661,9 @@ function TriggerForm({
                   options={EVENT_OPTIONS}
                   placeholder="Select an event"
                   empty="No events found."
-                  onChange={(option) => update("event", parseEditorEvent(option.value))}
+                  onChange={(option) =>
+                    onChange(changeTriggerEvent(form, parseEditorEvent(option.value)))
+                  }
                 />
               )}
             </FormField>
@@ -684,6 +689,12 @@ function TriggerForm({
               </FormField>
             )}
           </div>
+          <EventFields
+            event={form.event}
+            values={form.qualifiers}
+            errors={errors}
+            onChange={(qualifiers) => update("qualifiers", qualifiers)}
+          />
         </Card>
 
         {form.event === "manual.run" ? null : (
@@ -1231,6 +1242,7 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     event: slack === undefined ? "manual.run" : "slack.mention",
     connection: slack?.slug ?? "",
     allowedUsers: "*",
+    qualifiers: {},
     daemon: "",
     cwd: "/workspace",
     agent: "",
@@ -1249,5 +1261,5 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
 }
 
 function eventLabel(event: string): string {
-  return EVENT_LABELS[event] ?? event;
+  return isEditorEvent(event) ? eventDefinition(event).label : event;
 }
