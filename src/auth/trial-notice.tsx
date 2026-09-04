@@ -37,7 +37,7 @@ export function TrialNotice({ organizationSlug }: { organizationSlug: string }) 
   const label = trialNoticeLabel(daysLeft);
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild size="sm" tooltip={label} className="text-muted-foreground">
+      <SidebarMenuButton asChild tooltip={label}>
         <Link to={`/o/${organizationSlug}/settings/billing` as never} onClick={navigate}>
           <Clock aria-hidden="true" />
           <span>{label}</span>

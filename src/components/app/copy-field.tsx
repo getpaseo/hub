@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "../ui/button.js";
 import { Field, FieldDescription, FieldLabel } from "../ui/field.js";
@@ -39,12 +39,13 @@ function useCopy(label: string, value: string) {
   return { state, copy, announcement };
 }
 
-function CopyButton({
+function CopyControl({
   label,
   copied,
   onCopy,
   children,
 }: {
+  /** The button's accessible name, already worded. */
   label: string;
   copied: boolean;
   onCopy: () => void;
@@ -55,7 +56,7 @@ function CopyButton({
       type="button"
       variant="ghost"
       size={children === undefined ? "icon-sm" : "sm"}
-      aria-label={children === undefined ? `Copy ${label}` : undefined}
+      aria-label={children === undefined ? label : undefined}
       className="shrink-0"
       onClick={onCopy}
     >
@@ -65,11 +66,31 @@ function CopyButton({
   );
 }
 
+/**
+ * The confirmation, for whoever is not looking at the button. `role="status"` as well as the
+ * live attribute: the role is what a test — and some screen readers — find the region by, and
+ * an element that is only `aria-live` has no role to be found under.
+ */
 function Announcement({ message }: { message: string }) {
   return (
-    <span aria-live="polite" className="sr-only">
+    <span role="status" aria-live="polite" className="sr-only">
       {message}
     </span>
+  );
+}
+
+/**
+ * Copy this value, with nothing else on screen about it. For a value that is already visible in
+ * something that is not a field — an editor pane, a preview — where the label and the box a
+ * `CopyField` draws would be a second copy of what the reader is already looking at.
+ */
+export function CopyButton({ label, value }: { label: string; value: string }) {
+  const { state, copy, announcement } = useCopy(label, value);
+  return (
+    <>
+      <CopyControl label={`Copy ${label}`} copied={state === "copied"} onCopy={copy} />
+      <Announcement message={announcement} />
+    </>
   );
 }
 
@@ -97,12 +118,44 @@ export function CodeBlock({ label, children }: { label?: string; children: strin
   );
 }
 
-export function CopyField({ label, value }: { label: string; value: string }) {
+/**
+ * A value to copy, its label, and the one control that copies it.
+ *
+ * `focusOnMount` is for a value shown once and never again — a generated secret — where the
+ * whole point of the surface is that value: it arrives focused and already selected, so the
+ * browser's own copy shortcut works before anything is clicked. Holding a caret and a selection
+ * needs a real text control, so that path renders a read-only input; every other value stays a
+ * span, which is what lets a long URL wrap inside the box instead of scrolling out of a narrow
+ * column. The box, the type, and the button are the same either way.
+ */
+export function CopyField({
+  label,
+  value,
+  copyLabel,
+  focusOnMount = false,
+}: {
+  label: string;
+  value: string;
+  /** The copy button's accessible name, when "Copy <label>" is not what it should say. */
+  copyLabel?: string;
+  focusOnMount?: boolean;
+}) {
   const { state, copy, announcement } = useCopy(label, value);
+  const id = useId();
   const text = useRef<HTMLSpanElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!focusOnMount) return;
+    field.current?.focus();
+    field.current?.select();
+  }, [focusOnMount]);
   // The manual path has to leave the operator something to do: put the whole value in their
   // selection so the browser's own copy shortcut finishes the job.
   const select = useCallback(() => {
+    if (field.current !== null) {
+      field.current.select();
+      return;
+    }
     const node = text.current;
     if (node === null) return;
     const range = document.createRange();
@@ -117,12 +170,27 @@ export function CopyField({ label, value }: { label: string; value: string }) {
   }, [copy, select]);
   return (
     <Field className="min-w-0 gap-2">
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <div className="flex min-h-8 items-center gap-1 rounded-md border border-input bg-transparent py-1 pr-1 pl-2.5">
-        <span ref={text} className="min-w-0 flex-1 font-mono text-xs break-all">
-          {value}
-        </span>
-        <CopyButton label={label} copied={state === "copied"} onCopy={onCopy} />
+        {focusOnMount ? (
+          <input
+            ref={field}
+            id={id}
+            readOnly
+            value={value}
+            onFocus={selectOnFocus}
+            className="min-w-0 flex-1 bg-transparent font-mono text-xs outline-none"
+          />
+        ) : (
+          <span ref={text} id={id} className="min-w-0 flex-1 font-mono text-xs break-all">
+            {value}
+          </span>
+        )}
+        <CopyControl
+          label={copyLabel ?? `Copy ${label}`}
+          copied={state === "copied"}
+          onCopy={onCopy}
+        />
       </div>
       {state === "manual" ? (
         <FieldDescription>Select the value and copy it.</FieldDescription>
@@ -130,6 +198,10 @@ export function CopyField({ label, value }: { label: string; value: string }) {
       <Announcement message={announcement} />
     </Field>
   );
+}
+
+function selectOnFocus(event: { currentTarget: HTMLInputElement }): void {
+  event.currentTarget.select();
 }
 
 export function CopyBlock({
@@ -147,9 +219,9 @@ export function CopyBlock({
     <Field className="min-w-0 gap-2">
       <div className="flex items-center justify-between gap-2">
         <FieldLabel>{label}</FieldLabel>
-        <CopyButton label={label} copied={state === "copied"} onCopy={copy}>
+        <CopyControl label={`Copy ${label}`} copied={state === "copied"} onCopy={copy}>
           {action}
-        </CopyButton>
+        </CopyControl>
       </div>
       <CodeBlock label={`${label} value`}>{value}</CodeBlock>
       {state === "manual" ? (

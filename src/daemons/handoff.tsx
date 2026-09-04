@@ -2,11 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { TriangleAlert } from "lucide-react";
 import { useCallback } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
 import { CopyField } from "../components/app/copy-field.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
+import { LoadingLine } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
 import { daemonList, type BrowserDaemonList } from "./functions.js";
@@ -169,21 +169,17 @@ export function DaemonHandoffView({
 function LinkProgress({ link, onRetry }: { link: DaemonLink; onRetry: () => void }) {
   if (link.state === "failed") {
     return (
-      <Alert variant="destructive">
-        <TriangleAlert />
-        <AlertTitle>Hub couldn't check for daemons</AlertTitle>
-        <AlertDescription>
-          <p>{link.message}</p>
-          <Button type="button" size="sm" variant="outline" onClick={onRetry}>
-            Check again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Hub couldn't check for daemons"
+        error={link.message}
+        fallback="Hub didn't answer. Check your connection, then check again."
+        onRetry={onRetry}
+      />
     );
   }
   return (
-    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <LoadingLine>
       {link.state === "checking" ? "Checking for daemons…" : "Waiting for a daemon to connect…"}
-    </p>
+    </LoadingLine>
   );
 }

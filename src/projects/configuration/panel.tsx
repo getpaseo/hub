@@ -2,11 +2,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
+import { Combobox, type ComboboxOption } from "../../components/app/combobox.js";
+import { FailureAlert, NoticeAlert } from "../../components/app/failure-alert.js";
+import { FormField } from "../../components/app/form-field.js";
+import { LoadingLine } from "../../components/app/loading.js";
 import { PageHeader } from "../../components/app/page.js";
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.js";
-import { Button } from "../../components/ui/button.js";
-import { Input } from "../../components/ui/input.js";
+import { RelativeTime, formatAbsolute } from "../../components/app/relative-time.js";
+import { SegmentedControl, type SegmentedOption } from "../../components/app/segmented-control.js";
+import { StatusLine } from "../../components/app/status-line.js";
+import { StatusPill } from "../../components/app/status-pill.js";
 import { ProviderGlyph } from "../../connections/provider-glyph.js";
+import { TwoLine } from "../../components/app/two-line.js";
+import { Button } from "../../components/ui/button.js";
 import type { Result } from "../../contract/respond.js";
 import { cn } from "../../lib/utils.js";
 import { useRouteTenant } from "../context.js";
@@ -20,13 +27,11 @@ import {
 } from "../functions.js";
 import {
   CommandError,
-  formatDate,
   projectScope,
   useProjectCommand,
   useProjectSnapshot,
   type ProjectSnapshot,
 } from "../panel-state.js";
-import { RepositoryCombobox, type ComboboxRepository } from "../repository-combobox.js";
 import { CodeEditor } from "./code-editor.js";
 import {
   addPartial,
@@ -44,6 +49,14 @@ import {
 } from "./draft.js";
 
 type Configuration = ProjectSnapshot["configuration"];
+
+/** A repository this project's connections can read, as the source picker needs it. */
+export interface AvailableRepository {
+  connectionId: string;
+  repositoryId: number;
+  fullName: string;
+  defaultBranch: string;
+}
 
 export function ProjectConfigurationPanel() {
   const tenant = useRouteTenant();
@@ -69,7 +82,7 @@ function ProjectConfigurationScreen() {
     queryFn: () => loadRepositories({ data: scope }),
   });
   const [sourceMode, setSourceMode] = useState<"manual" | "github" | null>(null);
-  const [stagedRepository, setStagedRepository] = useState<ComboboxRepository | null>(null);
+  const [stagedRepository, setStagedRepository] = useState<AvailableRepository | null>(null);
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
   const configuration = data.configuration;
@@ -165,10 +178,12 @@ function ConfigurationWorkbench({
   return (
     <section
       aria-label="Configuration editor"
-      // The row tracks are bounded like the columns are: an `auto` row would size to
-      // the open document and push the editor past this fixed height, where
-      // `overflow-hidden` would clip it with nothing left to scroll.
-      className="grid h-[70svh] min-h-[30rem] grid-cols-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border bg-card md:grid-cols-[17rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]"
+      // The workbench is a fixed-height pane: the rail and the document each scroll inside it,
+      // so a long configuration never turns the page into two nested scrollbars. The row tracks
+      // are bounded like the columns are — an `auto` row would size to the open document and push
+      // the editor past the pane, where `overflow-hidden` would clip it with nothing left to
+      // scroll. `CodeEditor` fills whatever height it is given.
+      className="grid h-160 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border bg-card md:grid-cols-[17rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]"
     >
       <div className="flex flex-col gap-5 overflow-y-auto border-b p-4 md:border-r md:border-b-0">
         {source}
@@ -207,14 +222,9 @@ function ConfigurationWorkbench({
       <div className="flex min-w-0 flex-col">
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
           <span className="truncate font-mono text-xs">{document.label}</span>
-          <span
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[10px]",
-              editing ? "bg-warning-surface text-warning" : "bg-muted text-muted-foreground",
-            )}
-          >
+          <StatusPill tone={editing ? "warning" : "neutral"} dot={false}>
             {editing ? "Editing" : "Read-only"}
-          </span>
+          </StatusPill>
           <span className="flex-1" />
           {!editable && configuration.authority === "github" ? (
             <span className="text-xs text-muted-foreground">
@@ -259,9 +269,13 @@ function ConfigurationWorkbench({
             onChange={(content) => setDraft(editSelected(draft, content))}
           />
         </div>
-        <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
           <span>{revisionState(revision)}</span>
-          {modified ? <span className="text-warning">Unsaved changes</span> : null}
+          {modified ? (
+            <StatusPill tone="warning" dot={false}>
+              Unsaved changes
+            </StatusPill>
+          ) : null}
           <span className="flex-1" />
           <span>{`${String(draft.files.length)} file${draft.files.length === 1 ? "" : "s"}`}</span>
         </div>
@@ -280,16 +294,18 @@ function RevisionSummary({ revision }: { revision: Configuration["activeRevision
     <div className="grid gap-1.5">
       <RailLabel>Active revision</RailLabel>
       {revision === null ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          No active configuration.
-        </p>
+        <StatusLine>No active configuration.</StatusLine>
       ) : (
         <div className="rounded-md border px-2.5 py-2">
-          <p className="text-sm">Revision {revision.version}</p>
-          <p className="text-xs text-muted-foreground">
-            {revision.sourceKind === "github" ? "GitHub-managed" : "Manual"} ·{" "}
-            {formatDate(revision.createdAt)}
-          </p>
+          <TwoLine
+            primary={`Revision ${String(revision.version)}`}
+            secondary={
+              <>
+                {revision.sourceKind === "github" ? "GitHub-managed" : "Manual"} ·{" "}
+                <RelativeTime value={revision.createdAt} />
+              </>
+            }
+          />
         </div>
       )}
     </div>
@@ -322,21 +338,13 @@ function FileList({
       <div className="flex items-center justify-between">
         <RailLabel>Files</RailLabel>
         {editing && adding === null ? (
-          <span className="flex gap-2">
-            <button
-              type="button"
-              className="text-xs text-link hover:underline"
-              onClick={() => onStartAdding("workflow")}
-            >
+          <span className="flex gap-3">
+            <Button type="button" variant="link" onClick={() => onStartAdding("workflow")}>
               Add workflow
-            </button>
-            <button
-              type="button"
-              className="text-xs text-link hover:underline"
-              onClick={() => onStartAdding("partial")}
-            >
+            </Button>
+            <Button type="button" variant="link" onClick={() => onStartAdding("partial")}>
               Add partial
-            </button>
+            </Button>
           </span>
         ) : null}
       </div>
@@ -372,7 +380,7 @@ function FileList({
       </ul>
       {adding !== null ? (
         <form
-          className="grid gap-1.5"
+          className="grid gap-3"
           onSubmit={(event) => {
             event.preventDefault();
             const form = new FormData(event.currentTarget);
@@ -380,13 +388,15 @@ function FileList({
             onAdd(adding, typeof path === "string" ? path : "");
           }}
         >
-          <Input
+          <FormField
+            id="configuration-file-path"
+            label={adding === "workflow" ? "Workflow file name" : "Partial path"}
+            kind="text"
             name="filePath"
-            aria-label={adding === "workflow" ? "Workflow file name" : "Partial path"}
             placeholder={adding === "workflow" ? "triage.yml" : "triage/preamble.md"}
-            className="h-8 font-mono text-xs"
+            {...(pathError === null ? {} : { error: pathError })}
           />
-          <div className="flex gap-1.5">
+          <div className="flex gap-2">
             <Button type="submit" size="sm">
               Add
             </Button>
@@ -396,11 +406,6 @@ function FileList({
           </div>
         </form>
       ) : null}
-      {pathError === null ? null : (
-        <p role="alert" className="text-xs text-destructive">
-          {pathError}
-        </p>
-      )}
       <p className="text-xs text-muted-foreground">
         Workflow YAML lives directly under <span className="font-mono">.paseo/workflows/</span>;
         shared prompt files live under <span className="font-mono">partials/</span>. Saving
@@ -430,16 +435,16 @@ function ConfigurationSource({
   mode: "manual" | "github";
   onSelectMode: (mode: "manual" | "github") => void;
   switchToManualPending: boolean;
-  repositories: ComboboxRepository[];
+  repositories: AvailableRepository[];
   repositoriesLoading: boolean;
-  stagedRepository: ComboboxRepository | null;
-  onStageRepository: (repository: ComboboxRepository) => void;
+  stagedRepository: AvailableRepository | null;
+  onStageRepository: (repository: AvailableRepository) => void;
   onSaveRepository: () => void;
   saveRepositoryPending: boolean;
   onSync: () => void;
   syncPending: boolean;
 }) {
-  const currentRepository: ComboboxRepository | null =
+  const currentRepository: AvailableRepository | null =
     configuration.sourceState.kind === "github"
       ? {
           connectionId: configuration.sourceState.githubConnectionId,
@@ -453,7 +458,7 @@ function ConfigurationSource({
     return (
       <div className="grid gap-1.5">
         <RailLabel>Source</RailLabel>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm">
           {currentRepository === null ? "Manual" : `GitHub · ${currentRepository.fullName}`}
         </p>
       </div>
@@ -462,45 +467,48 @@ function ConfigurationSource({
 
   const manualUnavailable =
     configuration.authority === "github" && configuration.activeRevision === null;
+  const selected = stagedRepository ?? currentRepository;
 
   return (
     <div className="grid gap-2">
       <RailLabel>Source</RailLabel>
-      <div
-        role="radiogroup"
-        aria-label="Configuration source mode"
-        className="inline-flex w-full gap-1 rounded-md border bg-muted p-1"
-      >
-        <SourceModeButton
-          active={mode === "manual"}
-          disabled={switchToManualPending || manualUnavailable}
-          title={
-            manualUnavailable ? "Sync a GitHub revision before switching to manual." : undefined
-          }
-          onClick={() => onSelectMode("manual")}
-        >
-          Manual
-        </SourceModeButton>
-        <SourceModeButton
-          active={mode === "github"}
-          disabled={switchToManualPending}
-          onClick={() => onSelectMode("github")}
-        >
-          <ProviderGlyph provider="github" />
-          GitHub
-        </SourceModeButton>
-      </div>
+      <SegmentedControl
+        label="Configuration source mode"
+        value={mode}
+        options={
+          [
+            {
+              value: "manual",
+              label: "Manual",
+              disabled: switchToManualPending || manualUnavailable,
+              ...(manualUnavailable
+                ? { hint: "Sync a GitHub revision before switching to Manual." }
+                : { hint: "Edited in Hub. Saving activates a new revision." }),
+            },
+            {
+              value: "github",
+              label: "GitHub",
+              icon: GITHUB_GLYPH,
+              disabled: switchToManualPending,
+            },
+          ] satisfies readonly SegmentedOption[]
+        }
+        onChange={(next) => onSelectMode(next as "manual" | "github")}
+      />
       {mode === "github" ? (
         <div className="grid gap-2">
-          <RepositoryCombobox
-            repositories={repositories}
-            loading={repositoriesLoading}
-            selected={stagedRepository ?? currentRepository}
+          <Combobox
+            id="configuration-repository"
+            label="Repository"
+            value={selected === null ? "" : repositoryKey(selected)}
+            options={repositoryOptions(repositories, selected)}
+            onChange={(option) => onStageRepository(option.repository)}
             placeholder="Select repository…"
+            loading={repositoriesLoading}
             disabled={saveRepositoryPending}
-            onSelect={onStageRepository}
+            empty="No repositories found."
           />
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               disabled={stagedRepository === null || saveRepositoryPending}
@@ -517,60 +525,72 @@ function ConfigurationSource({
                 aria-busy={syncPending}
                 onClick={onSync}
               >
-                {syncPending ? "Syncing…" : "Sync now"}
+                Sync now
               </Button>
             ) : null}
           </div>
+          {syncPending ? <LoadingLine>Syncing…</LoadingLine> : null}
           {configuration.authority === "github" ? (
-            <p role="status" className="text-xs text-muted-foreground">
+            <StatusLine>
               {configuration.lastSyncAttempt === null
                 ? "No synchronization attempt yet."
-                : `${syncOutcome(configuration.lastSyncAttempt.outcome)} at ${formatDate(configuration.lastSyncAttempt.createdAt)}${configuration.lastSyncAttempt.commitSha === null ? "" : ` · ${configuration.lastSyncAttempt.commitSha.slice(0, 12)}`}`}
-            </p>
+                : `${syncOutcome(configuration.lastSyncAttempt.outcome)} at ${formatAbsolute(configuration.lastSyncAttempt.createdAt)}${configuration.lastSyncAttempt.commitSha === null ? "" : ` · ${configuration.lastSyncAttempt.commitSha.slice(0, 12)}`}`}
+            </StatusLine>
           ) : null}
         </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Edited in Hub. Saving activates a new revision.
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }
 
-function SourceModeButton({
-  active,
-  disabled,
-  title,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  title?: string | undefined;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={active}
-      disabled={disabled}
-      title={title}
-      onClick={onClick}
-      className={cn(
-        "inline-flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1 text-xs transition-colors disabled:pointer-events-none disabled:opacity-50",
-        active
-          ? "bg-background text-foreground shadow-xs"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
+/** The provider's own mark, not a lucide stand-in: the segment names GitHub, so it wears it. */
+const GITHUB_GLYPH = <ProviderGlyph provider="github" />;
+
+interface RepositoryOption extends ComboboxOption {
+  repository: AvailableRepository;
 }
 
+/** A repository is identified by the connection that can read it, not by its name alone. */
+function repositoryKey(repository: AvailableRepository): string {
+  return `${repository.connectionId}:${String(repository.repositoryId)}`;
+}
+
+/**
+ * The repositories on offer, with the one already in use always among them. The list arrives
+ * after the page does, and a repository the picker cannot find reads as unavailable — which is
+ * right for a repository that has gone away and wrong for one that simply has not loaded yet.
+ */
+function repositoryOptions(
+  repositories: readonly AvailableRepository[],
+  selected: AvailableRepository | null,
+): readonly RepositoryOption[] {
+  const options = repositories.map(
+    (repository): RepositoryOption => ({
+      value: repositoryKey(repository),
+      label: repository.fullName,
+      detail: repository.defaultBranch,
+      repository,
+    }),
+  );
+  if (selected === null || options.some((option) => option.value === repositoryKey(selected))) {
+    return options;
+  }
+  return [
+    {
+      value: repositoryKey(selected),
+      label: selected.fullName,
+      detail: selected.defaultBranch,
+      repository: selected,
+    },
+    ...options,
+  ];
+}
+
+/**
+ * What the last save did. An activation is an announcement — the revision it produced is already
+ * on screen below — and a refusal is the one thing the operator has to act on, so it lists every
+ * line of YAML that stopped it rather than running them together into one sentence.
+ */
 function ManualConfigurationResult({
   result,
 }: {
@@ -579,32 +599,35 @@ function ManualConfigurationResult({
   if (result?.status !== "ok") return null;
   if (result.data.outcome === "activated") {
     return (
-      <Alert role="status" className="mb-5">
-        <AlertDescription>
-          Configuration saved and activated as Revision {result.data.revision.version}.
-        </AlertDescription>
-      </Alert>
+      // The banner owns the distance to the workbench it sits over; no caller spaces it.
+      <div className="mb-6">
+        <NoticeAlert tone="success">
+          {`Configuration saved and activated as Revision ${String(result.data.revision.version)}.`}
+        </NoticeAlert>
+      </div>
     );
   }
   return (
-    <Alert variant="destructive" className="mb-5">
-      <AlertTitle>Configuration couldn't be activated</AlertTitle>
-      <AlertDescription>
-        <p>Correct the YAML and try again. The active revision was not changed.</p>
-        <ul className="list-disc pl-5">
-          {result.data.errors.map((error) => (
-            <li key={error}>{error}</li>
-          ))}
-        </ul>
-      </AlertDescription>
-    </Alert>
+    <div className="mb-6">
+      <FailureAlert
+        title="Configuration couldn't be activated"
+        error={null}
+        fallback="Correct the YAML and try again. The active revision was not changed."
+        details={
+          <ul className="grid list-disc gap-1 pl-4">
+            {result.data.errors.map((message) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        }
+      />
+    </div>
   );
 }
 
+/** The quiet name above a group of controls in the editor's rail. */
 function RailLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-[11px] tracking-wide text-muted-foreground uppercase">{children}</span>
-  );
+  return <span className="text-xs text-muted-foreground">{children}</span>;
 }
 
 function syncOutcome(outcome: string) {

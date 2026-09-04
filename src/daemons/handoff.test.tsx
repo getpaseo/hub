@@ -142,7 +142,7 @@ describe("the daemon handoff screen", () => {
 
     assert.match(screen, /Hub couldn&#x27;t check for daemons/u);
     assert.match(screen, /Hub did not answer\./u);
-    assert.match(screen, /Check again/u);
+    assert.match(screen, /Try again/u);
     assert.ok(screen.includes("paseo hub login http://localhost:4173"));
     // A failed check is not a reason to strand the operator here.
     assert.match(screen, /Do this later/u);

@@ -1,7 +1,6 @@
 import { useCallback, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { TriangleAlert } from "lucide-react";
 import {
   DataCell,
   DataRow,
@@ -9,23 +8,15 @@ import {
   DataTableSkeleton,
   type DataColumn,
 } from "../components/app/data-table.js";
+import { FailureAlert, WarningAlert } from "../components/app/failure-alert.js";
+import { FormDialog } from "../components/app/form-dialog.js";
+import { FormField } from "../components/app/form-field.js";
 import { PageHeader } from "../components/app/page.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
 import { StatusPill } from "../components/app/status-pill.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
-import { Badge } from "../components/ui/badge.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
 import {
   Select,
   SelectContent,
@@ -109,14 +100,11 @@ function OrganizationPicker({
   if (query.isPending) return <OrganizationPickerLoading />;
   if (query.isError || query.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Operator console unavailable</AlertTitle>
-        <AlertDescription>
-          {query.data?.status === "error"
-            ? query.data.error.message
-            : "Hub did not receive the organization list. Check your connection and reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Operator console unavailable"
+        error={query.data}
+        fallback="Hub did not receive the organization list. Check your connection and reload the page."
+      />
     );
   }
   return (
@@ -147,14 +135,11 @@ function OperatorOrganization({ slug }: { slug: string }) {
   if (query.isPending) return <OperatorOrganizationLoading />;
   if (query.isError || query.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Entitlements unavailable</AlertTitle>
-        <AlertDescription>
-          {query.data?.status === "error"
-            ? query.data.error.message
-            : "Hub did not receive this organization's entitlements. Check your connection and reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Entitlements unavailable"
+        error={query.data}
+        fallback="Hub did not receive this organization's entitlements. Check your connection and reload the page."
+      />
     );
   }
   return <OrganizationContent snapshot={query.data.data} slug={slug} />;
@@ -235,17 +220,17 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
           <DataRow>
             <DataCell>Members can invite</DataCell>
             <DataCell muted>
-              <InviteBadge canInvite={granted.canInviteMembers} />
+              <InviteState canInvite={granted.canInviteMembers} />
             </DataCell>
             <DataCell muted>
               {overrides.canInviteMembers === undefined ? (
                 "—"
               ) : (
-                <InviteBadge canInvite={overrides.canInviteMembers} />
+                <InviteState canInvite={overrides.canInviteMembers} />
               )}
             </DataCell>
             <DataCell>
-              <InviteBadge canInvite={effective.canInviteMembers} />
+              <InviteState canInvite={effective.canInviteMembers} />
             </DataCell>
             <DataCell muted>—</DataCell>
             <DataCell align="end">
@@ -299,17 +284,13 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
 function OverLimitBanner({ overages }: { overages: Snapshot["overages"] }) {
   if (overages.length === 0) return null;
   return (
-    <Alert aria-label="Over plan limit" className="border-warning/40 bg-warning-surface">
-      <TriangleAlert className="text-warning" />
-      <AlertTitle>This organization is over its limits</AlertTitle>
-      <AlertDescription>
-        {overages.map((overage) => (
-          <p key={overage.entitlement}>
-            {`${overage.current} seats in use, but the effective limit is ${overage.limit}.`}
-          </p>
-        ))}
-      </AlertDescription>
-    </Alert>
+    <WarningAlert title="This organization is over its limits">
+      {overages.map((overage) => (
+        <p key={overage.entitlement}>
+          {`${overage.current} seats in use, but the effective limit is ${overage.limit}.`}
+        </p>
+      ))}
+    </WarningAlert>
   );
 }
 
@@ -374,105 +355,91 @@ function OverrideDialog({
   );
 
   return (
-    <Dialog open onOpenChange={handleOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{overrideTitle(target)}</DialogTitle>
-          <DialogDescription>
-            Overrides are hand-set and survive plan changes. Every override — and every reset back
-            to the plan default — is recorded in the audit trail with the reason you give.
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} aria-label="Override entitlement" className="grid gap-6">
-          {target.kind === "seats" && <SeatsControl max={target.max} />}
-          {target.kind === "canInviteMembers" && <InviteControl value={target.value} />}
-          {target.kind === "executionsMonthly" && <ExecutionsMonthlyControl limit={target.limit} />}
-          <Field>
-            <FieldLabel htmlFor="override-reason">Reason</FieldLabel>
-            <Input
-              id="override-reason"
-              name="reason"
-              required
-              maxLength={500}
-              placeholder="Why is this override being made?"
-            />
-          </Field>
-          {error !== undefined && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            {target.hasOverride && (
-              <Button
-                type="submit"
-                name="intent"
-                value="clear"
-                variant="outline"
-                disabled={pending}
-              >
-                Reset to plan default
-              </Button>
-            )}
-            <Button type="submit" name="intent" value="save" disabled={pending}>
-              Save override
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open
+      onOpenChange={handleOpenChange}
+      title={overrideTitle(target)}
+      description="Overrides are hand-set and survive plan changes. Every override — and every reset back to the plan default — is recorded in the audit trail with the reason you give."
+      label="Override entitlement"
+      submitLabel="Save override"
+      // "Reset to plan default" is the same form submitted for the opposite outcome: it carries
+      // the same reason and needs no fields of its own, so it is the second submitter, not a
+      // second dialog.
+      {...(target.hasOverride
+        ? { secondary: { label: "Reset to plan default", name: "intent", value: "clear" } }
+        : {})}
+      busy={pending}
+      onSubmit={submit}
+    >
+      {target.kind === "seats" && <SeatsControl max={target.max} />}
+      {target.kind === "canInviteMembers" && <InviteControl value={target.value} />}
+      {target.kind === "executionsMonthly" && <ExecutionsMonthlyControl limit={target.limit} />}
+      <FormField
+        id="override-reason"
+        label="Reason"
+        kind="text"
+        name="reason"
+        maxLength={500}
+        placeholder="Why is this override being made?"
+        required
+      />
+      {error !== undefined && (
+        <FailureAlert
+          title="Override not applied"
+          error={error}
+          fallback="Hub did not record this change. Try again."
+        />
+      )}
+    </FormDialog>
   );
 }
 
 function SeatsControl({ max }: { max: number | null }) {
   return (
-    <Field>
-      <FieldLabel htmlFor="override-seats">Seat limit</FieldLabel>
-      <Input
-        id="override-seats"
-        name="seats"
-        type="number"
-        min={1}
-        step={1}
-        defaultValue={max === null ? "" : String(max)}
-        placeholder="Leave blank for unlimited"
-      />
-    </Field>
+    <FormField
+      id="override-seats"
+      label="Seat limit"
+      kind="number"
+      name="seats"
+      min={1}
+      step={1}
+      defaultValue={max === null ? "" : String(max)}
+      placeholder="Leave blank for unlimited"
+    />
   );
 }
 
 function InviteControl({ value }: { value: boolean }) {
   const [choice, setChoice] = useState(value ? "allowed" : "blocked");
   return (
-    <Field>
-      <FieldLabel htmlFor="override-invite">Members can invite</FieldLabel>
-      <Select name="invite" value={choice} onValueChange={setChoice}>
-        <SelectTrigger id="override-invite" className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="allowed">Allowed</SelectItem>
-          <SelectItem value="blocked">Not allowed</SelectItem>
-        </SelectContent>
-      </Select>
-    </Field>
+    <FormField id="override-invite" label="Members can invite">
+      {(control) => (
+        <Select name="invite" value={choice} onValueChange={setChoice}>
+          <SelectTrigger {...control} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="allowed">Allowed</SelectItem>
+            <SelectItem value="blocked">Not allowed</SelectItem>
+          </SelectContent>
+        </Select>
+      )}
+    </FormField>
   );
 }
 
 function ExecutionsMonthlyControl({ limit }: { limit: number | null }) {
   return (
-    <Field>
-      <FieldLabel htmlFor="override-executions-monthly">Executions this month</FieldLabel>
-      <Input
-        id="override-executions-monthly"
-        name="executionsMonthly"
-        type="number"
-        min={1}
-        step={1}
-        defaultValue={limit === null ? "" : String(limit)}
-        placeholder="Leave blank for unlimited"
-      />
-    </Field>
+    <FormField
+      id="override-executions-monthly"
+      label="Executions this month"
+      kind="number"
+      name="executionsMonthly"
+      min={1}
+      step={1}
+      defaultValue={limit === null ? "" : String(limit)}
+      placeholder="Leave blank for unlimited"
+    />
   );
 }
 
@@ -487,14 +454,10 @@ function AuditTrail({ history }: { history: Snapshot["history"] }) {
       {history.map((entry) => (
         <DataRow key={entry.id}>
           <DataCell>
-            <div className="flex flex-col gap-1">
-              <Badge variant={sourceBadgeVariant(entry.source)}>
-                {SOURCE_LABELS[entry.source]}
-              </Badge>
-              <span className="text-xs text-muted-foreground">
-                {effectiveLabel(entry.effective)}
-              </span>
-            </div>
+            <TwoLine
+              primary={SOURCE_LABELS[entry.source]}
+              secondary={effectiveLabel(entry.effective)}
+            />
           </DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
           <DataCell muted className="max-w-xs">
@@ -511,7 +474,7 @@ function AuditTrail({ history }: { history: Snapshot["history"] }) {
   );
 }
 
-function InviteBadge({ canInvite }: { canInvite: boolean }) {
+function InviteState({ canInvite }: { canInvite: boolean }) {
   return (
     <StatusPill tone={canInvite ? "success" : "neutral"} dot={false}>
       {canInvite ? "Allowed" : "Not allowed"}
@@ -546,12 +509,6 @@ function effectiveLabel(effective: Snapshot["entitlements"]["effective"]): strin
   const invite = effective.canInviteMembers ? "Allowed" : "Not allowed";
   const executions = meterLimitLabel(effective.meters["executions.monthly"].limit);
   return `Seats: ${seatLimitLabel(effective.seats.max)} · Invites: ${invite} · Executions: ${executions}`;
-}
-
-function sourceBadgeVariant(source: EntitlementChangeSource): "default" | "secondary" | "outline" {
-  if (source === "override") return "default";
-  if (source === "plan_stamp") return "secondary";
-  return "outline";
 }
 
 function seatLimitLabel(max: number | null): string {

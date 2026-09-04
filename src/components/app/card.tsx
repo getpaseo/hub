@@ -20,7 +20,8 @@ export function Card({
   description?: string;
   /** A single trailing link or button belonging to the card, not to its body. */
   action?: ReactNode;
-  children: ReactNode;
+  /** Optional: a card that is only a title and an action is still a card. */
+  children?: ReactNode;
   /** Placement in a parent grid only. Never used to change how the card looks. */
   className?: string;
 }) {

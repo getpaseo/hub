@@ -6,19 +6,12 @@ import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
+import { FormDialog } from "../components/app/form-dialog.js";
 import { Section } from "../components/app/section.js";
+import { StatusLine } from "../components/app/status-line.js";
 import { StatusPill } from "../components/app/status-pill.js";
-import { Button } from "../components/ui/button.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
 import {
   Select,
   SelectContent,
@@ -28,7 +21,7 @@ import {
 } from "../components/ui/select.js";
 import type { ActiveAccountState, TeamMember } from "./organization-contract.js";
 import { formValue, invitationRole } from "./account-actions.js";
-import { FormField } from "../components/app/form-field.js";
+import { FormField, type FieldControl } from "../components/app/form-field.js";
 import { useActiveAccount } from "./active-account.js";
 import { cancelInvitation, changeMemberRole, createInvitation, removeMember } from "./functions.js";
 import type { Result } from "../contract/respond.js";
@@ -174,38 +167,40 @@ function InvitationDialog({
     setRole(invitationRoleSchema.parse(value));
   }, []);
 
+  const roleControl = useCallback(
+    (control: FieldControl) => (
+      <Select name="role" value={role} onValueChange={selectRole} required>
+        <SelectTrigger {...control} className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {INVITATION_ROLES.map((roleValue) => (
+            <SelectItem value={roleValue} key={roleValue}>
+              {INVITATION_ROLE_LABELS[roleValue]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    ),
+    [role, selectRole],
+  );
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Invite a team member</DialogTitle>
-          <DialogDescription>Create a role-bound invitation link for a teammate.</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} aria-label="Invite team member" className="grid gap-6">
-          <FormField label="Invitee email" name="email" id="invite-email" kind="email" required />
-          <Field>
-            <FieldLabel htmlFor="invite-role">Role</FieldLabel>
-            <Select name="role" value={role} onValueChange={selectRole} required>
-              <SelectTrigger id="invite-role" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {INVITATION_ROLES.map((roleValue) => (
-                  <SelectItem value={roleValue} key={roleValue}>
-                    {INVITATION_ROLE_LABELS[roleValue]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <DialogFooter>
-            <Button type="submit" disabled={busy}>
-              Create invitation
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Invite a team member"
+      description="Create a role-bound invitation link for a teammate."
+      label="Invite team member"
+      submitLabel="Create invitation"
+      busy={busy}
+      onSubmit={submit}
+    >
+      <FormField label="Invitee email" name="email" id="invite-email" kind="email" required />
+      <FormField id="invite-role" label="Role">
+        {roleControl}
+      </FormField>
+    </FormDialog>
   );
 }
 
@@ -262,8 +257,7 @@ function MemberRow({ account, member }: { account: ActiveAccount; member: TeamMe
   return (
     <DataRow>
       <DataCell className="min-w-0">
-        <span className="block truncate">{member.name}</span>
-        <span className="block truncate text-xs text-muted-foreground">{member.email}</span>
+        <TwoLine primary={member.name} secondary={member.email} />
       </DataCell>
       <DataCell>
         {canManage ? (
@@ -324,7 +318,7 @@ function InvitationList({
   const [copyStatus, setCopyStatus] = useState<string>();
 
   return (
-    <div className="grid gap-3">
+    <>
       <DataTable
         label="Pending invitations"
         columns={INVITATION_COLUMNS}
@@ -334,7 +328,7 @@ function InvitationList({
         {invitations.map((invitation) => (
           <DataRow key={invitation.id}>
             <DataCell className="min-w-0">
-              <span className="block truncate">{invitation.email}</span>
+              <TwoLine primary={invitation.email} />
             </DataCell>
             <DataCell>
               <StatusPill tone="neutral" dot={false}>
@@ -354,10 +348,8 @@ function InvitationList({
           </DataRow>
         ))}
       </DataTable>
-      <p className="min-h-5 text-sm text-muted-foreground" role="status" aria-live="polite">
-        {copyStatus}
-      </p>
-    </div>
+      <StatusLine>{copyStatus}</StatusLine>
+    </>
   );
 }
 

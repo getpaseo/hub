@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "../ui/command.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.js";
-import { LoadingLine } from "./loading.js";
+import { LoadingLine, Spinner } from "./loading.js";
 
 export interface ComboboxOption {
   /** The stored value. May be empty for an explicit "no choice" option. */
@@ -35,11 +35,14 @@ export function Combobox<T extends ComboboxOption>({
   options,
   onChange,
   placeholder,
+  searchPlaceholder,
   loading = false,
   required = false,
   disabled = false,
   renderOption,
   empty,
+  "aria-invalid": invalid,
+  "aria-describedby": describedBy,
 }: {
   id: string;
   /** The accessible name, when no `FormField` label points at this control. */
@@ -47,7 +50,14 @@ export function Combobox<T extends ComboboxOption>({
   value: string;
   options: readonly T[];
   onChange: (option: T) => void;
+  /** What the closed trigger says when nothing is chosen, e.g. "Select a model". */
   placeholder: string;
+  /**
+   * What the search box says. Defaults to the trigger's own placeholder with an ellipsis, which
+   * is right when the trigger names the thing; name it separately when the search is doing
+   * something the trigger's words do not describe, e.g. "Search models…".
+   */
+  searchPlaceholder?: string;
   /** The options are still arriving. The list says so rather than saying there are none. */
   loading?: boolean;
   required?: boolean;
@@ -56,6 +66,12 @@ export function Combobox<T extends ComboboxOption>({
   renderOption?: (option: T) => ReactNode;
   /** What to say when the search matches nothing, e.g. "No repositories found." */
   empty: string;
+  /**
+   * The rest of a `FormField`'s wiring, so a labelled combobox is `{...control}` like every
+   * other control rather than an id threaded through by hand.
+   */
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
@@ -79,6 +95,8 @@ export function Combobox<T extends ComboboxOption>({
           aria-controls={listId}
           {...(label === undefined ? {} : { "aria-label": label })}
           {...(required ? { "aria-required": true } : {})}
+          {...(invalid === undefined ? {} : { "aria-invalid": invalid })}
+          {...(describedBy === undefined ? {} : { "aria-describedby": describedBy })}
           disabled={disabled}
           data-value={value}
           className="w-full min-w-0 justify-between"
@@ -91,14 +109,18 @@ export function Combobox<T extends ComboboxOption>({
                 "text-extra-muted-foreground",
             )}
           >
-            {comboboxLabel(options, value, placeholder)}
+            {comboboxLabel(options, value, placeholder, loading)}
           </span>
-          <ChevronsUpDownIcon aria-hidden="true" className="size-4 shrink-0 opacity-50" />
+          {loading ? (
+            <Spinner className="opacity-50" />
+          ) : (
+            <ChevronsUpDownIcon aria-hidden="true" className="size-4 shrink-0 opacity-50" />
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-(--radix-popper-anchor-width) p-0" align="start">
         <Command>
-          <CommandInput placeholder={`${placeholder}…`} />
+          <CommandInput placeholder={searchPlaceholder ?? `${placeholder}…`} />
           <CommandList id={listId}>
             {loading ? (
               <div className="flex justify-center py-6">
@@ -154,13 +176,21 @@ export function comboboxSelection<T extends ComboboxOption>(
   return options.find((option) => option.value === value);
 }
 
-/** What the closed trigger reads: the choice, the placeholder, or a value that has gone away. */
+/**
+ * What the closed trigger reads: the choice, the placeholder, or a value that has gone away.
+ *
+ * "Gone away" is a claim about the options, so it waits for them. While they are still arriving
+ * the stored value is shown as it is — a value that has not been looked up yet is not a value
+ * that was withdrawn.
+ */
 export function comboboxLabel(
   options: readonly ComboboxOption[],
   value: string,
   placeholder: string,
+  loading = false,
 ): string {
   const selected = comboboxSelection(options, value);
   if (selected !== undefined) return selected.label;
-  return value === "" ? placeholder : `${value} (unavailable)`;
+  if (value === "") return placeholder;
+  return loading ? value : `${value} (unavailable)`;
 }

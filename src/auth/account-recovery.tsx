@@ -2,8 +2,11 @@ import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
+import { AuthForm } from "../components/app/auth-form.js";
+import { failureMessage } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { StatusLine } from "../components/app/status-line.js";
 import { Button } from "../components/ui/button.js";
-import { Field, FieldSet } from "../components/ui/field.js";
 import { ErrorSummary } from "./account-states.js";
 import { formValue } from "./account-actions.js";
 import { FormField } from "../components/app/form-field.js";
@@ -31,11 +34,13 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
     },
     [request],
   );
-  let message: string | undefined;
-  if (request.data?.status === "error") message = request.data.error.message;
-  if (request.isError) {
-    message = "Hub did not receive the reset request. Check your connection and try again.";
-  }
+  const message =
+    request.isError || request.data?.status === "error"
+      ? failureMessage(
+          request.data,
+          "Hub did not receive the reset request. Check your connection and try again.",
+        )
+      : undefined;
   return (
     <AuthLayout>
       <AuthCard
@@ -45,35 +50,34 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
       >
         <ErrorSummary message={message} />
         {sent ? (
-          <div className="grid gap-4">
-            <p role="status" className="text-sm text-muted-foreground">
+          <>
+            <StatusLine>
               If an account exists for that email, a password reset link is on its way.
-            </p>
-            <Button type="button" onClick={onBack}>
-              Back to sign in
-            </Button>
-          </div>
-        ) : (
-          <form method="post" onSubmit={submit} aria-label="Reset password">
-            <FieldSet className="gap-4" disabled={request.isPending}>
-              <FormField
-                label="Email"
-                name="email"
-                id="forgot-password-email"
-                kind="email"
-                autoComplete="email"
-                required
-              />
-              <Field>
-                <Button type="submit" disabled={request.isPending}>
-                  Send reset link
-                </Button>
-              </Field>
-              <Button type="button" variant="ghost" disabled={request.isPending} onClick={onBack}>
+            </StatusLine>
+            <FormActions>
+              <Button type="button" onClick={onBack}>
                 Back to sign in
               </Button>
-            </FieldSet>
-          </form>
+            </FormActions>
+          </>
+        ) : (
+          <AuthForm
+            label="Reset password"
+            busy={request.isPending}
+            submitLabel="Send reset link"
+            onSubmit={submit}
+            secondaryLabel="Back to sign in"
+            onSecondary={onBack}
+          >
+            <FormField
+              label="Email"
+              name="email"
+              id="forgot-password-email"
+              kind="email"
+              autoComplete="email"
+              required
+            />
+          </AuthForm>
         )}
       </AuthCard>
     </AuthLayout>
@@ -98,11 +102,13 @@ export function VerificationPendingEntry({
     () => resend.mutate({ data: { email, ...(invitation === undefined ? {} : { invitation }) } }),
     [email, invitation, resend],
   );
-  let message: string | undefined;
-  if (resend.data?.status === "error") message = resend.data.error.message;
-  if (resend.isError) {
-    message = "Hub did not receive the resend result. Check your connection and try again.";
-  }
+  const message =
+    resend.isError || resend.data?.status === "error"
+      ? failureMessage(
+          resend.data,
+          "Hub did not receive the resend result. Check your connection and try again.",
+        )
+      : undefined;
   return (
     <AuthLayout>
       <AuthCard
@@ -111,19 +117,19 @@ export function VerificationPendingEntry({
         description={`We sent a verification link to ${email}. Open it to finish signing in.`}
       >
         <ErrorSummary message={message} />
-        {resend.data?.status === "ok" && (
-          <p role="status" className="text-sm text-muted-foreground">
-            If this address still needs verification, a new link is on its way.
-          </p>
-        )}
-        <div className="grid gap-2">
-          <Button type="button" disabled={resend.isPending} onClick={resendEmail}>
-            Resend verification email
-          </Button>
+        <StatusLine>
+          {resend.data?.status === "ok"
+            ? "If this address still needs verification, a new link is on its way."
+            : undefined}
+        </StatusLine>
+        <FormActions>
           <Button type="button" variant="ghost" disabled={resend.isPending} onClick={onBack}>
             Back to sign in
           </Button>
-        </div>
+          <Button type="button" disabled={resend.isPending} onClick={resendEmail}>
+            Resend verification email
+          </Button>
+        </FormActions>
       </AuthCard>
     </AuthLayout>
   );
@@ -145,9 +151,11 @@ export function EmailVerificationResult({ error }: { error?: string }) {
   return (
     <AuthLayout>
       <AuthCard titleId="email-verification-heading" title={title} description={description}>
-        <Button type="button" className="w-full" onClick={leaveAuthCallback}>
-          {failed ? "Back to sign in" : "Continue"}
-        </Button>
+        <FormActions>
+          <Button type="button" onClick={leaveAuthCallback}>
+            {failed ? "Back to sign in" : "Continue"}
+          </Button>
+        </FormActions>
       </AuthCard>
     </AuthLayout>
   );
@@ -195,9 +203,11 @@ export function PasswordResetEntry({
           title="Reset link invalid or expired"
           description="Request a new password reset link from the sign-in screen."
         >
-          <Button type="button" className="w-full" onClick={leaveAuthCallback}>
-            Back to sign in
-          </Button>
+          <FormActions>
+            <Button type="button" onClick={leaveAuthCallback}>
+              Back to sign in
+            </Button>
+          </FormActions>
         </AuthCard>
       </AuthLayout>
     );
@@ -210,18 +220,22 @@ export function PasswordResetEntry({
           title="Password reset"
           description="Your new password is ready. You can use it to sign in."
         >
-          <Button type="button" className="w-full" onClick={leaveAuthCallback}>
-            Back to sign in
-          </Button>
+          <FormActions>
+            <Button type="button" onClick={leaveAuthCallback}>
+              Back to sign in
+            </Button>
+          </FormActions>
         </AuthCard>
       </AuthLayout>
     );
   }
-  let message: string | undefined;
-  if (reset.data?.status === "error") message = reset.data.error.message;
-  if (reset.isError) {
-    message = "Hub did not receive the password reset result. Check your connection and try again.";
-  }
+  const message =
+    reset.isError || reset.data?.status === "error"
+      ? failureMessage(
+          reset.data,
+          "Hub did not receive the password reset result. Check your connection and try again.",
+        )
+      : undefined;
   return (
     <AuthLayout>
       <AuthCard
@@ -230,33 +244,31 @@ export function PasswordResetEntry({
         description="Use at least 12 characters."
       >
         <ErrorSummary message={message} />
-        <form method="post" onSubmit={submit} aria-label="Choose a new password">
-          <FieldSet className="gap-4" disabled={reset.isPending}>
-            <FormField
-              label="New password"
-              name="newPassword"
-              id="reset-password-new"
-              kind="password"
-              autoComplete="new-password"
-              minLength={12}
-              required
-            />
-            <FormField
-              label="Confirm new password"
-              name="confirmPassword"
-              id="reset-password-confirm"
-              kind="password"
-              autoComplete="new-password"
-              minLength={12}
-              required
-            />
-            <Field>
-              <Button type="submit" disabled={reset.isPending}>
-                Save new password
-              </Button>
-            </Field>
-          </FieldSet>
-        </form>
+        <AuthForm
+          label="Choose a new password"
+          busy={reset.isPending}
+          submitLabel="Save new password"
+          onSubmit={submit}
+        >
+          <FormField
+            label="New password"
+            name="newPassword"
+            id="reset-password-new"
+            kind="password"
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+          <FormField
+            label="Confirm new password"
+            name="confirmPassword"
+            id="reset-password-confirm"
+            kind="password"
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+        </AuthForm>
       </AuthCard>
     </AuthLayout>
   );

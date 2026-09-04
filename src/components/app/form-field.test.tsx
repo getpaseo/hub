@@ -48,9 +48,39 @@ describe("a field's wiring", () => {
     );
 
     assert.doesNotMatch(optional, /required/u);
-    assert.doesNotMatch(optional, /aria-hidden="true"[^>]*>\*</u);
     assert.match(mandatory, /required/u);
-    assert.match(mandatory, /aria-hidden="true"[^>]*>\*</u);
+  });
+
+  it("leaves the label the words it was given, so a label lookup can ask for them", () => {
+    const markup = renderToStaticMarkup(
+      <FormField id="new-password" label="New password" kind="password" name="newPassword" />,
+    );
+
+    assert.match(markup, /for="new-password">New password<\/label>/u);
+  });
+
+  it("carries the constraints of a typed control instead of sending it to a render prop", () => {
+    const slug = renderToStaticMarkup(
+      <FormField
+        id="project-slug"
+        label="Project slug"
+        kind="text"
+        name="slug"
+        pattern="[a-z0-9]+"
+        maxLength={100}
+        placeholder="triage"
+      />,
+    );
+    const seats = renderToStaticMarkup(
+      <FormField id="seats" label="Seat limit" kind="number" name="seats" min={1} step={1} />,
+    );
+
+    assert.match(slug, /pattern="\[a-z0-9\]\+"/u);
+    assert.match(slug, /maxLength="100"/u);
+    assert.match(slug, /placeholder="triage"/u);
+    assert.match(seats, /type="number"/u);
+    assert.match(seats, /min="1"/u);
+    assert.match(seats, /step="1"/u);
   });
 
   it("hands the same attributes to a control it does not render itself", () => {

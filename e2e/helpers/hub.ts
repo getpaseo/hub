@@ -2919,7 +2919,8 @@ class HubUser {
       origin: this.origin,
     });
     await dialog.getByRole("button", { name: "Copy API key" }).click();
-    await expect(dialog.getByRole("status")).toHaveText("API key copied.");
+    // `CopyField` announces the copy in its own words, the same on every surface that copies.
+    await expect(dialog.getByRole("status")).toHaveText("Copied Generated API key");
     await expect(this.page.evaluate(() => navigator.clipboard.readText())).resolves.toMatch(
       /^paseo_pk_/u,
     );
@@ -3488,7 +3489,8 @@ class HubUser {
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
     await expect(daemon.getByText(daemonId.slice(0, 8), { exact: true })).toBeVisible();
     await expect(daemon.getByText(state, { exact: true })).toBeVisible();
-    await expect(daemon.getByText(/\w{3} \d{1,2}, \d{4}/u).first()).toBeVisible();
+    // Timestamps read as "3m ago"; the absolute instant is the tooltip `RelativeTime` puts on it.
+    await expect(daemon.locator("time").first()).toHaveAttribute("title", /\w{3} \d{1,2}, \d{4}/u);
   }
 
   private daemonRow(displayName: string): Locator {
@@ -4456,7 +4458,7 @@ class HubUser {
   async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    const banner = this.page.getByRole("alert", { name: "Over limit" });
+    const banner = this.overLimitBanner();
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(`You have ${expected.used} seats in use`);
     await expect(banner).toContainText(`your limit is ${expected.limit}`);
@@ -4466,7 +4468,13 @@ class HubUser {
   async expectNoOverLimitBanner(): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    await expect(this.page.getByRole("alert", { name: "Over limit" })).toHaveCount(0);
+    await expect(this.overLimitBanner()).toHaveCount(0);
+  }
+
+  /** The banner is found by what it says. Its title is the accessible name of the warning; an
+   * `aria-label` repeating it in different words would be a second name for one thing. */
+  private overLimitBanner(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "You're over your seat limit" });
   }
 
   /** Assert the granted / override / effective cells of one entitlement row after a re-stamp — on

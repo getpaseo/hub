@@ -117,8 +117,10 @@ function TableShell({
                 className={cn(
                   // The identifying column absorbs the spare width; everything after it
                   // shrinks to its content, so columns stay next to each other instead of
-                  // drifting apart on a wide screen.
-                  index === 0 ? "w-full" : "w-px",
+                  // drifting apart on a wide screen. It also has a floor: on a phone the
+                  // columns after it would otherwise take what they need and leave the record's
+                  // own name as "Over…".
+                  index === 0 ? "w-full min-w-48" : "w-px",
                   column.align === "end" && "text-right",
                   column.className,
                 )}

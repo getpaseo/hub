@@ -23,8 +23,8 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("heading", { name: "Agent & instructions" })).toBeHidden();
     await expect(this.page.getByLabel("Working directory")).toBeHidden();
     const topbar = this.page.locator("header.sticky");
-    await expect(topbar.getByRole("button", { name: "Form" })).toBeEnabled();
-    await expect(topbar.getByRole("button", { name: "YAML" })).toBeVisible();
+    await expect(topbar.getByRole("radio", { name: "Form" })).toBeEnabled();
+    await expect(topbar.getByRole("radio", { name: "YAML" })).toBeVisible();
     await expect(topbar.getByRole("button", { name: "Discard" })).toBeVisible();
     await expect(this.page.getByLabel("Trigger ID")).toHaveValue("Assigned when saved");
   }
@@ -44,7 +44,7 @@ export class OrganizationTriggers {
     await this.page.getByLabel("Trigger name").fill(input.name);
     await this.selectOption("When this happens", "slack.mention");
     await this.selectOption("Connection", input.connection);
-    await this.page.getByRole("button", { name: "Specific people" }).click();
+    await this.page.getByRole("radio", { name: "Specific people" }).click();
     await this.page.getByLabel("User IDs").fill(input.users);
     await this.selectOption("Run on daemon", input.daemon);
     await expect(this.page.getByRole("combobox", { name: "Agent" })).toHaveAttribute(
@@ -67,11 +67,8 @@ export class OrganizationTriggers {
     );
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
-    await this.page
-      .locator("summary")
-      .filter({ hasText: "Advanced provider options (JSON)" })
-      .click();
-    await this.page.getByLabel("Advanced provider options (JSON)").fill(input.providerOptions);
+    await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+    await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
 
@@ -95,12 +92,12 @@ export class OrganizationTriggers {
   }
 
   async switchToYaml() {
-    await this.page.getByRole("button", { name: "YAML" }).click();
+    await this.page.getByRole("radio", { name: "YAML" }).click();
     await expect(this.yamlEditor()).toBeVisible();
   }
 
   async switchToForm() {
-    await this.page.getByRole("button", { name: "Form" }).click();
+    await this.page.getByRole("radio", { name: "Form" }).click();
     await expect(this.page.getByLabel("Agent", { exact: true })).toBeVisible();
   }
 
@@ -137,11 +134,8 @@ export class OrganizationTriggers {
       "data-value",
       input.mode,
     );
-    await this.page
-      .locator("summary")
-      .filter({ hasText: "Advanced provider options (JSON)" })
-      .click();
-    await expect(this.page.getByLabel("Advanced provider options (JSON)")).toHaveValue(
+    await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+    await expect(this.page.getByLabel("Provider options (JSON)")).toHaveValue(
       input.providerOptions,
     );
     await expect(this.page.getByLabel("Instructions", { exact: true })).toHaveValue(input.prompt);
@@ -150,7 +144,7 @@ export class OrganizationTriggers {
   async expectAgentSearch() {
     const agent = this.page.getByRole("combobox", { name: "Agent" });
     await agent.click();
-    const search = this.page.getByPlaceholder("Search models…");
+    const search = this.page.getByPlaceholder("Select a model…");
     await expect(search).toBeFocused();
     await search.fill("gpt-5.4");
     await expect(this.page.getByRole("option", { name: /GPT-5.4/u })).toBeVisible();
@@ -158,10 +152,7 @@ export class OrganizationTriggers {
     await search.fill("");
   }
 
-  async expectShadcnSelectors() {
-    await expect(
-      this.page.locator('#trigger-editor-form [data-slot="select-trigger"]'),
-    ).toHaveCount(6);
+  async expectComboboxes() {
     for (const name of [
       "When this happens",
       "Connection",
@@ -202,9 +193,9 @@ export class OrganizationTriggers {
   async expectLegacyReadOnly() {
     await expect(this.page.getByRole("alert")).toContainText("Legacy multi-step workflow");
     await expect(this.page.getByRole("alert")).toContainText("remains runnable");
-    await expect(this.page.getByRole("button", { name: "Form" })).toBeDisabled();
+    await expect(this.page.getByRole("radio", { name: "Form" })).toBeDisabled();
     await expect(this.yamlEditor()).toHaveAttribute("contenteditable", "false");
-    await expect(this.page.getByRole("button", { name: "Save changes" }).first()).toBeDisabled();
+    await expect(this.page.getByRole("button", { name: "Save YAML" }).first()).toBeDisabled();
   }
 
   async expectOperationalList(name: string) {
@@ -226,7 +217,7 @@ export class OrganizationTriggers {
     const agent = this.page.getByRole("combobox", { name: "Agent" });
     await agent.scrollIntoViewIfNeeded();
     await agent.click();
-    await expect(this.page.getByPlaceholder("Search models…")).toBeFocused();
+    await expect(this.page.getByPlaceholder("Select a model…")).toBeFocused();
     await this.page.screenshot({ path });
   }
 

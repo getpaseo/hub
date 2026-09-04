@@ -24,6 +24,7 @@ export function FormDialog({
   description,
   label,
   submitLabel,
+  secondary,
   busy,
   onSubmit,
   children,
@@ -35,6 +36,12 @@ export function FormDialog({
   /** The form's accessible name, e.g. "Create organization". */
   label: string;
   submitLabel: string;
+  /**
+   * A second thing the same form can be submitted to do, e.g. clearing what the primary sets.
+   * It submits the same fields under its own `name`/`value`, so the handler reads one intent
+   * off the form data instead of the dialog carrying two forms or two handlers.
+   */
+  secondary?: { label: string; name: string; value: string };
   busy: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   children: ReactNode;
@@ -50,6 +57,16 @@ export function FormDialog({
           <FieldSet disabled={busy}>
             {children}
             <FormActions>
+              {secondary === undefined ? null : (
+                <Button
+                  type="submit"
+                  variant="outline"
+                  name={secondary.name}
+                  value={secondary.value}
+                >
+                  {secondary.label}
+                </Button>
+              )}
               <Button type="submit">{submitLabel}</Button>
             </FormActions>
           </FieldSet>

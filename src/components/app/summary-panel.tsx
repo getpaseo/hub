@@ -30,8 +30,11 @@ export function SummaryPanel({
       data-summary={label}
       // A one-pixel gap over the border colour is the divider. No extra element, and the rows
       // reflow into one column on a phone without the rules ending up in the wrong places.
+      //
+      // The tracks are fitted rather than fixed at two: a panel of one fact filled half a box
+      // and left the other half empty, and a panel of three left a hole under the third.
       className={cn(
-        "grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2",
+        "grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-[repeat(auto-fit,minmax(16rem,1fr))]",
         className,
       )}
     >

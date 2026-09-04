@@ -5,9 +5,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { completeAppSetup } from "../auth/functions.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { AuthLayout } from "../components/app/auth-layout.js";
+import { FailureAlert, type Failure } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
 import { PageHeader } from "../components/app/page.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
-import { TriangleAlert } from "lucide-react";
 import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
 import { connectionReturnCopy } from "../connections/result-contract.js";
@@ -58,15 +58,11 @@ function ProviderApplications({
   if (query.isPending) return <OverviewLoading />;
   if (query.isError || query.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <TriangleAlert />
-        <AlertTitle>Your apps couldn't be loaded</AlertTitle>
-        <AlertDescription>
-          {query.data?.status === "error"
-            ? query.data.error.message
-            : "Hub did not answer. Check your connection, then reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Your apps couldn't be loaded"
+        error={query.data}
+        fallback="Hub did not answer. Check your connection, then reload the page."
+      />
     );
   }
   const overview = query.data.data;
@@ -126,8 +122,6 @@ export function AppSetupEntry({
   const queryClient = useQueryClient();
   const overview = useProviderApplicationsOverview();
   const connected = overview.data?.status === "ok" ? connectedProviderCount(overview.data.data) : 0;
-  const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), []);
   const finish = useMutation({
     mutationFn: useServerFn(completeAppSetup) as (
       input: Parameters<typeof completeAppSetup>[0],
@@ -139,40 +133,26 @@ export function AppSetupEntry({
     },
   });
   const done = useCallback(() => finish.mutate({}), [finish]);
-  const exitFailure = useRef<HTMLDivElement>(null);
-  const failure = exitFailureMessage(finish);
-  // The operator pressed a button and stayed where they were. Say why, where they are looking.
-  useEffect(() => {
-    if (failure !== undefined) exitFailure.current?.focus();
-  }, [failure]);
+  const failed = finish.data?.status === "error" || finish.isError;
   return (
     <AuthLayout width="xl">
+      <PageHeader
+        title="Set up your apps"
+        description="Paseo Hub talks to GitHub, Slack, Discord, and Linear through apps you create and own. Set up the ones you want to use."
+        focusOnMount
+      />
       <div className="grid min-w-0 gap-6">
-        <div className="grid gap-1.5">
-          <h1
-            ref={heading}
-            tabIndex={-1}
-            className="text-xl font-medium tracking-tight outline-none"
-          >
-            Set up your apps
-          </h1>
-          <p className="text-sm text-balance text-muted-foreground">
-            Paseo Hub talks to GitHub, Slack, Discord, and Linear through apps you create and own.
-            Set up the ones you want to use.
-          </p>
-        </div>
-        <ExitFailure ref={exitFailure} message={exitFailureMessage(finish)} onRetry={done} />
+        {failed ? <ExitFailure error={finish.data} onRetry={done} /> : null}
         <ProviderApplications surface="appSetup" organizationId={organizationId} />
-        <div className="sticky bottom-0 -mx-6 border-t bg-background px-6 py-4 sm:static sm:mx-0 sm:flex sm:justify-end sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
+        <FormActions>
           <Button
-            className="w-full sm:w-auto"
             variant={connected > 0 ? "default" : "ghost"}
             disabled={finish.isPending}
             onClick={done}
           >
             {connected > 0 ? "Finish" : "Do this later"}
           </Button>
-        </div>
+        </FormActions>
       </div>
     </AuthLayout>
   );
@@ -183,41 +163,20 @@ export function AppSetupEntry({
  *
  * A rejected request and a request that never arrived are different failures with the same
  * consequence: the operator is still here and nothing has changed. The server owns the first and
- * says so itself; the second never reached a server, so this page is the only thing that can
- * report it, and it does rather than swallowing the press.
+ * says so itself; the second never reached a server, so the fallback sentence is the only thing
+ * this page can offer, and it does rather than swallowing the press.
+ *
+ * The operator pressed a button and stayed where they were, so the alert takes the keyboard.
  */
-function exitFailureMessage(finish: {
-  data: Result<Record<string, never>> | undefined;
-  isError: boolean;
-}): string | undefined {
-  if (finish.data?.status === "error") return finish.data.error.message;
-  if (finish.isError) {
-    return "Hub didn't get the request, so nothing changed. Check your connection, then try again.";
-  }
-  return undefined;
-}
-
-function ExitFailure({
-  ref,
-  message,
-  onRetry,
-}: {
-  ref: React.RefObject<HTMLDivElement | null>;
-  message: string | undefined;
-  onRetry: () => void;
-}) {
-  if (message === undefined) return null;
+function ExitFailure({ error, onRetry }: { error: Failure; onRetry: () => void }) {
   return (
-    <Alert ref={ref} tabIndex={-1} variant="destructive">
-      <TriangleAlert />
-      <AlertTitle>Hub couldn't leave app setup</AlertTitle>
-      <AlertDescription>
-        <p>{message}</p>
-        <Button type="button" size="sm" variant="outline" onClick={onRetry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
+    <FailureAlert
+      title="Hub couldn't leave app setup"
+      error={error}
+      fallback="Hub didn't get the request, so nothing changed. Check your connection, then try again."
+      onRetry={onRetry}
+      focusOnMount
+    />
   );
 }
 
@@ -230,9 +189,7 @@ export function AppsPanel() {
         title="Apps"
         description="The GitHub, Slack, Discord, and Linear apps Hub uses to reach your workspaces."
       />
-      <div className="max-w-5xl">
-        <ProviderApplications surface="apps" organizationId={account.organization.id} />
-      </div>
+      <ProviderApplications surface="apps" organizationId={account.organization.id} />
     </>
   );
 }

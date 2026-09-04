@@ -116,9 +116,10 @@ describe("trigger form YAML bridge", () => {
   test("keeps advanced YAML added before a new trigger's first save", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);
-    const yaml = mergeTriggerForm(ADVANCED, { ...projection.value, prompt: "Changed." });
-    expect(yaml).toContain("# keep this heading");
-    const value = TriggerDocumentSchema.parse(parseDocument(yaml).toJS());
+    const merged = mergeTriggerForm(ADVANCED, { ...projection.value, prompt: "Changed." });
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("# keep this heading");
+    const value = TriggerDocumentSchema.parse(parseDocument(merged.yaml).toJS());
     expect(value.run.prompt).toBe("Changed.");
     expect(value.run.target.worktree).toBeDefined();
     expect(value.run.outputs).toBeDefined();
@@ -198,9 +199,9 @@ describe("trigger form YAML bridge", () => {
     const projection = projectTriggerForm(initial);
     if (projection.status !== "editable") throw new Error(projection.reason);
 
-    expect(mergeTriggerForm(initial, { ...projection.value, name: "release" })).toContain(
-      "name: release",
-    );
+    const merged = mergeTriggerForm(initial, { ...projection.value, name: "release" });
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("name: release");
   });
 
   test("splits only the first slash in a full agent ID", () => {
@@ -208,5 +209,32 @@ describe("trigger form YAML bridge", () => {
       provider: "pi",
       model: "gateway/vendor/model-v1",
     });
+  });
+
+  test("reports the missing field instead of throwing when the form is half filled", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+
+    expect(mergeTriggerForm("", { ...projection.value, daemon: "" })).toEqual({
+      status: "incomplete",
+      reason: "Daemon is required.",
+    });
+    expect(mergeTriggerForm("", { ...projection.value, agent: "" })).toEqual({
+      status: "incomplete",
+      reason: "Agent is required.",
+    });
+    expect(mergeTriggerForm("", { ...projection.value, providerOptions: "{" })).toEqual({
+      status: "incomplete",
+      reason: "Provider options must be valid JSON.",
+    });
+  });
+
+  test("serialises a complete new trigger that has no document yet", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+
+    const merged = mergeTriggerForm("", projection.value);
+    if (merged.status !== "ok") throw new Error(merged.reason);
+    expect(merged.yaml).toContain("daemon: office");
   });
 });

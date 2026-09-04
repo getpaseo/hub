@@ -46,7 +46,7 @@ as the link and focus hue.
 | `extra-muted-foreground`  | `#62666d`             | Tertiary text: separators, placeholders, decorative marks. Below AA on purpose. Never for a value, an error, or anything the reader must act on. |
 | `border`                  | `#23252a`             | Every structural rule. Near invisible; that is the point.                                                                                        |
 | `input`                   | `#34343a`             | Control borders, one step stronger than `border`.                                                                                                |
-| `primary` / `-foreground` | `#e5e5e6` / `#08090a` | The filled button. An inverted neutral, not a hue.                                                                                               |
+| `primary` / `-foreground` | `#1b4f4a` / `#bfe6da` | A dark teal fill with a pale mint label; the one place the brand hue is a surface.                                                               |
 | `link`                    | `#7ccba0`             | Text links and the focus ring. The one brand hue.                                                                                                |
 | `ring`                    | `#7ccba0`             | Focus. One pixel outline, two pixel offset, nothing else.                                                                                        |
 | `destructive`             | `#e8837a`             | Destructive button fill and error text.                                                                                                          |

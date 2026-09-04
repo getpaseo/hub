@@ -1,5 +1,5 @@
-import { TriangleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+import { CircleCheck, Info, TriangleAlert } from "lucide-react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import type { Result } from "../../contract/respond.js";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert.js";
@@ -37,26 +37,66 @@ export function FailureAlert({
   title,
   error,
   fallback,
+  details,
   onRetry,
+  focusOnMount = false,
 }: {
   title: string;
   error: Failure;
   /** What to say when the failure carries no message of its own. Name the thing that failed. */
   fallback: string;
+  /** Everything the one-line message cannot carry, e.g. the list of values that were refused. */
+  details?: ReactNode;
   onRetry?: () => void;
+  /**
+   * Take the keyboard when this alert arrives. Submitting disables the form, which blurs the
+   * button that was pressed, so without this the keyboard lands on the document body. The alert
+   * carries the focus itself; a focusable wrapper around it is a second node with no name.
+   */
+  focusOnMount?: boolean;
 }) {
+  const alert = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focusOnMount) alert.current?.focus();
+  }, [focusOnMount]);
   return (
-    <Alert variant="destructive">
+    <Alert ref={alert} variant="destructive" {...(focusOnMount ? { tabIndex: -1 } : {})}>
       <TriangleAlert aria-hidden="true" />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
         <p>{failureMessage(error, fallback)}</p>
+        {details}
         {onRetry === undefined ? null : (
           <Button type="button" size="sm" variant="outline" onClick={onRetry}>
             Try again
           </Button>
         )}
       </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * Something that went right, or something the reader should know about where they are, in the
+ * same box a failure would have used. It is announced politely rather than urgently: nothing
+ * here interrupts what the reader is doing, and `role="status"` is what makes an activation or
+ * a return from a provider portal reach a screen reader without being read as an alarm.
+ */
+export function NoticeAlert({
+  tone,
+  title,
+  children,
+}: {
+  tone: "neutral" | "success";
+  title?: string;
+  children: ReactNode;
+}) {
+  const Icon = tone === "success" ? CircleCheck : Info;
+  return (
+    <Alert role="status" variant={tone === "success" ? "success" : "default"}>
+      <Icon aria-hidden="true" />
+      {title === undefined ? null : <AlertTitle>{title}</AlertTitle>}
+      <AlertDescription>{children}</AlertDescription>
     </Alert>
   );
 }

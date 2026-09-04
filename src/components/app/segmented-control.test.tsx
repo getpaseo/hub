@@ -4,7 +4,14 @@ import { describe, it } from "vitest";
 
 const NOOP = (): void => {};
 
-import { SegmentedControl, nextSegmentValue, type SegmentedOption } from "./segmented-control.js";
+import { FileCode } from "lucide-react";
+
+import {
+  SegmentedControl,
+  nextSegmentValue,
+  segmentHint,
+  type SegmentedOption,
+} from "./segmented-control.js";
 
 const MODES: readonly SegmentedOption[] = [
   { value: "form", label: "Form" },
@@ -66,5 +73,76 @@ describe("segmented control semantics", () => {
 
     assert.equal(markup.match(/tabindex="0"/gu)?.length, 1);
     assert.equal(markup.match(/tabindex="-1"/gu)?.length, MODES.length - 1);
+  });
+});
+
+const WITH_LUCIDE_ICON: readonly SegmentedOption[] = [
+  { value: "form", label: "Form", icon: FileCode },
+  { value: "yaml", label: "YAML" },
+];
+
+const WITH_DRAWN_MARK: readonly SegmentedOption[] = [
+  { value: "manual", label: "Manual" },
+  { value: "github", label: "GitHub", icon: <svg data-mark="github" /> },
+];
+
+describe("what a segment does with the mark it was given", () => {
+  it("instantiates a component, including the forwardRef object a lucide icon is", () => {
+    const markup = renderToStaticMarkup(
+      <SegmentedControl
+        label="Editor mode"
+        value="form"
+        options={WITH_LUCIDE_ICON}
+        onChange={NOOP}
+      />,
+    );
+
+    assert.match(markup, /<svg[^>]*class="[^"]*size-4/u);
+    assert.doesNotMatch(markup, /\[object Object\]/u);
+  });
+
+  it("renders an element as it is, so a provider mark keeps its own drawing", () => {
+    const markup = renderToStaticMarkup(
+      <SegmentedControl
+        label="Configuration source mode"
+        value="github"
+        options={WITH_DRAWN_MARK}
+        onChange={NOOP}
+      />,
+    );
+
+    assert.match(markup, /data-mark="github"/u);
+  });
+});
+
+describe("the one line under a segmented control", () => {
+  it("says what the chosen mode means", () => {
+    assert.equal(
+      segmentHint(
+        [
+          { value: "form", label: "Form", hint: "Guided fields." },
+          { value: "yaml", label: "YAML", hint: "Write it yourself." },
+        ],
+        "yaml",
+      ),
+      "Write it yourself.",
+    );
+  });
+
+  it("falls back to why a disabled option cannot be chosen, which nothing else can reveal", () => {
+    assert.equal(
+      segmentHint(
+        [
+          { value: "manual", label: "Manual", disabled: true, hint: "Sync a revision first." },
+          { value: "github", label: "GitHub" },
+        ],
+        "github",
+      ),
+      "Sync a revision first.",
+    );
+  });
+
+  it("says nothing when neither the choice nor a refusal has anything to add", () => {
+    assert.equal(segmentHint(MODES, "form"), undefined);
   });
 });

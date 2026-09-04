@@ -1,8 +1,7 @@
-import { Button } from "../components/ui/button.js";
-import { Field, FieldSet } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
-import { FormField } from "../components/app/form-field.js";
 import type { FormEvent } from "react";
+
+import { AuthForm } from "../components/app/auth-form.js";
+import { FormField } from "../components/app/form-field.js";
 
 export function LoginForm({
   mode,
@@ -18,6 +17,7 @@ export function LoginForm({
   emailReadOnly?: boolean;
 }) {
   const prefix = mode === "signIn" ? "sign-in" : "sign-up";
+  const action = mode === "signIn" ? "Sign in" : "Create account";
   const emailProps: {
     value?: string;
     defaultValue?: string;
@@ -32,48 +32,35 @@ export function LoginForm({
     }
   }
   return (
-    <form
-      method="post"
-      onSubmit={onSubmit}
-      aria-label={mode === "signIn" ? "Sign in" : "Create account"}
-      aria-busy={busy}
-    >
-      <FieldSet className="gap-4" disabled={busy}>
-        <Input type="hidden" name="mode" value={mode} />
-        {mode === "signUp" && (
-          <FormField
-            kind="text"
-            label="Name"
-            name="name"
-            id={`${prefix}-name`}
-            autoComplete="name"
-            required
-          />
-        )}
+    <AuthForm label={action} busy={busy} submitLabel={action} onSubmit={onSubmit}>
+      {mode === "signUp" && (
         <FormField
-          label="Email"
-          name="email"
-          id={`${prefix}-email`}
-          kind="email"
-          autoComplete="email"
-          {...emailProps}
+          kind="text"
+          label="Name"
+          name="name"
+          id={`${prefix}-name`}
+          autoComplete="name"
           required
         />
-        <FormField
-          label="Password"
-          name="password"
-          id={`${prefix}-password`}
-          kind="password"
-          autoComplete={mode === "signIn" ? "current-password" : "new-password"}
-          minLength={12}
-          required
-        />
-        <Field>
-          <Button type="submit" disabled={busy}>
-            {mode === "signIn" ? "Sign in" : "Create account"}
-          </Button>
-        </Field>
-      </FieldSet>
-    </form>
+      )}
+      <FormField
+        label="Email"
+        name="email"
+        id={`${prefix}-email`}
+        kind="email"
+        autoComplete="email"
+        {...emailProps}
+        required
+      />
+      <FormField
+        label="Password"
+        name="password"
+        id={`${prefix}-password`}
+        kind="password"
+        autoComplete={mode === "signIn" ? "current-password" : "new-password"}
+        minLength={12}
+        required
+      />
+    </AuthForm>
   );
 }

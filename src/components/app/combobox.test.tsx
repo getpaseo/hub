@@ -65,3 +65,17 @@ describe("what the closed combobox reads", () => {
     assert.match(markup, /aria-expanded="false"/u);
   });
 });
+
+describe("what the closed combobox reads while its options are still arriving", () => {
+  it("shows the stored value as it is, rather than calling it unavailable", () => {
+    assert.equal(comboboxLabel([], "gpt-5", "Select a model", true), "gpt-5");
+  });
+
+  it("says it has gone away once the options have arrived without it", () => {
+    assert.equal(comboboxLabel(MODELS, "gemini", "Select a model", false), "gemini (unavailable)");
+  });
+
+  it("still shows the placeholder when nothing is stored", () => {
+    assert.equal(comboboxLabel([], "", "Select a model", true), "Select a model");
+  });
+});

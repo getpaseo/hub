@@ -24,10 +24,19 @@ export function Spinner({ className }: { className?: string }) {
   );
 }
 
-/** A spinner and what it is waiting for, on one line, inside an already-drawn page. */
+/**
+ * A spinner and what it is waiting for, on one line, inside an already-drawn page. It is a live
+ * region as well as a busy one: `aria-busy` says the part is not finished, and only the status
+ * role makes the sentence itself reach a screen reader when the wait starts.
+ */
 export function LoadingLine({ children }: { children: string }) {
   return (
-    <p aria-busy="true" className="flex items-center gap-2 text-sm text-muted-foreground">
+    <p
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      className="flex items-center gap-2 text-sm text-muted-foreground"
+    >
       <Spinner />
       {children}
     </p>

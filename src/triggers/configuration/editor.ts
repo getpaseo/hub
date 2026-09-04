@@ -142,11 +142,37 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   return document.toString({ lineWidth: 0 });
 }
 
-/** Create from an invalid/empty draft, otherwise retain the canonical document while patching it. */
-export function mergeTriggerForm(yaml: string, value: TriggerFormValue): string {
-  return projectTriggerForm(yaml).status === "editable"
-    ? patchTriggerYaml(yaml, value)
-    : createTriggerYaml(value);
+export type TriggerYamlResult =
+  | { status: "ok"; yaml: string }
+  | { status: "incomplete"; reason: string };
+
+/**
+ * The YAML a form amounts to: the canonical document patched where one exists, a fresh document
+ * where it does not.
+ *
+ * A half-filled trigger has no document at all — `run.target.daemon` and `run.agent.provider` have
+ * no empty representation — so the caller is told which field is still missing. Handing back a
+ * reason rather than throwing is what lets a screen disable the YAML view and say why beside the
+ * control, instead of surfacing a stray exception somewhere far from the field that caused it.
+ */
+export function mergeTriggerForm(yaml: string, value: TriggerFormValue): TriggerYamlResult {
+  try {
+    return {
+      status: "ok",
+      yaml:
+        projectTriggerForm(yaml).status === "editable"
+          ? patchTriggerYaml(yaml, value)
+          : createTriggerYaml(value),
+    };
+  } catch (cause) {
+    return { status: "incomplete", reason: incompleteReason(cause) };
+  }
+}
+
+function incompleteReason(cause: unknown): string {
+  return cause instanceof Error && cause.message.trim() !== ""
+    ? cause.message
+    : "The trigger is invalid.";
 }
 
 export function createTriggerYaml(value: TriggerFormValue): string {

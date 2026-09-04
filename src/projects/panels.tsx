@@ -5,7 +5,9 @@ import { useServerFn } from "@tanstack/react-start";
 import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
+import { Card } from "../components/app/card.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
+import { CodeBlock } from "../components/app/copy-field.js";
 import {
   DataCell,
   DataRow,
@@ -13,18 +15,21 @@ import {
   DataTableSkeleton,
   type DataColumn,
 } from "../components/app/data-table.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { FormField } from "../components/app/form-field.js";
+import { NoticeAlert } from "../components/app/failure-alert.js";
 import { PageHeader } from "../components/app/page.js";
+import { RelativeTime, formatAbsolute } from "../components/app/relative-time.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
-import { StatusPill } from "../components/app/status-pill.js";
+import { StatusPill, statusLabel } from "../components/app/status-pill.js";
+import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { useConnectionReturn } from "../connections/result.js";
 import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
-import { Alert, AlertDescription } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
 import type { Result } from "../contract/respond.js";
 import {
   connectionStatus,
@@ -37,7 +42,6 @@ import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
 import {
   CommandError,
-  formatDate,
   invalidateOrganization,
   invalidateScope,
   projectScope,
@@ -154,13 +158,10 @@ export function OrganizationConnectionsPanel() {
           {rows.map((connection) => (
             <DataRow key={`${connection.provider}-${connection.id}`}>
               <DataCell>
-                <span>{connection.name}</span>
-                <span className="block font-mono text-xs text-muted-foreground">
-                  {connection.externalId}
-                </span>
+                <TwoLine primary={connection.name} secondary={connection.externalId} mono />
               </DataCell>
               <DataCell>
-                <span className="inline-flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-2">
                   <ProviderGlyph provider={connection.provider} />
                   {providerLabel(connection.provider)}
                 </span>
@@ -174,7 +175,7 @@ export function OrganizationConnectionsPanel() {
                       : "success"
                   }
                 >
-                  {statusLabel(connection.status)}
+                  {connectionStatusLabel(connection.status)}
                 </StatusPill>
               </DataCell>
               <DataCell align="end">
@@ -264,7 +265,7 @@ export function ProjectOverviewPanel() {
         title="Overview"
         description={`Setup and recent operations for ${data.project.name}.`}
       />
-      <div className="mb-8 grid gap-3 sm:grid-cols-2">
+      <Section className="sm:grid-cols-2">
         <SetupCard
           label="Configuration"
           ready={data.configuration.activeRevision !== null}
@@ -285,13 +286,13 @@ export function ProjectOverviewPanel() {
           }
           detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
         />
-      </div>
+      </Section>
       <Section
         title="Recent activity"
         action={
-          <Link className="text-sm hover:underline" to={`${base}/activity` as never}>
-            View all
-          </Link>
+          <Button variant="link" asChild>
+            <Link to={`${base}/activity` as never}>View all</Link>
+          </Button>
         }
       >
         <ActivityTable
@@ -320,6 +321,8 @@ export function ProjectActivityPanel() {
   );
 }
 
+type RunActivity = Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>["activity"];
+
 export function ProjectActivityRunPanel({ runId }: { runId: string }) {
   const tenant = useRouteTenant();
   const load = useServerFn(activityRunSnapshot);
@@ -344,76 +347,51 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
         title="Run detail"
         description={`${activity.provider} · ${activity.configuredTriggerName}`}
       />
-      <div className="grid gap-6">
-        <Section title="Invocation">
-          <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
-            <DetailField label="Prompt">
-              <pre className="whitespace-pre-wrap text-sm">{activity.prompt}</pre>
-            </DetailField>
-            <DetailField label="Typed inputs">
-              <JsonValue value={activity.inputs} />
-            </DetailField>
-            <DetailField label="Composed routing values">
-              <JsonValue value={activity.values} />
-            </DetailField>
-            <DetailField label="Run status">
-              <StatusPill tone={executionTone(activity.status)}>{activity.status}</StatusPill>
-            </DetailField>
-            <DetailField label="Run deadline">
-              <span className="font-mono text-xs">
-                {activity.deadlineAt === null ? "—" : formatDate(activity.deadlineAt)}
-                {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
-              </span>
-            </DetailField>
-            <DetailField label="Failure reason">
-              <span>{activity.failureReason ?? "—"}</span>
-            </DetailField>
-            <DetailField label="Delivery">
-              <span className="font-mono text-xs">{activity.deliveryId}</span>
-            </DetailField>
-          </dl>
-        </Section>
-        <Section title="Steps" description="Ordered durable step state and structured outputs.">
-          <DataTable
-            label="Run steps"
-            columns={[
-              { header: "Step" },
-              { header: "Status" },
-              { header: "Deadline" },
-              { header: "Structured output" },
-              { header: "Failure reason" },
-            ]}
-            isEmpty={activity.steps.length === 0}
-            empty={{ title: "No steps" }}
-          >
-            {activity.steps.map((step) => (
-              <DataRow key={step.id}>
-                <DataCell>
-                  <span>
-                    {step.ordinal + 1}. {step.stepId}
-                  </span>
-                </DataCell>
-                <DataCell>
-                  <StatusPill tone={executionTone(step.status)}>{step.status}</StatusPill>
-                </DataCell>
-                <DataCell muted>
-                  <span className="font-mono text-xs">
-                    {step.deadlineAt === null ? "—" : formatDate(step.deadlineAt)}
-                    {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
-                    {step.idleDeadlineAt === null
-                      ? ""
-                      : ` · idle ${formatDate(step.idleDeadlineAt)}`}
-                  </span>
-                </DataCell>
-                <DataCell>
-                  <JsonValue value={step.output} />
-                </DataCell>
-                <DataCell muted>{step.failureReason ?? "—"}</DataCell>
-              </DataRow>
-            ))}
-          </DataTable>
-        </Section>
-      </div>
+      <Section title="Invocation">
+        <SummaryPanel label="Invocation" rows={invocationRows(activity)} />
+      </Section>
+      <Section title="Steps" description="Ordered durable step state and structured outputs.">
+        <DataTable
+          label="Run steps"
+          columns={[
+            { header: "Step" },
+            { header: "Status" },
+            { header: "Deadline" },
+            { header: "Structured output" },
+            { header: "Failure reason" },
+          ]}
+          isEmpty={activity.steps.length === 0}
+          empty={{ title: "No steps" }}
+        >
+          {activity.steps.map((step) => (
+            <DataRow key={step.id}>
+              <DataCell>
+                <span>
+                  {step.ordinal + 1}. {step.stepId}
+                </span>
+              </DataCell>
+              <DataCell>
+                <StatusPill tone={executionTone(step.status)}>
+                  {statusLabel(step.status)}
+                </StatusPill>
+              </DataCell>
+              <DataCell muted>
+                <span className="font-mono text-xs">
+                  {step.deadlineAt === null ? "—" : formatAbsolute(step.deadlineAt)}
+                  {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
+                  {step.idleDeadlineAt === null
+                    ? ""
+                    : ` · idle ${formatAbsolute(step.idleDeadlineAt)}`}
+                </span>
+              </DataCell>
+              <DataCell>
+                <JsonValue value={step.output} />
+              </DataCell>
+              <DataCell muted>{step.failureReason ?? "—"}</DataCell>
+            </DataRow>
+          ))}
+        </DataTable>
+      </Section>
     </>
   );
 }
@@ -465,17 +443,21 @@ export function ProjectGeneralSettingsPanel() {
           >
             <form
               aria-label="Change project slug"
-              className="flex max-w-md items-end gap-2"
+              className="grid max-w-md gap-4"
               onSubmit={submit}
             >
-              <LabeledInput
+              <FormField
+                id="project-slug"
                 label="Project slug"
+                kind="text"
                 name="slug"
                 defaultValue={data.project.slug}
                 pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
                 required
               />
-              <Button type="submit">Save slug</Button>
+              <FormActions>
+                <Button type="submit">Save slug</Button>
+              </FormActions>
             </form>
           </Section>
           <Section title="Archive project">
@@ -508,38 +490,55 @@ function SettingsPage({ children }: { children: ReactNode }) {
 
 function SetupCard({ label, ready, detail }: { label: string; ready: boolean; detail: string }) {
   return (
-    <section aria-label={label} className="rounded-lg border bg-card p-5">
-      <div className="mb-2 flex items-center justify-between">
-        <h2>{label}</h2>
+    <Card
+      title={label}
+      action={
         <StatusPill tone={ready ? "success" : "neutral"}>
           {ready ? "Ready" : "Setup needed"}
         </StatusPill>
-      </div>
+      }
+    >
       <p className="text-sm text-muted-foreground">{detail}</p>
-    </section>
+    </Card>
   );
 }
 
-function DetailField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="grid gap-1">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0">{children}</dd>
-    </div>
-  );
+/** What one run amounts to, in the order an operator reads it: what was asked, then what happened. */
+function invocationRows(activity: RunActivity): readonly SummaryRow[] {
+  return [
+    { label: "Prompt", value: <CodeBlock label="Prompt">{activity.prompt}</CodeBlock> },
+    { label: "Typed inputs", value: <JsonValue value={activity.inputs} /> },
+    { label: "Composed routing values", value: <JsonValue value={activity.values} /> },
+    {
+      label: "Run status",
+      value: (
+        <StatusPill tone={executionTone(activity.status)}>
+          {statusLabel(activity.status)}
+        </StatusPill>
+      ),
+    },
+    {
+      label: "Run deadline",
+      value: (
+        <span className="font-mono text-xs">
+          {activity.deadlineAt === null ? "—" : formatAbsolute(activity.deadlineAt)}
+          {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
+        </span>
+      ),
+    },
+    { label: "Failure reason", value: activity.failureReason ?? "—" },
+    { label: "Delivery", value: <span className="font-mono text-xs">{activity.deliveryId}</span> },
+  ];
 }
 
 function JsonValue({ value }: { value: unknown }) {
-  return (
-    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">
-      {JSON.stringify(value, null, 2) ?? "—"}
-    </pre>
-  );
+  return <CodeBlock>{JSON.stringify(value, null, 2) ?? "—"}</CodeBlock>;
 }
 
-function executionTone(status: string): "success" | "danger" | "neutral" {
+function executionTone(status: string): "success" | "warning" | "danger" | "neutral" {
   if (status === "succeeded") return "success";
   if (status === "failed" || status === "timed_out") return "danger";
+  if (status === "dropped") return "warning";
   return "neutral";
 }
 
@@ -571,42 +570,57 @@ function ActivityTable({
       isEmpty={activity.length === 0}
       empty={{ title: "No activity" }}
     >
-      {activity.map((event) => (
-        <DataRow key={event.id}>
-          <DataCell>
-            {detailBasePath &&
-            "configuredTriggerName" in event &&
-            event.configuredTriggerName !== null ? (
-              <Link className="hover:underline" to={`${detailBasePath}/${event.id}` as never}>
-                {event.configuredTriggerName}
-              </Link>
-            ) : (
-              <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
-            )}
-            {event.repo === null ? null : (
-              <span className="block text-xs text-muted-foreground">{event.repo}</span>
-            )}
-          </DataCell>
-          <DataCell>{event.provider}</DataCell>
-          <DataCell>{event.source}</DataCell>
-          <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
-          {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
-          <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
-        </DataRow>
-      ))}
+      {activity.map((event) => {
+        const status = "status" in event ? event.status : "dropped";
+        return (
+          <DataRow key={event.id}>
+            <DataCell>
+              <TwoLine
+                primary={
+                  detailBasePath &&
+                  "configuredTriggerName" in event &&
+                  event.configuredTriggerName !== null ? (
+                    <Button variant="link" asChild>
+                      <Link to={`${detailBasePath}/${event.id}` as never}>
+                        {event.configuredTriggerName}
+                      </Link>
+                    </Button>
+                  ) : (
+                    <span className="font-mono">{event.id.slice(0, 12)}</span>
+                  )
+                }
+                {...(event.repo === null ? {} : { secondary: event.repo })}
+              />
+            </DataCell>
+            <DataCell>{event.provider}</DataCell>
+            <DataCell>{event.source}</DataCell>
+            <DataCell>
+              <StatusPill tone={executionTone(status)}>{statusLabel(status)}</StatusPill>
+            </DataCell>
+            {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
+            <DataCell muted>
+              <RelativeTime value={event.receivedAt} />
+            </DataCell>
+          </DataRow>
+        );
+      })}
     </DataTable>
   );
 }
 
+/**
+ * What the provider sent the operator back with. A return is an announcement about the round trip
+ * they just took, not a failure of the page they landed on, so both tones read as one live region
+ * and the banner owns the distance to the table below it.
+ */
 function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
   return (
-    <Alert
-      role="status"
-      className="mb-6"
-      {...(copy.tone === "error" ? { variant: "destructive" } : {})}
-    >
-      <AlertDescription>{copy.message}</AlertDescription>
-    </Alert>
+    // The banner owns the distance to the table under it; no caller spaces it.
+    <div className="mb-6">
+      <NoticeAlert tone={copy.tone === "success" ? "success" : "neutral"}>
+        {copy.message}
+      </NoticeAlert>
+    </div>
   );
 }
 
@@ -659,9 +673,9 @@ function UnconfiguredProvider({
 }) {
   if (!operator) return <StatusPill tone="neutral">Not configured</StatusPill>;
   return (
-    <Link className="text-sm text-link hover:underline" to={"/apps" as never}>
-      Set up the {providerLabel(provider)} app
-    </Link>
+    <Button variant="link" asChild>
+      <Link to={"/apps" as never}>Set up the {providerLabel(provider)} app</Link>
+    </Button>
   );
 }
 
@@ -671,24 +685,12 @@ function providerLabel(provider: "github" | "discord" | "slack" | "linear") {
   return provider === "slack" ? "Slack" : "Linear";
 }
 
-function statusLabel(status: string): string {
-  if (status === "requiresReauthorization") return "Reauthorization required";
-  return status.charAt(0).toUpperCase() + status.slice(1);
+/** The one connection status a sentence-cased machine value gets wrong. */
+function connectionStatusLabel(status: string): string {
+  return status === "requiresReauthorization" ? "Reauthorization required" : statusLabel(status);
 }
+
 function formString(form: FormData, name: string) {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
-}
-function LabeledInput({
-  label,
-  name,
-  ...props
-}: { label: string; name: string } & Omit<React.ComponentProps<typeof Input>, "name">) {
-  const id = `field-${name}`;
-  return (
-    <Field>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input id={id} name={name} {...props} />
-    </Field>
-  );
 }

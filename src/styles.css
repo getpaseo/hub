@@ -6,9 +6,9 @@
  *
  * Both ramps are Linear's measured palette: four neutral surfaces above the page, four text
  * steps, two border steps. Nothing here is a hue except `--link` and `--ring`, which stay Paseo
- * green so the product still signs its name somewhere. `--primary` is the inverted neutral —
- * the filled button is the opposite end of the greyscale, not a brand colour, which is why it
- * needs no contrast care at any size.
+ * green so the product still signs its name somewhere. `--primary` is the one place that hue is
+ * a surface rather than text: a dark teal fill under a pale mint label, dark enough that the
+ * label clears AA at every size the filled button is drawn.
  *
  * The app renders dark (`<html class="dark">`). The light column is kept correct so switching
  * is a one-line change, not a re-derivation.
@@ -21,8 +21,8 @@
   --card-foreground: #282a30;
   --popover: #ffffff;
   --popover-foreground: #282a30;
-  --primary: #282a30;
-  --primary-foreground: #ffffff;
+  --primary: #1d5c50;
+  --primary-foreground: #eefaf4;
   --link: #20744a;
   --secondary: #f0f0f0;
   --secondary-foreground: #282a30;
@@ -74,8 +74,8 @@
   --card-foreground: #f7f8f8;
   --popover: #141516;
   --popover-foreground: #f7f8f8;
-  --primary: #e5e5e6;
-  --primary-foreground: #08090a;
+  --primary: #1b4f4a;
+  --primary-foreground: #bfe6da;
   --link: #7ccba0;
   --secondary: #191a1b;
   --secondary-foreground: #f7f8f8;

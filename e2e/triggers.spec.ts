@@ -64,7 +64,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     });
     await triggers.expectMergeTagsAndAutosizing();
     await triggers.expectAgentSearch();
-    await triggers.expectShadcnSelectors();
+    await triggers.expectComboboxes();
     await triggers.changePrompt("Handle the Slack request.");
     await page.evaluate(() => window.scrollTo({ top: 0 }));
     await triggers.capture(`${SHOTS}/02-configured-form.png`);
