@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { trialDaysRemaining } from "./trial-policy.js";
+import { TRIAL_DAYS, trialDaysRemaining } from "./trial-policy.js";
 
 const NOW = new Date("2026-09-03T12:00:00.000Z");
 
@@ -12,6 +12,10 @@ function subscription(
 }
 
 describe("days left in a trial", () => {
+  it("sets every new cardless trial to seven days", () => {
+    assert.equal(TRIAL_DAYS, 7);
+  });
+
   it("counts the days a trialing organization has left", () => {
     assert.equal(trialDaysRemaining(subscription("trialing", "2026-09-15T12:00:00.000Z"), NOW), 12);
   });

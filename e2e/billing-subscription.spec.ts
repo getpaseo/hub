@@ -71,7 +71,7 @@ test("a new organization starts trialing, replay is a no-op, and cancellation ex
     await hub.expectNoTrialReminder("owner");
     await page.screenshot({ path: `${SLICE_6_DIR}/03-cancel-reverts.png`, fullPage: true });
     // The trial was consumed by the cancelled subscription, so the paywall now sells the plan
-    // instead of promising another 14 free days.
+    // instead of promising another 7 free days.
     await hub.expectNoSecondTrialOffer("owner");
     await hub.openPlanDialog("owner");
     await page.screenshot({ path: `${SLICE_6_DIR}/04-paid-paywall.png`, fullPage: true });

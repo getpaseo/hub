@@ -1,5 +1,5 @@
 /** The single cardless-trial duration used by Stripe policy and billing copy. */
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
