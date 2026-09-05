@@ -22,6 +22,8 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 const PROJECT_SLUG = "default";
 const PersistedDaemonAgentSchema = z.object({
   id: z.string(),
+  workspaceId: z.string().optional(),
+  archivedAt: z.string().nullable().optional(),
   lastStatus: z.enum(["error", "initializing", "idle", "running", "closed"]),
   owner: z.object({
     kind: z.literal("daemon"),
@@ -108,6 +110,7 @@ interface ManagedChild {
 
 interface HubE2EOptions {
   realAgent?: boolean;
+  completeInTurn?: boolean;
 }
 
 export interface SourceCliBundleDeploymentEvidence {
@@ -213,6 +216,10 @@ export class HubE2E {
     return { state: requiredString(status, "state") };
   }
 
+  requestProviderSnapshot(cwd = this.workspace): Promise<Record<string, unknown>> {
+    return this.requireProxy().requestProviderSnapshot(cwd);
+  }
+
   async deployCurrentProjectBundleWithSourceCli(): Promise<SourceCliBundleDeploymentEvidence> {
     const sourceFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
       left.path.localeCompare(right.path),
@@ -234,6 +241,8 @@ export class HubE2E {
     await this.requirePool().query("update daemons set slug = 'local' where id = $1", [
       connectedDaemonId,
     ]);
+    await this.requireSource().restart();
+    await this.daemonIsConnected();
     await this.seedCurrentProjectResources();
     await this.waitForBundleProviders(sourceFiles);
 
@@ -340,7 +349,7 @@ export class HubE2E {
     return requiredString(result, "agentId");
   }
 
-  async installProductionConfiguration(): Promise<void> {
+  async installProductionConfiguration(workspaceAffinityKey?: string): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
@@ -364,6 +373,12 @@ export class HubE2E {
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
+      ...(workspaceAffinityKey === undefined
+        ? []
+        : [
+            "        workspace_affinity:",
+            `          key: ${JSON.stringify(workspaceAffinityKey)}`,
+          ]),
       "        agent:",
       "          provider: hub-e2e",
       '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
@@ -897,6 +912,32 @@ export class HubE2E {
     };
   }
 
+  async completedExecutionWorkspace(executionId: string): Promise<string> {
+    await this.completedRun(executionId);
+    // Completion and daemon archival are separate durable actions. Observe both before testing
+    // whether the workspace survives the gap between executions.
+    await this.observe(async () => {
+      const records = await this.persistedDaemonAgents(executionId);
+      return records.length === 1 && typeof records[0]?.archivedAt === "string";
+    }, "completed execution agent archival");
+    const record = (await this.persistedDaemonAgents(executionId))[0];
+    if (!record?.workspaceId) throw new Error("Completed execution has no workspace");
+    return record.workspaceId;
+  }
+
+  async expectWorkspaceActive(workspaceId: string, active: boolean): Promise<void> {
+    await this.observe(
+      async () =>
+        (await this.requireSource().activeWorkspaceIds()).includes(workspaceId) === active,
+      `workspace ${workspaceId} to be ${active ? "active" : "archived"}`,
+    );
+  }
+
+  async archiveWorkspace(workspaceId: string): Promise<void> {
+    await this.cli(["workspace", "archive", workspaceId, "--host", this.daemonHost, "--json"]);
+    await this.expectWorkspaceActive(workspaceId, false);
+  }
+
   requestForbiddenOperation() {
     return this.requireProxy().requestForbiddenOperation();
   }
@@ -1248,7 +1289,7 @@ export class HubE2E {
     this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();
-    if (this.options.realAgent !== true) {
+    if (this.options.realAgent !== true && this.options.completeInTurn !== true) {
       this.completionRunner = await startChild({
         name: "completion-runner",
         command: process.execPath,
@@ -1335,6 +1376,7 @@ export class HubE2E {
                     HUB_E2E_ACP_RECORD_FILE: this.acpRecordFile,
                     HUB_E2E_COMPLETE_GATE: this.completionGate,
                     HUB_E2E_COMPLETION_JOBS: this.completionJobs,
+                    HUB_E2E_COMPLETE_IN_TURN: this.options.completeInTurn === true ? "1" : "0",
                   },
                 },
               },

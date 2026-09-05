@@ -5,12 +5,23 @@ import { accountState } from "./functions.js";
 import { DaemonHandoffEntry } from "../daemons/handoff.js";
 import { AccountEntry, InvitationEntry, OrganizationGate } from "./account-entry.js";
 import { FailedEntry, LoadingEntry, UnavailableInvitation } from "./account-states.js";
-import { DashboardShell } from "./dashboard-shell.js";
+import { DashboardShell } from "../shell/dashboard-shell.js";
 import { InstanceSetupEntry } from "./instance-setup-entry.js";
 import { AppSetupEntry } from "../provider-applications/panel.js";
 import { PasswordChangeEntry } from "./password-change.js";
+import { EmailVerificationResult, PasswordResetEntry } from "./account-recovery.js";
+import {
+  parseSignupIntent,
+  SIGNUP_INTENT_QUERY_PARAMETER,
+} from "../organizations/signup-intent.js";
 
 export function AccountApp() {
+  const authCallback = readAuthCallback();
+  if (authCallback !== undefined) return <AuthCallbackEntry callback={authCallback} />;
+  return <AccountApplication />;
+}
+
+function AccountApplication() {
   const loadAccount = useServerFn(accountState);
   /**
    * The first-run phase between finishing app setup and the dashboard. A phase, not a gate: app
@@ -20,13 +31,19 @@ export function AccountApp() {
   const [handoff, setHandoff] = useState(false);
   const enterHandoff = useCallback(() => setHandoff(true), []);
   const leaveHandoff = useCallback(() => setHandoff(false), []);
-  const invitation =
-    typeof window === "undefined"
-      ? undefined
-      : (new URLSearchParams(window.location.search).get("invitation") ?? undefined);
+  const search =
+    typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search);
+  const invitation = search?.get("invitation") ?? undefined;
+  const signupIntent = parseSignupIntent(search?.get(SIGNUP_INTENT_QUERY_PARAMETER));
   const account = useQuery({
-    queryKey: ["account", invitation],
-    queryFn: () => loadAccount({ data: { invitation } }),
+    queryKey: ["account", invitation, signupIntent],
+    queryFn: () =>
+      loadAccount({
+        data: {
+          ...(invitation === undefined ? {} : { invitation }),
+          ...(signupIntent === undefined ? {} : { signupIntent }),
+        },
+      }),
   });
   if (account.isPending) return <LoadingEntry />;
   if (account.isError || account.data.status === "error") {
@@ -66,4 +83,42 @@ export function AccountApp() {
   }
   if (state.status === "organizationRequired") return <OrganizationGate account={state} />;
   return <DashboardShell account={state} />;
+}
+
+type AuthCallback =
+  | { kind: "email-verification"; error?: string }
+  | { kind: "password-reset"; token?: string; error?: string };
+
+function AuthCallbackEntry({ callback }: { callback: AuthCallback }) {
+  if (callback.kind === "email-verification") {
+    return (
+      <EmailVerificationResult
+        {...(callback.error === undefined ? {} : { error: callback.error })}
+      />
+    );
+  }
+  return (
+    <PasswordResetEntry
+      {...(callback.token === undefined ? {} : { token: callback.token })}
+      {...(callback.error === undefined ? {} : { callbackError: callback.error })}
+    />
+  );
+}
+
+function readAuthCallback(): AuthCallback | undefined {
+  if (typeof window === "undefined") return undefined;
+  const search = new URLSearchParams(window.location.search);
+  const error = search.get("error") ?? undefined;
+  if (search.get("auth") === "email-verification") {
+    return { kind: "email-verification", ...(error === undefined ? {} : { error }) };
+  }
+  if (search.get("auth") === "password-reset") {
+    const token = search.get("token") ?? undefined;
+    return {
+      kind: "password-reset",
+      ...(token === undefined ? {} : { token }),
+      ...(error === undefined ? {} : { error }),
+    };
+  }
+  return undefined;
 }

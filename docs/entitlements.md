@@ -93,6 +93,21 @@ flags. It maps to one wire shape, `EntitlementDenialPayload`
 (`encodeEntitlementDenialFailureReason`/`decodeEntitlementDenialFailureReason`). Nothing catches
 and reshapes a denial per call site.
 
+Lock the control when the UI can see the denial coming. Shared primitives in
+`src/entitlements/ui/` read the cached organization limits, distinguish exhausted headroom from
+an existing overage, render a locked action, and link it to the deployment's remedy — the plan
+picker (`/o/:slug/settings/billing?plans=true`, open on arrival) on a billing-configured instance,
+the Usage page otherwise, since self-hosted has nothing to buy and the limit is the operator's to
+raise. The call site still owns its policy check and the sentence naming the limit: a boolean flag
+and a numeric cap need not pretend to be the same rule.
+
+Keep a locked control as a live link rather than a disabled button: a disabled control leads
+nowhere and explains nothing. The server-side denial message stays as the fallback for the race,
+and remains the only path for denials no control can anticipate.
+
+The Team page reaches the picker by URL rather than by rendering it, because `src/billing/` may
+not be imported outside its boundary (docs/billing.md). Any future locked control does the same.
+
 ## Fail closed
 
 Enforcement must fail closed. An early version threaded `EntitlementsService` as an optional

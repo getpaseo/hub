@@ -3,10 +3,12 @@ import { Writable } from "node:stream";
 import { describe, it } from "vitest";
 import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
+import type { Database } from "../db/types.js";
 import { hashTemplate } from "../entitlements/catalog.js";
 import { runWithFailureTracking } from "../failures/index.js";
 import { createLogger } from "../logger.js";
-import { syncBillingCatalog } from "./catalog-sync.js";
+import { syncBillingCatalog as syncBillingCatalogWithPresentations } from "./catalog-sync.js";
+import type { BillingPlanPresentations } from "./plan-presentation.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
@@ -44,7 +46,6 @@ function soloProduct(overrides: Partial<StripeCatalogProduct> = {}): StripeCatal
       ent_can_invite: "true",
       ent_executions_monthly_limit: "2000",
     },
-    marketingFeatures: ["5 seats", "2000 executions / month"],
     ...overrides,
   };
 }
@@ -70,6 +71,25 @@ function soloPrices(): StripeCatalogPrice[] {
       interval: "year",
     },
   ];
+}
+
+const TEST_PLAN_PRESENTATIONS: BillingPlanPresentations = {
+  solo: {
+    name: "Solo",
+    features: [
+      {
+        key: "feature-1",
+        label: "5 seats",
+        tooltip: "Includes owners, members, and pending invitations.",
+      },
+      { key: "feature-2", label: "2000 executions / month", tooltip: null },
+    ],
+    priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
+  },
+};
+
+function syncBillingCatalog(source: StripeCatalogSource, database: Database): Promise<void> {
+  return syncBillingCatalogWithPresentations(source, database, TEST_PLAN_PRESENTATIONS);
 }
 
 describe("syncBillingCatalog", () => {
@@ -108,7 +128,21 @@ describe("syncBillingCatalog", () => {
     assert.equal(plan.slug, "solo");
     assert.equal(plan.name, "Solo");
     assert.equal(plan.active, true);
-    assert.deepEqual(plan.marketing, { features: ["5 seats", "2000 executions / month"] });
+    assert.deepEqual(plan.marketing, {
+      features: [
+        {
+          key: "feature-1",
+          label: "5 seats",
+          tooltip: "Includes owners, members, and pending invitations.",
+        },
+        {
+          key: "feature-2",
+          label: "2000 executions / month",
+          tooltip: null,
+        },
+      ],
+      priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
+    });
     assert.equal(
       plan.templateHash,
       hashTemplate({

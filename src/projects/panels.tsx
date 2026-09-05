@@ -2,32 +2,30 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronRight } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
+import { Card, CardSkeleton } from "../components/app/card.js";
 import { ConfirmAction, ConfirmMenuItem } from "../components/app/confirm-action.js";
+import { CodeBlock } from "../components/app/copy-field.js";
 import { DataCell, DataRow, DataTable } from "../components/app/data-table.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { FormField } from "../components/app/form-field.js";
+import { FailureAlert, NoticeAlert } from "../components/app/failure-alert.js";
 import { EmptyState } from "../components/app/empty-state.js";
 import { PageHeader } from "../components/app/page.js";
+import { RelativeTime, formatAbsolute } from "../components/app/relative-time.js";
+import { RecordList, RecordRow } from "../components/app/record-list.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { Section } from "../components/app/section.js";
-import { StatusPill } from "../components/app/status-pill.js";
+import { StatusPill, statusLabel } from "../components/app/status-pill.js";
+import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
-import { connectionResultCopy, useConnectionResult } from "../connections/result.js";
-import { cn } from "../lib/utils.js";
-import { Alert, AlertDescription } from "../components/ui/alert.js";
+import { useConnectionReturn } from "../connections/result.js";
+import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
 import type { Result } from "../contract/respond.js";
 import {
   connectionStatus,
@@ -40,7 +38,6 @@ import { useRouteTenant } from "./context.js";
 import type { ProjectDashboard } from "./dashboard.js";
 import {
   CommandError,
-  formatDate,
   invalidateOrganization,
   invalidateScope,
   projectScope,
@@ -51,141 +48,22 @@ import {
   type OrganizationSnapshot,
   type ProjectSnapshot,
 } from "./panel-state.js";
-import {
-  archiveProject,
-  activityRunSnapshot,
-  createProject,
-  updateProjectSlug,
-} from "./functions.js";
-export function ProjectsPanel() {
-  const tenant = useRouteTenant();
-  const queryClient = useQueryClient();
-  const scope = { organizationSlug: tenant.organization.slug };
-  const snapshot = useOrganizationSnapshot();
-  const [connectionResult] = useConnectionResult();
-  const [creating, setCreating] = useState(false);
-  const create = useProjectCommand(createProject, queryClient, scope);
-  if (!snapshot.ok) return snapshot.element;
-  const data = snapshot.data;
-  const submitCreate = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    create.mutate({
-      data: {
-        ...scope,
-        name: formString(form, "name"),
-        slug: formString(form, "slug"),
-      },
-    });
-    setCreating(false);
-  };
+import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
+const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
+const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
+
+function ConnectionsLoading() {
   return (
     <>
-      <PageHeader title="Projects" description="Select a project to work in.">
-        {data.capabilities.manageResources ? (
-          <Button onClick={() => setCreating(true)}>New project</Button>
-        ) : null}
-      </PageHeader>
-      {connectionResult === undefined ? null : (
-        <Alert role="status" className="mb-6">
-          <AlertDescription>{connectionResultCopy(connectionResult)}</AlertDescription>
-        </Alert>
-      )}
-      <CommandError mutations={[create]} />
-      {data.projects.length === 0 ? (
-        <div className="rounded-lg border bg-card">
-          <EmptyState
-            title="No projects"
-            description="Create a project to route provider events at a daemon."
-          />
-        </div>
-      ) : (
-        <ul aria-label="Projects" className="grid gap-2">
-          {data.projects.map((project) => (
-            <li key={project.id}>
-              <ProjectCard
-                project={project}
-                to={`/o/${data.organization.slug}/projects/${project.slug}/overview`}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-      <Dialog open={creating} onOpenChange={setCreating}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
-          <form aria-label="Create project" className="grid gap-5" onSubmit={submitCreate}>
-            <LabeledInput label="Project name" name="name" required />
-            <LabeledInput
-              label="Project slug"
-              name="slug"
-              pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-              required
-            />
-            <DialogFooter>
-              <Button type="submit">Create project</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
+      <Section>
+        {CONNECTION_PROVIDERS.map((provider) => (
+          <CardSkeleton key={provider} lines={2} />
+        ))}
+      </Section>
     </>
   );
-}
-
-/**
- * The project chooser row. Choosing a project is the whole job of that screen, so the
- * card itself is the target rather than the name inside a cell. Archived projects keep
- * their row but lose every affordance — their routes stop resolving once archived.
- */
-function ProjectCard({
-  project,
-  to,
-}: {
-  project: OrganizationSnapshot["projects"][number];
-  to: string;
-}) {
-  const card = "flex items-center gap-4 rounded-lg border bg-card px-4 py-3.5";
-  const body = (
-    <>
-      <span
-        aria-hidden="true"
-        className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm text-link"
-      >
-        {monogram(project.name)}
-      </span>
-      <span className="grid min-w-0 flex-1 gap-0.5">
-        <span className="flex items-center gap-2">
-          <span className="truncate group-hover:text-link">{project.name}</span>
-          {project.status === "active" ? null : <StatusPill tone="neutral">Archived</StatusPill>}
-        </span>
-        <span className="truncate font-mono text-xs text-muted-foreground">{project.slug}</span>
-      </span>
-      <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">
-        Created {formatDate(project.createdAt)}
-      </span>
-    </>
-  );
-  if (project.status !== "active") {
-    return <div className={cn(card, "opacity-60")}>{body}</div>;
-  }
-  return (
-    <Link
-      to={to as never}
-      className={cn(card, "group transition-colors hover:border-primary/60 hover:bg-accent/40")}
-    >
-      {body}
-      <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
-    </Link>
-  );
-}
-
-function monogram(name: string) {
-  const words = name.split(/\s+/).filter((word) => word.length > 0);
-  const letters =
-    words.length > 1 ? `${words[0]?.[0] ?? ""}${words[1]?.[0] ?? ""}` : name.slice(0, 2);
-  return letters.toUpperCase();
 }
 
 export function OrganizationConnectionsPanel() {
@@ -193,13 +71,13 @@ export function OrganizationConnectionsPanel() {
   const { isInstanceOperator } = useActiveAccount();
   const queryClient = useQueryClient();
   const scope = { organizationSlug: tenant.organization.slug };
-  const snapshot = useOrganizationSnapshot();
+  const snapshot = useOrganizationSnapshot(<ConnectionsLoading />);
   const loadStatus = useServerFn(connectionStatus);
   const statusQuery = useQuery({
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
     queryFn: () => loadStatus({ data: scope }),
   });
-  const [result, setResult] = useConnectionResult();
+  const [returned, setReturned] = useConnectionReturn();
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -209,9 +87,9 @@ export function OrganizationConnectionsPanel() {
     mutationFn: useServerFn(disconnectConnection) as (
       input: Parameters<typeof disconnectConnection>[0],
     ) => Promise<Result<{ result: ConnectionDisconnectResult }>>,
-    onSuccess: async (response) => {
+    onSuccess: async (response, variables) => {
       if (response.status !== "ok") return;
-      setResult(response.data.result);
+      setReturned({ provider: variables.data.provider, result: response.data.result });
       await Promise.all([
         invalidateOrganization(queryClient, scope.organizationSlug),
         queryClient.invalidateQueries({
@@ -221,10 +99,14 @@ export function OrganizationConnectionsPanel() {
     },
   });
   if (!snapshot.ok) return snapshot.element;
-  const status = queryState<ConnectionStatus>(statusQuery, "Connections unavailable");
+  const status = queryState<ConnectionStatus>(
+    statusQuery,
+    "Connections unavailable",
+    <ConnectionsLoading />,
+  );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: "github" | "discord" | "slack" | "linear") => {
+  const connectProvider = (provider: ConnectionProviderName) => {
     connect.mutate(
       { data: { ...scope, provider } },
       {
@@ -236,7 +118,7 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
-  const connectionActionLabel = (provider: "github" | "discord" | "slack" | "linear") => {
+  const connectionActionLabel = (provider: ConnectionProviderName) => {
     if (
       (provider === "slack" || provider === "linear") &&
       status.data[provider].status === "requiresReauthorization"
@@ -253,42 +135,110 @@ export function OrganizationConnectionsPanel() {
     }
     return "Connect";
   };
+  const providerAction = (provider: ConnectionProviderName): ReactNode => {
+    if (!data.capabilities.manageResources) return undefined;
+    // An app nobody has given Hub credentials for cannot be connected from here, and only an
+    // instance operator can change that. Everyone else is told nothing about instance
+    // credentials: a state they cannot act on is not news, and a card with only a name on it is
+    // the page talking about work they cannot do.
+    if (status.data[provider].status === "notConfigured") {
+      if (!isInstanceOperator) return undefined;
+      return (
+        <Button variant="outline" size="sm" asChild>
+          <Link to={"/apps" as never}>Set up the {providerLabel(provider)} app</Link>
+        </Button>
+      );
+    }
+    return (
+      <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
+        {connectionActionLabel(provider)} {providerLabel(provider)}
+      </Button>
+    );
+  };
+  // A provider block that can neither be acted on nor list anything says only its own name.
+  // That is every provider for someone who cannot connect one, and four of them is the whole
+  // page talking about work the reader cannot do.
+  const shown = CONNECTION_PROVIDERS.map((provider) => ({
+    provider,
+    connections: rows.filter((connection) => connection.provider === provider),
+    action: providerAction(provider),
+  })).filter((block) => block.action !== undefined || block.connections.length > 0);
+  // Whose problem the empty page is: an instance with no provider apps is the operator's, an
+  // organization that has connected nothing is its owners'.
+  const nothingToConnect = CONNECTION_PROVIDERS.every(
+    (provider) => status.data[provider].status === "notConfigured",
+  )
+    ? "This Hub has no provider apps set up yet. Ask whoever runs it to add one."
+    : "An organization owner connects the providers this organization can use.";
   return (
     <>
-      <PageHeader title="Connections" description="Organization provider connections." />
-      {result === undefined ? null : (
-        <Alert role="status" className="mb-6">
-          <AlertDescription>{connectionResultCopy(result)}</AlertDescription>
-        </Alert>
+      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
+      {returned === undefined ? null : (
+        <ConnectionReturnBanner copy={connectionReturnCopy(returned)} />
       )}
       <CommandError mutations={[connect, disconnect]} />
-      <Section title="Connections">
-        <DataTable
-          label="Connections"
-          columns={[
-            { header: "Connection" },
-            { header: "Provider" },
-            { header: "Status" },
-            { header: "" },
-          ]}
-          isEmpty={rows.length === 0}
-          empty={{ title: "No connections" }}
-        >
-          {rows.map((connection) => (
-            <DataRow key={`${connection.provider}-${connection.id}`}>
-              <DataCell>
-                <span>{connection.name}</span>
-                <span className="block font-mono text-xs text-muted-foreground">
-                  {connection.externalId}
-                </span>
-              </DataCell>
-              <DataCell>
-                <span className="inline-flex items-center gap-1.5">
-                  <ProviderGlyph provider={connection.provider} />
-                  {providerLabel(connection.provider)}
-                </span>
-              </DataCell>
-              <DataCell>
+      <Section>
+        {shown.length === 0 ? (
+          <EmptyState title="No connections" description={nothingToConnect} />
+        ) : (
+          shown.map(({ provider, connections, action }) => (
+            <ProviderConnections
+              key={provider}
+              provider={provider}
+              connections={connections}
+              canManage={data.capabilities.manageResources}
+              busy={busy}
+              action={action}
+              onRevoke={(connectionId) =>
+                disconnect.mutate({ data: { ...scope, provider, connectionId } })
+              }
+            />
+          ))
+        )}
+      </Section>
+      <Section
+        title="Known unrouted events"
+        description="Events received for this organization that were not routed to a workflow."
+      >
+        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
+      </Section>
+    </>
+  );
+}
+
+/**
+ * One integration, top to bottom: what it is, the one way to connect it, and the accounts it is
+ * already connected to. A provider with nothing connected is the same card without a list, so
+ * the page reads as the same four blocks whatever state the organization is in.
+ */
+function ProviderConnections({
+  provider,
+  connections,
+  canManage,
+  busy,
+  action,
+  onRevoke,
+}: {
+  provider: ConnectionProviderName;
+  connections: readonly ConnectionRecord[];
+  canManage: boolean;
+  busy: boolean;
+  action: ReactNode;
+  onRevoke: (connectionId: string) => void;
+}) {
+  const label = providerLabel(provider);
+  return (
+    <Card
+      icon={<ProviderGlyph provider={provider} />}
+      title={label}
+      {...(action === undefined ? {} : { action })}
+    >
+      {connections.length === 0 ? null : (
+        <RecordList label={`${label} connections`}>
+          {connections.map((connection) => (
+            <RecordRow
+              key={connection.id}
+              status={
                 <StatusPill
                   tone={
                     connection.status === "suspended" ||
@@ -297,11 +247,11 @@ export function OrganizationConnectionsPanel() {
                       : "success"
                   }
                 >
-                  {statusLabel(connection.status)}
+                  {connectionStatusLabel(connection.status)}
                 </StatusPill>
-              </DataCell>
-              <DataCell align="end">
-                {data.capabilities.manageResources ? (
+              }
+              actions={
+                canManage ? (
                   <RowActions label={`Actions for ${connection.name}`}>
                     <ConfirmMenuItem
                       busy={busy}
@@ -311,56 +261,18 @@ export function OrganizationConnectionsPanel() {
                       description="Projects using this credential will stop receiving new events."
                       confirmLabel="Revoke connection"
                       cancelLabel="Cancel"
-                      onConfirm={() =>
-                        disconnect.mutate({
-                          data: {
-                            ...scope,
-                            provider: connection.provider,
-                            connectionId: connection.id,
-                          },
-                        })
-                      }
+                      onConfirm={() => onRevoke(connection.id)}
                     />
                   </RowActions>
-                ) : null}
-              </DataCell>
-            </DataRow>
+                ) : undefined
+              }
+            >
+              <TwoLine primary={connection.name} secondary={connection.externalId} mono />
+            </RecordRow>
           ))}
-        </DataTable>
-        {data.capabilities.manageResources ? (
-          <div className="grid gap-2 sm:grid-cols-4">
-            {(["github", "discord", "slack", "linear"] as const).map((provider) => (
-              <div
-                key={provider}
-                className="flex items-center justify-between gap-2 rounded-md border p-3"
-              >
-                <span className="inline-flex items-center gap-2 text-sm">
-                  <ProviderGlyph provider={provider} />
-                  {providerLabel(provider)}
-                </span>
-                {status.data[provider].status === "notConfigured" ? (
-                  <UnconfiguredProvider provider={provider} operator={isInstanceOperator} />
-                ) : (
-                  <Button
-                    disabled={busy}
-                    variant="outline"
-                    onClick={() => connectProvider(provider)}
-                  >
-                    {connectionActionLabel(provider)} {providerLabel(provider)}
-                  </Button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </Section>
-      <Section
-        title="Known unrouted events"
-        description="Events received for this organization that were not routed to a workflow."
-      >
-        <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
-      </Section>
-    </>
+        </RecordList>
+      )}
+    </Card>
   );
 }
 
@@ -387,7 +299,7 @@ export function ProjectOverviewPanel() {
         title="Overview"
         description={`Setup and recent operations for ${data.project.name}.`}
       />
-      <div className="mb-8 grid gap-3 sm:grid-cols-2">
+      <Section className="sm:grid-cols-2">
         <SetupCard
           label="Configuration"
           ready={data.configuration.activeRevision !== null}
@@ -408,13 +320,13 @@ export function ProjectOverviewPanel() {
           }
           detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
         />
-      </div>
+      </Section>
       <Section
         title="Recent activity"
         action={
-          <Link className="text-sm hover:underline" to={`${base}/activity` as never}>
-            View all
-          </Link>
+          <Button variant="link" asChild>
+            <Link to={`${base}/activity` as never}>View all</Link>
+          </Button>
         }
       >
         <ActivityTable
@@ -443,6 +355,8 @@ export function ProjectActivityPanel() {
   );
 }
 
+type RunActivity = Awaited<ReturnType<ProjectDashboard["activityRunSnapshot"]>>["activity"];
+
 export function ProjectActivityRunPanel({ runId }: { runId: string }) {
   const tenant = useRouteTenant();
   const load = useServerFn(activityRunSnapshot);
@@ -467,76 +381,51 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
         title="Run detail"
         description={`${activity.provider} · ${activity.configuredTriggerName}`}
       />
-      <div className="grid gap-6">
-        <Section title="Invocation">
-          <dl className="grid gap-4 rounded-lg border bg-card p-5 sm:grid-cols-2">
-            <DetailField label="Prompt">
-              <pre className="whitespace-pre-wrap text-sm">{activity.prompt}</pre>
-            </DetailField>
-            <DetailField label="Typed inputs">
-              <JsonValue value={activity.inputs} />
-            </DetailField>
-            <DetailField label="Composed routing values">
-              <JsonValue value={activity.values} />
-            </DetailField>
-            <DetailField label="Run status">
-              <StatusPill tone={executionTone(activity.status)}>{activity.status}</StatusPill>
-            </DetailField>
-            <DetailField label="Run deadline">
-              <span className="font-mono text-xs">
-                {activity.deadlineAt === null ? "—" : formatDate(activity.deadlineAt)}
-                {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
-              </span>
-            </DetailField>
-            <DetailField label="Failure reason">
-              <span>{activity.failureReason ?? "—"}</span>
-            </DetailField>
-            <DetailField label="Delivery">
-              <span className="font-mono text-xs">{activity.deliveryId}</span>
-            </DetailField>
-          </dl>
-        </Section>
-        <Section title="Steps" description="Ordered durable step state and structured outputs.">
-          <DataTable
-            label="Run steps"
-            columns={[
-              { header: "Step" },
-              { header: "Status" },
-              { header: "Deadline" },
-              { header: "Structured output" },
-              { header: "Failure reason" },
-            ]}
-            isEmpty={activity.steps.length === 0}
-            empty={{ title: "No steps" }}
-          >
-            {activity.steps.map((step) => (
-              <DataRow key={step.id}>
-                <DataCell>
-                  <span>
-                    {step.ordinal + 1}. {step.stepId}
-                  </span>
-                </DataCell>
-                <DataCell>
-                  <StatusPill tone={executionTone(step.status)}>{step.status}</StatusPill>
-                </DataCell>
-                <DataCell muted>
-                  <span className="font-mono text-xs">
-                    {step.deadlineAt === null ? "—" : formatDate(step.deadlineAt)}
-                    {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
-                    {step.idleDeadlineAt === null
-                      ? ""
-                      : ` · idle ${formatDate(step.idleDeadlineAt)}`}
-                  </span>
-                </DataCell>
-                <DataCell>
-                  <JsonValue value={step.output} />
-                </DataCell>
-                <DataCell muted>{step.failureReason ?? "—"}</DataCell>
-              </DataRow>
-            ))}
-          </DataTable>
-        </Section>
-      </div>
+      <Section title="Invocation">
+        <SummaryPanel label="Invocation" rows={invocationRows(activity)} />
+      </Section>
+      <Section title="Steps" description="Ordered durable step state and structured outputs.">
+        <DataTable
+          label="Run steps"
+          columns={[
+            { header: "Step" },
+            { header: "Status" },
+            { header: "Deadline" },
+            { header: "Structured output" },
+            { header: "Failure reason" },
+          ]}
+          isEmpty={activity.steps.length === 0}
+          empty={{ title: "No steps" }}
+        >
+          {activity.steps.map((step) => (
+            <DataRow key={step.id}>
+              <DataCell>
+                <span>
+                  {step.ordinal + 1}. {step.stepId}
+                </span>
+              </DataCell>
+              <DataCell>
+                <StatusPill tone={executionTone(step.status)}>
+                  {statusLabel(step.status)}
+                </StatusPill>
+              </DataCell>
+              <DataCell muted>
+                <span className="font-mono text-xs">
+                  {step.deadlineAt === null ? "—" : formatAbsolute(step.deadlineAt)}
+                  {step.deadlineKind === null ? "" : ` · ${step.deadlineKind}`}
+                  {step.idleDeadlineAt === null
+                    ? ""
+                    : ` · idle ${formatAbsolute(step.idleDeadlineAt)}`}
+                </span>
+              </DataCell>
+              <DataCell>
+                <JsonValue value={step.output} />
+              </DataCell>
+              <DataCell muted>{step.failureReason ?? "—"}</DataCell>
+            </DataRow>
+          ))}
+        </DataTable>
+      </Section>
     </>
   );
 }
@@ -588,17 +477,21 @@ export function ProjectGeneralSettingsPanel() {
           >
             <form
               aria-label="Change project slug"
-              className="flex max-w-md items-end gap-2"
+              className="grid max-w-md gap-4"
               onSubmit={submit}
             >
-              <LabeledInput
+              <FormField
+                id="project-slug"
                 label="Project slug"
+                kind="text"
                 name="slug"
                 defaultValue={data.project.slug}
                 pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
                 required
               />
-              <Button type="submit">Save slug</Button>
+              <FormActions>
+                <Button type="submit">Save slug</Button>
+              </FormActions>
             </form>
           </Section>
           <Section title="Archive project">
@@ -631,38 +524,55 @@ function SettingsPage({ children }: { children: ReactNode }) {
 
 function SetupCard({ label, ready, detail }: { label: string; ready: boolean; detail: string }) {
   return (
-    <section aria-label={label} className="rounded-lg border bg-card p-5">
-      <div className="mb-2 flex items-center justify-between">
-        <h2>{label}</h2>
+    <Card
+      title={label}
+      action={
         <StatusPill tone={ready ? "success" : "neutral"}>
           {ready ? "Ready" : "Setup needed"}
         </StatusPill>
-      </div>
+      }
+    >
       <p className="text-sm text-muted-foreground">{detail}</p>
-    </section>
+    </Card>
   );
 }
 
-function DetailField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="grid gap-1">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="min-w-0">{children}</dd>
-    </div>
-  );
+/** What one run amounts to, in the order an operator reads it: what was asked, then what happened. */
+function invocationRows(activity: RunActivity): readonly SummaryRow[] {
+  return [
+    { label: "Prompt", value: <CodeBlock label="Prompt">{activity.prompt}</CodeBlock> },
+    { label: "Typed inputs", value: <JsonValue value={activity.inputs} /> },
+    { label: "Composed routing values", value: <JsonValue value={activity.values} /> },
+    {
+      label: "Run status",
+      value: (
+        <StatusPill tone={executionTone(activity.status)}>
+          {statusLabel(activity.status)}
+        </StatusPill>
+      ),
+    },
+    {
+      label: "Run deadline",
+      value: (
+        <span className="font-mono text-xs">
+          {activity.deadlineAt === null ? "—" : formatAbsolute(activity.deadlineAt)}
+          {activity.deadlineKind === null ? "" : ` · ${activity.deadlineKind}`}
+        </span>
+      ),
+    },
+    { label: "Failure reason", value: activity.failureReason ?? "—" },
+    { label: "Delivery", value: <span className="font-mono text-xs">{activity.deliveryId}</span> },
+  ];
 }
 
 function JsonValue({ value }: { value: unknown }) {
-  return (
-    <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">
-      {JSON.stringify(value, null, 2) ?? "—"}
-    </pre>
-  );
+  return <CodeBlock>{JSON.stringify(value, null, 2) ?? "—"}</CodeBlock>;
 }
 
-function executionTone(status: string): "success" | "danger" | "neutral" {
+function executionTone(status: string): "success" | "warning" | "danger" | "neutral" {
   if (status === "succeeded") return "success";
   if (status === "failed" || status === "timed_out") return "danger";
+  if (status === "dropped") return "warning";
   return "neutral";
 }
 
@@ -694,32 +604,69 @@ function ActivityTable({
       isEmpty={activity.length === 0}
       empty={{ title: "No activity" }}
     >
-      {activity.map((event) => (
-        <DataRow key={event.id}>
-          <DataCell>
-            {detailBasePath &&
-            "configuredTriggerName" in event &&
-            event.configuredTriggerName !== null ? (
-              <Link className="hover:underline" to={`${detailBasePath}/${event.id}` as never}>
-                {event.configuredTriggerName}
-              </Link>
-            ) : (
-              <span className="font-mono text-xs">{event.id.slice(0, 12)}</span>
-            )}
-            {event.repo === null ? null : (
-              <span className="block text-xs text-muted-foreground">{event.repo}</span>
-            )}
-          </DataCell>
-          <DataCell>{event.provider}</DataCell>
-          <DataCell>{event.source}</DataCell>
-          <DataCell>{"status" in event ? event.status : "dropped"}</DataCell>
-          {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
-          <DataCell muted>{formatDate(event.receivedAt)}</DataCell>
-        </DataRow>
-      ))}
+      {activity.map((event) => {
+        const status = "status" in event ? event.status : "dropped";
+        return (
+          <DataRow key={event.id}>
+            <DataCell>
+              <TwoLine
+                primary={
+                  detailBasePath &&
+                  "configuredTriggerName" in event &&
+                  event.configuredTriggerName !== null ? (
+                    <Button variant="link" asChild>
+                      <Link to={`${detailBasePath}/${event.id}` as never}>
+                        {event.configuredTriggerName}
+                      </Link>
+                    </Button>
+                  ) : (
+                    <span className="font-mono">{event.id.slice(0, 12)}</span>
+                  )
+                }
+                {...(event.repo === null ? {} : { secondary: event.repo })}
+              />
+            </DataCell>
+            <DataCell>{event.provider}</DataCell>
+            <DataCell>{event.source}</DataCell>
+            <DataCell>
+              <StatusPill tone={executionTone(status)}>{statusLabel(status)}</StatusPill>
+            </DataCell>
+            {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
+            <DataCell muted>
+              <RelativeTime value={event.receivedAt} />
+            </DataCell>
+          </DataRow>
+        );
+      })}
     </DataTable>
   );
 }
+
+/**
+ * What the provider sent the operator back with. A round trip that connected nothing is a failed
+ * request — the operator pressed Connect and came back to a page that looks unchanged — so it is
+ * reported as one rather than as news. Success is still an announcement. Either way the banner
+ * owns the distance to the table below it.
+ */
+function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
+  if (copy.tone === "error") {
+    return (
+      <FailureAlert
+        standalone
+        title={copy.title}
+        error={copy.message}
+        fallback="Hub couldn't finish the connection. Start it again from this page."
+      />
+    );
+  }
+  return (
+    <NoticeAlert standalone tone="success">
+      {copy.message}
+    </NoticeAlert>
+  );
+}
+
+type ConnectionRecord = ReturnType<typeof connectionRows>[number];
 
 function connectionRows(data: OrganizationSnapshot) {
   return [
@@ -757,49 +704,18 @@ function connectionRows(data: OrganizationSnapshot) {
     })),
   ];
 }
-/**
- * An operator can do something about an app that is not set up, so they get the way to do it.
- * A member cannot, and learns nothing about instance credentials either way.
- */
-function UnconfiguredProvider({
-  provider,
-  operator,
-}: {
-  provider: "github" | "discord" | "slack" | "linear";
-  operator: boolean;
-}) {
-  if (!operator) return <StatusPill tone="neutral">Not configured</StatusPill>;
-  return (
-    <Link className="text-sm text-link hover:underline" to={"/apps" as never}>
-      Set up the {providerLabel(provider)} app
-    </Link>
-  );
-}
-
-function providerLabel(provider: "github" | "discord" | "slack" | "linear") {
+function providerLabel(provider: ConnectionProviderName) {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
   return provider === "slack" ? "Slack" : "Linear";
 }
 
-function statusLabel(status: string): string {
-  if (status === "requiresReauthorization") return "Reauthorization required";
-  return status.charAt(0).toUpperCase() + status.slice(1);
+/** The one connection status a sentence-cased machine value gets wrong. */
+function connectionStatusLabel(status: string): string {
+  return status === "requiresReauthorization" ? "Reauthorization required" : statusLabel(status);
 }
+
 function formString(form: FormData, name: string) {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
-}
-function LabeledInput({
-  label,
-  name,
-  ...props
-}: { label: string; name: string } & Omit<React.ComponentProps<typeof Input>, "name">) {
-  const id = `field-${name}`;
-  return (
-    <Field>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input id={id} name={name} {...props} />
-    </Field>
-  );
 }

@@ -1,24 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { BookOpen } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
-import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
+import { CopyField } from "../components/app/copy-field.js";
+import {
+  DataCell,
+  DataRow,
+  DataTable,
+  DataTableSkeleton,
+  type DataColumn,
+} from "../components/app/data-table.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
+import { FormDialog } from "../components/app/form-dialog.js";
+import { FormField } from "../components/app/form-field.js";
 import { PageHeader } from "../components/app/page.js";
+import { RelativeTime } from "../components/app/relative-time.js";
 import { RowActions } from "../components/app/row-actions.js";
 import { StatusPill } from "../components/app/status-pill.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
 import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
-import { Skeleton } from "../components/ui/skeleton.js";
 import {
   daemonList,
   renameDaemon,
@@ -28,6 +30,7 @@ import {
 } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
+import { daemonLoginCommand } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
@@ -39,10 +42,38 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Registered" },
   { header: "", align: "end" },
 ];
+const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization.";
+const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
 const DAEMONS_EMPTY = {
-  title: "No daemons registered",
-  description: "Run paseo hub connect with this Hub URL to register one.",
-};
+  title: "No daemons connected",
+  description:
+    "Hub runs your workflows on machines you own. Log in from the machine where your code lives and the CLI offers to connect it.",
+  action: <ConnectDaemonHint />,
+} as const;
+
+/**
+ * The same handoff the operator saw during setup, for the operator who skipped it: the exact
+ * command with this Hub's address already in it, and the page that explains the rest.
+ */
+function ConnectDaemonHint() {
+  // The address the operator reached this Hub at is the address their daemon has to be told.
+  // An empty table is only reached after a client-side query settles, so there is no server
+  // render standing between this and a window.
+  const origin = typeof window === "undefined" ? undefined : window.location.origin;
+  return (
+    <>
+      {origin === undefined ? null : (
+        <CopyField label="Command" value={daemonLoginCommand(origin)} />
+      )}
+      <Button asChild variant="outline" size="sm">
+        <a href={DAEMON_DOCS_URL} target="_blank" rel="noreferrer">
+          <BookOpen aria-hidden="true" />
+          How to connect a daemon
+        </a>
+      </Button>
+    </>
+  );
+}
 
 export function DaemonsPanel({
   accountId,
@@ -113,35 +144,27 @@ export function DaemonsPanel({
   if (snapshot.isPending) return <DaemonLoading />;
   if (snapshot.isError || snapshot.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Daemons unavailable</AlertTitle>
-        <AlertDescription>
-          {snapshot.data?.status === "error"
-            ? snapshot.data.error.message
-            : "Hub did not receive the daemon list. Check your connection and reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Daemons unavailable"
+        error={snapshot.data}
+        fallback="Hub did not receive the daemon list. Check your connection and reload the page."
+      />
     );
   }
   const daemons = snapshot.data.data;
-  const failure = [revoke.data].find((result) => result?.status === "error");
-  let message = failure?.status === "error" ? failure.error.message : undefined;
-  if (revoke.isError)
-    message =
-      "Hub did not receive the daemon revocation result. Check your connection and reload its current status.";
+  const revokeFailed = revoke.isError || revoke.data?.status === "error";
   const busy = rename.isPending || revoke.isPending;
   return (
     <>
-      <PageHeader
-        id="daemons-heading"
-        title="Daemons"
-        description="Stable daemon identities registered to this organization."
-      />
-      {message === undefined ? null : (
-        <Alert variant="destructive" className="mb-6">
-          <AlertDescription>{message}</AlertDescription>
-        </Alert>
-      )}
+      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
+      {revokeFailed ? (
+        <FailureAlert
+          standalone
+          title="The daemon wasn't revoked"
+          error={revoke.data}
+          fallback="Hub did not receive the daemon revocation result. Check your connection and reload its current status."
+        />
+      ) : null}
       <DataTable
         label="Daemons"
         columns={DAEMON_COLUMNS}
@@ -186,7 +209,7 @@ function DaemonRow({
   return (
     <DataRow>
       <DataCell className="min-w-0">
-        <span className="block truncate">{daemon.slug}</span>
+        <TwoLine primary={daemon.slug} />
       </DataCell>
       <DataCell muted>
         <span className="font-mono text-xs">{daemon.id.slice(0, 8)}</span>
@@ -197,8 +220,12 @@ function DaemonRow({
       <DataCell muted>
         {daemon.permissions.includes("hub.execute") ? "Hub automations" : "Connected only"}
       </DataCell>
-      <DataCell muted>{formatDate(daemon.lastSeenAt)}</DataCell>
-      <DataCell muted>{formatDate(daemon.registeredAt)}</DataCell>
+      <DataCell muted>
+        <RelativeTime value={daemon.lastSeenAt} />
+      </DataCell>
+      <DataCell muted>
+        <RelativeTime value={daemon.registeredAt} />
+      </DataCell>
       <DataCell align="end">
         {canManage ? (
           <>
@@ -273,40 +300,26 @@ function RenameDaemonDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={changeOpen}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Rename daemon</DialogTitle>
-        </DialogHeader>
-        <form
-          onSubmit={submit}
-          aria-label={`Rename ${daemon.slug}`}
-          className="grid gap-6 text-left"
-        >
-          <Field>
-            <FieldLabel htmlFor={`daemon-slug-${daemon.id}`}>Daemon slug</FieldLabel>
-            <Input
-              id={`daemon-slug-${daemon.id}`}
-              name="slug"
-              defaultValue={daemon.slug}
-              maxLength={100}
-              required
-              disabled={busy}
-            />
-          </Field>
-          {error === undefined ? null : (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button type="submit" disabled={busy}>
-              Rename
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open={open}
+      onOpenChange={changeOpen}
+      title="Rename daemon"
+      label={`Rename ${daemon.slug}`}
+      submitLabel="Rename"
+      busy={busy}
+      onSubmit={submit}
+    >
+      <FormField
+        id={`daemon-slug-${daemon.id}`}
+        label="Daemon slug"
+        kind="text"
+        name="slug"
+        defaultValue={daemon.slug}
+        maxLength={100}
+        required
+        {...(error === undefined ? {} : { error })}
+      />
+    </FormDialog>
   );
 }
 
@@ -318,16 +331,9 @@ function DaemonStatus({ daemon }: { daemon: BrowserDaemon }) {
 
 function DaemonLoading() {
   return (
-    <section aria-label="Loading daemons" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-64 w-full" />
-    </section>
+    <>
+      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
+      <DataTableSkeleton label="Daemons" columns={DAEMON_COLUMNS} />
+    </>
   );
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 }

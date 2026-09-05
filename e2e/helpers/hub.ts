@@ -25,6 +25,11 @@ import {
 } from "../../src/e2e/harness/browser-billing.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
+import {
+  SIGNUP_INTENT_COOKIE,
+  SIGNUP_INTENT_QUERY_PARAMETER,
+  type SignupIntent,
+} from "../../src/organizations/signup-intent.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { SHOTS } from "./app-evidence.js";
 import {
@@ -47,10 +52,13 @@ export interface BuiltApplication {
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
   cancelSubscription(organizationId: string): Promise<void>;
+  /** Arms one creation-time Stripe trial failure, exercising the Checkout fallback. */
+  failNextTrialCreation(): Promise<void>;
   /** The seat quantity billing last reported to the fixture Stripe for this organization. */
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
+  accountEmailLink(email: string, kind: "verification" | "password-reset"): Promise<string>;
   /** Records a daemon enrollment token for this instance's organization. */
   issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
@@ -184,6 +192,8 @@ export class PaseoHub {
       data: account,
     });
     expect(response.status()).toBe(200);
+    const verificationLink = await this.primary.accountEmailLink(account.email, "verification");
+    expect((await this.requests.get(verificationLink)).ok()).toBe(true);
   }
 
   async verifyHttpContractMatrix(): Promise<void> {
@@ -260,6 +270,29 @@ export class PaseoHub {
     await user.signUp(account);
   }
 
+  async provePasswordRecoveryJourney(
+    alias: string,
+    account: Account,
+    replacementPassword: string,
+  ): Promise<void> {
+    await this.signUpAs(alias, account);
+    await this.requireUser(alias).completePasswordRecovery(account, replacementPassword);
+  }
+
+  async expectUnsupportedSignupPlanIgnored(alias: string, plan: string): Promise<void> {
+    const user = await this.user(alias);
+    await user.expectUnsupportedSignupPlanIgnored(plan);
+  }
+
+  async signUpAsWithPlanIntent(alias: string, account: Account, plan: SignupIntent): Promise<void> {
+    const user = await this.user(alias);
+    await user.signUp(account, plan);
+  }
+
+  async expectSignupPlanCookie(alias: string, plan: SignupIntent): Promise<void> {
+    await this.requireUser(alias).expectSignupPlanCookie(plan);
+  }
+
   async createOrganization(alias: string, name: string): Promise<void> {
     await this.requireUser(alias).createOrganization(name);
   }
@@ -279,7 +312,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     const page = await context.newPage();
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     try {
       await user.completeBootstrapJourney(account, replacementPassword, organizationName);
     } finally {
@@ -300,7 +333,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.completeFirstRunJourney(account, () => application.failNextAccountSetup());
       const logs = plainLogs(application.logs());
       expect(logs).toContain("auth.setup_instance");
@@ -342,7 +375,7 @@ export class PaseoHub {
     });
     const page = await context.newPage();
     await allowClipboard(page, application.origin);
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     await user.claimInstance(input.account);
     const surface = new AppSetupSurface(page);
     await surface.expectOnboarding();
@@ -371,7 +404,7 @@ export class PaseoHub {
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
-        const joining = new HubUser(application.origin, memberContext, memberPage);
+        const joining = new HubUser(application, memberContext, memberPage);
         await joining.signUp(member);
         await joining.createOrganization("Member Organization");
         return { page: memberPage, close: () => memberContext.close() };
@@ -390,14 +423,10 @@ export class PaseoHub {
     const loserContext = await this.browser.newContext();
     try {
       const loserPage = await loserContext.newPage();
-      const losingUser = new HubUser(application.origin, loserContext, loserPage);
+      const losingUser = new HubUser(application, loserContext, loserPage);
       await losingUser.openFirstRunSetupForm();
 
-      const winningUser = new HubUser(
-        application.origin,
-        winnerContext,
-        await winnerContext.newPage(),
-      );
+      const winningUser = new HubUser(application, winnerContext, await winnerContext.newPage());
       await winningUser.openFirstRunSetupForm();
       await winningUser.completeFirstRunClaim(winner);
 
@@ -429,10 +458,10 @@ export class PaseoHub {
     });
     const ownerContext = await this.browser.newContext();
     const ownerPage = await ownerContext.newPage();
-    const owner = new HubUser(application.origin, ownerContext, ownerPage);
+    const owner = new HubUser(application, ownerContext, ownerPage);
     const memberContext = await this.browser.newContext();
     const memberPage = await memberContext.newPage();
-    const user = new HubUser(application.origin, memberContext, memberPage);
+    const user = new HubUser(application, memberContext, memberPage);
     try {
       await owner.completeBootstrapJourney(
         {
@@ -503,7 +532,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     const page = await context.newPage();
-    const user = new HubUser(application.origin, context, page);
+    const user = new HubUser(application, context, page);
     try {
       await user.signUp({
         name: "No Organization Owner",
@@ -886,7 +915,6 @@ export class PaseoHub {
         ent_can_invite: "true",
         ent_executions_monthly_limit: "unlimited",
       },
-      marketingFeatures: [],
     });
     await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
 
@@ -900,7 +928,6 @@ export class PaseoHub {
       name: "Paseo Hub",
       active: true,
       metadata: { paseo_plan: "false" },
-      marketingFeatures: [],
     });
     await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
     // Nothing left to sell. The free record is still mirrored for entitlement stamping, so an
@@ -1000,6 +1027,10 @@ export class PaseoHub {
     await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
   }
 
+  async failNextTrialCreation(): Promise<void> {
+    await this.primary.failNextTrialCreation();
+  }
+
   async subscribeToPlan(alias: string, plan: string): Promise<void> {
     await this.requireUser(alias).subscribeToPlan(plan);
   }
@@ -1032,12 +1063,24 @@ export class PaseoHub {
     await this.requireUser(alias).expectNoSecondTrialOffer();
   }
 
+  async expectTrialReminder(alias: string): Promise<void> {
+    await this.requireUser(alias).expectTrialReminder();
+  }
+
+  async expectNoTrialReminder(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoTrialReminder();
+  }
+
   async expectPlanPickerFitsPhone(alias: string): Promise<void> {
     await this.requireUser(alias).expectPlanPickerFitsPhone();
   }
 
-  async expectInviteBlockedByPlan(alias: string, email: string): Promise<void> {
-    await this.requireUser(alias).expectInviteBlockedByPlan(email);
+  async expectInviteLockedByPlan(alias: string): Promise<void> {
+    await this.requireUser(alias).expectInviteLockedByPlan();
+  }
+
+  async followInviteLockToPlans(alias: string): Promise<void> {
+    await this.requireUser(alias).followInviteLockToPlans();
   }
 
   async expectPendingInvitation(alias: string, email: string): Promise<void> {
@@ -1117,12 +1160,15 @@ export class PaseoHub {
     await this.requireUser(alias).expectMeterUsage(expected);
   }
 
-  async expectInviteRefusedBySeatLimit(
+  async expectInviteLockedBySeatLimit(
     alias: string,
-    email: string,
     expected: { limit: number; current: number },
   ): Promise<void> {
-    await this.requireUser(alias).expectInviteRefusedBySeatLimit(email, expected);
+    await this.requireUser(alias).expectInviteLockedBySeatLimit(expected);
+  }
+
+  async followInviteLockToUsage(alias: string): Promise<void> {
+    await this.requireUser(alias).followInviteLockToUsage();
   }
 
   async expectEntitlementsAudit(
@@ -1293,7 +1339,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Unconfigured");
       await user.expectNotConfiguredConnections();
@@ -1310,7 +1356,7 @@ export class PaseoHub {
     const context = await this.browser.newContext();
     try {
       const page = await context.newPage();
-      const user = new HubUser(application.origin, context, page);
+      const user = new HubUser(application, context, page);
       const navigation = new ProjectNavigation(page);
       const configuration = new ProjectConfiguration(page);
       await user.signUp(account);
@@ -1334,7 +1380,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Approval");
       await user.expectGitHubApprovalRequired();
@@ -1347,7 +1393,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("State boundaries");
       await user.expectForgedConnectionStateRejected();
@@ -1367,6 +1413,26 @@ export class PaseoHub {
     }
   }
 
+  async proveSignedOutConnectionReturn(account: Account): Promise<void> {
+    const application = await this.startApplication({ databaseProfile: "fresh" });
+    const context = await this.browser.newContext();
+    try {
+      const user = new HubUser(application, context, await context.newPage());
+      await user.signUp(account);
+      await user.createOrganization("Signed-out return");
+      const signedOut = await user.beginProviderConnection("github");
+      const stranger = await this.browser.newContext();
+      try {
+        const returning = new HubUser(application, stranger, await stranger.newPage());
+        await returning.expectSignedOutConnectionReturn(signedOut, account, "Signed-out return");
+      } finally {
+        await stranger.close();
+      }
+    } finally {
+      await context.close();
+    }
+  }
+
   async proveProviderConnectionConflicts(account: Account): Promise<void> {
     const application = await this.startApplication({
       databaseProfile: "fresh",
@@ -1374,7 +1440,7 @@ export class PaseoHub {
     });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Conflict Acme");
       await user.connectGitHub();
@@ -1394,7 +1460,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Stale Acme");
       const staleGitHub = await user.beginProviderConnection("github");
@@ -1422,7 +1488,7 @@ export class PaseoHub {
     const application = await this.startApplication({ databaseProfile: "fresh" });
     const context = await this.browser.newContext();
     try {
-      const user = new HubUser(application.origin, context, await context.newPage());
+      const user = new HubUser(application, context, await context.newPage());
       await user.signUp(account);
       await user.createOrganization("Redirect Acme");
       await user.createAnotherOrganization("Redirect Orbit");
@@ -1841,6 +1907,12 @@ export class PaseoHub {
     return this.seedDaemon(alias, slug);
   }
 
+  /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
+  async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
+    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox", true);
+    return daemon.slug;
+  }
+
   /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */
   async seedSlackConnection(alias: string, slug: string, teamName: string): Promise<void> {
     await this.queryDatabase(
@@ -1988,7 +2060,7 @@ export class PaseoHub {
       context = await this.browser.newContext();
       page = await context.newPage();
     }
-    const user = new HubUser(this.primary.origin, context, page);
+    const user = new HubUser(this.primary, context, page);
     this.users.set(alias, user);
     return user;
   }
@@ -2038,6 +2110,7 @@ export class PaseoHub {
     _alias: string,
     organizationName: string,
     _displayName: string,
+    providerCatalog = false,
   ): Promise<ContractDaemon> {
     const enrollmentToken = randomUUID();
     const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
@@ -2047,7 +2120,7 @@ export class PaseoHub {
        select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
       [randomUUID(), verifier, organizationName],
     );
-    const daemon = new ContractDaemon(this.primary, this.requests);
+    const daemon = new ContractDaemon(this.primary, this.requests, undefined, providerCatalog);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -2232,11 +2305,17 @@ export class PaseoHub {
     });
     expect(signUp.status()).toBe(200);
     expect(signUp.headers()["content-type"]).toBe(JSON_TYPE);
-    expect(signUp.headers()["set-cookie"]).toContain("better-auth.session_token=");
+    expect(signUp.headers()["set-cookie"]).toBeUndefined();
     expect(await signUp.json()).toEqual({
-      token: expect.any(String),
+      token: null,
       user: expect.objectContaining({ name: account.name, email: account.email }),
     });
+    const signedOutSession = await this.requests.get(`${application.origin}/api/auth/get-session`);
+    expect(await signedOutSession.text()).toBe("null");
+    const verificationLink = await application.accountEmailLink(account.email, "verification");
+    const verification = await this.requests.get(verificationLink, { maxRedirects: 0 });
+    expect(verification.status()).toBe(302);
+    expect(verification.headers()["set-cookie"]).toContain("better-auth.session_token=");
     const session = await this.requests.get(`${application.origin}/api/auth/get-session`);
     expect(session.status()).toBe(200);
     expect(await session.json()).toEqual({
@@ -2508,18 +2587,44 @@ class HubUser {
   private readonly navigation: ProjectNavigation;
 
   constructor(
-    private readonly origin: string,
+    private readonly application: BuiltApplication,
     private readonly context: BrowserContext,
     private readonly page: Page,
   ) {
     this.navigation = new ProjectNavigation(page);
   }
 
-  async signUp(account: Account): Promise<void> {
+  async signUp(account: Account, plan?: SignupIntent): Promise<void> {
     this.email = account.email.toLowerCase();
-    if (this.page.url() === "about:blank") await this.page.goto(this.origin);
+    if (plan !== undefined) {
+      await this.page.goto(`${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${plan}`);
+    } else if (this.page.url() === "about:blank") {
+      await this.page.goto(this.origin);
+    }
     await this.submitSignUp(account);
+    await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+  }
+
+  async expectUnsupportedSignupPlanIgnored(plan: string): Promise<void> {
+    await this.page.goto(
+      `${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${encodeURIComponent(plan)}`,
+    );
+    await expect(this.page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
+    await expect(
+      this.context
+        .cookies(this.origin)
+        .then((cookies) => cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)),
+    ).resolves.toBeUndefined();
+  }
+
+  async expectSignupPlanCookie(plan: SignupIntent): Promise<void> {
+    await expect
+      .poll(async () => {
+        const cookies = await this.context.cookies(this.origin);
+        return cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)?.value;
+      })
+      .toBe(plan);
   }
 
   async completeBootstrapJourney(
@@ -2544,6 +2649,52 @@ class HubUser {
     await change.getByRole("button", { name: "Save password" }).click();
     await this.skipAppSetup();
     await this.expectActiveOrganization(organizationName);
+  }
+
+  async completePasswordRecovery(account: Account, replacementPassword: string): Promise<void> {
+    await this.signOut();
+    const requestReset = async (email: string) => {
+      await this.page.getByRole("button", { name: "Forgot password?" }).click();
+      const form = this.page.getByRole("form", { name: "Reset password" });
+      await form.getByLabel("Email").fill(email);
+      await form.getByRole("button", { name: "Send reset link" }).click();
+      await expect(this.page.getByRole("status")).toHaveText(
+        "If an account exists for that email, a password reset link is on its way.",
+      );
+    };
+    await requestReset("missing-account@example.test");
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await requestReset(account.email);
+
+    const link = await this.application.accountEmailLink(account.email, "password-reset");
+    await this.page.goto(link);
+    const reset = this.page.getByRole("form", { name: "Choose a new password" });
+    await reset.getByLabel("New password", { exact: true }).fill(replacementPassword);
+    await reset.getByLabel("Confirm new password").fill(replacementPassword);
+    await reset.getByRole("button", { name: "Save new password" }).click();
+    await expect(this.page.getByRole("heading", { name: "Password reset" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await signIn.getByLabel("Email").fill(account.email);
+    await signIn.getByLabel("Password").fill(account.password);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await expect(this.page.getByRole("alert")).toHaveText("The email or password is incorrect.");
+    await signIn.getByLabel("Password").fill(replacementPassword);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+
+    await this.signOut();
+    await this.page.goto(`${this.origin}/?auth=email-verification&error=TOKEN_EXPIRED`);
+    await expect(
+      this.page.getByRole("heading", { name: "Verification link expired" }),
+    ).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await this.page.goto(`${this.origin}/?auth=password-reset&error=INVALID_TOKEN`);
+    await expect(
+      this.page.getByRole("heading", { name: "Reset link invalid or expired" }),
+    ).toBeVisible();
+    await expectAccessible(this.page);
   }
 
   /**
@@ -2773,7 +2924,8 @@ class HubUser {
       origin: this.origin,
     });
     await dialog.getByRole("button", { name: "Copy API key" }).click();
-    await expect(dialog.getByRole("status")).toHaveText("API key copied.");
+    // `CopyField` announces the copy in its own words, the same on every surface that copies.
+    await expect(dialog.getByRole("status")).toHaveText("Copied Generated API key");
     await expect(this.page.evaluate(() => navigator.clipboard.readText())).resolves.toMatch(
       /^paseo_pk_/u,
     );
@@ -2826,7 +2978,20 @@ class HubUser {
   async signUpForInvitation(account: Account): Promise<void> {
     this.email = account.email.toLowerCase();
     await this.submitInvitationSignUp(account);
+    await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
+  }
+
+  private async completeEmailVerification(email: string): Promise<void> {
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    const link = await this.application.accountEmailLink(email, "verification");
+    await this.page.goto(link);
+    await expect(this.page.getByRole("heading", { name: "Email verified" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Continue" }).click();
+  }
+
+  private get origin(): string {
+    return this.application.origin;
   }
 
   private async submitSignUp(account: Account): Promise<void> {
@@ -3130,7 +3295,12 @@ class HubUser {
         .getByRole("menu")
         .getByRole("menuitem", { name: destinationOrganization, exact: true })
         .click();
-      await expect(this.page.getByRole("alert")).toHaveText(
+      await expect(
+        this.page.getByRole("alert").filter({
+          hasText:
+            "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
+        }),
+      ).toHaveText(
         "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
       );
       await expect(switcher).toContainText("Acme");
@@ -3150,9 +3320,16 @@ class HubUser {
       const form = await this.openInvitationForm();
       await form.getByLabel("Invitee email").fill(invitationEmail);
       await form.getByRole("button", { name: "Create invitation" }).click();
-      await expect(this.page.getByRole("alert")).toHaveText(
-        "Hub did not receive the account update. Check your connection, reload the current account state, and submit again.",
+      // The dialog answers for itself and keeps what was typed, so the address is one press
+      // away from being submitted again rather than gone.
+      await expect(form.getByRole("alert")).toHaveText(
+        "Invitation not sentHub did not create the invitation. Check your connection and submit it again.",
       );
+      await expect(form.getByLabel("Invitee email")).toHaveValue(invitationEmail);
+      // The page behind a modal is out of the accessibility tree, so the team and the
+      // organization it belongs to are checked once the dialog is dismissed.
+      await this.page.keyboard.press("Escape");
+      await expect(form).toBeHidden();
       await expect(this.invitationRow(invitationEmail)).toHaveCount(0);
       await expect(switcher).toContainText("Acme");
     } finally {
@@ -3204,16 +3381,14 @@ class HubUser {
       await expect(this.page.getByRole("region", { name: "Loading account context" })).toHaveCount(
         0,
       );
-      await expect(this.page.getByRole("button", { name: "Invite member" })).toBeDisabled();
-      await switcher.click();
-      const menu = this.page.getByRole("menu");
-      await expect(menu).toBeVisible();
-      await expect(
-        menu.getByRole("menuitem", { name: destinationOrganization, exact: true }),
-      ).toBeDisabled();
-      await expect(menu.getByRole("menuitem", { name: "Acme", exact: true })).toBeDisabled();
-      await this.page.keyboard.press("Escape");
-      await expect(menu).toBeHidden();
+      // The dialog stays open and busy until the invitation exists, so the request is dismissed
+      // before the organization it belongs to can be examined behind it.
+      await expect(form).toHaveAttribute("aria-busy", "true");
+      await expect(form.getByLabel("Invitee email")).toBeDisabled();
+      await this.page.getByRole("button", { name: "Close" }).click();
+      await expect(form).toBeHidden();
+      await this.expectTenantControlsLocked(destinationOrganization);
+      await expect(switcher).toContainText("Acme");
     } finally {
       releaseInvitation();
       await delivered;
@@ -3324,7 +3499,8 @@ class HubUser {
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
     await expect(daemon.getByText(daemonId.slice(0, 8), { exact: true })).toBeVisible();
     await expect(daemon.getByText(state, { exact: true })).toBeVisible();
-    await expect(daemon.getByText(/\w{3} \d{1,2}, \d{4}/u).first()).toBeVisible();
+    // Timestamps read as "3m ago"; the absolute instant is the tooltip `RelativeTime` puts on it.
+    await expect(daemon.locator("time").first()).toHaveAttribute("title", /\w{3} \d{1,2}, \d{4}/u);
   }
 
   private daemonRow(displayName: string): Locator {
@@ -3583,7 +3759,14 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/daemons$/u);
     await expect(sidebar).toBeHidden();
     await expect(this.page.getByRole("heading", { name: "Daemons", exact: true })).toBeVisible();
-    await expect(this.page.getByText("No daemons registered", { exact: true })).toBeVisible();
+    await expect(this.page.getByText("No daemons connected", { exact: true })).toBeVisible();
+    await expect(
+      this.page.getByText(`paseo hub login ${this.origin}`, { exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByRole("link", { name: "How to connect a daemon" })).toHaveAttribute(
+      "href",
+      "https://paseo.sh/docs/hub/daemons",
+    );
     const width = await this.page.getByRole("main").evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: document.documentElement.clientWidth,
@@ -3609,6 +3792,16 @@ class HubUser {
       .string()
       .url()
       .parse(await this.page.evaluate(() => navigator.clipboard.readText()));
+  }
+
+  /** The invite control in its locked state: a link out to the remedy, not a disabled button. */
+  private lockedInvite(): Locator {
+    return this.page.getByRole("link", { name: "Invite member" });
+  }
+
+  /** The visible sentence beside the locked control, which also describes it to a reader. */
+  private lockedInviteReason(): Locator {
+    return this.lockedInvite().locator("xpath=following-sibling::span");
   }
 
   private async openInvitationForm(): Promise<Locator> {
@@ -3738,13 +3931,11 @@ class HubUser {
     const identity = this.page.getByText(this.accountEmail, { exact: true });
     await expect(identity).toBeVisible();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const account = this.page.getByRole("button", { name: this.accountEmail });
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
     await this.tabThroughOrganizationDestinations();
-    await this.page.keyboard.press("Tab");
-    await expect(account).toBeFocused();
+    await this.tabThroughSidebarFooter();
 
     await expect(organization).toContainText("Owner");
     await organization.focus();
@@ -3767,15 +3958,13 @@ class HubUser {
     await this.openOrganizationSection("Team");
     await this.page.reload();
     const organization = this.page.getByRole("button", { name: "Organization" });
-    const account = this.page.getByRole("button", { name: this.accountEmail });
     const invite = this.page.getByRole("button", { name: "Invite member" });
     await expect(invite).toBeVisible();
 
     await this.page.keyboard.press("Tab");
     await expect(organization).toBeFocused();
     await this.tabThroughOrganizationDestinations();
-    await this.page.keyboard.press("Tab");
-    await expect(account).toBeFocused();
+    await this.tabThroughSidebarFooter();
 
     await invite.focus();
     await this.page.keyboard.press("Enter");
@@ -3846,6 +4035,18 @@ class HubUser {
       await this.page.keyboard.press("Tab");
       await expect(this.page.getByRole("link", { name: destination, exact: true })).toBeFocused();
     }
+  }
+
+  /**
+   * The footer's stops after the destinations: Help, then the account menu. A trial reminder
+   * precedes Help when the organization is trialing, which this harness never is — the browser
+   * fixtures that configure billing do not drive the sidebar by keyboard.
+   */
+  private async tabThroughSidebarFooter(): Promise<void> {
+    await this.page.keyboard.press("Tab");
+    await expect(this.page.getByRole("button", { name: "Help", exact: true })).toBeFocused();
+    await this.page.keyboard.press("Tab");
+    await expect(this.page.getByRole("button", { name: this.accountEmail })).toBeFocused();
   }
 
   async navigateToConnectionsFromMobileSidebar(): Promise<void> {
@@ -3995,20 +4196,28 @@ class HubUser {
     );
   }
 
-  async expectInviteRefusedBySeatLimit(
-    email: string,
-    expected: { limit: number; current: number },
-  ): Promise<void> {
+  /**
+   * A full cap locks the invite control instead of letting an owner fill in a form the server
+   * will refuse, and the lock names the limit it hit.
+   */
+  async expectInviteLockedBySeatLimit(expected: { limit: number; current: number }): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    const form = await this.openInvitationForm();
-    await form.getByLabel("Invitee email").fill(email);
-    await form.getByRole("button", { name: "Create invitation" }).click();
-    await expect(form).toBeHidden();
-    const alert = this.page.getByRole("alert");
-    await expect(alert).toContainText("Seat limit reached");
-    await expect(alert).toContainText(`${expected.current} of ${expected.limit} seats`);
-    await expect(alert).toContainText("Usage page");
-    await expect(this.invitationRow(email)).toHaveCount(0);
+    // The reason is on the page, not in a tooltip: a touch device never hovers, and the lock is
+    // useless without the sentence that says what to do about it.
+    await expect(this.lockedInviteReason()).toHaveText(
+      `Seat limit reached — ${expected.current} of ${expected.limit} seats are in use. See the Usage page for its limits.`,
+    );
+    await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
+    await expectAccessible(this.page);
+  }
+
+  /** Self-hosted there is nothing to buy, so the lock leads to the page that names the limit. */
+  async followInviteLockToUsage(): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    await this.lockedInvite().click();
+    await expect(
+      this.page.getByRole("heading", { name: "Usage", exact: true, level: 1 }),
+    ).toBeVisible();
   }
 
   async expectEntitlementsAudit(expected: {
@@ -4095,17 +4304,34 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
+  /**
+   * The sidebar's ambient countdown. The day count is Stripe's to decide, so this pins the
+   * sentence rather than a number — what matters is that it is there and reads as days left.
+   */
+  async expectTrialReminder(): Promise<void> {
+    await expect(this.trialReminder()).toBeVisible();
+  }
+
+  /** No trial, no countdown. A paid, free, or cancelled organization is told nothing. */
+  async expectNoTrialReminder(): Promise<void> {
+    await expect(this.trialReminder()).toHaveCount(0);
+  }
+
+  private trialReminder(): Locator {
+    return this.page.getByRole("link", { name: /^\d+ days? left in trial$/u });
+  }
+
   /** The picker offering the cardless trial, exactly: a badge, the offer, and the action. */
   async expectCardlessTrialOffer(): Promise<void> {
     await this.openPlanDialog();
     const dialog = this.page.getByRole("dialog");
-    await expect(dialog).toContainText("14 days free · No card required");
+    await expect(dialog).toContainText("7 days free · No card required");
     await expect(
       dialog.getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` }),
     ).toHaveText("Start free trial");
     await this.expectPickerShowsOnlyTheOffer(dialog);
     // Nothing frames or hedges the offer: no heading, no sales sentence, no post-trial footnote.
-    await expect(dialog).not.toContainText("14 days free, then");
+    await expect(dialog).not.toContainText("7 days free, then");
     await expect(dialog).not.toContainText("Nothing is charged");
     await expectAccessible(this.page);
   }
@@ -4119,7 +4345,7 @@ class HubUser {
   private async expectPickerShowsOnlyTheOffer(dialog: Locator): Promise<void> {
     await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([HOSTED_PLAN_NAME]);
     await expect(dialog).toContainText("€15");
-    await expect(dialog).toContainText("per user / month");
+    await expect(dialog).toContainText("per seat / month");
     await expect(dialog).not.toContainText("0 executions");
     await expect(dialog).not.toContainText("Choose your plan");
     await expect(dialog).not.toContainText("Recommended");
@@ -4150,10 +4376,10 @@ class HubUser {
     // The card states what the trial entitles the organization to, unlabelled — the plan name
     // above it is the label.
     await expect(plan.getByRole("listitem")).toHaveText([
-      "Unlimited daemons",
-      "GitHub, Linear, Slack, and Discord triggers",
-      "Versioned workflows and activity",
-      "Bring your own agents and inference",
+      "Paseo operates Hub",
+      "Managed GitHub, Slack, and Discord triggers",
+      "Daemons run on your machines",
+      "Same projects, workflows, and activity",
     ]);
     // One public offer means nothing to change to, so the picker has no entry point here.
     await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
@@ -4191,24 +4417,38 @@ class HubUser {
     expect(
       await this.page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(viewport!.width);
-    const trial = this.page
-      .getByRole("dialog")
-      .getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` });
-    await trial.scrollIntoViewIfNeeded();
-    await expect(trial).toBeInViewport();
+    const action = this.page.getByRole("dialog").getByRole("button", {
+      name: new RegExp(`^(Start free trial with|Subscribe to) ${HOSTED_PLAN_NAME}$`, "u"),
+    });
+    await action.scrollIntoViewIfNeeded();
+    await expect(action).toBeInViewport();
     await expectAccessible(this.page);
   }
 
-  async expectInviteBlockedByPlan(email: string): Promise<void> {
+  async expectInviteLockedByPlan(): Promise<void> {
     await this.refreshOrganizationSection("Team");
-    const form = await this.openInvitationForm();
-    await form.getByLabel("Invitee email").fill(email);
-    await form.getByRole("button", { name: "Create invitation" }).click();
-    await expect(form).toBeHidden();
-    const alert = this.page.getByRole("alert");
-    await expect(alert).toContainText("Inviting members isn't enabled");
-    await expect(this.invitationRow(email)).toHaveCount(0);
+    await expect(this.lockedInviteReason()).toHaveText(
+      "Inviting members isn't enabled for this organization. See the plans available to this organization.",
+    );
+    await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expectAccessible(this.page);
+  }
+
+  /** Hosted, the lock is the paywall's entrance: it lands on Billing with the offer already open. */
+  async followInviteLockToPlans(): Promise<void> {
+    await this.refreshOrganizationSection("Team");
+    await this.lockedInvite().click();
+    // The open picker is modal, so the page behind it is out of the accessibility tree: the URL
+    // is what says where the lock landed.
+    await expect(this.page).toHaveURL(/\/settings\/billing\?plans=true$/u);
+    const dialog = this.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expectAccessible(this.page);
+    await this.page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
   }
 
   async expectPendingInvitation(email: string): Promise<void> {
@@ -4233,7 +4473,7 @@ class HubUser {
   async expectOverLimitBanner(expected: { used: number; limit: number }): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    const banner = this.page.getByRole("alert", { name: "Over limit" });
+    const banner = this.overLimitBanner();
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(`You have ${expected.used} seats in use`);
     await expect(banner).toContainText(`your limit is ${expected.limit}`);
@@ -4243,7 +4483,13 @@ class HubUser {
   async expectNoOverLimitBanner(): Promise<void> {
     await this.openOrganizationSection("Usage");
     await this.page.reload();
-    await expect(this.page.getByRole("alert", { name: "Over limit" })).toHaveCount(0);
+    await expect(this.overLimitBanner()).toHaveCount(0);
+  }
+
+  /** The banner is found by what it says. Its title is the accessible name of the warning; an
+   * `aria-label` repeating it in different words would be a second name for one thing. */
+  private overLimitBanner(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "You're over your seat limit" });
   }
 
   /** Assert the granted / override / effective cells of one entitlement row after a re-stamp — on
@@ -4295,7 +4541,7 @@ class HubUser {
     await expect(
       this.page.getByRole("heading", { name: "Connections", exact: true, level: 1 }),
     ).toBeVisible();
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await expect(this.page.getByText(/does not deploy a/u)).toHaveCount(0);
     const widths = await this.page.getByRole("main").evaluate((main) => ({
       document: document.documentElement.scrollWidth,
@@ -4437,15 +4683,26 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(forged.toString());
   }
 
+  /**
+   * A round trip that connected nothing is reported as a failed request, headed by the provider
+   * the operator was trying to connect. Both halves are asserted: a banner with only the title
+   * has stopped saying what to do next.
+   */
+  private async expectConnectionFailure(message: string): Promise<void> {
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toContainText(/ wasn't connected/u);
+    await expect(alert).toContainText(message);
+  }
+
   async expectGitHubConnectionConflict(): Promise<void> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
-      "That provider account is already connected to another organization. Disconnect it there before trying again.",
+    await this.expectConnectionFailure(
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await this.expectNoProviderIdentity("acme-inc");
   }
 
@@ -4453,10 +4710,10 @@ class HubUser {
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
-      "That provider account is already connected to another organization. Disconnect it there before trying again.",
+    await this.expectConnectionFailure(
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
     );
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
     await this.expectNoProviderIdentity("Acme Guild");
   }
 
@@ -4484,12 +4741,46 @@ class HubUser {
     await this.expectUntrustedConnectionReturnUnavailable(url);
   }
 
+  /**
+   * A return Hub cannot tie to the attempt that started it still belongs to Connections: that
+   * is the only surface that started anything, and the only one that can say what to do next.
+   */
   async expectUntrustedConnectionReturnUnavailable(url: string): Promise<void> {
     await this.page.goto(url);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
-    await expect(this.page.getByRole("status")).toHaveText(
-      "This connection link is invalid, expired, or already used. Restart the connection from this Hub.",
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
+    await this.expectConnectionFailure(
+      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
+    );
+  }
+
+  /**
+   * A provider return that reaches Hub in a browser with no session. A GitHub App whose setup
+   * URL points at a host the operator never signed in to produces exactly this. It has to come
+   * back to Connections once the person signs in, saying that nothing was connected and why,
+   * instead of blaming app credentials on an unrelated page.
+   */
+  async expectSignedOutConnectionReturn(
+    url: string,
+    account: Account,
+    organizationName: string,
+  ): Promise<void> {
+    await this.page.goto(url);
+    await expect(this.page).toHaveURL(
+      /\/connections\?app=github&result=connection_unauthenticated$/u,
+    );
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await signIn.getByLabel("Email").fill(account.email);
+    await signIn.getByLabel("Password").fill(account.password);
+    await signIn.getByRole("button", { name: "Sign in" }).click();
+    await this.page
+      .getByRole("list", { name: "Organizations" })
+      .getByRole("button", { name: organizationName })
+      .click();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
+    await this.expectConnectionFailure(
+      "GitHub sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the GitHub app's callback and setup URLs, then start the connection again.",
     );
   }
 
@@ -4528,12 +4819,10 @@ class HubUser {
     const connectionsUrl = this.page.url();
     const github = this.connectionRow("GitHub");
     const discord = this.connectionRow("Discord");
-    await expect(github.getByRole("cell").first()).toContainText(expected.github);
-    await expect(github.getByRole("cell").first()).toContainText(
-      `installation ${expected.installationId}`,
-    );
-    await expect(discord.getByRole("cell").first()).toContainText(expected.discord);
-    await expect(discord.getByRole("cell").first()).toContainText(`guild ${expected.guildId}`);
+    await expect(github).toContainText(expected.github);
+    await expect(github).toContainText(`installation ${expected.installationId}`);
+    await expect(discord).toContainText(expected.discord);
+    await expect(discord).toContainText(`guild ${expected.guildId}`);
     await expect(this.page).toHaveURL(connectionsUrl);
     await expect(this.page.getByText(/ephemeral|state|code=/u)).toHaveCount(0);
     await expectAccessible(this.page);
@@ -4659,10 +4948,19 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
   }
 
+  /**
+   * An instance with no provider credentials, seen by someone who cannot supply them. The page
+   * says so once and offers nothing: four provider blocks with no action are four ways to say
+   * the same thing to a reader who can do nothing about any of them.
+   */
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
-    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(4);
-    await expect(this.page.getByRole("button", { name: /Connect|Revoke/u })).toHaveCount(0);
+    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await expect(this.page.getByText(/no provider apps set up yet/u)).toBeVisible();
+    await expect(this.page.getByRole("button", { name: /Connect|Revoke|Set up the/u })).toHaveCount(
+      0,
+    );
+    await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(0);
     await expectAccessible(this.page);
   }
 
@@ -4670,7 +4968,7 @@ class HubUser {
     await this.openOrganizationSection("Connections");
     await this.requestGitHubApproval();
     await this.requestGitHubApproval();
-    await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
+    await this.expectNoConnections();
   }
 
   private async requestGitHubApproval(): Promise<void> {
@@ -4681,8 +4979,8 @@ class HubUser {
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await returned;
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText(
-      "GitHub owner approval is required. Retry after approval.",
+    await this.expectConnectionFailure(
+      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
     );
   }
 
@@ -4908,11 +5206,14 @@ class HubUser {
     await this.page.reload();
   }
 
+  /** Every connection a provider card lists. Each provider owns its own list on the page. */
   private connectionRow(provider: string): Locator {
-    return this.page
-      .getByRole("table", { name: "Connections" })
-      .getByRole("row")
-      .filter({ has: this.page.getByRole("cell", { name: provider, exact: true }) });
+    return this.page.getByRole("list", { name: `${provider} connections` }).getByRole("listitem");
+  }
+
+  /** No provider lists any connection, whatever the reason there is nothing to list. */
+  private async expectNoConnections(): Promise<void> {
+    await expect(this.page.getByRole("list", { name: /^\w+ connections$/u })).toHaveCount(0);
   }
 
   private async chooseOption(select: Locator, option: string): Promise<void> {
@@ -5033,6 +5334,7 @@ class ContractDaemon {
     private readonly application: BuiltApplication,
     private readonly requests: APIRequestContext,
     friendlyName?: string,
+    private readonly providerCatalog = false,
   ) {
     const fallback = `daemon-${this.daemonId.slice(0, 8)}`;
     this.slug = friendlyName === undefined ? fallback : slugify(friendlyName, fallback);
@@ -5062,6 +5364,7 @@ class ContractDaemon {
       headers: {
         authorization: `Bearer ${this.credential}`,
         "x-paseo-daemon-id": this.daemonId,
+        ...(this.providerCatalog ? { "x-paseo-session-protocol": "1" } : {}),
       },
     });
     socket.on("message", (data) => this.acceptExecution(data));
@@ -5115,7 +5418,9 @@ class ContractDaemon {
   }
 
   private acceptExecution(data: RawData): void {
-    const envelope = ExecutionRequestSchema.safeParse(JSON.parse(readSocketData(data)));
+    const value: unknown = JSON.parse(readSocketData(data));
+    if (this.acceptHello(value) || this.acceptProviderRequest(value)) return;
+    const envelope = ExecutionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
     const capability = request.mcpServers?.["hub"];
@@ -5142,7 +5447,113 @@ class ContractDaemon {
       }),
     );
   }
+
+  private acceptHello(value: unknown): boolean {
+    const hello = z.object({ type: z.literal("hello") }).safeParse(value);
+    if (!hello.success) return false;
+    this.socket?.send(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: "status",
+          payload: {
+            status: "server_info",
+            serverId: `browser-${this.daemonId}`,
+            permissions: ["hub.execute"],
+            features: { providersSnapshot: true },
+          },
+        },
+      }),
+    );
+    return true;
+  }
+
+  private acceptProviderRequest(value: unknown): boolean {
+    const envelope = z
+      .object({
+        type: z.literal("session"),
+        message: z.discriminatedUnion("type", [
+          z.object({
+            type: z.literal("get_providers_snapshot_request"),
+            requestId: z.string(),
+            cwd: z.string().optional(),
+          }),
+          z.object({
+            type: z.literal("refresh_providers_snapshot_request"),
+            requestId: z.string(),
+          }),
+        ]),
+      })
+      .safeParse(value);
+    if (!envelope.success) return false;
+    const request = envelope.data.message;
+    const message =
+      request.type === "refresh_providers_snapshot_request"
+        ? {
+            type: "refresh_providers_snapshot_response",
+            payload: { requestId: request.requestId, acknowledged: true },
+          }
+        : {
+            type: "get_providers_snapshot_response",
+            payload: {
+              requestId: request.requestId,
+              ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+              entries: browserProviderSnapshot,
+              generatedAt: new Date().toISOString(),
+            },
+          };
+    this.socket?.send(JSON.stringify({ type: "session", message }));
+    return true;
+  }
 }
+
+const browserProviderSnapshot = [
+  {
+    provider: "pi",
+    status: "ready",
+    enabled: true,
+    label: "Pi",
+    models: [
+      {
+        provider: "pi",
+        id: "gateway/vendor/model-v1",
+        label: "Gateway Model v1",
+        isDefault: true,
+        thinkingOptions: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+        defaultThinkingOptionId: "high",
+      },
+      {
+        provider: "pi",
+        id: "gateway/vendor/model-v2",
+        label: "Gateway Model v2",
+        thinkingOptions: [{ id: "high", label: "High" }],
+      },
+    ],
+    modes: [{ id: "full-access", label: "Full access" }],
+    defaultModeId: "full-access",
+  },
+  {
+    provider: "codex",
+    status: "ready",
+    enabled: true,
+    label: "Codex",
+    models: [
+      {
+        provider: "codex",
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        isDefault: true,
+        thinkingOptions: [{ id: "high", label: "High", isDefault: true }],
+        defaultThinkingOptionId: "high",
+      },
+    ],
+    modes: [{ id: "full-access", label: "Full access" }],
+    defaultModeId: "full-access",
+  },
+] as const;
 
 type ExecutionCapability = { url: string; headers: Record<string, string> };
 
@@ -5173,11 +5584,18 @@ const STRIPE_WEBHOOK_SECRET = "whsec_phase_zero_fixture_secret";
 interface PublicBillingPlanExpectation {
   slug: string;
   name: string;
-  marketingFeatures: readonly string[];
-  prices: {
-    monthly: { unitAmount: number; currency: string } | null;
-    annual: { unitAmount: number; currency: string } | null;
+  billing: {
+    model: "per_unit";
+    unit: { key: "seat"; label: "seat" };
   };
+  features: readonly { key: string; label: string; tooltip: string | null }[];
+  prices: readonly {
+    interval: "monthly" | "annual";
+    intervalCount: 1;
+    unitAmount: number;
+    currency: string;
+    tooltip: string | null;
+  }[];
 }
 
 /**
@@ -5188,18 +5606,46 @@ interface PublicBillingPlanExpectation {
 const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
   {
     slug: "hosted",
-    name: "Paseo Hub",
-    marketingFeatures: [
-      "Unlimited daemons",
-      "GitHub, Linear, Slack, and Discord triggers",
-      "Versioned workflows and activity",
-      "Bring your own agents and inference",
+    name: "Hosted",
+    billing: {
+      model: "per_unit",
+      unit: {
+        key: "seat",
+        label: "seat",
+      },
+    },
+    features: [
+      {
+        key: "hub-operation",
+        label: "Paseo operates Hub",
+        tooltip: null,
+      },
+      {
+        key: "managed-triggers",
+        label: "Managed GitHub, Slack, and Discord triggers",
+        tooltip: null,
+      },
+      { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
+      {
+        key: "shared-model",
+        label: "Same projects, workflows, and activity",
+        tooltip: null,
+      },
     ],
-    prices: { monthly: { unitAmount: 1500, currency: "eur" }, annual: null },
+    prices: [
+      {
+        interval: "monthly",
+        intervalCount: 1,
+        unitAmount: 1500,
+        currency: "eur",
+        tooltip:
+          "Seats are Hub members and pending invitations. People who only trigger agents through GitHub, Slack, or Discord do not count as seats.",
+      },
+    ],
   },
 ];
 /** The one plan the fixture catalog — and the live Stripe catalog — publishes. */
-const HOSTED_PLAN_NAME = "Paseo Hub";
+const HOSTED_PLAN_NAME = "Hosted";
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const PROBLEM_TYPE = "application/problem+json";

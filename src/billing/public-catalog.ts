@@ -10,16 +10,45 @@ import { selectActivePlanPrice } from "./plan-prices.js";
 export interface PublicBillingPlan {
   slug: string;
   name: string;
-  marketingFeatures: readonly string[];
-  prices: Record<BillingPlanPriceInterval, PublicBillingPlanPrice | null>;
+  billing: {
+    model: "per_unit";
+    unit: {
+      key: "seat";
+      label: "seat";
+    };
+  };
+  features: readonly PublicBillingPlanFeature[];
+  prices: readonly PublicBillingPlanPrice[];
+}
+
+export interface PublicBillingPlanFeature {
+  key: string;
+  label: string;
+  tooltip: string | null;
 }
 
 export interface PublicBillingPlanPrice {
+  interval: BillingPlanPriceInterval;
+  intervalCount: 1;
   unitAmount: number;
   currency: string;
+  tooltip: string | null;
 }
 
-const billingPlanMarketingSchema = z.object({ features: z.array(z.string()) });
+const billingPlanMarketingSchema = z.object({
+  features: z.array(
+    z.object({ key: z.string(), label: z.string(), tooltip: z.string().nullable() }),
+  ),
+  priceTooltips: z.object({ monthly: z.string().nullable(), annual: z.string().nullable() }),
+});
+
+const SEAT_BILLING: PublicBillingPlan["billing"] = {
+  model: "per_unit",
+  unit: {
+    key: "seat",
+    label: "seat",
+  },
+};
 
 /**
  * Turns the catalog mirror into the plans a customer may buy. Two things are withheld: a plan the
@@ -37,27 +66,38 @@ export function publicBillingPlans(
 }
 
 function publicBillingPlan(record: BillingPlanRecord): PublicBillingPlan {
+  const marketing = billingPlanMarketingSchema.parse(record.marketing);
   return {
     slug: record.slug,
     name: record.name,
-    marketingFeatures: billingPlanMarketingSchema.parse(record.marketing).features,
-    prices: {
-      monthly: activePriceForInterval(record, "monthly"),
-      annual: activePriceForInterval(record, "annual"),
-    },
+    billing: SEAT_BILLING,
+    features: marketing.features,
+    prices: (["monthly", "annual"] as const).flatMap((interval) => {
+      const price = activePriceForInterval(record, interval, marketing.priceTooltips[interval]);
+      return price === null ? [] : [price];
+    }),
   };
 }
 
 function activePriceForInterval(
   record: BillingPlanRecord,
   interval: BillingPlanPriceInterval,
+  tooltip: string | null,
 ): PublicBillingPlanPrice | null {
   // Exact `{slug}_{interval}` lookup-key identity, matching checkout. Ambiguous pricing (two active
   // prices for one key) is surfaced as "unavailable" and logged, never displayed as an arbitrary
   // amount the customer might not be charged.
   try {
     const price = selectActivePlanPrice(record.prices, record.slug, interval);
-    return price === undefined ? null : { unitAmount: price.unitAmount, currency: price.currency };
+    return price === undefined
+      ? null
+      : {
+          interval,
+          intervalCount: 1,
+          unitAmount: price.unitAmount,
+          currency: price.currency,
+          tooltip,
+        };
   } catch (error) {
     reportFailure(
       error,

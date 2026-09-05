@@ -16,6 +16,10 @@ import {
   HubExecutionAgentUpdateSchema,
   HubExecutionControlRequestSchema,
   HubExecutionControlResponseSchema,
+  GetProvidersSnapshotRequestSchema,
+  GetProvidersSnapshotResponseSchema,
+  RefreshProvidersSnapshotRequestSchema,
+  RefreshProvidersSnapshotResponseSchema,
   HubExecutionOutboundSchema,
   HubDaemonHelloSchema,
   HubDaemonServerInfoEnvelopeSchema,
@@ -29,6 +33,7 @@ import {
   type DaemonExecutionControlOptions,
   type DaemonEventHandler,
 } from "./protocol.js";
+import type { HubProviderSnapshot } from "../hub/protocol.js";
 
 interface PendingCreateRequest {
   kind: "create";
@@ -51,17 +56,35 @@ interface PendingAgentValidationRequest {
   resolve(value: { valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }): void;
   reject(error: Error): void;
 }
+interface PendingProviderSnapshotRequest {
+  kind: "provider-snapshot";
+  generation: number;
+  resolve(value: HubProviderSnapshot): void;
+  reject(error: Error): void;
+}
+interface PendingProviderRefreshRequest {
+  kind: "provider-refresh";
+  generation: number;
+  resolve(): void;
+  reject(error: Error): void;
+}
 interface AgentValidationIssue {
   path: readonly (string | number)[];
   message: string;
 }
-type PendingRequest = PendingCreateRequest | PendingControlRequest | PendingAgentValidationRequest;
+type PendingRequest =
+  | PendingCreateRequest
+  | PendingControlRequest
+  | PendingAgentValidationRequest
+  | PendingProviderSnapshotRequest
+  | PendingProviderRefreshRequest;
 interface ActiveSocket {
   generation: number;
   socket: WebSocket;
   daemon: DaemonRecord;
   ready: boolean;
   presenceReady: Promise<void>;
+  providerSnapshotSupported: boolean;
 }
 
 export type DaemonSessionProtocol = "legacy" | "session-v1";
@@ -100,6 +123,7 @@ export class ActiveDaemonRegistry {
       daemon,
       ready: false,
       presenceReady: Promise.resolve(),
+      providerSnapshotSupported: false,
     };
     this.active.set(daemon.id, active);
     previous?.socket.close(4001, "replaced");
@@ -152,6 +176,8 @@ export class ActiveDaemonRegistry {
     return {
       createAgent: (options) => this.createAgent(daemonId, options),
       controlExecution: (options) => this.controlExecution(daemonId, options),
+      getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
+      refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       on: (handler) => {
         const subscribers = this.subscribersFor(daemonId);
         subscribers.add(handler);
@@ -290,6 +316,58 @@ export class ActiveDaemonRegistry {
     });
   }
 
+  private getProviderSnapshot(
+    daemonId: string,
+    options: { cwd?: string },
+  ): Promise<HubProviderSnapshot> {
+    const active = this.requireProviderSnapshotConnection(daemonId);
+    const requestId = randomUUID();
+    const request = GetProvidersSnapshotRequestSchema.parse({
+      type: "get_providers_snapshot_request",
+      requestId,
+      cwd: options.cwd,
+    });
+    return new Promise((resolve, reject) => {
+      this.pendingFor(daemonId).set(requestId, {
+        kind: "provider-snapshot",
+        generation: active.generation,
+        resolve,
+        reject,
+      });
+      active.socket.send(JSON.stringify({ type: "session", message: request }));
+    });
+  }
+
+  private refreshProviderSnapshot(
+    daemonId: string,
+    options: { cwd?: string; providers?: string[] },
+  ): Promise<void> {
+    const active = this.requireProviderSnapshotConnection(daemonId);
+    const requestId = randomUUID();
+    const request = RefreshProvidersSnapshotRequestSchema.parse({
+      type: "refresh_providers_snapshot_request",
+      requestId,
+      cwd: options.cwd,
+      providers: options.providers,
+    });
+    return new Promise((resolve, reject) => {
+      this.pendingFor(daemonId).set(requestId, {
+        kind: "provider-refresh",
+        generation: active.generation,
+        resolve,
+        reject,
+      });
+      active.socket.send(JSON.stringify({ type: "session", message: request }));
+    });
+  }
+
+  private requireProviderSnapshotConnection(daemonId: string): ActiveSocket {
+    const active = this.active.get(daemonId);
+    if (!active?.ready) throw new Error("daemon_not_connected");
+    if (!active.providerSnapshotSupported) throw new Error("daemon_provider_snapshot_unsupported");
+    return active;
+  }
+
   private receive(active: ActiveSocket, raw: string): void {
     if (this.active.get(active.daemon.id)?.generation !== active.generation) return;
     const receivedAt = this.clock.nowDate().toISOString();
@@ -303,7 +381,11 @@ export class ActiveDaemonRegistry {
     }
     const serverInfo = HubDaemonServerInfoEnvelopeSchema.safeParse(value);
     if (serverInfo.success) {
-      this.acceptServerInfo(active, serverInfo.data.message.payload.permissions);
+      this.acceptServerInfo(
+        active,
+        serverInfo.data.message.payload.permissions,
+        serverInfo.data.message.payload.features?.providersSnapshot === true,
+      );
       return;
     }
     const envelope = HubExecutionOutboundSchema.safeParse(value);
@@ -316,6 +398,11 @@ export class ActiveDaemonRegistry {
     if (controlled.success) return this.receiveControl(active, controlled.data);
     const validated = HubExecutionAgentValidateResponseSchema.safeParse(message);
     if (validated.success) return this.receiveAgentValidation(active, validated.data);
+    const providerSnapshot = GetProvidersSnapshotResponseSchema.safeParse(message);
+    if (providerSnapshot.success)
+      return this.receiveProviderSnapshot(active, providerSnapshot.data);
+    const providerRefresh = RefreshProvidersSnapshotResponseSchema.safeParse(message);
+    if (providerRefresh.success) return this.receiveProviderRefresh(active, providerRefresh.data);
     const update = HubExecutionAgentUpdateSchema.safeParse(message);
     if (update.success) {
       const event = {
@@ -340,11 +427,16 @@ export class ActiveDaemonRegistry {
     this.notifySubscribers(active.daemon.id, event);
   }
 
-  private acceptServerInfo(active: ActiveSocket, permissions: readonly string[]): void {
+  private acceptServerInfo(
+    active: ActiveSocket,
+    permissions: readonly string[],
+    providerSnapshotSupported = false,
+  ): void {
     if (!samePermissions(permissions, active.daemon.permissions)) {
       active.socket.close(4403, "daemon session permissions do not match enrollment");
       return;
     }
+    active.providerSnapshotSupported = providerSnapshotSupported;
     this.markReady(active);
   }
 
@@ -437,6 +529,44 @@ export class ActiveDaemonRegistry {
     pending.resolve(
       response.payload.valid ? { valid: true } : { valid: false, issues: response.payload.issues },
     );
+  }
+
+  private receiveProviderSnapshot(
+    active: ActiveSocket,
+    response: z.infer<typeof GetProvidersSnapshotResponseSchema>,
+  ): void {
+    const requests = this.pendingFor(active.daemon.id);
+    const pending = requests.get(response.payload.requestId);
+    if (
+      !pending ||
+      pending.kind !== "provider-snapshot" ||
+      pending.generation !== active.generation
+    ) {
+      return;
+    }
+    requests.delete(response.payload.requestId);
+    pending.resolve(response.payload);
+  }
+
+  private receiveProviderRefresh(
+    active: ActiveSocket,
+    response: z.infer<typeof RefreshProvidersSnapshotResponseSchema>,
+  ): void {
+    const requests = this.pendingFor(active.daemon.id);
+    const pending = requests.get(response.payload.requestId);
+    if (
+      !pending ||
+      pending.kind !== "provider-refresh" ||
+      pending.generation !== active.generation
+    ) {
+      return;
+    }
+    requests.delete(response.payload.requestId);
+    if (!response.payload.acknowledged) {
+      pending.reject(new Error("daemon provider refresh was not acknowledged"));
+      return;
+    }
+    pending.resolve();
   }
 
   private receiveControl(

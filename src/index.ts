@@ -44,7 +44,9 @@ import {
 } from "./provider-applications/index.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
-import { composeInvitationMailer } from "./invitations/index.js";
+import { createInvitationMailer } from "./invitations/index.js";
+import { composeEmailDelivery } from "./email/index.js";
+import { createAccountMailer } from "./auth/account-emails.js";
 import { migrateLegacyProjectTriggers } from "./triggers/migration.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
@@ -82,7 +84,11 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     const entitlements = composeEntitlements(database, runtime);
     resources.own(() => entitlements.close());
     const billingConfig = readBillingConfig();
-    const invitationMailer = composeInvitationMailer();
+    const emailDelivery = composeEmailDelivery();
+    const invitationMailer =
+      emailDelivery === undefined ? undefined : createInvitationMailer(emailDelivery);
+    const accountMailer =
+      emailDelivery === undefined ? undefined : createAccountMailer(emailDelivery);
     const billing =
       billingConfig === undefined
         ? null
@@ -111,6 +117,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       config.trustedClientIpHeader,
       billing,
       invitationMailer,
+      accountMailer,
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
@@ -186,7 +193,8 @@ function createProductionAuthServer(
   identity: HubIdentity,
   trustedClientIpHeader: string | undefined,
   billing: BillingRuntime | null,
-  invitationMailer: ReturnType<typeof composeInvitationMailer>,
+  invitationMailer: ReturnType<typeof createInvitationMailer> | undefined,
+  accountMailer: ReturnType<typeof createAccountMailer> | undefined,
 ) {
   return createAuthServer({
     database,
@@ -197,12 +205,14 @@ function createProductionAuthServer(
     policy: authPolicy,
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
     ...(invitationMailer === undefined ? {} : { invitationMailer }),
-    // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
-    // (billing null) keeps the createAuthServer default, which stamps unlimited.
+    ...(accountMailer === undefined ? {} : { accountMailer }),
+    // Hosted: new organizations are stamped with the Free floor, then synchronously moved onto
+    // their Stripe trial. Self-hosted keeps the unlimited default and never touches Stripe.
     ...(billing === null
       ? {}
       : {
           provisioningEntitlements: () => billing.provisioningEntitlement(),
+          onOrganizationCreated: (event) => billing.startSignup(event),
           onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
         }),
   });

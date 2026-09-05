@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { InvitationEmail, InvitationMailer } from "../index.js";
+import type { EmailDelivery, EmailMessage } from "../index.js";
 
 const RESEND_EMAILS_URL = "https://api.resend.com/emails";
 const DELIVERY_TIMEOUT_MS = 10_000;
@@ -32,53 +32,34 @@ export function readResendConfig(
   if (rawFrom === undefined || rawFrom.trim().length === 0) {
     throw new Error("RESEND_FROM is required when RESEND_API_KEY is set");
   }
-  const from = senderSchema.parse(rawFrom);
-  return { apiKey: key.data, from };
+  return { apiKey: key.data, from: senderSchema.parse(rawFrom) };
 }
 
-export function createResendInvitationMailer(
+export function createResendEmailDelivery(
   config: ResendConfig,
   sendRequest: SendRequest = fetch,
-): InvitationMailer {
+): EmailDelivery {
   return {
-    async send(invitation) {
+    async send(message: EmailMessage) {
       const response = await sendRequest(RESEND_EMAILS_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
           "Content-Type": "application/json",
-          "Idempotency-Key": `paseo-invitation-${invitation.id}`,
+          "Idempotency-Key": message.idempotencyKey,
         },
-        body: JSON.stringify(message(config.from, invitation)),
+        body: JSON.stringify({
+          from: config.from,
+          to: [message.to],
+          subject: message.subject,
+          text: message.text,
+          html: message.html,
+        }),
         signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
       });
       if (!response.ok) {
-        throw new Error(`Resend rejected invitation email with status ${response.status}`);
+        throw new Error(`Resend rejected email with status ${response.status}`);
       }
     },
   };
-}
-
-function message(from: string, invitation: InvitationEmail) {
-  const role = invitation.role === "admin" ? "an admin" : "a member";
-  const introduction = `${invitation.inviterName} invited you to join ${invitation.organizationName} as ${role}.`;
-  const expiry = `This invitation expires at ${invitation.expiresAt.toISOString()}.`;
-  const organizationName = escapeHtml(invitation.organizationName);
-  const invitationLink = escapeHtml(invitation.link);
-  return {
-    from,
-    to: [invitation.email],
-    subject: `Join ${invitation.organizationName} on Paseo`,
-    text: `${introduction}\n\nAccept the invitation: ${invitation.link}\n\n${expiry}`,
-    html: `<p>${escapeHtml(introduction)}</p><p><a href="${invitationLink}">Join ${organizationName}</a></p><p>${escapeHtml(expiry)}</p>`,
-  };
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }

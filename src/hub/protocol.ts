@@ -9,7 +9,15 @@ const McpHttpServerConfigSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 
-const JsonValueSchema: z.ZodType = z.lazy(() =>
+type WireJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | WireJsonValue[]
+  | { [key: string]: WireJsonValue };
+
+const JsonValueSchema: z.ZodType<WireJsonValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),
@@ -19,6 +27,50 @@ const JsonValueSchema: z.ZodType = z.lazy(() =>
     z.record(z.string(), JsonValueSchema),
   ]),
 );
+
+const ProviderSelectOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  isDefault: z.boolean().optional(),
+  metadata: z.record(z.string(), JsonValueSchema).optional(),
+});
+
+const ProviderModelSchema = z.object({
+  provider: z.string(),
+  id: z.string(),
+  aliases: z.array(z.string()).optional(),
+  isSelectable: z.boolean().optional(),
+  label: z.string(),
+  description: z.string().optional(),
+  isDefault: z.boolean().optional(),
+  metadata: z.record(z.string(), JsonValueSchema).optional(),
+  contextWindowMaxTokens: z.number().optional(),
+  thinkingOptions: z.array(ProviderSelectOptionSchema).optional(),
+  defaultThinkingOptionId: z.string().optional(),
+});
+
+const ProviderModeSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  icon: z.string().optional(),
+  colorTier: z.string().optional(),
+});
+
+const ProviderSnapshotEntrySchema = z.object({
+  provider: z.string(),
+  status: z.enum(["ready", "loading", "error", "unavailable"]),
+  enabled: z.boolean().optional().default(true),
+  source: z.enum(["builtin", "custom"]).optional(),
+  error: z.string().optional(),
+  models: z.array(ProviderModelSchema).optional(),
+  modes: z.array(ProviderModeSchema).optional(),
+  fetchedAt: z.string().optional(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  defaultModeId: z.string().nullable().optional(),
+});
 
 const McpToolRefSchema = z
   .object({
@@ -77,6 +129,7 @@ export const HubDaemonServerInfoEnvelopeSchema = z.object({
       .object({
         status: z.literal("server_info"),
         permissions: z.array(z.string()),
+        features: z.object({ providersSnapshot: z.boolean().optional() }).optional(),
       })
       .passthrough(),
   }),
@@ -184,6 +237,37 @@ export const HubExecutionAgentValidateResponseSchema = z.object({
   }),
 });
 
+export const GetProvidersSnapshotRequestSchema = z.object({
+  type: z.literal("get_providers_snapshot_request"),
+  requestId: z.string(),
+  cwd: z.string().optional(),
+});
+
+export const GetProvidersSnapshotResponseSchema = z.object({
+  type: z.literal("get_providers_snapshot_response"),
+  payload: z.object({
+    requestId: z.string(),
+    cwd: z.string().optional(),
+    entries: z.array(ProviderSnapshotEntrySchema),
+    generatedAt: z.string(),
+  }),
+});
+
+export const RefreshProvidersSnapshotRequestSchema = z.object({
+  type: z.literal("refresh_providers_snapshot_request"),
+  requestId: z.string(),
+  cwd: z.string().optional(),
+  providers: z.array(z.string()).optional(),
+});
+
+export const RefreshProvidersSnapshotResponseSchema = z.object({
+  type: z.literal("refresh_providers_snapshot_response"),
+  payload: z.object({
+    requestId: z.string(),
+    acknowledged: z.boolean(),
+  }),
+});
+
 export const HubExecutionAgentCreateResponseSchema = z.object({
   type: z.literal("hub.execution.agent.create.response"),
   payload: z.object({
@@ -279,6 +363,8 @@ export const HubExecutionOutboundSchema = z.object({
     HubExecutionAgentStreamSchema,
     HubExecutionControlResponseSchema,
     HubExecutionAgentValidateResponseSchema,
+    GetProvidersSnapshotResponseSchema,
+    RefreshProvidersSnapshotResponseSchema,
     RpcErrorSchema,
   ]),
 });
@@ -286,3 +372,5 @@ export const HubExecutionOutboundSchema = z.object({
 export type HubExecutionAgentSnapshot = z.infer<typeof HubExecutionAgentSnapshotSchema>;
 export type HubExecutionAgentStreamEvent = z.infer<typeof HubExecutionAgentStreamEventSchema>;
 export type HubExecutionControlAction = z.infer<typeof HubExecutionControlActionSchema>;
+export type HubProviderSnapshot = z.infer<typeof GetProvidersSnapshotResponseSchema>["payload"];
+export type HubProviderSnapshotEntry = z.infer<typeof ProviderSnapshotEntrySchema>;

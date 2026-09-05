@@ -4,6 +4,7 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { reportFailure, respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
+import type { HubProviderSnapshot } from "../hub/protocol.js";
 
 const daemonSchema = z.object({
   id: z.string().uuid(),
@@ -24,12 +25,44 @@ const daemonIdSchema = z.object({ daemonId: z.string().uuid() });
 const organizationScopeSchema = z.object({ organizationSlug: z.string().min(1) });
 const scopedRenameSchema = organizationScopeSchema.extend(renameSchema.shape);
 const scopedDaemonIdSchema = organizationScopeSchema.extend(daemonIdSchema.shape);
+const providerSnapshotSchema = scopedDaemonIdSchema.extend({
+  cwd: z.string().trim().min(1).optional(),
+  refresh: z.boolean().optional(),
+});
 
 export type BrowserDaemon = z.infer<typeof daemonSchema>;
 export type BrowserDaemonList = z.infer<typeof daemonListSchema>;
 export interface DaemonCommand {
   state: "complete" | "sessionExpired" | "organizationRequired";
 }
+
+export const daemonProviderSnapshot = createServerFn({ method: "GET" })
+  .validator(providerSnapshotSchema)
+  .handler(async ({ data }): Promise<Result<HubProviderSnapshot>> => {
+    try {
+      const catalog = (await getApplication()).daemonProviderCatalog;
+      if (catalog == null) throw new Error("daemon provider catalog unavailable");
+      return respondOk(
+        await catalog.read(getRequest(), {
+          organizationSlug: data.organizationSlug,
+          daemonId: data.daemonId,
+          ...(data.cwd === undefined ? {} : { cwd: data.cwd }),
+          ...(data.refresh === undefined ? {} : { refresh: data.refresh }),
+        }),
+      );
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.provider.snapshot", data.organizationSlug, data.daemonId),
+        {
+          fallback:
+            error instanceof Error && error.message === "daemon_provider_snapshot_unsupported"
+              ? "Update Paseo on this daemon to browse its providers."
+              : "Hub couldn't load this daemon's providers. Check the daemon connection and retry.",
+        },
+      );
+    }
+  });
 
 export const daemonList = createServerFn({ method: "GET" })
   .validator(organizationScopeSchema)

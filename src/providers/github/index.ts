@@ -7,6 +7,7 @@ import { logger } from "../../logger.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -383,13 +384,14 @@ async function completeSetup(
   const action = url.searchParams.get("setup_action");
   if (state === null || client === undefined)
     return connectionCallbackFailure({
+      request,
       error: new GitHubCallbackError("invalid setup callback"),
       provider: "github",
       phase: "setup",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -415,6 +417,7 @@ async function completeSetup(
     }
     if ((action !== "install" && action !== "update") || installationId === undefined) {
       return connectionCallbackFailure({
+        request,
         error: new GitHubCallbackError("invalid setup result"),
         provider: "github",
         phase: "setup",
@@ -441,6 +444,7 @@ async function completeSetup(
     );
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "github",
       phase: "setup",
@@ -471,14 +475,15 @@ async function completeAuthorization(
   }
   if (state === null || code === null || client === undefined) {
     return connectionCallbackFailure({
+      request,
       error: new GitHubCallbackError("invalid authorization callback"),
       provider: "github",
       phase: "authorization",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -504,6 +509,7 @@ async function completeAuthorization(
         access,
       });
       return connectionCallbackFailure({
+        request,
         error: new GitHubCallbackError("installation verification rejected"),
         provider: "github",
         phase: "authorization",
@@ -515,6 +521,7 @@ async function completeAuthorization(
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "github",
       phase: "authorization",

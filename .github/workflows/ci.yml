@@ -12,11 +12,11 @@ concurrency:
 permissions:
   contents: read
 
-# Replace this marker with the accepted companion commit immediately after the
-# companion PR creator commits it. Source-built jobs deliberately fail until it
-# is one exact 40-character SHA; mutable refs and repository variables are forbidden.
+# Keep the baseline daemon current independently of optional daemon capabilities.
+# Both baseline and affinity-capable sources are immutable, separately tested commits.
 env:
-  PASEO_E2E_COMMIT: bb3a46346c7e781bc963ffb2e0fdbd3f5ed3efa3
+  PASEO_E2E_COMMIT: c16d4f14a3ec95485f37aa7fb6201b7c239d9d2a
+  PASEO_AFFINITY_E2E_COMMIT: bb3a46346c7e781bc963ffb2e0fdbd3f5ed3efa3
 
 jobs:
   typecheck:
@@ -175,6 +175,41 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build and smoke-test production image
         run: npm run docker:smoke
+
+  workspace-affinity-e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        affinity: [false, true]
+    env:
+      PASEO_E2E_WORKTREE: ${{ github.workspace }}/paseo-source
+      PASEO_E2E_AFFINITY_SUPPORTED: ${{ matrix.affinity }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require immutable baseline and affinity daemon commits
+        run: |
+          [[ "$PASEO_E2E_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PASEO_AFFINITY_E2E_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out exact Paseo source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: getpaseo/paseo
+          ref: ${{ matrix.affinity && env.PASEO_AFFINITY_E2E_COMMIT || env.PASEO_E2E_COMMIT }}
+          path: paseo-source
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Build exact Paseo source
+        working-directory: paseo-source
+        run: |
+          npm ci
+          npm run build:server
+      - run: npm ci
+      - run: npm run build
+      - name: Verify workspace affinity and legacy fallback
+        run: npm run test:e2e:hub:affinity
 
   hub-e2e:
     runs-on: ubuntu-latest

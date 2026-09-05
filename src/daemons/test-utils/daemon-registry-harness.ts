@@ -110,6 +110,62 @@ export class DaemonRegistryHarness {
     };
   }
 
+  async pendingProviderSnapshot(cwd = "/workspace") {
+    const promise = this.connection().getProviderSnapshot({ cwd });
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("get_providers_snapshot_request"),
+    };
+  }
+
+  async pendingProviderRefresh(cwd = "/workspace") {
+    const promise = this.connection().refreshProviderSnapshot({ cwd, providers: ["codex"] });
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("refresh_providers_snapshot_request"),
+    };
+  }
+
+  respondProviderSnapshot(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderSnapshot"]>>,
+  ): void {
+    this.currentSocket().send({
+      type: "get_providers_snapshot_response",
+      payload: {
+        requestId: pending.request.requestId,
+        cwd: pending.request["cwd"],
+        entries: [
+          {
+            provider: "codex",
+            status: "ready",
+            enabled: true,
+            models: [
+              {
+                provider: "codex",
+                id: "gpt-5.4",
+                label: "GPT-5.4",
+                thinkingOptions: [{ id: "xhigh", label: "Extra high" }],
+              },
+            ],
+            modes: [{ id: "full-access", label: "Full access" }],
+          },
+        ],
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  respondProviderRefresh(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderRefresh"]>>,
+  ): void {
+    this.currentSocket().send({
+      type: "refresh_providers_snapshot_response",
+      payload: { requestId: pending.request.requestId, acknowledged: true },
+    });
+  }
+
   respondAgentValidation(
     pending: Awaited<ReturnType<DaemonRegistryHarness["pendingAgentValidation"]>>,
   ): void {
@@ -454,7 +510,7 @@ class RegistrySocket {
         status: "server_info",
         serverId: "test-daemon",
         permissions,
-        features: {},
+        features: { providersSnapshot: true },
       },
     });
   }

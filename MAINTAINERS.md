@@ -18,12 +18,20 @@ npm run build
 npm run docker:smoke
 npm run test:e2e:browser
 npm run test:e2e:hub:source
+npm run test:e2e:hub:affinity
 ```
 
-The source-built browser and Hub suites use the exact Paseo commit in `PASEO_E2E_COMMIT`.
-When a Hub change depends on a Paseo protocol or CLI change, update that immutable SHA and
-prove the combined contract before merging. Do not replace it with a branch or another mutable
-reference.
+The source-built browser and Hub suites use the exact baseline Paseo commit in `PASEO_E2E_COMMIT`.
+When a Hub change depends on a Paseo protocol or CLI change, update that immutable SHA and prove
+the combined contract before merging. Do not replace it with a branch or another mutable reference.
+
+Workspace affinity is optional, so CI also pins `PASEO_AFFINITY_E2E_COMMIT` independently. The
+affinity suite runs against both commits: the baseline must complete executions with the existing
+fresh-workspace behavior, while the capable daemon must retain, reuse, and restore a workspace
+without reusing the agent. Set `PASEO_E2E_WORKTREE` to the built source checkout and
+`PASEO_E2E_AFFINITY_SUPPORTED` to `false` or `true` respectively when running that suite locally.
+Advance the baseline for unrelated daemon improvements without dropping the capable contract
+test or forcing the unmerged affinity companion to carry those changes.
 
 Use the repository formatter through `npm run format` or `npm run format:files`. This repository
 uses Oxfmt, not Prettier.

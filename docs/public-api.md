@@ -106,24 +106,38 @@ customer can see. Today the hosted offer is one plan:
   "plans": [
     {
       "slug": "hosted",
-      "name": "Paseo Hub",
-      "marketingFeatures": [
-        "Unlimited daemons",
-        "GitHub, Linear, Slack, and Discord triggers",
-        "Versioned workflows and activity",
-        "Bring your own agents and inference"
+      "name": "Hosted",
+      "billing": {
+        "model": "per_unit",
+        "unit": {
+          "key": "seat",
+          "label": "seat"
+        }
+      },
+      "features": [
+        {
+          "key": "hub-operation",
+          "label": "Paseo operates Hub",
+          "tooltip": null
+        }
       ],
-      "prices": {
-        "monthly": { "unitAmount": 1500, "currency": "eur" },
-        "annual": null
-      }
+      "prices": [
+        {
+          "interval": "monthly",
+          "intervalCount": 1,
+          "unitAmount": 1500,
+          "currency": "eur",
+          "tooltip": "Seats are Hub members and pending invitations. People who only trigger agents through GitHub, Slack, or Discord do not count as seats."
+        }
+      ]
     }
   ]
 }
 ```
 
-`unitAmount` is in the smallest currency unit (cents for `eur`), matching Stripe's own `Price`
-convention. An interval is `null` when the plan has no active price at that interval. A
+`unitAmount` is the amount per billing unit in the smallest currency unit (cents for `eur`),
+matching Stripe's own `Price` convention. An interval is absent when the plan has no active price
+at that interval. A
 self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
 catalog — the billing boundary means the route is never registered on an unconfigured instance.
 See docs/billing.md.

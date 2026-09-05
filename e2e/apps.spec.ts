@@ -599,7 +599,7 @@ test("every way a provider can send the operator back is answered in that sectio
       {
         provider: "github" as const,
         result: "something_nobody_mapped",
-        copy: "GitHub ended the connection without saying why. Nothing was connected. Start the connection again from this page.",
+        copy: "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page.",
         focus: "error" as const,
       },
     ];
@@ -645,8 +645,8 @@ test("an environment-managed app is read-only, connectable, and names its variab
     await session.openManagement();
     await github.expand();
 
-    const notice = github.body().getByRole("alert");
-    await expect(notice).toContainText("Managed by environment");
+    const notice = github.environmentNotice();
+    await expect(notice).toBeVisible();
     for (const variable of [
       "GITHUB_APP_ID",
       "GITHUB_APP_SLUG",
@@ -743,9 +743,10 @@ test("the operator finishes, then manages the same apps from the account menu", 
       expect(await github.value("App ID")).toBe("42");
       expect(await github.value("Client secret")).toBe("");
       expect(await github.value("Private key")).toBe("");
+      // The card the form sits in owns the title and the description under it.
       await expect(
         github
-          .form()
+          .body()
           .getByText("Rotating secrets for the same app keeps your connections.", { exact: false }),
       ).toBeVisible();
       await expect(github.setupSteps()).toHaveAttribute("aria-expanded", "false");

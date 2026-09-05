@@ -714,9 +714,27 @@ export class HubHarness {
   async pendingExecutionCount(): Promise<number> {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
   }
-  async waitForRecoveredExecution(id: string): Promise<AgentExecutionRecord> {
-    await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
-    return this.execution(id);
+  /**
+   * Recovery lands in two writes: the daemon agent is attached, then the execution moves on from
+   * `spawning`. Waiting only for the agent, then reading the row again, returns whatever the
+   * second write happened to have done by then — so a caller asserting the settled status was
+   * racing it. Name the status you are waiting for, and the record you get is the one that
+   * satisfied the wait rather than a later re-read.
+   */
+  async waitForRecoveredExecution(
+    id: string,
+    status?: AgentExecutionRecord["status"],
+  ): Promise<AgentExecutionRecord> {
+    let recovered: AgentExecutionRecord | undefined;
+    await waitFor(async () => {
+      const execution = await this.execution(id);
+      if (execution.daemonAgentId === null) return false;
+      if (status !== undefined && execution.status !== status) return false;
+      recovered = execution;
+      return true;
+    });
+    if (recovered === undefined) throw new Error(`Execution ${id} did not recover`);
+    return recovered;
   }
   async waitForExecutionForTriggerRun(triggerRunId: string): Promise<AgentExecutionRecord> {
     let execution: AgentExecutionRecord | undefined;
@@ -1692,6 +1710,7 @@ export class HubHarness {
       billingOverview: () => Promise.reject(new Error("billing is not configured")),
       billingCheckout: () => Promise.reject(new Error("billing is not configured")),
       billingPortal: () => Promise.reject(new Error("billing is not configured")),
+      organizationTrial: () => Promise.resolve({ daysLeft: null }),
       providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
       stop: () => hub.stop(),
     }));

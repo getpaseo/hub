@@ -23,6 +23,7 @@ export class HubFaultProxy {
     this.createResponseDropped = resolve;
   });
   private denial: ((value: Denial) => void) | undefined;
+  private providerSnapshot: ((value: Record<string, unknown>) => void) | undefined;
   private readonly createsByExecution = new Map<string, number>();
   private readonly agentIdsByExecution = new Map<string, Set<string>>();
   private readonly createdAgentsByExecution = new Map<
@@ -81,6 +82,29 @@ export class HubFaultProxy {
       agentId,
       text: "outside Hub scope",
     });
+  }
+
+  async requestProviderSnapshot(cwd: string): Promise<Record<string, unknown>> {
+    const socket = this.daemonSocket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Daemon is not connected");
+    const requestId = `hub-e2e-providers-${Date.now()}`;
+    const observed = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`Provider snapshot was not observed\n${this.evidence()}`)),
+        10_000,
+      );
+      this.providerSnapshot = (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      };
+    });
+    socket.send(
+      JSON.stringify({
+        type: "session",
+        message: { type: "get_providers_snapshot_request", requestId, cwd },
+      }),
+    );
+    return observed;
   }
 
   private async requestDenied(message: Record<string, unknown>): Promise<Denial> {
@@ -247,7 +271,16 @@ export class HubFaultProxy {
     const message = sessionMessage(parseRecord(raw));
     this.recordDaemonEvidence(message);
     this.observeDenial(message);
+    this.observeProviderSnapshot(message);
     return this.observeCreateResponse(message);
+  }
+
+  private observeProviderSnapshot(message: Record<string, unknown> | undefined): void {
+    if (message?.["type"] !== "get_providers_snapshot_response") return;
+    const payload = recordAt(message, "payload");
+    if (payload === undefined) return;
+    this.providerSnapshot?.(payload);
+    this.providerSnapshot = undefined;
   }
 
   private recordDaemonEvidence(message: Record<string, unknown> | undefined): void {

@@ -4,6 +4,13 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { handleConnections } from "../server/runtime.js";
+import {
+  CONNECTION_PROVIDERS,
+  connectionProviderName,
+  type ConnectionProvider,
+} from "./result-contract.js";
+
+export type { ConnectionProvider } from "./result-contract.js";
 
 const githubStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("notConfigured") }),
@@ -45,13 +52,12 @@ const scopeSchema = z.object({
   projectSlug: z.string().min(1).optional(),
 });
 const providerSchema = scopeSchema.extend({
-  provider: z.enum(["github", "discord", "slack", "linear"]),
+  provider: z.enum(CONNECTION_PROVIDERS),
 });
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
 
 export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
-export type ConnectionProvider = z.infer<typeof providerSchema>["provider"];
 export type ConnectionDisconnectResult = `${ConnectionProvider}_disconnected`;
 
 export const connectionStatus = createServerFn({ method: "GET" })
@@ -81,7 +87,7 @@ export const connectionStatus = createServerFn({ method: "GET" })
 export const startConnection = createServerFn({ method: "POST" })
   .validator(providerSchema)
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
-    const name = providerName(data.provider);
+    const name = connectionProviderName(data.provider);
     try {
       const operation = CONNECTION_OPERATIONS[data.provider].start;
       const response = await handleConnections(
@@ -115,7 +121,7 @@ export const startConnection = createServerFn({ method: "POST" })
 export const disconnectConnection = createServerFn({ method: "POST" })
   .validator(disconnectSchema)
   .handler(async ({ data }): Promise<Result<{ result: ConnectionDisconnectResult }>> => {
-    const name = providerName(data.provider);
+    const name = connectionProviderName(data.provider);
     try {
       const operation = CONNECTION_OPERATIONS[data.provider].disconnect;
       const response = await handleConnections(
@@ -152,12 +158,6 @@ const CONNECTION_OPERATIONS = {
   slack: { start: "slackStart", disconnect: "slackDisconnect" },
   linear: { start: "linearStart", disconnect: "linearDisconnect" },
 } as const;
-
-function providerName(provider: ConnectionProvider): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "discord") return "Discord";
-  return provider === "slack" ? "Slack" : "Linear";
-}
 
 function connectionContext(
   operation: string,

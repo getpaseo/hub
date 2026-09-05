@@ -9,7 +9,6 @@ const owner = {
   password: "amara-entitlements-password",
 };
 const secondMember = "bela-entitlements@example.com";
-const thirdMember = "cyrus-entitlements@example.com";
 const meterOwner = {
   name: "Deo",
   email: "deo-entitlements@example.com",
@@ -67,9 +66,11 @@ test("an operator caps seats, a blocked invite explains itself, and the audit tr
     await hub.inviteMember("owner", secondMember, "member");
   });
 
-  await test.step("a third invite is refused with a message that names the limit", async () => {
-    await hub.expectInviteRefusedBySeatLimit("owner", thirdMember, { limit: 2, current: 2 });
-    await page.screenshot({ path: `${SLICE_2_DIR}/03-invite-refused.png`, fullPage: true });
+  await test.step("a third invite is locked, and the lock names the limit", async () => {
+    await hub.expectInviteLockedBySeatLimit("owner", { limit: 2, current: 2 });
+    await page.screenshot({ path: `${SLICE_2_DIR}/03-invite-locked.png`, fullPage: true });
+    // Self-hosted there is no plan to buy, so the lock leads to the page that names the limit.
+    await hub.followInviteLockToUsage("owner");
   });
 
   await test.step("the operator audit trail records who capped seats and why", async () => {
@@ -88,13 +89,12 @@ test.describe("metered usage", () => {
     const reason = "Trial cap on monthly executions";
     const app = projectApp(page);
     const triggers = new OrganizationTriggers(page);
+    let daemonSlug = "";
 
     await test.step("sign up, create an organization, register a daemon, become an operator", async () => {
       await hub.signUpAs("owner", meterOwner);
       await hub.createOrganization("owner", "Acme");
-      await hub.startDaemonRegistration("owner");
-      const daemonId = await hub.approveDaemon("owner", "Slice Three Runner", ["hub.execute"]);
-      await hub.setDaemonSlug(daemonId, "slice-three-runner");
+      daemonSlug = await hub.connectProviderDaemon("owner", "Acme");
       await hub.grantOperator("owner");
     });
 
@@ -109,9 +109,11 @@ test.describe("metered usage", () => {
       await triggers.startNew();
       await triggers.configureManual({
         name: "deploy",
-        daemon: "slice-three-runner",
+        daemon: daemonSlug,
         cwd: "/workspace",
-        agent: "opencode",
+        agent: "codex/gpt-5.4",
+        mode: "full-access",
+        thinking: "high",
         prompt: "${{ paseo.prompt }}",
       });
       await triggers.save("deploy");
@@ -152,7 +154,7 @@ test.describe("metered usage", () => {
         await page.reload();
         await expect(deployRows).toHaveCount(2);
         await expect(
-          deployRows.first().getByRole("cell", { name: "failed", exact: true }),
+          deployRows.first().getByRole("cell", { name: "Failed", exact: true }),
         ).toBeVisible();
       }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
       await page.screenshot({ path: `${SLICE_3_DIR}/02-execution-denied.png`, fullPage: true });

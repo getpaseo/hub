@@ -13,7 +13,7 @@ import { test } from "./app.js";
 // webhook is HMAC-signed with a known secret so signature verification is real.
 
 const DIR = "e2e/screenshots/slice-7";
-const PLAN = "Paseo Hub";
+const PLAN = "Hosted";
 
 test.use({ billing: true });
 
@@ -28,18 +28,17 @@ const invitees = [
   "three-downgrade@example.com",
   "four-downgrade@example.com",
 ];
-const sixthInvitee = "five-downgrade@example.com";
 
 test("losing the plan keeps every seat, warns that the org is over its limit, and blocks a new invite", async ({
   hub,
   page,
 }) => {
-  await test.step("create an organization and subscribe it to the plan", async () => {
+  test.slow();
+  await test.step("create an organization on the hosted trial", async () => {
     await hub.signUpAs("owner", downgradeOwner);
     await hub.createOrganization("owner", "Acme");
-    await hub.subscribeToPlan("owner", PLAN);
-    await hub.deliverSubscriptionWebhook("owner");
     await hub.expectCurrentPlan("owner", PLAN);
+    await hub.expectActiveTrial("owner");
   });
 
   await test.step("fill five seats: the owner plus four invited members", async () => {
@@ -59,9 +58,9 @@ test("losing the plan keeps every seat, warns that the org is over its limit, an
     await page.screenshot({ path: `${DIR}/02-over-limit-banner.png`, fullPage: true });
   });
 
-  await test.step("a sixth invite is refused — the floor blocks growth past the cap", async () => {
-    await hub.expectInviteBlockedByPlan("owner", sixthInvitee);
-    await page.screenshot({ path: `${DIR}/03-invite-blocked.png`, fullPage: true });
+  await test.step("a sixth invite is locked — the floor blocks growth past the cap", async () => {
+    await hub.expectInviteLockedByPlan("owner");
+    await page.screenshot({ path: `${DIR}/03-invite-locked.png`, fullPage: true });
   });
 });
 
@@ -77,10 +76,12 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
   hub,
   page,
 }) => {
-  await test.step("start from an unsubscribed organization and become an operator", async () => {
+  test.slow();
+  await test.step("start from a trialing organization and become an operator", async () => {
     await hub.signUpAs("owner", overrideOwner);
     await hub.createOrganization("owner", "Globex");
-    await hub.expectNoSubscription("owner");
+    await hub.expectCurrentPlan("owner", PLAN);
+    await hub.expectActiveTrial("owner");
     // Overrides are operator-only now; the owner is granted the flag to hand-set the deal.
     await hub.grantOperator("owner");
   });
@@ -88,6 +89,22 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
   await test.step("hand-set a three-seat override from the operator console", async () => {
     await hub.openSeatOverrideEditor("owner", { org: "Globex", max: 3, reason: seatReason });
     await hub.saveSeatOverride("owner", 3);
+    await hub.expectEntitlementCells("owner", "Globex", "Seats", {
+      granted: "Unlimited",
+      override: "3",
+      effective: "3",
+    });
+    await hub.expectEntitlementCells("owner", "Globex", "Executions this month", {
+      granted: "Unlimited",
+      override: "—",
+      effective: "Unlimited",
+    });
+    await page.screenshot({ path: `${DIR}/04-trial-override.png`, fullPage: true });
+  });
+
+  await test.step("cancel the trial: the override holds while granted values re-stamp", async () => {
+    await hub.cancelSubscription("owner");
+    await hub.expectNoSubscription("owner");
     await hub.expectEntitlementCells("owner", "Globex", "Seats", {
       granted: "1",
       override: "3",
@@ -98,38 +115,19 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
       override: "—",
       effective: "0",
     });
-    await page.screenshot({ path: `${DIR}/04-floor-override.png`, fullPage: true });
-  });
-
-  await test.step("subscribe to the plan: the override holds, the untouched values re-stamp", async () => {
-    await hub.subscribeToPlan("owner", PLAN);
-    await hub.deliverSubscriptionWebhook("owner");
-    await hub.expectCurrentPlan("owner", PLAN);
-    // Seats: plan re-stamped to unlimited, but the hand-set override still wins.
-    await hub.expectEntitlementCells("owner", "Globex", "Seats", {
-      granted: "Unlimited",
-      override: "3",
-      effective: "3",
-    });
-    // Executions: never overridden, so it re-stamps from the floor's 0 to the plan's unlimited.
-    await hub.expectEntitlementCells("owner", "Globex", "Executions this month", {
-      granted: "Unlimited",
-      override: "—",
-      effective: "Unlimited",
-    });
     await page.screenshot({ path: `${DIR}/05-override-survives-restamp.png`, fullPage: true });
   });
 
-  await test.step("clear the override: the plan's unlimited seats take over, and the reset is audited", async () => {
+  await test.step("clear the override: the Free floor takes control, and the reset is audited", async () => {
     await hub.clearSeatOverride("owner", {
       org: "Globex",
       reason: clearReason,
-      expectedEffective: "Unlimited",
+      expectedEffective: "1",
     });
     await hub.expectEntitlementCells("owner", "Globex", "Seats", {
-      granted: "Unlimited",
+      granted: "1",
       override: "—",
-      effective: "Unlimited",
+      effective: "1",
     });
     await hub.expectEntitlementsAudit("owner", {
       org: "Globex",

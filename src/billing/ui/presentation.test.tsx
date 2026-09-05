@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
+import type { BillingPlanPriceInterval } from "../../db/types.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 /**
  * Copy rules, not the product catalog. Where several plans are needed to pin generic behaviour
@@ -7,6 +8,7 @@ import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtim
  * otherwise is how obsolete tiers end up on a screenshot.
  */
 
+import { formatAbsolute } from "../../components/app/relative-time.js";
 import {
   intervalLabel,
   offeredIntervals,
@@ -15,18 +17,31 @@ import {
   subscriptionSummary,
 } from "./presentation.js";
 
-const euros = (unitAmount: number) => ({ unitAmount, currency: "eur" });
+const euros = (unitAmount: number, interval: BillingPlanPriceInterval = "monthly") => ({
+  interval,
+  intervalCount: 1 as const,
+  unitAmount,
+  currency: "eur",
+  tooltip: null,
+});
 
 function plan(
   slug: string,
   name: string,
-  prices: Partial<PublicBillingPlan["prices"]>,
+  prices: Partial<Record<BillingPlanPriceInterval, ReturnType<typeof euros>>>,
 ): PublicBillingPlan {
   return {
     slug,
     name,
-    marketingFeatures: [],
-    prices: { monthly: null, annual: null, ...prices },
+    billing: {
+      model: "per_unit",
+      unit: {
+        key: "seat",
+        label: "seat",
+      },
+    },
+    features: [],
+    prices: Object.values(prices),
   };
 }
 
@@ -49,11 +64,11 @@ function subscription(
 it("prices a paid plan as a figure the customer can read at a glance", () => {
   assert.deepEqual(planPrice(euros(1500), "monthly"), {
     amount: "€15",
-    unit: "per user / month",
+    unit: "per seat / month",
   });
-  assert.deepEqual(planPrice(euros(15000), "annual"), {
+  assert.deepEqual(planPrice(euros(15000, "annual"), "annual"), {
     amount: "€150",
-    unit: "per user / year",
+    unit: "per seat / year",
   });
 });
 
@@ -127,12 +142,17 @@ it("disables a plan the catalog does not price at the selected interval", () => 
 
 it("hides the interval switch for a catalog that only charges monthly", () => {
   const plans = [
-    plan("free", "Free", { monthly: euros(0), annual: euros(0) }),
+    plan("free", "Free", { monthly: euros(0), annual: euros(0, "annual") }),
     plan("starter", "Starter", { monthly: euros(1500) }),
   ];
   assert.deepEqual(offeredIntervals(plans), ["monthly"]);
   assert.deepEqual(
-    offeredIntervals([plan("starter", "Starter", { monthly: euros(1500), annual: euros(15000) })]),
+    offeredIntervals([
+      plan("starter", "Starter", {
+        monthly: euros(1500),
+        annual: euros(15000, "annual"),
+      }),
+    ]),
     ["monthly", "annual"],
   );
   // A catalog with nothing priced still has to render at one interval.
@@ -166,7 +186,9 @@ it("leads with the trial end date while a trial is running", () => {
     }),
   );
   assert.deepEqual(summary.status, { tone: "success", label: "Trialing" });
-  assert.equal(summary.detail, "Trial ends September 11, 2026.");
+  // The trial end wins over the period end, and the date is the app's one absolute formatter —
+  // a billing date and the same instant in a tooltip read as the same string.
+  assert.equal(summary.detail, `Trial ends ${formatAbsolute("2026-09-11T00:00:00.000Z")}.`);
 });
 
 it("leads with the cancellation date once a subscription is set to end", () => {
@@ -181,13 +203,14 @@ it("leads with the cancellation date once a subscription is set to end", () => {
       manageable: true,
     }),
   );
-  assert.equal(summary.detail, "Cancels on October 1, 2026.");
+  // A pending cancellation outranks the trial, and it dates from the period end, not the trial end.
+  assert.equal(summary.detail, `Cancels on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
 });
 
 it("warns on a payment problem and stays neutral on an unrecognised status", () => {
   assert.deepEqual(
     subscriptionSummary(subscription({ planName: "Paseo Hub", status: "past_due" })).status,
-    { tone: "warning", label: "Past Due" },
+    { tone: "warning", label: "Past due" },
   );
   assert.deepEqual(
     subscriptionSummary(subscription({ planName: "Paseo Hub", status: "paused" })).status,

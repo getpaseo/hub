@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
+import { Skeleton } from "../ui/skeleton.js";
+import { FieldSkeleton } from "./form-field.js";
 
 /**
  * The frame for every surface reached before the dashboard: sign-in, the organization
@@ -56,11 +58,11 @@ export function AuthCard({
   useEffect(() => heading.current?.focus(), []);
   return (
     <section
-      className="grid gap-6 rounded-lg border bg-card p-6 shadow-sm"
+      className="grid gap-6 rounded-xl border bg-card p-6"
       {...(titleId === undefined ? {} : { "aria-labelledby": titleId })}
     >
       <div className="grid gap-1.5">
-        <h1 ref={heading} id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
+        <h1 ref={heading} id={titleId} tabIndex={-1} className="text-base font-title outline-none">
           {title}
         </h1>
         {description === undefined ? null : (
@@ -74,6 +76,33 @@ export function AuthCard({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * The card before the account resolves, and before anything knows which pre-auth screen wins.
+ * It is the sign-in card's own box — title, two fields, the full-width submit, and the two
+ * quiet lines under it — because that is the screen this resolves to almost every time. Being
+ * the same box is the entire job: a shorter placeholder pulls the product mark up the page and
+ * drops it again the moment the answer arrives.
+ */
+export function AuthCardSkeleton() {
+  return (
+    <div aria-busy="true" className="grid gap-6 rounded-xl border bg-card p-6">
+      <div className="grid gap-1.5">
+        <Skeleton className="h-6 w-44" />
+        <Skeleton className="h-5 w-60 max-w-full" />
+      </div>
+      <div className="flex flex-col gap-4">
+        <FieldSkeleton description={false} />
+        <FieldSkeleton description={false} />
+        <Skeleton className="h-10 w-full" />
+      </div>
+      <div className="grid justify-items-center gap-2">
+        <Skeleton className="h-10 w-full max-w-72" />
+        <Skeleton className="h-5 w-32" />
+      </div>
+    </div>
   );
 }
 

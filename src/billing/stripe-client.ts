@@ -8,15 +8,25 @@ import type {
   ChangeSubscriptionPriceInput,
   CreateBillingPortalSessionInput,
   CreateCheckoutSessionInput,
+  CreateTrialSubscriptionInput,
   EnsureCustomerInput,
   ReportSeatQuantityInput,
   StripeBillingClient,
   StripeSubscriptionState,
 } from "./stripe-billing-client.js";
+import { TRIAL_DAYS } from "./trial-policy.js";
 
 const PASEO_PLAN_METADATA_KEY = "paseo_plan";
 const ORGANIZATION_REFERENCE_METADATA_KEY = "organizationId";
 const LIST_PAGE_SIZE = 100;
+
+function trialSubscriptionData(organizationId: string) {
+  return {
+    trial_period_days: TRIAL_DAYS,
+    trial_settings: { end_behavior: { missing_payment_method: "cancel" as const } },
+    metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: organizationId },
+  };
+}
 
 /**
  * The real Stripe SDK behind `StripeCatalogSource`. Fetches every product/price via the List
@@ -39,9 +49,6 @@ export function createStripeCatalogSource(stripeSecretKey: string): StripeCatalo
           name: product.name,
           active: product.active,
           metadata: product.metadata,
-          marketingFeatures: product.marketing_features.flatMap((feature) =>
-            feature.name === undefined ? [] : [feature.name],
-          ),
         });
       }
       return products;
@@ -117,11 +124,7 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
           client_reference_id: input.organizationId,
           metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
           subscription_data: input.trial
-            ? {
-                trial_period_days: 14,
-                trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
-                metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-              }
+            ? trialSubscriptionData(input.organizationId)
             : { metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId } },
           ...(input.trial ? { payment_method_collection: "if_required" } : {}),
         },
@@ -131,6 +134,17 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       );
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
       return { url: session.url };
+    },
+    async createTrialSubscription(input: CreateTrialSubscriptionInput): Promise<string> {
+      const subscription = await stripe.subscriptions.create(
+        {
+          customer: input.customerId,
+          items: [{ price: input.priceId, quantity: input.quantity }],
+          ...trialSubscriptionData(input.organizationId),
+        },
+        { idempotencyKey: `trial:${input.organizationId}` },
+      );
+      return subscription.id;
     },
     async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
       // A plan change updates the existing subscription's single item onto the new price — never a

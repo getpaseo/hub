@@ -27,6 +27,7 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
+import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -146,6 +147,7 @@ async function createOwnedApplicationRuntime(
             (projectId) => application.configurationForProject(projectId),
           ),
     triggerDashboard: triggerDashboardFor(options),
+    daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -173,6 +175,24 @@ async function createOwnedApplicationRuntime(
         return Promise.reject(new Error("auth unavailable"));
       }
       return options.auth.signUpEmail(data, headers, invitationId);
+    },
+    sendVerificationEmail(email, headers, invitationId) {
+      if (options.database === null || options.auth?.sendVerificationEmail === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.sendVerificationEmail(email, headers, invitationId);
+    },
+    requestPasswordReset(email, headers) {
+      if (options.database === null || options.auth?.requestPasswordReset === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.requestPasswordReset(email, headers);
+    },
+    resetPassword(data, headers) {
+      if (options.database === null || options.auth?.resetPassword === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.resetPassword(data, headers);
     },
     claimInstance(operator, headers) {
       if (options.database === null || options.auth?.claimInstance === undefined) {
@@ -320,6 +340,17 @@ async function createOwnedApplicationRuntime(
       });
       return { url: portal?.url ?? null };
     },
+    // Unlike the rest of the billing surface this one answers rather than refuses when billing is
+    // absent: the dashboard sidebar asks it on every organization, hosted or not, and "no trial"
+    // is the truthful answer on a self-hosted instance.
+    organizationTrial: async (request, organizationSlug) => {
+      const { billing, database } = options;
+      if (billing === null || database === null) return { daysLeft: null };
+      const { tenant } = await resolveRouteTenant(requireAuth(options), database, request, {
+        organizationSlug,
+      });
+      return { daysLeft: await billing.trialRemaining(tenant.organization.id) };
+    },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
     stop: () => ownership.close(),
@@ -330,6 +361,16 @@ function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDas
   return options.database === null || options.auth === null
     ? null
     : new TriggerDashboard(options.database, options.auth);
+}
+
+function daemonProviderCatalogFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): DaemonProviderCatalog | null {
+  if (options.database === null || options.auth === null) return null;
+  return new DaemonProviderCatalog(options.database, options.auth, (daemonId) =>
+    hub.connectionForDaemon(daemonId),
+  );
 }
 
 function providerApplicationsFor(
