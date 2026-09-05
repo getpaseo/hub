@@ -3164,6 +3164,10 @@ class HubUser {
 
   async createOrganization(name: string): Promise<void> {
     await this.submitOrganization(name);
+    // The sidebar can show the new account before its landing redirect finishes.
+    // A following navigation must start from the settled organization page.
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
+    await expect(this.page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
     await this.expectActiveOrganization(name);
   }
 
