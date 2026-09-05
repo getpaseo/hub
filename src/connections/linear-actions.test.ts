@@ -12,7 +12,7 @@ describe("Linear connection actions", () => {
 
   it("keeps initial connection choices explicit", () => {
     assert.deepEqual(linearConnectionActionLabels(false), {
-      baseline: "Connect Linear",
+      baseline: "Connect Linear without Agent Sessions",
       agentSessions: "Connect Linear for Agent Sessions",
     });
   });
