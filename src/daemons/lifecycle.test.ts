@@ -800,6 +800,40 @@ describe("durable Hub action acknowledgement state", () => {
       await fixture.lifecycle.stop();
     });
 
+    it("runs terminal cleanup for an idle success recovered by the workflow deadline scan", async () => {
+      const fixture = await dispatchedWorkflowExecution({ emitted: true });
+      fixture.clock.elapseWithoutRunningTimers(IDLE_TIMEOUT_MS);
+      const recoveries = await fixture.database.recoverWorkflowDeadlines(
+        new Date(fixture.clock.now()),
+      );
+      const recovery = recoveries[0];
+      assert.ok(recovery !== undefined);
+      assert.deepEqual(recovery.completedExecutionIds, [fixture.executionId]);
+
+      const terminalExecutionIds: string[] = [];
+      const recoveryLifecycle = createDaemonDispatchLifecycle({
+        database: fixture.database,
+        connectionForDaemon: () => undefined,
+        executionAuthority: {
+          materialize: async () => ({ env: {} }),
+          onExecutionTerminal: async (executionId) => {
+            terminalExecutionIds.push(executionId);
+          },
+          resourceCounts: () => ({ executionStates: 0, leases: 0, pendingMaterializations: 0 }),
+          stop: async () => ({ residualExposures: [] }),
+        },
+      });
+
+      await recoveryLifecycle.recoverWorkflowDeadlineExecutions(
+        recovery.executionIds,
+        recovery.completedExecutionIds,
+      );
+
+      assert.deepEqual(terminalExecutionIds, [fixture.executionId]);
+      await recoveryLifecycle.stop();
+      await fixture.lifecycle.stop();
+    });
+
     it("returns success when finish_execution arrives after the idle timestamp", async () => {
       const fixture = await dispatchedWorkflowExecution({ emitted: true });
       fixture.clock.elapseWithoutRunningTimers(IDLE_TIMEOUT_MS);
