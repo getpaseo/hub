@@ -148,6 +148,22 @@ describe("dynamic provider runtime", () => {
     assert.ok(trigger.eventNames.includes("linear.agent_session"));
   });
 
+  it("advertises Linear Agent Session reply fields through the stable runtime", () => {
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "linear")!;
+    const properties = stable.outputs[0]?.tool.inputSchema["properties"];
+
+    assert.equal(stable.outputs[0]?.type, "linear.reply");
+    assert.deepEqual(Object.keys(properties ?? {}), ["content", "kind", "options"]);
+    assert.equal(stable.outputs[0]?.tool.inputSchema["additionalProperties"], false);
+  });
+
   it("publishes a started replacement and routes later callbacks through it", async () => {
     const started: string[] = [];
     const stopped: string[] = [];
