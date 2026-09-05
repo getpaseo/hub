@@ -5,8 +5,9 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { createDurableWorkflowHandler } from "../../workflows/engine.js";
-import type { GitHubReactionClient } from "./provider.js";
 import { createGitHubReactionClient, createGitHubTriggerProvider } from "./provider.js";
+import type { GitHubReactionClient } from "./provider.js";
+import type { GitHubTeamMembershipClient } from "./team-membership.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import type { GitHubAuth } from "../../auth/github.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
@@ -84,6 +85,50 @@ describe("GitHub Phase 1 trigger provider", () => {
       external(project.id, revision.id, createEvent({ actor: "untrusted" })),
     );
     assert.equal(wrongActor, "trigger_filters_rejected");
+  });
+
+  it("allows active GitHub team members and fails closed when their membership cannot be checked", async () => {
+    const base = githubConfiguration();
+    const trigger = base.triggers[0]!;
+    const teamFilterBase = {
+      repo: trigger.filters.repo,
+      contains: trigger.filters.contains,
+    };
+    const { project, revision, store } = await activeConfiguration({
+      ...base,
+      triggers: [
+        {
+          ...trigger,
+          filters: {
+            ...teamFilterBase,
+            from_teams: ["boudra/maintainers"],
+          },
+        },
+      ],
+    });
+    const activeTeams = new TestTeamMemberships(true);
+    const activeProvider = createProvider(store, new TestReactions(), activeTeams);
+
+    const active = await activeProvider.match(
+      external(project.id, revision.id, createEvent({ actor: "maintainer" })),
+    );
+    assert.ok(Array.isArray(active));
+    assert.equal(active.length, 1);
+    assert.deepEqual(activeTeams.checks, [
+      {
+        installationId: 42,
+        organization: "boudra",
+        teamSlug: "maintainers",
+        username: "maintainer",
+      },
+    ]);
+
+    const denied = await createProvider(
+      store,
+      new TestReactions(),
+      new TestTeamMemberships(false),
+    ).match(external(project.id, revision.id, createEvent({ actor: "maintainer" })));
+    assert.equal(denied, "trigger_filters_rejected");
   });
 
   it("routes a semantic trigger from the legacy GitHub webhook source", async () => {
@@ -416,14 +461,16 @@ describe("GitHub Phase 1 trigger provider", () => {
 function createProvider(
   store: Awaited<ReturnType<typeof activeConfiguration>>["store"],
   reactions: TestReactions,
+  teamMemberships: GitHubTeamMembershipClient = new TestTeamMemberships(),
 ) {
   return createGitHubTriggerProvider({
     configurationStoreForProject: () => store,
     reactions,
+    teamMemberships,
   });
 }
 
-async function activeConfiguration(rawConfiguration = githubConfiguration()) {
+async function activeConfiguration(rawConfiguration: unknown = githubConfiguration()) {
   return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
 }
 
@@ -594,5 +641,16 @@ class TestReactions implements GitHubReactionClient {
 
   async deleteReaction(input: Parameters<GitHubReactionClient["deleteReaction"]>[0]) {
     this.deleted.push(input);
+  }
+}
+
+class TestTeamMemberships implements GitHubTeamMembershipClient {
+  readonly checks: Array<Parameters<GitHubTeamMembershipClient["isActiveMember"]>[0]> = [];
+
+  constructor(private readonly active = false) {}
+
+  async isActiveMember(input: Parameters<GitHubTeamMembershipClient["isActiveMember"]>[0]) {
+    this.checks.push(input);
+    return this.active;
   }
 }

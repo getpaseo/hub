@@ -286,6 +286,45 @@ describe("workflow compiler", () => {
     });
   });
 
+  it("supports GitHub team trigger allowlists and rejects invalid team filter uses", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    const githubTrigger = {
+      ...trigger,
+      on: "github.issue_comment",
+      filters: { from_teams: ["getpaseo/maintainers"] },
+    };
+
+    assert.deepEqual(compileHubConfig({ ...raw, triggers: [githubTrigger] }).triggers[0]?.filters, {
+      from_teams: ["getpaseo/maintainers"],
+    });
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [{ ...trigger, on: "slack.mention", filters: githubTrigger.filters }],
+        }),
+      /filters\.from_teams only for GitHub events/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...githubTrigger,
+              filters: { from_teams: ["maintainers"] },
+            },
+          ],
+        }),
+      /organization\/team-slug/iu,
+    );
+    assert.throws(
+      () => compileHubConfig({ ...raw, triggers: [{ ...trigger, on: "github.issue_comment" }] }),
+      /filters\.from_users or filters\.from_teams/iu,
+    );
+  });
+
   it("allows a project-scoped Linear scout but keeps reactive Linear triggers actor-allowlisted", () => {
     const raw = configuration();
     const trigger = raw.triggers[0]!;
