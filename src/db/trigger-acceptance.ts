@@ -378,43 +378,13 @@ async function findLinearStopRoutes(
       ),
     )
     .orderBy(desc(schema.providerEventReceipts.receivedAt));
-  const materializedReceiptRoutes =
-    acceptedSessionReceipts.length === 0
-      ? new Set<string>()
-      : new Set(
-          (
-            await transaction
-              .select({
-                providerEventReceiptId: schema.triggerRuns.providerEventReceiptId,
-                projectId: schema.triggerRuns.projectId,
-              })
-              .from(schema.triggerRuns)
-              .where(
-                and(
-                  eq(schema.triggerRuns.organizationId, organizationId),
-                  inArray(
-                    schema.triggerRuns.providerEventReceiptId,
-                    acceptedSessionReceipts.map(({ id }) => id),
-                  ),
-                ),
-              )
-          ).map(({ providerEventReceiptId, projectId }) =>
-            linearReceiptRouteKey(providerEventReceiptId, projectId),
-          ),
-        );
-  const receiptRoutes = acceptedSessionReceipts.flatMap(({ id, acceptedRoutes }) =>
-    (parseAcceptedRoutes(acceptedRoutes) ?? []).flatMap((route) =>
-      materializedReceiptRoutes.has(linearReceiptRouteKey(id, route.projectId))
-        ? []
-        : [
-            {
-              projectId: route.projectId,
-              revisionId: route.configurationRevisionId,
-              connectionId: route.connectionId,
-              resourceId: route.resourceId,
-            },
-          ],
-    ),
+  const receiptRoutes = acceptedSessionReceipts.flatMap(({ acceptedRoutes }) =>
+    (parseAcceptedRoutes(acceptedRoutes) ?? []).map((route) => ({
+      projectId: route.projectId,
+      revisionId: route.configurationRevisionId,
+      connectionId: route.connectionId,
+      resourceId: route.resourceId,
+    })),
   );
   const routedProjectIds = [...new Set(receiptRoutes.map((route) => route.projectId))];
   const existingProjectIds =
@@ -437,10 +407,6 @@ async function findLinearStopRoutes(
     ...runs.map((run) => Object.assign({}, run, { connectionId, resourceId: null })),
     ...receiptRoutes.filter((route) => existingProjectIds.has(route.projectId)),
   ];
-}
-
-function linearReceiptRouteKey(providerEventReceiptId: string, projectId: string): string {
-  return `${providerEventReceiptId}:${projectId}`;
 }
 
 function linearConnectionUnavailable(
