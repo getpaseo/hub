@@ -294,6 +294,27 @@ describe("Linear trigger matching", () => {
       0,
     );
   });
+
+  it("allows every Agent Session actor when from_users contains the wildcard", () => {
+    const config = configuration();
+    const wildcard = {
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "agent-session")
+        .map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: Object.assign({}, trigger.filters, { from_users: ["*"] }),
+          }),
+        ),
+    };
+
+    assert.deepEqual(
+      matchLinearTriggers(wildcard, agentSessionEvent({ actor: { id: "untrusted" } })).map(
+        (match) => match.trigger.name,
+      ),
+      ["agent-session"],
+    );
+  });
 });
 
 describe("Linear comment invocation parser handoff", () => {
