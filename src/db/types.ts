@@ -549,6 +549,12 @@ export type LinearConnectionRefreshOperation<T> = (
   updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
 ) => Promise<T>;
 
+export interface LinearAgentSessionStopConfirmationInput {
+  organizationId: string;
+  providerEventReceiptId: string;
+  agentSessionId: string;
+}
+
 export type DisconnectConnectionResult =
   | { provider: "github" }
   | { provider: "discord"; guildId: string | undefined }
@@ -1197,9 +1203,17 @@ export interface Database {
   ): Promise<CreateAcceptedLinearTriggerRunResult>;
   /**
    * Durably records a Linear stop/supersession before existing work is scanned. Returns whether
-   * this delivery advanced at least one suppression row, which also claims its one-shot effect.
+   * this delivery advanced at least one suppression row.
    */
   recordLinearTriggerSuppressions(input: RecordLinearTriggerSuppressionsInput): Promise<boolean>;
+  /**
+   * Coalesces a Linear Stop response across processes. The network operation runs outside a
+   * database connection; success is durable, while a failed operation releases its retry lease.
+   */
+  confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean>;
   createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;

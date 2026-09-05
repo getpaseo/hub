@@ -47,11 +47,29 @@ describe("Linear event acceptance", () => {
       projectId: "linear-project",
       deliveryId: "linear-session-started",
       source: "linear.agent_session",
-      payload: {},
+      payload: sessionPayload("session-1"),
       receivedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     assert.equal(started.status, "accepted");
     if (started.status !== "accepted") throw new Error("expected accepted session event");
+    const delayed = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-delayed",
+      source: "linear.agent_session",
+      payload: sessionPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:01.000Z"),
+    });
+    assert.equal(delayed.status, "accepted");
+    const future = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-future",
+      source: "linear.agent_session",
+      payload: sessionPayload("session-future"),
+      receivedAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+    assert.equal(future.status, "accepted");
     await database.createAcceptedLinearTriggerRun({
       organizationId: connection.organizationId,
       projectId: project.id,
@@ -85,6 +103,39 @@ describe("Linear event acceptance", () => {
       contentHash: "config-without-linear",
     });
     await database.activateProjectConfigurationRevision(project.id, replacement.id, []);
+
+    const stoppedBeforeRun = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-delayed-stop",
+      source: "linear.agent_session",
+      payload: stopPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:30.000Z"),
+    });
+    assert.equal(stoppedBeforeRun.status, "accepted");
+    if (stoppedBeforeRun.status !== "accepted") {
+      throw new Error("expected delayed session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedBeforeRun.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId: project.id, configurationRevisionId: revision.id }],
+    );
+
+    const stoppedBeforeFuture = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-stop-before-future",
+      source: "linear.agent_session",
+      payload: stopPayload("session-future"),
+      receivedAt: new Date("2026-01-01T00:04:00.000Z"),
+    });
+    assert.equal(stoppedBeforeFuture.status, "dropped");
+    if (stoppedBeforeFuture.status === "dropped") {
+      assert.equal(stoppedBeforeFuture.reason, "no_project_route");
+    }
 
     const stopped = await database.acceptLinearEvent({
       linearOrganizationId: connection.linearOrganizationId,
@@ -137,6 +188,13 @@ describe("Linear event acceptance", () => {
     if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
   });
 });
+
+function sessionPayload(agentSessionId: string) {
+  return {
+    type: "agent_session",
+    agentSession: { id: agentSessionId },
+  };
+}
 
 function stopPayload(agentSessionId: string) {
   return {

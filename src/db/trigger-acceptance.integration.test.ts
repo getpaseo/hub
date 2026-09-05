@@ -216,13 +216,13 @@ describe("trigger acceptance persistence", () => {
       contentHash: "linear-control-config",
     });
     await database.activateProjectConfigurationRevision(projectId, revision.id);
-    const receipt = async (deliveryId: string, eventOccurredAt: Date) => {
+    const receipt = async (deliveryId: string, eventOccurredAt: Date, payload: unknown = {}) => {
       const persisted = await database.persistManualEvent({
         organizationId,
         projectId,
         source: "linear.agent_session",
         deliveryId,
-        payload: {},
+        payload,
         receivedAt: eventOccurredAt,
       });
       if (persisted.status !== "accepted") throw new Error("expected accepted receipt");
@@ -264,7 +264,11 @@ describe("trigger acceptance persistence", () => {
     });
 
     const oldSessionReceipt = await receipt("linear-control-old-session", new Date("2026-01-03"));
-    const stopReceipt = await receipt("linear-control-stop", new Date("2026-01-04"));
+    const stopReceipt = await receipt(
+      "linear-control-stop",
+      new Date("2026-01-04"),
+      sessionPayload("session-1"),
+    );
     const stopSuppression = {
       organizationId,
       projectId,
@@ -278,6 +282,32 @@ describe("trigger acceptance persistence", () => {
       database.recordLinearTriggerSuppressions(stopSuppression),
     ]);
     assert.equal(concurrentClaims.filter(Boolean).length, 1);
+    let confirmationAttempts = 0;
+    const confirmationInput = {
+      organizationId,
+      providerEventReceiptId: stopReceipt,
+      agentSessionId: "session-1",
+    };
+    await assert.rejects(
+      database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+        throw new Error("Linear unavailable");
+      }),
+      /Linear unavailable/,
+    );
+    assert.equal(
+      await database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+      }),
+      true,
+    );
+    assert.equal(
+      await database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+      }),
+      false,
+    );
+    assert.equal(confirmationAttempts, 2);
     const stopped = await database.createAcceptedLinearTriggerRun({
       ...runInput(oldSessionReceipt, "old-session"),
       linearTrigger: {
@@ -500,11 +530,20 @@ describe("trigger acceptance persistence", () => {
       projectId: "linear-project",
       deliveryId: "linear-stop-session-started",
       source: "linear.agent_session",
-      payload: {},
+      payload: sessionPayload("session-1"),
       receivedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     assert.equal(started.status, "accepted");
     if (started.status !== "accepted") throw new Error("expected accepted session event");
+    const delayed = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-delayed",
+      source: "linear.agent_session",
+      payload: sessionPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:01.000Z"),
+    });
+    assert.equal(delayed.status, "accepted");
     await database.createAcceptedLinearTriggerRun({
       organizationId,
       projectId,
@@ -537,6 +576,26 @@ describe("trigger acceptance persistence", () => {
       contentHash: "linear-stop-config-without-route",
     });
     await database.activateProjectConfigurationRevision(projectId, replacement.id, []);
+
+    const stoppedBeforeRun = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-delayed-stop",
+      source: "linear.agent_session",
+      payload: stopPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:30.000Z"),
+    });
+    assert.equal(stoppedBeforeRun.status, "accepted");
+    if (stoppedBeforeRun.status !== "accepted") {
+      throw new Error("expected delayed session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedBeforeRun.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
 
     const stopped = await database.acceptLinearEvent({
       linearOrganizationId: "linear-stop-workspace",
@@ -598,6 +657,13 @@ describe("trigger acceptance persistence", () => {
     await database.close();
   }, 120_000);
 });
+
+function sessionPayload(agentSessionId: string) {
+  return {
+    type: "agent_session",
+    agentSession: { id: agentSessionId },
+  };
+}
 
 function stopPayload(agentSessionId: string) {
   return {

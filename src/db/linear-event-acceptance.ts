@@ -13,7 +13,13 @@ export function isLinearAgentSessionStop(
 export function linearAgentSessionStopId(
   input: Pick<AcceptLinearEventInput, "source" | "payload">,
 ): string | undefined {
-  if (!isLinearAgentSessionStop(input) || !isRecord(input.payload)) return undefined;
+  return isLinearAgentSessionStop(input) ? linearAgentSessionId(input) : undefined;
+}
+
+export function linearAgentSessionId(
+  input: Pick<AcceptLinearEventInput, "source" | "payload">,
+): string | undefined {
+  if (input.source !== "linear.agent_session" || !isRecord(input.payload)) return undefined;
   const session = input.payload["agentSession"];
   if (!isRecord(session)) return undefined;
   const id = session["id"];
