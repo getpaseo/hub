@@ -743,7 +743,8 @@ async function resolveResource(
   }
   if (provider === "slack") {
     const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
-      ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+      ({ id, slug, teamId }) =>
+        (teamId === resource || slug === resource) && allowedConnectionIds.has(id),
     );
     return connection === undefined
       ? undefined
@@ -757,7 +758,8 @@ async function resolveResource(
     return { connectionId: connections[0]!.id, resourceId: resource };
   }
   const connection = (await database.organizationConnectionUsage(organizationId)).discord.find(
-    ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+    ({ id, slug, guildId }) =>
+      (guildId === resource || slug === resource) && allowedConnectionIds.has(id),
   );
   return connection === undefined
     ? undefined
