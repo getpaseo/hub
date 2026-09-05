@@ -692,20 +692,23 @@ async function stopLinearAgentSession(
   event: NormalizedLinearAgentSessionEvent,
 ): Promise<void> {
   const agentSessionId = event.agentSession.id;
-  await options.database?.recordLinearTriggerSuppressions?.({
-    organizationId: trigger.organizationId,
-    projectId: trigger.projectId,
-    providerEventReceiptId: trigger.providerEventReceiptId,
-    reason: LINEAR_STOPPED_BY_USER_REASON,
-    externalIds: [agentSessionId],
-    eventOccurredAt: new Date(event.occurredAt),
-  });
+  const confirmationClaimed =
+    (await options.database?.recordLinearTriggerSuppressions?.({
+      organizationId: trigger.organizationId,
+      projectId: trigger.projectId,
+      providerEventReceiptId: trigger.providerEventReceiptId,
+      reason: LINEAR_STOPPED_BY_USER_REASON,
+      externalIds: [agentSessionId],
+      eventOccurredAt: new Date(event.occurredAt),
+    })) ?? true;
   await options.executions?.stopActive({
     projectId: trigger.projectId,
     reason: LINEAR_STOPPED_BY_USER_REASON,
     matches: (execution) => readLinearAgentSessionId(execution.outputContext) === agentSessionId,
   });
-  if (!(await isLinearStopConfirmationRoute(options.database, trigger))) return;
+  if (!confirmationClaimed || !(await isLinearStopConfirmationRoute(options.database, trigger))) {
+    return;
+  }
   await options.client?.createAgentActivity({
     linearOrganizationId: event.organizationId,
     agentSessionId,

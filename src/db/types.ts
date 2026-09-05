@@ -1173,8 +1173,11 @@ export interface Database {
   createAcceptedLinearTriggerRun(
     input: CreateAcceptedLinearTriggerRunInput,
   ): Promise<CreateAcceptedLinearTriggerRunResult>;
-  /** Durably records a Linear stop/supersession before existing work is scanned. */
-  recordLinearTriggerSuppressions(input: RecordLinearTriggerSuppressionsInput): Promise<void>;
+  /**
+   * Durably records a Linear stop/supersession before existing work is scanned. Returns whether
+   * this delivery advanced at least one suppression row, which also claims its one-shot effect.
+   */
+  recordLinearTriggerSuppressions(input: RecordLinearTriggerSuppressionsInput): Promise<boolean>;
   createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;

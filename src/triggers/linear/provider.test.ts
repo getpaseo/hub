@@ -1314,6 +1314,43 @@ describe("Linear trigger provider", () => {
     assert.equal(client.createdActivities.length, 1);
   });
 
+  it("claims one stop confirmation across concurrent delivery retries", async () => {
+    const database = createMemoryDatabase();
+    const { project } = await createActiveProjectConfiguration(
+      database,
+      agentSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    let stops = 0;
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => {
+        throw new Error("stop handling must not read the current trigger revision");
+      },
+      client,
+      database,
+      executions: {
+        stopActive: async () => {
+          stops += 1;
+          return { stopped: 1 };
+        },
+      },
+    });
+    const stop = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "retried-agent-session-stop",
+      stopSignalEvent(),
+    );
+
+    const results = await Promise.all([provider.match(stop), provider.match(stop)]);
+
+    assert.deepEqual(results, ["agent_session_stopped", "agent_session_stopped"]);
+    assert.equal(stops, 2);
+    assert.equal(client.createdActivities.length, 1);
+  });
+
   it("does not confirm a stop it could not apply", async () => {
     const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
     const client = new RecordingHistoryClient({ complete: true, comments: [] });

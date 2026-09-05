@@ -265,14 +265,19 @@ describe("trigger acceptance persistence", () => {
 
     const oldSessionReceipt = await receipt("linear-control-old-session", new Date("2026-01-03"));
     const stopReceipt = await receipt("linear-control-stop", new Date("2026-01-04"));
-    await database.recordLinearTriggerSuppressions({
+    const stopSuppression = {
       organizationId,
       projectId,
       providerEventReceiptId: stopReceipt,
-      reason: "stopped_by_user",
+      reason: "stopped_by_user" as const,
       externalIds: ["session-1"],
       eventOccurredAt: new Date("2026-01-04"),
-    });
+    };
+    const concurrentClaims = await Promise.all([
+      database.recordLinearTriggerSuppressions(stopSuppression),
+      database.recordLinearTriggerSuppressions(stopSuppression),
+    ]);
+    assert.equal(concurrentClaims.filter(Boolean).length, 1);
     const stopped = await database.createAcceptedLinearTriggerRun({
       ...runInput(oldSessionReceipt, "old-session"),
       linearTrigger: {
@@ -545,6 +550,35 @@ describe("trigger acceptance persistence", () => {
     if (stopped.status !== "accepted") throw new Error("expected accepted stop event");
     assert.deepEqual(
       stopped.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
+
+    const archiveClient = await createPostgresQueryRuntime(databaseUrl);
+    await archiveClient.query(
+      `update projects
+       set status = 'archived', active_configuration_revision_id = null,
+           archived_at = now(), updated_at = now()
+       where id = $1`,
+      [projectId],
+    );
+    await archiveClient.close();
+    const stoppedAfterArchive = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped-after-archive",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:01:30.000Z"),
+    });
+    assert.equal(stoppedAfterArchive.status, "accepted");
+    if (stoppedAfterArchive.status !== "accepted") {
+      throw new Error("expected archived session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterArchive.events.map((event) => ({
         projectId: event.projectId,
         configurationRevisionId: event.configurationRevisionId,
       })),

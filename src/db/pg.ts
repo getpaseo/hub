@@ -533,10 +533,10 @@ class PgDatabase implements Database {
 
   async recordLinearTriggerSuppressions(
     input: RecordLinearTriggerSuppressionsInput,
-  ): Promise<void> {
-    if (input.externalIds.length === 0) return;
+  ): Promise<boolean> {
+    if (input.externalIds.length === 0) return false;
     try {
-      await this.pool.transaction(async (client) => {
+      return await this.pool.transaction(async (client) => {
         const receipt = await client.query(
           `select 1 from provider_event_receipts
            where id = $1 and organization_id = $2
@@ -551,8 +551,9 @@ class PgDatabase implements Database {
           throw new Error("Linear trigger suppression receipt route unavailable");
         }
         const kind = linearTriggerSuppressionKind(input.reason);
+        let recorded = false;
         for (const externalId of new Set(input.externalIds)) {
-          await client.query(
+          const result = await client.query(
             `insert into linear_trigger_controls
                (organization_id, project_id, kind, external_id, suppression_reason,
                 suppression_occurred_at, source_provider_event_receipt_id, updated_at)
@@ -563,7 +564,8 @@ class PgDatabase implements Database {
                source_provider_event_receipt_id = excluded.source_provider_event_receipt_id,
                updated_at = now()
              where linear_trigger_controls.suppression_occurred_at is null
-                or linear_trigger_controls.suppression_occurred_at <= excluded.suppression_occurred_at`,
+                or linear_trigger_controls.suppression_occurred_at < excluded.suppression_occurred_at
+             returning 1`,
             [
               input.organizationId,
               input.projectId,
@@ -574,7 +576,9 @@ class PgDatabase implements Database {
               input.providerEventReceiptId,
             ],
           );
+          if (result.rowCount !== 0) recorded = true;
         }
+        return recorded;
       });
     } catch (error) {
       throw toDatabaseError(error);

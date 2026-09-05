@@ -353,7 +353,7 @@ class MemoryDatabase implements Database {
 
   async recordLinearTriggerSuppressions(
     input: RecordLinearTriggerSuppressionsInput,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
     if (receipt === undefined)
       throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
@@ -364,24 +364,28 @@ class MemoryDatabase implements Database {
       throw new Error("Linear trigger suppression receipt route unavailable");
     }
     const kind = linearTriggerSuppressionKind(input.reason);
+    let recorded = false;
     for (const externalId of new Set(input.externalIds)) {
       const key = linearTriggerSuppressionKey(input.projectId, kind, externalId);
-      await this.withAdvisoryLock(key, async () => {
+      const updated = await this.withAdvisoryLock(key, async () => {
         const existing = this.linearTriggerControls.get(key);
         if (
           existing?.suppressionOccurredAt !== null &&
           existing?.suppressionOccurredAt !== undefined &&
-          existing.suppressionOccurredAt.getTime() > input.eventOccurredAt.getTime()
+          existing.suppressionOccurredAt.getTime() >= input.eventOccurredAt.getTime()
         ) {
-          return;
+          return false;
         }
         this.linearTriggerControls.set(key, {
           suppressionReason: input.reason,
           suppressionOccurredAt: input.eventOccurredAt,
           sourceProviderEventReceiptId: input.providerEventReceiptId,
         });
+        return true;
       });
+      if (updated) recorded = true;
     }
+    return recorded;
   }
 
   async createRejectedTriggerRun(
@@ -3372,7 +3376,7 @@ class MemoryDatabase implements Database {
             return run.outcome === "accepted" &&
               run.status === "running" &&
               run.organizationId === organizationId &&
-              project?.status === "active" &&
+              project !== undefined &&
               matchesLinearSessionOutput(
                 run.outputContext,
                 input.linearOrganizationId,
