@@ -51,6 +51,7 @@ export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig
 }
 
 interface TriggerProviderMatchBase<TriggerContext, OutputContext> {
+  conversation?: import("./continuation.js").Conversation | null;
   triggerName: string;
   triggerContext: TriggerContext;
   outputContext: OutputContext;
@@ -62,6 +63,7 @@ export interface AcceptedTriggerProviderMatch<
   TriggerContext = unknown,
   OutputContext = TriggerContext,
 > extends TriggerProviderMatchBase<TriggerContext, OutputContext> {
+  conversation: import("./continuation.js").Conversation | null;
   invocation: Extract<InvocationParseResult, { status: "accepted" }>;
 }
 

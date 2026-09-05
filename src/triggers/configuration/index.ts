@@ -98,7 +98,12 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
   return {
     authored,
     environment: compiledEnvironment,
-    events: compiled.triggers.map(withAutomaticReply),
+    events: compiled.triggers.map((trigger) =>
+      withAutomaticReply({
+        ...trigger,
+        steps: trigger.steps.map((step) => ({ ...step, continuation: authored.run.continuation })),
+      }),
+    ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }

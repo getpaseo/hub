@@ -1,3 +1,4 @@
+import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
@@ -23,6 +24,8 @@ export interface TriggerFormValue {
   mode: string;
   thinkingOptionId: string;
   providerOptions: string;
+  continuationMode: string;
+  continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
   githubConnection: string;
@@ -80,6 +83,8 @@ function toFormValue(
     mode: agent.mode ?? "",
     thinkingOptionId: agent.thinkingOptionId ?? "",
     providerOptions: agent.options === undefined ? "" : JSON.stringify(agent.options, null, 2),
+    continuationMode: trigger.run.continuation.mode,
+    continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
     maxRuntime: trigger.run.max_runtime,
     idleTimeout: trigger.run.idle_timeout,
     githubConnection: trigger.run.github?.connection ?? "",
@@ -141,6 +146,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     blankToUndefined(value.thinkingOptionId),
   );
   setOptional(document, ["run", "agent", "options"], parseProviderOptions(value.providerOptions));
+  setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
@@ -212,6 +218,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
             : { thinkingOptionId: value.thinkingOptionId.trim() }),
           ...(providerOptions === undefined ? {} : { options: providerOptions }),
         },
+        continuation: formContinuation(value),
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
@@ -298,6 +305,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
     const permissions = refused(() => parsePermissions(value.githubPermissions));
     if (permissions !== undefined) errors.githubPermissions = permissions;
   }
+  Object.assign(errors, continuationErrors(value));
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
   return errors;
 }
@@ -441,4 +449,18 @@ function authoredQualifiers(value: TriggerFormValue): QualifierValues {
     if (selection !== undefined) filters[qualifier.key] = selection.trim();
   }
   return filters;
+}
+
+function formContinuation(value: TriggerFormValue) {
+  return ContinuationSchema.parse(
+    value.continuationMode === "key"
+      ? { mode: "key", key: value.continuationKey }
+      : { mode: value.continuationMode },
+  );
+}
+
+function continuationErrors(value: TriggerFormValue): TriggerFieldErrors {
+  return refused(() => formContinuation(value)) === undefined
+    ? {}
+    : { continuationKey: "Enter a continuation key or expression." };
 }

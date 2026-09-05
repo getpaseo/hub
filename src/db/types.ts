@@ -92,6 +92,8 @@ export interface MachineRecord {
 }
 
 export interface AgentExecutionRecord {
+  agentSessionId: string | null;
+  agentSessionAction: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -687,6 +689,7 @@ export interface InsertAgentExecutionInput {
 }
 
 interface TriggerRunEvidence {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -759,6 +762,7 @@ export interface WorkflowWakeupRecord {
 }
 
 export interface CreateAcceptedTriggerRunInput {
+  conversation?: import("../triggers/continuation.js").Conversation | null;
   id?: string;
   organizationId: string;
   projectId: string;
@@ -1145,6 +1149,17 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  findAgentSession(
+    id: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
+  saveAgentSession(session: import("../agent-sessions/index.js").AgentSessionRecord): Promise<void>;
+  attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void>;
+  listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]>;
+
   createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;

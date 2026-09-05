@@ -3,7 +3,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { verifyAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
+import {
+  deriveAgentExecutionCompletionToken,
+  verifyAgentExecutionCompletionToken,
+} from "../agent-executions/completion-token.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
 import { registerResponseLifecycle } from "../http/response-lifecycle.js";
 import { reportFailure, withReference } from "../failures/index.js";
@@ -19,10 +22,12 @@ import {
 type JsonSchema = OutputToolSchema;
 
 export interface ExecutionCapabilityServer {
+  handleSession(request: Request, sessionId: string): Promise<Response>;
   handle(request: Request, executionId: string): Promise<Response>;
 }
 
 interface ExecutionCapabilityOptions {
+  completionTokenSecret?: string;
   database: Database;
   outputs: OutputExecutorRegistry;
   completeExecution(input: {
@@ -37,6 +42,66 @@ export function createExecutionCapabilityServer(
   options: ExecutionCapabilityOptions,
 ): ExecutionCapabilityServer {
   return {
+    async handleSession(request, sessionId) {
+      const token = readBearerToken(request.headers.get("authorization") ?? undefined);
+      const session = z.uuid().safeParse(sessionId).success
+        ? await options.database.findAgentSession(sessionId)
+        : undefined;
+      if (
+        !session ||
+        !token ||
+        !options.completionTokenSecret ||
+        !verifyAgentExecutionCompletionToken(token, session.capabilityTokenHash)
+      ) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const server = new Server(
+        { name: "paseo-hub-session", version: "1.0.0" },
+        { capabilities: { tools: {} } },
+      );
+      server.setRequestHandler(ListToolsRequestSchema, () => ({
+        tools: session.tools.map((tool) => ({
+          ...tool,
+          inputSchema: {
+            ...tool.inputSchema,
+            properties: {
+              ...tool.inputSchema.properties,
+              executionId: {
+                type: "string",
+                description: "Execution ID supplied with the request prompt.",
+              },
+            },
+            required: [...(tool.inputSchema.required ?? []), "executionId"],
+          },
+        })),
+      }));
+      server.setRequestHandler(CallToolRequestSchema, async (call) => {
+        const { executionId, ...args } = call.params.arguments ?? {};
+        if (typeof executionId !== "string" || !z.uuid().safeParse(executionId).success)
+          return toolFailure("A valid executionId is required");
+        const execution = await options.database.findAgentExecutionById(executionId);
+        if (
+          !execution ||
+          execution.agentSessionId !== session.id ||
+          (execution.status !== "spawning" && execution.status !== "running")
+        ) {
+          return toolFailure("Execution is not live in this agent session");
+        }
+        const outputs = options.outputs.materialize(
+          execution.launchIntent?.allowOutputs ?? [],
+          execution.outputContext,
+        );
+        return callExecutionTool(
+          options,
+          execution,
+          deriveAgentExecutionCompletionToken(options.completionTokenSecret!, execution.id),
+          outputs,
+          call.params.name,
+          args,
+        );
+      });
+      return serveMcp(request, sessionId, server);
+    },
     async handle(request, executionId) {
       const token = readBearerToken(request.headers.get("authorization") ?? undefined);
       const execution = await authenticateExecution(options.database, executionId, token);
@@ -66,32 +131,36 @@ export function createExecutionCapabilityServer(
       }
 
       const server = createMcpServer(options, execution, token!, materializedOutputs);
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        // Omitting sessionIdGenerator is the SDK's stateless-mode setting.
-        enableJsonResponse: true,
-        enableDnsRebindingProtection: false,
-      });
-      let responseLifecycleRegistered = false;
-      const closeMcp = async (): Promise<void> => {
-        await closeCapabilityResource("mcp_server", executionId, () => server.close());
-        await closeCapabilityResource("mcp_transport", executionId, () => transport.close());
-      };
-      try {
-        await server.connect(transport);
-        const response = await transport.handleRequest(request);
-        responseLifecycleRegistered = true;
-        return registerResponseLifecycle(response, {
-          // HTTP finish only proves that Node flushed the MCP response. The
-          // provider still has to acknowledge its subsequent turn before a
-          // deferred Hub archive action can be reconciled.
-          onFinish: closeMcp,
-          onAbort: closeMcp,
-        });
-      } finally {
-        if (!responseLifecycleRegistered) await closeMcp();
-      }
+      return serveMcp(request, executionId, server);
     },
   };
+}
+
+async function serveMcp(request: Request, executionId: string, server: Server): Promise<Response> {
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    // Omitting sessionIdGenerator is the SDK's stateless-mode setting.
+    enableJsonResponse: true,
+    enableDnsRebindingProtection: false,
+  });
+  let responseLifecycleRegistered = false;
+  const closeMcp = async (): Promise<void> => {
+    await closeCapabilityResource("mcp_server", executionId, () => server.close());
+    await closeCapabilityResource("mcp_transport", executionId, () => transport.close());
+  };
+  try {
+    await server.connect(transport);
+    const response = await transport.handleRequest(request);
+    responseLifecycleRegistered = true;
+    return registerResponseLifecycle(response, {
+      // HTTP finish only proves that Node flushed the MCP response. The
+      // provider still has to acknowledge its subsequent turn before a
+      // deferred Hub archive action can be reconciled.
+      onFinish: closeMcp,
+      onAbort: closeMcp,
+    });
+  } finally {
+    if (!responseLifecycleRegistered) await closeMcp();
+  }
 }
 
 function outputCapabilityMessage(error: unknown): string {
@@ -138,38 +207,45 @@ function createMcpServer(
     { capabilities: { tools: {} } },
   );
   const tools = executionToolDefinitions(execution.launchIntent?.outputSchema, materializedOutputs);
-  const finishTool = tools.find((tool) => tool.name === finishExecutionToolName);
-  if (finishTool === undefined) throw new Error("finish execution tool is not registered");
-  const finishContract = finishExecutionContract(finishTool.inputSchema);
-  const contracts = new Map<string, JsonSchemaContract>([
-    [finishExecutionToolName, finishContract],
-  ]);
-  const outputsByToolName = new Map<string, MaterializedOutputCapability>();
-  for (const output of materializedOutputs) {
-    contracts.set(
-      output.capability.tool.name,
-      jsonSchemaContract(output.capability.tool.inputSchema),
-    );
-    outputsByToolName.set(output.capability.tool.name, output);
-  }
-
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
-    const contract = contracts.get(toolName);
-    if (contract === undefined) return toolFailure(`Tool ${toolName} not found`);
-    const args = request.params.arguments ?? {};
-    const validation = contract.validate(args);
-    if (!validation.valid) return toolFailure(validation.message);
-
-    if (toolName === finishExecutionToolName)
-      return finishExecutionCall(options, execution, token, args, materializedOutputs);
-    const output = outputsByToolName.get(toolName);
-    return output === undefined
-      ? toolFailure(`Tool ${toolName} not found`)
-      : executeOutputCall(options, execution, toolName, output, args);
-  });
+  server.setRequestHandler(CallToolRequestSchema, (request) =>
+    callExecutionTool(
+      options,
+      execution,
+      token,
+      materializedOutputs,
+      request.params.name,
+      request.params.arguments ?? {},
+    ),
+  );
   return server;
+}
+
+async function callExecutionTool(
+  options: Pick<ExecutionCapabilityOptions, "database" | "outputs" | "completeExecution" | "now">,
+  execution: AgentExecutionRecord,
+  token: string,
+  materializedOutputs: readonly MaterializedOutputCapability[],
+  toolName: string,
+  args: Record<string, unknown>,
+) {
+  const tool = executionToolDefinitions(
+    execution.launchIntent?.outputSchema,
+    materializedOutputs,
+  ).find((candidate) => candidate.name === toolName);
+  if (!tool) return toolFailure(`Tool ${toolName} not found`);
+  const contract =
+    toolName === finishExecutionToolName
+      ? finishExecutionContract(tool.inputSchema)
+      : jsonSchemaContract(tool.inputSchema);
+  const validation = contract.validate(args);
+  if (!validation.valid) return toolFailure(validation.message);
+  if (toolName === finishExecutionToolName)
+    return finishExecutionCall(options, execution, token, args, materializedOutputs);
+  const output = materializedOutputs.find((item) => item.capability.tool.name === toolName);
+  return output === undefined
+    ? toolFailure(`Tool ${toolName} not found`)
+    : executeOutputCall(options, execution, toolName, output, args);
 }
 
 async function finishExecutionCall(

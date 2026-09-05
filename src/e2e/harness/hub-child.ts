@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -156,6 +157,7 @@ async function main(): Promise<void> {
         name: "discord",
         eventNames: ["e2e.discord"],
         async match(trigger) {
+          const payload = z.object({ conversation: z.string().optional() }).parse(trigger.payload);
           const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
           const compiledConfiguration =
             activeConfiguration === undefined
@@ -178,12 +180,17 @@ async function main(): Promise<void> {
                 provider: "discord",
                 guildId: "guild-original",
                 channelId: "channel-original",
-                threadId: "thread-original",
-                messageId: "message-original",
+                threadId: payload.conversation ?? "thread-original",
+                messageId:
+                  payload.conversation === undefined ? "message-original" : trigger.deliveryId,
               },
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
               hubConfig: compiledConfiguration,
+              conversation:
+                payload.conversation === undefined
+                  ? null
+                  : { key: `e2e:${payload.conversation}`, label: payload.conversation },
               invocation: {
                 status: "accepted",
                 prompt: "Deploy mcp-capability for phase-five-operator",

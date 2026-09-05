@@ -23,6 +23,7 @@ import {
 } from "../configuration/github-sync.js";
 import type {
   Database,
+  AgentExecutionRecord,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
   ProviderEventReceiptSummary,
@@ -149,7 +150,16 @@ export class ProjectDashboard {
       membership: tenant.membership,
       capabilities: capabilitiesFor(tenant.membership.role),
       project: projectView(tenant.project),
-      activity: activityRunView(activity),
+      activity: activityRunView(
+        activity,
+        await Promise.all(
+          activity.steps.map(async (step) =>
+            step.agentExecutionId === null
+              ? undefined
+              : this.database.findAgentExecutionById(step.agentExecutionId),
+          ),
+        ),
+      ),
     };
   }
 
@@ -486,7 +496,10 @@ function configurationView(
   };
 }
 
-function activityRunView(activity: ProjectActivityRunRecord) {
+function activityRunView(
+  activity: ProjectActivityRunRecord,
+  executions: (AgentExecutionRecord | undefined)[],
+) {
   const { run, receipt, steps } = activity;
   const base = {
     id: run.id,
@@ -505,7 +518,10 @@ function activityRunView(activity: ProjectActivityRunRecord) {
     outputContext: jsonValue(run.outputContext),
     createdAt: run.createdAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
-    steps: steps.map((step) => ({
+    steps: steps.map((step, index) => ({
+      agentId: executions[index]?.daemonAgentId ?? null,
+      agentSessionId: executions[index]?.agentSessionId ?? null,
+      agentSessionAction: executions[index]?.agentSessionAction ?? null,
       id: step.id,
       stepId: step.stepId,
       ordinal: step.ordinal,

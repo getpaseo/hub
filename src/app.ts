@@ -94,6 +94,7 @@ export interface HubOperations {
   handleOrganizationDaemons(request: Request): Promise<Response>;
   handleOrganizationDaemonRename(request: Request, daemonId: string): Promise<Response>;
   handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
+  handleSessionCapabilities(request: Request, sessionId: string): Promise<Response>;
   handleExecutionCapabilities(request: Request, executionId: string): Promise<Response>;
   handleAttachmentDownload(
     request: Request,
@@ -284,6 +285,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       registration === null ? databaseUnavailable() : registration.rename(request, daemonId),
     handleOrganizationDaemonRevocation: (request, daemonId) =>
       registration === null ? databaseUnavailable() : registration.revoke(request, daemonId),
+    handleSessionCapabilities: (request, sessionId) =>
+      capabilityServer === null
+        ? databaseUnavailable()
+        : capabilityServer.handleSession(request, sessionId),
     handleExecutionCapabilities: (request, executionId) =>
       capabilityServer === null
         ? databaseUnavailable()
@@ -377,6 +382,9 @@ function createAppExecutionCapabilityServer(
     return null;
   }
   return createExecutionCapabilityServer({
+    ...(options.completionTokenSecret === undefined
+      ? {}
+      : { completionTokenSecret: options.completionTokenSecret }),
     database: options.database,
     outputs: outputRegistry,
     completeExecution: (input) =>

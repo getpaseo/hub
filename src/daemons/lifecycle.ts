@@ -1,3 +1,6 @@
+import { DaemonAgentError } from "./agents/index.js";
+import { AgentSessions, AgentSessionError } from "../agent-sessions/index.js";
+import type { AgentEvent } from "./agents/index.js";
 import {
   buildExecutionCapabilityMcpServer,
   deriveAgentExecutionCompletionToken,
@@ -649,7 +652,8 @@ export class DaemonDispatchLifecycle {
           typeof item.name === "string" &&
           isHubFinishExecutionToolName(item.name) &&
           typeof item.callId === "string" &&
-          isHubFinishExecutionStatus(item.status)
+          isHubFinishExecutionStatus(item.status) &&
+          !(await this.options.database.findAgentExecutionById(executionId))?.agentSessionId
         ) {
           await this.options.database.recordAgentExecutionHubAcknowledgement(executionId, {
             kind: "finish_execution",
@@ -1013,6 +1017,28 @@ export class DaemonDispatchLifecycle {
     const intent = current.launchIntent;
     if (intent === null || this.options.publicBaseUrl === undefined)
       throw new Error("execution launch intent cannot be recovered");
+    if (intent.continuation !== undefined) {
+      if (current.daemonAgentId === null) {
+        await this.dispatchSession({
+          daemonId: daemon.id,
+          executionId: current.id,
+          intent,
+          hubExecutionEnv: {
+            executionId: current.id,
+            completionToken: this.completionToken(current.id),
+            publicBaseUrl: this.options.publicBaseUrl,
+          },
+        });
+      } else {
+        const unsubscribe = await connection.agents.watch(current.daemonAgentId, (event) =>
+          this.observeSessionEvent(current.id, daemon.id, event),
+        );
+        this.recoveredSubscriptions.get(current.id)?.();
+        this.recoveredSubscriptions.set(current.id, unsubscribe);
+        this.armExecutionDeadline(current);
+      }
+      return;
+    }
     const createOptions = await this.buildCreateAgentOptions(intent, {
       executionId: current.id,
       completionToken: this.completionToken(current.id),
@@ -1312,7 +1338,9 @@ export class DaemonDispatchLifecycle {
     const connection = this.options.connectionForDaemon(daemonId);
     if (connection === undefined) return;
     await withHubActionTimeout(
-      connection.controlExecution({ executionId: execution.id, action }),
+      execution.agentSessionId === null
+        ? connection.controlExecution({ executionId: execution.id, action })
+        : this.sessionOwner().control(execution, connection.agents, action),
       this.dispatchTimeoutMs,
       (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
     );
@@ -1517,6 +1545,54 @@ export class DaemonDispatchLifecycle {
     }
   }
 
+  private sessionOwner(): AgentSessions {
+    if (!this.options.completionTokenSecret || !this.options.publicBaseUrl)
+      throw new Error("Session capabilities are unavailable");
+    return new AgentSessions(
+      this.options.database,
+      this.options.completionTokenSecret,
+      this.options.publicBaseUrl,
+      this.executionCapabilities,
+    );
+  }
+
+  private async dispatchSession(input: {
+    daemonId: string;
+    executionId: string;
+    intent: LaunchMachineIntent;
+    hubExecutionEnv: HubExecutionEnv;
+  }): Promise<string> {
+    const connection = this.options.connectionForDaemon(input.daemonId);
+    if (!connection) throw new DaemonDispatchFailure("daemon_unreachable");
+    const dispatched = await this.sessionOwner().dispatch({
+      executionId: input.executionId,
+      intent: input.intent,
+      connection: connection.agents,
+      createOptions: () => this.buildCreateAgentOptions(input.intent, input.hubExecutionEnv),
+      onEvent: (event) => this.observeSessionEvent(input.executionId, input.daemonId, event),
+    });
+    this.recoveredSubscriptions.get(input.executionId)?.();
+    this.recoveredSubscriptions.set(input.executionId, dispatched.unsubscribe);
+    await this.startAgentExecution(input.executionId);
+    await this.armLiveExecutionDeadline(input.executionId);
+    return dispatched.agentId;
+  }
+
+  private observeSessionEvent(executionId: string, daemonId: string, event: AgentEvent): void {
+    const normalized =
+      event.type === "agent_stream"
+        ? { ...event, executionId }
+        : {
+            ...event,
+            executionId,
+            agentId: event.agent.id,
+            agent: { ...event.agent, status: event.agent.status },
+          };
+    void this.queueDaemonEvent(executionId, daemonId, normalized).catch((error: unknown) => {
+      this.report(error, "daemon.session.event", { executionId });
+    });
+  }
+
   private async acquireAndSpawnAgentWithoutTimeout(
     input: {
       daemonId: string;
@@ -1529,6 +1605,7 @@ export class DaemonDispatchLifecycle {
     isCanceled: () => boolean,
     onCancel: (handler: () => Promise<void>) => void,
   ): Promise<string> {
+    if (input.intent.continuation !== undefined) return this.dispatchSession(input);
     const connection = this.options.connectionForDaemon(input.daemonId);
     if (connection === undefined) {
       throw new DaemonDispatchFailure("daemon_unreachable");
@@ -1935,6 +2012,8 @@ function isInterruptedAgentState(state: DaemonAgentSnapshot["state"]): boolean {
 }
 
 function toDaemonDispatchFailure(error: unknown): DaemonDispatchFailure {
+  if (error instanceof AgentSessionError || error instanceof DaemonAgentError)
+    return new DaemonDispatchFailure(error.message, { cause: error });
   if (error instanceof DaemonDispatchFailure) {
     return error;
   }
