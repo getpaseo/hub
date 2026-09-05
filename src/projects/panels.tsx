@@ -108,10 +108,7 @@ export function OrganizationIntegrationsPanel() {
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (
-    provider: ConnectionProviderName,
-    linearAgentSessions = false,
-  ) => {
+  const connectProvider = (provider: ConnectionProviderName, linearAgentSessions = false) => {
     connect.mutate(
       {
         data: {
