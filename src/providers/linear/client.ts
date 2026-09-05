@@ -139,6 +139,10 @@ const CommentThreadResponseSchema = z.object({
                   .optional(),
               }),
             ),
+            pageInfo: z.object({
+              hasNextPage: z.boolean(),
+              endCursor: z.string().min(1).nullable(),
+            }),
           }),
         })
         .nullable()
@@ -631,55 +635,71 @@ export function createLinearApiClient(options: {
       const authorIds = new Set<string>();
       const agentSessionRootIds = new Set<string>();
       let commentId = input.commentId;
-      let after: string | null = null;
+      let commentAfter: string | null = null;
+      let sessionAfter: string | null = null;
+      let commentPagesComplete = false;
+      let sessionPagesComplete = false;
       let rootId: string | undefined;
       for (;;) {
         const result = CommentThreadResponseSchema.parse(
           await graphql(request, accessToken, {
-            query: `query PaseoCommentThread($id: String!, $after: String) {
+            query: `query PaseoCommentThread(
+              $id: String!
+              $commentAfter: String
+              $sessionAfter: String
+            ) {
             comment(id: $id) {
               id user { id } botActor { id }
               parent {
                 id user { id } botActor { id }
-                children(first: 100, after: $after) {
+                children(first: 100, after: $commentAfter) {
                   nodes { user { id } botActor { id } }
                   pageInfo { hasNextPage endCursor }
                 }
               }
-              children(first: 100, after: $after) {
+              children(first: 100, after: $commentAfter) {
                 nodes { user { id } botActor { id } }
                 pageInfo { hasNextPage endCursor }
               }
-              issue { agentSessions(first: 50) { nodes { comment { id } } } }
+              issue {
+                agentSessions(first: 50, after: $sessionAfter) {
+                  nodes { comment { id } }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
             }
           }`,
-            variables: { id: commentId, after },
+            variables: { id: commentId, commentAfter, sessionAfter },
           }),
         );
         const comment = result.data.comment;
         if (comment === null) return undefined;
-        for (const session of comment.issue?.agentSessions.nodes ?? []) {
-          if (session.comment !== undefined && session.comment !== null) {
-            agentSessionRootIds.add(session.comment.id);
-          }
+        if (!sessionPagesComplete) {
+          const sessions = comment.issue?.agentSessions;
+          const nextSessionCursor =
+            sessions === undefined
+              ? undefined
+              : collectLinearAgentSessionRoots(agentSessionRootIds, sessions);
+          sessionPagesComplete = nextSessionCursor === undefined;
+          sessionAfter = nextSessionCursor ?? sessionAfter;
         }
         // Linear threads are one level deep: a reply's parent is the root, and the root's
         // children are the whole thread.
         const root = comment.parent ?? comment;
         rootId ??= root.id;
-        for (const author of [root, ...root.children.nodes]) {
-          const id = author.user?.id ?? author.botActor?.id ?? undefined;
-          if (id !== undefined) authorIds.add(id);
+        if (!commentPagesComplete) {
+          collectLinearCommentAuthors(authorIds, [root, ...root.children.nodes]);
+          const nextCommentCursor = nextLinearPageCursor(root.children.pageInfo, "comment thread");
+          commentPagesComplete = nextCommentCursor === undefined;
+          commentAfter = nextCommentCursor ?? commentAfter;
         }
-        if (!root.children.pageInfo.hasNextPage) {
+        if (commentPagesComplete && sessionPagesComplete) {
           return {
             rootId,
             authorIds: [...authorIds],
             agentSessionRootIds: [...agentSessionRootIds],
           };
         }
-        after = root.children.pageInfo.endCursor;
-        if (after === null) throw new Error("Linear comment thread page omitted its cursor");
         commentId = rootId;
       }
     },
@@ -732,6 +752,42 @@ export function createLinearApiClient(options: {
       }
     },
   };
+}
+
+function collectLinearAgentSessionRoots(
+  roots: Set<string>,
+  page: {
+    nodes: Array<{ comment?: { id: string } | null | undefined }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  },
+): string | undefined {
+  for (const session of page.nodes) {
+    const id = session.comment?.id;
+    if (id !== undefined) roots.add(id);
+  }
+  return nextLinearPageCursor(page.pageInfo, "agent-session");
+}
+
+function collectLinearCommentAuthors(
+  authorIds: Set<string>,
+  authors: Array<{
+    user?: { id: string } | null | undefined;
+    botActor?: { id?: string | null | undefined } | null | undefined;
+  }>,
+): void {
+  for (const author of authors) {
+    const id = author.user?.id ?? author.botActor?.id ?? undefined;
+    if (id !== undefined && id !== null) authorIds.add(id);
+  }
+}
+
+function nextLinearPageCursor(
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  subject: string,
+): string | undefined {
+  if (!pageInfo.hasNextPage) return undefined;
+  if (pageInfo.endCursor === null) throw new Error(`Linear ${subject} page omitted its cursor`);
+  return pageInfo.endCursor;
 }
 
 function compareLinearCommentOrder(

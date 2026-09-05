@@ -104,6 +104,27 @@ describe("Linear event acceptance", () => {
       [{ projectId: project.id, configurationRevisionId: revision.id }],
     );
 
+    await database.archiveProject(connection.organizationId, project.id, "user-1");
+    const stoppedAfterArchive = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-stopped-after-archive",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:01:30.000Z"),
+    });
+    assert.equal(stoppedAfterArchive.status, "accepted");
+    if (stoppedAfterArchive.status !== "accepted") {
+      throw new Error("expected archived session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterArchive.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId: project.id, configurationRevisionId: revision.id }],
+    );
+
     const unrelated = await database.acceptLinearEvent({
       linearOrganizationId: connection.linearOrganizationId,
       projectId: "linear-project",

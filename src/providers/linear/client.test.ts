@@ -218,7 +218,7 @@ describe("Linear connection client", () => {
     });
   });
 
-  it("reads a comment's thread root, its distinct authors, and the issue's session roots", async () => {
+  it("reads a comment thread and paginates the issue's Agent Session roots", async () => {
     const requests: string[] = [];
     const connection = linearConnection();
     let issue: unknown = {
@@ -227,8 +227,8 @@ describe("Linear connection client", () => {
           { comment: { id: "session-root" } },
           { comment: { id: "session-root" } },
           { comment: null },
-          { comment: { id: "root-1" } },
         ],
+        pageInfo: { hasNextPage: true, endCursor: "session-cursor-50" },
       },
     };
     let parent: unknown = {
@@ -254,7 +254,7 @@ describe("Linear connection client", () => {
         if (typeof variables !== "object" || variables === null || Array.isArray(variables)) {
           throw new Error("expected GraphQL variables");
         }
-        if (Reflect.get(variables, "after") === "cursor-100") {
+        if (Reflect.get(variables, "commentAfter") === "cursor-100") {
           return json({
             data: {
               comment: {
@@ -265,6 +265,12 @@ describe("Linear connection client", () => {
                 children: {
                   nodes: [{ user: { id: "app-user" }, botActor: null }],
                   pageInfo: { hasNextPage: false, endCursor: null },
+                },
+                issue: {
+                  agentSessions: {
+                    nodes: [{ comment: { id: "root-1" } }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
                 },
               },
             },
@@ -298,16 +304,21 @@ describe("Linear connection client", () => {
     );
     const request = graphqlRequest(requests[0] ?? "{}");
     assert.match(request.query, /comment\(id: \$id\)/u);
-    assert.match(request.query, /parent \{[\s\S]*children\(first: 100, after: \$after\)/u);
+    assert.match(request.query, /parent \{[\s\S]*children\(first: 100, after: \$commentAfter\)/u);
     assert.match(request.query, /pageInfo \{ hasNextPage endCursor \}/u);
     assert.match(
       request.query,
-      /issue \{ agentSessions\(first: 50\) \{ nodes \{ comment \{ id \} \} \} \}/u,
+      /agentSessions\(first: 50, after: \$sessionAfter\)[\s\S]*nodes \{ comment \{ id \} \}[\s\S]*pageInfo \{ hasNextPage endCursor \}/u,
     );
-    assert.deepEqual(request.variables, { id: "reply-2", after: null });
+    assert.deepEqual(request.variables, {
+      id: "reply-2",
+      commentAfter: null,
+      sessionAfter: null,
+    });
     assert.deepEqual(graphqlRequest(requests[1] ?? "{}").variables, {
       id: "root-1",
-      after: "cursor-100",
+      commentAfter: "cursor-100",
+      sessionAfter: "session-cursor-50",
     });
 
     // A root comment is its own thread root; a comment without an issue has no sessions.
@@ -319,7 +330,8 @@ describe("Linear connection client", () => {
     );
     assert.deepEqual(graphqlRequest(requests[2] ?? "{}").variables, {
       id: "reply-2",
-      after: null,
+      commentAfter: null,
+      sessionAfter: null,
     });
     assert.equal(requests.length, 3);
   });
