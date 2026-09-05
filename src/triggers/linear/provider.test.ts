@@ -1351,6 +1351,40 @@ describe("Linear trigger provider", () => {
     assert.equal(client.createdActivities.length, 1);
   });
 
+  it("retries a failed stop confirmation and remembers only a successful response", async () => {
+    const database = createMemoryDatabase();
+    const { project } = await createActiveProjectConfiguration(
+      database,
+      agentSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => {
+        throw new Error("stop handling must not read the current trigger revision");
+      },
+      client,
+      database,
+      executions: { stopActive: async () => ({ stopped: 0 }) },
+    });
+    const stop = await persistLinearEvent(
+      database,
+      project.id,
+      "linear.agent_session",
+      "failed-agent-session-stop",
+      stopSignalEvent(),
+    );
+    client.activityCreateError = new Error("Linear unavailable");
+
+    await assert.rejects(provider.match(stop), /Linear unavailable/);
+    client.activityCreateError = undefined;
+    assert.equal(await provider.match(stop), "agent_session_stopped");
+    assert.equal(await provider.match(stop), "agent_session_stopped");
+
+    assert.equal(client.activityCreateAttempts, 2);
+    assert.equal(client.createdActivities.length, 1);
+  });
+
   it("does not confirm a stop it could not apply", async () => {
     const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
     const client = new RecordingHistoryClient({ complete: true, comments: [] });
@@ -1454,6 +1488,8 @@ class RecordingHistoryClient implements Pick<
     beforeCreatedAt: string;
   }> = [];
   createdActivities: Parameters<LinearApiClient["createAgentActivity"]>[0][] = [];
+  activityCreateAttempts = 0;
+  activityCreateError: Error | undefined = undefined;
 
   constructor(
     private readonly history: LinearIssueCommentHistory | undefined,
@@ -1492,6 +1528,8 @@ class RecordingHistoryClient implements Pick<
   }
 
   createAgentActivity(input: Parameters<LinearApiClient["createAgentActivity"]>[0]): Promise<void> {
+    this.activityCreateAttempts += 1;
+    if (this.activityCreateError !== undefined) return Promise.reject(this.activityCreateError);
     this.createdActivities.push(input);
     return Promise.resolve();
   }
