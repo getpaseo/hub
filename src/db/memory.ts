@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { completesAtIdleDeadline } from "./idle-completion.js";
-import { isLinearAgentSessionStop, linearAgentSessionStopId } from "./linear-event-acceptance.js";
+import {
+  isLinearAgentSessionStop,
+  linearAgentSessionId,
+  linearAgentSessionStopId,
+} from "./linear-event-acceptance.js";
 import {
   linearTriggerSuppressionKey,
   linearTriggerSuppressionKind,
@@ -72,6 +76,7 @@ import type {
   DiscordConnectionRecord,
   SlackConnectionRecord,
   LinearConnectionRecord,
+  LinearAgentSessionStopConfirmationInput,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
@@ -178,6 +183,14 @@ class MemoryDatabase implements Database {
       suppressionReason: LinearTriggerSuppressionReason | null;
       suppressionOccurredAt: Date | null;
       sourceProviderEventReceiptId: string | null;
+    }
+  >();
+  private readonly linearStopConfirmations = new Map<
+    string,
+    {
+      status: "pending" | "confirmed";
+      claimId: string | null;
+      leaseExpiresAt: Date | null;
     }
   >();
   private readonly triggerRunIdsByProviderEventReceipt = new Map<
@@ -386,6 +399,64 @@ class MemoryDatabase implements Database {
       if (updated) recorded = true;
     }
     return recorded;
+  }
+
+  async confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean> {
+    const key = `linear-stop-confirmation:${input.providerEventReceiptId}`;
+    const claimId = randomUUID();
+    const claimed = await this.withAdvisoryLock(key, async () => {
+      const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
+      if (receipt === undefined)
+        throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+      if (
+        receipt.organizationId !== input.organizationId ||
+        linearAgentSessionId(receipt) !== input.agentSessionId
+      ) {
+        throw new Error("Linear stop confirmation receipt mismatch");
+      }
+      const existing = this.linearStopConfirmations.get(input.providerEventReceiptId);
+      if (existing?.status === "confirmed") return false;
+      if (
+        existing?.status === "pending" &&
+        existing.leaseExpiresAt !== null &&
+        existing.leaseExpiresAt.getTime() > this.now().getTime()
+      ) {
+        throw new Error("Linear stop confirmation is already in progress");
+      }
+      this.linearStopConfirmations.set(input.providerEventReceiptId, {
+        status: "pending",
+        claimId,
+        leaseExpiresAt: new Date(this.now().getTime() + 5 * 60_000),
+      });
+      return true;
+    });
+    if (!claimed) return false;
+    try {
+      await confirm();
+    } catch (error) {
+      await this.withAdvisoryLock(key, async () => {
+        const current = this.linearStopConfirmations.get(input.providerEventReceiptId);
+        if (current?.status === "pending" && current.claimId === claimId) {
+          this.linearStopConfirmations.delete(input.providerEventReceiptId);
+        }
+      });
+      throw error;
+    }
+    await this.withAdvisoryLock(key, async () => {
+      const current = this.linearStopConfirmations.get(input.providerEventReceiptId);
+      if (current?.status !== "pending" || current.claimId !== claimId) {
+        throw new Error("Linear stop confirmation lease was lost");
+      }
+      this.linearStopConfirmations.set(input.providerEventReceiptId, {
+        status: "confirmed",
+        claimId: null,
+        leaseExpiresAt: null,
+      });
+    });
+    return true;
   }
 
   async createRejectedTriggerRun(
@@ -3371,27 +3442,46 @@ class MemoryDatabase implements Database {
     const cancellationRoutes =
       stopSessionId === undefined || !("linearOrganizationId" in input)
         ? []
-        : Array.from(this.triggerRuns.values()).flatMap((run) => {
-            const project = this.projects.get(run.projectId);
-            return run.outcome === "accepted" &&
-              run.status === "running" &&
-              run.organizationId === organizationId &&
-              project !== undefined &&
-              matchesLinearSessionOutput(
-                run.outputContext,
-                input.linearOrganizationId,
-                stopSessionId,
-              )
-              ? [
-                  {
-                    projectId: run.projectId,
-                    configurationRevisionId: run.configurationRevisionId,
-                    connectionId,
-                    resourceId: null,
-                  },
-                ]
-              : [];
-          });
+        : [
+            ...Array.from(this.triggerRuns.values()).flatMap((run) => {
+              const project = this.projects.get(run.projectId);
+              return run.outcome === "accepted" &&
+                run.status === "running" &&
+                run.organizationId === organizationId &&
+                project !== undefined &&
+                matchesLinearSessionOutput(
+                  run.outputContext,
+                  input.linearOrganizationId,
+                  stopSessionId,
+                )
+                ? [
+                    {
+                      projectId: run.projectId,
+                      configurationRevisionId: run.configurationRevisionId,
+                      connectionId,
+                      resourceId: null,
+                    },
+                  ]
+                : [];
+            }),
+            ...Array.from(this.providerEventReceipts.values()).flatMap((candidate) =>
+              candidate.organizationId === organizationId &&
+              candidate.provider === "linear" &&
+              candidate.connectionId === connectionId &&
+              candidate.source === "linear.agent_session" &&
+              candidate.droppedReason === null &&
+              candidate.receivedAt.getTime() <= input.receivedAt.getTime() &&
+              linearAgentSessionId(candidate) === stopSessionId
+                ? (candidate.acceptedRoutes ?? []).filter(
+                    (route) =>
+                      this.projects.has(route.projectId) &&
+                      !this.triggerRunIdsByProviderEventReceipt
+                        .get(candidate.id)
+                        ?.has(route.projectId),
+                  )
+                : [],
+            ),
+          ];
     const routes = [...currentRoutes, ...cancellationRoutes];
     if (routes.length === 0) {
       this.providerEventReceipts.set(receipt.id, {

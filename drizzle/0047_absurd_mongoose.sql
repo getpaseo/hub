@@ -1,0 +1,6 @@
+ALTER TABLE "provider_event_receipts" ADD COLUMN "linear_stop_confirmation_status" text;--> statement-breakpoint
+ALTER TABLE "provider_event_receipts" ADD COLUMN "linear_stop_confirmation_claim_id" uuid;--> statement-breakpoint
+ALTER TABLE "provider_event_receipts" ADD COLUMN "linear_stop_confirmation_lease_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "provider_event_receipts" ADD CONSTRAINT "provider_event_receipts_linear_stop_confirmation_check" CHECK (("provider_event_receipts"."linear_stop_confirmation_status" is null and "provider_event_receipts"."linear_stop_confirmation_claim_id" is null and "provider_event_receipts"."linear_stop_confirmation_lease_expires_at" is null)
+        or ("provider_event_receipts"."linear_stop_confirmation_status" = 'pending' and "provider_event_receipts"."linear_stop_confirmation_claim_id" is not null and "provider_event_receipts"."linear_stop_confirmation_lease_expires_at" is not null)
+        or ("provider_event_receipts"."linear_stop_confirmation_status" = 'confirmed' and "provider_event_receipts"."linear_stop_confirmation_claim_id" is null and "provider_event_receipts"."linear_stop_confirmation_lease_expires_at" is null));

@@ -75,6 +75,7 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
+  LinearAgentSessionStopConfirmationInput,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -581,6 +582,86 @@ class PgDatabase implements Database {
         return recorded;
       });
     } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean> {
+    const claimId = randomUUID();
+    let claimed = false;
+    let operationCompleted = false;
+    try {
+      const claim = await query(
+        this.pool,
+        `update provider_event_receipts
+         set linear_stop_confirmation_status = 'pending',
+             linear_stop_confirmation_claim_id = $4,
+             linear_stop_confirmation_lease_expires_at = clock_timestamp() + interval '5 minutes'
+         where id = $1 and organization_id = $2
+           and source = 'linear.agent_session'
+           and payload -> 'agentSession' ->> 'id' = $3
+           and linear_stop_confirmation_status is distinct from 'confirmed'
+           and (linear_stop_confirmation_claim_id is null
+             or linear_stop_confirmation_lease_expires_at <= clock_timestamp())
+         returning id`,
+        [input.providerEventReceiptId, input.organizationId, input.agentSessionId, claimId],
+      );
+      claimed = claim.rowCount !== 0;
+      if (!claimed) {
+        const state = await query<{ status: string | null }>(
+          this.pool,
+          `select linear_stop_confirmation_status as status
+           from provider_event_receipts
+           where id = $1 and organization_id = $2
+             and source = 'linear.agent_session'
+             and payload -> 'agentSession' ->> 'id' = $3`,
+          [input.providerEventReceiptId, input.organizationId, input.agentSessionId],
+        );
+        const status = state.rows[0]?.status;
+        if (status === "confirmed") return false;
+        if (status === "pending") {
+          throw new Error("Linear stop confirmation is already in progress");
+        }
+        throw new Error("Linear stop confirmation receipt unavailable");
+      }
+
+      await confirm();
+      operationCompleted = true;
+      const completed = await query(
+        this.pool,
+        `update provider_event_receipts
+         set linear_stop_confirmation_status = 'confirmed',
+             linear_stop_confirmation_claim_id = null,
+             linear_stop_confirmation_lease_expires_at = null
+         where id = $1 and linear_stop_confirmation_status = 'pending'
+           and linear_stop_confirmation_claim_id = $2`,
+        [input.providerEventReceiptId, claimId],
+      );
+      if (completed.rowCount === 0) throw new Error("Linear stop confirmation lease was lost");
+      return true;
+    } catch (error) {
+      if (claimed && !operationCompleted) {
+        try {
+          await query(
+            this.pool,
+            `update provider_event_receipts
+             set linear_stop_confirmation_status = null,
+                 linear_stop_confirmation_claim_id = null,
+                 linear_stop_confirmation_lease_expires_at = null
+             where id = $1 and linear_stop_confirmation_status = 'pending'
+               and linear_stop_confirmation_claim_id = $2`,
+            [input.providerEventReceiptId, claimId],
+          );
+        } catch (releaseError) {
+          throw new Error(
+            `Linear stop confirmation failed (${toDatabaseError(error).message}) and its retry lease could not be released`,
+            { cause: releaseError },
+          );
+        }
+      }
       throw toDatabaseError(error);
     }
   }

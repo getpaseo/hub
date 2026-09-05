@@ -61,6 +61,13 @@ export const providerEventReceipts = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
     acceptedRoutes: jsonb("accepted_routes"),
+    linearStopConfirmationStatus: text("linear_stop_confirmation_status").$type<
+      "pending" | "confirmed"
+    >(),
+    linearStopConfirmationClaimId: uuid("linear_stop_confirmation_claim_id"),
+    linearStopConfirmationLeaseExpiresAt: timestamp("linear_stop_confirmation_lease_expires_at", {
+      withTimezone: true,
+    }),
   },
   (table) => [
     uniqueIndex("provider_event_receipts_id_organization_unique").on(
@@ -87,6 +94,12 @@ export const providerEventReceipts = pgTable(
     check(
       "provider_event_receipts_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual')`,
+    ),
+    check(
+      "provider_event_receipts_linear_stop_confirmation_check",
+      sql`(${table.linearStopConfirmationStatus} is null and ${table.linearStopConfirmationClaimId} is null and ${table.linearStopConfirmationLeaseExpiresAt} is null)
+        or (${table.linearStopConfirmationStatus} = 'pending' and ${table.linearStopConfirmationClaimId} is not null and ${table.linearStopConfirmationLeaseExpiresAt} is not null)
+        or (${table.linearStopConfirmationStatus} = 'confirmed' and ${table.linearStopConfirmationClaimId} is null and ${table.linearStopConfirmationLeaseExpiresAt} is null)`,
     ),
   ],
 );
