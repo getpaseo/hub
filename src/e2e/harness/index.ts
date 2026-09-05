@@ -1,3 +1,4 @@
+import { parseCompiledHubConfig } from "../../config/compiler.js";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -793,7 +794,7 @@ export class HubE2E {
     };
   }
 
-  async runCapabilityTrigger(deliveryKey: string): Promise<ManualRun> {
+  async runCapabilityTrigger(deliveryKey: string, conversation?: string): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/test/trigger`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -802,7 +803,7 @@ export class HubE2E {
         projectId: PROJECT_ID,
         source: "e2e.discord",
         deliveryId: deliveryKey,
-        payload: {},
+        payload: conversation === undefined ? {} : { conversation },
       }),
     });
     if (response.status !== 200) {
@@ -814,8 +815,14 @@ export class HubE2E {
     await this.observe(async () => {
       const execution = await this.requirePool().query<{
         daemon_agent_id: string | null;
-      }>("select daemon_agent_id from agent_executions where id = $1", [executionId]);
-      return execution.rows[0]?.daemon_agent_id !== null;
+        status: string;
+        result: unknown;
+      }>("select daemon_agent_id, status, result from agent_executions where id = $1", [
+        executionId,
+      ]);
+      if (execution.rows[0]?.status === "failed")
+        throw new Error(JSON.stringify(execution.rows[0].result));
+      return execution.rows[0]?.daemon_agent_id != null;
     }, "capability execution association");
     const execution = await this.requirePool().query<{
       daemon_agent_id: string;
@@ -870,6 +877,62 @@ export class HubE2E {
       daemonId: requiredString({ daemonId: row.daemon_id }, "daemonId"),
       agentId: requiredString({ agentId: row.daemon_agent_id }, "agentId"),
     };
+  }
+
+  async enableAgentContinuation(realAgent = false): Promise<void> {
+    if (realAgent) await this.installRealAgentConfiguration("codex");
+    else await this.installProductionConfiguration();
+    const result = await this.requirePool().query<{
+      id: string;
+      normalized_configuration: unknown;
+    }>(
+      `select r.id, r.normalized_configuration from project_configuration_revisions r
+       join projects p on p.active_configuration_revision_id = r.id where p.id = $1`,
+      [PROJECT_ID],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Missing test configuration");
+    const configuration = structuredClone(parseCompiledHubConfig(row.normalized_configuration));
+    for (const environment of configuration.environments) {
+      if (environment.kind !== "daemon") throw new Error("Expected daemon environment");
+      environment.worktree = {
+        mode: "branch-off",
+        newBranch: "continuation-${{ paseo.execution.id }}",
+      };
+    }
+    const trigger = configuration.triggers.find(
+      (item) => item.name === (realAgent ? "finalize" : "e2e-discord"),
+    )!;
+    for (const step of trigger.steps)
+      step.continuation = realAgent
+        ? { mode: "key", key: "real-agent-continuation" }
+        : { mode: "conversation" };
+    await this.requirePool().query(
+      "update project_configuration_revisions set normalized_configuration = $2 where id = $1",
+      [row.id, configuration],
+    );
+  }
+
+  async sessionEvidence(executionId: string) {
+    const result = await this.requirePool().query<{
+      data: { agentId: string; workspaceId: string };
+    }>(
+      `select s.data from agent_sessions s join agent_executions e on e.agent_session_id = s.id where e.id = $1`,
+      [executionId],
+    );
+    const session = result.rows[0]?.data;
+    if (!session) throw new Error("Missing agent session");
+    return session;
+  }
+
+  async sessionIsArchived(executionId: string): Promise<void> {
+    await this.observe(async () => {
+      const result = await this.requirePool().query<{ done: boolean }>(
+        "select hub_action_completed_at is not null as done from agent_executions where id = $1",
+        [executionId],
+      );
+      return result.rows[0]?.done === true;
+    }, "session workspace archival");
   }
 
   async completedCapabilityRun(executionId: string) {

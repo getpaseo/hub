@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
 
@@ -95,6 +96,7 @@ export const TriggerRunSchema = z
   .object({
     target: TriggerTargetSchema,
     agent: TriggerAgentSelectionSchema,
+    continuation: ContinuationSchema.default({ mode: "conversation" }),
     prompt: z.string().min(1),
     max_runtime: z.string().min(1).default("2h"),
     idle_timeout: z.string().min(1).default("10m"),

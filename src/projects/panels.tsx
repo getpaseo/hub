@@ -391,6 +391,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
             { header: "Step" },
             { header: "Status" },
             { header: "Deadline" },
+            { header: "Agent" },
             { header: "Structured output" },
             { header: "Failure reason" },
           ]}
@@ -417,6 +418,18 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
                     ? ""
                     : ` · idle ${formatAbsolute(step.idleDeadlineAt)}`}
                 </span>
+              </DataCell>
+              <DataCell>
+                {step.agentId === null ? (
+                  "—"
+                ) : (
+                  <span title={step.agentId}>
+                    {step.agentSessionAction === null
+                      ? "Created"
+                      : statusLabel(step.agentSessionAction)}{" "}
+                    · <span className="font-mono text-xs">{step.agentId.slice(0, 8)}</span>
+                  </span>
+                )}
               </DataCell>
               <DataCell>
                 <JsonValue value={step.output} />

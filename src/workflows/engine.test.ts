@@ -1909,6 +1909,7 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
           outputContext: { provider: "manual" },
           configurationRevisionId: revisionId,
           hubConfig: configuration,
+          conversation: null,
           invocation,
         },
       ];
