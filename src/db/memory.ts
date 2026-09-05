@@ -3596,12 +3596,8 @@ class MemoryDatabase implements Database {
               candidate.droppedReason === null &&
               candidate.receivedAt.getTime() <= input.receivedAt.getTime() &&
               linearAgentSessionId(candidate) === stopSessionId
-                ? (candidate.acceptedRoutes ?? []).filter(
-                    (route) =>
-                      this.projects.has(route.projectId) &&
-                      !this.triggerRunIdsByProviderEventReceipt
-                        .get(candidate.id)
-                        ?.has(route.projectId),
+                ? (candidate.acceptedRoutes ?? []).filter((route) =>
+                    this.projects.has(route.projectId),
                   )
                 : [],
             ),
