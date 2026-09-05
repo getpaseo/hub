@@ -88,20 +88,17 @@ export class SourcePaseo {
   async connectWithCredential(
     hubOrigin: string,
     credential: string,
+    permissions: readonly string[] = [],
   ): Promise<Record<string, unknown>> {
     this.rememberedHubOrigin = hubOrigin;
-    const result = await this.run([
-      "hub",
-      "connect",
-      hubOrigin,
-      "--api-key",
-      credential,
-      "--permission",
-      "hub.execute",
-      "--host",
-      this.paths.daemonHost,
-      "--json",
-    ]);
+    const result = await this.run(
+      sourceHubConnectArguments({
+        hubOrigin,
+        credential,
+        daemonHost: this.paths.daemonHost,
+        permissions,
+      }),
+    );
     await this.rememberActiveAuthority();
     return result;
   }
@@ -129,6 +126,19 @@ export class SourcePaseo {
     );
     const value: unknown = JSON.parse(result.stdout);
     return z.array(z.unknown()).parse(value);
+  }
+
+  async activeWorkspaceIds(): Promise<string[]> {
+    const result = await runCommand(
+      join(this.paths.packagesRoot, "node_modules/.bin/paseo"),
+      ["workspace", "ls", "--host", this.paths.daemonHost, "--json"],
+      this.paths.packagesRoot,
+      sourceEnvironment(this.paths.paseoHome),
+    );
+    return z
+      .array(z.object({ workspaceId: z.string() }))
+      .parse(JSON.parse(result.stdout))
+      .map((workspace) => workspace.workspaceId);
   }
 
   async agentProvider(agentId: string): Promise<string> {
@@ -272,6 +282,25 @@ export class SourcePaseo {
     await stopProcess(this.daemon, true);
     this.daemon = undefined;
   }
+}
+
+export function sourceHubConnectArguments(input: {
+  hubOrigin: string;
+  credential: string;
+  daemonHost: string;
+  permissions?: readonly string[];
+}): string[] {
+  return [
+    "hub",
+    "connect",
+    input.hubOrigin,
+    "--api-key",
+    input.credential,
+    "--host",
+    input.daemonHost,
+    ...(input.permissions?.length ? ["--permission", ...input.permissions] : []),
+    "--json",
+  ];
 }
 
 export function resolvePaseoWorktree(): string {

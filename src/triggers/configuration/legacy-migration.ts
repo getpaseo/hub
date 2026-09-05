@@ -99,6 +99,8 @@ function convertSingleRun(
   const step = trigger.steps[0];
   if (step === undefined) return { success: false, blockers };
   if (step.condition !== undefined) blockers.push("run is conditional");
+  // The single-run document cannot express affinity; retain the full compiled workflow.
+  if (step.workspaceAffinity !== undefined) blockers.push("run uses workspace affinity");
   if (hasNullableInputs(trigger.inputs)) blockers.push("trigger inputs allow null values");
   const environment = configuration.environments.find(
     (candidate) => candidate.name === step.environment,

@@ -37,10 +37,13 @@ import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../trigge
 import {
   ExpressionEvaluationError,
   evaluateExpression,
+  expressionPaths,
   expressionPathsInTemplate,
   renderExecutionTemplate,
   renderExpressionTemplate,
+  type Expression,
   type ExpressionContext,
+  type ExpressionPath,
 } from "./expression.js";
 import type { WorktreeTarget } from "../config/index.js";
 import type { Logger } from "pino";
@@ -584,6 +587,12 @@ export class DurableWorkflowEngine {
     if (existing?.launchIntent !== null && existing?.launchIntent !== undefined) {
       return { executionId: existing.id, intent: existing.launchIntent };
     }
+    const triggerConversationKey = workspaceAffinityConversationKey(
+      trigger,
+      step,
+      this.options.providers ?? [],
+      run.triggerContext,
+    );
     const executionId = durableExecutionId({
       triggerRunId: run.id,
       configurationRevisionId: run.configurationRevisionId,
@@ -597,7 +606,11 @@ export class DurableWorkflowEngine {
       trigger,
       step,
       run,
-      { ...context, context: materializedContext },
+      {
+        ...context,
+        context: materializedContext,
+        ...(triggerConversationKey === undefined ? {} : { triggerConversationKey }),
+      },
       stepRunId,
       deadlineAt,
       executionId,
@@ -909,6 +922,16 @@ function buildStepIntent(
     throw new Error(`workflow environment ${environmentName} is unavailable`);
   }
   const agent = materializeAgent(step.agent, context);
+  const workspaceAffinity =
+    step.workspaceAffinity === undefined
+      ? undefined
+      : {
+          key: workspaceAffinityKey(renderExpressionTemplate(step.workspaceAffinity.key, context)),
+          // A matching arrival extends this deadline on the daemon. It is deliberately the
+          // workflow's hard deadline rather than a separate sliding inactivity timer.
+          retainUntil: run.deadlineAt.toISOString(),
+          autoArchive: step.autoArchive,
+        };
   return {
     ...buildLaunchMachineIntent({
       organizationId: run.organizationId,
@@ -937,6 +960,7 @@ function buildStepIntent(
       timeoutMs: step.maxRuntimeMs,
       idleTimeoutMs: step.idleTimeoutMs,
       autoArchive: step.autoArchive,
+      ...(workspaceAffinity === undefined ? {} : { workspaceAffinity }),
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       configurationRevisionId: run.configurationRevisionId,
@@ -981,6 +1005,16 @@ function workflowContext(
   };
 }
 
+function workspaceAffinityKey(value: string): string {
+  if (value.trim().length === 0) {
+    throw new ExpressionEvaluationError("workspace affinity key resolved to an empty value");
+  }
+  if (value.length > 512) {
+    throw new ExpressionEvaluationError("workspace affinity key exceeds 512 characters");
+  }
+  return value;
+}
+
 function stepUsesTriggerContext(
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
 ): boolean {
@@ -1002,15 +1036,73 @@ function providerForTriggerContext(
   return providers.find((provider) => provider.name === triggerContext.provider);
 }
 
+function workspaceAffinityConversationKey(
+  trigger: CompiledProjectConfiguration["triggers"][number],
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+  providers: readonly TriggerProvider[],
+  triggerContext: unknown,
+): string | undefined {
+  if (!stepUsesTriggerConversationKey(trigger, step)) return undefined;
+  return providerForTriggerContext(providers, triggerContext)?.workspaceAffinityKey?.(
+    triggerContext,
+  );
+}
+
+function stepUsesTriggerConversationKey(
+  trigger: CompiledProjectConfiguration["triggers"][number],
+  step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+): boolean {
+  if (step.workspaceAffinity === undefined) return false;
+  return pathsUseTriggerConversationKey(
+    expressionPathsInTemplate(step.workspaceAffinity.key),
+    trigger.values,
+  );
+}
+
+function expressionUsesTriggerConversationKey(
+  expression: Expression,
+  values: Readonly<Record<string, Expression>>,
+): boolean {
+  return pathsUseTriggerConversationKey(expressionPaths(expression), values);
+}
+
+function pathsUseTriggerConversationKey(
+  paths: readonly ExpressionPath[],
+  values: Readonly<Record<string, Expression>>,
+): boolean {
+  const pending = [...paths];
+  const visitedValues = new Set<string>();
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (path === undefined) continue;
+    if (
+      path.namespace === "paseo" &&
+      Array.isArray(path.path) &&
+      path.path[0] === "trigger" &&
+      path.path[1] === "conversation_key"
+    ) {
+      return true;
+    }
+    if (path.namespace !== "values" || visitedValues.has(path.name)) continue;
+    visitedValues.add(path.name);
+    const expression = values[path.name];
+    if (expression !== undefined) pending.push(...expressionPaths(expression));
+  }
+  return false;
+}
+
 function composeValues(
   values: Readonly<Record<string, import("./expression.js").Expression>>,
   context: ExpressionContext,
 ): Readonly<Record<string, JsonValue>> {
   return Object.fromEntries(
-    Object.entries(values).map(([name, expression]) => [
-      name,
-      evaluateExpression(expression, context),
-    ]),
+    Object.entries(values)
+      .filter(
+        ([, expression]) =>
+          context.triggerConversationKey !== undefined ||
+          !expressionUsesTriggerConversationKey(expression, values),
+      )
+      .map(([name, expression]) => [name, evaluateExpression(expression, context)]),
   );
 }
 

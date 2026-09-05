@@ -238,6 +238,16 @@ export function createSlackTriggerProvider(options: {
         },
       };
     },
+    workspaceAffinityKey(triggerContext) {
+      const target = triggerContext.target;
+      return JSON.stringify([
+        "slack",
+        triggerContext.event.slack.connection_id,
+        target.teamId,
+        target.channelId,
+        target.threadTs,
+      ]);
+    },
     async onDispatchAccepted(_triggerContext, _outputContext, reactionState) {
       if (slackReactionPhase(reactionState) !== undefined) return reactionState;
       return { phase: "accepted" };

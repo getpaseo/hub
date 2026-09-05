@@ -21,6 +21,30 @@ describe("Hub execution create protocol", () => {
     };
 
     assert.equal(HubExecutionAgentCreateRequestSchema.safeParse(request).success, true);
+    const affinityRequest = HubExecutionAgentCreateRequestSchema.safeParse({
+      ...request,
+      workspaceAffinity: {
+        key: " slack:thread:1700000000.000001 ",
+        retainUntil: "2026-08-06T12:02:00.000Z",
+        autoArchive: true,
+      },
+    });
+    assert.equal(affinityRequest.success, true);
+    assert.equal(
+      affinityRequest.success ? affinityRequest.data.workspaceAffinity?.key : undefined,
+      " slack:thread:1700000000.000001 ",
+    );
+    assert.equal(
+      HubExecutionAgentCreateRequestSchema.safeParse({
+        ...request,
+        workspaceAffinity: {
+          key: "   ",
+          retainUntil: "2026-08-06T12:02:00.000Z",
+          autoArchive: true,
+        },
+      }).success,
+      false,
+    );
     assert.equal(
       HubExecutionAgentCreateRequestSchema.safeParse({
         ...request,

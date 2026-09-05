@@ -112,6 +112,79 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("rejects execution-scoped worktree branches for workspace affinity steps", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const executionScopedEnvironment = {
+      ...environment,
+      worktree: {
+        mode: "branch-off" as const,
+        newBranch: "trigger-${{ paseo.execution.id }}",
+      },
+    };
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          environments: [executionScopedEnvironment],
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: { key: "shared-review" },
+                },
+              ],
+            },
+          ],
+        }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.deepEqual(Reflect.get(error, "path"), [
+          "triggers",
+          "run",
+          "steps",
+          "work",
+          "workspace_affinity",
+        ]);
+        assert.match(error.message, /stable worktree target.*paseo\.execution\.id/iu);
+        return true;
+      },
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          environments: [
+            environment,
+            { ...executionScopedEnvironment, name: "execution-scoped-runner" },
+          ],
+          triggers: [
+            {
+              ...trigger,
+              inputs: {
+                runner: {
+                  type: "string",
+                  required: true,
+                  choices: ["runner", "execution-scoped-runner"],
+                },
+              },
+              steps: [
+                {
+                  ...step,
+                  environment: "${{ paseo.inputs.runner }}",
+                  workspace_affinity: { key: "shared-review" },
+                },
+              ],
+            },
+          ],
+        }),
+      /environment execution-scoped-runner.*stable worktree target/iu,
+    );
+  });
+
   it("preserves opaque provider options and leaves an omitted mode omitted", () => {
     const sourceOptions = {
       sandbox_workspace_write: {
@@ -610,6 +683,293 @@ describe("workflow compiler", () => {
           ],
         }),
       /dynamic inline agent configurations are not allowed/iu,
+    );
+  });
+
+  it("allows explicit workspace affinity keys without letting prompt text select a workspace", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+    const conversationTrigger = {
+      ...trigger,
+      on: "slack.mention",
+      filters: { from_users: ["U_ALLOWED"] },
+    };
+    const compiled = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...conversationTrigger,
+          steps: [
+            {
+              ...step,
+              workspace_affinity: {
+                key: " review-${{ paseo.trigger.conversation_key }} ",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.workspaceAffinity, {
+      key: " review-${{ paseo.trigger.conversation_key }} ",
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+
+    const renderedBoundedKey = "x".repeat(505) + "${{ true }}";
+    assert.ok(renderedBoundedKey.length > 512);
+    const compiledLongTemplate = compileHubConfig({
+      ...configuration(),
+      triggers: [
+        {
+          ...conversationTrigger,
+          steps: [{ ...step, workspace_affinity: { key: renderedBoundedKey } }],
+        },
+      ],
+    });
+    assert.deepEqual(compiledLongTemplate.triggers[0]?.steps[0]?.workspaceAffinity, {
+      key: renderedBoundedKey,
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiledLongTemplate), compiledLongTemplate);
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: {
+                    key: "review-${{ paseo.trigger.conversation_key }}",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      /manual\.run does not provide a conversation key/iu,
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...conversationTrigger,
+              on: "github.push",
+              steps: [
+                {
+                  ...step,
+                  workspace_affinity: {
+                    key: "review-${{ paseo.trigger.conversation_key }}",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      /github\.push does not provide a conversation key/iu,
+    );
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            steps: [{ ...step, workspace_affinity: { key: "shared-release-triage" } }],
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...step, workspace_affinity: { key: "   " } }],
+            },
+          ],
+        }),
+      /workspace affinity key must not be blank/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              steps: [{ ...step, workspace_affinity: { key: "${{ paseo.prompt }}" } }],
+            },
+          ],
+        }),
+      /paseo\.prompt.*authority-bearing/iu,
+    );
+  });
+
+  it("propagates workspace affinity authority checks through referenced values", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              values: {
+                prompt_route: "${{ paseo.prompt == 'reuse' }}",
+                route: "${{ values.prompt_route }}",
+              },
+              steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+            },
+          ],
+        }),
+      /paseo\.prompt.*authority-bearing/iu,
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              inputs: { route: { type: "string", required: true } },
+              values: { route: "${{ paseo.inputs.route == 'reuse' }}" },
+              steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+            },
+          ],
+        }),
+      /input route without finite choices/iu,
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              values: { route: "${{ steps.classify.outputs.route == 'reuse' }}" },
+              steps: [
+                {
+                  ...step,
+                  id: "classify",
+                  output: {
+                    schema: {
+                      type: "object",
+                      properties: { route: { type: "string" } },
+                    },
+                  },
+                },
+                {
+                  ...step,
+                  id: "work",
+                  workspace_affinity: { key: "shared-${{ values.route }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /agent output without provable finite choices/iu,
+    );
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            inputs: {
+              route: { type: "string", required: true, choices: ["reuse", "fresh"] },
+            },
+            values: { route: "${{ paseo.inputs.route == 'reuse' }}" },
+            steps: [{ ...step, workspace_affinity: { key: "shared-${{ values.route }}" } }],
+          },
+        ],
+      }),
+    );
+
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            on: "slack.mention",
+            filters: { from_users: ["U_ALLOWED"] },
+            values: {
+              provider_conversation: "${{ paseo.trigger.conversation_key }}",
+              conversation: "${{ values.provider_conversation }}",
+            },
+            steps: [
+              {
+                ...step,
+                workspace_affinity: { key: "shared-${{ values.conversation }}" },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              on: "slack.mention",
+              filters: { from_users: ["U_ALLOWED"] },
+              values: {
+                provider_conversation: "${{ paseo.trigger.conversation_key }}",
+                conversation: "${{ values.provider_conversation }}",
+              },
+              steps: [
+                {
+                  ...step,
+                  prompt: [{ text: "Conversation: ${{ values.conversation }}" }],
+                  workspace_affinity: { key: "shared-${{ values.conversation }}" },
+                },
+              ],
+            },
+          ],
+        }),
+      /conversation_key outside workspace_affinity\.key/iu,
+    );
+  });
+
+  it("rejects conversation-key value graphs without workspace-affinity consumers", () => {
+    const trigger = configuration().triggers[0]!;
+    const step = trigger.steps[0]!;
+
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...configuration(),
+          triggers: [
+            {
+              ...trigger,
+              on: "slack.mention",
+              filters: { from_users: ["U_ALLOWED"] },
+              values: {
+                provider_conversation: "${{ paseo.trigger.conversation_key }}",
+                conversation: "${{ values.provider_conversation }}",
+              },
+              steps: [step],
+            },
+          ],
+        }),
+      /conversation_key outside workspace_affinity\.key/iu,
     );
   });
 

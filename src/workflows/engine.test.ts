@@ -19,7 +19,7 @@ import type {
   ProviderEventReceiptRecord,
   TriggerRunRecord,
 } from "../db/types.js";
-import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
+import type { AcceptedTriggerProviderMatch, TriggerEventName } from "../triggers/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
@@ -1091,6 +1091,159 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(run.deadlineAt.toISOString(), "2026-08-06T12:02:00.000Z");
   });
 
+  it("derives workspace affinity from the authenticated conversation and retains it through the workflow deadline", async () => {
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => "manual-conversation-7",
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      now: () => now,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.deepEqual(dispatched?.workspaceAffinity, {
+      key: " review-manual-conversation-7 ",
+      retainUntil: "2026-08-06T12:02:00.000Z",
+      autoArchive: true,
+    });
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.deepEqual(
+      (await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id))?.launchIntent
+        ?.workspaceAffinity,
+      dispatched?.workspaceAffinity,
+    );
+  });
+
+  it("resolves conversation affinity through transitive named values", async () => {
+    const fixture = await workflowFixture({
+      rawConfiguration: affinityConfiguration(" review-${{ values.conversation }} ", {
+        conversation: "${{ values.provider_conversation }}",
+        provider_conversation: "${{ paseo.trigger.conversation_key }}",
+      }),
+    });
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      workspaceAffinityKey: () => "thread-through-values",
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.equal(dispatched?.workspaceAffinity?.key, " review-thread-through-values ");
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+    assert.ok(execution);
+    await fixture.database.transitionAgentExecution(execution.id, "succeeded", {
+      result: { status: "succeeded" },
+    });
+    await fixture.database.completeWorkflowStep(execution.id, "succeeded", {
+      status: "succeeded",
+    });
+    await engine.processAvailable();
+    assert.equal((await fixture.database.findTriggerRunById(run.id))?.status, "succeeded");
+  });
+
+  it("fails an invalid rendered workspace affinity key without retrying or dispatching", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => "x".repeat(506),
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const dispatches: LaunchMachineIntent[] = [];
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches.push(intent);
+        throw new Error("invalid workspace affinity key must not dispatch");
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    await engine.processAvailable();
+
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const step = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
+    assert.equal(run.status, "failed");
+    assert.match(run.failureReason ?? "", /workspace affinity key exceeds 512 characters/iu);
+    assert.equal(step.status, "failed");
+    assert.deepEqual(dispatches, []);
+  });
+
+  it("does not resolve provider affinity for a literal workspace key", async () => {
+    const fixture = await workflowFixture({
+      rawConfiguration: affinityConfiguration(" shared-release-triage "),
+    });
+    const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
+    const provider = {
+      ...baseProvider,
+      workspaceAffinityKey: () => {
+        throw new Error("literal affinity must not query the provider");
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    let dispatched: LaunchMachineIntent | undefined;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched = intent;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+
+    assert.equal(dispatched?.workspaceAffinity?.key, " shared-release-triage ");
+  });
+
   it("times out a live step when the whole-run deadline expires", async () => {
     let now = new Date("2026-08-06T12:00:00.000Z");
     const fixture = await workflowFixture({
@@ -1462,6 +1615,51 @@ describe("durable multi-step workflow engine", () => {
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.equal(execution?.launchIntent?.prompt, 'Context: {"ambient":"once"}\nTrigger: run');
   });
+
+  it("does not resolve conversation affinity when recovering a persisted pre-handoff execution", async () => {
+    let now = new Date("2026-08-06T12:00:00.000Z");
+    const fixture = await workflowFixture({ rawConfiguration: affinityConfiguration() });
+    let affinityLookups = 0;
+    let dispatches = 0;
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      workspaceAffinityKey() {
+        affinityLookups += 1;
+        if (affinityLookups > 1) throw new Error("provider registration is unavailable");
+        return "conversation-once";
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatches += 1;
+        if (dispatches === 1) throw new Error("dispatch crashed after persistence");
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+
+    await handler(fixture.trigger("run"));
+    await engine.processAvailable();
+    now = new Date("2026-08-06T12:00:02.000Z");
+    await engine.processAvailable();
+
+    assert.equal(affinityLookups, 1);
+    assert.equal(dispatches, 2);
+    const run = (
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
+    )[0]!;
+    const steps = await fixture.database.listWorkflowStepRunsForTriggerRun(run.id);
+    const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
+    assert.equal(execution?.launchIntent?.workspaceAffinity?.key, " review-conversation-once ");
+  });
 });
 
 interface Fixture {
@@ -1509,6 +1707,7 @@ async function workflowFixture(
         : { resolvedPromptPartials: options.resolvedPromptPartials }),
       ...(options.namedAgents === undefined ? {} : { namedAgents: options.namedAgents }),
     });
+  const eventSource = compiled.triggers[0]?.on ?? "manual.run";
   const configuration: CompiledHubConfig = {
     environments: compiled.environments.map((environment) => {
       if (environment.kind !== "daemon") return environment;
@@ -1536,7 +1735,7 @@ async function workflowFixture(
     organizationId: "org-1",
     projectId: project.id,
     deliveryId: randomUUID(),
-    source: "manual.run",
+    source: eventSource,
     payload: {},
     receivedAt: new Date(),
   });
@@ -1555,7 +1754,7 @@ async function workflowFixture(
         organizationId: "org-1",
         projectId: project.id,
         configurationRevisionId: revision.id,
-        source: "manual.run",
+        source: eventSource,
         deliveryId: receipt.event.deliveryId,
         payload: { input: message },
         receivedAt: new Date(),
@@ -1650,6 +1849,38 @@ function deadlineConfiguration(options: { idleTimeout?: string } = {}): Record<s
             idle_timeout: options.idleTimeout ?? "20s",
             agent: { provider: "codex" },
             prompt: [{ text: "run" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function affinityConfiguration(
+  key = " review-${{ paseo.trigger.conversation_key }} ",
+  values?: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/workspace" }],
+    triggers: [
+      {
+        name: "affinity-route",
+        on: "slack.mention",
+        max_runtime: "2m",
+        filters: { from_users: ["U_ALLOWED"] },
+        ...(values === undefined ? {} : { values }),
+        steps: [
+          {
+            id: "review",
+            environment: "runner",
+            max_runtime: "1m",
+            idle_timeout: "20s",
+            agent: { provider: "codex" },
+            prompt: [{ text: "run" }],
+            auto_archive: true,
+            workspace_affinity: {
+              key,
+            },
           },
         ],
       },
@@ -1890,9 +2121,12 @@ function finalValueConfiguration(): Record<string, unknown> {
 }
 
 function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
+  const eventName = configuration.triggers[0]?.on ?? "manual.run";
+  assertTriggerEventName(eventName);
+  const providerName = eventName.slice(0, eventName.indexOf("."));
   return {
-    name: "manual",
-    eventNames: ["manual.run"] as const,
+    name: providerName,
+    eventNames: [eventName],
     async match(external): Promise<readonly AcceptedTriggerProviderMatch[]> {
       const trigger = configuration.triggers[0]!;
       const input =
@@ -1905,8 +2139,8 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
       return [
         {
           triggerName: trigger.name,
-          triggerContext: { provider: "manual" },
-          outputContext: { provider: "manual" },
+          triggerContext: { provider: providerName },
+          outputContext: { provider: providerName },
           configurationRevisionId: revisionId,
           hubConfig: configuration,
           invocation,
@@ -1971,6 +2205,10 @@ function baseConfiguration(options: { unavailableValue?: boolean }): Record<stri
       },
     ],
   };
+}
+
+function assertTriggerEventName(value: string): asserts value is TriggerEventName {
+  if (!/^[^.]+\.[^.]+$/u.test(value)) throw new Error(`invalid test trigger event: ${value}`);
 }
 
 function terminalRecoveryConfiguration(): Record<string, unknown> {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   expressionPaths,
+  expressionPathsInTemplate,
   parseExpression,
   validateExecutionTemplate,
   type Expression,
@@ -23,6 +24,7 @@ import {
   type CompiledGitHubAuthority,
 } from "./github-authority.js";
 import { validateConnectionTemplate } from "./connection-template.js";
+import { triggerSupportsWorkspaceAffinityConversationKey } from "../triggers/workspace-affinity.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -160,6 +162,13 @@ const EnvironmentSchema = z.discriminatedUnion("kind", [
 
 const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
 
+const WorkspaceAffinityKeySchema = z
+  .string()
+  .min(1)
+  .refine((key) => key.trim().length > 0, "workspace affinity key must not be blank");
+
+const WorkspaceAffinitySchema = z.object({ key: WorkspaceAffinityKeySchema }).strict();
+
 const StepSchema = z
   .object({
     id: z.string().min(1),
@@ -174,6 +183,7 @@ const StepSchema = z
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
+    workspace_affinity: WorkspaceAffinitySchema.optional(),
   })
   .strict();
 
@@ -235,6 +245,10 @@ export interface CompiledInput {
   choices?: readonly JsonPrimitive[] | undefined;
 }
 
+export interface CompiledWorkspaceAffinity {
+  key: string;
+}
+
 export interface CompiledStep {
   id: string;
   environment: string;
@@ -248,6 +262,7 @@ export interface CompiledStep {
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
   autoArchive: boolean;
+  workspaceAffinity?: CompiledWorkspaceAffinity | undefined;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -348,6 +363,10 @@ const CompiledInputSchema: z.ZodType<CompiledInput> = z
   })
   .strict();
 
+const CompiledWorkspaceAffinitySchema: z.ZodType<CompiledWorkspaceAffinity> = z
+  .object({ key: WorkspaceAffinityKeySchema })
+  .strict();
+
 const CompiledEnvironmentSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -403,6 +422,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
+    workspaceAffinity: CompiledWorkspaceAffinitySchema.optional(),
   })
   .strict();
 
@@ -599,6 +619,9 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
+    ...(step.workspace_affinity === undefined
+      ? {}
+      : { workspaceAffinity: { key: step.workspace_affinity.key } }),
   };
 }
 
@@ -827,8 +850,19 @@ function validateExpressionContract(
   const stepOrdinals = new Map(trigger.steps.map((step, ordinal) => [step.id, ordinal]));
   const valueNames = new Set(Object.keys(trigger.values));
   const visiting = new Set<string>();
+  const workspaceAffinityValues = new Set<string>();
 
-  for (const name of valueNames) validateValue(name);
+  for (const step of trigger.steps) {
+    if (step.workspaceAffinity === undefined) continue;
+    compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity", "key"], () => {
+      for (const reference of expressionPathsInTemplate(step.workspaceAffinity!.key)) {
+        if (reference.namespace === "values") collectWorkspaceAffinityValue(reference.name);
+      }
+    });
+  }
+  for (const name of valueNames) {
+    if (!workspaceAffinityValues.has(name)) validateValue(name);
+  }
   for (const [ordinal, step] of trigger.steps.entries()) {
     if (step.condition !== undefined)
       compileAt(["triggers", triggerName, "steps", step.id, "if"], () =>
@@ -852,6 +886,18 @@ function validateExpressionContract(
           }
         }
       });
+    }
+    if (step.workspaceAffinity !== undefined) {
+      compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity", "key"], () =>
+        validateWorkspaceAffinityTemplate(
+          step.workspaceAffinity!.key,
+          ordinal,
+          `step ${step.id} workspace_affinity.key`,
+        ),
+      );
+      compileAt(["triggers", triggerName, "steps", step.id, "workspace_affinity"], () =>
+        validateWorkspaceAffinityEnvironmentSelection(step.environment, ordinal, step.id),
+      );
     }
     for (const [index, block] of step.prompt.entries()) {
       compileAt(["triggers", triggerName, "steps", step.id, "prompt", index], () =>
@@ -878,6 +924,41 @@ function validateExpressionContract(
       if (environments.get(name)?.kind !== "daemon") {
         throw new Error(`step ${stepId} environment ${name} must be a daemon environment`);
       }
+    }
+  }
+
+  function validateWorkspaceAffinityEnvironmentSelection(
+    template: string,
+    ordinal: number,
+    stepId: string,
+  ): void {
+    const selected = finiteTemplateValues(template, ordinal);
+    if (selected === undefined) return;
+    for (const name of selected) {
+      const environment = environments.get(name);
+      if (environment?.kind !== "daemon" || environment.worktree?.mode !== "branch-off") continue;
+      const executionScoped = expressionPathsInTemplate(environment.worktree.newBranch).some(
+        (reference) =>
+          reference.namespace === "paseo" &&
+          Array.isArray(reference.path) &&
+          reference.path[0] === "execution" &&
+          reference.path[1] === "id",
+      );
+      if (executionScoped) {
+        throw new Error(
+          `step ${stepId} workspace affinity environment ${name} must use a stable worktree target; worktree.newBranch references paseo.execution.id`,
+        );
+      }
+    }
+  }
+
+  function collectWorkspaceAffinityValue(name: string): void {
+    if (workspaceAffinityValues.has(name)) return;
+    workspaceAffinityValues.add(name);
+    const expression = trigger.values[name];
+    if (expression === undefined) return;
+    for (const reference of expressionPaths(expression)) {
+      if (reference.namespace === "values") collectWorkspaceAffinityValue(reference.name);
     }
   }
 
@@ -947,12 +1028,20 @@ function validateExpressionContract(
     return output === undefined ? undefined : finiteSchemaChoices(output.schema, reference.path);
   }
 
-  function validateValue(name: string, ordinal = Number.POSITIVE_INFINITY): void {
+  function validateValue(
+    name: string,
+    ordinal = Number.POSITIVE_INFINITY,
+    mode: "ordinary" | "authority" | "affinity" = "ordinary",
+  ): void {
     if (visiting.has(name)) throw new Error(`value dependency cycle includes ${name}`);
     const expression = trigger.values[name];
     if (expression === undefined) throw new Error(`value ${name} is unavailable`);
     visiting.add(name);
-    validateExpression(expression, ordinal, `value ${name}`, false);
+    if (mode === "affinity") {
+      validateWorkspaceAffinityExpression(expression, ordinal, `value ${name}`);
+    } else {
+      validateExpression(expression, ordinal, `value ${name}`, mode === "authority");
+    }
     visiting.delete(name);
   }
 
@@ -965,7 +1054,9 @@ function validateExpressionContract(
   ): void {
     for (const reference of expressionPaths(expression)) {
       validateReference(reference, ordinal, path, authorityBearing, contextAllowed);
-      if (reference.namespace === "values") validateValue(reference.name, ordinal);
+      if (reference.namespace === "values") {
+        validateValue(reference.name, ordinal, authorityBearing ? "authority" : "ordinary");
+      }
     }
     if (authorityBearing && !isFiniteAuthorityExpression(expression)) {
       throw new Error(
@@ -994,32 +1085,51 @@ function validateExpressionContract(
     }
   }
 
+  function validateWorkspaceAffinityTemplate(value: string, ordinal: number, path: string): void {
+    let cursor = 0;
+    while (true) {
+      const start = value.indexOf(EXPRESSION_START, cursor);
+      if (start < 0) return;
+      const end = value.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
+      if (end < 0) throw new Error(`${path} uses an unterminated expression`);
+      const expression = parseExpression(value.slice(start + EXPRESSION_START.length, end));
+      validateWorkspaceAffinityExpression(expression, ordinal, path);
+      cursor = end + EXPRESSION_END.length;
+    }
+  }
+
+  function validateWorkspaceAffinityExpression(
+    expression: Expression,
+    ordinal: number,
+    path: string,
+  ): void {
+    for (const reference of expressionPaths(expression)) {
+      validateReference(reference, ordinal, path, true, false, true);
+      if (reference.namespace === "values") validateValue(reference.name, ordinal, "affinity");
+    }
+    if (!isAffinityKeyExpression(expression)) {
+      throw new Error(
+        `${path} uses an unbounded key; use paseo.trigger.conversation_key or finite choices`,
+      );
+    }
+  }
+
   function validateReference(
     reference: ExpressionPath,
     ordinal: number,
     path: string,
     authorityBearing: boolean,
     contextAllowed: boolean,
+    conversationKeyAllowed = false,
   ): void {
     if (reference.namespace === "paseo") {
-      if (reference.path === "prompt") {
-        if (authorityBearing)
-          throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
-        return;
-      }
-      if (reference.path === "context") {
-        if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
-        return;
-      }
-      if (reference.path[0] === "execution") {
-        throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
-      }
-      const inputName = reference.path[1];
-      const input = trigger.inputs[inputName];
-      if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
-      if (authorityBearing && input.choices === undefined) {
-        throw new Error(`${path} uses input ${inputName} without finite choices`);
-      }
+      validatePaseoReference(
+        reference,
+        path,
+        authorityBearing,
+        contextAllowed,
+        conversationKeyAllowed,
+      );
       return;
     }
     if (reference.namespace === "values") {
@@ -1046,6 +1156,50 @@ function validateExpressionContract(
     }
   }
 
+  function validatePaseoReference(
+    reference: Extract<ExpressionPath, { namespace: "paseo" }>,
+    path: string,
+    authorityBearing: boolean,
+    contextAllowed: boolean,
+    conversationKeyAllowed: boolean,
+  ): void {
+    if (reference.path === "prompt") {
+      if (authorityBearing)
+        throw new Error(`${path} uses paseo.prompt in an authority-bearing field`);
+      return;
+    }
+    if (reference.path === "context") {
+      if (!contextAllowed) throw new Error(`${path} uses paseo.context outside a step prompt`);
+      return;
+    }
+    if (reference.path[0] === "execution") {
+      throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
+    }
+    if (reference.path[0] === "trigger") {
+      if (
+        !conversationKeyAllowed ||
+        reference.path[1] !== "conversation_key" ||
+        reference.path.length !== 2
+      ) {
+        throw new Error(
+          `${path} uses paseo.trigger.conversation_key outside workspace_affinity.key`,
+        );
+      }
+      if (!triggerSupportsWorkspaceAffinityConversationKey(trigger.on)) {
+        throw new Error(
+          `${path} uses paseo.trigger.conversation_key, but trigger event ${trigger.on} does not provide a conversation key`,
+        );
+      }
+      return;
+    }
+    const inputName = reference.path[1];
+    const input = trigger.inputs[inputName];
+    if (input === undefined) throw new Error(`${path} references undeclared input ${inputName}`);
+    if (authorityBearing && input.choices === undefined) {
+      throw new Error(`${path} uses input ${inputName} without finite choices`);
+    }
+  }
+
   function isFiniteAuthorityExpression(expression: Expression): boolean {
     if (expression.kind === "literal") return expression.value !== null;
     if (expression.kind === "not") return true;
@@ -1069,6 +1223,28 @@ function validateExpressionContract(
     const referencedOrdinal = stepOrdinals.get(reference.stepId);
     const step = referencedOrdinal === undefined ? undefined : trigger.steps[referencedOrdinal];
     return step?.output !== undefined && hasFiniteSchemaChoices(step.output.schema, reference.path);
+  }
+
+  function isAffinityKeyExpression(expression: Expression): boolean {
+    if (expression.kind === "literal") return true;
+    if (expression.kind === "not") return isAffinityKeyExpression(expression.value);
+    if (expression.kind === "binary") {
+      return isAffinityKeyExpression(expression.left) && isAffinityKeyExpression(expression.right);
+    }
+    const reference = expression.value;
+    if (
+      reference.namespace === "paseo" &&
+      Array.isArray(reference.path) &&
+      reference.path[0] === "trigger" &&
+      reference.path[1] === "conversation_key"
+    ) {
+      return true;
+    }
+    if (reference.namespace === "values") {
+      const value = trigger.values[reference.name];
+      return value !== undefined && isAffinityKeyExpression(value);
+    }
+    return isFiniteAuthorityExpression(expression);
   }
 
   if (
@@ -1229,6 +1405,7 @@ function validateStepEnvironmentContract(
       }
     }
   }
+
   if (github !== undefined) {
     validateGitHubAuthority(github, `trigger ${triggerName} step ${stepId} github`);
     if (github.repositories === undefined && !triggerEvent.startsWith("github.")) {
@@ -1302,7 +1479,8 @@ function isExpressionPath(value: unknown): boolean {
       (Array.isArray(value["path"]) &&
         value["path"].length === 2 &&
         ((value["path"][0] === "inputs" && typeof value["path"][1] === "string") ||
-          (value["path"][0] === "execution" && value["path"][1] === "id"))))
+          (value["path"][0] === "execution" && value["path"][1] === "id") ||
+          (value["path"][0] === "trigger" && value["path"][1] === "conversation_key"))))
   );
 }
 

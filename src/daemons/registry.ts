@@ -270,6 +270,7 @@ export class ActiveDaemonRegistry {
       env: options.env,
       mcpServers: options.mcpServers,
       worktree: options.worktree,
+      workspaceAffinity: options.workspaceAffinity,
     });
     return new Promise((resolve, reject) => {
       this.pendingFor(daemonId).set(requestId, {
@@ -600,15 +601,9 @@ export class ActiveDaemonRegistry {
     if (!pending || pending.kind !== "create" || pending.generation !== active.generation) return;
     const related = relatedCreateRequests(requests, active.generation, pending.executionId);
     for (const [requestId] of related) requests.delete(requestId);
-    if (response.payload.success && response.payload.toolPolicyApplied !== true) {
-      for (const [, request] of related) {
-        request.reject(
-          new DaemonCreateRejectedError(
-            "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
-            "tool_policy_not_confirmed",
-          ),
-        );
-      }
+    const contractRejection = createContractRejection(response);
+    if (contractRejection) {
+      for (const [, request] of related) request.reject(contractRejection);
       return;
     }
     if (!response.payload.success || !response.payload.agentId) {
@@ -690,6 +685,19 @@ function relatedCreateRequests(
     }
   }
   return related;
+}
+
+function createContractRejection(
+  response: z.infer<typeof HubExecutionAgentCreateResponseSchema>,
+): DaemonCreateRejectedError | undefined {
+  if (!response.payload.success) return undefined;
+  if (response.payload.toolPolicyApplied !== true) {
+    return new DaemonCreateRejectedError(
+      "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
+      "tool_policy_not_confirmed",
+    );
+  }
+  return undefined;
 }
 
 function samePermissions(actual: readonly string[], expected: readonly string[]): boolean {

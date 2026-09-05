@@ -14,6 +14,7 @@ import type {
 } from "../../providers/registration.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
+import { providerSupportsWorkspaceAffinityConversationKey } from "../../triggers/workspace-affinity.js";
 import type {
   Provider,
   ProviderApplicationConfiguration,
@@ -481,6 +482,14 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         const selected = current();
         return this.withLease(selected.active, () => selected.trigger.match(external));
       },
+      ...(providerSupportsWorkspaceAffinityConversationKey(provider)
+        ? {
+            workspaceAffinityKey: (triggerContext: unknown) => {
+              const selected = current();
+              return selected.trigger.workspaceAffinityKey?.(triggerContext);
+            },
+          }
+        : {}),
       materializeLaunch: (input) =>
         invoke((trigger) => trigger.materializeLaunch?.(input) ?? Promise.resolve({})),
       materializeContext: (input) =>

@@ -3,7 +3,12 @@ import type { JsonPrimitive, JsonValue } from "../config/compiler.js";
 export type ExpressionPath =
   | {
       namespace: "paseo";
-      path: "prompt" | "context" | ["inputs", string] | ["execution", "id"];
+      path:
+        | "prompt"
+        | "context"
+        | ["inputs", string]
+        | ["execution", "id"]
+        | ["trigger", "conversation_key"];
     }
   | { namespace: "steps"; stepId: string; path: readonly string[] }
   | { namespace: "values"; name: string };
@@ -25,6 +30,7 @@ export interface ExpressionContext {
   inputs: Readonly<Record<string, JsonPrimitive>>;
   steps: Readonly<Record<string, { status: string; output: unknown }>>;
   values: Readonly<Record<string, Expression>>;
+  triggerConversationKey?: string;
   executionId?: string;
 }
 
@@ -185,6 +191,12 @@ function parsePaseoPath(parts: readonly string[]): Expression {
   }
   if (parts[1] === "execution" && parts[2] === "id" && parts.length === 3) {
     return { kind: "path", value: { namespace: "paseo", path: ["execution", "id"] } };
+  }
+  if (parts[1] === "trigger" && parts[2] === "conversation_key" && parts.length === 3) {
+    return {
+      kind: "path",
+      value: { namespace: "paseo", path: ["trigger", "conversation_key"] },
+    };
   }
   throw new ExpressionSyntaxError(`unsupported path ${parts.join(".")}`);
 }
@@ -385,6 +397,12 @@ function readPath(path: ExpressionPath, context: ExpressionContext): JsonValue {
         throw new ExpressionEvaluationError("execution ID is unavailable");
       }
       return context.executionId;
+    }
+    if (path.path[0] === "trigger") {
+      if (context.triggerConversationKey === undefined) {
+        throw new ExpressionEvaluationError("trigger conversation key is unavailable");
+      }
+      return context.triggerConversationKey;
     }
     return context.inputs[path.path[1]] ?? null;
   }

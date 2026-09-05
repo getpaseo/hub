@@ -12,6 +12,12 @@ export interface DaemonAgentSnapshot {
   state?: HubExecutionAgentSnapshot;
 }
 
+export interface DaemonWorkspaceAffinity {
+  key: string;
+  retainUntil: string;
+  autoArchive: boolean;
+}
+
 export interface DaemonCreateAgentOptions {
   executionId: string;
   provider: string;
@@ -25,6 +31,7 @@ export interface DaemonCreateAgentOptions {
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
   worktree?: WorktreeTarget;
+  workspaceAffinity?: DaemonWorkspaceAffinity;
 }
 
 export interface McpToolRef {

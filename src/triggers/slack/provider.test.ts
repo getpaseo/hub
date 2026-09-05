@@ -233,6 +233,41 @@ describe("Slack Phase 1 trigger provider", () => {
     );
   });
 
+  it("uses one authenticated affinity key for a Slack root and its replies", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+    });
+    const root = (
+      await provider.match(
+        external(project.id, revision.id, { threadTs: null, messageTs: "1700000000.000001" }),
+      )
+    )[0];
+    const reply = (
+      await provider.match(
+        external(project.id, revision.id, {
+          threadTs: "1700000000.000001",
+          messageTs: "1700000001.000001",
+        }),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(root) || !isAcceptedTriggerProviderMatch(reply)) {
+      throw new Error("expected accepted matches");
+    }
+
+    assert.equal(
+      provider.workspaceAffinityKey?.(root.triggerContext),
+      provider.workspaceAffinityKey?.(reply.triggerContext),
+    );
+  });
+
   it("targets Slack failure output at the originating message thread", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(

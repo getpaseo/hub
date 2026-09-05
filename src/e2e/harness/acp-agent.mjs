@@ -90,7 +90,18 @@ class PhaseFiveAgent {
     });
     if (service === "daemon-restart" || prompt.includes("daemon-restart"))
       await runUntilInterrupted();
-    if (this.hubMcp) await scheduleHubCompletion(this.hubMcp);
+    if (this.hubMcp) {
+      if (process.env["HUB_E2E_COMPLETE_IN_TURN"] === "1") {
+        await initializeMcp(this.hubMcp);
+        const completion = await callMcp(this.hubMcp, 4, "tools/call", {
+          name: "finish_execution",
+          arguments: {},
+        });
+        if (completion.result?.isError === true) throw new Error("Hub completion was rejected");
+      } else {
+        await scheduleHubCompletion(this.hubMcp);
+      }
+    }
     return { stopReason: "end_turn" };
   }
 }

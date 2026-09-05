@@ -105,6 +105,7 @@ describe("dynamic provider runtime", () => {
 
     // The replaced source retires immediately; later callbacks use the active registration.
     assert.deepEqual(stopped, ["A1"]);
+    assert.equal(trigger.workspaceAffinityKey?.(oldMatch!.triggerContext), "A2:A1");
 
     await trigger.onAgentExecutionCompleted?.(oldMatch!.triggerContext, oldMatch!.outputContext, {
       status: "succeeded",
@@ -690,6 +691,7 @@ function fakeRegistration(
       completed.push(id);
       return Promise.resolve();
     },
+    workspaceAffinityKey: (triggerContext) => `${id}:${triggerContext.id}`,
   };
   return {
     connection: {

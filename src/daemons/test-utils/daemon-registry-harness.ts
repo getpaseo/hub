@@ -51,7 +51,10 @@ export class DaemonRegistryHarness {
     return harness;
   }
 
-  async pendingCreate(executionId: string): Promise<PendingRequest<DaemonAgentSnapshot>> {
+  async pendingCreate(
+    executionId: string,
+    options: { workspaceAffinity?: boolean } = {},
+  ): Promise<PendingRequest<DaemonAgentSnapshot>> {
     const connection = this.connection();
     const promise = connection.createAgent({
       executionId,
@@ -64,6 +67,15 @@ export class DaemonRegistryHarness {
       toolPolicy: {
         preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
       },
+      ...(options.workspaceAffinity
+        ? {
+            workspaceAffinity: {
+              key: "thread-1",
+              retainUntil: "2026-08-06T12:02:00.000Z",
+              autoArchive: true,
+            },
+          }
+        : {}),
     });
     void promise.catch(() => undefined);
     return {
@@ -187,6 +199,29 @@ export class DaemonRegistryHarness {
     });
   }
 
+  respondCreate(
+    pending: PendingRequest<DaemonAgentSnapshot>,
+    options: {
+      agentId?: string;
+      toolPolicyApplied?: boolean;
+      workspaceAffinityApplied?: boolean;
+    } = {},
+  ): void {
+    this.currentSocket().send({
+      type: "hub.execution.agent.create.response",
+      payload: {
+        requestId: pending.request.requestId,
+        executionId: pending.request.executionId,
+        agentId: options.agentId ?? `agent-${pending.request.executionId}`,
+        agent: null,
+        success: true,
+        ...(options.toolPolicyApplied ? { toolPolicyApplied: true } : {}),
+        ...(options.workspaceAffinityApplied ? { workspaceAffinityApplied: true } : {}),
+        error: null,
+      },
+    });
+  }
+
   async requestSettled(request: Promise<void>): Promise<boolean> {
     let settled = false;
     void request.finally(() => {
@@ -275,19 +310,16 @@ export class DaemonRegistryHarness {
     return this.currentSocket().waitUntilClosed();
   }
 
-  async completeCreate(executionId: string, agentId: string): Promise<DaemonAgentSnapshot> {
-    const pending = await this.pendingCreate(executionId);
-    this.currentSocket().send({
-      type: "hub.execution.agent.create.response",
-      payload: {
-        requestId: pending.request.requestId,
-        executionId,
-        agentId,
-        agent: null,
-        success: true,
-        toolPolicyApplied: true,
-        error: null,
-      },
+  async completeCreate(
+    executionId: string,
+    agentId: string,
+    options: { workspaceAffinity?: boolean } = {},
+  ): Promise<DaemonAgentSnapshot> {
+    const pending = await this.pendingCreate(executionId, options);
+    this.respondCreate(pending, {
+      agentId,
+      toolPolicyApplied: true,
+      ...(options.workspaceAffinity ? { workspaceAffinityApplied: true } : {}),
     });
     return pending.promise;
   }

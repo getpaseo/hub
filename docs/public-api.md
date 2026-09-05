@@ -33,6 +33,58 @@ Hub sends each daemon the authored rendered prompt unchanged. Execution tools ar
 
 Daemon environments may author `worktree.newBranch: "trigger-${{ paseo.execution.id }}"` for a stable branch name unique to each agent execution. Hub materializes the execution UUID before persisting or dispatching the launch intent; recovery reuses that fully rendered intent. This is independent of whether a manual, Slack, Discord, GitHub, or Linear trigger selected the reusable environment. No prompt, context, input, value, step output, or provider event namespace is available in environment configuration, and unsupported expressions fail bundle activation at the authored `newBranch` field.
 
+## Workspace affinity
+
+Workspace affinity is an explicit, step-scoped opt-in for a daemon workspace shared by related
+trigger arrivals. For example, an agent that replies to Slack threads can retain one workspace per
+thread:
+
+```yaml
+triggers:
+  - name: respond-to-slack
+    on: slack.mention
+    filters:
+      from_users: ["U0123456789"]
+    max_runtime: 2h
+    steps:
+      - id: respond
+        environment: runner
+        max_runtime: 30m
+        idle_timeout: 5m
+        auto_archive: true
+        workspace_affinity:
+          key: "slack-thread:${{ paseo.trigger.conversation_key }}"
+        agent: { provider: codex }
+        prompt: [{ text: "Respond to the thread." }]
+```
+
+`paseo.trigger.conversation_key` is a provider-authenticated identifier, not prompt text. Slack
+keys identify the connection, workspace, channel, and root thread; Discord keys identify the
+connection, guild, channel, and thread (or its starter message); GitHub keys identify the
+connection, repository, issue or pull request, and number. A key may also be a literal custom key,
+or be composed from finite declared inputs, values, and outputs. Prompt text, ambient context, the
+execution ID, and unbounded values are rejected so an untrusted event cannot select an existing
+workspace.
+
+Hub sends only the opaque key and the triggering workflow's `max_runtime` deadline. Daemons that
+support workspace affinity acknowledge the request, hash and persist their key-to-workspace
+mapping, and reuse an active workspace or restore it if it was archived. Each matching arrival
+extends retention to the later workflow deadline. With `auto_archive: true`, a supporting daemon
+archives the workspace at that retained deadline—not at `idle_timeout`. `idle_timeout` remains an
+in-execution liveness deadline. With `auto_archive: false`, Hub does not request affinity-driven
+workspace archiving.
+
+Workspace affinity is a progressive daemon capability. Older daemons safely ignore the optional
+request and continue creating and archiving fresh workspaces with their existing behavior; Hub does
+not reject those executions or require an immediate daemon upgrade. Exact reuse, retention, and
+archived-workspace restoration begin after the daemon is updated to a version that acknowledges
+workspace affinity.
+
+Affinity does not serialize matching executions: each gets its own agent in the shared workspace.
+All uses of a key must keep the same daemon target, cwd, worktree target, and auto-archive policy;
+the daemon rejects a mismatch rather than mixing state. In particular, an execution-ID-derived
+worktree branch is incompatible with reuse and is rejected during configuration compilation.
+
 `deliveryKey` is caller-supplied request identity for the existing durable manual-event path. Hub namespaces it by the authenticated organization and resolved project before persistence, so the same caller key can be used independently in different tenants or projects. Existing receipt/run de-duplication applies, but this API does not promise exactly-once execution or guaranteed response replay; retries can still fail or conflict during restart and timing races. A successful representation contains `deliveryKey`, `providerEventReceiptId`, `triggerRunId`, `configuredTriggerName`, and the durable `workflowStatus`.
 
 The self-hosted Scalar reference is served with a restrictive Content Security Policy and does not require external fonts, scripts, telemetry, registries, or proxies.
