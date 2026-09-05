@@ -345,7 +345,6 @@ async function findLinearStopRoutes(
       and(
         eq(schema.projects.id, schema.triggerRuns.projectId),
         eq(schema.projects.organizationId, organizationId),
-        eq(schema.projects.status, "active"),
       ),
     )
     .where(
