@@ -61,6 +61,19 @@ describe("Linear event acceptance", () => {
       receivedAt: new Date("2026-01-01T00:00:01.000Z"),
     });
     assert.equal(delayed.status, "accepted");
+    if (delayed.status !== "accepted") throw new Error("expected delayed session event");
+    await database.createRejectedTriggerRun({
+      organizationId: connection.organizationId,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: delayed.receiptId,
+      configuredTriggerName: "rejected-session-match",
+      prompt: "Help",
+      inputs: {},
+      triggerContext: {},
+      outputContext: { provider: "linear" },
+      rejection: { code: "missing_required", inputName: "priority" },
+    });
     const future = await database.acceptLinearEvent({
       linearOrganizationId: connection.linearOrganizationId,
       projectId: "linear-project",
