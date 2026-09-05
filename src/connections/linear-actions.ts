@@ -8,7 +8,7 @@ export function linearConnectionActionLabels(requiresReauthorization: boolean): 
         agentSessions: "Reauthorize Linear for Agent Sessions",
       }
     : {
-        baseline: "Connect Linear",
+        baseline: "Connect Linear without Agent Sessions",
         agentSessions: "Connect Linear for Agent Sessions",
       };
 }
