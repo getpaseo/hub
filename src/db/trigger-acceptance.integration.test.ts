@@ -544,6 +544,19 @@ describe("trigger acceptance persistence", () => {
       receivedAt: new Date("2026-01-01T00:00:01.000Z"),
     });
     assert.equal(delayed.status, "accepted");
+    if (delayed.status !== "accepted") throw new Error("expected delayed session event");
+    await database.createRejectedTriggerRun({
+      organizationId,
+      projectId,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: delayed.receiptId,
+      configuredTriggerName: "rejected-session-match",
+      prompt: "Help",
+      inputs: {},
+      triggerContext: {},
+      outputContext: { provider: "linear" },
+      rejection: { code: "missing_required", inputName: "priority" },
+    });
     await database.createAcceptedLinearTriggerRun({
       organizationId,
       projectId,
