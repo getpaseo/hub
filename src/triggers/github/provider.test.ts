@@ -120,6 +120,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     ["issues", "opened", "github.issue_created", 211],
     ["issues", "labeled", "github.issue_label_added", 211],
     ["pull_request", "opened", "github.pull_request_created", 312],
+    ["pull_request", "synchronize", "github.pull_request_updated", 312],
     ["pull_request", "labeled", "github.pull_request_label_added", 312],
   ] as const)("derives an item reaction target for %s %s", async (type, action, source, number) => {
     const configuration = githubConfiguration();
@@ -547,7 +548,7 @@ function createEvent(
 
 function createItemEvent(
   type: "issues" | "pull_request",
-  action: "opened" | "labeled",
+  action: "opened" | "synchronize" | "labeled",
   number: number,
 ): NormalizedGitHubEvent {
   return {
