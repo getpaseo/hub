@@ -9,6 +9,12 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toDatabaseError } from "./errors.js";
+import { completesAtIdleDeadline } from "./idle-completion.js";
+import {
+  linearTriggerSuppressionKind,
+  type LinearTriggerSuppressionReason,
+  type RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
@@ -69,6 +75,7 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
+  LinearAgentSessionStopConfirmationInput,
   GitHubLifecycleReceiptClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubLifecycleResult,
@@ -86,6 +93,8 @@ import type {
   PendingProjectTriggerMigration,
   SaveOrganizationTriggerInput,
   CreateAcceptedTriggerRunInput,
+  CreateAcceptedLinearTriggerRunInput,
+  CreateAcceptedLinearTriggerRunResult,
   CreateRejectedTriggerRunInput,
   AgentExecutionHubAcknowledgementInput,
   AcceptedTriggerRunRecord,
@@ -477,65 +486,244 @@ class PgDatabase implements Database {
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     try {
+      return await this.pool.transaction((client) =>
+        this.createAcceptedTriggerRunWithinTransaction(client, input),
+      );
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult> {
+    try {
       return await this.pool.transaction(async (client) => {
-        const inserted = await client.query<TriggerRunRow>(
-          `insert into trigger_runs
+        const { kind, externalId } = input.linearTrigger;
+        await client.query(
+          `insert into linear_trigger_controls
+             (organization_id, project_id, kind, external_id)
+           values ($1, $2, $3, $4)
+           on conflict (project_id, kind, external_id) do nothing`,
+          [input.organizationId, input.projectId, kind, externalId],
+        );
+        const controls = await client.query<LinearTriggerControlRow>(
+          `select suppression_reason, suppression_occurred_at
+           from linear_trigger_controls
+           where project_id = $1 and kind = $2 and external_id = $3
+           for update`,
+          [input.projectId, kind, externalId],
+        );
+        const control = controls.rows[0];
+        if (control === undefined) throw new Error("Linear trigger control unavailable");
+        if (
+          control.suppression_reason !== null &&
+          (kind === "comment" ||
+            (control.suppression_occurred_at !== null &&
+              input.linearTrigger.eventOccurredAt.getTime() <=
+                control.suppression_occurred_at.getTime()))
+        ) {
+          return { created: false, suppressionReason: control.suppression_reason };
+        }
+        return this.createAcceptedTriggerRunWithinTransaction(client, input);
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async recordLinearTriggerSuppressions(
+    input: RecordLinearTriggerSuppressionsInput,
+  ): Promise<boolean> {
+    if (input.externalIds.length === 0) return false;
+    try {
+      return await this.pool.transaction(async (client) => {
+        const receipt = await client.query(
+          `select 1 from provider_event_receipts
+           where id = $1 and organization_id = $2
+             and accepted_routes @> $3::jsonb`,
+          [
+            input.providerEventReceiptId,
+            input.organizationId,
+            JSON.stringify([{ projectId: input.projectId }]),
+          ],
+        );
+        if (receipt.rowCount === 0) {
+          throw new Error("Linear trigger suppression receipt route unavailable");
+        }
+        const kind = linearTriggerSuppressionKind(input.reason);
+        let recorded = false;
+        for (const externalId of new Set(input.externalIds)) {
+          const result = await client.query(
+            `insert into linear_trigger_controls
+               (organization_id, project_id, kind, external_id, suppression_reason,
+                suppression_occurred_at, source_provider_event_receipt_id, updated_at)
+             values ($1, $2, $3, $4, $5, $6, $7, now())
+             on conflict (project_id, kind, external_id) do update set
+               suppression_reason = excluded.suppression_reason,
+               suppression_occurred_at = excluded.suppression_occurred_at,
+               source_provider_event_receipt_id = excluded.source_provider_event_receipt_id,
+               updated_at = now()
+             where linear_trigger_controls.suppression_occurred_at is null
+                or linear_trigger_controls.suppression_occurred_at < excluded.suppression_occurred_at
+             returning 1`,
+            [
+              input.organizationId,
+              input.projectId,
+              kind,
+              externalId,
+              input.reason,
+              input.eventOccurredAt,
+              input.providerEventReceiptId,
+            ],
+          );
+          if (result.rowCount !== 0) recorded = true;
+        }
+        return recorded;
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean> {
+    const claimId = randomUUID();
+    let claimed = false;
+    let operationCompleted = false;
+    try {
+      const claim = await query(
+        this.pool,
+        `update provider_event_receipts
+         set linear_stop_confirmation_status = 'pending',
+             linear_stop_confirmation_claim_id = $4,
+             linear_stop_confirmation_lease_expires_at = clock_timestamp() + interval '5 minutes'
+         where id = $1 and organization_id = $2
+           and source = 'linear.agent_session'
+           and payload -> 'agentSession' ->> 'id' = $3
+           and linear_stop_confirmation_status is distinct from 'confirmed'
+           and (linear_stop_confirmation_claim_id is null
+             or linear_stop_confirmation_lease_expires_at <= clock_timestamp())
+         returning id`,
+        [input.providerEventReceiptId, input.organizationId, input.agentSessionId, claimId],
+      );
+      claimed = claim.rowCount !== 0;
+      if (!claimed) {
+        const state = await query<{ status: string | null }>(
+          this.pool,
+          `select linear_stop_confirmation_status as status
+           from provider_event_receipts
+           where id = $1 and organization_id = $2
+             and source = 'linear.agent_session'
+             and payload -> 'agentSession' ->> 'id' = $3`,
+          [input.providerEventReceiptId, input.organizationId, input.agentSessionId],
+        );
+        const status = state.rows[0]?.status;
+        if (status === "confirmed") return false;
+        if (status === "pending") {
+          throw new Error("Linear stop confirmation is already in progress");
+        }
+        throw new Error("Linear stop confirmation receipt unavailable");
+      }
+
+      await confirm();
+      operationCompleted = true;
+      const completed = await query(
+        this.pool,
+        `update provider_event_receipts
+         set linear_stop_confirmation_status = 'confirmed',
+             linear_stop_confirmation_claim_id = null,
+             linear_stop_confirmation_lease_expires_at = null
+         where id = $1 and linear_stop_confirmation_status = 'pending'
+           and linear_stop_confirmation_claim_id = $2`,
+        [input.providerEventReceiptId, claimId],
+      );
+      if (completed.rowCount === 0) throw new Error("Linear stop confirmation lease was lost");
+      return true;
+    } catch (error) {
+      if (claimed && !operationCompleted) {
+        try {
+          await query(
+            this.pool,
+            `update provider_event_receipts
+             set linear_stop_confirmation_status = null,
+                 linear_stop_confirmation_claim_id = null,
+                 linear_stop_confirmation_lease_expires_at = null
+             where id = $1 and linear_stop_confirmation_status = 'pending'
+               and linear_stop_confirmation_claim_id = $2`,
+            [input.providerEventReceiptId, claimId],
+          );
+        } catch (releaseError) {
+          throw new Error(
+            `Linear stop confirmation failed (${toDatabaseError(error).message}) and its retry lease could not be released`,
+            { cause: releaseError },
+          );
+        }
+      }
+      throw toDatabaseError(error);
+    }
+  }
+
+  private async createAcceptedTriggerRunWithinTransaction(
+    client: QueryHandle,
+    input: CreateAcceptedTriggerRunInput,
+  ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
+    const inserted = await client.query<TriggerRunRow>(
+      `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
             prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
          values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
-          [
-            input.id ?? null,
-            input.organizationId,
-            input.projectId,
-            input.configurationRevisionId,
-            input.providerEventReceiptId,
-            input.configuredTriggerName,
-            input.prompt,
-            input.inputs,
-            input.triggerContext,
-            input.outputContext,
-            input.deadlineAt,
-            input.createdAt ?? new Date(),
-          ],
-        );
-        let run = inserted.rows[0];
-        const created = run !== undefined;
-        if (run === undefined) {
-          const existing = await client.query<TriggerRunRow>(
-            `select * from trigger_runs
+      [
+        input.id ?? null,
+        input.organizationId,
+        input.projectId,
+        input.configurationRevisionId,
+        input.providerEventReceiptId,
+        input.configuredTriggerName,
+        input.prompt,
+        input.inputs,
+        input.triggerContext,
+        input.outputContext,
+        input.deadlineAt,
+        input.createdAt ?? new Date(),
+      ],
+    );
+    let run = inserted.rows[0];
+    const created = run !== undefined;
+    if (run === undefined) {
+      const existing = await client.query<TriggerRunRow>(
+        `select * from trigger_runs
            where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
            for update`,
-            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-          );
-          run = existing.rows[0];
-        }
-        if (run === undefined) throw new Error("trigger run insert returned no row");
-        if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        for (const [ordinal, stepId] of input.stepIds.entries()) {
-          await client.query(
-            `insert into workflow_step_runs
+        [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
+      );
+      run = existing.rows[0];
+    }
+    if (run === undefined) throw new Error("trigger run insert returned no row");
+    if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+    for (const [ordinal, stepId] of input.stepIds.entries()) {
+      await client.query(
+        `insert into workflow_step_runs
              (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
            values ($1, $2, $3, 'pending', null, null, null)
            on conflict (trigger_run_id, ordinal) do nothing`,
-            [run.id, stepId, ordinal],
-          );
-        }
-        await client.query(
-          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
+        [run.id, stepId, ordinal],
+      );
+    }
+    await client.query(
+      `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
          values ($1, $2, null)
          on conflict (trigger_run_id) do nothing`,
-          [run.id, input.createdAt ?? new Date()],
-        );
-        const record = toTriggerRunRecord(run);
-        if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        return { run: record, created };
-      });
-    } catch (error) {
-      throw toDatabaseError(error);
-    }
+      [run.id, input.createdAt ?? new Date()],
+    );
+    const record = toTriggerRunRecord(run);
+    if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+    return { run: record, created };
   }
 
   async createRejectedTriggerRun(
@@ -616,6 +804,37 @@ class PgDatabase implements Database {
        order by created_at desc, configured_trigger_name, id desc
        limit $2`,
       [projectId, limit],
+    );
+    return rows.rows.map(toTriggerRunRecord);
+  }
+
+  async listRunningTriggerRunsForProject(projectId: string) {
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs
+       where project_id = $1
+         and outcome = 'accepted'
+         and status = 'running'
+       order by created_at desc, configured_trigger_name, id desc`,
+      [projectId],
+    );
+    return rows.rows
+      .map(toTriggerRunRecord)
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.outcome === "accepted" && run.status === "running",
+      );
+  }
+
+  async listTriggerRunsForLinearComments(projectId: string, commentIds: readonly string[]) {
+    if (commentIds.length === 0) return [];
+    const rows = await query<TriggerRunRow>(
+      this.pool,
+      `select * from trigger_runs
+       where project_id = $1
+         and trigger_context #>> '{event,linear,comment,id}' = any($2::text[])
+       order by created_at desc, configured_trigger_name, id desc`,
+      [projectId, [...commentIds]],
     );
     return rows.rows.map(toTriggerRunRecord);
   }
@@ -959,6 +1178,23 @@ class PgDatabase implements Database {
               terminalRun,
             );
           }
+          if (
+            deadlineKind === "step_idle" &&
+            completesAtIdleDeadline(toAgentExecutionRecord(execution))
+          ) {
+            const completed = await completeWorkflowStepAtIdleDeadlineOnClient(
+              client,
+              execution,
+              step,
+              run,
+              observedAt,
+            );
+            const terminalRun = await findTriggerRunOnClient(client, run.id);
+            return transitionWithTerminalRun(
+              { execution: toAgentExecutionRecord(completed), transitioned: true },
+              terminalRun,
+            );
+          }
           if (deadlineKind !== undefined) {
             const updated = await timeoutWorkflowStepOnClient(
               client,
@@ -1091,9 +1327,31 @@ class PgDatabase implements Database {
             stepRun: toWorkflowStepRunRecord(step),
             run: toTriggerRunRecord(run),
             transitioned: false,
+            failedExecutionIds: [],
           };
         }
         const completedAt = new Date();
+        const failedExecutions = await client.query<{ id: string }>(
+          `update agent_executions
+           set status = 'failed', completed_at = $2::timestamptz,
+               result = jsonb_build_object('status', 'failed', 'reason', $3::text),
+               idle_deadline_at = null,
+               hub_action = case
+                 when daemon_id is null then null
+                 when coalesce((launch_intent ->> 'autoArchive')::boolean, false) then 'archive'
+                 else 'interrupt'
+               end,
+               hub_action_completed_at = case
+                 when daemon_id is null then $2::timestamptz
+                 else null::timestamptz
+               end
+           where workflow_step_run_id in (
+             select id from workflow_step_runs where trigger_run_id = $1
+           )
+             and status in ('spawning', 'running')
+           returning id`,
+          [triggerRunId, completedAt, failureReason],
+        );
         const updatedStep = await client.query<WorkflowStepRunRow>(
           `update workflow_step_runs
          set status = case when status in ('pending', 'running') then $2 else status end,
@@ -1117,6 +1375,7 @@ class PgDatabase implements Database {
           stepRun: toWorkflowStepRunRecord(updatedStep.rows[0] ?? step),
           run: toTriggerRunRecord(updatedRun.rows[0]!),
           transitioned: true,
+          failedExecutionIds: failedExecutions.rows.map((execution) => execution.id),
         };
       });
     } catch (error) {
@@ -1280,6 +1539,22 @@ class PgDatabase implements Database {
                 run.id,
               ]);
               recoveries.push({ triggerRunId: run.id, executionIds: [] });
+            } else if (
+              deadlineKind === "step_idle" &&
+              completesAtIdleDeadline(toAgentExecutionRecord(execution))
+            ) {
+              const completed = await completeWorkflowStepAtIdleDeadlineOnClient(
+                client,
+                execution,
+                step,
+                run,
+                now,
+              );
+              recoveries.push({
+                triggerRunId: run.id,
+                executionIds: [],
+                completedExecutionIds: [completed.id],
+              });
             } else {
               const updated = await timeoutWorkflowStepOnClient(
                 client,
@@ -4052,6 +4327,7 @@ class PgDatabase implements Database {
               receipts.repo, receipts.received_at, receipts.dropped_reason
        from provider_event_receipts receipts
        where receipts.organization_id = $1
+         -- Keep in sync with UNROUTED_PROVIDER_EVENT_DROP_REASON_CODES (drop-reason.ts).
          and receipts.dropped_reason in (
            'no_project_route',
            'no_trigger_for_source',
@@ -4406,6 +4682,11 @@ interface TriggerRunRow extends QueryRow {
   rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
+}
+
+interface LinearTriggerControlRow extends QueryRow {
+  suppression_reason: LinearTriggerSuppressionReason | null;
+  suppression_occurred_at: Date | null;
 }
 
 interface ProjectActivityRunRow extends TriggerRunRow {
@@ -5157,6 +5438,29 @@ async function timeoutWorkflowStepOnClient(
   }
   await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
   return updated;
+}
+
+async function completeWorkflowStepAtIdleDeadlineOnClient(
+  client: QueryHandle,
+  execution: AgentExecutionRow,
+  step: WorkflowStepRunRow,
+  run: TriggerRunRow,
+  observedAt: Date,
+): Promise<AgentExecutionRow> {
+  const input: WorkflowAgentCompletionInput = {
+    executionId: execution.id,
+    executionStatus: "succeeded",
+    stepStatus: "succeeded",
+    result: { status: "succeeded" },
+    observedAt,
+    hubAction:
+      execution.daemon_id !== null && execution.launch_intent?.autoArchive === true
+        ? "archive"
+        : null,
+  };
+  const transition = await transitionWorkflowAgentExecution(client, execution, input);
+  await finishWorkflowStepAndRun(client, step, run, input);
+  return transition?.execution ?? execution;
 }
 
 async function timeoutWorkflowRunOnClient(

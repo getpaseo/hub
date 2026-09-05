@@ -1,4 +1,5 @@
 import { DatabaseUnavailableError } from "../db/errors.js";
+import { readLinearTriggerStart } from "../db/linear-trigger-suppression.js";
 import type {
   AgentExecutionRecord,
   Database,
@@ -183,7 +184,7 @@ export class DurableWorkflowEngine {
         // Accepting a trigger reserves nothing: a trigger can skip every step, and multi-step
         // workflows create several executions. Metering happens per execution, at creation time
         // (see processWakeup), so the meter is genuinely per-execution and atomic with the work.
-        const created = await this.options.database!.createAcceptedTriggerRun({
+        const createInput = {
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           configurationRevisionId,
@@ -196,7 +197,16 @@ export class DurableWorkflowEngine {
           deadlineAt: runDeadline,
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
-        });
+        };
+        const linearTrigger = readLinearTriggerStart(acceptedMatch.triggerContext);
+        const created =
+          linearTrigger === undefined
+            ? await this.options.database!.createAcceptedTriggerRun(createInput)
+            : await this.options.database!.createAcceptedLinearTriggerRun({
+                ...createInput,
+                linearTrigger,
+              });
+        if ("suppressionReason" in created) return;
         if (created.created) await this.deliverWorkflowRunAccepted(created.run);
       }),
     );
@@ -1112,6 +1122,7 @@ async function collectProviderMatches(
   return {
     matches,
     dropReason:
+      reasons.find((reason) => reason === "agent_session_stopped") ??
       reasons.find((reason) => reason === "configuration_unavailable") ??
       reasons.find((reason) => reason === "trigger_filters_rejected") ??
       "no_trigger_for_source",

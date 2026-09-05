@@ -1,8 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
+import { completesAtIdleDeadline } from "./idle-completion.js";
+import {
+  isLinearAgentSessionStop,
+  linearAgentSessionId,
+  linearAgentSessionStopId,
+} from "./linear-event-acceptance.js";
+import {
+  linearTriggerSuppressionKey,
+  linearTriggerSuppressionKind,
+  type LinearTriggerSuppressionReason,
+  type RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import {
+  hasRequiredLinearAgentSessionScopes,
+  linearConnectionRequiresReauthorization,
+} from "../providers/linear/client.js";
 import type {
   AgentExecutionRecord,
   AgentExecutionOutputAttempt,
@@ -61,6 +76,7 @@ import type {
   DiscordConnectionRecord,
   SlackConnectionRecord,
   LinearConnectionRecord,
+  LinearAgentSessionStopConfirmationInput,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
   ProjectTriggerRoute,
@@ -71,6 +87,8 @@ import type {
   SaveOrganizationTriggerInput,
   OrganizationTriggerRoute,
   CreateAcceptedTriggerRunInput,
+  CreateAcceptedLinearTriggerRunInput,
+  CreateAcceptedLinearTriggerRunResult,
   CreateRejectedTriggerRunInput,
   AcceptedTriggerRunRecord,
   RejectedTriggerRunRecord,
@@ -104,7 +122,7 @@ import {
 } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 import {
-  isProviderEventDropReasonCode,
+  isUnroutedProviderEventDropReasonCode,
   type ProviderEventDropReasonCode,
 } from "../triggers/drop-reason.js";
 
@@ -159,6 +177,22 @@ class MemoryDatabase implements Database {
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
+  private readonly linearTriggerControls = new Map<
+    string,
+    {
+      suppressionReason: LinearTriggerSuppressionReason | null;
+      suppressionOccurredAt: Date | null;
+      sourceProviderEventReceiptId: string | null;
+    }
+  >();
+  private readonly linearStopConfirmations = new Map<
+    string,
+    {
+      status: "pending" | "confirmed";
+      claimId: string | null;
+      leaseExpiresAt: Date | null;
+    }
+  >();
   private readonly triggerRunIdsByProviderEventReceipt = new Map<
     string,
     Map<string, Map<string, string>>
@@ -302,6 +336,129 @@ class MemoryDatabase implements Database {
     return { run, created: true };
   }
 
+  async createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult> {
+    const { kind, externalId } = input.linearTrigger;
+    const key = linearTriggerSuppressionKey(input.projectId, kind, externalId);
+    return this.withAdvisoryLock(key, async () => {
+      const control = this.linearTriggerControls.get(key);
+      if (
+        control?.suppressionReason !== null &&
+        control?.suppressionReason !== undefined &&
+        (kind === "comment" ||
+          (control.suppressionOccurredAt !== null &&
+            input.linearTrigger.eventOccurredAt.getTime() <=
+              control.suppressionOccurredAt.getTime()))
+      ) {
+        return { created: false, suppressionReason: control.suppressionReason };
+      }
+      if (control === undefined) {
+        this.linearTriggerControls.set(key, {
+          suppressionReason: null,
+          suppressionOccurredAt: null,
+          sourceProviderEventReceiptId: null,
+        });
+      }
+      return this.createAcceptedTriggerRun(input);
+    });
+  }
+
+  async recordLinearTriggerSuppressions(
+    input: RecordLinearTriggerSuppressionsInput,
+  ): Promise<boolean> {
+    const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
+    if (receipt === undefined)
+      throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+    if (receipt.organizationId !== input.organizationId) {
+      throw new Error("Linear trigger suppression receipt organization mismatch");
+    }
+    if (!receipt.acceptedRoutes?.some((route) => route.projectId === input.projectId)) {
+      throw new Error("Linear trigger suppression receipt route unavailable");
+    }
+    const kind = linearTriggerSuppressionKind(input.reason);
+    let recorded = false;
+    for (const externalId of new Set(input.externalIds)) {
+      const key = linearTriggerSuppressionKey(input.projectId, kind, externalId);
+      const updated = await this.withAdvisoryLock(key, async () => {
+        const existing = this.linearTriggerControls.get(key);
+        if (
+          existing?.suppressionOccurredAt !== null &&
+          existing?.suppressionOccurredAt !== undefined &&
+          existing.suppressionOccurredAt.getTime() >= input.eventOccurredAt.getTime()
+        ) {
+          return false;
+        }
+        this.linearTriggerControls.set(key, {
+          suppressionReason: input.reason,
+          suppressionOccurredAt: input.eventOccurredAt,
+          sourceProviderEventReceiptId: input.providerEventReceiptId,
+        });
+        return true;
+      });
+      if (updated) recorded = true;
+    }
+    return recorded;
+  }
+
+  async confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean> {
+    const key = `linear-stop-confirmation:${input.providerEventReceiptId}`;
+    const claimId = randomUUID();
+    const claimed = await this.withAdvisoryLock(key, async () => {
+      const receipt = this.providerEventReceipts.get(input.providerEventReceiptId);
+      if (receipt === undefined)
+        throw new Error(`provider event receipt not found: ${input.providerEventReceiptId}`);
+      if (
+        receipt.organizationId !== input.organizationId ||
+        linearAgentSessionId(receipt) !== input.agentSessionId
+      ) {
+        throw new Error("Linear stop confirmation receipt mismatch");
+      }
+      const existing = this.linearStopConfirmations.get(input.providerEventReceiptId);
+      if (existing?.status === "confirmed") return false;
+      if (
+        existing?.status === "pending" &&
+        existing.leaseExpiresAt !== null &&
+        existing.leaseExpiresAt.getTime() > this.now().getTime()
+      ) {
+        throw new Error("Linear stop confirmation is already in progress");
+      }
+      this.linearStopConfirmations.set(input.providerEventReceiptId, {
+        status: "pending",
+        claimId,
+        leaseExpiresAt: new Date(this.now().getTime() + 5 * 60_000),
+      });
+      return true;
+    });
+    if (!claimed) return false;
+    try {
+      await confirm();
+    } catch (error) {
+      await this.withAdvisoryLock(key, async () => {
+        const current = this.linearStopConfirmations.get(input.providerEventReceiptId);
+        if (current?.status === "pending" && current.claimId === claimId) {
+          this.linearStopConfirmations.delete(input.providerEventReceiptId);
+        }
+      });
+      throw error;
+    }
+    await this.withAdvisoryLock(key, async () => {
+      const current = this.linearStopConfirmations.get(input.providerEventReceiptId);
+      if (current?.status !== "pending" || current.claimId !== claimId) {
+        throw new Error("Linear stop confirmation lease was lost");
+      }
+      this.linearStopConfirmations.set(input.providerEventReceiptId, {
+        status: "confirmed",
+        claimId: null,
+        leaseExpiresAt: null,
+      });
+    });
+    return true;
+  }
+
   async createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }> {
@@ -374,6 +531,29 @@ class MemoryDatabase implements Database {
           left.configuredTriggerName.localeCompare(right.configuredTriggerName),
       )
       .slice(0, limit);
+  }
+
+  async listRunningTriggerRunsForProject(projectId: string) {
+    return [...this.triggerRuns.values()]
+      .filter(
+        (run): run is AcceptedTriggerRunRecord =>
+          run.projectId === projectId && run.outcome === "accepted" && run.status === "running",
+      )
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() ||
+          left.configuredTriggerName.localeCompare(right.configuredTriggerName),
+      );
+  }
+
+  async listTriggerRunsForLinearComments(projectId: string, commentIds: readonly string[]) {
+    const wanted = new Set(commentIds);
+    return (await this.listTriggerRunsForProject(projectId, Number.POSITIVE_INFINITY)).filter(
+      (run) => {
+        const commentId = linearCommentIdOf(run.triggerContext);
+        return commentId !== undefined && wanted.has(commentId);
+      },
+    );
   }
 
   async findWorkflowStepRunById(id: string) {
@@ -604,9 +784,14 @@ class MemoryDatabase implements Database {
         );
       }
       if (deadlineKind !== undefined) {
-        const timedOut = this.timeoutWorkflowStep(execution.id, deadlineKind, observedAt);
-        const terminalRun = this.triggerRuns.get(run.id);
-        return transitionWithTerminalRun(timedOut, terminalRun);
+        const resolved = this.resolveWorkflowStepDeadline(
+          execution,
+          step,
+          run,
+          deadlineKind,
+          observedAt,
+        );
+        return transitionWithTerminalRun(resolved, this.triggerRuns.get(run.id));
       }
     }
 
@@ -676,6 +861,52 @@ class MemoryDatabase implements Database {
       });
     }
     this.workflowWakeups.delete(run.id);
+  }
+
+  /** A step whose execution already emitted an output completes at its idle deadline; any other step deadline times it out. */
+  private resolveWorkflowStepDeadline(
+    execution: AgentExecutionRecord,
+    step: WorkflowStepRunRecord,
+    run: TriggerRunRecord,
+    deadlineKind: Exclude<WorkflowDeadlineKind, "whole_run">,
+    now: Date,
+  ): TransitionAgentExecutionResult {
+    return deadlineKind === "step_idle" && completesAtIdleDeadline(execution)
+      ? this.completeWorkflowStepAtIdleDeadline(execution, step, run, now)
+      : this.timeoutWorkflowStep(execution.id, deadlineKind, now);
+  }
+
+  private completeWorkflowStepAtIdleDeadline(
+    execution: AgentExecutionRecord,
+    step: WorkflowStepRunRecord,
+    run: TriggerRunRecord,
+    now: Date,
+  ): TransitionAgentExecutionResult {
+    const result = { status: "succeeded" as const };
+    const hubAction: AgentExecutionRecord["hubAction"] =
+      execution.daemonId !== null && execution.launchIntent?.autoArchive === true
+        ? "archive"
+        : null;
+    const updatedExecution: AgentExecutionRecord = {
+      ...execution,
+      status: "succeeded",
+      completedAt: now,
+      result,
+      idleDeadlineAt: null,
+      hubAction,
+      hubActionCompletedAt: hubAction === null ? now : null,
+      hubActionReadyAt: null,
+      hubActionAcknowledgements: emptyHubActionAcknowledgements(),
+    };
+    this.agentExecutions.set(execution.id, updatedExecution);
+    this.finishWorkflowStep(step, run, {
+      executionId: execution.id,
+      executionStatus: "succeeded",
+      stepStatus: "succeeded",
+      result,
+      observedAt: now,
+    });
+    return { execution: updatedExecution, transitioned: true };
   }
 
   private timeoutWorkflowStep(
@@ -818,8 +1049,18 @@ class MemoryDatabase implements Database {
         const deadlineKind = workflowDeadlineKind(execution, step, run, now);
         if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
         if (execution !== undefined) {
-          const recovery = this.timeoutWorkflowStep(execution.id, deadlineKind, now);
-          recoveries.push({ triggerRunId: run.id, executionIds: [recovery.execution.id] });
+          const resolved = this.resolveWorkflowStepDeadline(
+            execution,
+            step,
+            run,
+            deadlineKind,
+            now,
+          );
+          recoveries.push(
+            resolved.execution.status === "succeeded"
+              ? { triggerRunId: run.id, executionIds: [], completedExecutionIds: [execution.id] }
+              : { triggerRunId: run.id, executionIds: [execution.id] },
+          );
         } else {
           this.workflowStepRuns.set(step.id, {
             ...step,
@@ -897,8 +1138,36 @@ class MemoryDatabase implements Database {
           )
         : steps.find((candidate) => candidate.stepId === stepId)) ?? steps[0];
     if (run === undefined || step === undefined) return undefined;
-    if (run.status !== "running") return { stepRun: step, run, transitioned: false };
+    if (run.status !== "running") {
+      return { stepRun: step, run, transitioned: false, failedExecutionIds: [] };
+    }
     const now = this.options.now?.() ?? new Date();
+    const failedExecutionIds: string[] = [];
+    for (const candidate of steps) {
+      if (candidate.agentExecutionId === null) continue;
+      const execution = this.agentExecutions.get(candidate.agentExecutionId);
+      if (
+        execution === undefined ||
+        (execution.status !== "spawning" && execution.status !== "running")
+      ) {
+        continue;
+      }
+      let hubAction: AgentExecutionRecord["hubAction"] = null;
+      if (execution.daemonId !== null) {
+        hubAction = execution.launchIntent?.autoArchive === true ? "archive" : "interrupt";
+      }
+      this.agentExecutions.set(execution.id, {
+        ...execution,
+        status: "failed",
+        completedAt: now,
+        result: { status: "failed", reason: failureReason },
+        idleDeadlineAt: null,
+        hubAction,
+        hubActionCompletedAt: hubAction === null ? now : null,
+        hubActionReadyAt: null,
+      });
+      failedExecutionIds.push(execution.id);
+    }
     const updatedStep =
       step.status === "pending" || step.status === "running"
         ? { ...step, status, failureReason, completedAt: now }
@@ -913,7 +1182,12 @@ class MemoryDatabase implements Database {
     this.workflowStepRuns.set(step.id, updatedStep);
     this.triggerRuns.set(run.id, updatedRun);
     this.workflowWakeups.delete(run.id);
-    return { stepRun: updatedStep, run: updatedRun, transitioned: true };
+    return {
+      stepRun: updatedStep,
+      run: updatedRun,
+      transitioned: true,
+      failedExecutionIds,
+    };
   }
 
   async recoverWorkflowWakeups(now: Date) {
@@ -1053,12 +1327,16 @@ class MemoryDatabase implements Database {
   async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
     const reason = linearDropReason(input, binding);
+    const resourceIds = [input.projectId, input.teamId].flatMap((id) =>
+      id === undefined ? [] : [id],
+    );
     return this.acceptMemoryEvent(
       input,
       binding?.organizationId,
       binding?.id,
-      input.projectId ?? null,
+      resourceIds[0] ?? null,
       reason,
+      resourceIds,
     );
   }
 
@@ -2936,7 +3214,8 @@ class MemoryDatabase implements Database {
         (receipt) =>
           receipt.organizationId === organizationId &&
           receipt.droppedReason !== null &&
-          isProviderEventDropReasonCode(receipt.droppedReason) &&
+          // Same codes as the Postgres query: a stop receipt was handled, not left unrouted.
+          isUnroutedProviderEventDropReasonCode(receipt.droppedReason) &&
           !routedReceiptIds.has(receipt.id),
       )
       .sort(
@@ -3086,6 +3365,7 @@ class MemoryDatabase implements Database {
     connectionId: string | undefined,
     resourceId: string | null,
     reason: string | undefined,
+    candidateResourceIds: readonly string[] = resourceId === null ? [] : [resourceId],
   ): Promise<ProviderEventAcceptance> {
     const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
@@ -3135,7 +3415,7 @@ class MemoryDatabase implements Database {
       };
     }
     const provider = providerForInput(input);
-    const routes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
+    const currentRoutes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
       ([projectId, candidates]) => {
         const project = this.projects.get(projectId);
         return project?.status === "active" && project.activeConfigurationRevisionId !== null
@@ -3144,12 +3424,65 @@ class MemoryDatabase implements Database {
                 (route) =>
                   route.provider === provider &&
                   route.connectionId === connectionId &&
-                  (route.resourceId === null || route.resourceId === resourceId),
+                  (route.resourceId === null || candidateResourceIds.includes(route.resourceId)),
               )
-              .map((route) => Object.assign({}, route, { projectId }))
+              .map((route) => ({
+                projectId,
+                configurationRevisionId: project.activeConfigurationRevisionId!,
+                connectionId: route.connectionId,
+                resourceId: route.resourceId,
+              }))
           : [];
       },
     );
+    const stopSessionId =
+      provider === "linear" && "linearOrganizationId" in input
+        ? linearAgentSessionStopId(input)
+        : undefined;
+    const cancellationRoutes =
+      stopSessionId === undefined || !("linearOrganizationId" in input)
+        ? []
+        : [
+            ...Array.from(this.triggerRuns.values()).flatMap((run) => {
+              const project = this.projects.get(run.projectId);
+              return run.outcome === "accepted" &&
+                run.status === "running" &&
+                run.organizationId === organizationId &&
+                project !== undefined &&
+                matchesLinearSessionOutput(
+                  run.outputContext,
+                  input.linearOrganizationId,
+                  stopSessionId,
+                )
+                ? [
+                    {
+                      projectId: run.projectId,
+                      configurationRevisionId: run.configurationRevisionId,
+                      connectionId,
+                      resourceId: null,
+                    },
+                  ]
+                : [];
+            }),
+            ...Array.from(this.providerEventReceipts.values()).flatMap((candidate) =>
+              candidate.organizationId === organizationId &&
+              candidate.provider === "linear" &&
+              candidate.connectionId === connectionId &&
+              candidate.source === "linear.agent_session" &&
+              candidate.droppedReason === null &&
+              candidate.receivedAt.getTime() <= input.receivedAt.getTime() &&
+              linearAgentSessionId(candidate) === stopSessionId
+                ? (candidate.acceptedRoutes ?? []).filter(
+                    (route) =>
+                      this.projects.has(route.projectId) &&
+                      !this.triggerRunIdsByProviderEventReceipt
+                        .get(candidate.id)
+                        ?.has(route.projectId),
+                  )
+                : [],
+            ),
+          ];
+    const routes = [...currentRoutes, ...cancellationRoutes];
     if (routes.length === 0) {
       this.providerEventReceipts.set(receipt.id, {
         ...receipt,
@@ -3166,7 +3499,7 @@ class MemoryDatabase implements Database {
       providerEventReceiptId: receipt.id,
       organizationId,
       projectId: route.projectId,
-      configurationRevisionId: this.projects.get(route.projectId)!.activeConfigurationRevisionId!,
+      configurationRevisionId: route.configurationRevisionId,
       deliveryId: input.deliveryId,
       source: input.source,
       payload: input.payload,
@@ -3264,6 +3597,23 @@ class MemoryDatabase implements Database {
   }
 }
 
+function matchesLinearSessionOutput(
+  outputContext: unknown,
+  linearOrganizationId: string,
+  agentSessionId: string,
+): boolean {
+  if (!isRecord(outputContext)) return false;
+  return (
+    outputContext["provider"] === "linear" &&
+    outputContext["linearOrganizationId"] === linearOrganizationId &&
+    outputContext["agentSessionId"] === agentSessionId
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function emptyHubActionAcknowledgements(): AgentExecutionHubAcknowledgements {
   return { terminalAt: null, idleAt: null, finishExecutionCall: null };
 }
@@ -3281,7 +3631,7 @@ function providerForInput(
 ): "github" | "discord" | "slack" | "linear" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
-  return "teamId" in input ? "slack" : "linear";
+  return "linearOrganizationId" in input ? "linear" : "slack";
 }
 
 function githubDropReason(
@@ -3318,7 +3668,12 @@ function linearDropReason(
 ): string | undefined {
   if (input.dropReason !== undefined) return input.dropReason;
   if (binding === undefined) return "linear_unbound";
-  if (linearConnectionRequiresReauthorization(binding, input.receivedAt)) {
+  if (isLinearAgentSessionStop(input)) return undefined;
+  if (
+    linearConnectionRequiresReauthorization(binding, input.receivedAt) ||
+    (input.source === "linear.agent_session" &&
+      !hasRequiredLinearAgentSessionScopes(binding.scopes))
+  ) {
     return "configuration_unavailable";
   }
   return undefined;
@@ -3389,4 +3744,20 @@ function attachmentSourceKey(
   sourceId: string,
 ): string {
   return `${providerEventReceiptId}:${provider}:${sourceId}`;
+}
+
+/** The triggering comment a Linear trigger context records; mirrors the SQL JSON path. */
+function linearCommentIdOf(triggerContext: unknown): string | undefined {
+  const event = nestedRecord(nestedRecord(triggerContext)?.["event"]);
+  const comment = nestedRecord(nestedRecord(event?.["linear"])?.["comment"]);
+  const id = comment?.["id"];
+  return typeof id === "string" ? id : undefined;
+}
+
+function nestedRecord(value: unknown): Record<string, unknown> | undefined {
+  return isPlainRecord(value) ? value : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

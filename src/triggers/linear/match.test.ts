@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
-import type { NormalizedLinearCommentEvent, NormalizedLinearIssueEvent } from "./events.js";
+import type {
+  NormalizedLinearAgentSessionEvent,
+  NormalizedLinearCommentEvent,
+  NormalizedLinearIssueEvent,
+} from "./events.js";
 import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
 
 describe("Linear trigger matching", () => {
@@ -61,6 +65,182 @@ describe("Linear trigger matching", () => {
     );
   });
 
+  it("routes projectless issues by team and can select comment replies", () => {
+    const config = configuration();
+    const teamScout = {
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "scout")
+        .map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: { team: "team-1", states: ["ready"], exclude_labels: ["no-paseo"] },
+          }),
+        ),
+    };
+    assert.deepEqual(
+      matchLinearTriggers(
+        teamScout,
+        issue({ issue: { ...issue().issue, projectId: null, teamId: "team-1" } }),
+      ).map((match) => match.trigger.name),
+      ["scout"],
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({ issue: { ...issue().issue, projectId: null, teamId: "other-team" } }),
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({
+          action: "update",
+          issue: { ...issue().issue, projectId: null, teamId: "team-1" },
+          updatedFrom: { teamId: "other-team" },
+        }),
+      ).length,
+      1,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        teamScout,
+        issue({
+          action: "update",
+          issue: { ...issue().issue, projectId: null, teamId: "team-1" },
+          updatedFrom: { teamId: "team-1" },
+        }),
+      ).length,
+      0,
+    );
+
+    const replies = {
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: {
+              project: "project-1",
+              from_users: ["operator"],
+              replies_only: true,
+            },
+          }),
+        ),
+    };
+    assert.equal(matchLinearTriggers(replies, commentEvent("continue", null)).length, 0);
+    assert.deepEqual(
+      matchLinearTriggers(replies, commentEvent("continue", "root-comment")).map(
+        (match) => match.trigger.name,
+      ),
+      ["comment"],
+    );
+  });
+
+  it("fires thread_with_app only for replies in a thread the app commented in", () => {
+    const config = configuration();
+    const withFilters = (filters: Record<string, unknown>) => ({
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) => Object.assign({}, trigger, { filters })),
+    });
+    const scope = { project: "project-1", from_users: ["operator"] };
+    const threadWithApp = withFilters({ ...scope, thread_with_app: true });
+    const reply = {
+      ...commentEvent("continue", "root-comment"),
+      threadAuthorIds: ["operator", "app-user"],
+    };
+
+    assert.deepEqual(
+      matchLinearTriggers(threadWithApp, reply, undefined, "app-user").map(
+        (match) => match.trigger.name,
+      ),
+      ["comment"],
+    );
+    // A thread without the app, a root comment, an unread thread, and an unknown app user
+    // all fail closed.
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...reply, threadAuthorIds: ["operator", "reviewer"] },
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...reply, comment: { ...reply.comment, parentId: null } },
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        commentEvent("continue", "root-comment"),
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(matchLinearTriggers(threadWithApp, reply).length, 0);
+    assert.equal(matchLinearTriggers(threadWithApp, reply, undefined, null).length, 0);
+    // Unset or false leaves plain comment matching untouched.
+    assert.equal(matchLinearTriggers(withFilters(scope), reply).length, 1);
+    assert.equal(
+      matchLinearTriggers(withFilters({ ...scope, thread_with_app: false }), reply).length,
+      1,
+    );
+  });
+
+  it("never treats an agent-session thread as a thread with the app", () => {
+    const config = configuration();
+    const withFilters = (filters: Record<string, unknown>) => ({
+      ...config,
+      triggers: config.triggers
+        .filter((trigger) => trigger.name === "comment")
+        .map((trigger) => Object.assign({}, trigger, { filters })),
+    });
+    const scope = { project: "project-1", from_users: ["operator"] };
+    const threadWithApp = withFilters({ ...scope, thread_with_app: true });
+    // The app answered in the thread, so by authorship alone it would qualify.
+    const sessionReply = {
+      ...commentEvent("continue", "session-root"),
+      threadAuthorIds: ["linear-bot", "operator", "app-user"],
+      threadIsAgentSession: true,
+    };
+
+    assert.equal(matchLinearTriggers(threadWithApp, sessionReply, undefined, "app-user").length, 0);
+    assert.equal(
+      matchLinearTriggers(
+        withFilters({ ...scope, thread_with_app: true, replies_only: true }),
+        sessionReply,
+        undefined,
+        "app-user",
+      ).length,
+      0,
+    );
+    assert.equal(
+      matchLinearTriggers(
+        threadWithApp,
+        { ...sessionReply, threadIsAgentSession: false },
+        undefined,
+        "app-user",
+      ).length,
+      1,
+    );
+    // Only thread_with_app consults it: replies_only and plain scoping still fire.
+    assert.equal(
+      matchLinearTriggers(withFilters({ ...scope, replies_only: true }), sessionReply).length,
+      1,
+    );
+    assert.equal(matchLinearTriggers(withFilters(scope), sessionReply).length, 1);
+  });
+
   it("keeps triggers isolated to their configured Linear connection", () => {
     const connectionId = "11111111-1111-4111-8111-111111111111";
     const config = configuration();
@@ -82,6 +262,7 @@ describe("Linear trigger matching", () => {
         expected: "assignment",
       },
       { event: commentEvent(), expected: "comment" },
+      { event: agentSessionEvent(), expected: "agent-session" },
     ];
 
     for (const { event, expected } of events) {
@@ -94,6 +275,24 @@ describe("Linear trigger matching", () => {
         0,
       );
     }
+  });
+
+  it("matches created and prompted agent sessions with project and actor boundaries", () => {
+    const config = configuration();
+    assert.deepEqual(
+      matchLinearTriggers(config, agentSessionEvent()).map((match) => match.trigger.name),
+      ["agent-session"],
+    );
+    assert.deepEqual(
+      matchLinearTriggers(config, agentSessionEvent({ action: "created" })).map(
+        (match) => match.trigger.name,
+      ),
+      ["agent-session"],
+    );
+    assert.equal(
+      matchLinearTriggers(config, agentSessionEvent({ actor: { id: "untrusted" } })).length,
+      0,
+    );
   });
 });
 
@@ -195,6 +394,18 @@ function configuration() {
         filters: { project: "project-1", from_users: ["operator"], contains: "@paseo" },
         steps: [base],
       },
+      {
+        name: "agent-session",
+        on: "linear.agent_session",
+        max_runtime: "2h",
+        filters: { project: "project-1", from_users: ["operator"] },
+        steps: [
+          {
+            ...base,
+            allow_outputs: [{ type: "linear.reply", max: 1, required: true }],
+          },
+        ],
+      },
     ],
   });
 }
@@ -217,6 +428,7 @@ function issue(
       title: "Ship the feature",
       description: "Useful context",
       projectId: "project-1",
+      teamId: "team-1",
       stateId: "ready",
       assigneeId: "user-1",
       labelIds: labelIds ?? [],
@@ -226,7 +438,10 @@ function issue(
   };
 }
 
-function commentEvent(body = "@paseo please investigate"): NormalizedLinearCommentEvent {
+function commentEvent(
+  body = "@paseo please investigate",
+  parentId: string | null = null,
+): NormalizedLinearCommentEvent {
   const event = issue();
   return {
     type: "comment",
@@ -234,7 +449,38 @@ function commentEvent(body = "@paseo please investigate"): NormalizedLinearComme
     id: "comment-1",
     organizationId: event.organizationId,
     actor: event.actor,
-    comment: { id: "comment-1", issueId: event.issue.id, body },
+    comment: { id: "comment-1", issueId: event.issue.id, body, parentId },
     issue: event.issue,
+  };
+}
+
+function agentSessionEvent(
+  overrides: Partial<NormalizedLinearAgentSessionEvent> = {},
+): NormalizedLinearAgentSessionEvent {
+  const base = issue();
+  return {
+    type: "agent_session",
+    action: "prompted",
+    id: "activity-1",
+    organizationId: base.organizationId,
+    actor: base.actor,
+    agentSession: {
+      id: "session-1",
+      appUserId: "app-user",
+      issueId: base.issue.id,
+      status: "active",
+    },
+    agentActivity: {
+      id: "activity-1",
+      type: "prompt",
+      body: "Please investigate",
+      createdAt: "2026-01-02T00:01:00.000Z",
+    },
+    prompt: "Please investigate",
+    parserMessage: "Please investigate",
+    promptContext: null,
+    issue: base.issue,
+    occurredAt: "2026-01-02T00:01:00.000Z",
+    ...overrides,
   };
 }

@@ -3,6 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type {
+  NormalizedLinearAgentSessionEvent,
   NormalizedLinearCommentEvent,
   NormalizedLinearEvent,
   NormalizedLinearIssue,
@@ -25,7 +26,20 @@ export function readLinearCommentInvocationParserMessage(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
 ): string {
-  const body = event.comment.body;
+  return readLinearInvocationParserMessage(event.comment.body, filter);
+}
+
+export function readLinearAgentSessionInvocationParserMessage(
+  event: NormalizedLinearAgentSessionEvent,
+  filter: TriggerFilter | undefined,
+): string {
+  return readLinearInvocationParserMessage(event.parserMessage, filter);
+}
+
+function readLinearInvocationParserMessage(
+  body: string,
+  filter: TriggerFilter | undefined,
+): string {
   const pattern = readCommentTextFilter(filter, "pattern");
   const contains = readCommentTextFilter(filter, "contains");
 
@@ -61,15 +75,18 @@ export function readLinearCommentInvocationParserMessage(
  * Match Linear's entity-level webhooks onto the small set of workflow-facing events. A scope
  * transition is edge-triggered: an eligible issue creates one run when it enters scope rather
  * than another run for every later title, estimate, or description update.
+ *
+ * `appUserId` is the Linear user the connection acts as; only `thread_with_app` consults it.
  */
 export function matchLinearTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedLinearEvent,
   connectionId?: string | null,
+  appUserId?: string | null,
 ): MatchedLinearTrigger[] {
   return config.triggers.flatMap((trigger) => {
     if (!matchesLinearEvent(trigger.on, event)) return [];
-    if (!matchesTriggerFilter(trigger, event, connectionId)) return [];
+    if (!matchesTriggerFilter(trigger, event, connectionId, appUserId)) return [];
     return [{ event, trigger }];
   });
 }
@@ -82,6 +99,7 @@ export function matchesIssueScope(
   if (filter === undefined) return false;
   if (filter.connectionId !== undefined && filter.connectionId !== connectionId) return false;
   if (filter.project !== undefined && filter.project !== issue.projectId) return false;
+  if (filter.team !== undefined && filter.team !== issue.teamId) return false;
   if (filter.states !== undefined && !matchesOptionalId(filter.states, issue.stateId)) return false;
   if (filter.assignees !== undefined && !matchesOptionalId(filter.assignees, issue.assigneeId)) {
     return false;
@@ -113,6 +131,7 @@ function matchesLinearEvent(eventName: string, event: NormalizedLinearEvent): bo
       Object.hasOwn(event.updatedFrom, "assigneeId")
     );
   }
+  if (eventName === "linear.agent_session") return event.type === "agent_session";
   return (
     eventName === "linear.comment_created" && event.type === "comment" && event.action === "create"
   );
@@ -122,6 +141,7 @@ function matchesTriggerFilter(
   trigger: MatchedTriggerDefinition,
   event: NormalizedLinearEvent,
   connectionId?: string | null,
+  appUserId?: string | null,
 ): boolean {
   if (trigger.on === "linear.issue_entered_scope") {
     return (
@@ -133,7 +153,12 @@ function matchesTriggerFilter(
   const issue = event.type === "issue" ? event.issue : event.issue;
   if (issue === null || !matchesIssueScope(issue, trigger.filters, connectionId)) return false;
   if (!matchesActor(event, trigger.filters?.from_users)) return false;
-  if (event.type === "comment" && !matchesCommentText(event, trigger.filters)) return false;
+  if (event.type === "comment" && !matchesComment(event, trigger.filters, appUserId)) {
+    return false;
+  }
+  if (event.type === "agent_session" && !matchesText(event.parserMessage, trigger.filters)) {
+    return false;
+  }
   return true;
 }
 
@@ -150,6 +175,9 @@ function enteredConfiguredScope(
     ...event.issue,
     ...(Object.hasOwn(event.updatedFrom, "projectId")
       ? { projectId: event.updatedFrom.projectId ?? null }
+      : {}),
+    ...(Object.hasOwn(event.updatedFrom, "teamId")
+      ? { teamId: event.updatedFrom.teamId ?? null }
       : {}),
     ...(Object.hasOwn(event.updatedFrom, "stateId")
       ? { stateId: event.updatedFrom.stateId ?? null }
@@ -183,14 +211,43 @@ function matchesOptionalId(allowed: readonly string[], value: string | null): bo
   return value !== null && allowed.includes(value);
 }
 
-function matchesCommentText(
+function matchesComment(
   event: NormalizedLinearCommentEvent,
   filter: TriggerFilter | undefined,
+  appUserId: string | null | undefined,
 ): boolean {
+  if (filter?.replies_only === true && event.comment.parentId === null) return false;
+  if (filter?.thread_with_app === true && !isReplyInThreadWithApp(event, appUserId)) return false;
+  return matchesText(event.comment.body, filter);
+}
+
+/**
+ * A reply in a plain comment thread the app already commented in. A root comment never
+ * qualifies, and an unread thread (`threadAuthorIds` absent) or an unknown app user fails
+ * closed: firing on a guess would bring back the double runs this filter exists to avoid.
+ *
+ * An agent-session thread never qualifies either, even though the app's responses make it
+ * look like one: Linear delivers a reply there as a session prompt as well, and the session
+ * is the one handling it. `replies_only` on its own is not affected.
+ */
+function isReplyInThreadWithApp(
+  event: NormalizedLinearCommentEvent,
+  appUserId: string | null | undefined,
+): boolean {
+  return (
+    event.comment.parentId !== null &&
+    event.threadIsAgentSession !== true &&
+    typeof appUserId === "string" &&
+    event.threadAuthorIds !== undefined &&
+    event.threadAuthorIds.includes(appUserId)
+  );
+}
+
+function matchesText(body: string, filter: TriggerFilter | undefined): boolean {
   const pattern = filter?.pattern;
-  if (pattern !== undefined && !event.comment.body.startsWith(pattern)) return false;
+  if (pattern !== undefined && !body.startsWith(pattern)) return false;
   const contains = filter?.contains;
-  return contains === undefined || event.comment.body.includes(contains);
+  return contains === undefined || body.includes(contains);
 }
 
 function consumeLeadingLinearCommandMarker(

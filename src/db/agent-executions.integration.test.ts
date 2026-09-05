@@ -10,7 +10,12 @@ import {
   type CompiledHubConfig,
 } from "../config/compiler.js";
 import type { AgentExecutionRecord, Database } from "./types.js";
+import { completesAtIdleDeadline } from "./idle-completion.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import {
+  OUTPUT_DELIVERY_FAILED_REASON,
+  failedRequiredOutputDeliveries,
+} from "../execution-capabilities/required-outputs.js";
 import type { DurableProviderEvent } from "../db/types.js";
 import type { RejectedTriggerProviderMatch, TriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
@@ -322,6 +327,249 @@ describe("agent execution PostgreSQL repository", () => {
     } finally {
       await fixture.database.close();
     }
+  });
+
+  describe("step idle deadline after an emitted output", () => {
+    const AFTER_IDLE = new Date("2026-08-05T12:00:08.000Z");
+
+    it("completes the step and wakes the run when the idle deadline sweep finds an emitted output", async () => {
+      const fixture = await idleWorkflowFixture(postgres, { emitted: true });
+      try {
+        const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
+
+        assert.deepEqual(recoveries, [
+          {
+            triggerRunId: fixture.run.id,
+            executionIds: [],
+            completedExecutionIds: [fixture.execution.id],
+          },
+        ]);
+        const execution = await fixture.database.findAgentExecutionById(fixture.execution.id);
+        assert.deepEqual(
+          {
+            status: execution?.status,
+            result: execution?.result,
+            hubAction: execution?.hubAction,
+            completedAt: execution?.completedAt?.toISOString(),
+          },
+          {
+            status: "succeeded",
+            result: { status: "succeeded" },
+            hubAction: null,
+            completedAt: AFTER_IDLE.toISOString(),
+          },
+        );
+        const step = await fixture.database.findWorkflowStepRunById(fixture.step.id);
+        assert.deepEqual(
+          { status: step?.status, deadlineKind: step?.deadlineKind },
+          { status: "succeeded", deadlineKind: null },
+        );
+        assert.equal(
+          (await fixture.database.findTriggerRunById(fixture.run.id))?.status,
+          "running",
+        );
+        assert.equal(
+          (await fixture.database.claimWorkflowWakeup(AFTER_IDLE, 1_000))?.triggerRunId,
+          fixture.run.id,
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
+    it("still times out the step when the sweep finds no emitted output", async () => {
+      const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+      try {
+        const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
+
+        assert.deepEqual(recoveries, [
+          { triggerRunId: fixture.run.id, executionIds: [fixture.execution.id] },
+        ]);
+        const execution = await fixture.database.findAgentExecutionById(fixture.execution.id);
+        assert.deepEqual(execution?.result, { status: "failed", reason: "step_idle_timeout" });
+        const step = await fixture.database.findWorkflowStepRunById(fixture.step.id);
+        assert.deepEqual(
+          { status: step?.status, deadlineKind: step?.deadlineKind },
+          { status: "timed_out", deadlineKind: "step_idle" },
+        );
+        const run = await fixture.database.findTriggerRunById(fixture.run.id);
+        if (run?.outcome !== "accepted") throw new Error("accepted run was not persisted");
+        assert.deepEqual(
+          { status: run.status, deadlineKind: run.deadlineKind },
+          { status: "failed", deadlineKind: "step_idle" },
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
+    it("turns a late completion into a success instead of an idle timeout once an output was emitted", async () => {
+      const fixture = await idleWorkflowFixture(postgres, { emitted: true });
+      try {
+        const transition = await fixture.database.completeWorkflowAgentExecution({
+          executionId: fixture.execution.id,
+          executionStatus: "succeeded",
+          stepStatus: "succeeded",
+          result: { status: "succeeded" },
+          observedAt: AFTER_IDLE,
+        });
+
+        assert.equal(transition.transitioned, true);
+        assert.equal(transition.deadlineKind, undefined);
+        assert.deepEqual(transition.execution.result, { status: "succeeded" });
+        assert.equal(transition.execution.status, "succeeded");
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+          "succeeded",
+        );
+        assert.equal(
+          (await fixture.database.findTriggerRunById(fixture.run.id))?.status,
+          "running",
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
+    it("keeps coercing a late completion into an idle timeout without an emitted output", async () => {
+      const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+      try {
+        const transition = await fixture.database.completeWorkflowAgentExecution({
+          executionId: fixture.execution.id,
+          executionStatus: "succeeded",
+          stepStatus: "succeeded",
+          result: { status: "succeeded" },
+          observedAt: AFTER_IDLE,
+        });
+
+        assert.equal(transition.deadlineKind, "step_idle");
+        assert.deepEqual(transition.execution.result, {
+          status: "failed",
+          reason: "step_idle_timeout",
+        });
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+          "timed_out",
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    });
+  });
+
+  it("fails a linked live execution in the same transaction as its workflow run", async () => {
+    const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+    try {
+      const failed = await fixture.database.failWorkflowRun(
+        fixture.run.id,
+        "failed",
+        "stopped_by_user",
+      );
+
+      assert.equal(failed?.transitioned, true);
+      assert.deepEqual(failed?.failedExecutionIds, [fixture.execution.id]);
+      assert.equal(
+        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.status,
+        "failed",
+      );
+      assert.deepEqual(
+        (await fixture.database.findAgentExecutionById(fixture.execution.id))?.result,
+        { status: "failed", reason: "stopped_by_user" },
+      );
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+        "failed",
+      );
+      assert.equal((await fixture.database.findTriggerRunById(fixture.run.id))?.status, "failed");
+    } finally {
+      await fixture.database.close();
+    }
+  });
+
+  describe("finish without a delivered required output", () => {
+    const BEFORE_IDLE = new Date("2026-08-05T12:00:04.000Z");
+    const AFTER_IDLE = new Date("2026-08-05T12:00:08.000Z");
+
+    it("persists failed attempts as no delivery and keeps the idle deadline on the timeout path", async () => {
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: false,
+        requiredOutput: true,
+        failedDeliveries: 3,
+      });
+      try {
+        assert.deepEqual(fixture.execution.outputEmissions, {});
+        assert.deepEqual(failedRequiredOutputDeliveries(fixture.execution), [
+          { type: "linear.reply", failedAttempts: 3 },
+        ]);
+        assert.equal(completesAtIdleDeadline(fixture.execution), false);
+
+        const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
+
+        assert.deepEqual(recoveries, [
+          { triggerRunId: fixture.run.id, executionIds: [fixture.execution.id] },
+        ]);
+        assert.deepEqual(
+          (await fixture.database.findAgentExecutionById(fixture.execution.id))?.result,
+          { status: "failed", reason: "step_idle_timeout" },
+        );
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
+    it("records an explicit completion after failed deliveries as a failed step and run", async () => {
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: false,
+        requiredOutput: true,
+        failedDeliveries: 3,
+      });
+      try {
+        const transition = await fixture.database.completeWorkflowAgentExecution({
+          executionId: fixture.execution.id,
+          executionStatus: "failed",
+          stepStatus: "failed",
+          result: { status: "failed", reason: OUTPUT_DELIVERY_FAILED_REASON },
+          stepOutput: { status: "failed", reason: OUTPUT_DELIVERY_FAILED_REASON },
+          failureReason: OUTPUT_DELIVERY_FAILED_REASON,
+          observedAt: BEFORE_IDLE,
+          hubAction: null,
+        });
+
+        assert.equal(transition.transitioned, true);
+        assert.equal(transition.deadlineKind, undefined);
+        assert.deepEqual(
+          { status: transition.execution.status, result: transition.execution.result },
+          { status: "failed", result: { status: "failed", reason: "output_delivery_failed" } },
+        );
+        const step = await fixture.database.findWorkflowStepRunById(fixture.step.id);
+        assert.deepEqual(
+          {
+            status: step?.status,
+            failureReason: step?.failureReason,
+            deadlineKind: step?.deadlineKind,
+          },
+          { status: "failed", failureReason: "output_delivery_failed", deadlineKind: null },
+        );
+        const run = await fixture.database.findTriggerRunById(fixture.run.id);
+        if (run?.outcome !== "accepted") throw new Error("accepted run was not persisted");
+        assert.deepEqual(
+          {
+            status: run.status,
+            failureReason: run.failureReason,
+            completedAt: run.completedAt?.toISOString(),
+          },
+          {
+            status: "failed",
+            failureReason: "output_delivery_failed",
+            completedAt: BEFORE_IDLE.toISOString(),
+          },
+        );
+        assert.notEqual(run.terminalNotificationPendingAt, null, "the provider is told");
+        assert.equal(await fixture.database.claimWorkflowWakeup(AFTER_IDLE, 1_000), undefined);
+      } finally {
+        await fixture.database.close();
+      }
+    });
   });
 
   it("stops between-step and live workflows at the absolute whole-run deadline", async () => {
@@ -1271,6 +1519,92 @@ describe("agent execution PostgreSQL repository", () => {
   });
 });
 
+/**
+ * A one-step workflow whose execution idles out at 12:00:05, persisted through the
+ * real engine so the row carries the launch intent and deadlines production writes.
+ */
+async function idleWorkflowFixture(
+  postgres: StartedPostgreSqlContainer,
+  options: { emitted: boolean; requiredOutput?: boolean; failedDeliveries?: number },
+): Promise<{
+  database: Database;
+  run: { id: string };
+  step: { id: string };
+  execution: AgentExecutionRecord;
+}> {
+  const fixture = await executionFixture(postgres);
+  const now = new Date("2026-08-05T12:00:00.000Z");
+  const configuration = deadlineWorkflowConfiguration({
+    idleTimeout: "5s",
+    ...(options.requiredOutput === undefined ? {} : { requiredOutput: options.requiredOutput }),
+  });
+  const revision = await fixture.database.insertProjectConfigurationRevision({
+    projectId: fixture.execution.projectId,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "idle-output-test" },
+    normalizedConfiguration: configuration,
+    contentHash: compiledConfigurationHash(configuration),
+  });
+  const trigger = await insertWorkflowTrigger(
+    fixture.database,
+    revision.id,
+    `idle-output-${options.emitted ? "emitted" : "silent"}`,
+  );
+  const { handler, engine } = postgresDeadlineEngine(
+    fixture.database,
+    configuration,
+    revision.id,
+    () => now,
+    [],
+  );
+  await handler(toDurableEvent(trigger.event));
+  await engine.processAvailable();
+  const run = (
+    await fixture.database.findTriggerRunsByProviderEventReceiptId(
+      trigger.event.providerEventReceiptId,
+    )
+  )[0];
+  if (run?.outcome !== "accepted") throw new Error("workflow run was not accepted");
+  const step = await fixture.database.findWorkflowStepRunByTriggerRun(run.id);
+  if (step === undefined) throw new Error("workflow step was not persisted");
+  const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id);
+  if (execution === undefined) throw new Error("workflow execution was not persisted");
+  assert.equal(execution.idleDeadlineAt?.toISOString(), "2026-08-05T12:00:05.000Z");
+  if (options.emitted) {
+    const startedAt = new Date("2026-08-05T12:00:03.000Z");
+    const attempt = await fixture.database.beginAgentExecutionOutput(
+      execution.id,
+      "linear.reply",
+      undefined,
+      startedAt,
+    );
+    assert.ok(attempt !== undefined);
+    const updated = await fixture.database.completeAgentExecutionOutput(
+      execution.id,
+      attempt.id,
+      startedAt,
+    );
+    assert.equal(updated?.outputEmissions["linear.reply"], 1);
+  }
+  for (let failed = 0; failed < (options.failedDeliveries ?? 0); failed += 1) {
+    const startedAt = new Date("2026-08-05T12:00:03.000Z");
+    const attempt = await fixture.database.beginAgentExecutionOutput(
+      execution.id,
+      "linear.reply",
+      undefined,
+      startedAt,
+    );
+    assert.ok(attempt !== undefined);
+    assert.equal(
+      await fixture.database.failAgentExecutionOutput(execution.id, attempt.id, startedAt),
+      true,
+    );
+  }
+  const persisted = await fixture.database.findAgentExecutionById(execution.id);
+  if (persisted === undefined) throw new Error("workflow execution was not persisted");
+  return { database: fixture.database, run, step, execution: persisted };
+}
+
 function launchIntent(
   triggerRunId: string,
   configurationRevisionId: string,
@@ -1413,6 +1747,7 @@ function deadlineWorkflowConfiguration(
     stepRuntime?: string;
     idleTimeout?: string;
     stepCount?: number;
+    requiredOutput?: boolean;
   } = {},
 ): CompiledHubConfig {
   const stepCount = options.stepCount ?? 1;
@@ -1432,6 +1767,9 @@ function deadlineWorkflowConfiguration(
             idle_timeout: options.idleTimeout ?? "5s",
             agent: { provider: "test" },
             prompt: [{ text: "run" }],
+            ...(options.requiredOutput === true
+              ? { allow_outputs: [{ type: "linear.reply", required: true }] }
+              : {}),
           })),
         },
       ],

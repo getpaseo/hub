@@ -114,6 +114,224 @@ describe("trigger acceptance persistence", () => {
     await database.close();
   }, 120_000);
 
+  it("lists the runs any of the given Linear comments started within one project, newest first", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const projectId = "60000000-0000-4000-8000-000000000001";
+    const otherProjectId = "60000000-0000-4000-8000-000000000002";
+
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('comment-runs-org', 'Comment Runs', 'comment-runs');
+      insert into projects (id, organization_id, name, slug)
+      values
+        ('${projectId}', 'comment-runs-org', 'Default', 'default'),
+        ('${otherProjectId}', 'comment-runs-org', 'Other', 'other');
+    `);
+    await client.close();
+    const revisions = new Map<string, string>();
+    for (const id of [projectId, otherProjectId]) {
+      const revision = await database.insertProjectConfigurationRevision({
+        projectId: id,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash: `comment-runs-config-${id}`,
+      });
+      await database.activateProjectConfigurationRevision(id, revision.id);
+      revisions.set(id, revision.id);
+    }
+    const run = async (
+      runProjectId: string,
+      deliveryId: string,
+      commentId: string | null,
+      createdAt: Date,
+    ) => {
+      const receipt = await database.persistManualEvent({
+        organizationId: "comment-runs-org",
+        projectId: runProjectId,
+        source: "manual.run",
+        deliveryId,
+        receivedAt: createdAt,
+        payload: {},
+      });
+      if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
+      return (
+        await database.createAcceptedTriggerRun({
+          organizationId: "comment-runs-org",
+          projectId: runProjectId,
+          configurationRevisionId: revisions.get(runProjectId)!,
+          providerEventReceiptId: receipt.event.providerEventReceiptId,
+          configuredTriggerName: commentId === null ? "agent-session" : "comment",
+          prompt: "raw",
+          inputs: {},
+          triggerContext: {
+            provider: "linear",
+            event: {
+              linear: {
+                comment:
+                  commentId === null ? null : { id: commentId, body: "raw", parent_id: null },
+              },
+            },
+          },
+          outputContext: { provider: "linear" },
+          deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+          stepIds: ["work"],
+          createdAt,
+        })
+      ).run;
+    };
+    const earlier = await run(projectId, "comment-1-earlier", "comment-1", new Date(1_000));
+    const later = await run(projectId, "comment-1-later", "comment-1", new Date(2_000));
+    const other = await run(projectId, "comment-2", "comment-2", new Date(3_000));
+    await run(projectId, "session", null, new Date(4_000));
+    await run(otherProjectId, "comment-1-elsewhere", "comment-1", new Date(5_000));
+
+    const ids = async (commentIds: readonly string[]) =>
+      (await database.listTriggerRunsForLinearComments(projectId, commentIds)).map((r) => r.id);
+    assert.deepEqual(await ids(["comment-1"]), [later.id, earlier.id]);
+    assert.deepEqual(await ids(["comment-2", "comment-1"]), [other.id, later.id, earlier.id]);
+    assert.deepEqual(await ids(["comment-3"]), []);
+    assert.deepEqual(await ids([]), []);
+    await database.close();
+  }, 120_000);
+
+  it("persists Linear comment and stop suppression at run creation", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const organizationId = "linear-control-org";
+    const projectId = "61000000-0000-4000-8000-000000000001";
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('${organizationId}', 'Linear Control', 'linear-control');
+      insert into projects (id, organization_id, name, slug)
+      values ('${projectId}', '${organizationId}', 'Default', 'default');
+    `);
+    await client.close();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-control-config",
+    });
+    await database.activateProjectConfigurationRevision(projectId, revision.id);
+    const receipt = async (deliveryId: string, eventOccurredAt: Date, payload: unknown = {}) => {
+      const persisted = await database.persistManualEvent({
+        organizationId,
+        projectId,
+        source: "linear.agent_session",
+        deliveryId,
+        payload,
+        receivedAt: eventOccurredAt,
+      });
+      if (persisted.status !== "accepted") throw new Error("expected accepted receipt");
+      return persisted.event.providerEventReceiptId;
+    };
+    const runInput = (providerEventReceiptId: string, configuredTriggerName: string) => ({
+      organizationId,
+      projectId,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId,
+      configuredTriggerName,
+      prompt: "raw",
+      inputs: {},
+      triggerContext: {},
+      outputContext: { provider: "linear" },
+      deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+      stepIds: ["work"],
+    });
+    const commentReceipt = await receipt("linear-control-comment", new Date("2026-01-01"));
+    const sessionReceipt = await receipt("linear-control-session", new Date("2026-01-02"));
+    await database.recordLinearTriggerSuppressions({
+      organizationId,
+      projectId,
+      providerEventReceiptId: sessionReceipt,
+      reason: "superseded_by_agent_session",
+      externalIds: ["comment-1"],
+      eventOccurredAt: new Date("2026-01-02"),
+    });
+    const comment = await database.createAcceptedLinearTriggerRun({
+      ...runInput(commentReceipt, "comment"),
+      linearTrigger: {
+        kind: "comment",
+        externalId: "comment-1",
+      },
+    });
+    assert.deepEqual(comment, {
+      created: false,
+      suppressionReason: "superseded_by_agent_session",
+    });
+
+    const oldSessionReceipt = await receipt("linear-control-old-session", new Date("2026-01-03"));
+    const stopReceipt = await receipt(
+      "linear-control-stop",
+      new Date("2026-01-04"),
+      sessionPayload("session-1"),
+    );
+    const stopSuppression = {
+      organizationId,
+      projectId,
+      providerEventReceiptId: stopReceipt,
+      reason: "stopped_by_user" as const,
+      externalIds: ["session-1"],
+      eventOccurredAt: new Date("2026-01-04"),
+    };
+    const concurrentClaims = await Promise.all([
+      database.recordLinearTriggerSuppressions(stopSuppression),
+      database.recordLinearTriggerSuppressions(stopSuppression),
+    ]);
+    assert.equal(concurrentClaims.filter(Boolean).length, 1);
+    let confirmationAttempts = 0;
+    const confirmationInput = {
+      organizationId,
+      providerEventReceiptId: stopReceipt,
+      agentSessionId: "session-1",
+    };
+    await assert.rejects(
+      database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+        throw new Error("Linear unavailable");
+      }),
+      /Linear unavailable/,
+    );
+    assert.equal(
+      await database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+      }),
+      true,
+    );
+    assert.equal(
+      await database.confirmLinearAgentSessionStop(confirmationInput, async () => {
+        confirmationAttempts += 1;
+      }),
+      false,
+    );
+    assert.equal(confirmationAttempts, 2);
+    const stopped = await database.createAcceptedLinearTriggerRun({
+      ...runInput(oldSessionReceipt, "old-session"),
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-03"),
+      },
+    });
+    assert.deepEqual(stopped, { created: false, suppressionReason: "stopped_by_user" });
+
+    const laterReceipt = await receipt("linear-control-later-session", new Date("2026-01-05"));
+    const later = await database.createAcceptedLinearTriggerRun({
+      ...runInput(laterReceipt, "later-session"),
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-05"),
+      },
+    });
+    assert.equal(later.created, true);
+    assert.equal("suppressionReason" in later, false);
+    await database.close();
+  }, 120_000);
+
   it("durably drops Linear events until the connection has the required scopes", async () => {
     const database = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);
@@ -148,6 +366,12 @@ describe("trigger acceptance persistence", () => {
         resourceId: "linear-project",
         triggerName: "linear-issue",
       },
+      {
+        provider: "linear",
+        connectionId,
+        resourceId: "linear-team",
+        triggerName: "linear-team-issue",
+      },
     ]);
 
     const dropped = await database.acceptLinearEvent({
@@ -168,7 +392,8 @@ describe("trigger acceptance persistence", () => {
     );
 
     await client.query(
-      `update linear_connections set scopes = '["read", "comments:create"]'::jsonb
+      `update linear_connections
+       set scopes = '["read", "comments:create"]'::jsonb
        where id = '${connectionId}'`,
     );
     const accepted = await database.acceptLinearEvent({
@@ -181,6 +406,58 @@ describe("trigger acceptance persistence", () => {
     });
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, projectId);
+
+    const agentSessionWithoutScopes = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-under-scoped",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(2),
+    });
+    assert.equal(agentSessionWithoutScopes.status, "dropped");
+    if (agentSessionWithoutScopes.status === "dropped") {
+      assert.equal(agentSessionWithoutScopes.reason, "configuration_unavailable");
+    }
+
+    const agentSessionStopWithoutScopes = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-stop-under-scoped",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(2),
+    });
+    assert.equal(agentSessionStopWithoutScopes.status, "accepted");
+
+    await client.query(
+      `update linear_connections
+       set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb
+       where id = '${connectionId}'`,
+    );
+    const acceptedAgentSession = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-agent-session-reauthorized",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(3),
+    });
+    assert.equal(acceptedAgentSession.status, "accepted");
+
+    const acceptedByTeam = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      teamId: "linear-team",
+      deliveryId: "linear-team-route",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(2),
+    });
+    assert.equal(acceptedByTeam.status, "accepted");
+    if (acceptedByTeam.status === "accepted") {
+      assert.equal(acceptedByTeam.events[0]?.projectId, projectId);
+      assert.equal(acceptedByTeam.events[0]?.resourceId, "linear-team");
+    }
 
     await client.query(
       `update linear_connections
@@ -199,10 +476,202 @@ describe("trigger acceptance persistence", () => {
     if (expired.status !== "dropped") throw new Error("expected an expired-token drop");
     assert.equal(expired.reason, "configuration_unavailable");
 
+    const expiredStop = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-scope-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-expired-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expiredStop.status, "accepted");
+
     await client.close();
     await database.close();
   }, 120_000);
+
+  it("routes Linear stops through matching active session work after routes change", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const organizationId = "linear-stop-route-org";
+    const projectId = "50000000-0000-4000-8000-000000000001";
+    const connectionId = "50000000-0000-4000-8000-000000000002";
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('${organizationId}', 'Linear Stop Route', 'linear-stop-route');
+      insert into projects (id, organization_id, name, slug)
+      values ('${projectId}', '${organizationId}', 'Default', 'default');
+      insert into linear_connections
+        (id, organization_id, linear_organization_id, provider_application_id, slug,
+         linear_organization_name, app_user_id, access_token, refresh_token, scopes)
+      values
+        ('${connectionId}', '${organizationId}', 'linear-stop-workspace', 'linear-app',
+         'linear-stop', 'Linear Stop', 'linear-app-user', 'linear-access-token',
+         'linear-refresh-token', '["read", "write", "app:assignable", "app:mentionable"]'::jsonb);
+    `);
+    await client.close();
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-stop-session-config",
+    });
+    await database.activateProjectConfigurationRevision(projectId, revision.id, [
+      {
+        provider: "linear",
+        connectionId,
+        resourceId: "linear-project",
+        triggerName: "agent-session",
+      },
+    ]);
+    const started = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-started",
+      source: "linear.agent_session",
+      payload: sessionPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    assert.equal(started.status, "accepted");
+    if (started.status !== "accepted") throw new Error("expected accepted session event");
+    const delayed = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-delayed",
+      source: "linear.agent_session",
+      payload: sessionPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:01.000Z"),
+    });
+    assert.equal(delayed.status, "accepted");
+    await database.createAcceptedLinearTriggerRun({
+      organizationId,
+      projectId,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: started.receiptId,
+      configuredTriggerName: "agent-session",
+      prompt: "Help",
+      inputs: {},
+      triggerContext: {},
+      outputContext: {
+        provider: "linear",
+        linearOrganizationId: "linear-stop-workspace",
+        issueId: "issue-1",
+        agentSessionId: "session-1",
+        threadRootCommentId: null,
+      },
+      deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+      stepIds: ["work"],
+      linearTrigger: {
+        kind: "agent_session",
+        externalId: "session-1",
+        eventOccurredAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    });
+    const replacement = await database.insertProjectConfigurationRevision({
+      projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "test" },
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "linear-stop-config-without-route",
+    });
+    await database.activateProjectConfigurationRevision(projectId, replacement.id, []);
+
+    const stoppedBeforeRun = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-delayed-stop",
+      source: "linear.agent_session",
+      payload: stopPayload("session-delayed"),
+      receivedAt: new Date("2026-01-01T00:00:30.000Z"),
+    });
+    assert.equal(stoppedBeforeRun.status, "accepted");
+    if (stoppedBeforeRun.status !== "accepted") {
+      throw new Error("expected delayed session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedBeforeRun.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
+
+    const stopped = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:01:00.000Z"),
+    });
+    assert.equal(stopped.status, "accepted");
+    if (stopped.status !== "accepted") throw new Error("expected accepted stop event");
+    assert.deepEqual(
+      stopped.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
+
+    const archiveClient = await createPostgresQueryRuntime(databaseUrl);
+    await archiveClient.query(
+      `update projects
+       set status = 'archived', active_configuration_revision_id = null,
+           archived_at = now(), updated_at = now()
+       where id = $1`,
+      [projectId],
+    );
+    await archiveClient.close();
+    const stoppedAfterArchive = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped-after-archive",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:01:30.000Z"),
+    });
+    assert.equal(stoppedAfterArchive.status, "accepted");
+    if (stoppedAfterArchive.status !== "accepted") {
+      throw new Error("expected archived session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterArchive.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
+
+    const unrelated = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "unrelated-linear-stop-session-stopped",
+      source: "linear.agent_session",
+      payload: stopPayload("session-2"),
+      receivedAt: new Date("2026-01-01T00:02:00.000Z"),
+    });
+    assert.equal(unrelated.status, "dropped");
+    if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
+    await database.close();
+  }, 120_000);
 });
+
+function sessionPayload(agentSessionId: string) {
+  return {
+    type: "agent_session",
+    agentSession: { id: agentSessionId },
+  };
+}
+
+function stopPayload(agentSessionId: string) {
+  return {
+    type: "agent_session",
+    agentSession: { id: agentSessionId },
+    agentActivity: { signal: "stop" },
+  };
+}
 
 function input(organizationId: string, projectId: string) {
   return {

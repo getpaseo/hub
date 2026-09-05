@@ -1,8 +1,12 @@
-import { and, eq, isNull, or } from "drizzle-orm";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import {
+  hasRequiredLinearAgentSessionScopes,
+  linearConnectionRequiresReauthorization,
+} from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
+import { isLinearAgentSessionStop, linearAgentSessionStopId } from "./linear-event-acceptance.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
@@ -30,27 +34,35 @@ export class ProviderEventAcceptanceRepository {
   ) {}
 
   acceptGitHub(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("github", input.installationId, input.repositoryId, input);
+    return this.acceptProvider("github", input.installationId, [input.repositoryId], input);
   }
 
   acceptDiscord(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("discord", input.guildId, input.guildId, input);
+    return this.acceptProvider("discord", input.guildId, [input.guildId], input);
   }
 
   acceptSlack(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("slack", input.teamId, input.teamId, input);
+    return this.acceptProvider("slack", input.teamId, [input.teamId], input);
   }
 
   acceptLinear(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
-    return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
+    return this.acceptProvider(
+      "linear",
+      input.linearOrganizationId,
+      [input.projectId, input.teamId],
+      input,
+    );
   }
 
   private async acceptProvider(
     provider: "github" | "slack" | "discord" | "linear",
     externalId: number | string,
-    resourceId: number | string | undefined,
+    candidateResourceIds: readonly (number | string | undefined)[],
     input: ProviderEventEvidence,
   ): Promise<ProviderEventAcceptance> {
+    const resourceIds = [
+      ...new Set(candidateResourceIds.flatMap((id) => (id === undefined ? [] : [String(id)]))),
+    ];
     return this.database.transaction(async (transaction) => {
       const connection = await findConnection(transaction, provider, externalId);
       if (connection === undefined) {
@@ -63,14 +75,15 @@ export class ProviderEventAcceptanceRepository {
       const dropReason =
         input.dropReason ??
         ((provider === "github" && "status" in connection && connection.status === "suspended") ||
-        (provider === "linear" && linearConnectionUnavailable(connection, input.receivedAt))
+        (provider === "linear" &&
+          linearConnectionUnavailable(connection, input.receivedAt, input.source, input.payload))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
         organizationId: connection.organizationId,
         provider,
         connectionId: connection.id,
-        resourceId: resourceId === undefined ? null : String(resourceId),
+        resourceId: resourceIds[0] ?? null,
         input: dropReason === undefined ? input : { ...input, dropReason },
       });
       if (!receipt.inserted) {
@@ -82,7 +95,7 @@ export class ProviderEventAcceptanceRepository {
         return { status: "dropped", receiptId: receipt.id, reason: dropReason };
       }
 
-      const routes = await transaction
+      const currentRoutes = await transaction
         .select({
           projectId: schema.projectTriggerRoutes.projectId,
           revisionId: schema.projectTriggerRoutes.configurationRevisionId,
@@ -109,15 +122,26 @@ export class ProviderEventAcceptanceRepository {
             eq(schema.projectTriggerRoutes.connectionId, connection.id),
             or(
               isNull(schema.projectTriggerRoutes.resourceId),
-              eq(
-                schema.projectTriggerRoutes.resourceId,
-                resourceId === undefined ? "" : String(resourceId),
-              ),
+              ...(resourceIds.length === 0
+                ? []
+                : [inArray(schema.projectTriggerRoutes.resourceId, resourceIds)]),
             ),
           ),
         );
 
-      const selectedRoutes = selectFirstRoutePerProject(routes);
+      const stopSessionId = provider === "linear" ? linearAgentSessionStopId(input) : undefined;
+      const cancellationRoutes =
+        stopSessionId === undefined
+          ? []
+          : await findLinearStopRoutes(
+              transaction,
+              connection.organizationId,
+              connection.id,
+              String(externalId),
+              stopSessionId,
+              input.receivedAt,
+            );
+      const selectedRoutes = selectFirstRoutePerProject([...currentRoutes, ...cancellationRoutes]);
       if (selectedRoutes.length === 0) {
         const reason = "no_project_route";
         await transaction
@@ -304,7 +328,127 @@ export class ProviderEventAcceptanceRepository {
   }
 }
 
-function linearConnectionUnavailable(connection: object, receivedAt: Date): boolean {
+async function findLinearStopRoutes(
+  transaction: HubTransaction,
+  organizationId: string,
+  connectionId: string,
+  linearOrganizationId: string,
+  agentSessionId: string,
+  stoppedAt: Date,
+) {
+  const runs = await transaction
+    .select({
+      projectId: schema.triggerRuns.projectId,
+      revisionId: schema.triggerRuns.configurationRevisionId,
+    })
+    .from(schema.triggerRuns)
+    .innerJoin(
+      schema.projects,
+      and(
+        eq(schema.projects.id, schema.triggerRuns.projectId),
+        eq(schema.projects.organizationId, organizationId),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.triggerRuns.organizationId, organizationId),
+        eq(schema.triggerRuns.status, "running"),
+        sql`${schema.triggerRuns.outputContext} ->> 'provider' = 'linear'`,
+        sql`${schema.triggerRuns.outputContext} ->> 'linearOrganizationId' = ${linearOrganizationId}`,
+        sql`${schema.triggerRuns.outputContext} ->> 'agentSessionId' = ${agentSessionId}`,
+      ),
+    );
+  const acceptedSessionReceipts = await transaction
+    .select({
+      id: schema.providerEventReceipts.id,
+      acceptedRoutes: schema.providerEventReceipts.acceptedRoutes,
+    })
+    .from(schema.providerEventReceipts)
+    .where(
+      and(
+        eq(schema.providerEventReceipts.organizationId, organizationId),
+        eq(schema.providerEventReceipts.provider, "linear"),
+        eq(schema.providerEventReceipts.connectionId, connectionId),
+        eq(schema.providerEventReceipts.source, "linear.agent_session"),
+        isNull(schema.providerEventReceipts.droppedReason),
+        isNotNull(schema.providerEventReceipts.acceptedRoutes),
+        lte(schema.providerEventReceipts.receivedAt, stoppedAt),
+        sql`${schema.providerEventReceipts.payload} ->> 'type' = 'agent_session'`,
+        sql`${schema.providerEventReceipts.payload} -> 'agentSession' ->> 'id' = ${agentSessionId}`,
+      ),
+    )
+    .orderBy(desc(schema.providerEventReceipts.receivedAt));
+  const materializedReceiptRoutes =
+    acceptedSessionReceipts.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await transaction
+              .select({
+                providerEventReceiptId: schema.triggerRuns.providerEventReceiptId,
+                projectId: schema.triggerRuns.projectId,
+              })
+              .from(schema.triggerRuns)
+              .where(
+                and(
+                  eq(schema.triggerRuns.organizationId, organizationId),
+                  inArray(
+                    schema.triggerRuns.providerEventReceiptId,
+                    acceptedSessionReceipts.map(({ id }) => id),
+                  ),
+                ),
+              )
+          ).map(({ providerEventReceiptId, projectId }) =>
+            linearReceiptRouteKey(providerEventReceiptId, projectId),
+          ),
+        );
+  const receiptRoutes = acceptedSessionReceipts.flatMap(({ id, acceptedRoutes }) =>
+    (parseAcceptedRoutes(acceptedRoutes) ?? []).flatMap((route) =>
+      materializedReceiptRoutes.has(linearReceiptRouteKey(id, route.projectId))
+        ? []
+        : [
+            {
+              projectId: route.projectId,
+              revisionId: route.configurationRevisionId,
+              connectionId: route.connectionId,
+              resourceId: route.resourceId,
+            },
+          ],
+    ),
+  );
+  const routedProjectIds = [...new Set(receiptRoutes.map((route) => route.projectId))];
+  const existingProjectIds =
+    routedProjectIds.length === 0
+      ? new Set<string>()
+      : new Set(
+          (
+            await transaction
+              .select({ id: schema.projects.id })
+              .from(schema.projects)
+              .where(
+                and(
+                  eq(schema.projects.organizationId, organizationId),
+                  inArray(schema.projects.id, routedProjectIds),
+                ),
+              )
+          ).map(({ id }) => id),
+        );
+  return [
+    ...runs.map((run) => Object.assign({}, run, { connectionId, resourceId: null })),
+    ...receiptRoutes.filter((route) => existingProjectIds.has(route.projectId)),
+  ];
+}
+
+function linearReceiptRouteKey(providerEventReceiptId: string, projectId: string): string {
+  return `${providerEventReceiptId}:${projectId}`;
+}
+
+function linearConnectionUnavailable(
+  connection: object,
+  receivedAt: Date,
+  source: string,
+  payload: unknown,
+): boolean {
   if (!("scopes" in connection) || !isStringArray(connection.scopes)) return true;
   if (
     !("refreshToken" in connection) ||
@@ -318,13 +462,18 @@ function linearConnectionUnavailable(connection: object, receivedAt: Date): bool
   ) {
     return true;
   }
-  return linearConnectionRequiresReauthorization(
-    {
-      scopes: connection.scopes,
-      refreshToken: connection.refreshToken,
-      accessTokenExpiresAt: connection.accessTokenExpiresAt,
-    },
-    receivedAt,
+  if (isLinearAgentSessionStop({ source, payload })) return false;
+  return (
+    (source === "linear.agent_session" &&
+      !hasRequiredLinearAgentSessionScopes(connection.scopes)) ||
+    linearConnectionRequiresReauthorization(
+      {
+        scopes: connection.scopes,
+        refreshToken: connection.refreshToken,
+        accessTokenExpiresAt: connection.accessTokenExpiresAt,
+      },
+      receivedAt,
+    )
   );
 }
 

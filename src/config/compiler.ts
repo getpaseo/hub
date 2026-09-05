@@ -91,12 +91,23 @@ const AuthoredTriggerFilterSchema = z
     workspace: z.string().min(1).optional(),
     /** A Linear project UUID. It is deliberately a string so imported Linear IDs work verbatim. */
     project: z.string().min(1).optional(),
+    /** A Linear team UUID, for workspaces where issues are not consistently project-scoped. */
+    team: z.string().min(1).optional(),
     /** Linear workflow-state IDs which are eligible for this trigger. */
     states: z.array(z.string().min(1)).min(1).optional(),
     /** Linear label IDs which make an issue ineligible. */
     exclude_labels: z.array(z.string().min(1)).min(1).optional(),
     /** Linear user IDs which may be assigned to the issue. */
     assignees: z.array(z.string().min(1)).min(1).optional(),
+    /** Restrict a Linear comment trigger to replies rather than root comments. */
+    replies_only: z.boolean().optional(),
+    /**
+     * Restrict a Linear comment trigger to replies in a plain comment thread the connection's
+     * app user has already commented in. Agent-session threads are excluded even though the
+     * app's responses appear there as comments: a reply in one already arrives as a session
+     * prompt, so this selects the threads a comment trigger alone answers.
+     */
+    thread_with_app: z.boolean().optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -1333,9 +1344,9 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
   if (trigger.on === "linear.issue_entered_scope") {
-    if (trigger.filters?.project === undefined) {
+    if (trigger.filters?.project === undefined && trigger.filters?.team === undefined) {
       throw new Error(
-        `trigger ${trigger.name} requires filters.project for linear.issue_entered_scope`,
+        `trigger ${trigger.name} requires filters.project or filters.team for linear.issue_entered_scope`,
       );
     }
     return;

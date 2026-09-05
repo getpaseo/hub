@@ -61,6 +61,13 @@ export const providerEventReceipts = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
     acceptedRoutes: jsonb("accepted_routes"),
+    linearStopConfirmationStatus: text("linear_stop_confirmation_status").$type<
+      "pending" | "confirmed"
+    >(),
+    linearStopConfirmationClaimId: uuid("linear_stop_confirmation_claim_id"),
+    linearStopConfirmationLeaseExpiresAt: timestamp("linear_stop_confirmation_lease_expires_at", {
+      withTimezone: true,
+    }),
   },
   (table) => [
     uniqueIndex("provider_event_receipts_id_organization_unique").on(
@@ -87,6 +94,12 @@ export const providerEventReceipts = pgTable(
     check(
       "provider_event_receipts_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual')`,
+    ),
+    check(
+      "provider_event_receipts_linear_stop_confirmation_check",
+      sql`(${table.linearStopConfirmationStatus} is null and ${table.linearStopConfirmationClaimId} is null and ${table.linearStopConfirmationLeaseExpiresAt} is null)
+        or (${table.linearStopConfirmationStatus} = 'pending' and ${table.linearStopConfirmationClaimId} is not null and ${table.linearStopConfirmationLeaseExpiresAt} is not null)
+        or (${table.linearStopConfirmationStatus} = 'confirmed' and ${table.linearStopConfirmationClaimId} is null and ${table.linearStopConfirmationLeaseExpiresAt} is null)`,
     ),
   ],
 );
@@ -495,6 +508,44 @@ export const triggerRuns = pgTable(
       foreignColumns: [providerEventReceipts.id, providerEventReceipts.organizationId],
       name: "trigger_runs_receipt_organization_fk",
     }),
+  ],
+);
+
+/**
+ * A row is also the serialization point between a Linear webhook that blocks work and the
+ * transaction that would create that work. A null reason is a run-creation claim; a non-null
+ * reason is the durable suppression recorded before existing work is scanned.
+ */
+export const linearTriggerControls = pgTable(
+  "linear_trigger_controls",
+  {
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id").notNull(),
+    kind: text().$type<"comment" | "agent_session">().notNull(),
+    externalId: text("external_id").notNull(),
+    suppressionReason: text("suppression_reason").$type<
+      "stopped_by_user" | "superseded_by_agent_session"
+    >(),
+    suppressionOccurredAt: timestamp("suppression_occurred_at", { withTimezone: true }),
+    sourceProviderEventReceiptId: uuid("source_provider_event_receipt_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.kind, table.externalId] }),
+    index("linear_trigger_controls_receipt_idx").on(table.sourceProviderEventReceiptId),
+    check("linear_trigger_controls_kind_check", sql`${table.kind} in ('comment', 'agent_session')`),
+    check(
+      "linear_trigger_controls_suppression_check",
+      sql`(${table.suppressionReason} is null and ${table.suppressionOccurredAt} is null and ${table.sourceProviderEventReceiptId} is null)
+        or (${table.kind} = 'comment' and ${table.suppressionReason} = 'superseded_by_agent_session' and ${table.suppressionOccurredAt} is not null and ${table.sourceProviderEventReceiptId} is not null)
+        or (${table.kind} = 'agent_session' and ${table.suppressionReason} = 'stopped_by_user' and ${table.suppressionOccurredAt} is not null and ${table.sourceProviderEventReceiptId} is not null)`,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.organizationId],
+      foreignColumns: [projects.id, projects.organizationId],
+      name: "linear_trigger_controls_project_organization_fk",
+    }).onDelete("cascade"),
   ],
 );
 

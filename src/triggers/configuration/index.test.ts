@@ -96,6 +96,29 @@ describe("self-contained trigger documents", () => {
     assert.deepEqual(parseTriggerDocument(serializeTriggerDocument(parsed)), parsed);
   });
 
+  it("accepts Linear team and comment-thread filters", () => {
+    const parsed = parseTriggerDocument(`
+name: linear-replies
+on:
+  linear.comment_created:
+    filters:
+      team: linear-team
+      replies_only: true
+      thread_with_app: true
+run:
+  target: { daemon: devbox, cwd: /workspace }
+  agent: { provider: codex }
+  prompt: Handle it
+`);
+
+    assert.deepEqual(parsed.on["linear.comment_created"]?.filters, {
+      team: "linear-team",
+      replies_only: true,
+      thread_with_app: true,
+    });
+    assert.deepEqual(parseTriggerDocument(serializeTriggerDocument(parsed)), parsed);
+  });
+
   it("allows authenticated manual dispatches when no actor filter is authored", () => {
     const compiled = compileTriggerDocument(`
 name: deploy

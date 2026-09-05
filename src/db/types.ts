@@ -4,6 +4,11 @@ import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js
 import type { InvocationRejection } from "../triggers/invocation.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
+  LinearTriggerStart,
+  LinearTriggerSuppressionReason,
+  RecordLinearTriggerSuppressionsInput,
+} from "./linear-trigger-suppression.js";
+import type {
   EntitlementPatch,
   EntitlementTemplate,
   OverrideKey,
@@ -542,6 +547,12 @@ export type LinearConnectionRefreshOperation<T> = (
   updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
 ) => Promise<T>;
 
+export interface LinearAgentSessionStopConfirmationInput {
+  organizationId: string;
+  providerEventReceiptId: string;
+  agentSessionId: string;
+}
+
 export type DisconnectConnectionResult =
   | { provider: "github" }
   | { provider: "discord"; guildId: string | undefined }
@@ -629,6 +640,7 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
 export interface AcceptLinearEventInput extends ProviderEventEvidence {
   linearOrganizationId: string;
   projectId?: string;
+  teamId?: string;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {
@@ -774,6 +786,18 @@ export interface CreateAcceptedTriggerRunInput {
   stepIds: readonly string[];
   createdAt?: Date;
 }
+
+export interface CreateAcceptedLinearTriggerRunInput extends CreateAcceptedTriggerRunInput {
+  linearTrigger: LinearTriggerStart;
+}
+
+export type CreateAcceptedLinearTriggerRunResult =
+  | { run: AcceptedTriggerRunRecord; created: boolean; suppressionReason?: never }
+  | {
+      run?: never;
+      created: false;
+      suppressionReason: LinearTriggerSuppressionReason;
+    };
 
 export interface CreateRejectedTriggerRunInput {
   id?: string;
@@ -1137,7 +1161,10 @@ export interface TransitionTriggerRunResult {
 
 export interface WorkflowDeadlineRecovery {
   triggerRunId: string;
+  /** Executions failed by the deadline. */
   executionIds: readonly string[];
+  /** Executions completed at their idle deadline because they had already emitted an output. */
+  completedExecutionIds?: readonly string[];
 }
 
 export interface TerminateMachineFields {
@@ -1148,6 +1175,23 @@ export interface Database {
   createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
+  /** Atomically checks the Linear suppression row and creates the run only when still eligible. */
+  createAcceptedLinearTriggerRun(
+    input: CreateAcceptedLinearTriggerRunInput,
+  ): Promise<CreateAcceptedLinearTriggerRunResult>;
+  /**
+   * Durably records a Linear stop/supersession before existing work is scanned. Returns whether
+   * this delivery advanced at least one suppression row.
+   */
+  recordLinearTriggerSuppressions(input: RecordLinearTriggerSuppressionsInput): Promise<boolean>;
+  /**
+   * Coalesces a Linear Stop response across processes. The network operation runs outside a
+   * database connection; success is durable, while a failed operation releases its retry lease.
+   */
+  confirmLinearAgentSessionStop(
+    input: LinearAgentSessionStopConfirmationInput,
+    confirm: () => Promise<void>,
+  ): Promise<boolean>;
   createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;
@@ -1156,6 +1200,13 @@ export interface Database {
     providerEventReceiptId: string,
   ): Promise<TriggerRunRecord[]>;
   listTriggerRunsForProject(projectId: string, limit: number): Promise<TriggerRunRecord[]>;
+  /** Accepted workflow runs that are still active in a project, newest first. */
+  listRunningTriggerRunsForProject(projectId: string): Promise<AcceptedTriggerRunRecord[]>;
+  /** Runs whose Linear trigger context names one of `commentIds` as the triggering comment, newest first. */
+  listTriggerRunsForLinearComments(
+    projectId: string,
+    commentIds: readonly string[],
+  ): Promise<TriggerRunRecord[]>;
   listProjectActivityRuns(
     projectId: string,
     limit: number,
@@ -1207,7 +1258,13 @@ export interface Database {
     failureReason: string,
     stepId?: string,
   ): Promise<
-    { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
+    | {
+        stepRun: WorkflowStepRunRecord;
+        run: TriggerRunRecord;
+        transitioned: boolean;
+        failedExecutionIds: readonly string[];
+      }
+    | undefined
   >;
   claimPendingWorkflowRunTerminalNotification(
     now: Date,
