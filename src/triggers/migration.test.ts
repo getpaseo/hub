@@ -71,6 +71,46 @@ describe("startup project trigger migration", () => {
     assert.equal((await database.listOrganizationTriggers("org")).length, 2);
   });
 
+  it("preserves a single-step affinity configuration durably across startup migration", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const key = "slack:${{ paseo.trigger.conversation_key }}";
+    await activeProject(database, "affinity", [
+      workflow(
+        "affinity",
+        "slack.mention",
+        `${oneStep()}    workspace_affinity: { key: ${JSON.stringify(key)} }\n`,
+      ),
+    ]);
+    const source = (await database.listPendingProjectTriggerMigrations())[0]!;
+
+    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+      projects: 1,
+      triggers: 1,
+      legacyMultistepTriggers: 1,
+    });
+    const [trigger] = await database.listOrganizationTriggers("org");
+    assert.equal(trigger?.format, "legacy_multistep");
+    assert.ok(trigger);
+    const revision = await database.findOrganizationTriggerRevision(
+      trigger.id,
+      trigger.activeRevisionId,
+    );
+    assert.ok(revision);
+    assert.deepEqual(revision.normalizedConfiguration, source.revision.normalizedConfiguration);
+    assert.match(revision.yaml, /workspaceAffinity:/u);
+
+    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+      projects: 0,
+      triggers: 0,
+      legacyMultistepTriggers: 0,
+    });
+    assert.deepEqual(await database.listOrganizationTriggers("org"), [trigger]);
+    assert.deepEqual(
+      await database.findOrganizationTriggerRevision(trigger.id, trigger.activeRevisionId),
+      revision,
+    );
+  });
+
   it("deterministically disambiguates duplicate trigger names when projects collapse", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     await activeProject(database, "hub", [workflow("request", "manual.run", oneStep())]);
