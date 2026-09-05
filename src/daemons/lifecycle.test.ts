@@ -1193,6 +1193,14 @@ class DispatchConnection implements DaemonConnection {
     return { id: AGENT_ID };
   }
 
+  async getProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async refreshProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
   async controlExecution(): Promise<void> {}
 }
 
