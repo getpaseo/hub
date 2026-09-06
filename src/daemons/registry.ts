@@ -301,6 +301,7 @@ export class ActiveDaemonRegistry {
       requestId,
       executionId: options.executionId,
       action: options.action,
+      ...(options.prompt === undefined ? {} : { prompt: options.prompt }),
     });
     return new Promise((resolve, reject) => {
       this.pendingFor(daemonId).set(requestId, {

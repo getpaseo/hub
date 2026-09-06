@@ -2280,6 +2280,29 @@ class PgDatabase implements Database {
     }
   }
 
+  async findLiveAgentExecutionByConversationKey(
+    organizationId: string,
+    conversationKey: string,
+  ): Promise<AgentExecutionRecord | undefined> {
+    try {
+      const rows = await query<AgentExecutionRow>(
+        this.pool,
+        `select * from agent_executions
+         where organization_id = $1
+           and status in ('spawning', 'running')
+           and daemon_agent_id is not null
+           and launch_intent->>'conversationKey' = $2
+         order by started_at desc
+         limit 1`,
+        [organizationId, conversationKey],
+      );
+      const row = rows.rows[0];
+      return row === undefined ? undefined : toAgentExecutionRecord(row);
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
   async findPendingHubActions(daemonId?: string): Promise<AgentExecutionRecord[]> {
     try {
       const rows = await query<AgentExecutionRow>(

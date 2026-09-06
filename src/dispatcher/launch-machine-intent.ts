@@ -30,6 +30,7 @@ export interface LaunchMachineIntent {
   timeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  conversationKey?: string;
   triggerContext: unknown;
   outputContext: unknown;
   outputSchema?: JsonValue;
@@ -54,6 +55,7 @@ export function buildLaunchMachineIntent(input: {
   timeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  conversationKey?: string;
   triggerContext: unknown;
   outputContext: unknown;
   hubConfig: unknown;
@@ -74,6 +76,7 @@ export function buildLaunchMachineIntent(input: {
     ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     autoArchive: input.autoArchive,
+    ...(input.conversationKey === undefined ? {} : { conversationKey: input.conversationKey }),
     triggerContext: input.triggerContext,
     outputContext: input.outputContext,
     configurationRevisionId: input.configurationRevisionId,

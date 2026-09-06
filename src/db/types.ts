@@ -1353,6 +1353,10 @@ export interface Database {
   ): Promise<AgentExecutionRecord>;
   findRunningAgentExecutionsForMachine(machineId: string): Promise<AgentExecutionRecord[]>;
   findPendingAgentExecutions(): Promise<AgentExecutionRecord[]>;
+  findLiveAgentExecutionByConversationKey(
+    organizationId: string,
+    conversationKey: string,
+  ): Promise<AgentExecutionRecord | undefined>;
   findPendingHubActions(daemonId?: string): Promise<AgentExecutionRecord[]>;
   markAgentExecutionHubActionReady(
     executionId: string,

@@ -21,7 +21,12 @@ import type {
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
-import type { TriggerProvider } from "../triggers/index.js";
+import type { AcceptedTriggerProviderMatch, TriggerProvider } from "../triggers/index.js";
+import {
+  conversationKeyFromOutputContext,
+  isLinearAgentSessionPrompted,
+  linearAgentSessionFollowUpPrompt,
+} from "../triggers/linear/conversation.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
@@ -244,6 +249,49 @@ export class DaemonDispatchLifecycle {
       outputContext: run.outputContext,
       reactionState: run.reactionState,
     });
+  }
+
+  async continueConversation(input: {
+    organizationId: string;
+    match: AcceptedTriggerProviderMatch;
+  }): Promise<boolean> {
+    if (!isLinearAgentSessionPrompted(input.match.triggerContext)) return false;
+    const conversationKey = conversationKeyFromOutputContext(input.match.outputContext);
+    if (conversationKey === undefined) return false;
+    const existing = await this.options.database.findLiveAgentExecutionByConversationKey(
+      input.organizationId,
+      conversationKey,
+    );
+    if (existing === undefined || existing.daemonId === null) return false;
+    const connection = this.options.connectionForDaemon(existing.daemonId);
+    if (connection === undefined) return false;
+    const prompt = linearAgentSessionFollowUpPrompt(input.match);
+    try {
+      await connection.controlExecution({
+        executionId: existing.id,
+        action: "prompt",
+        prompt,
+      });
+    } catch (error: unknown) {
+      this.report(error, "daemon.execution.continue", {
+        executionId: existing.id,
+        conversationKey,
+      });
+      return false;
+    }
+    await this.refreshAgentIdleDeadline(existing.id, new Date(this.now()));
+    const provider = this.findProviderForTriggerContext(input.match.triggerContext);
+    if (provider !== undefined) {
+      await notifyDispatchAccepted({
+        provider,
+        triggerContext: input.match.triggerContext,
+        outputContext: input.match.outputContext,
+        reactionState: existing.reactionState,
+      }).catch((error: unknown) => {
+        this.report(error, "daemon.provider.dispatch-accepted", { executionId: existing.id });
+      });
+    }
+    return true;
   }
 
   async notifyWorkflowRunTerminal(run: TriggerRunRecord): Promise<TriggerProviderReactionState> {
@@ -841,6 +889,7 @@ export class DaemonDispatchLifecycle {
     return true;
   }
 
+  // eslint-disable-next-line complexity -- conversation keep-alive is one extra live-session exit.
   async completeAgentExecutionFromCallback(
     input: {
       executionId: string;
@@ -875,6 +924,11 @@ export class DaemonDispatchLifecycle {
     }
     if (await this.expireExecutionIfDeadlineElapsed(currentExecution)) {
       throw new AgentExecutionCompletionFailure("expired");
+    }
+
+    if (currentExecution.launchIntent?.conversationKey !== undefined) {
+      await this.refreshAgentIdleDeadline(input.executionId, new Date(this.now()));
+      return currentExecution;
     }
 
     if (currentExecution.launchIntent?.outputSchema !== undefined) {

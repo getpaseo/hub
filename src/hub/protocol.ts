@@ -309,14 +309,28 @@ export const HubExecutionAgentStreamSchema = z.object({
   }),
 });
 
-export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive"]);
+export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive", "prompt"]);
 
-export const HubExecutionControlRequestSchema = z.object({
-  type: z.literal("hub.execution.control.request"),
-  requestId: z.string(),
-  executionId: z.string(),
-  action: HubExecutionControlActionSchema,
-});
+export const HubExecutionControlRequestSchema = z
+  .object({
+    type: z.literal("hub.execution.control.request"),
+    requestId: z.string(),
+    executionId: z.string(),
+    action: HubExecutionControlActionSchema,
+    prompt: z.string().min(1).optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.action === "prompt" &&
+      (value.prompt === undefined || value.prompt.trim().length === 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["prompt"],
+        message: "prompt is required when action is prompt",
+      });
+    }
+  });
 
 export const HubExecutionControlResponseSchema = z.object({
   type: z.literal("hub.execution.control.response"),

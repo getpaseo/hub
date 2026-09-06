@@ -46,6 +46,7 @@ export interface McpHttpServerConfig {
 export interface DaemonExecutionControlOptions {
   executionId: string;
   action: HubExecutionControlAction;
+  prompt?: string;
 }
 
 export type DaemonTimelineItem = Extract<

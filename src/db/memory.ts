@@ -1882,6 +1882,21 @@ class MemoryDatabase implements Database {
     );
   }
 
+  async findLiveAgentExecutionByConversationKey(
+    organizationId: string,
+    conversationKey: string,
+  ): Promise<AgentExecutionRecord | undefined> {
+    return Array.from(this.agentExecutions.values())
+      .filter(
+        (execution) =>
+          execution.organizationId === organizationId &&
+          (execution.status === "spawning" || execution.status === "running") &&
+          execution.daemonAgentId !== null &&
+          execution.launchIntent?.conversationKey === conversationKey,
+      )
+      .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())[0];
+  }
+
   async findPendingHubActions(daemonId?: string): Promise<AgentExecutionRecord[]> {
     return Array.from(this.agentExecutions.values()).filter(
       (execution) =>

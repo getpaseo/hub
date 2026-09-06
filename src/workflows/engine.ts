@@ -34,6 +34,7 @@ import type {
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { logProviderEventRouting } from "../triggers/audit.js";
 import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../triggers/index.js";
+import { conversationKeyFromOutputContext } from "../triggers/linear/conversation.js";
 import {
   ExpressionEvaluationError,
   evaluateExpression,
@@ -70,6 +71,10 @@ export interface DurableWorkflowEngineOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
+  continueConversation?: (input: {
+    organizationId: string;
+    match: AcceptedTriggerProviderMatch;
+  }) => Promise<boolean>;
   validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
   configurationRevisionId?: string;
   leaseMs?: number;
@@ -171,6 +176,15 @@ export class DurableWorkflowEngine {
         if (!isAcceptedTriggerProviderMatch(match))
           throw new Error("accepted workflow match required");
         const acceptedMatch: AcceptedTriggerProviderMatch = match;
+        if (
+          this.options.continueConversation !== undefined &&
+          (await this.options.continueConversation({
+            organizationId: trigger.organizationId,
+            match: acceptedMatch,
+          }))
+        ) {
+          return;
+        }
         const configuration = asProjectConfiguration(
           parseCompiledHubConfig(acceptedMatch.hubConfig),
         );
@@ -908,6 +922,7 @@ function buildStepIntent(
   ) {
     throw new Error(`workflow environment ${environmentName} is unavailable`);
   }
+  const conversationKey = conversationKeyFromOutputContext(run.outputContext);
   const agent = materializeAgent(step.agent, context);
   return {
     ...buildLaunchMachineIntent({
@@ -937,6 +952,7 @@ function buildStepIntent(
       timeoutMs: step.maxRuntimeMs,
       idleTimeoutMs: step.idleTimeoutMs,
       autoArchive: step.autoArchive,
+      ...(conversationKey === undefined ? {} : { conversationKey }),
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       configurationRevisionId: run.configurationRevisionId,

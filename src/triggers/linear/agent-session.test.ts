@@ -6,6 +6,12 @@ import {
   LinearAgentSessionTracker,
   agentSessionOutputContext,
 } from "./agent-session.js";
+import {
+  conversationKeyFromOutputContext,
+  isLinearAgentSessionPrompted,
+  linearAgentSessionConversationKey,
+  linearAgentSessionFollowUpPrompt,
+} from "./conversation.js";
 import { normalizeLinearEvent } from "./events.js";
 import { matchLinearTriggers } from "./match.js";
 
@@ -192,6 +198,54 @@ describe("agentSessionOutputContext", () => {
       agentSessionId: "session-1",
     });
     assert.equal(agentSessionOutputContext({ ...event, issue: null }).issueId, null);
+  });
+});
+
+describe("linear agent session continuation", () => {
+  it("keys a live conversation by agent session id", () => {
+    assert.equal(
+      conversationKeyFromOutputContext(context()),
+      linearAgentSessionConversationKey("session-1"),
+    );
+    assert.equal(conversationKeyFromOutputContext({ provider: "github" }), undefined);
+  });
+
+  it("treats only prompted session events as follow-ups", () => {
+    const event = normalizeLinearEvent(createdPayload(), "AgentSessionEvent");
+    assert.ok(event);
+    if (event.type !== "agent_session") return;
+    const created = {
+      provider: "linear",
+      target: context(),
+      event: { linear: { event_type: "agent_session", action: event.action } },
+    };
+    const prompted = {
+      ...created,
+      event: { linear: { event_type: "agent_session", action: "prompted" } },
+    };
+    assert.equal(isLinearAgentSessionPrompted(created), false);
+    assert.equal(isLinearAgentSessionPrompted(prompted), true);
+  });
+
+  it("wraps the follow-up mention as a continuation prompt", () => {
+    const prompt = linearAgentSessionFollowUpPrompt({
+      triggerName: "linear-mention",
+      hubConfig: {},
+      triggerContext: {
+        provider: "linear",
+        event: { linear: { prompt_context: "Issue LEX-1" } },
+      },
+      outputContext: context(),
+      invocation: {
+        status: "accepted",
+        prompt: "also update the changelog",
+        inputs: {},
+      },
+    });
+    assert.match(prompt, /Follow-up in the same Linear agent session/u);
+    assert.match(prompt, /also update the changelog/u);
+    assert.match(prompt, /Issue LEX-1/u);
+    assert.match(prompt, /Do not call hub.finish_execution/u);
   });
 });
 

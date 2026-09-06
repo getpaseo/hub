@@ -154,6 +154,11 @@ Because the mention text is the prompt, declared inputs are read straight from i
 `@Paseo agent=fast summarize this` runs the `fast` choice; omitting it uses the default. Filters
 still work when a workspace routes different projects or labels to different repositories.
 
+A reply in the same Linear session is a `prompted` event. Hub sends that follow-up to the live
+Paseo agent instead of starting another one, as long as the first run is still open. `hub.reply`
+still writes the answer into the session; `hub.finish_execution` ends the turn but keeps the
+agent around until the idle timeout.
+
 Hub narrates the run back into the session: a `thought` on pickup, which is what keeps Linear from
 marking the session unresponsive, an external link to Hub, the agent's `reply` as the session
 `response`, and an `error` activity carrying the failure reason when a run does not finish.

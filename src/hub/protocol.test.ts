@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import {
   GetProvidersSnapshotResponseSchema,
   HubExecutionAgentCreateRequestSchema,
+  HubExecutionControlRequestSchema,
 } from "./protocol.js";
 
 describe("Hub execution create protocol", () => {
@@ -36,6 +37,33 @@ describe("Hub execution create protocol", () => {
         },
       }).success,
       false,
+    );
+  });
+});
+
+describe("Hub execution control protocol", () => {
+  it("requires a prompt when the control action is prompt", () => {
+    const base = {
+      type: "hub.execution.control.request",
+      requestId: "request-1",
+      executionId: "execution-1",
+    };
+
+    assert.equal(
+      HubExecutionControlRequestSchema.safeParse({ ...base, action: "archive" }).success,
+      true,
+    );
+    assert.equal(
+      HubExecutionControlRequestSchema.safeParse({ ...base, action: "prompt" }).success,
+      false,
+    );
+    assert.equal(
+      HubExecutionControlRequestSchema.safeParse({
+        ...base,
+        action: "prompt",
+        prompt: "continue from the last answer",
+      }).success,
+      true,
     );
   });
 });

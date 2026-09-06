@@ -16,6 +16,7 @@ export interface DispatcherOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
+  continueConversation?: DurableWorkflowEngineOptions["continueConversation"];
   validateLaunchMachineIntent?: DurableWorkflowEngineOptions["validateLaunchMachineIntent"];
   configurationRevisionId?: string;
   leaseMs?: number;
@@ -44,6 +45,9 @@ export function createDispatcherWithEngine(options: DispatcherOptions): {
     ...(options.dispatchLaunchMachineIntent === undefined
       ? {}
       : { dispatchLaunchMachineIntent: options.dispatchLaunchMachineIntent }),
+    ...(options.continueConversation === undefined
+      ? {}
+      : { continueConversation: options.continueConversation }),
     ...(options.validateLaunchMachineIntent === undefined
       ? {}
       : { validateLaunchMachineIntent: options.validateLaunchMachineIntent }),

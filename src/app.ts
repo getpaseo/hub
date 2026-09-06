@@ -33,7 +33,11 @@ import type {
   ExecutionDeadlineClock,
 } from "./daemons/lifecycle.js";
 import type { TriggerProviderFactory, TriggerProviderResources } from "./providers/registration.js";
-import type { TriggerProvider, TriggerSource } from "./triggers/index.js";
+import type {
+  AcceptedTriggerProviderMatch,
+  TriggerProvider,
+  TriggerSource,
+} from "./triggers/index.js";
 import {
   createManualTriggerSource,
   dispatchManualTrigger,
@@ -209,6 +213,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
             daemonModule.lifecycle.notifyWorkflowRunStarted(run),
           onWorkflowRunTerminal: (run: TriggerRunRecord) =>
             daemonModule.lifecycle.notifyWorkflowRunTerminal(run),
+          continueConversation: (input: {
+            organizationId: string;
+            match: AcceptedTriggerProviderMatch;
+          }) => daemonModule.lifecycle.continueConversation(input),
         }),
   };
   const { handler: workflowDispatcher, engine: workflowEngine } = createDispatcherWithEngine({

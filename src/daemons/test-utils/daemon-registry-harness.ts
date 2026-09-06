@@ -19,7 +19,7 @@ const SessionRequestSchema = z.object({
       type: z.string(),
       requestId: z.string(),
       executionId: z.string().optional(),
-      action: z.enum(["interrupt", "archive"]).optional(),
+      action: z.enum(["interrupt", "archive", "prompt"]).optional(),
     })
     .passthrough(),
 });
