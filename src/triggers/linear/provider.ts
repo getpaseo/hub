@@ -1,3 +1,4 @@
+import type { TriggerFilter } from "../../config/index.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import {
   LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT,
@@ -8,46 +9,61 @@ import { reportFailure } from "../../failures/index.js";
 import type { TriggerProvider, TriggerProviderMatch } from "../index.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedLinearEventSchema, type NormalizedLinearEvent } from "./events.js";
-import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
+import {
+  matchLinearTriggers,
+  readLinearAgentSessionInvocationParserMessage,
+  readLinearCommentInvocationParserMessage,
+} from "./match.js";
+import {
+  agentSessionOutputContext,
+  buildAgentSessionContext,
+  type LinearAgentSessionContext,
+  type LinearAgentSessionHooks,
+  type LinearAgentSessionOutputContext,
+} from "./agent-session.js";
 
-export interface LinearOutputContext {
+export interface LinearIssueOutputContext {
   provider: "linear";
   linearOrganizationId: string;
   issueId: string;
 }
 
+export type LinearOutputContext = LinearIssueOutputContext | LinearAgentSessionOutputContext;
+
 export interface LinearTriggerContext {
   provider: "linear";
   target: LinearOutputContext;
   event: {
-    linear: {
-      event_type: "issue" | "comment";
-      action: "create" | "update" | "remove";
-      delivery_id: string;
-      connection_id: string | null;
-      organization: { id: string };
-      actor: { id: string; name?: string | undefined } | null;
-      issue: {
-        id: string;
-        identifier?: string;
-        title: string;
-        description: string | null;
-        url?: string;
-        project: { id: string } | null;
-        state: { id: string } | null;
-        assignee: { id: string } | null;
-        label_ids: string[];
-      };
-      comment: { id: string; body: string } | null;
-      trigger_thread_context:
-        | {
-            status: "deferred";
-            issue: { id: string };
-            before: { created_at: string };
-          }
-        | { status: "unavailable" };
-    };
+    linear: LinearEntityContext | LinearAgentSessionContext;
   };
+}
+
+export interface LinearEntityContext {
+  event_type: "issue" | "comment";
+  action: "create" | "update" | "remove";
+  delivery_id: string;
+  connection_id: string | null;
+  organization: { id: string };
+  actor: { id: string; name?: string | undefined } | null;
+  issue: {
+    id: string;
+    identifier?: string;
+    title: string;
+    description: string | null;
+    url?: string;
+    project: { id: string } | null;
+    state: { id: string } | null;
+    assignee: { id: string } | null;
+    label_ids: string[];
+  };
+  comment: { id: string; body: string } | null;
+  trigger_thread_context:
+    | {
+        status: "deferred";
+        issue: { id: string };
+        before: { created_at: string };
+      }
+    | { status: "unavailable" };
 }
 
 export interface LinearIssueContextMessage {
@@ -57,27 +73,50 @@ export interface LinearIssueContextMessage {
   created_at: string | null;
 }
 
+export interface LinearThread {
+  status: "available" | "incomplete" | "unavailable";
+  messages: LinearIssueContextMessage[];
+}
+
 export interface LinearMaterializedContext {
-  linear: Omit<LinearTriggerContext["event"]["linear"], "trigger_thread_context"> & {
-    thread: {
-      status: "available" | "incomplete" | "unavailable";
-      messages: LinearIssueContextMessage[];
-    };
-  };
+  linear:
+    | (Omit<LinearEntityContext, "trigger_thread_context"> & { thread: LinearThread })
+    | (LinearAgentSessionContext & { thread: LinearThread });
 }
 
 export function createLinearTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   client?: Pick<LinearApiClient, "readIssueComments">;
+  agentSessions?: LinearAgentSessionHooks;
 }): TriggerProvider<
   "linear",
   LinearTriggerContext,
   LinearOutputContext,
   LinearMaterializedContext
 > {
+  const sessions = options.agentSessions;
   return {
     name: "linear",
-    eventNames: ["linear.issue", "linear.comment"],
+    eventNames: ["linear.issue", "linear.comment", "linear.agent_session"],
+    ...(sessions === undefined
+      ? {}
+      : {
+          onDispatchAccepted: async (_triggerContext, outputContext) => {
+            await sessions.onDispatchAccepted(outputContext);
+          },
+          onAgentExecutionStarted: async (_triggerContext, outputContext) => {
+            await sessions.onAgentExecutionStarted(outputContext);
+          },
+          onAgentExecutionCompleted: async (_triggerContext, outputContext, result) => {
+            await sessions.onAgentExecutionCompleted(outputContext, result);
+          },
+          onAgentExecutionFailed: async (_triggerContext, outputContext, reason) => {
+            await sessions.onAgentExecutionFailed(outputContext, reason);
+          },
+          onMachineTerminated: async (triggerContext, reason) => {
+            await sessions.onAgentExecutionFailed(triggerContext.target, reason);
+          },
+        }),
     async match(externalTrigger) {
       const event = NormalizedLinearEventSchema.parse(externalTrigger.payload);
       const stored = await options
@@ -102,32 +141,47 @@ export function createLinearTriggerProvider(options: {
         if (compiledTrigger === undefined) {
           throw new Error(`compiled trigger not found: ${candidate.trigger.name}`);
         }
-        const issue = event.type === "issue" ? event.issue : event.issue;
-        if (issue === null) continue;
-        const outputContext: LinearOutputContext = {
-          provider: "linear",
-          linearOrganizationId: event.organizationId,
-          issueId: issue.id,
-        };
-        const triggerContext: LinearTriggerContext = {
-          provider: "linear",
-          target: outputContext,
-          event: {
-            linear: buildLinearContext(
-              event,
-              externalTrigger.deliveryId,
-              externalTrigger.connectionId,
-            ),
-          },
-        };
+        let outputContext: LinearOutputContext;
+        let triggerContext: LinearTriggerContext;
+        if (event.type === "agent_session") {
+          outputContext = agentSessionOutputContext(event);
+          triggerContext = {
+            provider: "linear",
+            target: outputContext,
+            event: {
+              linear: buildAgentSessionContext(
+                event,
+                externalTrigger.deliveryId,
+                externalTrigger.connectionId,
+              ),
+            },
+          };
+        } else {
+          const issue = event.issue;
+          if (issue === null) continue;
+          outputContext = {
+            provider: "linear",
+            linearOrganizationId: event.organizationId,
+            issueId: issue.id,
+          };
+          triggerContext = {
+            provider: "linear",
+            target: outputContext,
+            event: {
+              linear: buildLinearContext(
+                event,
+                externalTrigger.deliveryId,
+                externalTrigger.connectionId,
+              ),
+            },
+          };
+        }
         const prompt = promptForEvent(event);
         const invocation = parseInvocation(
           prompt,
           compiledTrigger.inputs,
           undefined,
-          event.type === "comment"
-            ? readLinearCommentInvocationParserMessage(event, compiledTrigger.filters)
-            : prompt,
+          invocationParserMessage(event, compiledTrigger.filters, prompt),
         );
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
@@ -153,7 +207,31 @@ export function createLinearTriggerProvider(options: {
       return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
     async materializeContext(launch): Promise<LinearMaterializedContext> {
-      const { trigger_thread_context: locator, ...linear } = launch.triggerContext.event.linear;
+      const source = launch.triggerContext.event.linear;
+      if (source.event_type === "agent_session") {
+        // Linear already renders issue, discussion, and guidance into one string for the session,
+        // so there is nothing to backfill and nothing to truncate.
+        return {
+          linear: {
+            ...source,
+            thread:
+              source.prompt_context === null
+                ? { status: "unavailable", messages: [] }
+                : {
+                    status: "available",
+                    messages: [
+                      {
+                        id: source.agent_session.id,
+                        content: source.prompt_context,
+                        author: null,
+                        created_at: null,
+                      },
+                    ],
+                  },
+          },
+        };
+      }
+      const { trigger_thread_context: locator, ...linear } = source;
       const root = issueRootMessage(linear.issue);
       if (locator.status !== "deferred" || options.client === undefined) {
         return linearThreadContext(linear, "unavailable", [root]);
@@ -194,16 +272,14 @@ export function createLinearTriggerProvider(options: {
 }
 
 function linearThreadContext(
-  linear: Omit<LinearTriggerContext["event"]["linear"], "trigger_thread_context">,
-  status: LinearMaterializedContext["linear"]["thread"]["status"],
+  linear: Omit<LinearEntityContext, "trigger_thread_context">,
+  status: LinearThread["status"],
   messages: LinearIssueContextMessage[],
 ): LinearMaterializedContext {
   return { linear: { ...linear, thread: { status, messages } } };
 }
 
-function issueRootMessage(
-  issue: LinearTriggerContext["event"]["linear"]["issue"],
-): LinearIssueContextMessage {
+function issueRootMessage(issue: LinearEntityContext["issue"]): LinearIssueContextMessage {
   return {
     id: issue.id,
     content:
@@ -236,26 +312,43 @@ function compareLinearCommentOrder(left: LinearIssueComment, right: LinearIssueC
 }
 
 function hasSourceTrigger(triggers: readonly { on: string }[], source: string): boolean {
-  return triggers.some((trigger) =>
-    source === "linear.issue"
-      ? trigger.on === "linear.issue_entered_scope" || trigger.on === "linear.issue_assigned"
-      : source === "linear.comment" && trigger.on === "linear.comment_created",
-  );
+  return triggers.some((trigger) => {
+    if (source === "linear.issue") {
+      return trigger.on === "linear.issue_entered_scope" || trigger.on === "linear.issue_assigned";
+    }
+    if (source === "linear.comment") return trigger.on === "linear.comment_created";
+    return source === "linear.agent_session" && trigger.on === "linear.agent_session";
+  });
+}
+
+function invocationParserMessage(
+  event: NormalizedLinearEvent,
+  filters: TriggerFilter | undefined,
+  prompt: string,
+): string {
+  if (event.type === "comment") return readLinearCommentInvocationParserMessage(event, filters);
+  if (event.type === "agent_session") {
+    return readLinearAgentSessionInvocationParserMessage(event.prompt);
+  }
+  return prompt;
 }
 
 function promptForEvent(event: NormalizedLinearEvent): string {
   if (event.type === "comment") return event.comment.body;
+  // The session prompt is what the human typed, so `agent=` style inputs parse exactly as in a
+  // comment. Linear's rendered context is passed separately through `${{ paseo.context }}`.
+  if (event.type === "agent_session") return event.prompt;
   return event.issue.description === null
     ? event.issue.title
     : `${event.issue.title}\n\n${event.issue.description}`;
 }
 
 function buildLinearContext(
-  event: NormalizedLinearEvent,
+  event: Exclude<NormalizedLinearEvent, { type: "agent_session" }>,
   deliveryId: string,
   connectionId: string | null | undefined,
-): LinearTriggerContext["event"]["linear"] {
-  const issue = event.type === "issue" ? event.issue : event.issue;
+): LinearEntityContext {
+  const issue = event.issue;
   if (issue === null) throw new Error("Linear event issue context unavailable");
   return {
     event_type: event.type,

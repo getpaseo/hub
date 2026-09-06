@@ -8,6 +8,8 @@ import type { TriggerHandler, TriggerSource } from "../index.js";
 import { eventIssueId, eventProjectId, normalizeLinearEvent } from "./events.js";
 import type { LinearIssueDetails } from "../../providers/linear/client.js";
 
+type LinearEventSource = "linear.issue" | "linear.comment" | "linear.agent_session";
+
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_TIMESTAMP_SKEW_MS = 60_000;
 
@@ -114,7 +116,12 @@ async function handoffLinearEvent(
       logger.info({ deliveryId: verified.deliveryId }, "ignoring unsupported Linear event");
       return new Response("OK", { status: 200 });
     }
-    if (eventProjectId(event) === undefined && options.resolveIssue !== undefined) {
+    const issueId = eventIssueId(event);
+    if (
+      eventProjectId(event) === undefined &&
+      issueId !== undefined &&
+      options.resolveIssue !== undefined
+    ) {
       const source = linearEventSource(event);
       if (
         options.canHydrateIssue !== undefined &&
@@ -124,7 +131,7 @@ async function handoffLinearEvent(
       }
       const issue = await options.resolveIssue({
         linearOrganizationId: event.organizationId,
-        issueId: eventIssueId(event),
+        issueId,
       });
       event = normalizeLinearEvent(verified.payload, verified.eventName, issue);
     }
@@ -147,7 +154,7 @@ async function handoffLinearEvent(
 
 async function acceptAndDispatchLinearEvent(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-  source: "linear.issue" | "linear.comment",
+  source: LinearEventSource,
   verified: VerifiedLinearRequest,
   handlers: Set<TriggerHandler>,
   options: LinearWebhookSourceOptions,
@@ -182,8 +189,9 @@ async function acceptAndDispatchLinearEvent(
 
 function linearEventSource(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-): "linear.issue" | "linear.comment" {
-  return event.type === "issue" ? "linear.issue" : "linear.comment";
+): LinearEventSource {
+  if (event.type === "issue") return "linear.issue";
+  return event.type === "comment" ? "linear.comment" : "linear.agent_session";
 }
 
 /** Verify Linear's HMAC-SHA256 over the exact raw request body. */

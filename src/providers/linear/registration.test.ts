@@ -209,6 +209,8 @@ describe("Linear registration", () => {
       },
       readIssueComments: async () => ({ comments: [], complete: true }),
       createComment: async () => {},
+      createAgentActivity: async () => {},
+      updateAgentSession: async () => {},
     };
     const registration = createLinearRegistration({
       database,

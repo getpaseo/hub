@@ -24,6 +24,43 @@ describe("Linear webhook", () => {
     assert.equal(verifyLinearWebhookTimestamp({ webhookTimestamp: "not-a-time" }, NOW), false);
   });
 
+  it("routes an agent session delivery to its own source", async () => {
+    const accepted: { source: string; projectId?: string }[] = [];
+    const dispatched: DurableProviderEvent[] = [];
+    const endpoint = webhookSource((input) => {
+      accepted.push({
+        source: input.source,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+      });
+      return Promise.resolve(acceptedEvent(input));
+    });
+    await endpoint.start((event) => {
+      dispatched.push(event);
+      return Promise.resolve();
+    });
+
+    const response = await endpoint.handle(request(agentSessionEnvelope(), "AgentSessionEvent"));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(accepted, [{ source: "linear.agent_session", projectId: "project-1" }]);
+    assert.deepEqual(
+      dispatched.map((event) => event.source),
+      ["linear.agent_session"],
+    );
+  });
+
+  it("rejects an agent session delivery whose signature does not verify", async () => {
+    const endpoint = webhookSource(() => {
+      throw new Error("must not accept");
+    });
+
+    const response = await endpoint.handle(
+      request(agentSessionEnvelope(), "AgentSessionEvent", { signature: sign("other") }),
+    );
+
+    assert.equal(response.status, 401);
+  });
+
   it("normalizes an issue, durably accepts it, and dispatches its selected route", async () => {
     const accepted: unknown[] = [];
     const dispatched: DurableProviderEvent[] = [];
@@ -196,6 +233,33 @@ describe("Linear webhook", () => {
     assert.equal((await endpoint.handle(request(issueEnvelope()))).status, 503);
   });
 });
+
+function agentSessionEnvelope() {
+  return {
+    type: "AgentSessionEvent",
+    action: "created",
+    organizationId: "linear-org",
+    createdAt: new Date(NOW).toISOString(),
+    webhookTimestamp: NOW,
+    promptContext: "Issue ENG-42",
+    agentSession: {
+      id: "session-1",
+      status: "pending",
+      creator: { id: "user-1", name: "Operator" },
+      comment: { id: "comment-1", body: "@Paseo take a look" },
+      issue: {
+        id: "issue-1",
+        identifier: "ENG-42",
+        title: "Ship the feature",
+        description: null,
+        projectId: "project-1",
+        stateId: "todo",
+        assigneeId: null,
+        labelIds: [],
+      },
+    },
+  };
+}
 
 function webhookSource(
   accept: (

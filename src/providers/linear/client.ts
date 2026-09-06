@@ -4,6 +4,17 @@ import type { Database, LinearConnectionRecord } from "../../db/types.js";
 /** The minimum authority required to read issues and leave an outcome on the issue. */
 export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
 
+/**
+ * Agent sessions need the app to be mentionable and delegatable, and `agentActivityCreate` is
+ * rejected with "Invalid scope: `write` required" under the narrow `comments:create` grant, so the
+ * broader write scope has to come with them. These are requested for every new authorization but
+ * deliberately not required: a workspace connected before agent sessions existed keeps its issue
+ * and comment triggers working and only loses the mention flow until it reconnects.
+ */
+export const LINEAR_AGENT_SCOPES = ["write", "app:mentionable", "app:assignable"] as const;
+
+export const LINEAR_REQUESTED_SCOPES = [...LINEAR_REQUIRED_SCOPES, ...LINEAR_AGENT_SCOPES] as const;
+
 /** Keep an issue description plus its preceding discussion within one bounded context window. */
 export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
 export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
@@ -89,6 +100,18 @@ const CommentResponseSchema = z.object({
   }),
 });
 
+const AgentActivityResponseSchema = z.object({
+  data: z.object({
+    agentActivityCreate: z.object({ success: z.literal(true) }),
+  }),
+});
+
+const AgentSessionUpdateResponseSchema = z.object({
+  data: z.object({
+    agentSessionUpdate: z.object({ success: z.literal(true) }),
+  }),
+});
+
 export interface LinearInstallation {
   linearOrganizationId: string;
   linearOrganizationName: string;
@@ -137,6 +160,22 @@ export interface LinearIssueCommentHistory {
   complete: boolean;
 }
 
+/**
+ * The activity vocabulary Linear renders inside an agent session. `thought` and `action` may be
+ * ephemeral, which shows them while the agent works and drops them from the permanent transcript.
+ */
+export type LinearAgentActivityContent =
+  | { type: "thought"; body: string }
+  | { type: "elicitation"; body: string }
+  | { type: "action"; action: string; parameter: string; result?: string }
+  | { type: "response"; body: string }
+  | { type: "error"; body: string; public?: boolean };
+
+export interface LinearExternalUrl {
+  label: string;
+  url: string;
+}
+
 export interface LinearApiClient {
   readIssue(input: {
     linearOrganizationId: string;
@@ -152,11 +191,28 @@ export interface LinearApiClient {
     issueId: string;
     body: string;
   }): Promise<void>;
+  createAgentActivity(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    content: LinearAgentActivityContent;
+    ephemeral?: boolean;
+  }): Promise<void>;
+  updateAgentSession(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    externalUrls: readonly LinearExternalUrl[];
+  }): Promise<void>;
 }
 
 export function hasRequiredLinearScopes(scopes: readonly string[]): boolean {
   const granted = new Set(scopes);
   return LINEAR_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+}
+
+/** Whether this connection can receive agent sessions, or only issue and comment events. */
+export function hasLinearAgentScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return LINEAR_AGENT_SCOPES.every((scope) => granted.has(scope));
 }
 
 export function linearConnectionRequiresReauthorization(
@@ -199,7 +255,7 @@ export function createLinearConnectionClient(options: {
         client_id: options.clientId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: LINEAR_REQUIRED_SCOPES.join(","),
+        scope: LINEAR_REQUESTED_SCOPES.join(","),
         state,
         // Keep workflow results visibly attributable to the installed Paseo application instead
         // of impersonating the administrator who completed the connection.
@@ -226,7 +282,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes ?? [...LINEAR_REQUIRED_SCOPES],
+        scopes: token.scopes ?? [...LINEAR_REQUESTED_SCOPES],
       };
     },
     async refresh(refreshToken) {
@@ -400,6 +456,41 @@ export function createLinearApiClient(options: {
       );
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
     },
+    async createAgentActivity(input) {
+      const result = AgentActivityResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `mutation PaseoAgentActivity($input: AgentActivityCreateInput!) {
+            agentActivityCreate(input: $input) { success }
+          }`,
+          variables: {
+            input: {
+              agentSessionId: input.agentSessionId,
+              content: input.content,
+              ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }),
+            },
+          },
+        }),
+      );
+      if (!result.data.agentActivityCreate.success) {
+        throw new Error("Linear agent activity was not accepted");
+      }
+    },
+    async updateAgentSession(input) {
+      const result = AgentSessionUpdateResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `mutation PaseoAgentSession($id: String!, $input: AgentSessionUpdateInput!) {
+            agentSessionUpdate(id: $id, input: $input) { success }
+          }`,
+          variables: {
+            id: input.agentSessionId,
+            input: { externalUrls: input.externalUrls.map((entry) => ({ ...entry })) },
+          },
+        }),
+      );
+      if (!result.data.agentSessionUpdate.success) {
+        throw new Error("Linear agent session update was not accepted");
+      }
+    },
   };
 }
 
@@ -456,7 +547,7 @@ async function readViewer(request: typeof fetch, accessToken: string) {
 async function graphql(
   request: typeof fetch,
   accessToken: string,
-  payload: { query: string; variables: Record<string, string> },
+  payload: { query: string; variables: Record<string, unknown> },
 ): Promise<unknown> {
   const response = await request("https://api.linear.app/graphql", {
     method: "POST",
@@ -466,13 +557,31 @@ async function graphql(
     },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) throw new Error(`Linear GraphQL HTTP ${response.status}`);
+  if (!response.ok) {
+    // Linear answers a malformed document with a plain 400, so the body is the only description of
+    // what it rejected. Without it every schema mismatch looks identical in the logs.
+    throw new Error(`Linear GraphQL HTTP ${response.status}: ${await readErrorBody(response)}`);
+  }
   const result: unknown = await response.json();
   const errors = GraphqlErrorSchema.safeParse(result);
   if (errors.success && errors.data.errors !== undefined) {
     throw new Error(`Linear GraphQL ${errors.data.errors[0]!.message}`);
   }
   return result;
+}
+
+const MAX_LINEAR_ERROR_BODY = 400;
+
+async function readErrorBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    const collapsed = text.replace(/\s+/gu, " ").trim();
+    return collapsed.length > MAX_LINEAR_ERROR_BODY
+      ? `${collapsed.slice(0, MAX_LINEAR_ERROR_BODY)}…`
+      : collapsed;
+  } catch {
+    return "unreadable response body";
+  }
 }
 
 function parseLinearScopes(scope: string | undefined): string[] {

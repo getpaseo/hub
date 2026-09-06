@@ -112,6 +112,54 @@ The image is published as `ghcr.io/getpaseo/hub:latest`.
 See the [self-hosting guide](https://paseo.sh/docs/hub/self-hosting) for production deployment details.
 For Linear setup and workflows, see the public [Linear app](https://paseo.sh/docs/hub/self-hosting/linear-app) and [Linear triggers](https://paseo.sh/docs/hub/triggers/linear) guides.
 
+## Linear agent sessions
+
+Paseo can be a first-class Linear agent: people `@mention` it in an issue, or delegate the issue to
+it, and Linear opens an agent session that shows the run's progress and answer inline.
+
+Enable **Agent session events** on your Linear application's webhook, then reconnect Linear in Hub
+so the connection picks up the `write`, `app:mentionable`, and `app:assignable` scopes. Connections
+made before this stay valid and keep their issue and comment triggers; they only miss mentions until
+they reconnect.
+
+A session trigger needs no actor allowlist, because Linear creates a session only when someone
+addresses your app by name and delivers it to no other app:
+
+```yaml
+name: linear-mention
+on:
+  linear.agent_session:
+    connection: acme-linear
+inputs:
+  agent:
+    type: string
+    default: opus
+    choices: [opus, fast]
+run:
+  target:
+    daemon: ax41
+    cwd: /srv/repo
+  agent:
+    select: ${{ paseo.inputs.agent }}
+    choices:
+      opus: { provider: claude, model: claude-opus-5, mode: bypassPermissions }
+      fast: { provider: claude, model: claude-haiku-4-5, mode: bypassPermissions }
+  prompt: |-
+    ${{ paseo.prompt }}
+
+    ${{ paseo.context }}
+```
+
+Because the mention text is the prompt, declared inputs are read straight from it. Writing
+`@Paseo agent=fast summarize this` runs the `fast` choice; omitting it uses the default. Filters
+still work when a workspace routes different projects or labels to different repositories.
+
+Hub narrates the run back into the session: a `thought` on pickup, which is what keeps Linear from
+marking the session unresponsive, an external link to Hub, the agent's `reply` as the session
+`response`, and an `error` activity carrying the failure reason when a run does not finish.
+`${{ paseo.context }}` is Linear's own rendered issue and discussion context, so no comment
+backfill is needed.
+
 ## Provider options and Hub tools
 
 Workflow steps may pass a JSON-compatible, provider-native `agent.options` object. Hub preserves

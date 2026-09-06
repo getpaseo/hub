@@ -152,6 +152,48 @@ describe("Linear trigger provider", () => {
     });
   });
 
+  it("takes the session prompt from the mention and parses its typed inputs", async () => {
+    const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+
+    const match = (await provider.match(agentSessionExternal(project.id, revision.id)))[0];
+
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    assert.equal(match.invocation.prompt, "@Paseo agent=fast ship it");
+    assert.equal(match.invocation.inputs["agent"], "fast");
+    assert.deepEqual(match.outputContext, {
+      provider: "linear",
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      agentSessionId: "session-1",
+    });
+  });
+
+  it("uses Linear's rendered session context instead of reading the comment history", async () => {
+    const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+    });
+    const match = (await provider.match(agentSessionExternal(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    const materialized = await provider.materializeContext!({
+      executionId: "execution-1",
+      organizationId: "hub-org",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
+      triggerContext: match.triggerContext,
+    });
+
+    assert.deepEqual(client.historyReads, []);
+    assert.equal(materialized.linear.thread.status, "available");
+    assert.deepEqual(materialized.linear.thread.messages, [
+      { id: "session-1", content: "Issue ENG-1\n\nShip it", author: null, created_at: null },
+    ]);
+  });
+
   it("defers a bounded, causal issue history until context materialization", async () => {
     const { project, revision, store } = await activeConfiguration();
     const triggerAt = "2026-01-02T00:00:00.000Z";
@@ -178,7 +220,9 @@ describe("Linear trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
 
     assert.deepEqual(client.historyReads, []);
-    assert.deepEqual(match.triggerContext.event.linear.trigger_thread_context, {
+    const linearContext = match.triggerContext.event.linear;
+    if (linearContext.event_type === "agent_session") throw new Error("expected entity context");
+    assert.deepEqual(linearContext.trigger_thread_context, {
       status: "deferred",
       issue: { id: "issue-1" },
       before: { created_at: triggerAt },
@@ -297,7 +341,7 @@ class RecordingHistoryClient implements Pick<LinearApiClient, "readIssueComments
   }
 }
 
-function activeConfiguration(configuration = linearCommentConfiguration()) {
+function activeConfiguration(configuration: unknown = linearCommentConfiguration()) {
   return createActiveProjectConfiguration(createMemoryDatabase(), configuration, {
     organizationId: "hub-org",
   });
@@ -324,6 +368,64 @@ function linearCommentConfiguration() {
         ],
       },
     ],
+  };
+}
+
+function agentSessionConfiguration() {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+    triggers: [
+      {
+        name: "mention",
+        on: "linear.agent_session",
+        max_runtime: "1h",
+        inputs: { agent: { type: "string", default: "opus" } },
+        steps: [
+          {
+            id: "work",
+            environment: "runner",
+            max_runtime: "1h",
+            idle_timeout: "5m",
+            agent: { provider: "codex" },
+            prompt: [{ text: "Work from ${{ paseo.context }}" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function agentSessionExternal(projectId: string, configurationRevisionId: string): ExternalTrigger {
+  return {
+    providerEventReceiptId: "11111111-1111-4111-8111-111111111120",
+    organizationId: "hub-org",
+    projectId,
+    configurationRevisionId,
+    source: "linear.agent_session",
+    deliveryId: "delivery-2",
+    receivedAt: new Date("2026-01-02T00:00:00.000Z"),
+    connectionId: "linear-connection",
+    payload: {
+      type: "agent_session",
+      action: "created",
+      id: "session-1",
+      organizationId: "linear-org",
+      actor: { id: "operator" },
+      agentSession: { id: "session-1", status: "pending", commentId: "comment-1" },
+      issue: {
+        id: "issue-1",
+        identifier: "ENG-1",
+        title: "Ship it",
+        description: null,
+        projectId: "project-1",
+        stateId: "todo",
+        assigneeId: null,
+        labelIds: [],
+      },
+      prompt: "@Paseo agent=fast ship it",
+      promptContext: "Issue ENG-1\n\nShip it",
+      occurredAt: "2026-01-02T00:00:00.000Z",
+    },
   };
 }
 

@@ -43,14 +43,42 @@ export const NormalizedLinearCommentEventSchema = z.object({
   occurredAt: z.string().datetime().optional(),
 });
 
+/**
+ * An agent session is Linear's own first-party record of a delegated or mentioned agent run. The
+ * session, not the comment, is the durable thing an activity stream attaches to, so it carries its
+ * own identity alongside the issue the work belongs to.
+ */
+export const NormalizedLinearAgentSessionEventSchema = z.object({
+  type: z.literal("agent_session"),
+  action: z.enum(["created", "prompted"]),
+  id: LinearIdSchema,
+  organizationId: LinearIdSchema,
+  actor: LinearActorSchema.nullable(),
+  agentSession: z.object({
+    id: LinearIdSchema,
+    status: z.string().min(1).optional(),
+    commentId: LinearIdSchema.nullable(),
+  }),
+  issue: LinearIssueSchema.nullable(),
+  /** Exactly what the human typed, so invocation parsing sees the same text a comment would give. */
+  prompt: z.string(),
+  /** Linear's pre-rendered issue and discussion context; absent on some follow-up deliveries. */
+  promptContext: z.string().nullable(),
+  occurredAt: z.string().datetime().optional(),
+});
+
 export const NormalizedLinearEventSchema = z.discriminatedUnion("type", [
   NormalizedLinearIssueEventSchema,
   NormalizedLinearCommentEventSchema,
+  NormalizedLinearAgentSessionEventSchema,
 ]);
 
 export type NormalizedLinearIssue = z.infer<typeof LinearIssueSchema>;
 export type NormalizedLinearIssueEvent = z.infer<typeof NormalizedLinearIssueEventSchema>;
 export type NormalizedLinearCommentEvent = z.infer<typeof NormalizedLinearCommentEventSchema>;
+export type NormalizedLinearAgentSessionEvent = z.infer<
+  typeof NormalizedLinearAgentSessionEventSchema
+>;
 export type NormalizedLinearEvent = z.infer<typeof NormalizedLinearEventSchema>;
 
 /**
@@ -62,6 +90,8 @@ export function normalizeLinearEvent(
   eventName?: string | null,
   hydratedIssue?: LinearIssueDetails,
 ): NormalizedLinearEvent | undefined {
+  const session = normalizeAgentSessionEvent(payload, eventName, hydratedIssue);
+  if (session !== undefined) return session;
   const envelope = readEnvelope(payload, eventName);
   if (envelope === undefined) return undefined;
   return envelope.kind === "issue"
@@ -69,12 +99,98 @@ export function normalizeLinearEvent(
     : normalizeCommentEvent(envelope, hydratedIssue);
 }
 
-export function eventIssueId(event: NormalizedLinearEvent): string {
-  return event.type === "issue" ? event.issue.id : event.comment.issueId;
+export function eventIssueId(event: NormalizedLinearEvent): string | undefined {
+  if (event.type === "issue") return event.issue.id;
+  if (event.type === "comment") return event.comment.issueId;
+  return event.issue?.id;
 }
 
 export function eventProjectId(event: NormalizedLinearEvent): string | undefined {
   return event.issue?.projectId ?? undefined;
+}
+
+export function isAgentSessionEventName(eventName: string | null | undefined): boolean {
+  return (eventName ?? "").toLowerCase().replace(/[^a-z]/gu, "") === "agentsessionevent";
+}
+
+/**
+ * Agent session deliveries carry `agentSession` where entity webhooks carry `data`, so they are
+ * recognized before the entity envelope reader rather than through it.
+ */
+function normalizeAgentSessionEvent(
+  payload: unknown,
+  eventName: string | null | undefined,
+  hydratedIssue: LinearIssueDetails | undefined,
+): NormalizedLinearEvent | undefined {
+  if (!isRecord(payload)) return undefined;
+  const declaredType = typeof payload["type"] === "string" ? payload["type"] : undefined;
+  if (!isAgentSessionEventName(eventName) && !isAgentSessionEventName(declaredType)) {
+    return undefined;
+  }
+  const session = asRecord(payload["agentSession"]);
+  const organizationId = firstDefined(
+    readString(payload["organizationId"]),
+    readString(session?.["organizationId"]),
+  );
+  const sessionId = readString(session?.["id"]);
+  const action = readSessionAction(payload["action"]);
+  if (session === undefined || organizationId === undefined || sessionId === undefined) {
+    return undefined;
+  }
+  if (action === undefined) return undefined;
+  const comment = asRecord(session["comment"]);
+  const issue = normalizeIssue(asRecord(session["issue"]) ?? {}, hydratedIssue);
+  return NormalizedLinearAgentSessionEventSchema.parse({
+    type: "agent_session",
+    action,
+    id: sessionId,
+    organizationId,
+    actor: readSessionActor(payload, session, comment),
+    agentSession: {
+      id: sessionId,
+      ...optionalProperty("status", readString(session["status"])),
+      commentId: readString(comment?.["id"]) ?? null,
+    },
+    issue: issue ?? null,
+    prompt: readSessionPrompt(payload, session) ?? "",
+    promptContext: readNullableString(payload["promptContext"]) ?? null,
+    ...optionalProperty("occurredAt", readDate(payload["createdAt"])),
+  });
+}
+
+/** The human who opened the session: its creator, the delivery actor, or the comment's author. */
+function readSessionActor(
+  payload: Record<string, unknown>,
+  session: Record<string, unknown>,
+  comment: Record<string, unknown> | undefined,
+): { id: string; name?: string } | null {
+  return (
+    normalizeActor(session["creator"]) ??
+    normalizeActor(payload["actor"]) ??
+    normalizeActor(comment?.["user"]) ??
+    null
+  );
+}
+
+function readSessionAction(value: unknown): "created" | "prompted" | undefined {
+  return value === "created" || value === "prompted" ? value : undefined;
+}
+
+/**
+ * The human's words live in the triggering comment on `created` and in the follow-up activity on
+ * `prompted`. Both spellings of an activity body are accepted so a schema tweak cannot mute a run.
+ */
+function readSessionPrompt(
+  payload: Record<string, unknown>,
+  session: Record<string, unknown>,
+): string | undefined {
+  const activity = asRecord(payload["agentActivity"]);
+  return firstDefined(
+    readString(asRecord(activity?.["content"])?.["body"]),
+    readString(activity?.["body"]),
+    readString(asRecord(session["comment"])?.["body"]),
+    readString(payload["promptContext"]),
+  );
 }
 
 interface LinearEnvelope {

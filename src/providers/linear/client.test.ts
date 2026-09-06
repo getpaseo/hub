@@ -10,6 +10,7 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createLinearApiClient,
   createLinearConnectionClient,
+  hasLinearAgentScopes,
   hasRequiredLinearScopes,
 } from "./client.js";
 
@@ -29,7 +30,7 @@ describe("Linear connection client", () => {
             access_token: "access-token",
             refresh_token: "refresh-token",
             expires_in: 3600,
-            scope: "read,comments:create",
+            scope: "read,comments:create,write,app:mentionable,app:assignable",
           });
         }
         return json({
@@ -44,7 +45,10 @@ describe("Linear connection client", () => {
       authorization.searchParams.get("redirect_uri"),
       "https://hub.test/api/integrations/linear/callback",
     );
-    assert.equal(authorization.searchParams.get("scope"), "read,comments:create");
+    assert.equal(
+      authorization.searchParams.get("scope"),
+      "read,comments:create,write,app:mentionable,app:assignable",
+    );
     assert.equal(authorization.searchParams.get("actor"), "app");
     assert.equal(authorization.searchParams.get("state"), "state-value");
 
@@ -55,7 +59,7 @@ describe("Linear connection client", () => {
       accessToken: "access-token",
       refreshToken: "refresh-token",
       accessTokenExpiresAt: new Date(1_700_003_600_000),
-      scopes: ["comments:create", "read"],
+      scopes: ["app:assignable", "app:mentionable", "comments:create", "read", "write"],
     });
     assert.match(requests[0]?.body ?? "", /code=code-value/u);
   });
@@ -77,7 +81,13 @@ describe("Linear connection client", () => {
 
     const installation = await client.exchangeCode("code-value");
 
-    assert.deepEqual(installation.scopes, ["read", "comments:create"]);
+    assert.deepEqual(installation.scopes, [
+      "read",
+      "comments:create",
+      "write",
+      "app:mentionable",
+      "app:assignable",
+    ]);
   });
 
   it("reads a bounded, chronological history before the triggering comment", async () => {
@@ -488,6 +498,26 @@ describe("Linear connection client", () => {
   it("requires read access and the narrow comment-creation scope", () => {
     assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
     assert.equal(hasRequiredLinearScopes(["read"]), false);
+  });
+
+  it("treats the agent actor scopes as a capability rather than a requirement", () => {
+    // A workspace connected before agent sessions keeps working; it just cannot be mentioned.
+    assert.equal(hasRequiredLinearScopes(["read", "comments:create"]), true);
+    assert.equal(hasLinearAgentScopes(["read", "comments:create"]), false);
+    assert.equal(
+      hasLinearAgentScopes(["read", "comments:create", "app:mentionable", "app:assignable"]),
+      false,
+    );
+    assert.equal(
+      hasLinearAgentScopes([
+        "read",
+        "comments:create",
+        "write",
+        "app:mentionable",
+        "app:assignable",
+      ]),
+      true,
+    );
   });
 });
 

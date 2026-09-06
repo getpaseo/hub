@@ -1340,6 +1340,12 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
     }
     return;
   }
+  // An agent session is addressed to this app by name: Linear creates one only when a workspace
+  // member mentions or delegates to it, and delivers it to no other app. The mention is the
+  // authorization, and the install already scoped which teams can see the app. An allowlist stays
+  // available for workspaces that want to narrow it further, but requiring one here would make the
+  // documented @mention flow impossible to configure.
+  if (trigger.on === "linear.agent_session") return;
   if ((trigger.filters?.from_users?.length ?? 0) === 0) {
     throw new Error(
       `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,

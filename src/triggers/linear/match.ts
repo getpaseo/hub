@@ -3,6 +3,7 @@ import type {
   TriggerFilter,
 } from "../../config/index.js";
 import type {
+  NormalizedLinearAgentSessionEvent,
   NormalizedLinearCommentEvent,
   NormalizedLinearEvent,
   NormalizedLinearIssue,
@@ -14,6 +15,19 @@ type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">
 export interface MatchedLinearTrigger {
   event: NormalizedLinearEvent;
   trigger: MatchedTriggerDefinition;
+}
+
+/**
+ * A session prompt still opens with the mention that created it, and Linear may render that as
+ * plain text or as a markdown link. Typed inputs are read from what follows, so the leading mention
+ * is dropped before header parsing while the prompt itself stays untouched.
+ */
+export function readLinearAgentSessionInvocationParserMessage(prompt: string): string {
+  const trimmed = prompt.trimStart();
+  const markdown = /^\[@[^\]]*\]\([^)]*\)\s*/u.exec(trimmed);
+  if (markdown !== null) return trimmed.slice(markdown[0].length);
+  const plain = /^@[^\s]+\s*/u.exec(trimmed);
+  return plain === null ? trimmed : trimmed.slice(plain[0].length);
 }
 
 /**
@@ -74,6 +88,46 @@ export function matchLinearTriggers(
   });
 }
 
+/**
+ * Linear delivers an agent session only to the app it addresses, so the mention itself is the
+ * authorization and an unfiltered trigger is the sane default. Filters still narrow scope when a
+ * workspace routes different projects or labels to different repositories.
+ */
+function matchesAgentSessionFilter(
+  event: NormalizedLinearAgentSessionEvent,
+  filter: TriggerFilter | undefined,
+  connectionId?: string | null,
+): boolean {
+  if (filter?.connectionId !== undefined && filter.connectionId !== connectionId) return false;
+  if (!matchesActorIfPresent(event, filter?.from_users)) return false;
+  if (!matchesSessionPrompt(event.prompt, filter)) return false;
+  return matchesSessionIssueScope(event.issue, filter, connectionId);
+}
+
+function matchesSessionPrompt(prompt: string, filter: TriggerFilter | undefined): boolean {
+  const pattern = readCommentTextFilter(filter, "pattern");
+  if (pattern !== undefined && !prompt.startsWith(pattern)) return false;
+  const contains = readCommentTextFilter(filter, "contains");
+  return contains === undefined || prompt.includes(contains);
+}
+
+/** A session can be opened somewhere without an issue, so issue filters can only reject when one is present. */
+function matchesSessionIssueScope(
+  issue: NormalizedLinearIssue | null,
+  filter: TriggerFilter | undefined,
+  connectionId: string | null | undefined,
+): boolean {
+  const scoped =
+    filter?.project !== undefined ||
+    filter?.states !== undefined ||
+    filter?.assignees !== undefined ||
+    filter?.labels !== undefined ||
+    filter?.exclude_labels !== undefined;
+  if (issue === null) return !scoped;
+  if (!scoped) return true;
+  return matchesIssueScope(issue, filter, connectionId);
+}
+
 export function matchesIssueScope(
   issue: NormalizedLinearIssue,
   filter: TriggerFilter | undefined,
@@ -102,6 +156,8 @@ export function matchesIssueScope(
 }
 
 function matchesLinearEvent(eventName: string, event: NormalizedLinearEvent): boolean {
+  if (eventName === "linear.agent_session") return event.type === "agent_session";
+  if (event.type === "agent_session") return false;
   if (eventName === "linear.issue_entered_scope") {
     return event.type === "issue" && (event.action === "create" || event.action === "update");
   }
@@ -123,6 +179,9 @@ function matchesTriggerFilter(
   event: NormalizedLinearEvent,
   connectionId?: string | null,
 ): boolean {
+  if (event.type === "agent_session") {
+    return matchesAgentSessionFilter(event, trigger.filters, connectionId);
+  }
   if (trigger.on === "linear.issue_entered_scope") {
     return (
       event.type === "issue" &&

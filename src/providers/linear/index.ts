@@ -23,6 +23,10 @@ import { outputContextProvider, replyOutputTool } from "../../execution-capabili
 import { logger } from "../../logger.js";
 import { createLinearTriggerProvider } from "../../triggers/linear/provider.js";
 import { createLinearReplyExecutor } from "../../triggers/linear/reply.js";
+import {
+  createLinearAgentSessionHooks,
+  LinearAgentSessionTracker,
+} from "../../triggers/linear/agent-session.js";
 import { createLinearWebhookSource } from "../../triggers/linear/webhook.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
@@ -116,6 +120,7 @@ export function createLinearRegistration(
             providerApplicationId: configuration.clientId,
             providerConfigurationVersion: options.configurationVersion ?? 0,
           });
+  const agentSessionTracker = new LinearAgentSessionTracker();
   const webhook = createLinearWebhookSource({
     signingSecret: configuration.webhookSecret,
     accept,
@@ -171,6 +176,15 @@ export function createLinearRegistration(
         createLinearTriggerProvider({
           configurationStoreForProject,
           ...(api === undefined ? {} : { client: api }),
+          ...(api === undefined
+            ? {}
+            : {
+                agentSessions: createLinearAgentSessionHooks({
+                  client: api,
+                  tracker: agentSessionTracker,
+                  publicBaseUrl: options.publicBaseUrl,
+                }),
+              }),
         }),
     ],
     sources: [webhook],
@@ -182,7 +196,7 @@ export function createLinearRegistration(
               type: "linear.reply",
               tool: replyOutputTool,
               available: outputContextProvider("linear"),
-              execute: createLinearReplyExecutor({ client: api }),
+              execute: createLinearReplyExecutor({ client: api, tracker: agentSessionTracker }),
             },
           ],
     requests: [{ name: "linear.events", handle: (request) => webhook.handle(request) }],
