@@ -48,18 +48,12 @@ describe("organization trigger store", () => {
     assert.equal((await database.listProjectsForOrganization("org")).length, 0);
   });
 
-  it.each([
-    ["a relative working directory", "cwd: workspace", /absolute path/iu],
-    ["an omitted execution mode", "provider: test, mode: full-access", /mode.*required/iu],
-  ])("rejects %s at the authoring boundary", async (_name, authored, expected) => {
+  it("rejects a relative working directory at the authoring boundary", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const store = new OrganizationTriggerStore(database, "org");
-    const yaml = triggerYaml(true).replace(
-      authored === "cwd: workspace" ? "cwd: /workspace" : authored,
-      authored === "cwd: workspace" ? authored : "provider: test",
-    );
+    const yaml = triggerYaml(true).replace("cwd: /workspace", "cwd: workspace");
 
-    await assert.rejects(store.save({ yaml, userId: null }), expected);
+    await assert.rejects(store.save({ yaml, userId: null }), /absolute path/iu);
   });
 });
 

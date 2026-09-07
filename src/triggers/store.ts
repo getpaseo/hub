@@ -92,20 +92,5 @@ function validateAuthoringContract(
   if (!trigger.run.target.cwd.startsWith("/")) {
     issues.push({ path: ["run", "target", "cwd"], message: "must be an absolute path" });
   }
-  if ("choices" in trigger.run.agent) {
-    for (const [name, agent] of Object.entries(trigger.run.agent.choices)) {
-      if (agent.mode === undefined) {
-        issues.push({
-          path: ["run", "agent", "choices", name, "mode"],
-          message: "is required for new triggers",
-        });
-      }
-    }
-  } else if (trigger.run.agent.mode === undefined) {
-    issues.push({
-      path: ["run", "agent", "mode"],
-      message: "is required for new triggers",
-    });
-  }
   if (issues.length > 0) throw new TriggerDocumentError(issues);
 }
