@@ -12,8 +12,78 @@ import type {
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 
 describe("dynamic provider runtime", () => {
+  it("exposes and delivers GitHub replies through the hosted provider registration", async () => {
+    const comments: unknown[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: () => ({
+        ...connectionRegistration("github", "A1"),
+        outputs: [
+          {
+            type: "github.reply",
+            tool: replyOutputTool,
+            available: githubReplyAvailable,
+            execute: createGitHubReplyExecutor({
+              client: {
+                createIssueComment: async (comment) => {
+                  comments.push(comment);
+                },
+              },
+            }),
+          },
+        ],
+      }),
+    });
+    const registry = new OutputExecutorRegistry();
+    for (const registration of runtime.registrations()) {
+      for (const output of registration.outputs) registry.register(output);
+    }
+    const candidate = await runtime.prepare(
+      "github",
+      providerConfiguration("github", "A1"),
+      "https://hub.test",
+      providerIdentity("github", "A1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+    const outputContext = {
+      provider: "github",
+      target: { installationId: 42, repository: "acme/repo" },
+      event: { github: { item: { number: 7 } } },
+    };
+    const grants = [{ type: "github.reply", required: false }];
+    assert.equal(registry.materialize(grants, outputContext).length, 1);
+    assert.equal(
+      registry.materialize(grants, {
+        ...outputContext,
+        event: { github: { item: null } },
+      }).length,
+      0,
+    );
+    await registry.execute({
+      agentExecutionId: "execution-1",
+      toolType: "github.reply",
+      args: { content: "remembered" },
+      outputContext,
+    });
+    assert.deepEqual(comments, [
+      {
+        installationId: 42,
+        owner: "acme",
+        repo: "repo",
+        issueNumber: 7,
+        body: "remembered",
+      },
+    ]);
+  });
+
   it.each([
     "github.issues",
     "github.issue_comment",

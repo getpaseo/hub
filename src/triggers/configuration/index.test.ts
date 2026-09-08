@@ -176,4 +176,12 @@ it("applies the continuation default when reading old trigger revisions without 
   assert.equal(stored.triggers[0]?.steps[0]?.continuation, undefined);
   const legacy = parseProjectConfiguration({ ...revision, sourceEvidence: { kind: "manual" } });
   assert.equal(legacy.triggers[0]?.steps[0]?.continuation, undefined);
+  const migratedLegacy = parseProjectConfiguration({
+    ...revision,
+    rawYaml: JSON.stringify({
+      name: "preserved-workflow",
+      legacy_multistep: { trigger: stored.triggers[0], environments: stored.environments },
+    }),
+  });
+  assert.deepEqual(migratedLegacy, legacy);
 });
