@@ -1,5 +1,5 @@
 import { parseTriggerDocument } from "../triggers/configuration/index.js";
-import { dump } from "js-yaml";
+import { dump, load } from "js-yaml";
 import { z } from "zod";
 import {
   compiledConfigurationHash,
@@ -318,6 +318,9 @@ export function parseProjectConfiguration(
   if (adapter.success) {
     if (revision.rawYaml === null)
       throw new Error("Trigger revision is missing its authored document");
+    // Preserved legacy workflows share the adapter but retain their original run policy.
+    const legacy = z.object({ legacy_multistep: z.object({}) }).safeParse(load(revision.rawYaml));
+    if (legacy.success) return toProjectConfiguration(configuration);
     const policy = parseTriggerDocument(revision.rawYaml).run.continuation;
     return toProjectConfiguration({
       ...configuration,
