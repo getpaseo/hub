@@ -1,6 +1,7 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import { linearConnectionRequiresReauthorization } from "../../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../../providers/slack/client.js";
+import { assertNever } from "../../exhaustive.js";
 import type { Provider, ProviderApplicationInventory } from "../index.js";
 
 interface ConnectionIdentityRow extends QueryRow {
@@ -75,36 +76,48 @@ export function createProviderApplicationInventory(
   };
 }
 
-function connectionTable(provider: Provider): string {
-  if (provider === "github") return "github_connections";
-  if (provider === "slack") return "slack_connections";
-  if (provider === "linear") return "linear_connections";
-  return "discord_connections";
+/** @package — exported for tests only; treat as internal to this directory. */
+export function connectionTable(provider: Provider): string {
+  switch (provider) {
+    case "github":
+      return "github_connections";
+    case "slack":
+      return "slack_connections";
+    case "discord":
+      return "discord_connections";
+    case "linear":
+      return "linear_connections";
+    default:
+      return assertNever(provider, "connectionTable");
+  }
 }
 
-function connectionIdentityQuery(provider: Provider): string {
-  if (provider === "github") {
-    return `select id::text as id, account_login as name,
-                   provider_application_id as application_id,
-                   status = 'suspended' as action_needed, null::jsonb as scopes
-            from github_connections order by connected_at`;
+/** @package — exported for tests only; treat as internal to this directory. */
+export function connectionIdentityQuery(provider: Provider): string {
+  switch (provider) {
+    case "github":
+      return `select id::text as id, account_login as name,
+                     provider_application_id as application_id,
+                     status = 'suspended' as action_needed, null::jsonb as scopes
+              from github_connections order by connected_at`;
+    case "slack":
+      return `select id::text as id, team_name as name,
+                     provider_application_id as application_id,
+                     false as action_needed, scopes
+              from slack_connections order by connected_at`;
+    case "discord":
+      return `select id::text as id, guild_name as name,
+                     provider_application_id as application_id,
+                     false as action_needed, null::jsonb as scopes
+              from discord_connections order by connected_at`;
+    case "linear":
+      return `select id::text as id, linear_organization_name as name,
+                     provider_application_id as application_id,
+                     false as action_needed, scopes, refresh_token, access_token_expires_at
+              from linear_connections order by connected_at`;
+    default:
+      return assertNever(provider, "connectionIdentityQuery");
   }
-  if (provider === "slack") {
-    return `select id::text as id, team_name as name,
-                   provider_application_id as application_id,
-                   false as action_needed, scopes
-            from slack_connections order by connected_at`;
-  }
-  if (provider === "linear") {
-    return `select id::text as id, linear_organization_name as name,
-                   provider_application_id as application_id,
-                   false as action_needed, scopes, refresh_token, access_token_expires_at
-            from linear_connections order by connected_at`;
-  }
-  return `select id::text as id, guild_name as name,
-                 provider_application_id as application_id,
-                 false as action_needed, null::jsonb as scopes
-          from discord_connections order by connected_at`;
 }
 
 function linearConnectionActionNeeded(row: ConnectionIdentityRow): boolean {

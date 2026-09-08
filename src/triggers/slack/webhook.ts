@@ -7,8 +7,12 @@ import type { TriggerHandler, TriggerSource } from "../index.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import { intakeSlackEvent, SlackEventIntakeValidationError } from "./source/internal/intake.js";
 import { SlackUrlVerificationSchema } from "./events.js";
+import {
+  createWebhookHandlerRegistry,
+  MAX_WEBHOOK_BYTES,
+  parseWebhookJsonBody,
+} from "../webhook-shared.js";
 
-const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_TIMESTAMP_SKEW_SECONDS = 5 * 60;
 const SlackEnvelopeTypeSchema = z.object({ type: z.string() }).passthrough();
 
@@ -37,20 +41,16 @@ interface VerifiedSlackRequest {
 }
 
 export function createSlackWebhookSource(options: SlackWebhookSourceOptions): SlackWebhookEndpoint {
-  const handlers = new Set<TriggerHandler>();
+  const registry = createWebhookHandlerRegistry();
 
   return {
     async handle(request) {
       const verified = await verifySlackRequest(request, options);
       if (verified instanceof Response) return verified;
-      return handleVerifiedSlackRequest(verified, handlers, options);
+      return handleVerifiedSlackRequest(verified, registry.handlers, options);
     },
-    async start(handler) {
-      handlers.add(handler);
-    },
-    async stop() {
-      handlers.clear();
-    },
+    start: registry.start,
+    stop: registry.stop,
   };
 }
 
@@ -72,19 +72,18 @@ async function verifySlackRequest(
     return new Response("Unauthorized", { status: 401 });
   }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
-  } catch (error) {
-    reportFailure(
-      error,
-      { operation: "slack.webhook.parse", component: "triggers", provider: "slack", status: 400 },
-      { status: 400, scrubValues: [options.signingSecret] },
-    );
-    return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
-  }
+  const parsed = parseWebhookJsonBody({
+    body,
+    operation: "slack.webhook.parse",
+    provider: "slack",
+    scrubValues: [options.signingSecret],
+  });
+  if (parsed instanceof Response) return parsed;
 
-  return { payload, signatureHash: createHash("sha256").update(signature).digest("hex") };
+  return {
+    payload: parsed.payload,
+    signatureHash: createHash("sha256").update(signature).digest("hex"),
+  };
 }
 
 async function handleVerifiedSlackRequest(
