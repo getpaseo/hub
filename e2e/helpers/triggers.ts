@@ -198,6 +198,19 @@ export class OrganizationTriggers {
     await this.yamlEditor().fill(yaml);
   }
 
+  async exerciseContinuity() {
+    await expect(
+      this.page.getByRole("radio", { name: "Same conversation", exact: true }),
+    ).toBeChecked();
+    await this.page.getByRole("radio", { name: "Custom key", exact: true }).click();
+    await expect(this.page.getByRole("radio", { name: "Custom key", exact: true })).toBeChecked();
+    await this.page.getByLabel("Continuation key", { exact: true }).fill("support-ticket");
+    await this.capture("e2e/screenshots/triggers/continuation-key.png");
+    await this.page.getByRole("radio", { name: "New agent", exact: true }).click();
+    await expect(this.page.getByLabel("Continuation key", { exact: true })).toBeHidden();
+    await this.page.getByRole("radio", { name: "Same conversation", exact: true }).click();
+  }
+
   async save(name: string) {
     await this.page
       .locator("#trigger-editor-form")

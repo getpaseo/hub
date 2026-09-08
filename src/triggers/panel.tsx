@@ -845,6 +845,42 @@ function TriggerForm({
                   onRetry={providerCatalog.refresh}
                 />
               )}
+              <SegmentedControl
+                label="Agent continuity"
+                description="Agent continuity"
+                value={form.continuationMode}
+                onChange={text("continuationMode")}
+                options={[
+                  {
+                    value: "conversation",
+                    label: "Same conversation",
+                    hint: "Continue the same agent for this conversation. Events without a conversation start a new agent. Archived workspaces are restored.",
+                  },
+                  {
+                    value: "key",
+                    label: "Custom key",
+                    hint: "Arrivals with the same key in this project share an agent. Agent and workspace settings must match.",
+                  },
+                  {
+                    value: "new",
+                    label: "New agent",
+                    hint: "Create a separate agent for every request.",
+                  },
+                ]}
+              />
+              {form.continuationMode === "key" ? (
+                <FormField
+                  id="trigger-continuation-key"
+                  label="Continuation key"
+                  kind="text"
+                  name="continuationKey"
+                  value={form.continuationKey}
+                  onChange={text("continuationKey")}
+                  description="A key or expression, for example ${{ paseo.inputs.ticket }}."
+                  required
+                  {...fieldError(errors, "continuationKey")}
+                />
+              ) : null}
               <PromptEditor
                 value={form.prompt}
                 {...fieldError(errors, "prompt")}
@@ -1249,6 +1285,8 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     mode: "",
     thinkingOptionId: "",
     providerOptions: "",
+    continuationMode: "conversation",
+    continuationKey: "",
     maxRuntime: "2h",
     idleTimeout: "10m",
     githubConnection: "",

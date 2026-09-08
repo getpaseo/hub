@@ -1,3 +1,4 @@
+import { DaemonAgents } from "./agents/index.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -79,6 +80,7 @@ type PendingRequest =
   | PendingProviderSnapshotRequest
   | PendingProviderRefreshRequest;
 interface ActiveSocket {
+  agents: DaemonAgents;
   generation: number;
   socket: WebSocket;
   daemon: DaemonRecord;
@@ -118,6 +120,7 @@ export class ActiveDaemonRegistry {
     const previous = this.active.get(daemon.id);
     if (previous) this.rejectGeneration(daemon.id, previous.generation);
     const active: ActiveSocket = {
+      agents: new DaemonAgents((frame) => socket.send(frame)),
       generation: ++this.generation,
       socket,
       daemon,
@@ -126,9 +129,11 @@ export class ActiveDaemonRegistry {
       providerSnapshotSupported: false,
     };
     this.active.set(daemon.id, active);
+    previous?.agents.close();
     previous?.socket.close(4001, "replaced");
     socket.on("message", (data) => this.receive(active, readText(data)));
     socket.on("close", () => {
+      active.agents.close();
       if (this.active.get(daemon.id)?.generation === active.generation) {
         this.active.delete(daemon.id);
         this.rejectGeneration(daemon.id, active.generation);
@@ -153,6 +158,7 @@ export class ActiveDaemonRegistry {
             type: "hello",
             clientId: `hub:${daemon.id}`,
             clientType: "hub",
+            capabilities: { all_providers: true, selective_agent_timeline: true },
             protocolVersion: 1,
           }),
         ),
@@ -174,6 +180,7 @@ export class ActiveDaemonRegistry {
     const active = this.active.get(daemonId);
     if (!active?.ready || !active.daemon.permissions.includes("hub.execute")) return undefined;
     return {
+      agents: this.active.get(daemonId)!.agents,
       createAgent: (options) => this.createAgent(daemonId, options),
       controlExecution: (options) => this.controlExecution(daemonId, options),
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
@@ -378,6 +385,7 @@ export class ActiveDaemonRegistry {
       active.socket.close(4400, "invalid daemon message");
       return;
     }
+    if (active.agents.receive(value)) return;
     const serverInfo = HubDaemonServerInfoEnvelopeSchema.safeParse(value);
     if (serverInfo.success) {
       this.acceptServerInfo(

@@ -133,6 +133,8 @@ export function toMachineRecord(row: MachineRow): MachineRecord {
 
 export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRecord {
   return {
+    agentSessionId: row.agent_session_id,
+    agentSessionAction: row.agent_session_action,
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,

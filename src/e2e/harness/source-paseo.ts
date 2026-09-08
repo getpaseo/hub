@@ -265,7 +265,15 @@ export class SourcePaseo {
     daemon.stdout?.on("data", record);
     daemon.stderr?.on("data", record);
     this.daemon = daemon;
-    await observe(async () => canConnect(this.paths.daemonHost), "source daemon readiness", daemon);
+    await observe(
+      async () => canConnect(this.paths.daemonHost),
+      "source daemon readiness",
+      daemon,
+    ).catch((error: unknown) => {
+      throw new Error(`Source daemon did not start:\n${this.daemonOutput.join("")}`, {
+        cause: error,
+      });
+    });
   }
 
   private async stopDaemon(): Promise<void> {
@@ -327,7 +335,7 @@ async function buildPaseoArtifacts(paseoRoot: string): Promise<string> {
   const packages = join(root, "paseo-packages");
   const tarballs = join(root, "paseo-tarballs");
   await Promise.all([mkdir(packages), mkdir(tarballs)]);
-  for (const workspace of ["protocol", "relay", "highlight", "client", "server", "cli"]) {
+  for (const workspace of ["protocol", "relay", "highlight", "plugin", "client", "server", "cli"]) {
     await runCommand(
       "npm",
       ["pack", "--ignore-scripts", "--pack-destination", tarballs],

@@ -417,6 +417,7 @@ export const triggerRuns = pgTable(
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
     providerEventReceiptId: uuid("provider_event_receipt_id").notNull(),
     configuredTriggerName: text("configured_trigger_name").notNull(),
+    conversation: jsonb().$type<import("../triggers/continuation.js").Conversation>(),
     outcome: text().$type<"accepted" | "rejected">().notNull().default("accepted"),
     status: text().$type<"running" | "succeeded" | "failed" | "timed_out" | "rejected">().notNull(),
     prompt: text().notNull(),
@@ -684,10 +685,29 @@ export const organizationCliCredentials = pgTable(
   ],
 );
 
+export const agentSessions = pgTable(
+  "agent_sessions",
+  {
+    id: uuid().primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id),
+    continuationKey: text("continuation_key"),
+    data: jsonb().$type<import("../agent-sessions/index.js").AgentSessionRecord>().notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_sessions_project_key_unique").on(table.projectId, table.continuationKey),
+  ],
+);
+
 export const agentExecutions = pgTable(
   "agent_executions",
   {
     id: uuid().defaultRandom().primaryKey(),
+    agentSessionAction:
+      text("agent_session_action").$type<import("../agent-sessions/index.js").AgentSessionAction>(),
+    agentSessionId: uuid("agent_session_id").references(() => agentSessions.id),
     organizationId: text("organization_id").notNull(),
     projectId: uuid("project_id").notNull(),
     machineId: uuid("machine_id"),
@@ -725,6 +745,7 @@ export const agentExecutions = pgTable(
       .default({ terminal_at: null, idle_at: null, finish_execution_call: null }),
   },
   (table) => [
+    index("agent_executions_session_idx").on(table.agentSessionId),
     index("agent_executions_machine_id_idx").on(table.machineId),
     index("agent_executions_project_started_at_idx").on(table.projectId, table.startedAt.desc()),
     index("agent_executions_status_idx").on(table.status),

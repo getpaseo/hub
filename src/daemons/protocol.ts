@@ -76,6 +76,7 @@ export type DaemonEvent = DaemonAgentStreamDaemonEvent | DaemonAgentUpdateEvent;
 export type DaemonEventHandler = (event: DaemonEvent) => void | Promise<void>;
 
 export interface DaemonConnection {
+  agents: import("./agents/index.js").AgentConnection;
   createAgent(options: DaemonCreateAgentOptions): Promise<DaemonAgentSnapshot>;
   controlExecution(options: DaemonExecutionControlOptions): Promise<void>;
   getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;

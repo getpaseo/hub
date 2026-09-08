@@ -12,7 +12,7 @@ class PhaseFiveAgent {
   }
 
   async initialize() {
-    return { protocolVersion: sdk.PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
+    return { protocolVersion: sdk.PROTOCOL_VERSION, agentCapabilities: { loadSession: true } };
   }
 
   async newSession(params) {
@@ -25,6 +25,11 @@ class PhaseFiveAgent {
         availableModes: [{ id: "default", name: "Default" }],
       },
     };
+  }
+
+  async loadSession(params) {
+    const session = await this.newSession(params);
+    return { modes: session.modes };
   }
 
   async authenticate() {
@@ -44,18 +49,21 @@ class PhaseFiveAgent {
       .join("\n");
     const service = /Deploy ([^ ]+) for/u.exec(prompt)?.[1] ?? "unknown";
     const output = `phase-five:${service}`;
-    const executionId = this.hubMcp ? executionIdFromMcp(this.hubMcp) : null;
+    const sessionExecutionId = /Hub execution: ([a-f0-9-]+)/u.exec(prompt)?.[1];
+    const executionId =
+      sessionExecutionId ?? (this.hubMcp ? executionIdFromMcp(this.hubMcp) : null);
+    const executionArgs = sessionExecutionId ? { executionId: sessionExecutionId } : {};
     let replySucceeded = null;
     let duplicateRejected = null;
     if (service === "mcp-capability" && this.hubMcp) {
       await initializeMcp(this.hubMcp);
       const reply = await callMcp(this.hubMcp, 2, "tools/call", {
         name: "reply",
-        arguments: { content: output },
+        arguments: { ...executionArgs, content: output },
       });
       const duplicate = await callMcp(this.hubMcp, 3, "tools/call", {
         name: "reply",
-        arguments: { content: `${output}:duplicate` },
+        arguments: { ...executionArgs, content: `${output}:duplicate` },
       });
       replySucceeded = reply.result?.isError !== true;
       duplicateRejected = duplicate.result?.isError === true;
@@ -90,7 +98,13 @@ class PhaseFiveAgent {
     });
     if (service === "daemon-restart" || prompt.includes("daemon-restart"))
       await runUntilInterrupted();
-    if (this.hubMcp) await scheduleHubCompletion(this.hubMcp);
+    if (this.hubMcp && sessionExecutionId) {
+      const finish = await callMcp(this.hubMcp, 4, "tools/call", {
+        name: "finish_execution",
+        arguments: executionArgs,
+      });
+      if (finish.result?.isError) throw new Error(JSON.stringify(finish));
+    } else if (this.hubMcp) await scheduleHubCompletion(this.hubMcp);
     return { stopReason: "end_turn" };
   }
 }

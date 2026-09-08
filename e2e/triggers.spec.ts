@@ -65,6 +65,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
       providerOptions: '{"sandbox_mode":"workspace-write"}',
       prompt: "Handle the Slack request.",
     });
+    await triggers.exerciseContinuity();
     await triggers.expectMergeTagsAndAutosizing();
     await triggers.expectAgentSearch();
     await triggers.expectComboboxes();
@@ -84,6 +85,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
       "model: gateway/vendor/model-v1",
       "mode: full-access",
       "sandbox_mode: workspace-write",
+      "mode: conversation",
     );
     await triggers.capture(`${SHOTS}/03-generated-yaml.png`);
     await triggers.replaceYaml(advancedTriggerYaml(daemon));

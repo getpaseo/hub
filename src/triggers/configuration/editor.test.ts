@@ -162,6 +162,8 @@ describe("trigger form YAML bridge", () => {
       mode: "full-access",
       thinkingOptionId: "",
       providerOptions: "",
+      continuationMode: "conversation",
+      continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
       githubConnection: "",
@@ -177,6 +179,7 @@ describe("trigger form YAML bridge", () => {
       run: {
         target: { daemon: "office", cwd: "/workspace" },
         agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
+        continuation: { mode: "conversation" },
         max_runtime: "2h",
         idle_timeout: "10m",
         prompt: "Handle it.",
@@ -198,6 +201,8 @@ describe("trigger form YAML bridge", () => {
       mode: "full-access",
       thinkingOptionId: "",
       providerOptions: "",
+      continuationMode: "conversation",
+      continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
       githubConnection: "",
@@ -426,3 +431,19 @@ test.each(["github.issue_label_added", "github.pull_request_label_added"])(
     expect(TriggerDocumentSchema.safeParse(parseDocument(blank).toJS()).success).toBe(false);
   },
 );
+
+test("continuation policies round-trip through the form and YAML", () => {
+  const projection = projectTriggerForm(ADVANCED);
+  if (projection.status !== "editable") throw new Error(projection.reason);
+  expect(projection.value.continuationMode).toBe("conversation");
+  for (const mode of ["key", "new", "conversation"]) {
+    const yaml = patchTriggerYaml(ADVANCED, {
+      ...projection.value,
+      continuationMode: mode,
+      continuationKey: "${{ paseo.inputs.ticket }}",
+    });
+    const next = projectTriggerForm(yaml);
+    expect(next).toMatchObject({ status: "editable", value: { continuationMode: mode } });
+    expect(yaml).toContain("# keep this heading");
+  }
+});

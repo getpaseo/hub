@@ -482,8 +482,8 @@ class PgDatabase implements Database {
           `insert into trigger_runs
            (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
            configured_trigger_name, outcome, status,
-            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
+            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at, conversation)
+         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12, $13)
          on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
          returning *`,
           [
@@ -499,6 +499,7 @@ class PgDatabase implements Database {
             input.outputContext,
             input.deadlineAt,
             input.createdAt ?? new Date(),
+            input.conversation ?? null,
           ],
         );
         let run = inserted.rows[0];
@@ -2738,6 +2739,46 @@ class PgDatabase implements Database {
     }
   }
 
+  async findAgentSession(id: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where id = $1", [id]);
+    return result.rows[0]?.data;
+  }
+
+  async saveAgentSession(
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into agent_sessions (id, organization_id, project_id, continuation_key, data)
+       values ($1, $2, $3, $4, $5) on conflict (id) do update set data = excluded.data`,
+      [session.id, session.organizationId, session.projectId, session.continuationKey, session],
+    );
+  }
+
+  async attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void> {
+    const result = await this.pool.query(
+      `update agent_executions e set agent_session_id = s.id, agent_session_action = coalesce(e.agent_session_action, $3) from agent_sessions s
+       where e.id = $1 and s.id = $2 and e.project_id = s.project_id
+       and e.organization_id = s.organization_id
+       and (e.agent_session_id is null or e.agent_session_id = s.id)`,
+      [executionId, sessionId, action ?? null],
+    );
+    if (result.rowCount !== 1) throw new Error("Agent session does not belong to this execution");
+  }
+
+  async listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]> {
+    const result = await this.pool.query<AgentExecutionRow>(
+      "select * from agent_executions where agent_session_id = $1",
+      [sessionId],
+    );
+    return result.rows.map(toAgentExecutionRecord);
+  }
+
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     return this.locks.withLock(key, fn);
   }
@@ -4383,6 +4424,7 @@ export interface ProviderEventReceiptRow extends QueryRow {
 }
 
 interface TriggerRunRow extends QueryRow {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organization_id: string;
   project_id: string;
@@ -4461,6 +4503,7 @@ interface WorkflowWakeupRow extends QueryRow {
 
 function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
   const evidence = {
+    conversation: row.conversation,
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
@@ -4552,6 +4595,8 @@ export interface MachineRow extends QueryRow {
 }
 
 export interface AgentExecutionRow extends QueryRow {
+  agent_session_id: string | null;
+  agent_session_action: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organization_id: string;
   project_id: string;

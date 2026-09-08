@@ -143,6 +143,7 @@ function singleRunDocument(
       ? {}
       : { max_runtime: duration(trigger.maxRuntimeMs) }),
     run: {
+      continuation: { mode: "new" },
       target: {
         daemon: environment.daemon,
         cwd: environment.cwd,

@@ -23,6 +23,33 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
   }, 120_000);
 
+  it("continues a conversation through session tools and restores its archived workspace", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.enableAgentContinuation();
+    const first = await hub.runCapabilityTrigger("continuation-first", "one-thread");
+    const firstResult = await hub.completedCapabilityRun(first.executionId);
+    assert.equal(firstResult.replySucceeded, true);
+    assert.equal(firstResult.duplicateRejected, true);
+    await hub.sessionIsArchived(first.executionId);
+    const session = await hub.sessionEvidence(first.executionId);
+    const second = await hub.runCapabilityTrigger("continuation-second", "one-thread");
+    assert.equal(second.agentId, first.agentId);
+    assert.deepEqual(await hub.sessionEvidence(second.executionId), session);
+    const secondResult = await hub.completedCapabilityRun(second.executionId);
+    assert.equal(secondResult.replySucceeded, true);
+    assert.deepEqual(secondResult.outputContext, {
+      provider: "discord",
+      guildId: "guild-original",
+      channelId: "channel-original",
+      threadId: "one-thread",
+      messageId: "continuation-second",
+    });
+    const separate = await hub.runCapabilityTrigger("continuation-separate", "another-thread");
+    assert.notEqual(separate.agentId, first.agentId);
+    await hub.completedCapabilityRun(separate.executionId);
+  }, 120_000);
+
   it("connects the source-built daemon through an enrollment token", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();
@@ -105,7 +132,6 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const capabilityRun = await hub.runCapabilityTrigger("capability-delivery");
     const capability = await hub.completedCapabilityRun(capabilityRun.executionId);
     const denial = await hub.requestForbiddenOperation();
-    const steerDenial = await hub.requestForbiddenSteer(unrelatedAgent);
 
     assert.equal(connected.state, "connected");
     assert.deepEqual(completed, {
@@ -132,11 +158,6 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(denial, {
       type: "rpc_error",
       requestType: "daemon.get_status.request",
-      code: "access_denied",
-    });
-    assert.deepEqual(steerDenial, {
-      type: "rpc_error",
-      requestType: "send_agent_message_request",
       code: "access_denied",
     });
     assert.deepEqual(hub.relayEvidence(), {

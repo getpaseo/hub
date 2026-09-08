@@ -1,3 +1,4 @@
+import { DaemonAgents } from "./agents/index.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
@@ -23,6 +24,9 @@ describe("daemon provider catalog", () => {
     await enrollTestDaemon(database, "org-1");
     const calls: string[] = [];
     const connection: DaemonConnection = {
+      agents: new DaemonAgents(() => {
+        throw new Error("Native agents are not used by this fixture");
+      }),
       createAgent: async () => {
         throw new Error("not used");
       },

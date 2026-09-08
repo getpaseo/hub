@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { parseProjectConfiguration } from "../../configuration/store.js";
+import type { ProjectConfigurationRevisionRecord } from "../../db/types.js";
 import { describe, it } from "vitest";
 import {
   compileTriggerDocument,
@@ -144,4 +146,34 @@ run:
       reportsMissingEvent,
     );
   });
+});
+
+it("applies the continuation default when reading old trigger revisions without rewriting their evidence", () => {
+  const compiled = compileTriggerDocument(trigger);
+  const stored = structuredClone({
+    environments: [{ ...compiled.environment, daemonId: "daemon" }],
+    triggers: compiled.events,
+  });
+  for (const event of stored.triggers) for (const step of event.steps) delete step.continuation;
+  const revision: ProjectConfigurationRevisionRecord = {
+    id: "revision",
+    projectId: "project",
+    organizationId: "org",
+    version: 1,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "organization_trigger_adapter" },
+    rawYaml: trigger,
+    normalizedConfiguration: stored,
+    validationErrors: null,
+    contentHash: "original",
+    createdByUserId: "user",
+    receivedAt: null,
+    createdAt: new Date(),
+    validatedAt: new Date(),
+  };
+  const loaded = parseProjectConfiguration(revision);
+  assert.deepEqual(loaded.triggers[0]?.steps[0]?.continuation, { mode: "conversation" });
+  assert.equal(stored.triggers[0]?.steps[0]?.continuation, undefined);
+  const legacy = parseProjectConfiguration({ ...revision, sourceEvidence: { kind: "manual" } });
+  assert.equal(legacy.triggers[0]?.steps[0]?.continuation, undefined);
 });

@@ -1,3 +1,4 @@
+import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -236,6 +237,7 @@ export interface CompiledInput {
 }
 
 export interface CompiledStep {
+  continuation?: import("../triggers/continuation.js").Continuation | undefined;
   id: string;
   environment: string;
   maxRuntimeMs: number;
@@ -383,6 +385,7 @@ const CompiledJsonSchemaSchema = z.custom<JsonValue>(
 
 const CompiledStepSchema: z.ZodType<CompiledStep> = z
   .object({
+    continuation: ContinuationSchema.optional(),
     id: z.string().regex(IDENTIFIER),
     environment: z.string().min(1),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),

@@ -1,3 +1,4 @@
+import { continuationKey } from "../triggers/continuation.js";
 import { DatabaseUnavailableError } from "../db/errors.js";
 import type {
   AgentExecutionRecord,
@@ -193,6 +194,7 @@ export class DurableWorkflowEngine {
           inputs: acceptedMatch.invocation.inputs,
           triggerContext: acceptedMatch.triggerContext,
           outputContext: acceptedMatch.outputContext,
+          conversation: acceptedMatch.conversation,
           deadlineAt: runDeadline,
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
@@ -942,6 +944,21 @@ function buildStepIntent(
       configurationRevisionId: run.configurationRevisionId,
       hubConfig: configuration,
     }),
+    ...(step.continuation === undefined
+      ? {}
+      : {
+          continuation: {
+            key: continuationKey(step.continuation, run.conversation, (value) =>
+              renderExpressionTemplate(value, context),
+            ),
+            compatibility: {
+              agent,
+              target: environment,
+              env: step.env ?? {},
+              github: step.github ?? null,
+            },
+          },
+        }),
     workflowStepRunId: stepRunId,
     ...(step.output === undefined ? {} : { outputSchema: step.output.schema }),
     deadlineAt,

@@ -32,6 +32,7 @@ import { Route as ApiDaemonsDaemonIdRouteImport } from './routes/api/daemons/$da
 import { Route as ApiBillingWebhookRouteImport } from './routes/api/billing/webhook'
 import { Route as ApiBillingPlansRouteImport } from './routes/api/billing/plans'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AgentSessionsSessionIdMcpRouteImport } from './routes/agent-sessions/$sessionId/mcp'
 import { Route as AgentExecutionsExecutionIdMcpRouteImport } from './routes/agent-executions/$executionId/mcp'
 import { Route as ApiV1CliAuthorizationsPollRouteImport } from './routes/api/v1/cli-authorizations/poll'
 import { Route as ApiIntegrationsSlackEventsRouteImport } from './routes/api/integrations/slack/events'
@@ -169,6 +170,12 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AgentSessionsSessionIdMcpRoute =
+  AgentSessionsSessionIdMcpRouteImport.update({
+    id: '/agent-sessions/$sessionId/mcp',
+    path: '/agent-sessions/$sessionId/mcp',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AgentExecutionsExecutionIdMcpRoute =
   AgentExecutionsExecutionIdMcpRouteImport.update({
     id: '/agent-executions/$executionId/mcp',
@@ -319,6 +326,7 @@ export interface FileRoutesByFullPath {
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
+  '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
@@ -365,6 +373,7 @@ export interface FileRoutesByTo {
   '/test/trigger': typeof TestTriggerRoute
   '/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
+  '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
@@ -411,6 +420,7 @@ export interface FileRoutesById {
   '/test/trigger': typeof TestTriggerRoute
   '/_shell/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
+  '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/billing/plans': typeof ApiBillingPlansRoute
   '/api/billing/webhook': typeof ApiBillingWebhookRoute
@@ -459,6 +469,7 @@ export interface FileRouteTypes {
     | '/test/stripe-checkout'
     | '/test/trigger'
     | '/agent-executions/$executionId/mcp'
+    | '/agent-sessions/$sessionId/mcp'
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
@@ -505,6 +516,7 @@ export interface FileRouteTypes {
     | '/test/trigger'
     | '/'
     | '/agent-executions/$executionId/mcp'
+    | '/agent-sessions/$sessionId/mcp'
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
@@ -550,6 +562,7 @@ export interface FileRouteTypes {
     | '/test/trigger'
     | '/_shell/'
     | '/agent-executions/$executionId/mcp'
+    | '/agent-sessions/$sessionId/mcp'
     | '/api/auth/$'
     | '/api/billing/plans'
     | '/api/billing/webhook'
@@ -592,6 +605,7 @@ export interface RootRouteChildren {
   TestStripeCheckoutRoute: typeof TestStripeCheckoutRoute
   TestTriggerRoute: typeof TestTriggerRoute
   AgentExecutionsExecutionIdMcpRoute: typeof AgentExecutionsExecutionIdMcpRoute
+  AgentSessionsSessionIdMcpRoute: typeof AgentSessionsSessionIdMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiBillingPlansRoute: typeof ApiBillingPlansRoute
   ApiBillingWebhookRoute: typeof ApiBillingWebhookRoute
@@ -770,6 +784,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agent-sessions/$sessionId/mcp': {
+      id: '/agent-sessions/$sessionId/mcp'
+      path: '/agent-sessions/$sessionId/mcp'
+      fullPath: '/agent-sessions/$sessionId/mcp'
+      preLoaderRoute: typeof AgentSessionsSessionIdMcpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agent-executions/$executionId/mcp': {
@@ -1033,6 +1054,7 @@ const rootRouteChildren: RootRouteChildren = {
   TestStripeCheckoutRoute: TestStripeCheckoutRoute,
   TestTriggerRoute: TestTriggerRoute,
   AgentExecutionsExecutionIdMcpRoute: AgentExecutionsExecutionIdMcpRoute,
+  AgentSessionsSessionIdMcpRoute: AgentSessionsSessionIdMcpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiBillingPlansRoute: ApiBillingPlansRoute,
   ApiBillingWebhookRoute: ApiBillingWebhookRoute,

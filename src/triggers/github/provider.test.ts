@@ -13,6 +13,21 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
+  it("keeps the issue conversation identity stable across comments", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const first = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    const next = (
+      await provider.match(
+        external(project.id, revision.id, createEvent({ body: "another @paseo request" })),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(first) || !isAcceptedTriggerProviderMatch(next))
+      throw new Error("expected accepted matches");
+    assert.equal(first.conversation?.key, JSON.stringify(["github", 7, 211]));
+    assert.equal(next.conversation?.key, first.conversation?.key);
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createProvider(store, new TestReactions());
