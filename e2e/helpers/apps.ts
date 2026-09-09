@@ -392,17 +392,16 @@ export class AppSection {
 
   async expectSummary(expected: Readonly<Record<string, string | RegExp>>): Promise<void> {
     await expect(this.summary()).toBeVisible();
-    const matchers = Object.fromEntries(
-      Object.entries(expected).map(([label, value]) => [
-        label,
-        typeof value === "string" ? value : expect.stringMatching(value),
-      ]),
-    );
-    await expect.poll(() => this.summaryValues()).toMatchObject(matchers);
+    for (const [label, value] of Object.entries(expected)) {
+      const term = this.page.getByRole("term").and(this.page.getByText(label, { exact: true }));
+      const row = this.summary().locator(":scope > div").filter({ has: term });
+      // Provider callbacks can navigate after the old summary becomes visible. Locator
+      // assertions re-resolve the labelled fact across that navigation; evaluate() cannot.
+      await expect(row.getByRole("definition")).toHaveText(value);
+    }
     // One statement of each fact. The rejected surface said "Connected to X" and "X connected"
     // one line apart, and repeated the identity a third time above both.
-    const text = (await this.summary().innerText()).replace(/\s+/gu, " ");
-    expect(text).not.toMatch(/Connected to /u);
+    await expect(this.summary()).not.toContainText(/Connected to /u);
   }
 
   /**
