@@ -1,6 +1,6 @@
-import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
+import { usePresentedPathname } from "../navigation/index.js";
 import { cn } from "../lib/utils.js";
 import { Separator } from "../components/ui/separator.js";
 import { SidebarTrigger, useSidebar } from "../components/ui/sidebar.js";
@@ -13,7 +13,7 @@ import { SiteHeaderActionsTarget } from "./site-header-actions.js";
  * ends on the thing the reader is looking at.
  */
 export function SiteHeader({ scope, project }: { scope: string; project?: string }) {
-  const trail = useRouterState({ select: (state) => viewTrail(state.location.pathname) });
+  const trail = viewTrail(usePresentedPathname());
   return (
     <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b bg-background px-4">
       <RestoringSidebarTrigger />

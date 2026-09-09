@@ -1,8 +1,9 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- dynamic tenant URLs are assembled from server-resolved route metadata */
 import { Check, FolderKanban, LogOut, Plus, ShieldCheck } from "lucide-react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useCallback, useState, type FormEvent } from "react";
 
+import { usePresentedPathname } from "../navigation/index.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";
 import { FormDialog } from "../components/app/form-dialog.js";
 import { FormField } from "../components/app/form-field.js";
@@ -151,7 +152,7 @@ function OrganizationItem({
 
 /** One line, and no organization on it: the switcher above already says which one. */
 export function ProjectSwitcher({ tenant }: { tenant: RouteTenant }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = usePresentedPathname();
   const route = routeSection(pathname);
   const section =
     route !== undefined && "projectSection" in route ? route.projectSection : "overview";

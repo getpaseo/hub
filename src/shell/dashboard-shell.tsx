@@ -11,10 +11,11 @@ import {
   SlidersHorizontal,
   Zap,
 } from "lucide-react";
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback } from "react";
+import { usePresentedPathname } from "../navigation/index.js";
 import { Page } from "../components/app/page.js";
 import { FailureAlert } from "../components/app/failure-alert.js";
 import { PanelSkeleton } from "../components/app/loading.js";
@@ -207,7 +208,7 @@ function PageContent({
   transitioning: boolean;
 }) {
   const status = useRouteTenantStatus();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = usePresentedPathname();
   // One name for the slot, whichever read is in flight: switching organization and resolving the
   // tenant behind a URL are the same wait to someone listening to the page.
   if (transitioning || status.state === "pending") {
@@ -392,9 +393,7 @@ const INSTANCE_DESTINATIONS: readonly NavigationItem[] = [
  * route keeps the organization sidebar and their way back out — the route itself refuses them.
  */
 function useInstanceScope(operator: boolean): boolean {
-  const onInstanceRoute = useRouterState({
-    select: (state) =>
-      INSTANCE_DESTINATIONS.some((destination) => destination.to === state.location.pathname),
-  });
+  const pathname = usePresentedPathname();
+  const onInstanceRoute = INSTANCE_DESTINATIONS.some((destination) => destination.to === pathname);
   return operator && onInstanceRoute;
 }

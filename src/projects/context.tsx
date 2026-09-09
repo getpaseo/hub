@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRouterState } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { usePresentedPathname } from "../navigation/index.js";
 import { tenantContext } from "./functions.js";
 import type { ProjectDashboard } from "./dashboard.js";
 
@@ -25,7 +25,7 @@ const ProjectTenantContext = createContext<TenantContextValue | null>(null);
 const RouteTenantStatusContext = createContext<RouteTenantStatus>({ state: "outside" });
 
 export function RouteTenantProvider({ children }: { children: ReactNode }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = usePresentedPathname();
   const scope = routeScope(pathname);
   const load = useServerFn(tenantContext);
   const snapshot = useQuery({
