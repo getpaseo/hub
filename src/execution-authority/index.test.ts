@@ -17,6 +17,35 @@ function createExecutionAuthority(
 }
 
 describe("Hub execution authority", () => {
+  it("resumes scoped credentials only while their original lease is live", async () => {
+    const options = {
+      connectionsForProject: () => async () => "unused",
+      githubAuthority: githubAuthorityFake(),
+    };
+    const authority = createExecutionAuthority(options);
+    const input = {
+      executionId: "recovery",
+      projectId: "project-1",
+      triggerContext: {},
+      github: {
+        connection: "github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "read" as const },
+        durationMs: 60_000,
+      },
+    };
+    assert.equal(authority.canResume(input), false);
+    await authority.materialize(input);
+    assert.equal(authority.canResume(input), true);
+    await authority.stop();
+    assert.equal(authority.canResume(input), false);
+    assert.equal(createExecutionAuthority(options).canResume(input), false);
+    assert.equal(
+      authority.canResume({ ...input, github: undefined, env: { STATIC: "value" } }),
+      true,
+    );
+  });
+
   it.each(["discord", "slack", "github", "manual"] as const)(
     "resolves explicit connection templates for the %s trigger source without automatic GitHub authority",
     async (provider) => {

@@ -38,9 +38,9 @@ export class AgentSessions {
     action: "created" | "continued" | "restored";
   }> {
     const policy = input.intent.continuation;
-    if (!policy) throw new Error("Session dispatch requires continuation policy");
+    const continuationKey = policy?.key ?? null;
     if (
-      policy.key !== null &&
+      continuationKey !== null &&
       (input.intent.github !== undefined ||
         Object.values({ ...input.intent.environment.env, ...input.intent.env }).some(
           (value) => parseConnectionTemplate(value).length > 0,
@@ -50,13 +50,19 @@ export class AgentSessions {
         "Temporary environment credentials require New agent continuity. Existing agents cannot refresh their environment.",
       );
     }
-    const id = sessionId(input.intent.projectId, policy.key ?? `execution:${input.executionId}`);
+    const id = sessionId(
+      input.intent.projectId,
+      continuationKey ?? `execution:${input.executionId}`,
+    );
+    // External credential minting must not hold a database connection open during shutdown.
+    const storedSession = await this.database.findAgentSession(id);
+    const options = storedSession?.creationOptions ?? (await input.createOptions());
     return this.database.withAdvisoryLock(`agent-session:${id}`, async () => {
       const tools = executionToolDefinitions(
         input.intent.outputSchema,
         this.outputs.materialize(input.intent.allowOutputs, input.intent.outputContext),
       );
-      const compatibility = fingerprint({ settings: policy.compatibility, tools });
+      const compatibility = fingerprint({ settings: policy?.compatibility, tools });
       let session = await this.database.findAgentSession(id);
       if (session && session.compatibility !== compatibility) {
         throw new AgentSessionError(
@@ -64,13 +70,12 @@ export class AgentSessions {
         );
       }
       if (!session) {
-        const options = await input.createOptions();
         const token = deriveAgentExecutionCompletionToken(this.secret, `session:${id}`);
         session = {
           id,
           projectId: input.intent.projectId,
           organizationId: input.intent.organizationId,
-          continuationKey: policy.key,
+          continuationKey,
           daemonId: input.intent.environment.daemonId,
           agentId: null,
           workspaceId: null,
@@ -79,13 +84,17 @@ export class AgentSessions {
           capabilityTokenHash: hashAgentExecutionCompletionToken(token),
           creationOptions: {
             ...options,
-            mcpServers: {
-              hub: {
-                type: "http",
-                url: new URL(`/agent-sessions/${id}/mcp`, this.publicBaseUrl).toString(),
-                headers: { Authorization: `Bearer ${token}` },
-              },
-            },
+            ...(policy === undefined
+              ? {}
+              : {
+                  mcpServers: {
+                    hub: {
+                      type: "http",
+                      url: new URL(`/agent-sessions/${id}/mcp`, this.publicBaseUrl).toString(),
+                      headers: { Authorization: `Bearer ${token}` },
+                    },
+                  },
+                }),
           },
         };
         await this.database.saveAgentSession(session);
@@ -100,23 +109,32 @@ export class AgentSessions {
       }
       if (session.agentId === null || session.workspaceId === null)
         throw new Error("Session agent is missing");
-      const agent = await input.connection.get(session.agentId);
-      if (agent.archivedAt) {
-        await input.connection.restore(session.workspaceId);
-        action = "restored";
-      }
       await this.database.attachAgentToExecution(
         input.executionId,
         session.daemonId,
         session.agentId,
       );
+      const agent = await input.connection.get(session.agentId);
+      if (!agent.archivedAt && (agent.status === "closed" || agent.status === "error")) {
+        throw new AgentSessionError("agent_interrupted");
+      }
+      if (agent.archivedAt) {
+        await input.connection.restore(session.workspaceId);
+        action = "restored";
+      }
       await this.database.attachExecutionToSession(input.executionId, id, action);
       const unsubscribe = await input.connection.watch(session.agentId, input.onEvent);
       try {
+        const execution = await this.database.findAgentExecutionById(input.executionId);
+        if (!execution || execution.status === "failed" || execution.status === "succeeded") {
+          throw new AgentSessionError("execution_terminal");
+        }
         await input.connection.send(
           session.agentId,
           input.executionId,
-          `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.\n\n${input.intent.prompt}`,
+          policy === undefined
+            ? input.intent.prompt
+            : `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.\n\n${input.intent.prompt}`,
         );
       } catch (error) {
         unsubscribe();
@@ -130,17 +148,19 @@ export class AgentSessions {
     execution: AgentExecutionRecord,
     connection: AgentConnection,
     action: "interrupt" | "archive",
-  ): Promise<void> {
-    if (!execution.agentSessionId) throw new Error("Execution has no agent session");
+  ): Promise<boolean> {
+    if (!execution.agentSessionId) return true;
     const id = execution.agentSessionId;
-    await this.database.withAdvisoryLock(`agent-session:${id}`, async () => {
-      const session = await this.database.findAgentSession(id);
-      if (!session?.agentId || !session.workspaceId) return;
+    const session = await this.database.findAgentSession(id);
+    if (!session?.agentId || !session.workspaceId) return false;
+    const { agentId, workspaceId } = session;
+    return this.database.withAdvisoryLock(`agent-session:${id}`, async () => {
       const executions = await this.database.listAgentSessionExecutions(id);
       // A completed arrival cannot stop work belonging to a newer arrival.
       if (executions.some((item) => item.status === "spawning" || item.status === "running"))
-        return;
-      await connection.control(session.agentId, session.workspaceId, action);
+        return true;
+      await connection.control(agentId, workspaceId, action);
+      return true;
     });
   }
 }
