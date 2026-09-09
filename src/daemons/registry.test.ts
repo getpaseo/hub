@@ -328,4 +328,23 @@ describe("daemon socket generations", () => {
 
     await assert.rejects(pending.promise, /daemon disconnected/u);
   });
+
+  it("survives an invalid WebSocket close code instead of crashing the process", async () => {
+    // Real production crash: a peer sending a close frame with a code the
+    // protocol forbids on the wire (1006 is reserved and must never be
+    // sent) makes `ws`'s Receiver emit `error` on the server socket. With
+    // no `error` listener, Node rethrows it as an uncaught exception and
+    // kills the whole Hub process. If `accept()` regresses, this test
+    // crashes the worker instead of merely failing an assertion.
+    daemon.sendInvalidClose(1006);
+    await daemon.waitUntilCurrentClosed();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assertOneFailure(stream, {
+      operation: "daemon.socket.error",
+      component: "daemons",
+      failureKind: "network",
+      canary: "invalid-close-code-1006-never-logged",
+    });
+  });
 });
