@@ -1,4 +1,3 @@
-import { DaemonAgents } from "../daemons/agents/index.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
@@ -329,17 +328,17 @@ async function runTwoStepWorkflow<
     createdAt: now,
   });
   const connection: DaemonConnection = {
-    agents: new DaemonAgents(() => {
-      throw new Error("Native agents are not used by this fixture");
-    }),
-    on: () => () => undefined,
-    createAgent: async (agentOptions) => {
-      if (options.outcome === "prelaunch_failure") {
-        throw new Error("daemon rejected agent");
-      }
-      return { id: agentOptions.executionId };
+    agents: {
+      create: async (key) => {
+        if (options.outcome === "prelaunch_failure") throw new Error("daemon rejected agent");
+        return { id: key, workspaceId: "workspace", status: "idle" };
+      },
+      get: async (id) => ({ id, workspaceId: "workspace", status: "idle" }),
+      send: async () => {},
+      control: async () => {},
+      restore: async () => false,
+      watch: async () => () => {},
     },
-    controlExecution: async () => undefined,
     getProviderSnapshot: async () => {
       throw new Error("not used");
     },

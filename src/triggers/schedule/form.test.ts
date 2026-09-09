@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { defaultDraft, projectRecurrence, ruleFromDraft } from "./form.js";
-import { nextOccurrence, RecurrenceSchema } from "./recurrence.js";
+import { DEFAULT_RECURRENCE, nextOccurrence, RecurrenceSchema } from "./recurrence.js";
 
 it("round-trips exact paired times without extra hour/minute combinations", () => {
   const draft = {
@@ -63,4 +63,57 @@ it("rejects incomplete or duplicate controls before saving", () => {
   expect(() =>
     ruleFromDraft({ ...defaultDraft("2026-01-01T09:00:00"), frequency: "WEEKLY", days: [] }),
   ).toThrow("at least one day");
+});
+
+it.each([
+  [
+    "UTC",
+    "2026-09-09T07:00:00Z",
+    "2026-09-09T07:01:00.000Z",
+    "2026-09-09T08:00:00.000Z",
+    "2026-09-09T08:00:00.000Z",
+  ],
+  [
+    "Pacific/Honolulu",
+    "2026-09-09T09:00:00Z",
+    "2026-09-09T09:01:00.000Z",
+    "2026-09-09T10:00:00.000Z",
+    "2026-09-09T18:00:00.000Z",
+  ],
+  [
+    "Asia/Tokyo",
+    "2026-09-08T22:00:00Z",
+    "2026-09-08T22:01:00.000Z",
+    "2026-09-08T23:00:00.000Z",
+    "2026-09-08T23:00:00.000Z",
+  ],
+])(
+  "starts new presets at the next matching local time in %s",
+  (timezone, now, minute, hour, daily) => {
+    for (const [frequency, expected] of [
+      ["MINUTELY", minute],
+      ["HOURLY", hour],
+      ["DAILY", daily],
+    ]) {
+      const draft = {
+        ...projectRecurrence(DEFAULT_RECURRENCE)!,
+        frequency: frequency!,
+        times: ["08:00"],
+      };
+      const recurrence = { ...DEFAULT_RECURRENCE, timezone, rule: ruleFromDraft(draft) };
+      expect(nextOccurrence(recurrence, new Date(now))?.toISOString()).toBe(expected);
+    }
+  },
+);
+it("keeps the default daily time and explicitly authored future anchors", () => {
+  expect(projectRecurrence(DEFAULT_RECURRENCE)?.times).toEqual(["09:00"]);
+  const custom = {
+    start: "2026-09-10T12:00:00",
+    timezone: "UTC",
+    rule: "FREQ=MINUTELY;INTERVAL=90",
+  };
+  expect(projectRecurrence(custom)).toBeNull();
+  expect(nextOccurrence(custom, new Date("2026-09-09T07:00:00Z"))?.toISOString()).toBe(
+    "2026-09-10T12:00:00.000Z",
+  );
 });

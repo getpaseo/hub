@@ -1,13 +1,6 @@
 import { z } from "zod";
-import { WorktreeTargetSchema } from "../config/index.js";
 
 const AgentStatusSchema = z.enum(["error", "initializing", "idle", "running", "closed"]);
-
-const McpHttpServerConfigSchema = z.object({
-  type: z.literal("http"),
-  url: z.string(),
-  headers: z.record(z.string(), z.string()).optional(),
-});
 
 type WireJsonValue =
   | string
@@ -71,14 +64,6 @@ const ProviderSnapshotEntrySchema = z.object({
   description: z.string().optional(),
   defaultModeId: z.string().nullable().optional(),
 });
-
-const McpToolRefSchema = z
-  .object({
-    kind: z.literal("mcp"),
-    server: z.literal("hub"),
-    tool: z.string(),
-  })
-  .strict();
 
 export const HubExecutionAgentSnapshotSchema = z
   .object({
@@ -181,25 +166,6 @@ export const HubExecutionAgentStreamEventSchema = z.discriminatedUnion("type", [
     .passthrough(),
 ]);
 
-export const HubExecutionAgentCreateRequestSchema = z.object({
-  type: z.literal("hub.execution.agent.create.request"),
-  requestId: z.string(),
-  executionId: z.string(),
-  provider: z.string(),
-  cwd: z.string(),
-  prompt: z.string(),
-  workspaceId: z.string().optional(),
-  model: z.string().optional(),
-  modeId: z.string().optional(),
-  thinkingOptionId: z.string().optional(),
-  providerOptions: z.record(z.string(), JsonValueSchema).optional(),
-  toolPolicy: z.object({ preapproved: z.array(McpToolRefSchema) }).strict(),
-  featureValues: z.record(z.string(), z.unknown()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  mcpServers: z.record(z.string(), McpHttpServerConfigSchema).optional(),
-  worktree: WorktreeTargetSchema.optional(),
-});
-
 export const HubExecutionAgentValidateRequestSchema = z.object({
   type: z.literal("hub.execution.agent.validate.request"),
   requestId: z.string(),
@@ -256,79 +222,7 @@ export const RefreshProvidersSnapshotResponseSchema = z.object({
   }),
 });
 
-export const HubExecutionAgentCreateResponseSchema = z.object({
-  type: z.literal("hub.execution.agent.create.response"),
-  payload: z.object({
-    requestId: z.string(),
-    executionId: z.string(),
-    agentId: z.string().nullable(),
-    agent: HubExecutionAgentSnapshotSchema.nullable(),
-    success: z.boolean(),
-    toolPolicyApplied: z.literal(true).optional(),
-    error: z
-      .union([
-        z.string(),
-        z.discriminatedUnion("code", [
-          z.object({
-            code: z.literal("provider_options_invalid"),
-            provider: z.string(),
-            issues: z.array(
-              z.object({
-                path: z.array(z.union([z.string(), z.number()])),
-                message: z.string(),
-              }),
-            ),
-            message: z.string(),
-          }),
-          z.object({
-            code: z.literal("tool_policy_unsupported"),
-            provider: z.string(),
-            message: z.string(),
-          }),
-          z.object({ code: z.literal("create_failed"), message: z.string() }),
-        ]),
-      ])
-      .nullable(),
-  }),
-});
-
-export const HubExecutionAgentUpdateSchema = z.object({
-  type: z.literal("hub.execution.agent.update"),
-  payload: z.object({
-    executionId: z.string(),
-    agentId: z.string(),
-    agent: HubExecutionAgentSnapshotSchema,
-  }),
-});
-
-export const HubExecutionAgentStreamSchema = z.object({
-  type: z.literal("hub.execution.agent.stream"),
-  payload: z.object({
-    executionId: z.string(),
-    agentId: z.string(),
-    event: HubExecutionAgentStreamEventSchema,
-  }),
-});
-
 export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive"]);
-
-export const HubExecutionControlRequestSchema = z.object({
-  type: z.literal("hub.execution.control.request"),
-  requestId: z.string(),
-  executionId: z.string(),
-  action: HubExecutionControlActionSchema,
-});
-
-export const HubExecutionControlResponseSchema = z.object({
-  type: z.literal("hub.execution.control.response"),
-  payload: z.object({
-    requestId: z.string(),
-    executionId: z.string(),
-    action: HubExecutionControlActionSchema,
-    success: z.boolean(),
-    error: z.string().nullable(),
-  }),
-});
 
 const RpcErrorSchema = z.object({
   type: z.literal("rpc_error"),
@@ -343,10 +237,6 @@ const RpcErrorSchema = z.object({
 export const HubExecutionOutboundSchema = z.object({
   type: z.literal("session"),
   message: z.discriminatedUnion("type", [
-    HubExecutionAgentCreateResponseSchema,
-    HubExecutionAgentUpdateSchema,
-    HubExecutionAgentStreamSchema,
-    HubExecutionControlResponseSchema,
     HubExecutionAgentValidateResponseSchema,
     GetProvidersSnapshotResponseSchema,
     RefreshProvidersSnapshotResponseSchema,

@@ -76,7 +76,7 @@ export interface HubRuntime {
   daemonModule: DaemonModule | null;
   connectionForDaemon(daemonId: string): import("./daemons/index.js").DaemonConnection | undefined;
   resourceCounts(): {
-    recoveredExecutionSubscriptions: number;
+    executionSubscriptions: number;
   };
   processWorkflowOutbox(): Promise<void>;
   handleUpgrade: ReturnType<typeof createDaemonUpgradeHandler> | null;
@@ -233,8 +233,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     connectionForDaemon: (daemonId) =>
       options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId),
     resourceCounts: () => ({
-      recoveredExecutionSubscriptions:
-        daemonModule?.lifecycle.activeRecoveryObservationCount() ?? 0,
+      executionSubscriptions: daemonModule?.lifecycle.activeExecutionObservationCount() ?? 0,
     }),
     processWorkflowOutbox: () => workflowEngine.processAvailable(),
     handleUpgrade:

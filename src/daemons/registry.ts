@@ -9,14 +9,8 @@ import type { Database, DaemonRecord } from "../db/types.js";
 import { reportFailure, type FailureKind } from "../failures/index.js";
 import { logger as defaultLogger } from "../logger.js";
 import {
-  HubExecutionAgentCreateRequestSchema,
-  HubExecutionAgentCreateResponseSchema,
   HubExecutionAgentValidateRequestSchema,
   HubExecutionAgentValidateResponseSchema,
-  HubExecutionAgentStreamSchema,
-  HubExecutionAgentUpdateSchema,
-  HubExecutionControlRequestSchema,
-  HubExecutionControlResponseSchema,
   GetProvidersSnapshotRequestSchema,
   GetProvidersSnapshotResponseSchema,
   RefreshProvidersSnapshotRequestSchema,
@@ -25,32 +19,9 @@ import {
   HubDaemonHelloSchema,
   HubDaemonServerInfoEnvelopeSchema,
 } from "../hub/protocol.js";
-import {
-  DaemonCreateResponseLostError,
-  DaemonCreateRejectedError,
-  type DaemonConnection,
-  type DaemonAgentSnapshot,
-  type DaemonCreateAgentOptions,
-  type DaemonExecutionControlOptions,
-  type DaemonEventHandler,
-} from "./protocol.js";
+import { type DaemonConnection } from "./protocol.js";
 import type { HubProviderSnapshot } from "../hub/protocol.js";
 
-interface PendingCreateRequest {
-  kind: "create";
-  generation: number;
-  executionId: string;
-  resolve(value: DaemonAgentSnapshot): void;
-  reject(error: Error): void;
-}
-interface PendingControlRequest {
-  kind: "control";
-  generation: number;
-  executionId: string;
-  action: DaemonExecutionControlOptions["action"];
-  resolve(): void;
-  reject(error: Error): void;
-}
 interface PendingAgentValidationRequest {
   kind: "agent-validation";
   generation: number;
@@ -74,8 +45,6 @@ interface AgentValidationIssue {
   message: string;
 }
 type PendingRequest =
-  | PendingCreateRequest
-  | PendingControlRequest
   | PendingAgentValidationRequest
   | PendingProviderSnapshotRequest
   | PendingProviderRefreshRequest;
@@ -100,7 +69,6 @@ type DaemonRevokedHandler = (daemon: DaemonRecord) => void | Promise<void>;
 export class ActiveDaemonRegistry {
   private readonly active = new Map<string, ActiveSocket>();
   private readonly pendingByDaemon = new Map<string, Map<string, PendingRequest>>();
-  private readonly subscribersByDaemon = new Map<string, Set<DaemonEventHandler>>();
   private readonly connectedHandlers = new Set<DaemonConnectedHandler>();
   private readonly revokedHandlers = new Set<DaemonRevokedHandler>();
   private readonly presenceWrites = new Set<Promise<void>>();
@@ -120,7 +88,10 @@ export class ActiveDaemonRegistry {
     const previous = this.active.get(daemon.id);
     if (previous) this.rejectGeneration(daemon.id, previous.generation);
     const active: ActiveSocket = {
-      agents: new DaemonAgents((frame) => socket.send(frame)),
+      agents: new DaemonAgents(
+        (frame) => socket.send(frame),
+        () => this.clock.nowDate(),
+      ),
       generation: ++this.generation,
       socket,
       daemon,
@@ -132,6 +103,15 @@ export class ActiveDaemonRegistry {
     previous?.agents.close();
     previous?.socket.close(4001, "replaced");
     socket.on("message", (data) => this.receive(active, readText(data)));
+    socket.on("error", (error) => {
+      // A peer that sends a malformed control frame (e.g. an invalid close
+      // status code) makes the `ws` receiver emit `error` on this socket.
+      // Node's EventEmitter rethrows unlistened `error` events as an
+      // uncaught exception, which without this listener kills the whole
+      // Hub process over one bad daemon connection. Report and let the
+      // subsequent `close` event drive the normal offline-presence cleanup.
+      this.report(error, "daemon.socket.error", daemon.id, "network");
+    });
     socket.on("close", () => {
       active.agents.close();
       if (this.active.get(daemon.id)?.generation === active.generation) {
@@ -181,15 +161,8 @@ export class ActiveDaemonRegistry {
     if (!active?.ready || !active.daemon.permissions.includes("hub.execute")) return undefined;
     return {
       agents: this.active.get(daemonId)!.agents,
-      createAgent: (options) => this.createAgent(daemonId, options),
-      controlExecution: (options) => this.controlExecution(daemonId, options),
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
-      on: (handler) => {
-        const subscribers = this.subscribersFor(daemonId);
-        subscribers.add(handler);
-        return () => subscribers.delete(handler);
-      },
     };
   }
 
@@ -249,77 +222,9 @@ export class ActiveDaemonRegistry {
     await Promise.all(sockets);
     await Promise.all(this.presenceWrites);
     for (const [daemonId, pending] of this.pendingByDaemon) {
-      for (const request of pending.values()) request.reject(disconnectError(request));
+      for (const request of pending.values()) request.reject(new Error("daemon disconnected"));
       this.pendingByDaemon.delete(daemonId);
     }
-  }
-
-  private createAgent(
-    daemonId: string,
-    options: DaemonCreateAgentOptions,
-  ): Promise<{ id: string }> {
-    const active = this.active.get(daemonId);
-    if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
-    const requestId = randomUUID();
-    const executionId = options.executionId;
-    const request = HubExecutionAgentCreateRequestSchema.parse({
-      type: "hub.execution.agent.create.request",
-      requestId,
-      executionId,
-      provider: options.provider,
-      cwd: options.cwd,
-      prompt: options.prompt,
-      model: options.model,
-      modeId: options.mode,
-      thinkingOptionId: options.thinkingOptionId,
-      providerOptions: options.providerOptions,
-      toolPolicy: options.toolPolicy,
-      env: options.env,
-      mcpServers: options.mcpServers,
-      worktree: options.worktree,
-    });
-    return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
-        kind: "create",
-        generation: active.generation,
-        executionId,
-        resolve: (value) => {
-          if (value === undefined) {
-            reject(new Error("daemon create returned no agent"));
-            return;
-          }
-          resolve(value);
-        },
-        reject,
-      });
-      active.socket.send(JSON.stringify({ type: "session", message: request }));
-    });
-  }
-
-  private controlExecution(
-    daemonId: string,
-    options: DaemonExecutionControlOptions,
-  ): Promise<void> {
-    const active = this.active.get(daemonId);
-    if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
-    const requestId = randomUUID();
-    const request = HubExecutionControlRequestSchema.parse({
-      type: "hub.execution.control.request",
-      requestId,
-      executionId: options.executionId,
-      action: options.action,
-    });
-    return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
-        kind: "control",
-        generation: active.generation,
-        executionId: options.executionId,
-        action: options.action,
-        resolve,
-        reject,
-      });
-      active.socket.send(JSON.stringify({ type: "session", message: request }));
-    });
   }
 
   private getProviderSnapshot(
@@ -376,7 +281,6 @@ export class ActiveDaemonRegistry {
 
   private receive(active: ActiveSocket, raw: string): void {
     if (this.active.get(active.daemon.id)?.generation !== active.generation) return;
-    const receivedAt = this.clock.nowDate().toISOString();
     let value: unknown;
     try {
       value = JSON.parse(raw);
@@ -399,10 +303,6 @@ export class ActiveDaemonRegistry {
     if (!envelope.success) return;
     const message = envelope.data.message;
     if (message.type === "rpc_error") return this.receiveRpcError(active, message.payload);
-    const created = HubExecutionAgentCreateResponseSchema.safeParse(message);
-    if (created.success) return this.receiveCreate(active, created.data);
-    const controlled = HubExecutionControlResponseSchema.safeParse(message);
-    if (controlled.success) return this.receiveControl(active, controlled.data);
     const validated = HubExecutionAgentValidateResponseSchema.safeParse(message);
     if (validated.success) return this.receiveAgentValidation(active, validated.data);
     const providerSnapshot = GetProvidersSnapshotResponseSchema.safeParse(message);
@@ -410,28 +310,6 @@ export class ActiveDaemonRegistry {
       return this.receiveProviderSnapshot(active, providerSnapshot.data);
     const providerRefresh = RefreshProvidersSnapshotResponseSchema.safeParse(message);
     if (providerRefresh.success) return this.receiveProviderRefresh(active, providerRefresh.data);
-    const update = HubExecutionAgentUpdateSchema.safeParse(message);
-    if (update.success) {
-      const event = {
-        type: "agent_update",
-        executionId: update.data.payload.executionId,
-        agentId: update.data.payload.agentId,
-        agent: update.data.payload.agent,
-        timestamp: receivedAt,
-      } as const;
-      this.notifySubscribers(active.daemon.id, event);
-      return;
-    }
-    const stream = HubExecutionAgentStreamSchema.safeParse(message);
-    if (!stream.success) return;
-    const event = {
-      type: "agent_stream",
-      executionId: stream.data.payload.executionId,
-      agentId: stream.data.payload.agentId,
-      event: stream.data.payload.event,
-      timestamp: receivedAt,
-    } as const;
-    this.notifySubscribers(active.daemon.id, event);
   }
 
   private acceptServerInfo(
@@ -470,18 +348,6 @@ export class ActiveDaemonRegistry {
       }
       return undefined;
     });
-  }
-
-  private notifySubscribers(daemonId: string, event: Parameters<DaemonEventHandler>[0]): void {
-    for (const subscriber of this.subscribersFor(daemonId)) {
-      this.observeHandler(
-        () => subscriber(event),
-        "daemon.event.subscriber",
-        daemonId,
-        undefined,
-        event.executionId,
-      );
-    }
   }
 
   private observeHandler(
@@ -576,75 +442,6 @@ export class ActiveDaemonRegistry {
     pending.resolve();
   }
 
-  private receiveControl(
-    active: ActiveSocket,
-    response: z.infer<typeof HubExecutionControlResponseSchema>,
-  ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (
-      !pending ||
-      pending.kind !== "control" ||
-      pending.generation !== active.generation ||
-      pending.executionId !== response.payload.executionId ||
-      pending.action !== response.payload.action
-    ) {
-      return;
-    }
-    requests.delete(response.payload.requestId);
-    if (!response.payload.success) {
-      pending.reject(new Error(response.payload.error ?? "daemon execution control failed"));
-      return;
-    }
-    pending.resolve();
-  }
-
-  private receiveCreate(
-    active: ActiveSocket,
-    response: z.infer<typeof HubExecutionAgentCreateResponseSchema>,
-  ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (!pending || pending.kind !== "create" || pending.generation !== active.generation) return;
-    const related = relatedCreateRequests(requests, active.generation, pending.executionId);
-    for (const [requestId] of related) requests.delete(requestId);
-    if (response.payload.success && response.payload.toolPolicyApplied !== true) {
-      for (const [, request] of related) {
-        request.reject(
-          new DaemonCreateRejectedError(
-            "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
-            "tool_policy_not_confirmed",
-          ),
-        );
-      }
-      return;
-    }
-    if (!response.payload.success || !response.payload.agentId) {
-      const error = response.payload.error;
-      for (const [, request] of related) {
-        request.reject(
-          typeof error === "object" && error !== null
-            ? new DaemonCreateRejectedError(
-                error.message,
-                error.code,
-                "provider" in error ? error.provider : undefined,
-                "issues" in error ? error.issues : undefined,
-              )
-            : new DaemonCreateRejectedError(
-                "The connected Paseo daemon returned the legacy Hub create error contract; update Paseo before running this workflow",
-                "tool_policy_not_confirmed",
-              ),
-        );
-      }
-      return;
-    }
-    const snapshot = {
-      id: response.payload.agentId,
-      ...(response.payload.agent === null ? {} : { state: response.payload.agent }),
-    };
-    for (const [, request] of related) request.resolve(snapshot);
-  }
-
   private receiveRpcError(
     active: ActiveSocket,
     payload: { requestId: string; error: string },
@@ -669,35 +466,9 @@ export class ActiveDaemonRegistry {
     for (const [requestId, request] of pending) {
       if (request.generation !== generation) continue;
       pending.delete(requestId);
-      request.reject(disconnectError(request));
+      request.reject(new Error("daemon disconnected"));
     }
   }
-
-  private subscribersFor(daemonId: string): Set<DaemonEventHandler> {
-    const existing = this.subscribersByDaemon.get(daemonId);
-    if (existing) return existing;
-    const subscribers = new Set<DaemonEventHandler>();
-    this.subscribersByDaemon.set(daemonId, subscribers);
-    return subscribers;
-  }
-}
-
-function relatedCreateRequests(
-  requests: ReadonlyMap<string, PendingRequest>,
-  generation: number,
-  executionId: string,
-): Array<[string, PendingCreateRequest]> {
-  const related: Array<[string, PendingCreateRequest]> = [];
-  for (const [requestId, request] of requests) {
-    if (
-      request.kind === "create" &&
-      request.generation === generation &&
-      request.executionId === executionId
-    ) {
-      related.push([requestId, request]);
-    }
-  }
-  return related;
 }
 
 function samePermissions(actual: readonly string[], expected: readonly string[]): boolean {
@@ -766,12 +537,6 @@ function readText(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString();
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString();
   return data.toString();
-}
-
-function disconnectError(request: PendingRequest): Error {
-  return request.kind === "create"
-    ? new DaemonCreateResponseLostError()
-    : new Error("daemon disconnected");
 }
 
 export interface DaemonClock {

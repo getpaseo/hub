@@ -27,11 +27,6 @@ describe("daemon provider catalog", () => {
       agents: new DaemonAgents(() => {
         throw new Error("Native agents are not used by this fixture");
       }),
-      createAgent: async () => {
-        throw new Error("not used");
-      },
-      controlExecution: async () => undefined,
-      on: () => () => undefined,
       refreshProviderSnapshot: async ({ cwd }) => {
         calls.push(`refresh:${cwd}`);
       },

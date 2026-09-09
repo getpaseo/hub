@@ -41,6 +41,7 @@ export interface MaterializedExecutionAuthority {
 
 export interface ExecutionAuthority {
   materialize(input: ExecutionAuthorityMaterialization): Promise<MaterializedExecutionAuthority>;
+  canResume(input: ExecutionAuthorityMaterialization): boolean;
   onExecutionTerminal(executionId: string): Promise<void>;
   resourceCounts(): ExecutionAuthorityResourceCounts;
   stop(): Promise<ExecutionAuthorityStopResult>;
@@ -380,7 +381,16 @@ export function createExecutionAuthority(
     return stopPromise;
   }
 
-  return { materialize, onExecutionTerminal, resourceCounts, stop };
+  function canResume(input: ExecutionAuthorityMaterialization): boolean {
+    const needsCredentials =
+      input.github !== undefined ||
+      Object.values(input.env ?? {}).some((value) => parseConnectionTemplate(value).length > 0);
+    if (!needsCredentials) return true;
+    const state = states.get(input.executionId);
+    return state !== undefined && !state.terminal && state.leases.size > 0;
+  }
+
+  return { materialize, canResume, onExecutionTerminal, resourceCounts, stop };
 
   function collectResidualExposures(
     activeStates: Array<[string, ExecutionState]>,

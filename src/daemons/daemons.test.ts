@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { DaemonDispatchFailure } from "./index.js";
-import { DaemonCreateResponseLostError } from "./protocol.js";
+import { DaemonResponseLostError } from "./protocol.js";
 import { ENROLLMENT_LIFETIME_MS } from "./registration.js";
 import { HubHarness } from "./test-utils/hub-harness.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
@@ -246,20 +246,11 @@ describe("daemon enrollment and execution", () => {
     assert.equal(isRecord(launch.env) ? launch.env["PASEO_AGENT_MODE"] : undefined, undefined);
   });
 
-  it("surfaces daemon provider-option validation at the authored YAML path", async () => {
+  it("preserves the ordinary daemon provider-option validation error", async () => {
     await hub.connectDaemon();
-    hub.rejectNextCreate({
-      code: "provider_options_invalid",
-      provider: "codex",
-      issues: [
-        {
-          path: ["sandbox_workspace_write", "network-access"],
-          message: "Expected boolean, received string",
-        },
-      ],
-      message:
-        "Invalid providerOptions for 'codex': providerOptions.sandbox_workspace_write.network_access: Expected boolean, received string",
-    });
+    hub.rejectNextCreate(
+      "Invalid providerOptions for 'codex': providerOptions.sandbox_workspace_write.network_access: Expected boolean, received string",
+    );
 
     const handedOff = await hub.handoff({
       agent: {
@@ -272,25 +263,20 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(failed.result, {
       status: "failed",
       reason:
-        "provider 'codex': agent.options.sandbox_workspace_write[\"network-access\"]: Expected boolean, received string",
+        "Invalid providerOptions for 'codex': providerOptions.sandbox_workspace_write.network_access: Expected boolean, received string",
     });
   });
 
   it("surfaces unsupported exact MCP preapproval without waiting for a timeout", async () => {
     await hub.connectDaemon();
-    hub.rejectNextCreate({
-      code: "tool_policy_unsupported",
-      provider: "test-provider",
-      message: "Provider test-provider does not support exact MCP tool preapproval",
-    });
+    hub.rejectNextCreate("Provider test-provider does not support exact MCP tool preapproval");
 
     const handedOff = await hub.handoff({ agent: { provider: "test-provider" } });
     const failed = await hub.waitForExecutionStatus(handedOff.execution.id, "failed");
 
     assert.deepEqual(failed.result, {
       status: "failed",
-      reason:
-        "tool_policy_unsupported: Provider test-provider does not support exact MCP tool preapproval",
+      reason: "Provider test-provider does not support exact MCP tool preapproval",
     });
   });
 
@@ -372,7 +358,7 @@ describe("daemon enrollment and execution", () => {
     const delivered = await hub.deliverCurrentProjectSlackMention(slackConnectionId);
     assert.equal(delivered.status, 200);
 
-    await hub.waitForCreatedAgentRequests(1);
+    await hub.waitForDeliveredPrompts(1);
     const classifier = await hub.waitForPendingExecution();
     const classifierLaunch = hub.createdAgentLaunch();
     assert.equal(classifierLaunch.provider, "claude");
@@ -402,7 +388,7 @@ describe("daemon enrollment and execution", () => {
       runStatus: "running",
       runFailure: null,
     });
-    await hub.waitForCreatedAgentRequests(2);
+    await hub.waitForDeliveredPrompts(2);
     const worker = await hub.waitForPendingExecution();
     const workerLaunch = hub.createdAgentLaunch();
     assert.equal(workerLaunch.provider, "codex");
@@ -485,6 +471,7 @@ describe("daemon enrollment and execution", () => {
 
       hub.releaseLaunchMaterialization();
       await hub.waitForRecoveredExecution(handedOff.execution.id);
+      await hub.waitForDeliveredPrompts(1);
       assert.equal(hub.createdAgentLaunch().prompt, "token=<secret>");
       assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
       assert.deepEqual(hub.createdAgentLaunch().worktree, {
@@ -545,9 +532,9 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
   });
 
-  it("reconstructs authority on graceful restart and revokes the old lease before recovery remints", async () => {
+  it("fails recovery of revoked scoped credentials without recreating the agent or reminting", async () => {
     await hub.connectDaemon();
-    await hub.handoff({
+    const handedOff = await hub.handoff({
       github: {
         connection: "getpaseo-github",
         repositories: ["getpaseo/paseo"],
@@ -559,11 +546,15 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.authorityRevokedTokens(), []);
 
     await hub.restartApp();
-    await hub.waitForCreatedAgentRequests(2);
+    const failed = await hub.waitForExecutionStatus(handedOff.execution.id, "failed");
 
     assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
-    assert.equal(hub.authorityMintInputs().length, 2);
-    assert.equal(hub.createdAgentRequestCount(), 2);
+    assert.deepEqual(failed.result, {
+      status: "failed",
+      reason: "execution_credentials_unavailable",
+    });
+    assert.equal(hub.authorityMintInputs().length, 1);
+    assert.equal(hub.createdAgentRequestCount(), 1);
   });
 
   it("bounds Hub shutdown when terminal cleanup follows a permanently unresolved authority mint", async () => {
@@ -650,6 +641,7 @@ describe("daemon enrollment and execution", () => {
     assert(execution !== undefined);
     await hub.waitForRecoveredExecution(execution.id);
 
+    await hub.waitForDeliveredPrompts(1);
     assert.equal(hub.createdAgentLaunch().prompt, "token=<secret>");
     assert.equal(Reflect.get(Object(hub.createdAgentLaunch().env), "TOKEN"), "resolved-secret");
     assert.deepEqual(hub.createdAgentLaunch().worktree, {
@@ -815,8 +807,8 @@ describe("daemon enrollment and execution", () => {
 
     const agentId = hub.interruptPendingSpawn();
     hub.interruptPendingSpawn();
-    await hub.failureNotified();
     const action = await hub.acceptSpawnAndObserveControl(pending.id);
+    await hub.failureNotified();
     await dispatch.catch(() => undefined);
 
     const execution = await hub.execution(pending.id);
@@ -844,40 +836,15 @@ describe("daemon enrollment and execution", () => {
     );
   });
 
-  it("retains MCP completion cleanup before spawn acknowledgement", async () => {
-    const daemonId = await hub.connectDaemon();
+  it("sends the prompt only after agent creation is acknowledged", async () => {
+    await hub.connectDaemon();
     hub.holdSpawnAcknowledgement();
     const dispatch = hub.beginDispatch({ autoArchive: true });
     await hub.spawnBegins();
-    const pending = await hub.pendingExecution();
-
-    assert.equal(await hub.completeExecution(pending.id), 200);
-    assert.deepEqual(hub.controlActions(), []);
-    await hub.completeCurrentTurn(`agent-${pending.id}`);
-    await hub.pendingControlAction(pending.id);
-    await hub.completePendingCleanup();
-
-    const completed = await hub.execution(pending.id);
-    assert.deepEqual(
-      {
-        status: completed.status,
-        daemon: completed.daemonId,
-        agent: completed.daemonAgentId,
-        hubAction: completed.hubAction,
-        hubActionCompleted: completed.hubActionCompletedAt !== null,
-        actions: hub.controlActions(),
-      },
-      {
-        status: "succeeded",
-        daemon: daemonId,
-        agent: null,
-        hubAction: "archive",
-        hubActionCompleted: true,
-        actions: ["archive"],
-      },
-    );
+    assert.equal(hub.createdAgentLaunch().prompt, undefined);
     hub.acceptSpawn();
     await dispatch;
+    assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
   });
 
   it("retains deadline cleanup when spawn never materializes", async () => {
@@ -908,8 +875,8 @@ describe("daemon enrollment and execution", () => {
         daemon: daemonId,
         agent: null,
         hubAction: "archive",
-        hubActionCompleted: true,
-        actions: ["archive"],
+        hubActionCompleted: false,
+        actions: [],
         agents: 0,
       },
     );
@@ -927,7 +894,7 @@ describe("daemon enrollment and execution", () => {
       hub.markPendingSpawnInterrupted(status);
 
       await hub.restartApp();
-      await assert.rejects(dispatch, DaemonCreateResponseLostError);
+      await assert.rejects(dispatch, DaemonResponseLostError);
       await hub.failureNotified();
       await hub.completePendingCleanup(daemonId);
 
@@ -1022,7 +989,7 @@ describe("daemon enrollment and execution", () => {
 
     await hub.disconnectDaemon();
 
-    await assert.rejects(dispatch, DaemonCreateResponseLostError);
+    await assert.rejects(dispatch, DaemonResponseLostError);
     assert.deepEqual(
       {
         status: (await hub.execution(pending.id)).status,
@@ -1178,7 +1145,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal((await hub.execution(result.execution.id)).hubActionReadyAt, null);
 
     await hub.reconnectDaemon();
-    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
+    await hub.runtimeResources({ executionSubscriptions: 1 });
     await hub.completeCurrentTurn(result.agentId);
     await hub.pendingControlAction(result.execution.id);
     await hub.completePendingCleanup();
@@ -1208,7 +1175,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(recovered.hubActionCompletedAt, null);
 
     await hub.reconnectDaemon();
-    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
+    await hub.runtimeResources({ executionSubscriptions: 1 });
     await hub.completeCurrentTurn(result.agentId);
     await hub.pendingControlAction(result.execution.id);
     await hub.completePendingCleanup();
@@ -1227,10 +1194,9 @@ describe("daemon enrollment and execution", () => {
     hub.holdControlAcknowledgements();
 
     await hub.restartApp();
-    await hub.runtimeResources({ recoveredExecutionSubscriptions: 2 });
+    await hub.runtimeResources({ executionSubscriptions: 2 });
     await hub.completeCurrentTurn(cleanup.agentId);
     assert.equal(await hub.pendingControlAction(cleanup.execution.id), "archive");
-    await hub.spawnBegins();
     hub.interruptAgent(live.agentId);
     assert.equal(await hub.pendingControlAction(live.execution.id), "interrupt");
 
@@ -1504,6 +1470,7 @@ describe("daemon enrollment and execution", () => {
     const result = await dispatch;
     assert.equal(result.status, 200);
 
+    await hub.waitForExecutionStatus(pending.id, "running");
     await hub.advanceDispatchTime(10_000);
 
     assert.equal((await hub.execution(pending.id)).status, "failed");
@@ -1691,10 +1658,10 @@ describe("daemon enrollment and execution", () => {
         result: { status: "failed", reason: "agent_interrupted" },
         daemonId,
         agentId: result.agentId,
-        createRequests: 2,
+        createRequests: 1,
         failureHooks: 1,
         resources: {
-          recoveredExecutionSubscriptions: 0,
+          executionSubscriptions: 0,
         },
       },
     );
@@ -1718,19 +1685,19 @@ describe("daemon enrollment and execution", () => {
       await hub.waitForRecoveredExecution(execution.id);
       assert.deepEqual(
         await hub.runtimeResources({
-          recoveredExecutionSubscriptions: 1,
+          executionSubscriptions: 1,
         }),
         {
-          recoveredExecutionSubscriptions: 1,
+          executionSubscriptions: 1,
         },
       );
       assert.equal(await hub.completeExecution(execution.id), 200);
       await hub.waitForExecutionStatus(execution.id, "succeeded");
       assert.deepEqual(
         await hub.runtimeResources({
-          recoveredExecutionSubscriptions: 0,
+          executionSubscriptions: 0,
         }),
-        { recoveredExecutionSubscriptions: 0 },
+        { executionSubscriptions: 0 },
       );
     }
 
@@ -1743,9 +1710,9 @@ describe("daemon enrollment and execution", () => {
     await hub.waitForExecutionStatus(execution.id, "running");
     await hub.restartApp();
     await hub.waitForRecoveredExecution(execution.id);
-    await hub.runtimeResources({ recoveredExecutionSubscriptions: 1 });
+    await hub.runtimeResources({ executionSubscriptions: 1 });
     assert.deepEqual(await hub.stopRuntimeResources(), {
-      recoveredExecutionSubscriptions: 0,
+      executionSubscriptions: 0,
     });
   });
 
@@ -1754,16 +1721,16 @@ describe("daemon enrollment and execution", () => {
     const timedOut = await hub.dispatch({ timeoutMs: 1_000 });
     assert.deepEqual(
       await hub.runtimeResources({
-        recoveredExecutionSubscriptions: 0,
+        executionSubscriptions: 1,
       }),
       {
-        recoveredExecutionSubscriptions: 0,
+        executionSubscriptions: 1,
       },
     );
     await hub.advanceDispatchTime(1_000);
     assert.equal((await hub.execution(timedOut.execution.id)).status, "failed");
     assert.deepEqual(await hub.runtimeResources(), {
-      recoveredExecutionSubscriptions: 0,
+      executionSubscriptions: 0,
     });
   });
 

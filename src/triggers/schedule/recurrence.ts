@@ -37,8 +37,9 @@ export const RecurrenceSchema = shape.superRefine((value, context) => {
   }
 });
 export const DEFAULT_RECURRENCE: Recurrence = {
-  start: `${new Date().toISOString().slice(0, 10)}T09:00:00`,
-  rule: "FREQ=DAILY",
+  // Presets follow the clock immediately; the daily time belongs to the rule, not a future anchor.
+  start: "1970-01-01T00:00:00",
+  rule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0",
   timezone: "UTC",
 };
 

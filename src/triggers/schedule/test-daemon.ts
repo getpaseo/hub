@@ -23,16 +23,8 @@ export class ScheduleTestDaemon implements DaemonConnection {
     control: async () => {},
     watch: async () => () => {},
   };
-  async createAgent(options: DaemonCreateAgentOptions) {
-    this.launches.push(options);
-    return { id: this.agent.id };
-  }
-  async controlExecution() {}
   async getProviderSnapshot(): Promise<import("../../hub/protocol.js").HubProviderSnapshot> {
     throw new Error("Provider catalog is not used by this test daemon.");
   }
   async refreshProviderSnapshot() {}
-  on() {
-    return () => {};
-  }
 }
