@@ -3,6 +3,18 @@ import { describe, it } from "vitest";
 import { summarizeTrigger } from "./activity-summary.js";
 
 describe("summarizeTrigger", () => {
+  it("identifies clock occurrences as scheduled runs in Activity", () => {
+    assert.deepEqual(
+      summarizeTrigger("schedule.tick", {
+        schedule: {
+          trigger_id: "periodic-scan",
+          scheduled_at: "2026-09-09T09:00:00.000Z",
+          timezone: "UTC",
+        },
+      }),
+      { provider: "schedule", headline: "Scheduled run", actor: null, externalUrl: null },
+    );
+  });
   it("summarizes a GitHub issue comment with the issue number and commenter", () => {
     const summary = summarizeTrigger("github.issue_comment", {
       id: "1",

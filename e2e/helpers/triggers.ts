@@ -1,5 +1,6 @@
 import { parseDocument } from "yaml";
 import { expect, type Page } from "@playwright/test";
+import type { BuiltApplication } from "./hub.js";
 
 export class OrganizationTriggers {
   constructor(private readonly page: Page) {}
@@ -132,6 +133,115 @@ export class OrganizationTriggers {
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
+  }
+
+  async configureSchedule(daemon: string) {
+    await this.configureManual({
+      name: "periodic-scan",
+      daemon,
+      cwd: "/workspace/acme",
+      agent: "pi/gateway/vendor/model-v1",
+      mode: "full-access",
+      thinking: "low",
+      prompt: "Read reports and summarize new items.",
+    });
+    await this.selectOption("When this happens", "schedule.tick");
+    await this.page.getByRole("radio", { name: "New agent", exact: true }).check();
+    await expect(this.page.getByRole("combobox", { name: "Connection", exact: true })).toBeHidden();
+    await expect(this.page.getByRole("heading", { name: "Who can invoke it" })).toBeHidden();
+    await this.page.getByLabel("Time 1", { exact: true }).fill("08:15");
+    await this.page.getByRole("button", { name: "Add time", exact: true }).click();
+    await this.page.getByLabel("Time 2", { exact: true }).fill("16:45");
+    await this.page.getByRole("combobox", { name: "Timezone", exact: true }).click();
+    await this.page.getByRole("option", { name: "Europe/Berlin", exact: true }).click();
+    await expect(
+      this.page
+        .getByRole("status")
+        .filter({ hasText: "Every day at 08:15 and 16:45 (Europe/Berlin)" }),
+    ).toBeVisible();
+  }
+
+  async editScheduleToWeekdays() {
+    await this.page.getByRole("combobox", { name: "Repeat", exact: true }).click();
+    await this.page.getByRole("option", { name: "Every week", exact: true }).click();
+    await this.page.getByRole("checkbox", { name: "Friday", exact: true }).check();
+    await this.page.getByRole("combobox", { name: "Repeat", exact: true }).click();
+    await this.page.getByRole("option", { name: "Every week", exact: true }).click();
+    await expect(this.page.getByRole("checkbox", { name: "Friday", exact: true })).toBeChecked();
+    await this.page.getByLabel("Time 2", { exact: true }).fill("08:15");
+    await this.page.getByRole("button", { name: "Save changes", exact: true }).first().click();
+    await expect(
+      this.page.getByRole("alert").filter({ hasText: "Check the recurrence" }),
+    ).toContainText("Choose distinct times");
+    await this.page.getByLabel("Time 2", { exact: true }).fill("18:30");
+  }
+
+  async expectScheduleAfterReload() {
+    await this.page.reload();
+    await expect(this.page.getByRole("checkbox", { name: "Monday", exact: true })).toBeChecked();
+    await expect(this.page.getByRole("checkbox", { name: "Friday", exact: true })).toBeChecked();
+    await expect(
+      this.page.getByRole("checkbox", { name: "Tuesday", exact: true }),
+    ).not.toBeChecked();
+    await expect(this.page.getByLabel("Time 1", { exact: true })).toHaveValue("08:15");
+    await expect(this.page.getByLabel("Time 2", { exact: true })).toHaveValue("18:30");
+    await expect(
+      this.page.getByRole("combobox", { name: "Thinking", exact: true }),
+    ).toHaveAttribute("data-value", "low");
+    await expect(this.page.getByLabel("Instructions", { exact: true })).toHaveValue(
+      "Read reports and summarize new items.",
+    );
+  }
+
+  async captureSchedule(path: string) {
+    await this.page.evaluate(() => window.scrollTo(0, 0));
+    await this.page.screenshot({ path, fullPage: true });
+  }
+
+  async captureScheduleAtPhoneWidth(path: string) {
+    await this.page.setViewportSize({ width: 390, height: 844 });
+    await this.page.getByRole("combobox", { name: "Repeat", exact: true }).evaluate((element) => {
+      window.scrollBy(0, element.getBoundingClientRect().top - 100);
+    });
+    expect(
+      await this.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    await this.page.screenshot({ path });
+  }
+
+  async runScheduledOccurrence(application: BuiltApplication, name: string) {
+    // Move the fixture's persisted occurrence into the past; the production clock accepts it.
+    await application.query(
+      `update trigger_schedules set next_at = clock_timestamp() - interval '1 minute'
+       where trigger_id = (select id from organization_triggers where name = $1)`,
+      [name],
+    );
+    await expect
+      .poll(async () => {
+        const rows = await application.query(
+          `select r.id from trigger_runs r
+           join provider_event_receipts e on e.id = r.provider_event_receipt_id
+           where e.source = 'schedule.tick'`,
+        );
+        return rows.length;
+      })
+      .toBe(1);
+    await expect
+      .poll(async () => {
+        return await application.query(
+          `select e.status, r.failure_reason from agent_executions e
+           join workflow_step_runs s on s.agent_execution_id = e.id
+           join trigger_runs r on r.id = s.trigger_run_id`,
+        );
+      })
+      .toEqual([{ status: "running", failure_reason: null }]);
+    await this.page.setViewportSize({ width: 1280, height: 900 });
+    await this.page.getByRole("link", { name: "Activity", exact: true }).click();
+    await this.page.reload();
+    const row = this.page.getByRole("row").filter({ hasText: name });
+    await expect(row.getByRole("cell", { name: "schedule", exact: true })).toBeVisible();
+    await expect(row.getByRole("cell", { name: "schedule.tick", exact: true })).toBeVisible();
+    await this.page.screenshot({ path: "e2e/screenshots/schedules/activity.png" });
   }
 
   async configureLabelAdded(input: { name: string; daemon: string; event: string }) {

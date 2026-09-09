@@ -5318,6 +5318,10 @@ function roleLabel(role: "owner" | "admin" | "member"): string {
 }
 
 class ContractDaemon {
+  private readonly agents = new Map<
+    string,
+    { id: string; workspaceId: string; status: "running" }
+  >();
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
@@ -5418,7 +5422,12 @@ class ContractDaemon {
 
   private acceptExecution(data: RawData): void {
     const value: unknown = JSON.parse(readSocketData(data));
-    if (this.acceptHello(value) || this.acceptProviderRequest(value)) return;
+    if (
+      this.acceptHello(value) ||
+      this.acceptProviderRequest(value) ||
+      this.acceptAgentRequest(value)
+    )
+      return;
     const envelope = ExecutionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
@@ -5459,7 +5468,10 @@ class ContractDaemon {
             status: "server_info",
             serverId: `browser-${this.daemonId}`,
             permissions: ["hub.execute"],
-            features: { providersSnapshot: true },
+            features: {
+              providersSnapshot: true,
+              ...(this.providerCatalog ? { hubAgentRpc: true, agentRequestReceipts: true } : {}),
+            },
           },
         },
       }),
@@ -5502,6 +5514,50 @@ class ContractDaemon {
             },
           };
     this.socket?.send(JSON.stringify({ type: "session", message }));
+    return true;
+  }
+
+  private acceptAgentRequest(value: unknown): boolean {
+    if (!this.providerCatalog) return false;
+    const parsed = z
+      .object({
+        type: z.literal("session"),
+        message: z.object({
+          type: z.enum([
+            "create_agent_request",
+            "fetch_agent_request",
+            "send_agent_message_request",
+            "fetch_agents_request",
+            "agent.timeline.set_subscription.request",
+          ]),
+          requestId: z.string(),
+          idempotencyKey: z.string().optional(),
+          agentId: z.string().optional(),
+        }),
+      })
+      .safeParse(value);
+    if (!parsed.success) return false;
+    const request = parsed.data.message;
+    let agent = this.agents.get(request.agentId ?? "");
+    if (request.type === "create_agent_request") {
+      const id = `agent-${request.idempotencyKey!}`;
+      agent = this.agents.get(id) ?? { id, workspaceId: `workspace-${id}`, status: "running" };
+      this.agents.set(id, agent);
+    }
+    this.socket?.send(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: request.type.replace("request", "response"),
+          payload: {
+            requestId: request.requestId,
+            accepted: true,
+            agent,
+            agents: [...this.agents.values()],
+          },
+        },
+      }),
+    );
     return true;
   }
 }

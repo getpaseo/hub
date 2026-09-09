@@ -1,3 +1,9 @@
+import {
+  recurrenceSummary,
+  RecurrenceSchema,
+  DEFAULT_RECURRENCE,
+  type Recurrence,
+} from "../schedule/recurrence.js";
 import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
@@ -18,6 +24,7 @@ export interface TriggerFormValue {
   connection: string;
   allowedUsers: string;
   qualifiers: QualifierValues;
+  recurrence?: Recurrence;
   daemon: string;
   cwd: string;
   agent: string;
@@ -77,6 +84,7 @@ function toFormValue(
     connection: definition.connection ?? "",
     allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
     qualifiers: readQualifiers(event, definition.filters),
+    recurrence: definition.recurrence ?? DEFAULT_RECURRENCE,
     daemon: trigger.run.target.daemon,
     cwd: trigger.run.target.cwd,
     agent: joinAgentId(agent.provider, agent.model),
@@ -116,7 +124,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     document.deleteIn(["on", previousEvent]);
     document.setIn(["on", value.event], definition ?? {});
   }
-  if (value.event === "manual.run") {
+  if (eventDefinition(value.event).origin === "hub") {
     deleteIfPresent(document, ["on", value.event, "connection"]);
     deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
   } else {
@@ -124,6 +132,12 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     setIfChanged(document, ["on", value.event, "filters", "from_users"], users(value.allowedUsers));
   }
 
+  setOptional(
+    document,
+    ["on", value.event, "recurrence"],
+    value.event === "schedule.tick" ? (value.recurrence ?? DEFAULT_RECURRENCE) : undefined,
+  );
+  if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
   const qualifiers = authoredQualifiers(value);
   const ownedKeys = new Set(
     [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
@@ -192,16 +206,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
-  const definition =
-    value.event === "manual.run"
-      ? {}
-      : {
-          connection: value.connection,
-          filters: {
-            from_users: users(value.allowedUsers),
-            ...authoredQualifiers(value),
-          },
-        };
+  const definition = formEventDefinition(value);
   return stringify(
     {
       name: value.name,
@@ -227,6 +232,22 @@ export function createTriggerYaml(value: TriggerFormValue): string {
     },
     { lineWidth: 0 },
   );
+}
+
+function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][string] {
+  if (value.event === "schedule.tick")
+    return { recurrence: value.recurrence ?? DEFAULT_RECURRENCE };
+  if (eventDefinition(value.event).origin === "hub") return {};
+  return {
+    connection: value.connection,
+    filters: { from_users: users(value.allowedUsers), ...authoredQualifiers(value) },
+  };
+}
+
+function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
+  if (value.event !== "schedule.tick") return {};
+  const parsed = RecurrenceSchema.safeParse(value.recurrence ?? DEFAULT_RECURRENCE);
+  return parsed.success ? {} : { recurrence: parsed.error.issues[0]!.message };
 }
 
 function githubAuthority(value: TriggerFormValue) {
@@ -278,7 +299,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   else if (!IDENTIFIER.test(name)) {
     errors.name = "Use lowercase letters, digits, and hyphens, starting with a letter.";
   }
-  if (value.event !== "manual.run") {
+  if (eventDefinition(value.event).origin === "provider") {
     if (value.connection.trim().length === 0) errors.connection = "Connection is required.";
     if (value.allowedUsers.trim().length === 0) {
       errors.allowedUsers = "Name at least one user ID, or let everyone trigger it.";
@@ -290,6 +311,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
       errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
     }
   }
+  Object.assign(errors, recurrenceErrors(value));
   if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
   if (!value.cwd.trim().startsWith("/")) {
     errors.cwd = "Working directory must be an absolute path.";
@@ -463,4 +485,10 @@ function continuationErrors(value: TriggerFormValue): TriggerFieldErrors {
   return refused(() => formContinuation(value)) === undefined
     ? {}
     : { continuationKey: "Enter a continuation key or expression." };
+}
+
+export function summarizeTriggerEvent(value: TriggerFormValue | null, event: string): string {
+  if (value?.event === "schedule.tick")
+    return recurrenceSummary(value.recurrence ?? DEFAULT_RECURRENCE);
+  return isEditorEvent(event) ? eventDefinition(event).label : event;
 }

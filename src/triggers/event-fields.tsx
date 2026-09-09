@@ -1,41 +1,46 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- qualifier controls bind the definition and value rendered beside them */
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- event controls bind their own configuration */
 import { FormField } from "../components/app/form-field.js";
-import {
-  eventDefinition,
-  type EditorEvent,
-  type QualifierKey,
-  type QualifierValues,
-} from "./configuration/events.js";
-import type { TriggerFieldErrors } from "./configuration/editor.js";
+import { eventDefinition, type QualifierKey } from "./configuration/events.js";
+import type { TriggerFieldErrors, TriggerFormValue } from "./configuration/editor.js";
+import { ScheduleFields } from "./schedule/fields.js";
 
-/** Event definitions provide the fields; this component only renders their controls. */
+/** Source-specific controls live behind the event form boundary. */
 export function EventFields({
-  event,
-  values,
+  value,
   errors,
   onChange,
 }: {
-  event: EditorEvent;
-  values: QualifierValues;
+  value: TriggerFormValue;
   errors: TriggerFieldErrors;
-  onChange: (values: QualifierValues) => void;
+  onChange: (value: TriggerFormValue) => void;
 }) {
-  const update = (key: QualifierKey, value: string) => onChange({ ...values, [key]: value });
-  return eventDefinition(event).qualifiers.map((qualifier) => {
-    const error = errors[`qualifiers.${qualifier.key}`];
-    return (
-      <FormField
-        key={qualifier.key}
-        id={`trigger-qualifier-${qualifier.key}`}
-        name={qualifier.key}
-        label={qualifier.label}
-        description={qualifier.description}
-        kind="text"
-        value={values[qualifier.key] ?? ""}
-        onChange={(next) => update(qualifier.key, next)}
-        required={qualifier.required}
-        {...(error === undefined ? {} : { error })}
+  const updateQualifier = (key: QualifierKey, next: string) =>
+    onChange({ ...value, qualifiers: { ...value.qualifiers, [key]: next } });
+  return (
+    <>
+      <ScheduleFields
+        event={value.event}
+        value={value.recurrence}
+        error={errors.recurrence}
+        onChange={(recurrence) => onChange({ ...value, recurrence })}
       />
-    );
-  });
+      {eventDefinition(value.event).qualifiers.map((qualifier) => {
+        const error = errors[`qualifiers.${qualifier.key}`];
+        return (
+          <FormField
+            key={qualifier.key}
+            id={`trigger-qualifier-${qualifier.key}`}
+            name={qualifier.key}
+            label={qualifier.label}
+            description={qualifier.description}
+            kind="text"
+            value={value.qualifiers[qualifier.key] ?? ""}
+            onChange={(next) => updateQualifier(qualifier.key, next)}
+            required={qualifier.required}
+            {...(error === undefined ? {} : { error })}
+          />
+        );
+      })}
+    </>
+  );
 }

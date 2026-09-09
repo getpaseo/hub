@@ -137,6 +137,12 @@ event-native `reply` tool for progress and final responses. Provider or machine 
 controls every unrelated tool. A read-only provider configuration is defense in depth; Hub output
 authorization remains enforced by the execution MCP server.
 
+## Scheduled triggers
+
+Choose Schedule in the trigger editor to run agents daily or on selected weekdays, at one or more
+local times. See [scheduled triggers](docs/scheduled-triggers.md) for setup, YAML, timezone rules,
+and recovery behavior.
+
 ## Public API
 
 Each Hub serves a self-hosted API reference at `/api/reference` and its generated OpenAPI 3.1 contract at `/api/openapi.json`. The short [public API guide](docs/public-api.md) covers CLI login, versioning, credential scopes, and request correlation.

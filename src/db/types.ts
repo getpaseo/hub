@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -1072,6 +1072,7 @@ export interface MigrateProjectTriggersInput {
 }
 
 export interface SaveOrganizationTriggerInput {
+  recurrence?: import("../triggers/schedule/recurrence.js").Recurrence;
   organizationId: string;
   triggerId?: string;
   name: string;
@@ -1149,6 +1150,7 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
   findAgentSession(
     id: string,
   ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
@@ -1186,7 +1188,12 @@ export interface Database {
   findAgentExecutionByWorkflowStepRunId(
     stepRunId: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  claimWorkflowWakeup(now: Date, leaseMs: number): Promise<WorkflowWakeupRecord | undefined>;
+  releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date): Promise<void>;
+  claimWorkflowWakeup(
+    now: Date,
+    leaseMs: number,
+    excludedRunIds?: readonly string[],
+  ): Promise<WorkflowWakeupRecord | undefined>;
   wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
   deleteWorkflowWakeup(triggerRunId: string): Promise<void>;
   createWorkflowStepExecution(input: WorkflowStepExecutionInput): Promise<{
