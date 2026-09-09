@@ -24,10 +24,10 @@ const PROJECT_SLUG = "default";
 const PersistedDaemonAgentSchema = z.object({
   id: z.string(),
   lastStatus: z.enum(["error", "initializing", "idle", "running", "closed"]),
-  owner: z.object({
-    kind: z.literal("daemon"),
-    daemonId: z.string(),
-    executionId: z.string(),
+  config: z.object({
+    mcpServers: z
+      .record(z.string(), z.object({ url: z.string().optional() }).passthrough())
+      .optional(),
   }),
 });
 const CanonicalToolCallSchema = z
@@ -346,7 +346,9 @@ export class HubE2E {
     return requiredString(result, "agentId");
   }
 
-  async installProductionConfiguration(): Promise<void> {
+  async installProductionConfiguration(
+    prompt = "Deploy requested for phase-five-operator",
+  ): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
@@ -372,7 +374,7 @@ export class HubE2E {
       "        auto_archive: true",
       "        agent:",
       "          provider: hub-e2e",
-      '        prompt: [{ text: "Deploy requested for phase-five-operator" }] ',
+      `        prompt: [{ text: ${JSON.stringify(prompt)} }]`,
       "        allow_outputs:",
       "          - type: hub.e2e",
       "  - name: e2e-discord",
@@ -915,7 +917,7 @@ export class HubE2E {
 
   async sessionEvidence(executionId: string) {
     const result = await this.requirePool().query<{
-      data: { agentId: string; workspaceId: string };
+      data: { agentId: string; workspaceId: string; daemonId: string };
     }>(
       `select s.data from agent_sessions s join agent_executions e on e.agent_session_id = s.id where e.id = $1`,
       [executionId],
@@ -1011,15 +1013,6 @@ export class HubE2E {
     void this.waitForManualRun(dispatch).catch(() => undefined);
     await this.requireProxy().createResponseWasDropped();
     const executionId = await this.executionForManualRun(dispatch.providerEventReceiptId);
-    await this.observe(
-      async () => this.outputIsPersisted(executionId),
-      "ambiguous agent output to persist before Hub restart",
-    );
-    await this.observe(
-      async () =>
-        (await this.manualRunEvidence(dispatch.providerEventReceiptId)).status === "running",
-      "ambiguous execution to enter running state before Hub restart",
-    );
     return {
       providerEventReceiptId: dispatch.providerEventReceiptId,
       executionId,
@@ -1085,10 +1078,6 @@ export class HubE2E {
     );
     await this.daemonIsConnected();
     await this.observe(async () => {
-      const creation = proxy.creation(executionId);
-      return proxy.createAttempts(executionId) > createsBefore && creation.status === "closed";
-    }, "restarted daemon idempotent create with closed current state");
-    await this.observe(async () => {
       const execution = await this.requirePool().query<{ status: string }>(
         "select status from agent_executions where id = $1",
         [executionId],
@@ -1114,14 +1103,14 @@ export class HubE2E {
     return {
       persistedDaemonAgents: persistedAgents.length,
       executionAgentId: row.daemon_agent_id,
-      ownerAgentId: persistedAgent.id,
-      ownerDaemonId: persistedAgent.owner.daemonId,
+      persistedAgentId: persistedAgent.id,
+      sessionDaemonId: (await this.sessionEvidence(executionId)).daemonId,
       associationDaemonId: row.daemon_id,
       createAttempts: proxy.createAttempts(executionId),
       promptAttempts: prompts.filter((prompt) => prompt["executionId"] === executionId).length,
       recoveryCreateAttempts: proxy.createAttempts(executionId) - createsBefore,
       statusImmediatelyBeforeRestart: beforeRestart.lastStatus,
-      recoveredStatusAfterRestart: proxy.creation(executionId).status,
+      recoveredStatusAfterRestart: persistedAgent.lastStatus,
       executionStatus: row.status,
       executionResult: row.result,
     };
@@ -1148,9 +1137,11 @@ export class HubE2E {
       deliveryReceipts: delivery.receipts,
       executions: delivery.executions,
       persistedDaemonAgents: persistedAgents.length,
-      ownerMatchingAgentId: persistedAgent.id,
-      ownerDaemonId: persistedAgent.owner.daemonId,
-      ownerMatchesAssociation: persistedAgent.owner.daemonId === row.daemon_id,
+      persistedAgentId: persistedAgent.id,
+      sessionDaemonId: (await this.sessionEvidence(executionId)).daemonId,
+      sessionMatchesAssociation:
+        (await this.sessionEvidence(executionId)).daemonId === row.daemon_id &&
+        (await this.sessionEvidence(executionId)).agentId === row.daemon_agent_id,
       executionAgentId: row.daemon_agent_id,
       persistedAssociations: association.rows[0]?.count ?? 0,
       createAttempts: this.requireProxy().createAttempts(executionId),
@@ -1202,7 +1193,9 @@ export class HubE2E {
         }),
     );
     return records.filter(
-      (record) => record?.owner.executionId === executionId && record.owner.kind === "daemon",
+      (record) =>
+        record !== undefined &&
+        record.config.mcpServers?.["hub"]?.url?.endsWith(`/agent-executions/${executionId}/mcp`),
     );
   }
 

@@ -1,13 +1,8 @@
-import { DaemonAgents } from "./agents/index.js";
+import type { AgentConnection } from "./agents/index.js";
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import type {
-  DaemonExecutionControlOptions,
-  DaemonEventHandler,
-  DaemonEvent,
-  DaemonConnection,
-} from "./protocol.js";
+import type { DaemonEvent, DaemonConnection } from "./protocol.js";
 import {
   createDaemonDispatchLifecycle,
   DaemonDispatchFailure,
@@ -258,6 +253,25 @@ async function acknowledgementFixture() {
     outputContext: {},
     configurationRevisionId: "revision-ack-test",
   });
+  await database.saveAgentSession({
+    id: "session",
+    organizationId: "org-ack-test",
+    projectId: "project-ack-test",
+    continuationKey: null,
+    daemonId: DAEMON_ID,
+    agentId: AGENT_ID,
+    workspaceId: "workspace",
+    compatibility: "test",
+    capabilityTokenHash: "test",
+    tools: [],
+    creationOptions: {
+      provider: "codex",
+      cwd: "/workspace",
+      env: {},
+      toolPolicy: { preapproved: [] },
+    },
+  });
+  await database.attachExecutionToSession(EXECUTION_ID, "session");
   await database.attachAgentToExecution(EXECUTION_ID, DAEMON_ID, AGENT_ID);
   await database.transitionAgentExecution(EXECUTION_ID, "succeeded", {
     completedByAgent: true,
@@ -277,24 +291,51 @@ function createLifecycle(
 ): DaemonDispatchLifecycle {
   return createDaemonDispatchLifecycle({
     database,
+    publicBaseUrl: "http://hub.test",
+    completionTokenSecret: "test-secret",
     connectionForDaemon: (daemonId) => (daemonId === DAEMON_ID ? connection : undefined),
   });
 }
 
 class AcknowledgementConnection implements DaemonConnection {
-  readonly agents = new DaemonAgents(() => {
-    throw new Error("Native agents are not used by this legacy fixture");
-  });
-  readonly actions: DaemonExecutionControlOptions["action"][] = [];
-  private readonly handlers = new Set<DaemonEventHandler>();
+  readonly agents: AgentConnection = {
+    create: async () => {
+      throw new Error("not used");
+    },
+    get: async () => {
+      throw new Error("not used");
+    },
+    send: async () => {
+      throw new Error("not used");
+    },
+    restore: async () => {
+      throw new Error("not used");
+    },
+    control: async (_agentId, _workspaceId, action) => {
+      this.actions.push(action);
+    },
+    watch: async (_agentId, listener) =>
+      this.on((event) => {
+        if (event.type === "agent_stream") listener(event);
+        else
+          listener({
+            type: "agent_update",
+            agent: { id: event.agentId, workspaceId: "workspace", status: event.agent.status },
+            timestamp: event.timestamp,
+          });
+      }),
+  };
+  readonly actions: Array<"interrupt" | "archive"> = [];
+  private readonly handlers = new Set<(event: DaemonEvent) => void | Promise<void>>();
 
-  on(handler: DaemonEventHandler): () => void {
+  on(handler: (event: DaemonEvent) => void | Promise<void>): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
   }
 
   async emit(event: DaemonEvent): Promise<void> {
     for (const handler of this.handlers) await handler(event);
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   async emitObserved(event: DaemonEvent): Promise<void> {
@@ -313,10 +354,6 @@ class AcknowledgementConnection implements DaemonConnection {
 
   async refreshProviderSnapshot(): Promise<never> {
     throw new Error("not used");
-  }
-
-  async controlExecution(options: DaemonExecutionControlOptions): Promise<void> {
-    this.actions.push(options.action);
   }
 }
 

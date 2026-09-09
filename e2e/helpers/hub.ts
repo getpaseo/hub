@@ -5363,7 +5363,7 @@ class ContractDaemon {
       headers: {
         authorization: `Bearer ${this.credential}`,
         "x-paseo-daemon-id": this.daemonId,
-        ...(this.providerCatalog ? { "x-paseo-session-protocol": "1" } : {}),
+        "x-paseo-session-protocol": "1",
       },
     });
     socket.on("message", (data) => this.acceptExecution(data));
@@ -5422,29 +5422,50 @@ class ContractDaemon {
     const envelope = ExecutionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
-    const capability = request.mcpServers?.["hub"];
-    if (capability !== undefined) {
-      this.executionCapabilities.set(request.executionId, capability);
+    if (request.type === "create_agent_request") {
+      const capability = request.config.mcpServers["hub"];
+      if (!capability) throw new Error("Hub execution capability is missing");
+      const executionId = new URL(capability.url).pathname.split("/")[2];
+      if (!executionId) throw new Error("Hub execution ID is missing");
+      this.executionCapabilities.set(executionId, capability);
+      this.sendAgentResponse("status", {
+        requestId: request.requestId,
+        status: "agent_created",
+        agentId: `agent-${executionId}`,
+        agent: this.agentSnapshot(`agent-${executionId}`),
+      });
+      return;
     }
-    this.executionCreateEvents.get(request.executionId)?.resolve();
-    this.executionCreateEvents.delete(request.executionId);
-    this.socket?.send(
-      JSON.stringify({
-        type: "session",
-        message: {
-          type: "hub.execution.agent.create.response",
-          payload: {
-            requestId: request.requestId,
-            executionId: request.executionId,
-            agentId: `agent-${request.executionId}`,
-            agent: { id: `agent-${request.executionId}`, status: "running" },
-            success: true,
-            toolPolicyApplied: true,
-            error: null,
-          },
-        },
-      }),
-    );
+    if (request.type === "fetch_agent_request") {
+      this.sendAgentResponse("fetch_agent_response", {
+        requestId: request.requestId,
+        agent: this.agentSnapshot(request.agentId),
+      });
+      return;
+    }
+    if (request.type === "send_agent_message_request") {
+      const executionId = request.agentId.slice("agent-".length);
+      this.sendAgentResponse("send_agent_message_response", {
+        requestId: request.requestId,
+        accepted: true,
+      });
+      this.executionCreateEvents.get(executionId)?.resolve();
+      this.executionCreateEvents.delete(executionId);
+      return;
+    }
+    const responseType =
+      request.type === "agent.timeline.set_subscription.request"
+        ? "agent.timeline.set_subscription.response"
+        : request.type.replace("_request", "_response");
+    this.sendAgentResponse(responseType, { requestId: request.requestId });
+  }
+
+  private agentSnapshot(agentId: string) {
+    return { id: agentId, workspaceId: `workspace-${agentId}`, status: "idle" };
+  }
+
+  private sendAgentResponse(type: string, payload: Record<string, unknown>): void {
+    this.socket?.send(JSON.stringify({ type: "session", message: { type, payload } }));
   }
 
   private acceptHello(value: unknown): boolean {
@@ -5459,7 +5480,7 @@ class ContractDaemon {
             status: "server_info",
             serverId: `browser-${this.daemonId}`,
             permissions: ["hub.execute"],
-            features: { providersSnapshot: true },
+            features: { providersSnapshot: true, hubAgentRpc: true, agentRequestReceipts: true },
           },
         },
       }),
@@ -5812,22 +5833,41 @@ const WEBHOOK_SOURCE_CONTRACTS: readonly HttpContract[] = [
 
 const ExecutionRequestSchema = z.object({
   type: z.literal("session"),
-  message: z.object({
-    type: z.literal("hub.execution.agent.create.request"),
-    requestId: z.string(),
-    executionId: z.string(),
-    env: z.record(z.string(), z.string()).optional(),
-    mcpServers: z
-      .record(
-        z.string(),
-        z.object({
-          type: z.literal("http"),
-          url: z.string().url(),
-          headers: z.record(z.string(), z.string()).default({}),
-        }),
-      )
-      .optional(),
-  }),
+  message: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("create_agent_request"),
+      requestId: z.string(),
+      config: z.object({
+        mcpServers: z.record(
+          z.string(),
+          z.object({
+            type: z.literal("http"),
+            url: z.string().url(),
+            headers: z.record(z.string(), z.string()).default({}),
+          }),
+        ),
+      }),
+    }),
+    z.object({
+      type: z.literal("fetch_agent_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+    }),
+    z.object({
+      type: z.literal("send_agent_message_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+    }),
+    z.object({
+      type: z.enum([
+        "fetch_agents_request",
+        "agent.timeline.set_subscription.request",
+        "cancel_agent_request",
+        "archive_workspace_request",
+      ]),
+      requestId: z.string(),
+    }),
+  ]),
 });
 
 function exact(

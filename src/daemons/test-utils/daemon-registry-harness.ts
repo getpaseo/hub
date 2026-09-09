@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
+import type { AgentSnapshot } from "../agents/index.js";
 import type { Logger } from "pino";
 import type { DaemonRecord } from "../../db/types.js";
-import type { HubExecutionAgentSnapshot } from "../../hub/protocol.js";
-import type {
-  DaemonAgentSnapshot,
-  DaemonConnection,
-  DaemonEvent,
-  DaemonEventHandler,
-} from "../protocol.js";
+import type { DaemonConnection } from "../protocol.js";
 import { ActiveDaemonRegistry } from "../registry.js";
 
 const SessionRequestSchema = z.object({
@@ -56,14 +51,12 @@ export class DaemonRegistryHarness {
     return harness;
   }
 
-  async pendingCreate(executionId: string): Promise<PendingRequest<DaemonAgentSnapshot>> {
+  async pendingCreate(executionId: string): Promise<PendingRequest<AgentSnapshot>> {
     const connection = this.connection();
-    const promise = connection.createAgent({
-      executionId,
+    const promise = connection.agents.create(executionId, {
       provider: "opencode",
       mode: "full-access",
       cwd: "/workspace",
-      prompt: "Do the work",
       env: {},
       providerOptions: { permission: { edit: "ask", bash: "deny" } },
       toolPolicy: {
@@ -73,7 +66,7 @@ export class DaemonRegistryHarness {
     void promise.catch(() => undefined);
     return {
       promise,
-      request: await this.currentSocket().next("hub.execution.agent.create.request"),
+      request: await this.currentSocket().next("create_agent_request"),
     };
   }
 
@@ -81,11 +74,17 @@ export class DaemonRegistryHarness {
     executionId: string,
     action: "interrupt" | "archive",
   ): Promise<PendingRequest<void>> {
-    const promise = this.connection().controlExecution({ executionId, action });
+    const promise = this.connection().agents.control(
+      `agent-${executionId}`,
+      `workspace-${executionId}`,
+      action,
+    );
     void promise.catch(() => undefined);
     return {
       promise,
-      request: await this.currentSocket().next("hub.execution.control.request"),
+      request: await this.currentSocket().next(
+        action === "archive" ? "archive_workspace_request" : "cancel_agent_request",
+      ),
     };
   }
 
@@ -176,16 +175,14 @@ export class DaemonRegistryHarness {
     });
   }
 
-  respondControl(
-    pending: PendingRequest<void>,
-    overrides: { executionId?: string; action?: "interrupt" | "archive" } = {},
-  ): void {
+  respondControl(pending: PendingRequest<void>, overrides: { requestId?: string } = {}): void {
     this.currentSocket().send({
-      type: "hub.execution.control.response",
+      type:
+        pending.request.type === "archive_workspace_request"
+          ? "archive_workspace_response"
+          : "cancel_agent_response",
       payload: {
-        requestId: pending.request.requestId,
-        executionId: overrides.executionId ?? pending.request.executionId,
-        action: overrides.action ?? pending.request.action,
+        requestId: overrides.requestId ?? pending.request.requestId,
         success: true,
         error: null,
       },
@@ -257,10 +254,6 @@ export class DaemonRegistryHarness {
     return this.registry.onConnected(handler);
   }
 
-  subscribe(handler: DaemonEventHandler): () => void {
-    return this.connection().on(handler);
-  }
-
   failOfflinePresence(error: Error): void {
     this.presence.failNext(error);
   }
@@ -284,55 +277,17 @@ export class DaemonRegistryHarness {
     return this.currentSocket().waitUntilClosed();
   }
 
-  async completeCreate(executionId: string, agentId: string): Promise<DaemonAgentSnapshot> {
+  async completeCreate(executionId: string, agentId: string): Promise<AgentSnapshot> {
     const pending = await this.pendingCreate(executionId);
     this.currentSocket().send({
-      type: "hub.execution.agent.create.response",
+      type: "status",
       payload: {
+        status: "agent_created",
         requestId: pending.request.requestId,
-        executionId,
-        agentId,
-        agent: null,
-        success: true,
-        toolPolicyApplied: true,
-        error: null,
+        agent: { id: agentId, workspaceId: `workspace-${agentId}`, status: "idle" },
       },
     });
     return pending.promise;
-  }
-
-  async completeCreateWithoutContract(executionId: string): Promise<DaemonAgentSnapshot> {
-    const pending = await this.pendingCreate(executionId);
-    this.currentSocket().send({
-      type: "hub.execution.agent.create.response",
-      payload: {
-        requestId: pending.request.requestId,
-        executionId,
-        agentId: `agent-${executionId}`,
-        agent: null,
-        success: true,
-        error: null,
-      },
-    });
-    return pending.promise;
-  }
-
-  async reportAgentStatus(
-    executionId: string,
-    status: HubExecutionAgentSnapshot["status"],
-  ): Promise<DaemonEvent> {
-    const event = new Promise<DaemonEvent>((resolve) => {
-      const unsubscribe = this.connection().on((value) => {
-        unsubscribe();
-        resolve(value);
-      });
-    });
-    const agentId = `agent-${executionId}`;
-    this.currentSocket().send({
-      type: "hub.execution.agent.update",
-      payload: { executionId, agentId, agent: agentSnapshot(agentId, status) },
-    });
-    return event;
   }
 
   async stop(): Promise<void> {
@@ -487,7 +442,7 @@ class RegistrySocket {
         status: "server_info",
         serverId: "test-daemon",
         permissions,
-        features: { providersSnapshot: true },
+        features: { providersSnapshot: true, hubAgentRpc: true, agentRequestReceipts: true },
       },
     });
   }
@@ -553,37 +508,6 @@ function daemonRecord(): DaemonRecord {
     disconnectedAt: null,
     lastSeenAt: now,
     createdAt: now,
-  };
-}
-
-function agentSnapshot(
-  id: string,
-  status: HubExecutionAgentSnapshot["status"],
-): HubExecutionAgentSnapshot {
-  const timestamp = "2026-01-01T00:00:00.000Z";
-  return {
-    id,
-    provider: "opencode",
-    cwd: "/workspace",
-    model: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    lastUserMessageAt: null,
-    status,
-    capabilities: {
-      supportsStreaming: true,
-      supportsSessionPersistence: true,
-      supportsDynamicModes: true,
-      supportsMcpServers: true,
-      supportsReasoningStream: true,
-      supportsToolInvocations: true,
-    },
-    currentModeId: null,
-    availableModes: [],
-    pendingPermissions: [],
-    persistence: null,
-    title: null,
-    labels: {},
   };
 }
 

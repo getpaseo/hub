@@ -72,9 +72,10 @@ async function fixture() {
       (await database.transitionAgentExecution(executionId, "succeeded")).execution,
   });
   async function arrival(
-    key: string | null = "conversation",
+    key: string | null | false = "conversation",
     target = "daemon",
     env: Record<string, string> = {},
+    prompt = "hello",
   ) {
     const executionId = randomUUID();
     const intent: LaunchMachineIntent = {
@@ -86,7 +87,7 @@ async function fixture() {
       environmentName: "target",
       environment: { kind: "daemon", daemonId: target, authoredSlug: target, cwd: "/repo" },
       agent: { provider: "codex" },
-      prompt: "hello",
+      prompt,
       env,
       allowOutputs: [{ type: "test.reply", max: 1 }],
       autoArchive: true,
@@ -94,7 +95,7 @@ async function fixture() {
       outputContext: { arrival: executionId },
       configurationRevisionId: randomUUID(),
       hubConfig: {},
-      continuation: { key, compatibility: { target } },
+      ...(key === false ? {} : { continuation: { key, compatibility: { target } } }),
     };
     await database.insertAgentExecution({
       id: executionId,
@@ -115,10 +116,8 @@ async function fixture() {
           connection,
           onEvent: () => {},
           createOptions: async () => ({
-            executionId,
             provider: "codex",
             cwd: "/repo",
-            prompt: "hello",
             env: {},
             toolPolicy: { preapproved: [] },
           }),
@@ -220,6 +219,23 @@ test("new-agent policy isolates arrivals and incompatible targets fail without r
   const changed = await f.arrival("conversation", "different-daemon");
   await expect(changed.dispatch()).rejects.toThrow("Continuation settings differ");
   expect(f.connection.creates).toHaveLength(3);
+});
+
+test("ordinary launches use agent sessions and preserve long prompts without enabling continuation", async () => {
+  const f = await fixture();
+  const prompt = "Investigate this request.\n" + "Full request context. ".repeat(1_000);
+  const first = await f.arrival(false, "daemon", {}, prompt);
+  const second = await f.arrival(false, "daemon", {}, prompt);
+  const a = await first.dispatch();
+  const replay = await first.dispatch();
+  const b = await second.dispatch();
+  expect(replay.agentId).toBe(a.agentId);
+  expect(b.agentId).not.toBe(a.agentId);
+  expect(f.connection.creates).toHaveLength(2);
+  expect(f.connection.deliveries).toEqual([
+    { agentId: a.agentId, text: prompt },
+    { agentId: b.agentId, text: prompt },
+  ]);
 });
 
 test("temporary environment credentials require a new agent instead of being reused", async () => {
