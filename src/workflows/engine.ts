@@ -957,6 +957,7 @@ function buildStepIntent(
       allowOutputs: step.allowOutputs,
       timeoutMs: step.maxRuntimeMs,
       idleTimeoutMs: step.idleTimeoutMs,
+      ...(step.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: step.startupTimeoutMs }),
       autoArchive: step.autoArchive,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,

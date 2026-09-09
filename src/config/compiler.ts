@@ -168,6 +168,7 @@ const StepSchema = z
     environment: z.string().min(1),
     max_runtime: z.string().min(1),
     idle_timeout: z.string().min(1),
+    startup_timeout: z.string().min(1).optional(),
     agent: AuthoredAgentSelectionSchema,
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
@@ -243,6 +244,7 @@ export interface CompiledStep {
   environment: string;
   maxRuntimeMs: number;
   idleTimeoutMs: number;
+  startupTimeoutMs?: number | undefined;
   agent: CompiledAgentSelection;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
@@ -391,6 +393,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     environment: z.string().min(1),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
     idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
+    startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
     agent: CompiledAgentSelectionSchema,
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
@@ -591,6 +594,16 @@ function compileStep(
     environment: step.environment,
     maxRuntimeMs,
     idleTimeoutMs,
+    ...(step.startup_timeout === undefined
+      ? {}
+      : {
+          startupTimeoutMs: compileAt([...stepPath, "startup_timeout"], () =>
+            parseDurationMs(
+              step.startup_timeout!,
+              `trigger ${trigger.name} step ${step.id} startup_timeout`,
+            ),
+          ),
+        }),
     agent,
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),

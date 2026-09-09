@@ -56,6 +56,14 @@ function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
 }
 
 describe("workflow compiler", () => {
+  it("preserves an authored startup timeout in stored compiled configurations", () => {
+    const authored = configuration();
+    Reflect.set(authored.triggers[0]!.steps[0]!, "startup_timeout", "3m");
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.steps[0]?.startupTimeoutMs, 180_000);
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
   it.each([
     "paseo.event.github.delivery_id",
     "paseo.prompt",

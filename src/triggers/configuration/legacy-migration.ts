@@ -155,6 +155,9 @@ function singleRunDocument(
         .join("\n"),
       max_runtime: duration(step.maxRuntimeMs),
       idle_timeout: duration(step.idleTimeoutMs),
+      ...(step.startupTimeoutMs === undefined
+        ? {}
+        : { startup_timeout: duration(step.startupTimeoutMs) }),
       ...(step.env === undefined ? {} : { env: { ...step.env } }),
       ...(step.github === undefined
         ? {}

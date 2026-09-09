@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { DaemonAgents } from "./index.js";
 import { DaemonResponseLostError, type DaemonCreateAgentOptions } from "../protocol.js";
 
@@ -81,3 +81,55 @@ function enable(agents: DaemonAgents): void {
     },
   });
 }
+
+test.each(["create", "restore", "send"] as const)(
+  "%s honors the supplied startup wait without changing the RPC",
+  async (operation) => {
+    vi.useFakeTimers();
+    let respond: (() => void) | undefined;
+    const agents = new DaemonAgents((frame) => {
+      const { message } = z
+        .object({ message: z.record(z.string(), z.unknown()) })
+        .parse(JSON.parse(frame));
+      const reply = () =>
+        agents.receive({
+          type: "session",
+          message: {
+            type: "response",
+            payload: {
+              requestId: message["requestId"],
+              state: { kind: "recoverable" },
+              accepted: true,
+              agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+            },
+          },
+        });
+      if (message["type"] === "workspace.recovery.inspect.request") reply();
+      else respond = reply;
+      expect(message).not.toHaveProperty("timeoutMs");
+    });
+    try {
+      enable(agents);
+      const start = () => {
+        if (operation === "create") return agents.create("key", options, 180_000);
+        if (operation === "restore") return agents.restore("workspace", 180_000);
+        return agents.send("agent", "message-key", "hello", 180_000);
+      };
+      const outcome = start().then(
+        () => "accepted",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(150_000);
+      expect(respond).toBeDefined();
+      respond!();
+      expect(await outcome).toBe("accepted");
+
+      const expired = start().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(await expired).toBeInstanceOf(DaemonResponseLostError);
+    } finally {
+      agents.close();
+      vi.useRealTimers();
+    }
+  },
+);

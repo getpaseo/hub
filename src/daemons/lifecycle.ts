@@ -21,7 +21,10 @@ import type {
   WorkflowDeadlineKind,
   WorkflowAgentCompletionInput,
 } from "../db/types.js";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import {
+  DEFAULT_STARTUP_TIMEOUT_MS,
+  type LaunchMachineIntent,
+} from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
 import type { TriggerProvider } from "../triggers/index.js";
@@ -1479,7 +1482,10 @@ export class DaemonDispatchLifecycle {
     let canceled = false;
     const timeoutMs = Math.max(
       0,
-      Math.min(this.dispatchTimeoutMs, deadlineAt.getTime() - this.now()),
+      Math.min(
+        input.intent.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
+        deadlineAt.getTime() - this.now(),
+      ),
     );
     try {
       return await withDispatchTimeout(

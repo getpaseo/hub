@@ -67,6 +67,29 @@ run:
 `;
 
 describe("self-contained trigger documents", () => {
+  it("compiles and preserves a configurable startup timeout", () => {
+    const yaml = trigger.replace("  max_runtime: 90m", "  max_runtime: 90m\n  startup_timeout: 3m");
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.events[0]?.steps[0]?.startupTimeoutMs, 180_000);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.startup_timeout,
+      "3m",
+    );
+  });
+
+  it.each(["0s", "25h", "invalid"])("rejects invalid startup timeout %s", (duration) => {
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          trigger.replace(
+            "  max_runtime: 90m",
+            `  max_runtime: 90m\n  startup_timeout: ${duration}`,
+          ),
+        ),
+      /startup_timeout/,
+    );
+  });
+
   it("compiles every input event to one launch against the inline target and agent choices", () => {
     const compiled = compileTriggerDocument(trigger);
 
