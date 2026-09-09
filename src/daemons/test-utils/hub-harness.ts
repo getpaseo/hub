@@ -1765,13 +1765,16 @@ export class HubHarness {
 
   private createExecutionAuthority(): ExecutionAuthority {
     return createExecutionAuthority({
+      database: this.requireDatabase(),
       connectionsForProject: () => async (connectionSlug, value, context) => {
         if (connectionSlug !== "some-connection" || value !== "token") {
           throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
         }
         if (this.issueAuthorityConnectionLease) {
-          await context?.registerToken?.("durable-connection-token", async () => {
-            this.authorityRevocations.push("durable-connection-token");
+          await context?.registerToken?.({
+            provider: "github",
+            token: "durable-connection-token",
+            expiresAt: Date.now() + 60 * 60_000,
           });
         }
         return "resolved-secret";

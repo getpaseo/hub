@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
 import { z } from "zod";
 import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
@@ -144,8 +146,35 @@ async function main(): Promise<void> {
   });
   await configuration.activate(config.id);
   const resources = new OrganizationResources(database);
+  const executionAuthority = createExecutionAuthority({
+    database,
+    connectionsForProject: () => async () => {
+      throw new Error("Unexpected E2E connection value");
+    },
+    isExecutionActive: async (id) => {
+      const execution = await database.findAgentExecutionById(id);
+      return execution?.status === "running" || execution?.status === "spawning";
+    },
+    githubAuthority: {
+      mint: async () => {
+        const token = randomUUID();
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "mint", token })}\n`,
+        );
+        return { token, expiresAt: Date.now() + 3600_000, botUserId: 123, botLogin: "paseo[bot]" };
+      },
+      revoke: async (token) => {
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "revoke", token })}\n`,
+        );
+      },
+    },
+  });
   const application = createHubApplication({
     database,
+    executionAuthority,
     entitlements: entitlements.service,
     publicApi:
       auth.publicCredentials === undefined

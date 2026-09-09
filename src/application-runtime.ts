@@ -420,6 +420,7 @@ function createRuntimeExecutionAuthority(
     (integration) => integration.githubAuthority !== undefined,
   )?.githubAuthority;
   return createExecutionAuthority({
+    database,
     connectionsForProject,
     ...(githubAuthority === undefined ? {} : { githubAuthority }),
     isExecutionActive: async (executionId) => {

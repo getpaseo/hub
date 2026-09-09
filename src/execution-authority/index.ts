@@ -1,32 +1,41 @@
+import { randomUUID } from "node:crypto";
+import type { Logger } from "pino";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import {
   parseConnectionTemplate,
   resolveConnectionTemplate,
 } from "../config/connection-template.js";
-import type { ConnectionResolver } from "../config/connections.js";
+import type {
+  ConnectionResolver,
+  ConnectionResolutionContext,
+  ConnectionTokenLease,
+} from "../config/connections.js";
+import type { Database } from "../db/types.js";
 import type { GitHubAuthorityRegistration } from "../providers/registration.js";
-import { reportFailure, type FailureContext, type ReportOptions } from "../failures/index.js";
-import type { Logger } from "pino";
+import { reportFailure } from "../failures/index.js";
+import type { ExecutionCredentialLease } from "./internal/store.js";
+export { ExecutionAuthorityRepository } from "./internal/store.js";
+export type {
+  ExecutionAuthorityStore,
+  ExecutionAuthorityRecord,
+  ExecutionCredentialLease,
+} from "./internal/store.js";
 
 const TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
 const REVOCATION_RETRY_BASE_DELAY_MS = 1_000;
-const REVOCATION_RETRY_WINDOW_MS = 60 * 60 * 1_000;
-const SHUTDOWN_GRACE_MS = 10_000;
 
 export interface ExecutionAuthorityClock {
   now(): number;
   schedule(callback: () => Promise<void>, delayMs: number, options?: { ref?: boolean }): () => void;
 }
-
 const systemClock: ExecutionAuthorityClock = {
   now: Date.now,
-  schedule(callback, delayMs, options) {
+  schedule(callback, delayMs) {
     const timer = setTimeout(() => void callback(), delayMs);
-    if (options?.ref !== true) timer.unref();
+    timer.unref();
     return () => clearTimeout(timer);
   },
 };
-
 export interface ExecutionAuthorityMaterialization {
   executionId: string;
   projectId: string;
@@ -34,37 +43,24 @@ export interface ExecutionAuthorityMaterialization {
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
 }
-
 export interface MaterializedExecutionAuthority {
   env: Record<string, string>;
 }
-
 export interface ExecutionAuthority {
   materialize(input: ExecutionAuthorityMaterialization): Promise<MaterializedExecutionAuthority>;
-  canResume(input: ExecutionAuthorityMaterialization): boolean;
+  canResume(input: ExecutionAuthorityMaterialization): Promise<boolean>;
+  recover(): Promise<void>;
   onExecutionTerminal(executionId: string): Promise<void>;
   resourceCounts(): ExecutionAuthorityResourceCounts;
-  stop(): Promise<ExecutionAuthorityStopResult>;
+  stop(): Promise<void>;
 }
-
 export interface ExecutionAuthorityResourceCounts {
   executionStates: number;
   leases: number;
   pendingMaterializations: number;
 }
-
-export interface ExecutionAuthorityResidualExposure {
-  executionId: string;
-  leaseCount: number;
-  pendingMaterializations: number;
-  earliestUpstreamExpiresAt?: number;
-}
-
-export interface ExecutionAuthorityStopResult {
-  residualExposures: ExecutionAuthorityResidualExposure[];
-}
-
 export interface CreateExecutionAuthorityOptions {
+  database: Pick<Database, "executionAuthority" | "withAdvisoryLock">;
   connectionsForProject: (projectId: string) => ConnectionResolver;
   githubAuthority?: GitHubAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
@@ -72,511 +68,333 @@ export interface CreateExecutionAuthorityOptions {
   logger?: Pick<Logger, "warn" | "error">;
 }
 
-interface TokenLease {
-  token: string;
-  revoke: () => Promise<void>;
-  cancelLeaseDeadline: () => void;
-  cancelUpstreamExpiry: () => void;
-  cancelRetry: () => void;
-  upstreamExpiresAt?: number;
-  retryUntil?: number;
-  revocationAttempts: number;
-  revocationPromise?: Promise<void>;
-  retryScheduled: boolean;
-}
-
-interface ExecutionState {
-  pendingMaterializations: number;
-  terminal: boolean;
-  leases: Map<string, TokenLease>;
-  pendingWaiters: Set<() => void>;
-  leaseWaiters: Set<() => void>;
-}
-
-interface TerminalCleanup {
-  cancel(): void;
-  promise: Promise<void>;
-}
-
+/** Owns issuance, durable lease recovery, and revocation independently of Hub process lifetime. */
 export function createExecutionAuthority(
   options: CreateExecutionAuthorityOptions,
 ): ExecutionAuthority {
   const clock = options.clock ?? systemClock;
-  const states = new Map<string, ExecutionState>();
-  const terminalCleanups = new Map<string, TerminalCleanup>();
+  const store = options.database.executionAuthority;
+  const timers = new Map<string, { executionId: string; cancel: () => void }>();
+  const pending = new Map<string, { count: number; terminal: boolean }>();
   let stopped = false;
-  let stopPromise: Promise<ExecutionAuthorityStopResult> | undefined;
-
-  const report = (error: unknown, context: FailureContext, reportOptions: ReportOptions = {}) => {
-    reportFailure(error, context, {
-      ...reportOptions,
-      ...(options.logger === undefined ? {} : { logger: options.logger }),
-    });
-  };
 
   async function materialize(
     input: ExecutionAuthorityMaterialization,
   ): Promise<MaterializedExecutionAuthority> {
     if (stopped) throw authorityStoppedError();
-    const state = getOrCreateState(input.executionId);
-    state.pendingMaterializations += 1;
-    const ownedTokens = new Set<string>();
+    const state = pending.get(input.executionId) ?? { count: 0, terminal: false };
+    state.count++;
+    pending.set(input.executionId, state);
+    const ownedLeases: string[] = [];
+    const assertActive = async () => {
+      if (stopped) throw authorityStoppedError();
+      if (
+        state.terminal ||
+        !(await options.isExecutionActive(input.executionId)) ||
+        state.terminal
+      ) {
+        throw terminalExecutionError(input.executionId);
+      }
+      if (stopped) throw authorityStoppedError();
+    };
     try {
-      await assertExecutionActive(state, input.executionId);
-      const tokenRevocations = new Map<string, Promise<string> | undefined>();
-      const context = {
-        executionId: input.executionId,
-        registerToken: async (token: string, revoke?: () => Promise<void> | void) => {
-          if (revoke === undefined) return;
-          await registerLease(state, input.executionId, token, revoke);
-          ownedTokens.add(token);
-        },
+      await assertActive();
+      const existing = await store.read(input.executionId);
+      if (existing) {
+        if (!(await canResume(input)))
+          throw authorityError(
+            "execution_credentials_unavailable",
+            "Execution credentials are no longer available",
+          );
+        await assertActive();
+        return { env: existing.env };
+      }
+      const register = async (credential: ConnectionTokenLease, durationMs?: number) => {
+        const lease: ExecutionCredentialLease = {
+          id: randomUUID(),
+          executionId: input.executionId,
+          ...credential,
+          deadlineAt: Math.min(
+            credential.expiresAt,
+            durationMs === undefined ? credential.expiresAt : clock.now() + durationMs,
+          ),
+          revoking: false,
+          attempts: 0,
+          nextAttemptAt: 0,
+        };
+        // Registration completes durably before a token can enter an agent environment.
+        try {
+          await store.saveLease(lease);
+        } catch (error) {
+          await revokeToken(lease);
+          throw error;
+        }
+        ownedLeases.push(lease.id);
+        schedule(lease);
+        if (state.terminal || stopped) {
+          await release(lease, true);
+          throw stopped ? authorityStoppedError() : terminalExecutionError(input.executionId);
+        }
       };
-      const env = await materializeEnvironment(input, context, tokenRevocations);
-      if (input.github !== undefined) {
-        if (options.githubAuthority === undefined) {
+      const context: ConnectionResolutionContext = {
+        executionId: input.executionId,
+        registerToken: register,
+      };
+      const resolver = options.connectionsForProject(input.projectId);
+      const resolved = new Map<string, Promise<string>>();
+      const env = Object.fromEntries(
+        await Promise.all(
+          Object.entries(input.env ?? {}).map(
+            async ([key, value]): Promise<[string, string]> => [
+              key,
+              await resolveConnectionTemplate(
+                value,
+                (slug, name, resolutionContext) => {
+                  const reference = `${slug}:${name}`;
+                  let result = resolved.get(reference);
+                  if (!result) {
+                    result = Promise.resolve(resolver(slug, name, resolutionContext));
+                    resolved.set(reference, result);
+                  }
+                  return result;
+                },
+                context,
+                `step env.${key}`,
+              ),
+            ],
+          ),
+        ),
+      );
+      if (input.github) {
+        if (!options.githubAuthority)
           throw authorityError(
             "github_authority_unavailable",
             "GitHub step authority is unavailable",
           );
-        }
-        const repositories = repositoriesForAuthority(input.github, input.triggerContext);
-        const authority = await options.githubAuthority.mint({
+        const github = await options.githubAuthority.mint({
           projectId: input.projectId,
           connectionSlug: input.github.connection,
-          repositories,
+          repositories: repositoriesForAuthority(input.github, input.triggerContext),
           permissions: input.github.permissions,
         });
-        await registerLease(
-          state,
-          input.executionId,
-          authority.token,
-          () => options.githubAuthority!.revoke(authority.token),
+        await register(
+          { provider: "github", token: github.token, expiresAt: github.expiresAt },
           input.github.durationMs,
-          authority.expiresAt,
         );
-        ownedTokens.add(authority.token);
-        await assertExecutionActive(state, input.executionId);
-        return {
-          env: {
-            ...env,
-            ...githubEnvironment(authority.botUserId, authority.botLogin, authority.token),
-          },
-        };
+        Object.assign(env, githubEnvironment(github.botUserId, github.botLogin, github.token));
       }
-      await assertExecutionActive(state, input.executionId);
-      return { env };
+      await assertActive();
+      // A concurrent launch may have won. Keep its environment and revoke only our unused tokens.
+      const committed = await store.commit({
+        executionId: input.executionId,
+        env,
+        leaseIds: ownedLeases,
+      });
+      const unused = ownedLeases.filter((id) => !committed.leaseIds.includes(id));
+      await releaseOwned(input.executionId, unused);
+      await assertActive();
+      return { env: committed.env };
     } catch (error) {
-      await Promise.all(
-        [...ownedTokens].map((token) => releaseLease(input.executionId, token, "materialization")),
-      );
+      const committed = await store.read(input.executionId);
+      if (state.terminal || !(await options.isExecutionActive(input.executionId))) {
+        await onExecutionTerminal(input.executionId);
+      } else {
+        // A stopped worker must preserve credentials already committed for delivery.
+        await releaseOwned(
+          input.executionId,
+          ownedLeases.filter((id) => !committed?.leaseIds.includes(id)),
+        );
+      }
       throw error;
     } finally {
-      state.pendingMaterializations -= 1;
-      if (state.pendingMaterializations === 0) {
-        for (const resolve of state.pendingWaiters) resolve();
-        state.pendingWaiters.clear();
-      }
-      deleteEmptyState(states, input.executionId, state);
+      state.count--;
+      if (state.count === 0) pending.delete(input.executionId);
     }
   }
 
-  async function materializeEnvironment(
-    input: ExecutionAuthorityMaterialization,
-    context: {
-      executionId: string;
-      registerToken: (token: string, revoke?: () => Promise<void> | void) => Promise<void>;
-    },
-    tokenRevocations: Map<string, Promise<string> | undefined>,
-  ): Promise<Record<string, string>> {
-    if (input.env === undefined) return {};
-    const resolver = options.connectionsForProject(input.projectId);
-    return Object.fromEntries(
-      await Promise.all(
-        Object.entries(input.env).map(async ([key, value]) => {
-          const references = parseConnectionTemplate(value, `step env.${key}`);
-          const resolved = await resolveConnectionTemplate(
-            value,
-            (slug, namedValue, resolutionContext) => {
-              const cacheKey = `${slug}:${namedValue}`;
-              const cached = tokenRevocations.get(cacheKey);
-              if (cached !== undefined) return cached;
-              const pending = Promise.resolve(resolver(slug, namedValue, resolutionContext));
-              tokenRevocations.set(cacheKey, pending);
-              return pending;
-            },
-            context,
-            `step env.${key}`,
-          );
-          if (references.length === 0) return [key, resolved] as const;
-          return [key, resolved] as const;
-        }),
-      ),
+  async function releaseOwned(executionId: string, ids: string[]) {
+    const leases = await store.leases(executionId);
+    await Promise.all(
+      leases.filter((lease) => ids.includes(lease.id)).map((lease) => release(lease, true)),
     );
   }
 
-  async function registerLease(
-    state: ExecutionState,
-    executionId: string,
-    token: string,
-    revoke: () => Promise<void> | void,
-    leaseDurationMs?: number,
-    upstreamExpiresAt?: number,
-  ): Promise<void> {
-    const now = clock.now();
-    const leaseDeadline =
-      leaseDurationMs === undefined
-        ? undefined
-        : Math.min(
-            now + leaseDurationMs,
-            upstreamExpiresAt === undefined ? Number.POSITIVE_INFINITY : upstreamExpiresAt,
-          );
-    const cancelLeaseDeadline =
-      leaseDeadline === undefined
-        ? () => undefined
-        : clock.schedule(
-            () => releaseLease(executionId, token, "lease-deadline"),
-            Math.max(0, leaseDeadline - now),
-          );
-    const cancelUpstreamExpiry =
-      upstreamExpiresAt === undefined
-        ? () => undefined
-        : clock.schedule(
-            () => releaseLease(executionId, token, "upstream-expiry"),
-            Math.max(0, upstreamExpiresAt - now),
-          );
-    const lease: TokenLease = {
-      token,
-      revoke: async () => revoke(),
-      cancelLeaseDeadline,
-      cancelUpstreamExpiry,
-      cancelRetry: () => undefined,
-      ...(upstreamExpiresAt === undefined ? {} : { upstreamExpiresAt }),
-      revocationAttempts: 0,
-      retryScheduled: false,
-    };
-    state.leases.set(token, lease);
-    if (state.terminal || stopped) {
-      await requestLeaseRevocation(executionId, token, "terminal");
-      throw terminalExecutionError(executionId);
-    }
+  async function canResume(input: ExecutionAuthorityMaterialization): Promise<boolean> {
+    if (
+      input.github === undefined &&
+      !Object.values(input.env ?? {}).some((value) => parseConnectionTemplate(value).length > 0)
+    )
+      return true;
+    if (stopped) return false;
+    const record = await store.read(input.executionId);
+    if (!record) return false;
+    const leases = await store.leases(input.executionId);
+    const valid = record.leaseIds.every((id) =>
+      leases.some((lease) => lease.id === id && !lease.revoking && lease.deadlineAt > clock.now()),
+    );
+    if (valid) for (const lease of leases) schedule(lease);
+    return valid;
   }
 
-  async function releaseLease(
-    executionId: string,
-    token: string,
-    reason: "lease-deadline" | "upstream-expiry" | "terminal" | "materialization" | "stop",
-  ): Promise<void> {
-    const state = states.get(executionId);
-    const lease = state?.leases.get(token);
-    if (state === undefined || lease === undefined) return;
-    await requestLeaseRevocation(executionId, token, reason);
+  async function recover(): Promise<void> {
+    for (const executionId of await store.executions()) {
+      if (stopped) return;
+      if (!(await options.isExecutionActive(executionId))) await onExecutionTerminal(executionId);
+    }
+    for (const lease of await store.leases()) {
+      if (stopped) return;
+      if (!(await options.isExecutionActive(lease.executionId))) {
+        await store.remove(lease.executionId);
+        await release(lease, true);
+      } else if (lease.revoking || lease.deadlineAt <= clock.now()) {
+        await release(lease);
+      } else {
+        schedule(lease);
+      }
+    }
   }
 
   async function onExecutionTerminal(executionId: string): Promise<void> {
-    const state = getOrCreateState(executionId);
-    state.terminal = true;
-    await revokeLeases(executionId, state, "terminal");
-    startTerminalCleanup(executionId, state);
+    const state = pending.get(executionId);
+    if (state) state.terminal = true;
+    await store.remove(executionId);
+    await Promise.all((await store.leases(executionId)).map((lease) => release(lease, true)));
   }
 
-  function startTerminalCleanup(executionId: string, state: ExecutionState): void {
-    if (state.pendingMaterializations === 0) {
-      deleteEmptyState(states, executionId, state);
-      return;
-    }
-    if (terminalCleanups.has(executionId)) return;
-    const pending = waitForPendingMaterializationsUntilCanceled(state);
-    const cleanup: TerminalCleanup = {
-      cancel: () => pending.cancel(),
-      promise: Promise.resolve(),
-    };
-    cleanup.promise = (async () => {
-      if ((await pending.outcome) === "canceled") return;
-      await revokeLeases(executionId, state, "terminal");
-      deleteEmptyState(states, executionId, state);
-    })()
-      .catch((error: unknown) => {
-        report(error, {
-          operation: "execution-authority.terminal.cleanup",
-          component: "execution-authority",
-          executionId,
-        });
-      })
-      .finally(() => {
-        if (terminalCleanups.get(executionId) === cleanup) {
-          terminalCleanups.delete(executionId);
-        }
-      });
-    terminalCleanups.set(executionId, cleanup);
+  function cancelTimer(id: string) {
+    timers.get(id)?.cancel();
+    timers.delete(id);
   }
 
-  function getOrCreateState(executionId: string): ExecutionState {
-    const existing = states.get(executionId);
-    if (existing !== undefined) return existing;
-    const state: ExecutionState = {
-      pendingMaterializations: 0,
-      terminal: false,
-      leases: new Map(),
-      pendingWaiters: new Set(),
-      leaseWaiters: new Set(),
-    };
-    states.set(executionId, state);
-    return state;
-  }
-
-  function resourceCounts(): ExecutionAuthorityResourceCounts {
-    let leases = 0;
-    let pendingMaterializations = 0;
-    for (const state of states.values()) {
-      leases += state.leases.size;
-      pendingMaterializations += state.pendingMaterializations;
-    }
-    return { executionStates: states.size, leases, pendingMaterializations };
-  }
-
-  async function stop(): Promise<ExecutionAuthorityStopResult> {
-    if (stopPromise !== undefined) return stopPromise;
-    stopped = true;
-    for (const cleanup of terminalCleanups.values()) cleanup.cancel();
-    stopPromise = (async () => {
-      const activeStates = [...states.entries()];
-      for (const [, state] of activeStates) state.terminal = true;
-      let graceElapsed!: () => void;
-      const grace = new Promise<"grace-elapsed">((resolve) => {
-        graceElapsed = () => resolve("grace-elapsed");
-      });
-      const cancelGrace = clock.schedule(async () => graceElapsed(), SHUTDOWN_GRACE_MS, {
-        ref: true,
-      });
-      const cleanup = Promise.all(
-        activeStates.map(async ([executionId, state]) => {
-          await revokeLeases(executionId, state, "stop");
-          await waitForPendingMaterializations(state);
-          await revokeLeases(executionId, state, "stop");
-          await waitForLeasesClosed(state);
-          deleteEmptyState(states, executionId, state);
-        }),
-      ).then(() => "clean" as const);
-      const outcome = await Promise.race([cleanup, grace]);
-      cancelGrace();
-      const residualExposures = outcome === "clean" ? [] : collectResidualExposures(activeStates);
-      if (residualExposures.length > 0) {
-        report(
-          Object.assign(new Error("Execution authority shutdown grace elapsed"), {
-            code: "shutdown_timeout",
-          }),
-          { operation: "execution-authority.shutdown", component: "execution-authority" },
-          {
-            kind: "timeout",
-            diagnostic: {
-              shutdownGraceMs: SHUTDOWN_GRACE_MS,
-              residualExposureCount: residualExposures.length,
+  function schedule(lease: ExecutionCredentialLease, databaseRetry = false) {
+    cancelTimer(lease.id);
+    if (stopped) return;
+    let at = lease.revoking ? Math.min(lease.nextAttemptAt, lease.expiresAt) : lease.deadlineAt;
+    if (databaseRetry) at = clock.now() + REVOCATION_RETRY_BASE_DELAY_MS;
+    const cancel = clock.schedule(
+      async () => {
+        timers.delete(lease.id);
+        try {
+          await release(lease);
+        } catch (error) {
+          reportFailure(
+            error,
+            {
+              operation: "execution-authority.token.revoke",
+              component: "execution-authority",
+              executionId: lease.executionId,
             },
-          },
-        );
-      }
-      return { residualExposures };
-    })();
-    return stopPromise;
-  }
-
-  function canResume(input: ExecutionAuthorityMaterialization): boolean {
-    const needsCredentials =
-      input.github !== undefined ||
-      Object.values(input.env ?? {}).some((value) => parseConnectionTemplate(value).length > 0);
-    if (!needsCredentials) return true;
-    const state = states.get(input.executionId);
-    return state !== undefined && !state.terminal && state.leases.size > 0;
-  }
-
-  return { materialize, canResume, onExecutionTerminal, resourceCounts, stop };
-
-  function collectResidualExposures(
-    activeStates: Array<[string, ExecutionState]>,
-  ): ExecutionAuthorityResidualExposure[] {
-    return activeStates.flatMap(([executionId, state]) => {
-      if (state.leases.size === 0 && state.pendingMaterializations === 0) return [];
-      const upstreamExpiries = [...state.leases.values()].flatMap((lease) =>
-        lease.upstreamExpiresAt === undefined ? [] : [lease.upstreamExpiresAt],
-      );
-      return [
-        {
-          executionId,
-          leaseCount: state.leases.size,
-          pendingMaterializations: state.pendingMaterializations,
-          ...(upstreamExpiries.length === 0
-            ? {}
-            : { earliestUpstreamExpiresAt: Math.min(...upstreamExpiries) }),
-        },
-      ];
-    });
-  }
-
-  async function requestLeaseRevocation(
-    executionId: string,
-    token: string,
-    reason: "lease-deadline" | "upstream-expiry" | "terminal" | "materialization" | "stop",
-  ): Promise<void> {
-    const state = states.get(executionId);
-    const lease = state?.leases.get(token);
-    if (state === undefined || lease === undefined) return;
-    lease.cancelLeaseDeadline();
-    lease.cancelUpstreamExpiry();
-    if (lease.revocationPromise !== undefined) return lease.revocationPromise;
-    if (lease.retryScheduled) return;
-
-    let retryDelayMs: number | undefined;
-    const attempt = async (): Promise<void> => {
-      lease.revocationAttempts += 1;
-      const succeeded = await revokeWithTimeout(lease.revoke, executionId, {
-        reason,
-        attempt: lease.revocationAttempts,
-      });
-      if (succeeded) {
-        removeLease(states, executionId, state, lease);
-        return;
-      }
-
-      const now = clock.now();
-      const retryUntil =
-        lease.retryUntil ??
-        (lease.retryUntil = Math.min(
-          lease.upstreamExpiresAt ?? Number.POSITIVE_INFINITY,
-          now + REVOCATION_RETRY_WINDOW_MS,
-        ));
-      if (now >= retryUntil) {
-        removeLease(states, executionId, state, lease);
-        report(
-          Object.assign(new Error("Execution authority revocation retry window elapsed"), {
-            code: "revocation_retry_exhausted",
-          }),
-          {
-            operation: "execution-authority.token.revoke",
-            component: "execution-authority",
-            executionId,
-          },
-          {
-            kind: "upstreamUnavailable",
-            diagnostic: { reason, attempts: lease.revocationAttempts },
-          },
-        );
-        return;
-      }
-
-      retryDelayMs = Math.max(
-        0,
-        Math.min(
-          REVOCATION_RETRY_BASE_DELAY_MS * 2 ** Math.min(lease.revocationAttempts - 1, 10),
-          retryUntil - now,
-        ),
-      );
-    };
-
-    const pending = attempt();
-    let revocationPromise!: Promise<void>;
-    revocationPromise = pending.finally(() => {
-      if (lease.revocationPromise === revocationPromise) delete lease.revocationPromise;
-      if (retryDelayMs === undefined || state.leases.get(token) !== lease) return;
-      lease.cancelRetry();
-      lease.retryScheduled = true;
-      lease.cancelRetry = clock.schedule(() => {
-        lease.retryScheduled = false;
-        return requestLeaseRevocation(executionId, token, reason);
-      }, retryDelayMs);
-    });
-    lease.revocationPromise = revocationPromise;
-    return revocationPromise;
-  }
-
-  async function revokeLeases(
-    executionId: string,
-    state: ExecutionState,
-    reason: "terminal" | "stop",
-  ): Promise<void> {
-    await Promise.all(
-      [...state.leases.keys()].map((token) => requestLeaseRevocation(executionId, token, reason)),
+            options.logger ? { logger: options.logger } : {},
+          );
+          // A database outage must not discard the wakeup; durable state remains authoritative.
+          schedule(lease, true);
+        }
+      },
+      Math.max(0, at - clock.now()),
     );
+    timers.set(lease.id, { executionId: lease.executionId, cancel });
   }
 
-  async function waitForPendingMaterializations(state: ExecutionState): Promise<void> {
-    if (state.pendingMaterializations === 0) return;
-    await new Promise<void>((resolve) => state.pendingWaiters.add(resolve));
-  }
-
-  function waitForPendingMaterializationsUntilCanceled(state: ExecutionState): {
-    outcome: Promise<"settled" | "canceled">;
-    cancel(): void;
-  } {
-    if (state.pendingMaterializations === 0) {
-      return { outcome: Promise.resolve("settled"), cancel: () => undefined };
-    }
-    let resolveOutcome!: (outcome: "settled" | "canceled") => void;
-    let finished = false;
-    const outcome = new Promise<"settled" | "canceled">((resolve) => {
-      resolveOutcome = resolve;
-    });
-    const settle = (result: "settled" | "canceled"): void => {
-      if (finished) return;
-      finished = true;
-      state.pendingWaiters.delete(onSettled);
-      resolveOutcome(result);
-    };
-    const onSettled = (): void => settle("settled");
-    state.pendingWaiters.add(onSettled);
-    return { outcome, cancel: () => settle("canceled") };
-  }
-
-  async function waitForLeasesClosed(state: ExecutionState): Promise<void> {
-    if (state.leases.size === 0) return;
-    await new Promise<void>((resolve) => state.leaseWaiters.add(resolve));
-  }
-
-  async function assertExecutionActive(state: ExecutionState, executionId: string): Promise<void> {
-    if (stopped) throw authorityStoppedError();
-    if (state.terminal) throw terminalExecutionError(executionId);
-    const active = await options.isExecutionActive(executionId);
-    if (stopped) throw authorityStoppedError();
-    if (state.terminal) throw terminalExecutionError(executionId);
-    if (active) return;
-    state.terminal = true;
-    await revokeLeases(executionId, state, "terminal");
-    throw terminalExecutionError(executionId);
-  }
-
-  async function revokeWithTimeout(
-    revoke: () => Promise<void>,
-    executionId: string,
-    details: { reason: string; attempt: number },
-  ): Promise<boolean> {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(new Error(`token revocation timed out after ${TOKEN_REVOCATION_TIMEOUT_MS}ms`)),
-        TOKEN_REVOCATION_TIMEOUT_MS,
+  async function release(observed: ExecutionCredentialLease, requested = false): Promise<void> {
+    await options.database.withAdvisoryLock(`execution-credential:${observed.id}`, async () => {
+      const lease = (await store.leases(observed.executionId)).find(
+        (item) => item.id === observed.id,
       );
+      if (!lease) {
+        cancelTimer(observed.id);
+        return;
+      }
+      if (!requested && !lease.revoking && lease.deadlineAt > clock.now()) {
+        schedule(lease);
+        return;
+      }
+      lease.revoking = true;
+      // Persist intent before the external call; a replacement worker can finish it.
+      await store.saveLease(lease);
+      if (lease.expiresAt <= clock.now()) {
+        await store.removeLease(lease.id);
+        cancelTimer(lease.id);
+        return;
+      }
+      if (lease.nextAttemptAt > clock.now()) {
+        schedule(lease);
+        return;
+      }
+      lease.attempts++;
+      if (await revokeToken(lease)) {
+        await store.removeLease(lease.id);
+        cancelTimer(lease.id);
+      } else {
+        lease.nextAttemptAt = Math.min(
+          lease.expiresAt,
+          clock.now() + REVOCATION_RETRY_BASE_DELAY_MS * 2 ** Math.min(lease.attempts - 1, 10),
+        );
+        await store.saveLease(lease);
+        schedule(lease);
+      }
     });
+  }
+
+  async function revokeToken(lease: ExecutionCredentialLease): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([Promise.resolve().then(revoke), timeout]);
+      await Promise.race([
+        Promise.resolve().then(() => {
+          if (!options.githubAuthority)
+            throw new Error("GitHub credential revocation is unavailable");
+          return options.githubAuthority.revoke(lease.token);
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("token revocation timed out")),
+            TOKEN_REVOCATION_TIMEOUT_MS,
+          );
+        }),
+      ]);
       return true;
     } catch (error) {
-      report(
+      reportFailure(
         error,
         {
           operation: "execution-authority.token.revoke",
           component: "execution-authority",
-          executionId,
+          executionId: lease.executionId,
         },
-        { kind: "upstreamUnavailable", diagnostic: details },
+        {
+          kind: "upstreamUnavailable",
+          diagnostic: { attempt: lease.attempts },
+          ...(options.logger ? { logger: options.logger } : {}),
+        },
       );
       return false;
     } finally {
       clearTimeout(timer);
     }
   }
-}
 
+  return {
+    materialize,
+    canResume,
+    recover,
+    onExecutionTerminal,
+    resourceCounts: () => ({
+      executionStates: new Set([
+        ...pending.keys(),
+        ...[...timers.values()].map((timer) => timer.executionId),
+      ]).size,
+      leases: timers.size,
+      pendingMaterializations: [...pending.values()].reduce(
+        (count, state) => count + state.count,
+        0,
+      ),
+    }),
+    async stop() {
+      stopped = true;
+      for (const timer of timers.values()) timer.cancel();
+      timers.clear();
+    },
+  };
+}
 function repositoriesForAuthority(
   github: CompiledGitHubAuthority,
   triggerContext: unknown,
@@ -638,36 +456,4 @@ function authorityStoppedError(): Error {
 
 function authorityError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
-}
-
-function removeLease(
-  states: Map<string, ExecutionState>,
-  executionId: string,
-  state: ExecutionState,
-  lease: TokenLease,
-): void {
-  if (state.leases.get(lease.token) !== lease) return;
-  state.leases.delete(lease.token);
-  lease.cancelLeaseDeadline();
-  lease.cancelUpstreamExpiry();
-  lease.cancelRetry();
-  if (state.leases.size === 0) {
-    for (const resolve of state.leaseWaiters) resolve();
-    state.leaseWaiters.clear();
-  }
-  deleteEmptyState(states, executionId, state);
-}
-
-function deleteEmptyState(
-  states: Map<string, ExecutionState>,
-  executionId: string,
-  state: ExecutionState,
-): void {
-  if (
-    states.get(executionId) === state &&
-    state.pendingMaterializations === 0 &&
-    state.leases.size === 0
-  ) {
-    states.delete(executionId);
-  }
 }

@@ -1010,13 +1010,13 @@ export class DaemonDispatchLifecycle {
     if (
       current.agentSessionId !== null &&
       this.options.executionAuthority &&
-      !this.options.executionAuthority.canResume({
+      !(await this.options.executionAuthority.canResume({
         executionId: current.id,
         projectId: intent.projectId,
         triggerContext: intent.triggerContext,
         env: { ...intent.environment.env, ...intent.env },
         ...(intent.github === undefined ? {} : { github: intent.github }),
-      })
+      }))
     ) {
       await this.failAgentExecution(current.id, "execution_credentials_unavailable");
       return;

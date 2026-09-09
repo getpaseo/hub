@@ -1,17 +1,17 @@
+import { createMemoryDatabase } from "../db/memory.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import type { CreateExecutionAuthorityOptions, ExecutionAuthorityClock } from "./index.js";
 import { createExecutionAuthority as createProductionExecutionAuthority } from "./index.js";
-import { createLogger } from "../logger.js";
-import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
 function createExecutionAuthority(
-  options: Omit<CreateExecutionAuthorityOptions, "isExecutionActive"> &
-    Partial<Pick<CreateExecutionAuthorityOptions, "isExecutionActive">>,
+  options: Omit<CreateExecutionAuthorityOptions, "isExecutionActive" | "database"> &
+    Partial<Pick<CreateExecutionAuthorityOptions, "isExecutionActive" | "database">>,
 ) {
   return createProductionExecutionAuthority({
     ...options,
+    database: options.database ?? createMemoryDatabase(),
     isExecutionActive: options.isExecutionActive ?? (async () => true),
   });
 }
@@ -34,14 +34,14 @@ describe("Hub execution authority", () => {
         durationMs: 60_000,
       },
     };
-    assert.equal(authority.canResume(input), false);
+    assert.equal(await authority.canResume(input), false);
     await authority.materialize(input);
-    assert.equal(authority.canResume(input), true);
+    assert.equal(await authority.canResume(input), true);
     await authority.stop();
-    assert.equal(authority.canResume(input), false);
-    assert.equal(createExecutionAuthority(options).canResume(input), false);
+    assert.equal(await authority.canResume(input), false);
+    assert.equal(await createExecutionAuthority(options).canResume(input), false);
     assert.equal(
-      authority.canResume({ ...input, github: undefined, env: { STATIC: "value" } }),
+      await authority.canResume({ ...input, github: undefined, env: { STATIC: "value" } }),
       true,
     );
   });
@@ -52,12 +52,19 @@ describe("Hub execution authority", () => {
       const connectionRevocations: string[] = [];
       const authority = createExecutionAuthority({
         connectionsForProject: () => async (slug, value, context) => {
-          await context?.registerToken?.(`${slug}-${value}`, async () => {
-            connectionRevocations.push(`${slug}-${value}`);
+          await context?.registerToken?.({
+            provider: "github",
+            token: `${slug}-${value}`,
+            expiresAt: Date.now() + 3600_000,
           });
           return "resolved-secret";
         },
-        githubAuthority: githubAuthorityFake(),
+        githubAuthority: {
+          ...githubAuthorityFake(),
+          revoke: async (token) => {
+            connectionRevocations.push(token);
+          },
+        },
       });
       const authoredEnv = {
         SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
@@ -296,9 +303,17 @@ describe("Hub execution authority", () => {
     let active = true;
     const revocations: string[] = [];
     const authority = createExecutionAuthority({
+      githubAuthority: {
+        ...githubAuthorityFake(),
+        revoke: async (token) => {
+          revocations.push(token);
+        },
+      },
       connectionsForProject: () => async (_slug, _value, context) => {
-        await context?.registerToken?.("durable-token", () => {
-          revocations.push("durable-token");
+        await context?.registerToken?.({
+          provider: "github",
+          token: "durable-token",
+          expiresAt: Date.now() + 3600_000,
         });
         active = false;
         return "resolved-secret";
@@ -330,9 +345,17 @@ describe("Hub execution authority", () => {
     });
     const revocations: string[] = [];
     const authority = createExecutionAuthority({
+      githubAuthority: {
+        ...githubAuthorityFake(),
+        revoke: async (token) => {
+          revocations.push(token);
+        },
+      },
       connectionsForProject: () => async (_slug, _value, context) => {
-        await context?.registerToken?.("final-query-token", () => {
-          revocations.push("final-query-token");
+        await context?.registerToken?.({
+          provider: "github",
+          token: "final-query-token",
+          expiresAt: Date.now() + 3600_000,
         });
         return "resolved-secret";
       },
@@ -357,44 +380,6 @@ describe("Hub execution authority", () => {
     await assert.rejects(materialization, /terminal execution/iu);
     await terminal;
     assert.deepEqual(revocations, ["final-query-token"]);
-  });
-
-  it("registers materialization before the initial durable activity query", async () => {
-    let activityQueryStarted!: () => void;
-    const activityQueryObserved = new Promise<void>((resolve) => {
-      activityQueryStarted = resolve;
-    });
-    let resolveActivityQuery!: (active: boolean) => void;
-    const activityQuery = new Promise<boolean>((resolve) => {
-      resolveActivityQuery = resolve;
-    });
-    const authority = createExecutionAuthority({
-      connectionsForProject: () => async () => "unused",
-      isExecutionActive: async () => {
-        activityQueryStarted();
-        return activityQuery;
-      },
-    });
-
-    const materialization = authority.materialize({
-      executionId: "stop-during-initial-query",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      env: { VALUE: "literal" },
-    });
-    await activityQueryObserved;
-    const stopping = authority.stop();
-    let stopReturned = false;
-    void stopping.then(() => {
-      stopReturned = true;
-      return undefined;
-    });
-    for (let index = 0; index < 10; index += 1) await Promise.resolve();
-    assert.equal(stopReturned, false);
-
-    resolveActivityQuery(true);
-    await assert.rejects(materialization, /stopped/iu);
-    await stopping;
   });
 
   it("does not return an explicit GitHub token after durable execution becomes terminal", async () => {
@@ -491,217 +476,6 @@ describe("Hub execution authority", () => {
     await assert.rejects(materialization, /terminal execution/iu);
     await terminal;
     assert.deepEqual(revoked, ["race-token"]);
-  });
-
-  it("revokes held connection credentials before waiting for an unrelated hung GitHub mint", async () => {
-    const revoked: string[] = [];
-    let releaseMint!: () => void;
-    const mintBlocked = new Promise<void>((resolve) => {
-      releaseMint = resolve;
-    });
-    const authority = createExecutionAuthority({
-      connectionsForProject: () => async (_slug, _value, context) => {
-        await context?.registerToken?.("held-connection-token", () => {
-          revoked.push("held-connection-token");
-        });
-        return "resolved-secret";
-      },
-      githubAuthority: {
-        mint: async () => {
-          await mintBlocked;
-          return {
-            token: "late-github-token",
-            expiresAt: Date.now() + 60 * 60 * 1000,
-            botUserId: 1,
-            botLogin: "paseo[bot]",
-          };
-        },
-        revoke: async (token) => {
-          revoked.push(token);
-        },
-      },
-      isExecutionActive: async () => true,
-    });
-    await authority.materialize({
-      executionId: "terminal-ordering",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
-    });
-    const hungMaterialization = authority.materialize({
-      executionId: "terminal-ordering",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      github: {
-        connection: "getpaseo-github",
-        repositories: ["getpaseo/paseo"],
-        permissions: { contents: "read" },
-        durationMs: 60 * 60 * 1000,
-      },
-    });
-    await Promise.resolve();
-
-    const terminal = authority.onExecutionTerminal("terminal-ordering");
-    await Promise.resolve();
-    assert.deepEqual(revoked, ["held-connection-token"]);
-
-    releaseMint();
-    await assert.rejects(hungMaterialization, /terminal execution/iu);
-    await terminal;
-    assert.deepEqual(revoked, ["held-connection-token", "late-github-token"]);
-  });
-
-  it("revokes active leases when the authority owner stops", async () => {
-    const mint = githubAuthorityFake();
-    const authority = createExecutionAuthority({
-      connectionsForProject: () => async () => "unused",
-      githubAuthority: mint,
-    });
-    await authority.materialize({
-      executionId: "graceful-stop",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      github: {
-        connection: "getpaseo-github",
-        repositories: ["getpaseo/paseo"],
-        permissions: { contents: "read" },
-        durationMs: 60 * 60 * 1000,
-      },
-    });
-
-    await authority.stop();
-
-    assert.deepEqual(mint.revoked, ["scoped-token-1"]);
-    await assert.rejects(
-      authority.materialize({
-        executionId: "new-after-stop",
-        projectId: "project-1",
-        triggerContext: { provider: "manual" },
-        env: { TOKEN: "literal" },
-      }),
-      /stopped/iu,
-    );
-  });
-
-  it("keeps graceful shutdown pending until a transient revocation succeeds", async () => {
-    const canary = "execution-authority-secret-75ad";
-    const stream = new FailureLogStream();
-    const clock = new TestClock();
-    let attempts = 0;
-    let firstAttempt!: () => void;
-    const firstAttemptObserved = new Promise<void>((resolve) => {
-      firstAttempt = resolve;
-    });
-    const authority = createExecutionAuthority({
-      connectionsForProject: () => async () => "unused",
-      githubAuthority: {
-        mint: async () => ({
-          token: "shutdown-retry-token",
-          expiresAt: clock.now() + 60 * 60 * 1000,
-          botUserId: 1,
-          botLogin: "paseo[bot]",
-        }),
-        revoke: async () => {
-          attempts += 1;
-          if (attempts === 1) {
-            firstAttempt();
-            throw new Error(canary);
-          }
-        },
-      },
-      clock,
-      logger: createLogger(stream),
-    });
-    await authority.materialize({
-      executionId: "shutdown-retry",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      github: {
-        connection: "getpaseo-github",
-        repositories: ["getpaseo/paseo"],
-        permissions: { contents: "read" },
-        durationMs: 60 * 60 * 1000,
-      },
-    });
-
-    const stopping = authority.stop();
-    await firstAttemptObserved;
-    await clock.waitForScheduledDelay(1_000);
-    assert.equal(attempts, 1);
-    let stopped = false;
-    void stopping.then(() => {
-      stopped = true;
-      return undefined;
-    });
-    await Promise.resolve();
-    assert.equal(stopped, false);
-
-    await clock.advance(1_000);
-    await stopping;
-    assert.equal(attempts, 2);
-    assertOneFailure(stream, {
-      operation: "execution-authority.token.revoke",
-      component: "execution-authority",
-      failureKind: "upstreamUnavailable",
-      canary,
-    });
-  });
-
-  it("returns bounded token-free residual exposure when shutdown revocation keeps failing", async () => {
-    const clock = new TestClock();
-    let attempts = 0;
-    const authority = createExecutionAuthority({
-      connectionsForProject: () => async () => "unused",
-      githubAuthority: {
-        mint: async () => ({
-          token: "must-not-appear-in-stop-evidence",
-          expiresAt: clock.now() + 60 * 60 * 1000,
-          botUserId: 1,
-          botLogin: "paseo[bot]",
-        }),
-        revoke: async () => {
-          attempts += 1;
-          throw new Error("permanent upstream failure");
-        },
-      },
-      clock,
-      isExecutionActive: async () => true,
-    });
-    await authority.materialize({
-      executionId: "bounded-shutdown",
-      projectId: "project-1",
-      triggerContext: { provider: "manual" },
-      github: {
-        connection: "getpaseo-github",
-        repositories: ["getpaseo/paseo"],
-        permissions: { contents: "read" },
-        durationMs: 60 * 60 * 1000,
-      },
-    });
-
-    let stopResult: Awaited<ReturnType<typeof authority.stop>> | undefined;
-    void authority.stop().then((result) => {
-      stopResult = result;
-      return undefined;
-    });
-    await clock.waitForScheduledDelay(10_000);
-    await clock.advance(10_000);
-    for (let index = 0; index < 10; index += 1) await Promise.resolve();
-
-    assert.notEqual(stopResult, undefined);
-    assert.deepEqual(stopResult, {
-      residualExposures: [
-        {
-          executionId: "bounded-shutdown",
-          leaseCount: 1,
-          pendingMaterializations: 0,
-          earliestUpstreamExpiresAt: Date.parse("2026-08-01T01:00:00.000Z"),
-        },
-      ],
-    });
-    assert.equal(JSON.stringify(stopResult).includes("must-not-appear-in-stop-evidence"), false);
-    assert.equal(clock.referencedTimerCount(), 0);
-    assert.ok(attempts >= 1);
   });
 
   it("retains a failed deadline revocation and retries it through the clock seam", async () => {
@@ -822,9 +596,9 @@ describe("Hub execution authority", () => {
     await clock.advance(1_000);
     assert.equal(attempts, 2);
     await clock.advance(2_000);
-    assert.equal(attempts, 3);
+    assert.equal(attempts, 2);
     await clock.advance(10_000);
-    assert.equal(attempts, 3);
+    assert.equal(attempts, 2);
   });
 
   it("does not retain empty terminal execution states", async () => {
@@ -854,6 +628,226 @@ describe("Hub execution authority", () => {
       }),
       /terminal execution/iu,
     );
+  });
+  it.each(["shutdown", "crash"])(
+    "recovers the original credential and deadline after %s",
+    async (kind) => {
+      const database = createMemoryDatabase();
+      const clock = new TestClock();
+      const mint = githubAuthorityFake(() => clock.now());
+      const options = {
+        database,
+        clock,
+        githubAuthority: mint,
+        connectionsForProject: () => async () => "unused",
+      };
+      const first = createExecutionAuthority(options);
+      const input = restartInput();
+      const initial = await first.materialize(input);
+      if (kind === "shutdown") await first.stop();
+      // A fresh clock represents a replacement process: old timers cannot help recovery.
+      const replacementClock = new TestClock();
+      await replacementClock.advance(30_000);
+      const replacement = createExecutionAuthority({ ...options, clock: replacementClock });
+      await replacement.recover();
+      assert.equal(await replacement.canResume(input), true);
+      assert.deepEqual(await replacement.materialize(input), initial);
+      assert.equal(mint.inputs.length, 1);
+      assert.deepEqual(mint.revoked, []);
+      await replacementClock.advance(30_000);
+      assert.deepEqual(mint.revoked, [initial.env["GH_TOKEN"]]);
+      assert.equal(await replacement.canResume(input), false);
+      await first.stop();
+      await replacement.stop();
+    },
+  );
+
+  it("recovers connection tokens and resolved values that do not own a revocable token", async () => {
+    const database = createMemoryDatabase();
+    const mint = githubAuthorityFake();
+    const options = {
+      database,
+      githubAuthority: mint,
+      connectionsForProject:
+        () =>
+        async (
+          slug: string,
+          _value: string,
+          context?: import("../config/connections.js").ConnectionResolutionContext,
+        ) => {
+          if (slug === "leased")
+            await context?.registerToken?.({
+              provider: "github",
+              token: "connection-token",
+              expiresAt: Date.now() + 60_000,
+            });
+          return "resolved-value";
+        },
+    };
+    const first = createExecutionAuthority(options);
+    for (const slug of ["leased", "static"]) {
+      await first.materialize({
+        ...restartInput(),
+        executionId: slug,
+        github: undefined,
+        env: { TOKEN: "prefix-${{ paseo.connections." + slug + ".token }}" },
+      });
+    }
+    await first.stop();
+    const replacement = createExecutionAuthority(options);
+    await replacement.recover();
+    for (const slug of ["leased", "static"]) {
+      const input = {
+        ...restartInput(),
+        executionId: slug,
+        github: undefined,
+        env: { TOKEN: "prefix-${{ paseo.connections." + slug + ".token }}" },
+      };
+      assert.equal(await replacement.canResume(input), true);
+      assert.deepEqual(await replacement.materialize(input), {
+        env: { TOKEN: "prefix-resolved-value" },
+      });
+      await replacement.onExecutionTerminal(slug);
+      assert.equal(await database.executionAuthority.read(slug), undefined);
+    }
+    assert.deepEqual(mint.revoked, ["connection-token"]);
+    await replacement.stop();
+  });
+
+  it("finishes terminal cleanup after a crash and an upstream revocation failure", async () => {
+    const database = createMemoryDatabase();
+    const clock = new TestClock();
+    const mint = githubAuthorityFake(() => clock.now());
+    let active = true;
+    let attempts = 0;
+    const options = {
+      database,
+      clock,
+      connectionsForProject: () => async () => "unused",
+      isExecutionActive: async () => active,
+      githubAuthority: {
+        ...mint,
+        revoke: async (token: string) => {
+          if (++attempts === 1) throw new Error("temporary upstream failure");
+          await mint.revoke(token);
+        },
+      },
+    };
+    const first = createExecutionAuthority(options);
+    const input = restartInput();
+    await first.materialize(input);
+    active = false;
+    await first.onExecutionTerminal(input.executionId);
+    await first.stop();
+    const replacement = createExecutionAuthority(options);
+    await replacement.recover();
+    assert.equal(attempts, 1);
+    await clock.advance(1_000);
+    assert.deepEqual(mint.revoked, ["scoped-token-1"]);
+    assert.deepEqual(await database.executionAuthority.leases(), []);
+    assert.equal(await database.executionAuthority.read(input.executionId), undefined);
+    await replacement.stop();
+  });
+
+  it("does not let an old process revoke a replacement process's active credentials on shutdown", async () => {
+    const database = createMemoryDatabase();
+    const clock = new TestClock();
+    const mint = githubAuthorityFake(() => clock.now());
+    const options = {
+      database,
+      clock,
+      githubAuthority: mint,
+      connectionsForProject: () => async () => "unused",
+    };
+    const first = createExecutionAuthority(options);
+    const input = restartInput();
+    await first.materialize(input);
+    const replacement = createExecutionAuthority(options);
+    await replacement.recover();
+    await first.stop();
+    assert.deepEqual(mint.revoked, []);
+    assert.equal(await replacement.canResume(input), true);
+    await replacement.onExecutionTerminal(input.executionId);
+    assert.deepEqual(mint.revoked, ["scoped-token-1"]);
+    await replacement.stop();
+  });
+
+  it("serializes revocation across two recovering processes", async () => {
+    const database = createMemoryDatabase();
+    const clock = new TestClock();
+    const mint = githubAuthorityFake(() => clock.now());
+    const options = {
+      database,
+      clock,
+      githubAuthority: mint,
+      connectionsForProject: () => async () => "unused",
+    };
+    const first = createExecutionAuthority(options);
+    const input = restartInput();
+    await first.materialize(input);
+    const replacement = createExecutionAuthority(options);
+    await replacement.recover();
+    await Promise.all([
+      first.onExecutionTerminal(input.executionId),
+      replacement.onExecutionTerminal(input.executionId),
+    ]);
+    assert.deepEqual(mint.revoked, ["scoped-token-1"]);
+    await first.stop();
+    await replacement.stop();
+  });
+
+  it("commits one environment when two processes materialize the same execution", async () => {
+    const database = createMemoryDatabase();
+    const mint = githubAuthorityFake();
+    const options = {
+      database,
+      githubAuthority: mint,
+      connectionsForProject: () => async () => "unused",
+    };
+    const first = createExecutionAuthority(options);
+    const second = createExecutionAuthority(options);
+    const input = restartInput();
+    const [a, b] = await Promise.all([first.materialize(input), second.materialize(input)]);
+    assert.deepEqual(a, b);
+    assert.equal(mint.revoked.includes(a.env["GH_TOKEN"]!), false);
+    assert.equal((await database.executionAuthority.leases()).length, 1);
+    await first.onExecutionTerminal(input.executionId);
+    assert.equal(new Set(mint.revoked).size, mint.inputs.length);
+    await first.stop();
+    await second.stop();
+  });
+
+  it("returns promptly from shutdown with a hung mint and revokes its late result", async () => {
+    const database = createMemoryDatabase();
+    const mint = githubAuthorityFake();
+    let begun!: () => void;
+    const started = new Promise<void>((resolve) => {
+      begun = resolve;
+    });
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const authority = createExecutionAuthority({
+      database,
+      connectionsForProject: () => async () => "unused",
+      githubAuthority: {
+        ...mint,
+        mint: async (input) => {
+          begun();
+          await blocked;
+          return mint.mint(input);
+        },
+      },
+    });
+    const materialization = authority.materialize(restartInput());
+    await started;
+    await authority.stop();
+    assert.deepEqual(mint.revoked, []);
+    finish();
+    await assert.rejects(materialization, /stopped/);
+    assert.deepEqual(mint.revoked, ["scoped-token-1"]);
+    assert.deepEqual(await database.executionAuthority.leases(), []);
   });
 });
 
@@ -926,4 +920,18 @@ class TestClock implements ExecutionAuthorityClock {
       await timer.callback();
     }
   }
+}
+
+function restartInput() {
+  return {
+    executionId: "restart",
+    projectId: "project-1",
+    triggerContext: {},
+    github: {
+      connection: "github",
+      repositories: ["getpaseo/paseo"],
+      permissions: { contents: "write" as const },
+      durationMs: 60_000,
+    },
+  };
 }

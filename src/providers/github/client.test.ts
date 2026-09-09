@@ -81,7 +81,7 @@ class GitHubProviderPort implements GitHubAuth {
     return Promise.reject(new Error("unused"));
   }
 
-  mintInstallationToken(): Promise<string> {
+  mintInstallationToken(): Promise<never> {
     return Promise.reject(new Error("unused"));
   }
 

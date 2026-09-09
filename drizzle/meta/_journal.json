@@ -337,6 +337,13 @@
       "when": 1788961022620,
       "tag": "0047_loving_nuke",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788991675061,
+      "tag": "0048_execution_authority",
+      "breakpoints": true
     }
   ]
 }

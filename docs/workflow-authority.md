@@ -76,11 +76,21 @@ activation fails instead of making precedence order observable. Authority is
 materialized independently for each running step. Classifier and skipped steps do
 not receive it, and no Git-specific RPC field is sent to Paseo.
 
-Graceful Hub shutdown stops the authority owner and retries active lease revocation
-within a bounded shutdown grace period. If upstream revocation remains unavailable,
-shutdown reports token-free residual-exposure diagnostics and returns; unreferenced
-retries may continue while the process remains alive. A hard process crash cannot run
-revocation, so GitHub's upstream one-hour token expiry remains the unavoidable exposure
-boundary until a future persisted lease policy can provide stronger crash recovery.
+Hub persists materialized authority and credential leases before delivering credentials to
+an agent. A Hub restart preserves active executions and their original credentials; recovery
+reattaches the same agent and restores lease deadlines and pending revocation work. Stopping
+the Hub process does not end an execution or revoke its credentials.
+
+Completion, cancellation, and the original lease deadline still require revocation. Recovery
+does not mint replacement credentials or extend deadlines. If Hub is unavailable at a shorter
+lease deadline, it reconciles overdue revocation when it returns; upstream expiry remains the
+maximum token lifetime. Revocation failures remain durable and retry until upstream expiry.
+
+Resolved credentials are private runtime data in the Hub database, separate from authored
+configuration. Authority records are removed at execution termination; lease records remain
+only until revocation succeeds or the token expires.
+
+When upgrading from a version with process-owned credentials, let active credentialed runs
+finish before restarting Hub. That version cannot hand its in-memory leases to the replacement.
 
 Public workflow-authority guidance lives in the Paseo repository under `public-docs/`.

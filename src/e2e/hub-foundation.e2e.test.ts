@@ -229,6 +229,32 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     });
   }, 120_000);
 
+  it.each([false, true])(
+    "preserves a credentialed execution across a real Hub restart (crash=%s)",
+    async (crash) => {
+      await hub.connect();
+      await hub.daemonIsConnected();
+      await hub.installProductionConfiguration();
+      const run = await hub.beginCredentialRun();
+      const before = await hub.sessionEvidence(run.executionId);
+      const issued = await hub.credentialEvents();
+      assert.equal(issued.length, 1);
+      assert.equal(issued[0]?.["action"], "mint");
+      const after = await hub.restartHubWithRunningAgent(run.executionId, crash);
+      assert.deepEqual(after, before);
+      assert.deepEqual(await hub.credentialEvents(), issued);
+      await hub.allowRecoveredCompletion();
+      const completed = await hub.completedRun(run.executionId);
+      assert.equal(completed.status, "succeeded");
+      assert.equal(completed.agentId, run.agentId);
+      assert.deepEqual(await hub.credentialEvents(), [
+        ...issued,
+        { action: "revoke", token: issued[0]?.["token"] },
+      ]);
+    },
+    120_000,
+  );
+
   it("fails the same running agent when a real daemon restart interrupts it", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();

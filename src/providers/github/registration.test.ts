@@ -161,7 +161,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
         getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
@@ -251,7 +252,10 @@ describe("GitHub registration", () => {
         getInstallationToken: () => Promise.reject(new Error("unused")),
         mintInstallationToken: (installationId) => {
           installations.push(installationId);
-          return Promise.resolve("test-installation-token");
+          return Promise.resolve({
+            token: "test-installation-token",
+            expiresAt: Date.now() + 3600_000,
+          });
         },
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
@@ -313,7 +317,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: (input) => {
           requests.push(input);
           return Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 });
@@ -530,7 +535,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
         getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
@@ -714,7 +720,8 @@ function githubAuth() {
   return {
     getInstallation: () => Promise.resolve(undefined),
     getInstallationToken: () => Promise.resolve("token"),
-    mintInstallationToken: () => Promise.resolve("token"),
+    mintInstallationToken: () =>
+      Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
     mintInstallationAccessToken: () =>
       Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
     getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
