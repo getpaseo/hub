@@ -64,6 +64,9 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           environment: "target",
           max_runtime: authored.run.max_runtime,
           idle_timeout: authored.run.idle_timeout,
+          ...(authored.run.startup_timeout === undefined
+            ? {}
+            : { startup_timeout: authored.run.startup_timeout }),
           agent,
           prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),

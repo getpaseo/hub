@@ -562,6 +562,7 @@ describe("daemon enrollment and execution", () => {
     hub.issueConnectionLeaseOnAuthorityMaterialization();
     hub.hangAuthorityMintPermanently();
     const dispatch = hub.beginDispatch({
+      startupTimeoutMs: 30_000,
       env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
       github: {
         connection: "getpaseo-github",
@@ -1844,19 +1845,63 @@ describe("daemon enrollment and execution", () => {
     },
   );
 
-  it("bounds spawn acknowledgement and execution deadlines with the deterministic clock", async () => {
+  it.each([
+    { name: "default", startupTimeoutMs: undefined, delayMs: 90_000 },
+    { name: "configured", startupTimeoutMs: 180_000, delayMs: 150_000 },
+  ])("allows slow startup within the $name budget", async ({ startupTimeoutMs, delayMs }) => {
     await hub.connectDaemon();
     hub.holdSpawnAcknowledgement();
-    const dispatch = hub.beginDispatch({ timeoutMs: 60_000 });
+    const dispatch = hub
+      .beginDispatch({
+        ...(startupTimeoutMs === undefined ? {} : { startupTimeoutMs }),
+        timeoutMs: 600_000,
+        idleTimeoutMs: 600_000,
+      })
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
     await hub.spawnBegins();
-    await hub.advanceDispatchTime(30_000);
-
-    await assert.rejects(
-      dispatch,
-      (error: unknown) =>
-        error instanceof DaemonDispatchFailure && error.reason === "daemon_timeout",
-    );
+    await hub.advanceDispatchTime(delayMs);
+    hub.acceptSpawn();
+    const outcome = await dispatch;
+    assert.ok("value" in outcome, "error" in outcome ? String(outcome.error) : "dispatch failed");
+    assert.equal((await hub.execution(outcome.value.execution.id)).status, "running");
+    assert.equal(hub.createdAgentCount(), 1);
   });
+
+  it.each([
+    { startupTimeoutMs: undefined, timeoutMs: 600_000, waitMs: 120_000, reason: "daemon_timeout" },
+    { startupTimeoutMs: 45_000, timeoutMs: 600_000, waitMs: 45_000, reason: "daemon_timeout" },
+    { startupTimeoutMs: 180_000, timeoutMs: 60_000, waitMs: 60_000, reason: "timeout" },
+  ])(
+    "bounds startup at $waitMs ms with reason $reason",
+    async ({ startupTimeoutMs, timeoutMs, waitMs, reason }) => {
+      await hub.connectDaemon();
+      hub.holdSpawnAcknowledgement();
+      let settled = false;
+      const dispatch = hub
+        .beginDispatch({
+          timeoutMs,
+          ...(startupTimeoutMs === undefined ? {} : { startupTimeoutMs }),
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+      await hub.spawnBegins();
+      await hub.advanceDispatchTime(waitMs - 1);
+      assert.equal(settled, false);
+      await hub.advanceDispatchTime(1);
+      const failure = await dispatch;
+      assert.ok(failure instanceof DaemonDispatchFailure);
+      assert.equal(failure.reason, reason);
+    },
+  );
 
   it("expires at the dispatch boundary before creating an agent", async () => {
     await hub.connectDaemon();

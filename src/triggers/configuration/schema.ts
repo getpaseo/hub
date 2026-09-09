@@ -102,6 +102,7 @@ export const TriggerRunSchema = z
     prompt: z.string().min(1),
     max_runtime: z.string().min(1).default("2h"),
     idle_timeout: z.string().min(1).default("10m"),
+    startup_timeout: z.string().min(1).optional(),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
     output: z

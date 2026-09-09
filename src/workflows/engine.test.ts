@@ -164,7 +164,7 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(steps[0]?.failureReason, "trigger_context_materializer_unavailable");
   });
 
-  it("carries provider options unchanged into persisted and dispatched launch intent", async () => {
+  it("carries provider options and startup timeout into persisted and dispatched launch intent", async () => {
     const rawConfiguration = deadlineConfiguration();
     const options = {
       sandbox_workspace_write: {
@@ -183,6 +183,7 @@ describe("durable multi-step workflow engine", () => {
     const agent = authoredStep["agent"];
     if (!isRecord(agent)) throw new Error("test agent unavailable");
     Reflect.set(agent, "options", options);
+    Reflect.set(authoredStep, "startup_timeout", "3m");
     const fixture = await workflowFixture({ rawConfiguration });
     let dispatched: LaunchMachineIntent | undefined;
     const { handler, engine } = engineFor(fixture, [], async (intent) => {
@@ -193,11 +194,13 @@ describe("durable multi-step workflow engine", () => {
     await engine.processAvailable();
 
     assert.deepEqual(dispatched?.agent, { provider: "codex", options });
+    assert.equal(dispatched?.startupTimeoutMs, 180_000);
     const run = (
       await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
     )[0]!;
     const persistedStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     assert.deepEqual(persistedStep.dispatchIntent?.agent, { provider: "codex", options });
+    assert.equal(persistedStep.dispatchIntent?.startupTimeoutMs, 180_000);
   });
 
   it("logs an initial recovery rejection and retries on the next interval", async () => {

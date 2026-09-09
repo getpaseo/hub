@@ -49,6 +49,7 @@ run:
   prompt: Handle it.
   max_runtime: 3h
   idle_timeout: 15m
+  startup_timeout: 3m
   env:
     TEAM: core
   github:
@@ -97,6 +98,7 @@ describe("trigger form YAML bridge", () => {
     });
     expect(value.inputs).toBeDefined();
     expect(value.max_runtime).toBe("4h");
+    expect(value.run.startup_timeout).toBe("3m");
     expect(value.run.env).toEqual({ TEAM: "core" });
     expect(value.run.github).toEqual({
       connection: "company-github",

@@ -1,7 +1,10 @@
 import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
 import type { Database, AgentExecutionRecord } from "../db/types.js";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import {
+  DEFAULT_STARTUP_TIMEOUT_MS,
+  type LaunchMachineIntent,
+} from "../dispatcher/launch-machine-intent.js";
 import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
 import type { AgentConnection, AgentEvent } from "../daemons/agents/index.js";
 import {
@@ -38,6 +41,7 @@ export class AgentSessions {
     action: "created" | "continued" | "restored";
   }> {
     const policy = input.intent.continuation;
+    const startupTimeoutMs = input.intent.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     const continuationKey = policy?.key ?? null;
     if (
       continuationKey !== null &&
@@ -102,7 +106,7 @@ export class AgentSessions {
       await this.database.attachExecutionToSession(input.executionId, id);
       let action: "created" | "continued" | "restored" = "continued";
       if (session.agentId === null) {
-        const agent = await input.connection.create(id, session.creationOptions);
+        const agent = await input.connection.create(id, session.creationOptions, startupTimeoutMs);
         session = { ...session, agentId: agent.id, workspaceId: agent.workspaceId };
         await this.database.saveAgentSession(session);
         action = "created";
@@ -119,7 +123,7 @@ export class AgentSessions {
         throw new AgentSessionError("agent_interrupted");
       }
       if (agent.archivedAt) {
-        await input.connection.restore(session.workspaceId);
+        await input.connection.restore(session.workspaceId, startupTimeoutMs);
         action = "restored";
       }
       await this.database.attachExecutionToSession(input.executionId, id, action);
@@ -135,6 +139,7 @@ export class AgentSessions {
           policy === undefined
             ? input.intent.prompt
             : `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.\n\n${input.intent.prompt}`,
+          startupTimeoutMs,
         );
       } catch (error) {
         unsubscribe();

@@ -4,6 +4,8 @@ import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 
+export const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
+
 export interface DaemonEnvironmentTarget {
   kind: "daemon";
   daemonId: string;
@@ -29,6 +31,7 @@ export interface LaunchMachineIntent {
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
   triggerContext: unknown;
@@ -53,6 +56,7 @@ export function buildLaunchMachineIntent(input: {
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
   triggerContext: unknown;
@@ -73,6 +77,7 @@ export function buildLaunchMachineIntent(input: {
     agent: input.agent,
     allowOutputs: input.allowOutputs,
     ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    ...(input.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: input.startupTimeoutMs }),
     ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     autoArchive: input.autoArchive,
     triggerContext: input.triggerContext,
