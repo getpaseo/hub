@@ -87,6 +87,7 @@
     "radix-ui": "^1.6.2",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "rrule-temporal": "2.2.4",
     "stripe": "^18.5.0",
     "tailwind-merge": "3.4.0",
     "ws": "^8.21.3",

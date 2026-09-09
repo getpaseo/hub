@@ -21,7 +21,7 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
     await triggers.switchToYaml();
     await triggers.expectYamlContains(
       "schedule.tick:",
-      "frequency: daily",
+      "FREQ=DAILY",
       "Europe/Berlin",
       "thinkingOptionId: low",
     );
@@ -37,9 +37,53 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
     await triggers.captureSchedule("e2e/screenshots/schedules/weekly.png");
     await triggers.captureScheduleAtPhoneWidth("e2e/screenshots/schedules/mobile.png");
     await triggers.switchToYaml();
-    await triggers.expectYamlContains("frequency: weekly", "monday", "friday", "18:30");
+    await triggers.expectYamlContains(
+      "FREQ=WEEKLY",
+      "BYDAY=MO,FR",
+      "BYHOUR=8,18",
+      "BYMINUTE=15,30",
+    );
   });
   await test.step("accept a real clock occurrence and show its source in Activity", async () => {
     await triggers.runScheduledOccurrence(hub.primaryApplication(), "periodic-scan");
+  });
+  await test.step("edit to hourly and anchored 90-minute repeats, then save and reload", async () => {
+    await triggers.open();
+    await triggers.openTrigger("periodic-scan");
+    await triggers.setScheduleInterval("Every hour", 1);
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
+    await triggers.expectScheduleIntervalAfterReload("Every hour", 1);
+    await triggers.captureScheduleDetail("e2e/screenshots/schedules/hourly.png");
+    await triggers.setScheduleInterval("Every minute", 90);
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
+    await triggers.expectScheduleIntervalAfterReload("Every minute", 90);
+    await triggers.captureScheduleDetail("e2e/screenshots/schedules/interval.png");
+    await triggers.switchToYaml();
+    await triggers.expectYamlContains("FREQ=MINUTELY;INTERVAL=90");
+  });
+  await test.step("edit to the last Friday each month and reload its controls", async () => {
+    await triggers.open();
+    await triggers.openTrigger("periodic-scan");
+    await triggers.setScheduleToLastFriday();
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
+    await triggers.expectLastFridayAfterReload();
+    await triggers.captureScheduleDetail("e2e/screenshots/schedules/monthly.png");
+    await triggers.switchToYaml();
+    await triggers.expectYamlContains("FREQ=MONTHLY;BYDAY=-1FR");
+  });
+  await test.step("preserve advanced rules while editing execution settings", async () => {
+    await triggers.open();
+    await triggers.openTrigger("periodic-scan");
+    await triggers.useAdvancedScheduleRule("FREQ=HOURLY;BYMINUTE=15,45;COUNT=10");
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
+    await triggers.expectAdvancedScheduleRuleAfterReload("FREQ=HOURLY;BYMINUTE=15,45;COUNT=10");
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
+    await triggers.switchToYaml();
+    await triggers.expectYamlContains("FREQ=HOURLY;BYMINUTE=15,45;COUNT=10", "Include links.");
   });
 });

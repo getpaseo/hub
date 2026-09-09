@@ -1,8 +1,11 @@
 # Scheduled triggers
 
-Choose **Schedule** under **When this happens** in a new organization trigger. Choose **Every day**
-or **Every week**, select weekdays for a weekly schedule, add one or more times, and choose the
-timezone. For a morning and evening scan, add two times to a daily schedule.
+Choose **Schedule** under **When this happens** in a new organization trigger. Choose a minute,
+hour, day, week, month or year frequency and how many units between repeats. Daily and weekly
+controls accept multiple times; weekly controls select weekdays. Monthly controls select a date
+(including the last day) or an ordinal weekday, such as the last Friday. Choose a local start date
+and time and an IANA timezone. For a morning and evening scan, add two times to a daily schedule.
+For every 90 minutes, choose **Every minute** and set **Every** to 90.
 
 Then choose the daemon, working directory, provider/model, execution mode, thinking, and instructions
 as usual. GitHub access uses the same connection, repository, permission, and duration controls as
@@ -23,8 +26,8 @@ enabled: true
 on:
   schedule.tick:
     recurrence:
-      frequency: daily
-      times: ["09:00", "17:00"]
+      start: "2026-09-09T09:00:00"
+      rule: "FREQ=DAILY;BYHOUR=9,17"
       timezone: Europe/Berlin
 run:
   target:
@@ -40,12 +43,33 @@ run:
   idle_timeout: 10m
 ```
 
-For weekly recurrence, set `frequency: weekly` and add `days: [monday, wednesday, friday]`.
-`times` contains 1–24 distinct `HH:mm` strings in 24-hour time. `days` contains 1–7 distinct,
-lowercase weekday names; it is only valid with weekly recurrence. `timezone` is an IANA timezone
-name, including `UTC`. A schedule is the document's sole event and has no connection, filters,
-or invocation inputs. Other execution settings work normally, including GitHub authority,
-provider options, worktrees, continuation and outputs.
+The persisted recurrence has three fields: `start` is a quoted local date-time with seconds and
+no offset; `timezone` gives that clock's IANA timezone; `rule` is one RFC 5545 RRULE value, without
+the `RRULE:` prefix. The anchor determines interval alignment and omitted calendar/time fields.
+It is a lower bound, not an extra occurrence inserted outside the rule.
+
+These rules all use the same representation:
+
+| Recurrence                    | `rule`                                | Example `start`       |
+| ----------------------------- | ------------------------------------- | --------------------- |
+| Every hour                    | `FREQ=HOURLY`                         | `2026-09-09T09:00:00` |
+| Every 90 minutes              | `FREQ=MINUTELY;INTERVAL=90`           | `2026-09-09T09:00:00` |
+| Daily at 09:00 and 17:00      | `FREQ=DAILY;BYHOUR=9,17`              | `2026-09-09T09:00:00` |
+| Every other Monday and Friday | `FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,FR`  | `2026-09-07T09:00:00` |
+| Last Friday at 17:00          | `FREQ=MONTHLY;BYDAY=-1FR`             | `2026-09-25T17:00:00` |
+| Last day of each month        | `FREQ=MONTHLY;BYMONTHDAY=-1`          | `2026-09-30T09:00:00` |
+| February 29                   | `FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29` | `2028-02-29T09:00:00` |
+| Ten hourly occurrences        | `FREQ=HOURLY;COUNT=10`                | `2026-09-09T09:00:00` |
+
+The form generates standard RRULE fields, including `BYSETPOS` when necessary to preserve exact
+pairs such as 08:15 and 16:45 without adding 08:45 and 16:15. No form layout or preset identifier is
+stored. Rules beyond the guided controls remain intact in the recurrence rule editor, including
+when other execution settings change. **Use guided controls (replace rule)** explicitly replaces
+such a rule with a daily pattern. YAML/API can use calendar selectors beyond the current form.
+
+A schedule is the document's sole event and has no connection, filters or invocation inputs.
+Other execution settings work normally, including GitHub authority, provider options, worktrees,
+continuation and outputs.
 
 `${{ paseo.context }}` contains a `schedule` object with `trigger_id`, `scheduled_at` (the intended
 UTC occurrence), and `timezone`. History identifies the source as `schedule.tick`. Each occurrence
@@ -65,17 +89,32 @@ has its own durable identity; it is never represented as an external user's manu
   Disabling/re-enabling or editing a trigger preserves exclusion for its accepted run.
 - Times follow the selected timezone's local calendar. A local time missing during a daylight-saving
   jump is skipped. A local time repeated when clocks turn back runs only at its earlier instant.
+  Minute/hour intervals follow this local clock too; use UTC for elapsed-time intervals across DST.
+  Missing dates, such as February 31, are skipped. `COUNT` counts valid recurrence occurrences
+  since the anchor, including occurrences before enablement or skipped because a run was active;
+  it does not count successful executions. Missing DST times do not consume it. `UNTIL` is an
+  inclusive UTC date-time, such as `UNTIL=20261231T235959Z`. Exhausted rules have no next occurrence.
+  An already-persisted overdue final occurrence still receives the normal one catch-up run.
 - If the daemon is offline or connected to another Hub process, workflow work remains queued until
   the process with that connection can dispatch it. The existing maximum runtime still bounds that
   wait. This dispatch behavior applies to all trigger sources.
 
-The first slice supports daily and weekly recurrence. It does not include cron, monthly calendars,
-custom intervals, holiday exceptions, or configurable backlog/overlap policies. Exclusion is per
-trigger; separately authored triggers can execute simultaneously on the same daemon.
+The feature accepts a single RRULE, without exception calendars, multiple-rule unions or custom
+backlog/overlap policies. `COUNT` and `INTERVAL` are limited to 10,000 and rules to 2,048 characters;
+recurrence evaluation is bounded. Invalid fields, combinations and rules with no reachable
+occurrence are rejected. Exclusion is per trigger; separately authored triggers can execute
+simultaneously on the same daemon. The earlier daily/weekly YAML shape in this unreleased PR is
+replaced by the three-field representation above.
 
 ## Ownership and storage
 
 `src/triggers/schedule/` owns recurrence, its controls, clock, context, and `trigger_schedules` state.
+The recurrence document is independent of the form. `rrule-temporal` expands calendar candidates;
+a small adapter resolves wall times through Temporal, skips gaps, chooses the earlier fold and
+applies finite limits to valid occurrences. RFC month/year anchor defaults are explicit so invalid
+month dates are skipped instead of constrained. The operational table stores the recurrence,
+next occurrence and active run; exhausted schedules use a null next occurrence.
+
 Trigger save synchronizes this state within its existing transaction. A clock tick locks the owning
 trigger and scheduling state, then atomically writes the provider receipt, ordinary workflow run,
 steps, wakeup, next occurrence, and active-run link. Workflow intake is shared with other sources.

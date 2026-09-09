@@ -63,10 +63,34 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
       expect(await fixture.receipts()).toHaveLength(2);
       await store.save({
         triggerId: trigger.id,
-        yaml: scheduleYaml.replace('"09:00", "17:00"', '"23:15"'),
+        yaml: scheduleYaml.replace("BYHOUR=9,17", "BYHOUR=23;BYMINUTE=15"),
         userId: null,
       });
       expect((await fixture.due()).getTime()).toBeGreaterThan(Date.now() - 1000);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("persists finite exhaustion and retains one catch-up after the final occurrence", async () => {
+    const fixture = await setup(kind);
+    try {
+      const start = new Date(Date.now() + 86400_000).toISOString().slice(0, 19);
+      const yaml = scheduleYaml
+        .replace("2026-01-01T09:00:00", start)
+        .replace("FREQ=DAILY;BYHOUR=9,17", "FREQ=MINUTELY;COUNT=1")
+        .replace("Europe/Berlin", "UTC");
+      const trigger = await fixture.store.save({ yaml, userId: null });
+      const due = await fixture.due();
+      expect(await fixture.database.schedules.tick(new Date(due.getTime() + 86400_000))).toBe(1);
+      const state = await fixture.bundle.runtime.query<{ next_at: Date | null }>(
+        "select next_at from trigger_schedules where trigger_id = $1",
+        [trigger.id],
+      );
+      expect(state.rows[0]!.next_at).toBeNull();
+      await fixture.reopen();
+      expect(await fixture.database.schedules.tick(new Date("2099-01-01"))).toBe(0);
+      expect(await fixture.receipts()).toHaveLength(1);
     } finally {
       await fixture.close();
     }
@@ -280,7 +304,7 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
   try {
     expect((await request("validate", scheduleYaml)).status).toBe(200);
     expect((await request("install", scheduleYaml)).status).toBe(201);
-    const edited = scheduleYaml.replace('"09:00", "17:00"', '"08:15", "18:30"');
+    const edited = scheduleYaml.replace("BYHOUR=9,17", "BYHOUR=8,18;BYMINUTE=15,30;BYSETPOS=1,4");
     expect((await request("install", edited)).status).toBe(201);
     const response = await application.publicApi.handle(
       new Request("http://schedule.test/api/v1/triggers"),

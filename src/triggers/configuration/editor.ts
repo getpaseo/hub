@@ -113,7 +113,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   if (sameFormValue(projection.value, value)) return yaml;
   validateFormValue(value);
 
-  const document = parseDocument(yaml);
+  const document = parseDocument(yaml, { compat: ["timestamp"] });
   assertDocument(document);
   setIfChanged(document, ["name"], value.name);
   setIfChanged(document, ["enabled"], value.enabled);
@@ -230,7 +230,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         prompt: value.prompt,
       },
     },
-    { lineWidth: 0 },
+    { lineWidth: 0, compat: ["timestamp"] },
   );
 }
 
@@ -383,7 +383,7 @@ export function splitAgentId(value: string): { provider: string; model?: string 
 function parseEditorDocument(
   yaml: string,
 ): { success: true; data: TriggerDocument } | { success: false; error: string } {
-  const document = parseDocument(yaml);
+  const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
   const parsed = TriggerDocumentSchema.safeParse(document.toJS());
   if (!parsed.success) {

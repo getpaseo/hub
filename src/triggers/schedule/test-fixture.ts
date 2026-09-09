@@ -3,8 +3,8 @@ name: scheduled-scan
 on:
   schedule.tick:
     recurrence:
-      frequency: daily
-      times: ["09:00", "17:00"]
+      start: "2026-01-01T09:00:00"
+      rule: "FREQ=DAILY;BYHOUR=9,17"
       timezone: Europe/Berlin
 run:
   target: { daemon: devbox, cwd: /workspace }
