@@ -1904,7 +1904,7 @@ export class PaseoHub {
 
   /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
   async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
-    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox", true);
+    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox");
     return daemon.slug;
   }
 
@@ -2105,7 +2105,6 @@ export class PaseoHub {
     _alias: string,
     organizationName: string,
     _displayName: string,
-    providerCatalog = false,
   ): Promise<ContractDaemon> {
     const enrollmentToken = randomUUID();
     const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
@@ -2115,7 +2114,7 @@ export class PaseoHub {
        select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
       [randomUUID(), verifier, organizationName],
     );
-    const daemon = new ContractDaemon(this.primary, this.requests, undefined, providerCatalog);
+    const daemon = new ContractDaemon(this.primary, this.requests);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -5333,7 +5332,6 @@ class ContractDaemon {
     private readonly application: BuiltApplication,
     private readonly requests: APIRequestContext,
     friendlyName?: string,
-    private readonly providerCatalog = false,
   ) {
     const fallback = `daemon-${this.daemonId.slice(0, 8)}`;
     this.slug = friendlyName === undefined ? fallback : slugify(friendlyName, fallback);

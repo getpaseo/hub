@@ -30,6 +30,7 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
+  summarizeTriggerEvent,
   changeTriggerEvent,
   mergeTriggerForm,
   projectTriggerForm,
@@ -41,12 +42,7 @@ import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { EventFields } from "./event-fields.js";
-import {
-  EDITOR_EVENTS,
-  eventDefinition,
-  isEditorEvent,
-  parseEditorEvent,
-} from "./configuration/events.js";
+import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
@@ -55,7 +51,7 @@ type EditorMode = "form" | "yaml";
 /** Every form value the operator types into a control, i.e. everything but the event and the switch. */
 type TriggerTextField = Exclude<
   {
-    [Key in keyof TriggerFormValue]: TriggerFormValue[Key] extends string ? Key : never;
+    [Key in keyof TriggerFormValue]-?: TriggerFormValue[Key] extends string ? Key : never;
   }[keyof TriggerFormValue],
   "event"
 >;
@@ -170,7 +166,7 @@ export function TriggersPanel() {
               </DataCell>
               <DataCell className="hidden whitespace-nowrap md:table-cell">
                 <TwoLine
-                  primary={eventLabel(trigger.event)}
+                  primary={summarizeTriggerEvent(trigger.draft, trigger.event)}
                   {...(trigger.draft?.connection === "" || trigger.draft?.connection === undefined
                     ? {}
                     : { secondary: trigger.draft.connection })}
@@ -667,7 +663,7 @@ function TriggerForm({
                 />
               )}
             </FormField>
-            {form.event === "manual.run" ? null : (
+            {eventDefinition(form.event).origin === "hub" ? null : (
               <FormField
                 id="trigger-connection"
                 label="Connection"
@@ -689,15 +685,10 @@ function TriggerForm({
               </FormField>
             )}
           </div>
-          <EventFields
-            event={form.event}
-            values={form.qualifiers}
-            errors={errors}
-            onChange={(qualifiers) => update("qualifiers", qualifiers)}
-          />
+          <EventFields value={form} errors={errors} onChange={onChange} />
         </Card>
 
-        {form.event === "manual.run" ? null : (
+        {eventDefinition(form.event).origin === "hub" ? null : (
           <Card title={EDITOR_STEPS.access.title} description={EDITOR_STEPS.access.description}>
             <div className="grid gap-4 sm:grid-cols-2">
               <FormField id="trigger-audience" label="Audience">
@@ -1029,7 +1020,7 @@ function TriggerEditorSkeleton() {
 const EDITOR_STEPS = {
   event: {
     title: "The event",
-    description: "What arrives, and the connection it arrives on.",
+    description: "What starts the agent.",
   },
   access: {
     title: "Who can invoke it",
@@ -1296,8 +1287,4 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     prompt:
       "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };
-}
-
-function eventLabel(event: string): string {
-  return isEditorEvent(event) ? eventDefinition(event).label : event;
 }

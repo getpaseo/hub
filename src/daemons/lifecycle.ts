@@ -965,7 +965,8 @@ export class DaemonDispatchLifecycle {
     if (active) {
       return active.then(async () => {
         const current = await this.options.database.findAgentExecutionById(execution.id);
-        if (current !== undefined && isResumableDurableExecution(current)) {
+        // Agent identity is persisted before delivery; the replacement must also restore observation.
+        if (current !== undefined && !isTerminalExecutionStatus(current.status)) {
           return this.recoverExecutionOnce(daemon, current);
         }
         return undefined;
@@ -1856,10 +1857,6 @@ function isHubFinishExecutionStatus(
   value: unknown,
 ): value is AgentExecutionHubFinishExecutionStatus {
   return value === "running" || value === "completed" || value === "failed" || value === "canceled";
-}
-
-function isResumableDurableExecution(execution: AgentExecutionRecord): boolean {
-  return execution.status === "spawning" && execution.daemonAgentId === null;
 }
 
 function deriveHubAction(

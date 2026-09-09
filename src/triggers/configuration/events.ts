@@ -13,8 +13,9 @@ export interface QualifierDefinition {
 }
 
 interface EventDefinition {
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
   label: string;
+  origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
 }
 
@@ -32,7 +33,12 @@ function event(
   label: string,
   qualifiers: readonly QualifierDefinition[] = [],
 ): EventDefinition {
-  return { provider, label, qualifiers };
+  return {
+    provider,
+    label,
+    qualifiers,
+    origin: provider === "manual" || provider === "schedule" ? "hub" : "provider",
+  };
 }
 
 const EVENTS = {
@@ -55,6 +61,7 @@ const EVENTS = {
   "linear.issue_entered_scope": event("linear", "Linear issue entered scope"),
   "linear.issue_assigned": event("linear", "Linear issue assigned"),
   "linear.comment_created": event("linear", "Linear comment created"),
+  "schedule.tick": event("schedule", "Schedule"),
   "manual.run": event("manual", "Manual run"),
 };
 

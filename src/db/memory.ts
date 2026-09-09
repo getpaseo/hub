@@ -111,6 +111,7 @@ import {
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 export interface MemoryDatabaseOptions {
+  schedules?: import("../triggers/schedule/index.js").ScheduleStore;
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
   organizationIds?: readonly string[];
   memberships?: readonly {
@@ -153,6 +154,16 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
+  // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
+    return (
+      this.options.schedules ?? {
+        async tick() {
+          return 0;
+        },
+      }
+    );
+  }
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
@@ -398,10 +409,16 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+    const wakeup = this.workflowWakeups.get(triggerRunId);
+    if (wakeup?.leaseExpiresAt?.getTime() === claimedLease.getTime()) wakeup.leaseExpiresAt = now;
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
     const candidate = Array.from(this.workflowWakeups.values())
       .filter(
         (wakeup) =>
+          !excludedRunIds.includes(wakeup.triggerRunId) &&
           wakeup.availableAt <= now &&
           (wakeup.leaseExpiresAt === null || wakeup.leaseExpiresAt <= now),
       )

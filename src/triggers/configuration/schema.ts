@@ -1,3 +1,4 @@
+import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
@@ -52,6 +53,7 @@ export const TriggerFilterSchema = z
 
 export const TriggerEventSchema = z
   .object({
+    recurrence: RecurrenceSchema.optional(),
     connection: z.string().regex(CONNECTION_SLUG).optional(),
     filters: TriggerFilterSchema.optional(),
   })
@@ -124,6 +126,32 @@ export const TriggerDocumentSchema = z
   .strict()
   .superRefine((trigger, context) => {
     for (const [event, definition] of Object.entries(trigger.on)) {
+      if (event === "schedule.tick") {
+        if (
+          definition.recurrence === undefined ||
+          definition.connection !== undefined ||
+          definition.filters !== undefined
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["on", event],
+            message: "Schedule requires recurrence and does not accept connection or filters.",
+          });
+        }
+        if (Object.keys(trigger.on).length !== 1 || trigger.inputs !== undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["on", event],
+            message: "A schedule must be the only event and cannot require invocation inputs.",
+          });
+        }
+      } else if (definition.recurrence !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["on", event, "recurrence"],
+          message: "Recurrence is only supported for schedule.tick.",
+        });
+      }
       if (!isEditorEvent(event)) continue;
       for (const qualifier of eventDefinition(event).qualifiers) {
         const value = definition.filters?.[qualifier.key];

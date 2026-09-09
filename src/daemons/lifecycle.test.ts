@@ -1,3 +1,5 @@
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { DaemonResponseLostError } from "./protocol.js";
 import type { AgentConnection } from "./agents/index.js";
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
@@ -36,6 +38,121 @@ describe("durable Hub action acknowledgement state", () => {
     assert.equal(Reflect.get(cause, "code"), "github_authority_unavailable");
     assert.equal(JSON.stringify(diagnostic).includes("credential detail"), false);
   });
+
+  it.each(["spawning", "running"] as const)(
+    "recovers %s delivery and observation when reconnects overlap after creation",
+    async (status) => {
+      const database = createMemoryDatabase();
+      const daemon = daemonRecord();
+      const intent: LaunchMachineIntent = {
+        kind: "launch_machine",
+        organizationId: "org-reconnect",
+        projectId: "project-reconnect",
+        triggerRunId: "run-reconnect",
+        triggerName: "reconnect",
+        environmentName: "runner",
+        environment: {
+          kind: "daemon",
+          daemonId: daemon.id,
+          authoredSlug: daemon.slug,
+          cwd: "/repo",
+        },
+        agent: { provider: "codex" },
+        prompt: "Full prompt ".repeat(100),
+        allowOutputs: [],
+        autoArchive: false,
+        triggerContext: {},
+        outputContext: {},
+        configurationRevisionId: "revision-reconnect",
+        hubConfig: {},
+      };
+      await database.insertAgentExecution({
+        id: EXECUTION_ID,
+        organizationId: intent.organizationId,
+        projectId: intent.projectId,
+        machineId: null,
+        daemonId: daemon.id,
+        triggerContext: {},
+        outputContext: {},
+        configurationRevisionId: intent.configurationRevisionId,
+        launchIntent: intent,
+      });
+      if (status === "running") await database.transitionAgentExecution(EXECUTION_ID, "running");
+      let started!: () => void;
+      const sending = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let loseResponse!: (error: Error) => void;
+      const response = new Promise<void>((_resolve, reject) => {
+        loseResponse = reject;
+      });
+      const deliveries = new Map<string, string>();
+      let creates = 0;
+      let currentSends = 0;
+      let subscriptions = 0;
+      const agent = { id: AGENT_ID, workspaceId: "workspace-reconnect", status: "idle" as const };
+      const agents: AgentConnection = {
+        create: async () => {
+          creates++;
+          return agent;
+        },
+        get: async () => agent,
+        restore: async () => true,
+        control: async () => {},
+        watch: async () => {
+          subscriptions++;
+          return () => {
+            subscriptions--;
+          };
+        },
+        send: async (_agentId, messageId, text) => {
+          deliveries.set(messageId, text);
+          started();
+          await response;
+        },
+      };
+      let connection: DaemonConnection = {
+        agents,
+        getProviderSnapshot: async () => {
+          throw new Error("Provider catalog is not used");
+        },
+        refreshProviderSnapshot: async () => {},
+      };
+      const lifecycle = createDaemonDispatchLifecycle({
+        database,
+        connectionForDaemon: () => connection,
+        publicBaseUrl: "https://hub.test",
+        completionTokenSecret: "test-secret",
+      });
+      try {
+        const original = lifecycle.recoverDaemon(daemon);
+        await sending;
+        connection = {
+          ...connection,
+          agents: {
+            ...agents,
+            send: async (_agentId, messageId, text) => {
+              currentSends++;
+              assert.equal(deliveries.get(messageId), text);
+              deliveries.set(messageId, text);
+            },
+          },
+        };
+        const replacement = lifecycle.recoverDaemon(daemon);
+        loseResponse(new DaemonResponseLostError());
+        await Promise.all([original, replacement]);
+        assert.equal(currentSends, 1);
+        assert.equal(creates, 1);
+        assert.deepEqual([...deliveries], [[EXECUTION_ID, intent.prompt]]);
+        assert.equal((await database.findAgentExecutionById(EXECUTION_ID))?.status, "running");
+        assert.equal(lifecycle.activeExecutionObservationCount(), 1);
+        assert.equal(subscriptions, 1);
+      } finally {
+        await lifecycle.stop();
+      }
+      assert.equal(subscriptions, 0);
+    },
+  );
 
   it("logs a daemon execution recovery failure exactly once", async () => {
     const canary = "daemon-lifecycle-secret-4c09";
