@@ -135,6 +135,7 @@ const ExecutionSessionRequestSchema = z.object({
       agentId: z.string(),
       messageId: z.string(),
       text: z.string(),
+      activeTurnBehavior: z.literal("steer"),
     }),
     z.object({
       type: z.literal("cancel_agent_request"),
@@ -1160,6 +1161,36 @@ export class HubHarness {
         id: 1,
         method: "tools/call",
         params: { name, arguments: args },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body: unknown = await response.json();
+    assert.ok(isRecord(body));
+    return body;
+  }
+
+  async callSessionTool(
+    executionId: string,
+    name: "finish_execution" | "reply",
+    args: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const execution = await this.execution(executionId);
+    assert.ok(execution.agentSessionId);
+    const session = await this.requireDatabase().findAgentSession(execution.agentSessionId);
+    const mcp = session?.creationOptions.mcpServers?.["hub"];
+    assert.ok(mcp);
+    const response = await fetch(mcp.url, {
+      method: "POST",
+      headers: {
+        ...mcp.headers,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: { ...args, executionId } },
       }),
     });
     assert.equal(response.status, 200);

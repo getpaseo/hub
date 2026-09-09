@@ -51,7 +51,7 @@ class TestAgents implements AgentConnection {
   }
 }
 
-async function fixture() {
+async function fixture(now = Date.now) {
   const database = createMemoryDatabase();
   const connection = new TestAgents();
   const outputs = new OutputExecutorRegistry();
@@ -63,7 +63,7 @@ async function fixture() {
       replies.push({ executionId: input.agentExecutionId, context: input.outputContext });
     },
   });
-  const sessions = new AgentSessions(database, "secret", "https://hub.test", outputs);
+  const sessions = new AgentSessions(database, "secret", "https://hub.test", outputs, now);
   const capabilities = createExecutionCapabilityServer({
     database,
     outputs,
@@ -76,6 +76,7 @@ async function fixture() {
     target = "daemon",
     env: Record<string, string> = {},
     prompt = "hello",
+    overrides: Partial<LaunchMachineIntent> = {},
   ) {
     const executionId = randomUUID();
     const intent: LaunchMachineIntent = {
@@ -96,6 +97,7 @@ async function fixture() {
       configurationRevisionId: randomUUID(),
       hubConfig: {},
       ...(key === false ? {} : { continuation: { key, compatibility: { target } } }),
+      ...overrides,
     };
     await database.insertAgentExecution({
       id: executionId,
@@ -106,6 +108,7 @@ async function fixture() {
       outputContext: intent.outputContext,
       configurationRevisionId: intent.configurationRevisionId,
       launchIntent: intent,
+      ...(intent.deadlineAt === undefined ? {} : { deadlineAt: intent.deadlineAt }),
     });
     return {
       executionId,
@@ -118,7 +121,7 @@ async function fixture() {
           createOptions: async () => ({
             provider: "codex",
             cwd: "/repo",
-            env: {},
+            env: intent.github === undefined ? {} : { GH_TOKEN: "scoped-github-token" },
             toolPolicy: { preapproved: [] },
           }),
         }),
@@ -238,15 +241,69 @@ test("ordinary launches use agent sessions and preserve long prompts without ena
   ]);
 });
 
-test("temporary environment credentials require a new agent instead of being reused", async () => {
+test("steering keeps the active agent's scoped credentials instead of requiring a new agent", async () => {
   const f = await fixture();
   const env = { TOKEN: "${{ paseo.connections.support.token }}" };
-  const continuing = await f.arrival("conversation", "daemon", env);
-  await expect(continuing.dispatch()).rejects.toThrow(
-    "Temporary environment credentials require New agent",
-  );
-  expect(f.connection.creates).toHaveLength(0);
-  const fresh = await f.arrival(null, "daemon", env);
-  await fresh.dispatch();
+  const github = {
+    connection: "getpaseo-github",
+    repositories: ["getpaseo/paseo"],
+    permissions: { contents: "write" as const },
+    durationMs: 60 * 60 * 1000,
+  };
+  const first = await f.arrival("conversation", "daemon", env, "first request", { github });
+  const original = await first.dispatch();
+  const next = await f.arrival("conversation", "daemon", env, "follow-up", { github });
+  expect(await next.dispatch()).toMatchObject({ agentId: original.agentId, action: "continued" });
   expect(f.connection.creates).toHaveLength(1);
+  expect(f.connection.creates[0]?.env).toEqual({ GH_TOKEN: "scoped-github-token" });
+  expect(f.connection.deliveries).toHaveLength(2);
+});
+
+test("steering cannot extend the active agent's original max-runtime deadline", async () => {
+  const f = await fixture();
+  const deadlineAt = new Date("2030-01-01T01:00:00Z");
+  const first = await f.arrival("conversation", "daemon", {}, "first request", { deadlineAt });
+  await first.dispatch();
+  const next = await f.arrival("conversation", "daemon", {}, "follow-up", {
+    deadlineAt: new Date("2030-01-01T01:30:00Z"),
+  });
+  await next.dispatch();
+  expect((await f.execution(first.executionId)).deadlineAt).toEqual(deadlineAt);
+  expect((await f.execution(next.executionId)).deadlineAt).toEqual(deadlineAt);
+});
+
+test("a completed credentialed task gets a fresh agent and isolates the previous agent's tools", async () => {
+  const f = await fixture();
+  const github = {
+    connection: "getpaseo-github",
+    repositories: ["getpaseo/paseo"],
+    permissions: { contents: "write" as const },
+    durationMs: 60 * 60 * 1000,
+  };
+  const first = await f.arrival("conversation", "daemon", {}, "first", { github });
+  const original = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  await f.sessions.releaseAuthority(await f.execution(first.executionId), async () => {});
+  const next = await f.arrival("conversation", "daemon", {}, "next task", { github });
+  const fresh = await next.dispatch();
+  expect(fresh.agentId).not.toBe(original.agentId);
+  expect(f.connection.creates).toHaveLength(2);
+  expect(await f.call(next.executionId, "finish_execution", {}, first.executionId)).toMatchObject({
+    result: { isError: true },
+  });
+});
+
+test("a ping cannot send more work after the inherited deadline while timeout cleanup is pending", async () => {
+  let now = Date.parse("2030-01-01T00:00:00Z");
+  const f = await fixture(() => now);
+  const first = await f.arrival("conversation", "daemon", {}, "first", {
+    deadlineAt: new Date(now + 1000),
+  });
+  await first.dispatch();
+  now += 1000;
+  const next = await f.arrival("conversation", "daemon", {}, "too late", {
+    deadlineAt: new Date(now + 1000),
+  });
+  await expect(next.dispatch()).rejects.toThrow("execution_deadline_exceeded");
+  expect(f.connection.deliveries).toHaveLength(1);
 });
