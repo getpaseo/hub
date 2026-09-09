@@ -3,7 +3,24 @@ import { describe, it } from "vitest";
 import {
   GetProvidersSnapshotResponseSchema,
   HubExecutionAgentCreateRequestSchema,
+  isHubFinishExecutionToolName,
 } from "./protocol.js";
+
+describe("isHubFinishExecutionToolName", () => {
+  it("accepts all known Hub finish-execution tool name forms", () => {
+    assert.equal(isHubFinishExecutionToolName("hub.finish_execution"), true);
+    assert.equal(isHubFinishExecutionToolName("mcp__hub__finish_execution"), true);
+    assert.equal(isHubFinishExecutionToolName("hub_finish_execution"), true);
+  });
+
+  it("rejects unrelated or partially matching tool names", () => {
+    assert.equal(isHubFinishExecutionToolName("hub_finish_execution_extra"), false);
+    assert.equal(isHubFinishExecutionToolName("finish_execution"), false);
+    assert.equal(isHubFinishExecutionToolName("hub.finish_execution "), false);
+    assert.equal(isHubFinishExecutionToolName("mcp__other__finish_execution"), false);
+    assert.equal(isHubFinishExecutionToolName(""), false);
+  });
+});
 
 describe("Hub execution create protocol", () => {
   it("accepts only structured refs for the injected Hub MCP server", () => {
