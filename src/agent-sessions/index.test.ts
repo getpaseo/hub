@@ -426,4 +426,7 @@ test("a continuation cannot overtake a durable cleanup action that has not been 
   const next = await f.arrival();
   await expect(next.dispatch()).rejects.toThrow("cleanup is pending");
   expect(f.connection.deliveries).toHaveLength(1);
+  // A rejected arrival has selected the session but has not started work on its agent.
+  await f.sessions.control(await f.execution(first.executionId), f.connection, "archive");
+  expect(f.connection.archives).toBe(1);
 });

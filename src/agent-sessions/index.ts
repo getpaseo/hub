@@ -235,8 +235,16 @@ export class AgentSessions {
       }
       if (!session.agentId || !session.workspaceId) return;
       const executions = await this.database.listAgentSessionExecutions(id);
-      // A completed arrival cannot stop work belonging to a newer arrival.
-      if (executions.some((item) => item.status === "spawning" || item.status === "running"))
+      // Session selection alone is not work: a rejected arrival must not suppress cleanup.
+      // A completed arrival cannot stop a newer arrival already attached to this agent.
+      const agentId = session.agentId;
+      if (
+        executions.some(
+          (item) =>
+            item.daemonAgentId === agentId &&
+            (item.status === "spawning" || item.status === "running"),
+        )
+      )
         return;
       await connection.control(
         session.agentId,
