@@ -165,7 +165,10 @@ jobs:
 
       - run: npm ci
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: |
+          # Playwright downloads its own Chromium; the runner's Chrome apt feed is unrelated.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google-chrome*.sources
+          npx playwright install --with-deps chromium
       - name: Run built-app browser tests
         run: npm run test:e2e:browser
 
