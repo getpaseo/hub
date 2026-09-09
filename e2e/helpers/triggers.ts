@@ -149,6 +149,7 @@ export class OrganizationTriggers {
     await this.page.getByRole("radio", { name: "New agent", exact: true }).check();
     await expect(this.page.getByRole("combobox", { name: "Connection", exact: true })).toBeHidden();
     await expect(this.page.getByRole("heading", { name: "Who can invoke it" })).toBeHidden();
+    await this.expectSimpleScheduleControls();
     await this.page.getByLabel("Time 1", { exact: true }).fill("08:15");
     await this.page.getByRole("button", { name: "Add time", exact: true }).click();
     await this.page.getByLabel("Time 2", { exact: true }).fill("16:45");
@@ -178,6 +179,7 @@ export class OrganizationTriggers {
 
   async expectScheduleAfterReload() {
     await this.page.reload();
+    await this.expectSimpleScheduleControls();
     await expect(this.page.getByRole("checkbox", { name: "Monday", exact: true })).toBeChecked();
     await expect(this.page.getByRole("checkbox", { name: "Friday", exact: true })).toBeChecked();
     await expect(
@@ -193,60 +195,55 @@ export class OrganizationTriggers {
     );
   }
 
-  async setScheduleInterval(frequency: string, every: number) {
+  async setSimpleSchedule(frequency: string) {
     await this.page.setViewportSize({ width: 1280, height: 1000 });
     await this.page.getByRole("combobox", { name: "Repeat", exact: true }).click();
     await this.page.getByRole("option", { name: frequency, exact: true }).click();
-    await this.page.getByLabel("Every", { exact: true }).fill(String(every));
-    await this.page.getByLabel("Starting", { exact: true }).fill("2026-09-09T09:00");
+    await this.expectSimpleScheduleControls();
   }
 
-  async expectScheduleIntervalAfterReload(frequency: string, every: number) {
+  async expectSimpleScheduleControls() {
+    await expect(this.page.getByLabel("Every", { exact: true })).toHaveCount(0);
+    await expect(this.page.getByLabel("Starting", { exact: true })).toHaveCount(0);
+    await expect(this.page.getByLabel("Custom schedule", { exact: true })).toHaveCount(0);
+    await expect(
+      this.page.getByRole("button", { name: "Edit recurrence rule", exact: true }),
+    ).toHaveCount(0);
+  }
+
+  async expectHourlyAfterReload() {
     await this.page.reload();
     await expect(this.page.getByRole("combobox", { name: "Repeat", exact: true })).toContainText(
-      frequency,
+      "Every hour",
     );
-    await expect(this.page.getByLabel("Every", { exact: true })).toHaveValue(String(every));
-    await expect(this.page.getByLabel("Starting", { exact: true })).toHaveValue("2026-09-09T09:00");
-    await expect(this.page.getByLabel("Time 1", { exact: true })).toBeHidden();
-  }
-
-  async setScheduleToLastFriday() {
-    await this.setScheduleInterval("Every month", 1);
-    await this.page.getByRole("combobox", { name: "Repeat on", exact: true }).click();
-    await this.page.getByRole("option", { name: "Weekday of the month", exact: true }).click();
-    await this.page.getByRole("combobox", { name: "Which week", exact: true }).click();
-    await this.page.getByRole("option", { name: "Last", exact: true }).click();
-    await this.page.getByRole("combobox", { name: "Weekday", exact: true }).click();
-    await this.page.getByRole("option", { name: "Friday", exact: true }).click();
-    await this.page.getByLabel("Time 1", { exact: true }).fill("17:00");
-  }
-
-  async expectLastFridayAfterReload() {
-    await this.page.reload();
-    await expect(this.page.getByRole("combobox", { name: "Repeat on", exact: true })).toContainText(
-      "Weekday of the month",
-    );
-    await expect(
-      this.page.getByRole("combobox", { name: "Which week", exact: true }),
-    ).toContainText("Last");
-    await expect(this.page.getByRole("combobox", { name: "Weekday", exact: true })).toContainText(
-      "Friday",
-    );
-    await expect(this.page.getByLabel("Time 1", { exact: true })).toHaveValue("17:00");
+    await this.expectSimpleScheduleControls();
+    await expect(this.page.getByLabel("Time 1", { exact: true })).toHaveCount(0);
   }
 
   async useAdvancedScheduleRule(rule: string) {
-    await this.page.getByRole("button", { name: "Edit recurrence rule", exact: true }).click();
-    await this.page.getByLabel("Recurrence rule", { exact: true }).fill(rule);
+    await this.switchToYaml();
+    const document = parseDocument(await this.yamlEditor().innerText(), { compat: ["timestamp"] });
+    document.setIn(["on", "schedule.tick", "recurrence", "rule"], rule);
+    await this.replaceYaml(document.toString({ lineWidth: 0 }));
+    await this.switchToForm();
+    await expect(this.page.getByLabel("Custom schedule", { exact: true })).toHaveValue(rule);
+    await expect(this.page.getByRole("combobox", { name: "Repeat", exact: true })).toHaveCount(0);
+    await expect(this.page.getByLabel("Every", { exact: true })).toHaveCount(0);
   }
 
   async expectAdvancedScheduleRuleAfterReload(rule: string) {
     await this.page.reload();
-    await expect(this.page.getByLabel("Recurrence rule", { exact: true })).toHaveValue(rule);
+    await expect(this.page.getByLabel("Custom schedule", { exact: true })).toHaveValue(rule);
     await this.page
       .getByLabel("Instructions", { exact: true })
       .fill("Read reports and summarize new items. Include links.");
+  }
+
+  async captureCustomSchedule(path: string) {
+    await this.page.getByLabel("Custom schedule", { exact: true }).evaluate((element) => {
+      window.scrollBy(0, element.getBoundingClientRect().top - 100);
+    });
+    await this.page.screenshot({ path });
   }
 
   async captureScheduleDetail(path: string) {

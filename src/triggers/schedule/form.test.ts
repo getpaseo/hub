@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { defaultDraft, projectRecurrence, ruleFromDraft } from "./form.js";
-import { nextOccurrence, recurrenceSummary, RecurrenceSchema } from "./recurrence.js";
+import { nextOccurrence, RecurrenceSchema } from "./recurrence.js";
 
 it("round-trips exact paired times without extra hour/minute combinations", () => {
   const draft = {
@@ -24,10 +24,10 @@ it("round-trips exact paired times without extra hour/minute combinations", () =
     "2026-09-14T08:15:00.000Z",
   ]);
 });
-it.each(["MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"])(
-  "round-trips %s controls",
+it.each(["MINUTELY", "HOURLY", "DAILY", "WEEKLY"])(
+  "round-trips simple %s controls",
   (frequency) => {
-    const draft = { ...defaultDraft("2026-09-09T09:00:00"), frequency, interval: 2 };
+    const draft = { ...defaultDraft("2026-09-09T09:00:00"), frequency };
     const value = {
       start: "2026-09-09T09:00:00",
       timezone: "Europe/Berlin",
@@ -37,21 +37,15 @@ it.each(["MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"])(
     expect(RecurrenceSchema.safeParse(value).success).toBe(true);
   },
 );
-it("round-trips the last Friday of each month", () => {
-  const draft = {
-    ...defaultDraft("2026-09-09T17:00:00"),
-    frequency: "MONTHLY",
-    monthly: "weekday" as const,
-    ordinal: -1,
-    weekday: "FR",
-  };
-  const value = {
-    start: "2026-09-09T17:00:00",
-    timezone: "Europe/Berlin",
-    rule: ruleFromDraft(draft),
-  };
-  expect(projectRecurrence(value)).toEqual(draft);
-  expect(recurrenceSummary(value)).toBe("Every month on the last friday at 17:00 (Europe/Berlin)");
+it.each([
+  "FREQ=MINUTELY;INTERVAL=90",
+  "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO",
+  "FREQ=MONTHLY;BYDAY=-1FR",
+  "FREQ=YEARLY",
+])("leaves %s in a custom rule field", (rule) => {
+  const value = { start: "2026-01-01T09:00:00", timezone: "UTC", rule };
+  expect(projectRecurrence(value)).toBeNull();
+  expect(RecurrenceSchema.safeParse(value).success).toBe(true);
 });
 it("preserves advanced rules instead of projecting them into lossy controls", () => {
   for (const rule of [

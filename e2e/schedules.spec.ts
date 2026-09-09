@@ -47,32 +47,34 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   await test.step("accept a real clock occurrence and show its source in Activity", async () => {
     await triggers.runScheduledOccurrence(hub.primaryApplication(), "periodic-scan");
   });
-  await test.step("edit to hourly and anchored 90-minute repeats, then save and reload", async () => {
+  await test.step("Every hour means hourly without a second interval field", async () => {
     await triggers.open();
     await triggers.openTrigger("periodic-scan");
-    await triggers.setScheduleInterval("Every hour", 1);
+    await triggers.setSimpleSchedule("Every hour");
     await triggers.save("periodic-scan");
     await triggers.openTrigger("periodic-scan");
-    await triggers.expectScheduleIntervalAfterReload("Every hour", 1);
+    await triggers.expectHourlyAfterReload();
     await triggers.captureScheduleDetail("e2e/screenshots/schedules/hourly.png");
-    await triggers.setScheduleInterval("Every minute", 90);
+  });
+  await test.step("custom intervals from YAML use the custom field and survive reload", async () => {
+    await triggers.useAdvancedScheduleRule("FREQ=MINUTELY;INTERVAL=90");
     await triggers.save("periodic-scan");
     await triggers.openTrigger("periodic-scan");
-    await triggers.expectScheduleIntervalAfterReload("Every minute", 90);
-    await triggers.captureScheduleDetail("e2e/screenshots/schedules/interval.png");
+    await triggers.expectAdvancedScheduleRuleAfterReload("FREQ=MINUTELY;INTERVAL=90");
+    await triggers.captureCustomSchedule("e2e/screenshots/schedules/interval.png");
+    await triggers.save("periodic-scan");
+    await triggers.openTrigger("periodic-scan");
     await triggers.switchToYaml();
-    await triggers.expectYamlContains("FREQ=MINUTELY;INTERVAL=90");
+    await triggers.expectYamlContains("FREQ=MINUTELY;INTERVAL=90", "Include links.");
   });
-  await test.step("edit to the last Friday each month and reload its controls", async () => {
+  await test.step("calendar rules from YAML use the custom field", async () => {
     await triggers.open();
     await triggers.openTrigger("periodic-scan");
-    await triggers.setScheduleToLastFriday();
+    await triggers.useAdvancedScheduleRule("FREQ=MONTHLY;BYDAY=-1FR;BYHOUR=17");
     await triggers.save("periodic-scan");
     await triggers.openTrigger("periodic-scan");
-    await triggers.expectLastFridayAfterReload();
-    await triggers.captureScheduleDetail("e2e/screenshots/schedules/monthly.png");
-    await triggers.switchToYaml();
-    await triggers.expectYamlContains("FREQ=MONTHLY;BYDAY=-1FR");
+    await triggers.expectAdvancedScheduleRuleAfterReload("FREQ=MONTHLY;BYDAY=-1FR;BYHOUR=17");
+    await triggers.captureCustomSchedule("e2e/screenshots/schedules/monthly.png");
   });
   await test.step("preserve advanced rules while editing execution settings", async () => {
     await triggers.open();

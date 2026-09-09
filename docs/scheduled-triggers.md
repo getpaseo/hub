@@ -1,11 +1,13 @@
 # Scheduled triggers
 
-Choose **Schedule** under **When this happens** in a new organization trigger. Choose a minute,
-hour, day, week, month or year frequency and how many units between repeats. Daily and weekly
-controls accept multiple times; weekly controls select weekdays. Monthly controls select a date
-(including the last day) or an ordinal weekday, such as the last Friday. Choose a local start date
-and time and an IANA timezone. For a morning and evening scan, add two times to a daily schedule.
-For every 90 minutes, choose **Every minute** and set **Every** to 90.
+Choose **Schedule** under **When this happens** in a new organization trigger. Choose **Every
+minute**, **Every hour**, **Every day**, or **Every week**. Each preset means exactly that frequency;
+there is no second interval setting. Daily and weekly schedules accept one or more times. Weekly
+schedules also select days of the week. Choose a timezone for those times.
+
+Author custom intervals and calendar rules in YAML. When a rule has no matching preset, the form
+shows a **Custom schedule** rule field with its start and timezone. You can edit the rule there;
+changes to other execution settings preserve it exactly.
 
 Then choose the daemon, working directory, provider/model, execution mode, thinking, and instructions
 as usual. GitHub access uses the same connection, repository, permission, and duration controls as
@@ -61,11 +63,11 @@ These rules all use the same representation:
 | February 29                   | `FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29` | `2028-02-29T09:00:00` |
 | Ten hourly occurrences        | `FREQ=HOURLY;COUNT=10`                | `2026-09-09T09:00:00` |
 
-The form generates standard RRULE fields, including `BYSETPOS` when necessary to preserve exact
+The simple controls generate standard RRULE fields, including `BYSETPOS` when necessary to preserve exact
 pairs such as 08:15 and 16:45 without adding 08:45 and 16:15. No form layout or preset identifier is
-stored. Rules beyond the guided controls remain intact in the recurrence rule editor, including
-when other execution settings change. **Use guided controls (replace rule)** explicitly replaces
-such a rule with a daily pattern. YAML/API can use calendar selectors beyond the current form.
+stored. Rules beyond the simple presets appear in the **Custom schedule** field, including when
+other execution settings change. Custom intervals, monthly/yearly patterns, and finite rules
+remain fully supported by YAML/API; they are not expanded into extra form controls.
 
 A schedule is the document's sole event and has no connection, filters or invocation inputs.
 Other execution settings work normally, including GitHub authority, provider options, worktrees,
