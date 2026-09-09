@@ -21,6 +21,7 @@ import type { DiscordBotClient } from "../triggers/discord/bot.js";
 import { createDiscordTriggerProvider } from "../triggers/discord/provider.js";
 import type { GitHubReactionClient } from "../triggers/github/provider.js";
 import { createGitHubTriggerProvider } from "../triggers/github/provider.js";
+import type { GitHubTeamMembershipClient } from "../triggers/github/team-membership.js";
 import type { SlackBotClient } from "../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../triggers/slack/provider.js";
 import type { TriggerProvider } from "../triggers/index.js";
@@ -208,6 +209,7 @@ function createGitHubReactionFixture() {
     configurationStoreForProject: () =>
       new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
     reactions,
+    teamMemberships: new DenyingGitHubTeamMemberships(),
   });
   return {
     provider,
@@ -224,6 +226,12 @@ function createGitHubReactionFixture() {
       deleted: reactions.deleted,
     }),
   };
+}
+
+class DenyingGitHubTeamMemberships implements GitHubTeamMembershipClient {
+  async isActiveMember(): Promise<boolean> {
+    return false;
+  }
 }
 
 type WorkflowOutcome = "step_failure" | "timeout" | "prelaunch_failure";

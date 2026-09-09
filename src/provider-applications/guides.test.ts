@@ -208,6 +208,7 @@ test("GitHub renders permissions as a mapping and events as a list, never as pro
     { name: "Issues", access: "Read and write" },
     { name: "Pull requests", access: "Read and write" },
     { name: "Metadata", access: "Read-only" },
+    { name: "Members", access: "Read-only" },
   ]);
   assert.deepEqual(
     steps.flatMap((step) => step.events ?? []),
