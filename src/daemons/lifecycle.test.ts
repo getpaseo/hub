@@ -194,6 +194,23 @@ describe("durable Hub action acknowledgement state", () => {
     await fixture.lifecycle.stop();
   });
 
+  it("archives on the OpenCode-normalized hub_finish_execution tool name", async () => {
+    const fixture = await acknowledgementFixture();
+    await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+
+    await fixture.connection.emit(toolCall("finish-call", "hub_finish_execution", "completed"));
+    await fixture.connection.emit(turnCompleted());
+    await fixture.connection.emit(agentIdle());
+
+    const execution = await fixture.database.findAgentExecutionById(EXECUTION_ID);
+    assert.equal(execution?.hubActionAcknowledgements.finishExecutionCall?.callId, "finish-call");
+    assert.equal(execution?.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+    assert.deepEqual(fixture.connection.actions, ["archive"]);
+    assert.notEqual(execution?.hubActionReadyAt, null);
+    assert.notEqual(execution?.hubActionCompletedAt, null);
+    await fixture.lifecycle.stop();
+  });
+
   it.each(["running", "canceled"] as const)(
     "does not archive while finish_execution is %s",
     async (status) => {

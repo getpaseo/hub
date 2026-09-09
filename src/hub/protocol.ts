@@ -99,7 +99,11 @@ const HubTimelineItemSchema = z
   .passthrough();
 
 export function isHubFinishExecutionToolName(name: string): boolean {
-  return name === "hub.finish_execution" || name === "mcp__hub__finish_execution";
+  return (
+    name === "hub.finish_execution" ||
+    name === "hub_finish_execution" ||
+    name === "mcp__hub__finish_execution"
+  );
 }
 
 export const HubDaemonHelloSchema = z.object({
