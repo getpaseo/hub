@@ -50,6 +50,21 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     await hub.completedCapabilityRun(separate.executionId);
   }, 120_000);
 
+  it("recovers a continuation whose agent was attached before its initial send", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.enableAgentContinuation();
+    hub.loseNextContinuationSend();
+    const first = await hub.runCapabilityTrigger("continuation-restart", "restart-thread");
+    await hub.restartBeforeContinuationSend(first.executionId);
+    const completed = await hub.completedCapabilityRun(first.executionId);
+    assert.equal(completed.replySucceeded, true);
+    await hub.sessionIsArchived(first.executionId);
+    const next = await hub.runCapabilityTrigger("continuation-after-restart", "restart-thread");
+    assert.equal(next.agentId, first.agentId);
+    await hub.completedCapabilityRun(next.executionId);
+  }, 120_000);
+
   it("connects the source-built daemon through an enrollment token", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();

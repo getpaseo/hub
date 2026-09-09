@@ -794,6 +794,29 @@ export class HubE2E {
     };
   }
 
+  loseNextContinuationSend(): void {
+    this.requireProxy().loseNextContinuationSend();
+  }
+
+  async restartBeforeContinuationSend(executionId: string): Promise<void> {
+    await this.observe(
+      async () => this.requireProxy().continuationSendAttempts() === 1,
+      "continuation send to reach the fault proxy",
+    );
+    const result = await this.requirePool().query<{ status: string }>(
+      "select status from agent_executions where id = $1",
+      [executionId],
+    );
+    if (result.rows[0]?.status !== "spawning")
+      throw new Error("Expected startup before the send acknowledgement");
+    await this.restartHub();
+    await this.daemonIsConnected();
+    await this.observe(
+      async () => this.requireProxy().continuationSendAttempts() === 2,
+      "the same continuation message to retry after Hub restart",
+    );
+  }
+
   async runCapabilityTrigger(deliveryKey: string, conversation?: string): Promise<ManualRun> {
     const response = await fetch(`${this.requireProxy().origin}/test/trigger`, {
       method: "POST",
@@ -821,7 +844,7 @@ export class HubE2E {
         executionId,
       ]);
       if (execution.rows[0]?.status === "failed")
-        throw new Error(JSON.stringify(execution.rows[0].result));
+        throw new Error(`${JSON.stringify(execution.rows[0].result)}\n${this.failureArtifacts()}`);
       return execution.rows[0]?.daemon_agent_id != null;
     }, "capability execution association");
     const execution = await this.requirePool().query<{

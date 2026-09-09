@@ -113,36 +113,38 @@ async function main(): Promise<void> {
     daemon = enrollment?.status === "slug_conflict" ? undefined : enrollment;
   }
   if (daemon === undefined) throw new Error("Hub E2E seed daemon enrollment failed");
-  const config = await configuration.insertManualBundleRevision({
-    files: configurationBundleFixture(
-      dump({
-        environments: [
-          { name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() },
-        ],
-        triggers: [
-          {
-            name: "e2e-discord",
-            on: "e2e.discord",
-            max_runtime: "2h",
-            filters: { from_users: ["phase-five-operator"] },
-            steps: [
-              {
-                id: "e2e-step",
-                environment: "hub-e2e",
-                max_runtime: "1h",
-                idle_timeout: "5m",
-                agent: { provider: "hub-e2e" },
-                prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
-              },
-            ],
-          },
-        ],
-      }),
-    ),
-    userId: "hub-e2e",
-    sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
-  });
-  await configuration.activate(config.id);
+  if ((await configuration.getActive()) === undefined) {
+    const config = await configuration.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump({
+          environments: [
+            { name: "hub-e2e", kind: "daemon", daemon: daemon.slug, cwd: process.cwd() },
+          ],
+          triggers: [
+            {
+              name: "e2e-discord",
+              on: "e2e.discord",
+              max_runtime: "2h",
+              filters: { from_users: ["phase-five-operator"] },
+              steps: [
+                {
+                  id: "e2e-step",
+                  environment: "hub-e2e",
+                  max_runtime: "1h",
+                  idle_timeout: "5m",
+                  agent: { provider: "hub-e2e" },
+                  prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      userId: "hub-e2e",
+      sourceEvidence: { kind: "harness-seed", userId: "hub-e2e" },
+    });
+    await configuration.activate(config.id);
+  }
   const resources = new OrganizationResources(database);
   const application = createHubApplication({
     database,

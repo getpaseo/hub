@@ -1,5 +1,9 @@
-import { DaemonAgentError } from "./agents/index.js";
-import { AgentSessions, AgentSessionError } from "../agent-sessions/index.js";
+import { DaemonAgentError, DaemonRequestTimeoutError } from "./agents/index.js";
+import {
+  AgentSessions,
+  AgentSessionError,
+  AgentOperationPendingError,
+} from "../agent-sessions/index.js";
 import type { AgentEvent } from "./agents/index.js";
 import {
   buildExecutionCapabilityMcpServer,
@@ -157,8 +161,11 @@ export class DaemonDispatchLifecycle {
     (failure?: DaemonDispatchFailure) => void
   >();
   private readonly deadlineTimersByExecution = new Map<string, () => void>();
+  private readonly stopped = new AbortController();
+  private readonly startupControllers = new Map<string, AbortController>();
   private readonly activeExecutionDispatches = new Map<string, Promise<unknown>>();
   private readonly reconcilingHubActions = new Map<string, Promise<void>>();
+  private readonly hubActionRetryTimers = new Map<string, () => void>();
   private readonly daemonRecoveries = new Set<Promise<void>>();
   private readonly recoveredSubscriptions = new Map<string, () => void>();
   private stopping = false;
@@ -176,11 +183,17 @@ export class DaemonDispatchLifecycle {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.stopped.abort(new DaemonCreateResponseLostError());
+    for (const controller of this.startupControllers.values()) {
+      controller.abort(new DaemonCreateResponseLostError());
+    }
     for (const unsubscribe of this.recoveredSubscriptions.values()) unsubscribe();
     this.recoveredSubscriptions.clear();
     for (const clear of this.deadlineTimersByExecution.values()) clear();
     this.deadlineTimersByExecution.clear();
     this.startedExecutions.clear();
+    for (const clear of this.hubActionRetryTimers.values()) clear();
+    this.hubActionRetryTimers.clear();
     await Promise.allSettled([
       ...this.daemonRecoveries,
       ...this.reconcilingHubActions.values(),
@@ -1015,48 +1028,72 @@ export class DaemonDispatchLifecycle {
     if (this.stopping) return;
 
     const intent = current.launchIntent;
-    if (intent === null || this.options.publicBaseUrl === undefined)
+    const publicBaseUrl = this.options.publicBaseUrl;
+    if (intent === null || publicBaseUrl === undefined)
       throw new Error("execution launch intent cannot be recovered");
     if (intent.continuation !== undefined) {
-      if (current.daemonAgentId === null) {
-        await this.dispatchSession({
-          daemonId: daemon.id,
-          executionId: current.id,
-          intent,
-          hubExecutionEnv: {
+      if (current.status === "spawning" || current.daemonAgentId === null) {
+        if (current.deadlineAt === null) throw new Error("Execution deadline is missing");
+        await this.acquireAndSpawnAgent(
+          {
+            daemonId: daemon.id,
+            machineId: daemon.machineId,
             executionId: current.id,
-            completionToken: this.completionToken(current.id),
-            publicBaseUrl: this.options.publicBaseUrl,
+            intent,
+            hubExecutionEnv: {
+              executionId: current.id,
+              completionToken: this.completionToken(current.id),
+              publicBaseUrl,
+            },
           },
-        });
-      } else {
-        const unsubscribe = await connection.agents.watch(current.daemonAgentId, (event) =>
-          this.observeSessionEvent(current.id, daemon.id, event),
+          current.deadlineAt,
         );
-        this.recoveredSubscriptions.get(current.id)?.();
-        this.recoveredSubscriptions.set(current.id, unsubscribe);
-        this.armExecutionDeadline(current);
+      } else {
+        if (current.deadlineAt === null) throw new Error("Execution deadline is missing");
+        const agentId = current.daemonAgentId;
+        await this.withExecutionStartup(current.id, current.deadlineAt, async (signal) => {
+          const unsubscribe = await connection.agents.watch(
+            agentId,
+            (event) => this.observeSessionEvent(current.id, daemon.id, event),
+            signal,
+          );
+          if (signal.aborted) {
+            unsubscribe();
+            signal.throwIfAborted();
+          }
+          this.recoveredSubscriptions.get(current.id)?.();
+          this.recoveredSubscriptions.set(current.id, unsubscribe);
+          this.armExecutionDeadline(current);
+        });
       }
       return;
     }
-    const createOptions = await this.buildCreateAgentOptions(intent, {
-      executionId: current.id,
-      completionToken: this.completionToken(current.id),
-      publicBaseUrl: this.options.publicBaseUrl,
-    }).catch((error: unknown) => {
-      throw toDispatchPreparationFailure(error);
+    if (current.deadlineAt === null) throw new Error("Execution deadline is missing");
+    const deadlineAt = current.deadlineAt;
+    await this.withExecutionStartup(current.id, deadlineAt, async (signal) => {
+      const createOptions = await this.buildCreateAgentOptions(intent, {
+        executionId: current.id,
+        completionToken: this.completionToken(current.id),
+        publicBaseUrl,
+      }).catch((error: unknown) => {
+        throw toDispatchPreparationFailure(error);
+      });
+      signal.throwIfAborted();
+      this.subscribeRecoveredExecution(current.id, daemon.id, connection);
+      this.armExecutionDeadline(current);
+      const agent = await connection
+        .createAgent({ ...createOptions, deadlineAt: deadlineAt.toISOString() }, signal)
+        .catch((error: unknown) => {
+          throw toDaemonTransportFailure(error);
+        });
+      signal.throwIfAborted();
+      if (isInterruptedAgentState(agent.state)) {
+        await this.failAgentExecution(current.id, "agent_interrupted");
+        return;
+      }
+      await this.options.database.attachAgentToExecution(current.id, daemon.id, agent.id);
+      await this.restoreAgentState(current.id, agent);
     });
-    this.subscribeRecoveredExecution(current.id, daemon.id, connection);
-    this.armExecutionDeadline(current);
-    const agent = await connection.createAgent(createOptions).catch((error: unknown) => {
-      throw toDaemonTransportFailure(error);
-    });
-    if (isInterruptedAgentState(agent.state)) {
-      await this.failAgentExecution(current.id, "agent_interrupted");
-      return;
-    }
-    await this.options.database.attachAgentToExecution(current.id, daemon.id, agent.id);
-    await this.restoreAgentState(current.id, agent);
   }
 
   private subscribeRecoveredExecution(
@@ -1134,7 +1171,11 @@ export class DaemonDispatchLifecycle {
 
   private async completeAgentExecution(
     executionId: string,
-    options: { completedByAgent?: boolean; output?: unknown; deferHubAction?: boolean } = {},
+    options: {
+      completedByAgent?: boolean;
+      output?: unknown;
+      deferHubAction?: boolean;
+    } = {},
   ): Promise<AgentExecutionRecord> {
     const existing = await this.options.database.findAgentExecutionById(executionId);
     if (existing === undefined) throw new Error(`agent execution not found: ${executionId}`);
@@ -1236,6 +1277,7 @@ export class DaemonDispatchLifecycle {
       return undefined;
     }
 
+    this.startupControllers.get(executionId)?.abort(new DaemonDispatchFailure(reason));
     this.clearExecutionDeadline(executionId);
     this.releaseExecutionResources(executionId);
 
@@ -1286,6 +1328,22 @@ export class DaemonDispatchLifecycle {
 
   private reconcileHubActionSafely(execution: AgentExecutionRecord): Promise<void> {
     return this.reconcileHubAction(execution).catch((error: unknown) => {
+      if (
+        error instanceof AgentOperationPendingError ||
+        error instanceof DaemonRequestTimeoutError
+      ) {
+        if (!this.stopping && !this.hubActionRetryTimers.has(execution.id)) {
+          this.hubActionRetryTimers.set(
+            execution.id,
+            this.scheduleDeadline(async () => {
+              this.hubActionRetryTimers.delete(execution.id);
+              const current = await this.options.database.findAgentExecutionById(execution.id);
+              if (current) await this.reconcileHubActionSafely(current);
+            }, 1_000),
+          );
+        }
+        return;
+      }
       this.report(error, "daemon.execution.hub-action", {
         executionId: execution.id,
         hubAction: execution.hubAction,
@@ -1338,9 +1396,12 @@ export class DaemonDispatchLifecycle {
     const connection = this.options.connectionForDaemon(daemonId);
     if (connection === undefined) return;
     await withHubActionTimeout(
-      execution.agentSessionId === null
-        ? connection.controlExecution({ executionId: execution.id, action })
-        : this.sessionOwner().control(execution, connection.agents, action),
+      (signal) => {
+        const combined = AbortSignal.any([signal, this.stopped.signal]);
+        return execution.agentSessionId === null
+          ? connection.controlExecution({ executionId: execution.id, action }, combined)
+          : this.sessionOwner().control(execution, connection.agents, action, combined);
+      },
       this.dispatchTimeoutMs,
       (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
     );
@@ -1511,37 +1572,53 @@ export class DaemonDispatchLifecycle {
     },
     deadlineAt: Date,
   ): Promise<string> {
-    let canceled = false;
-    const cancelHandlers = new Set<() => Promise<void>>();
-    const timeoutMs = Math.max(
-      0,
-      Math.min(this.dispatchTimeoutMs, deadlineAt.getTime() - this.now()),
-    );
-    try {
-      return await withDispatchTimeout(
-        this.acquireAndSpawnAgentWithoutTimeout(
-          input,
-          () => canceled,
-          (handler) => {
-            cancelHandlers.add(handler);
-          },
-        ),
-        timeoutMs,
-        () => {
-          canceled = true;
-          for (const handler of cancelHandlers) {
-            void handler().catch((error: unknown) => {
-              this.report(error, "daemon.dispatch.cancel", { executionId: input.executionId });
+    return this.withExecutionStartup(input.executionId, deadlineAt, async (signal) => {
+      const cancelHandlers = new Set<() => Promise<void>>();
+      const abort = () => {
+        for (const handler of cancelHandlers) {
+          void handler().catch((error: unknown) => {
+            this.report(error, "daemon.dispatch.cancel", {
+              executionId: input.executionId,
             });
-          }
-        },
+          });
+        }
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        return await this.acquireAndSpawnAgentWithoutTimeout(
+          input,
+          (handler) => cancelHandlers.add(handler),
+          signal,
+          deadlineAt,
+        );
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    });
+  }
+
+  private async withExecutionStartup<T>(
+    executionId: string,
+    deadlineAt: Date,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    this.startupControllers.set(executionId, controller);
+    try {
+      if (!(await this.armLiveExecutionDeadline(executionId)))
+        throw new DaemonDispatchFailure("timeout");
+      return await withDispatchTimeout(
+        withStartupCancellation(operation(controller.signal), controller.signal),
+        Math.max(0, deadlineAt.getTime() - this.now()),
+        () => controller.abort(new DaemonDispatchFailure("timeout")),
         (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
       );
     } catch (error) {
-      if (deadlineAt.getTime() <= this.now()) {
+      if (deadlineAt.getTime() <= this.now())
         throw new DaemonDispatchFailure("timeout", { cause: error });
-      }
       throw error;
+    } finally {
+      this.startupControllers.delete(executionId);
     }
   }
 
@@ -1561,16 +1638,32 @@ export class DaemonDispatchLifecycle {
     executionId: string;
     intent: LaunchMachineIntent;
     hubExecutionEnv: HubExecutionEnv;
+    signal?: AbortSignal;
   }): Promise<string> {
     const connection = this.options.connectionForDaemon(input.daemonId);
     if (!connection) throw new DaemonDispatchFailure("daemon_unreachable");
+    const execution = await this.options.database.findAgentExecutionById(input.executionId);
+    if (!execution?.deadlineAt) throw new Error("Execution deadline is missing");
     const dispatched = await this.sessionOwner().dispatch({
       executionId: input.executionId,
       intent: input.intent,
       connection: connection.agents,
       createOptions: () => this.buildCreateAgentOptions(input.intent, input.hubExecutionEnv),
       onEvent: (event) => this.observeSessionEvent(input.executionId, input.daemonId, event),
+      ...(input.signal
+        ? {
+            startup: {
+              key: input.executionId,
+              signal: input.signal,
+              deadlineAt: execution.deadlineAt.toISOString(),
+            },
+          }
+        : {}),
     });
+    if (input.signal?.aborted) {
+      dispatched.unsubscribe();
+      input.signal.throwIfAborted();
+    }
     this.recoveredSubscriptions.get(input.executionId)?.();
     this.recoveredSubscriptions.set(input.executionId, dispatched.unsubscribe);
     await this.startAgentExecution(input.executionId);
@@ -1602,10 +1695,11 @@ export class DaemonDispatchLifecycle {
       intent: LaunchMachineIntent;
       hubExecutionEnv: HubExecutionEnv;
     },
-    isCanceled: () => boolean,
     onCancel: (handler: () => Promise<void>) => void,
+    signal: AbortSignal,
+    deadlineAt: Date,
   ): Promise<string> {
-    if (input.intent.continuation !== undefined) return this.dispatchSession(input);
+    if (input.intent.continuation !== undefined) return this.dispatchSession({ ...input, signal });
     const connection = this.options.connectionForDaemon(input.daemonId);
     if (connection === undefined) {
       throw new DaemonDispatchFailure("daemon_unreachable");
@@ -1616,9 +1710,7 @@ export class DaemonDispatchLifecycle {
     ).catch((error: unknown) => {
       throw toDispatchPreparationFailure(error);
     });
-    if (isCanceled()) {
-      throw new DaemonSpawnAckTimeoutError(this.dispatchTimeoutMs);
-    }
+    signal.throwIfAborted();
     const pendingHandlers = new Set<Promise<void>>();
     let disposed = false;
     let settleTerminal: ((failure?: DaemonDispatchFailure) => void) | undefined;
@@ -1671,18 +1763,14 @@ export class DaemonDispatchLifecycle {
         throw new DaemonDispatchFailure("timeout");
       }
 
-      if (isCanceled()) {
-        throw new DaemonSpawnAckTimeoutError(this.dispatchTimeoutMs);
-      }
+      signal.throwIfAborted();
       const agent = await Promise.race([
         connection
-          .createAgent(createOptions)
+          .createAgent({ ...createOptions, deadlineAt: deadlineAt.toISOString() }, signal)
           .catch((error: unknown) => Promise.reject(toDaemonTransportFailure(error))),
         terminal.then<never>(() => new Promise<never>(() => undefined)),
       ]);
-      if (isCanceled()) {
-        throw new DaemonSpawnAckTimeoutError(this.dispatchTimeoutMs);
-      }
+      signal.throwIfAborted();
       await this.options.database.attachAgentToExecution(
         input.executionId,
         input.daemonId,
@@ -2192,6 +2280,22 @@ function assertNeverAgentStreamEvent(value: never): never {
   throw new Error(`unhandled daemon agent stream event: ${JSON.stringify(value)}`);
 }
 
+async function withStartupCancellation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let abort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abort) signal.removeEventListener("abort", abort);
+  }
+}
+
 async function withDispatchTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -2216,19 +2320,21 @@ async function withDispatchTimeout<T>(
 }
 
 async function withHubActionTimeout(
-  operation: Promise<void>,
+  operation: (signal: AbortSignal) => Promise<void>,
   timeoutMs: number,
   schedule: (callback: () => void, delayMs: number) => () => void,
 ): Promise<void> {
   let clearTimer: (() => void) | undefined;
+  const controller = new AbortController();
   try {
     await Promise.race([
-      operation,
+      operation(controller.signal),
       new Promise<void>((_resolve, reject) => {
-        clearTimer = schedule(
-          () => reject(new Error("timed out waiting for daemon execution control ack")),
-          timeoutMs,
-        );
+        clearTimer = schedule(() => {
+          const failure = new DaemonRequestTimeoutError();
+          controller.abort(failure);
+          reject(failure);
+        }, timeoutMs);
       }),
     ]);
   } finally {

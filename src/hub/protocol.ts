@@ -185,6 +185,7 @@ export const HubExecutionAgentCreateRequestSchema = z.object({
   type: z.literal("hub.execution.agent.create.request"),
   requestId: z.string(),
   executionId: z.string(),
+  deadlineAt: z.string().datetime().optional(),
   provider: z.string(),
   cwd: z.string(),
   prompt: z.string(),

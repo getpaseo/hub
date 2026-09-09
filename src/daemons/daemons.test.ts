@@ -571,6 +571,7 @@ describe("daemon enrollment and execution", () => {
     hub.issueConnectionLeaseOnAuthorityMaterialization();
     hub.hangAuthorityMintPermanently();
     const dispatch = hub.beginDispatch({
+      timeoutMs: 30_000,
       env: { TOKEN: "${{ paseo.connections.some-connection.token }}" },
       github: {
         connection: "getpaseo-github",
@@ -1877,18 +1878,84 @@ describe("daemon enrollment and execution", () => {
     },
   );
 
-  it("bounds spawn acknowledgement and execution deadlines with the deterministic clock", async () => {
+  it("allows slow agent startup within the configured runtime", async () => {
+    await hub.connectDaemon();
+    hub.holdSpawnAcknowledgement();
+    const dispatch = hub.beginDispatch({ timeoutMs: 5 * 60_000 });
+    await hub.spawnBegins();
+    await hub.advanceDispatchTime(2 * 60_000);
+    hub.acceptSpawn();
+
+    const result = await dispatch;
+    assert.equal((await hub.execution(result.execution.id)).status, "running");
+    assert.equal(hub.createdAgentCount(), 1);
+  });
+
+  it.each([false, true])(
+    "preserves initial idle semantics while startup waits (initializing: %s)",
+    async (initializing) => {
+      await hub.connectDaemon();
+      await hub.installConfiguration({
+        yaml: [
+          "environments:",
+          "  - name: target",
+          "    kind: daemon",
+          `    daemon: ${hub.connectedDaemonSlug()}`,
+          "    cwd: /workspace/manual",
+          "triggers:",
+          "  - name: startup",
+          "    on: manual.run",
+          "    max_runtime: 5m",
+          "    filters:",
+          "      from_users: [alice]",
+          "    steps:",
+          "      - id: start",
+          "        environment: target",
+          "        max_runtime: 5m",
+          "        idle_timeout: 1m",
+          "        agent:",
+          "          provider: codex",
+          '        prompt: [{ text: "Hello" }]',
+        ].join("\n"),
+      });
+      hub.holdSpawnAcknowledgement();
+      const dispatch = hub.beginManual({
+        trigger: "startup",
+        deliveryKey: `startup-idle-${initializing}`,
+      });
+      await hub.spawnBegins();
+      const pending = await hub.pendingExecution();
+      assert.notEqual(pending.idleDeadlineAt, null);
+      if (initializing) await hub.pendingSpawnBeginsInitializing(pending.id);
+      await hub.advanceDispatchTime(45_000);
+      await hub.connectionHeartbeat();
+      await hub.advanceDispatchTime(15_000);
+      const current = await hub.execution(pending.id);
+      if (initializing) {
+        assert.equal(current.idleDeadlineAt, null);
+        assert.equal(current.status, "spawning");
+        assert.equal(current.deadlineAt?.getTime(), pending.deadlineAt?.getTime());
+      } else {
+        assert.equal(current.status, "failed");
+        assert.deepEqual(current.result, { status: "failed", reason: "step_idle_timeout" });
+      }
+      hub.acceptSpawn();
+      await dispatch;
+      if (!initializing) assert.equal((await hub.execution(pending.id)).status, "failed");
+    },
+  );
+
+  it("bounds hung startup by the configured execution deadline", async () => {
     await hub.connectDaemon();
     hub.holdSpawnAcknowledgement();
     const dispatch = hub.beginDispatch({ timeoutMs: 60_000 });
-    await hub.spawnBegins();
-    await hub.advanceDispatchTime(30_000);
-
-    await assert.rejects(
+    const rejected = assert.rejects(
       dispatch,
-      (error: unknown) =>
-        error instanceof DaemonDispatchFailure && error.reason === "daemon_timeout",
+      (error: unknown) => error instanceof DaemonDispatchFailure && error.reason === "timeout",
     );
+    await hub.spawnBegins();
+    await hub.advanceDispatchTime(60_000);
+    await rejected;
   });
 
   it("expires at the dispatch boundary before creating an agent", async () => {

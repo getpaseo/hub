@@ -181,8 +181,8 @@ export class ActiveDaemonRegistry {
     if (!active?.ready || !active.daemon.permissions.includes("hub.execute")) return undefined;
     return {
       agents: this.active.get(daemonId)!.agents,
-      createAgent: (options) => this.createAgent(daemonId, options),
-      controlExecution: (options) => this.controlExecution(daemonId, options),
+      createAgent: (options, signal) => this.createAgent(daemonId, options, signal),
+      controlExecution: (options, signal) => this.controlExecution(daemonId, options, signal),
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       on: (handler) => {
@@ -257,7 +257,9 @@ export class ActiveDaemonRegistry {
   private createAgent(
     daemonId: string,
     options: DaemonCreateAgentOptions,
+    signal?: AbortSignal,
   ): Promise<{ id: string }> {
+    signal?.throwIfAborted();
     const active = this.active.get(daemonId);
     if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
     const requestId = randomUUID();
@@ -266,6 +268,7 @@ export class ActiveDaemonRegistry {
       type: "hub.execution.agent.create.request",
       requestId,
       executionId,
+      deadlineAt: options.deadlineAt,
       provider: options.provider,
       cwd: options.cwd,
       prompt: options.prompt,
@@ -278,7 +281,13 @@ export class ActiveDaemonRegistry {
       mcpServers: options.mcpServers,
       worktree: options.worktree,
     });
-    return new Promise((resolve, reject) => {
+    let abort: (() => void) | undefined;
+    return new Promise<{ id: string }>((resolve, reject) => {
+      abort = () => {
+        this.pendingFor(daemonId).delete(requestId);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
       this.pendingFor(daemonId).set(requestId, {
         kind: "create",
         generation: active.generation,
@@ -293,13 +302,17 @@ export class ActiveDaemonRegistry {
         reject,
       });
       active.socket.send(JSON.stringify({ type: "session", message: request }));
+    }).finally(() => {
+      if (abort) signal?.removeEventListener("abort", abort);
     });
   }
 
   private controlExecution(
     daemonId: string,
     options: DaemonExecutionControlOptions,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     const active = this.active.get(daemonId);
     if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
     const requestId = randomUUID();
@@ -309,7 +322,13 @@ export class ActiveDaemonRegistry {
       executionId: options.executionId,
       action: options.action,
     });
-    return new Promise((resolve, reject) => {
+    let abort: (() => void) | undefined;
+    return new Promise<void>((resolve, reject) => {
+      abort = () => {
+        this.pendingFor(daemonId).delete(requestId);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
       this.pendingFor(daemonId).set(requestId, {
         kind: "control",
         generation: active.generation,
@@ -319,6 +338,8 @@ export class ActiveDaemonRegistry {
         reject,
       });
       active.socket.send(JSON.stringify({ type: "session", message: request }));
+    }).finally(() => {
+      if (abort) signal?.removeEventListener("abort", abort);
     });
   }
 

@@ -657,6 +657,13 @@ export class HubHarness {
       },
     });
   }
+  async connectionHeartbeat(): Promise<void> {
+    await this.requireDaemon().connectionHeartbeat();
+  }
+  async pendingSpawnBeginsInitializing(executionId: string): Promise<void> {
+    const agentId = this.requireDaemon().pendingSpawnAgentId();
+    await this.agentBeginsInitializing(executionId, agentId);
+  }
   holdSpawnAcknowledgement(): void {
     this.requireDaemon().holdSpawnAcknowledgement();
   }
@@ -2282,6 +2289,10 @@ class TestDaemon {
     this.holdAck = false;
     if (this.pendingCreate) this.acknowledge(this.pendingCreate);
   }
+  pendingSpawnAgentId(): string {
+    if (!this.pendingCreate) throw new Error("No pending create request");
+    return `agent-${this.pendingCreate.executionId}`;
+  }
   interruptPendingSpawn(): string {
     if (!this.pendingCreate) throw new Error("No pending create request");
     const agentId = `agent-${this.pendingCreate.executionId}`;
@@ -2316,6 +2327,14 @@ class TestDaemon {
       },
     });
     await new Promise((resolve) => setImmediate(resolve));
+  }
+  async connectionHeartbeat(): Promise<void> {
+    const socket = this.socket;
+    if (!socket) throw new Error("Daemon is disconnected");
+    await new Promise<void>((resolve) => {
+      socket.once("pong", () => resolve());
+      socket.ping();
+    });
   }
   createdAgent(): Record<string, unknown> {
     return [...this.agents.values()].at(-1) ?? {};

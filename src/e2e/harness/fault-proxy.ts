@@ -15,6 +15,8 @@ export class HubFaultProxy {
   private daemonSocket: WebSocket | undefined;
   private hubSocket: WebSocket | undefined;
   private loseCreateResponse = false;
+  private loseSend = false;
+  private sendAttempts = 0;
   private createResponseDropped: (() => void) | undefined;
   private readonly droppedCreateResponse = new Promise<void>((resolve) => {
     this.createResponseDropped = resolve;
@@ -52,6 +54,13 @@ export class HubFaultProxy {
       proxy.server.listen(port, "127.0.0.1", resolve);
     });
     return proxy;
+  }
+
+  loseNextContinuationSend(): void {
+    this.loseSend = true;
+  }
+  continuationSendAttempts(): number {
+    return this.sendAttempts;
   }
 
   loseNextCreateResponse(): void {
@@ -230,6 +239,16 @@ export class HubFaultProxy {
       hubSocket.on("message", (data) => {
         const raw = readText(data);
         this.observeHubMessage(raw);
+        const envelope = z
+          .object({ message: z.object({ type: z.string() }) })
+          .safeParse(JSON.parse(raw));
+        if (envelope.success && envelope.data.message.type === "send_agent_message_request") {
+          this.sendAttempts++;
+          if (this.loseSend) {
+            this.loseSend = false;
+            return;
+          }
+        }
         if (daemonSocket.readyState === WebSocket.OPEN) daemonSocket.send(raw);
       });
       daemonSocket.on("close", (code, reason) => {

@@ -14,6 +14,7 @@ export interface DaemonAgentSnapshot {
 
 export interface DaemonCreateAgentOptions {
   executionId: string;
+  deadlineAt?: string;
   provider: string;
   mode?: string;
   model?: string;
@@ -77,8 +78,11 @@ export type DaemonEventHandler = (event: DaemonEvent) => void | Promise<void>;
 
 export interface DaemonConnection {
   agents: import("./agents/index.js").AgentConnection;
-  createAgent(options: DaemonCreateAgentOptions): Promise<DaemonAgentSnapshot>;
-  controlExecution(options: DaemonExecutionControlOptions): Promise<void>;
+  createAgent(
+    options: DaemonCreateAgentOptions,
+    signal?: AbortSignal,
+  ): Promise<DaemonAgentSnapshot>;
+  controlExecution(options: DaemonExecutionControlOptions, signal?: AbortSignal): Promise<void>;
   getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
   on(handler: DaemonEventHandler): () => void;

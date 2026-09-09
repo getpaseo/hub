@@ -4,21 +4,83 @@ import { AgentSessions } from "./index.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../execution-capabilities/outputs.js";
 import { createExecutionCapabilityServer } from "../execution-capabilities/server.js";
-import type { AgentConnection, AgentSnapshot } from "../daemons/agents/index.js";
+import type { AgentConnection, AgentSnapshot, AgentStartup } from "../daemons/agents/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
 
 class TestAgents implements AgentConnection {
+  private readonly creationKeys = new Map<string, AgentSnapshot>();
+  private heldPhase: "create" | "restore" | "send" | "control" | undefined;
+  private phaseStarted!: () => void;
+  private phaseReleased!: () => void;
+  private phaseGate: Promise<void> | undefined;
+  private pendingStartup: string | undefined;
+  hold(phase: "create" | "restore" | "send" | "control") {
+    this.heldPhase = phase;
+    this.phaseGate = new Promise<void>((resolve) => {
+      this.phaseReleased = resolve;
+    });
+    return new Promise<void>((resolve) => {
+      this.phaseStarted = resolve;
+    });
+  }
+  release() {
+    this.phaseReleased();
+  }
+  private readonly pendingControls = new Set<string>();
+  async inspectOperation(key: string) {
+    return {
+      agentId: null,
+      outcome: this.pendingControls.has(key) ? ("pending" as const) : ("settled" as const),
+    };
+  }
+  async cancelOperation(key: string, creationKey: string) {
+    return {
+      agentId: this.creationKeys.get(creationKey)?.id ?? null,
+      outcome: this.pendingStartup === key ? ("pending" as const) : ("settled" as const),
+    };
+  }
+  private async pause(
+    phase: "create" | "restore" | "send" | "control",
+    startup?: { key: string; signal?: AbortSignal },
+  ) {
+    if (this.heldPhase !== phase) return;
+    this.heldPhase = undefined;
+    this.pendingStartup = startup?.key;
+    this.phaseStarted();
+    const operation = this.phaseGate!.then(() => {
+      this.pendingStartup = undefined;
+      return;
+    });
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          abort = () => reject(startup?.signal?.reason);
+          startup?.signal?.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+      startup?.signal?.throwIfAborted();
+    } finally {
+      if (abort) startup?.signal?.removeEventListener("abort", abort);
+    }
+  }
   readonly agents = new Map<string, AgentSnapshot>();
   readonly deliveries: { agentId: string; text: string }[] = [];
   readonly creates: DaemonCreateAgentOptions[] = [];
   readonly messages = new Set<string>();
   archives = 0;
   restorations = 0;
-  async create(_key: string, options: DaemonCreateAgentOptions) {
-    this.creates.push(options);
-    const agent = { id: randomUUID(), workspaceId: randomUUID(), status: "idle" as const };
-    this.agents.set(agent.id, agent);
+  async create(key: string, options: DaemonCreateAgentOptions, startup?: AgentStartup) {
+    let agent = this.creationKeys.get(key);
+    if (!agent) {
+      this.creates.push(options);
+      agent = { id: randomUUID(), workspaceId: randomUUID(), status: "idle" };
+      this.creationKeys.set(key, agent);
+      this.agents.set(agent.id, agent);
+    }
+    await this.pause("create", startup);
     return agent;
   }
   async get(id: string) {
@@ -26,7 +88,8 @@ class TestAgents implements AgentConnection {
     if (!agent) throw new Error("missing");
     return agent;
   }
-  async send(agentId: string, messageId: string, text: string) {
+  async send(agentId: string, messageId: string, text: string, startup?: AgentStartup) {
+    await this.pause("send", startup);
     if (this.messages.has(messageId)) return;
     this.messages.add(messageId);
     this.deliveries.push({ agentId, text });
@@ -34,19 +97,44 @@ class TestAgents implements AgentConnection {
   async watch() {
     return () => {};
   }
-  async restore(workspaceId: string) {
+  async restore(workspaceId: string, startup?: AgentStartup) {
+    await this.pause("restore", startup);
     this.restorations++;
     for (const [id, agent] of this.agents)
       if (agent.workspaceId === workspaceId) this.agents.set(id, { ...agent, archivedAt: null });
     return true;
   }
-  async control(agentId: string, _workspaceId: string, action: "interrupt" | "archive") {
-    if (action === "archive") {
-      this.archives++;
-      this.agents.set(agentId, {
-        ...(await this.get(agentId)),
-        archivedAt: new Date().toISOString(),
-      });
+  async control(
+    agentId: string,
+    _workspaceId: string,
+    action: "interrupt" | "archive",
+    operationKey?: string,
+    signal?: AbortSignal,
+  ) {
+    if (operationKey) this.pendingControls.add(operationKey);
+    const operation = (async () => {
+      await this.pause("control", operationKey ? { key: operationKey } : undefined);
+      if (action === "archive") {
+        this.archives++;
+        this.agents.set(agentId, {
+          ...(await this.get(agentId)),
+          archivedAt: new Date().toISOString(),
+        });
+      }
+    })().finally(() => {
+      if (operationKey) this.pendingControls.delete(operationKey);
+    });
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          abort = () => reject(signal?.reason);
+          signal?.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (abort) signal?.removeEventListener("abort", abort);
     }
   }
 }
@@ -106,12 +194,19 @@ async function fixture() {
       configurationRevisionId: intent.configurationRevisionId,
       launchIntent: intent,
     });
+    const controller = new AbortController();
     return {
       executionId,
+      cancel: () => controller.abort(new Error("startup expired")),
       dispatch: () =>
         sessions.dispatch({
           executionId,
           intent,
+          startup: {
+            key: executionId,
+            deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+            signal: controller.signal,
+          },
           connection,
           onEvent: () => {},
           createOptions: async () => ({
@@ -233,4 +328,102 @@ test("temporary environment credentials require a new agent instead of being reu
   const fresh = await f.arrival(null, "daemon", env);
   await fresh.dispatch();
   expect(f.connection.creates).toHaveLength(1);
+});
+
+test.each(["create", "restore", "send"] as const)(
+  "expiry during %s releases conversation ownership and accounts for late work",
+  async (phase) => {
+    const f = await fixture();
+    if (phase === "restore") {
+      const initial = await f.arrival();
+      await initial.dispatch();
+      await f.database.transitionAgentExecution(initial.executionId, "succeeded");
+      await f.sessions.control(await f.execution(initial.executionId), f.connection, "archive");
+    }
+    const entered = f.connection.hold(phase);
+    const first = await f.arrival();
+    const dispatch = first.dispatch();
+    const rejected = expect(dispatch).rejects.toThrow("startup expired");
+    await entered;
+    await f.database.transitionAgentExecution(first.executionId, "failed", {
+      hubAction: "archive",
+    });
+    first.cancel();
+    await rejected;
+    await expect(
+      f.sessions.control(await f.execution(first.executionId), f.connection, "archive"),
+    ).rejects.toThrow("cancellation is pending");
+
+    const competing = await f.arrival();
+    await expect(competing.dispatch()).rejects.toThrow("cancellation is pending");
+    await f.database.transitionAgentExecution(competing.executionId, "failed", {
+      hubAction: "archive",
+    });
+    f.connection.release();
+    await expect
+      .poll(async () => {
+        try {
+          await f.sessions.control(await f.execution(first.executionId), f.connection, "archive");
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .toBe(true);
+    await f.database.completeHubAction(first.executionId, "archive");
+    await f.sessions.control(await f.execution(competing.executionId), f.connection, "archive");
+    await f.database.completeHubAction(competing.executionId, "archive");
+    expect((await f.execution(first.executionId)).daemonAgentId).toBe(
+      phase === "send" ? [...f.connection.agents.keys()][0] : null,
+    );
+    const next = await f.arrival();
+    await next.dispatch();
+    expect(f.connection.creates).toHaveLength(1);
+    expect(f.connection.deliveries).toHaveLength(phase === "restore" ? 2 : 1);
+  },
+);
+
+test("a slow archive remains owned after its acknowledgement wait expires", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded", {
+    hubAction: "archive",
+  });
+  const entered = f.connection.hold("control");
+  const controller = new AbortController();
+  const cleanup = f.sessions.control(
+    await f.execution(first.executionId),
+    f.connection,
+    "archive",
+    controller.signal,
+  );
+  const rejected = expect(cleanup).rejects.toThrow("control wait expired");
+  await entered;
+  controller.abort(new Error("control wait expired"));
+  await rejected;
+  const next = await f.arrival();
+  await expect(next.dispatch()).rejects.toThrow("cleanup is pending");
+  await f.database.transitionAgentExecution(next.executionId, "failed", { hubAction: "archive" });
+  f.connection.release();
+  await expect.poll(() => f.connection.archives).toBe(1);
+  await f.database.completeHubAction(first.executionId, "archive");
+  await f.sessions.control(await f.execution(next.executionId), f.connection, "archive");
+  await f.database.completeHubAction(next.executionId, "archive");
+  const subsequent = await f.arrival();
+  await subsequent.dispatch();
+  expect(f.connection.creates).toHaveLength(1);
+  expect(f.connection.restorations).toBe(1);
+});
+
+test("a continuation cannot overtake a durable cleanup action that has not been acknowledged", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded", {
+    hubAction: "archive",
+  });
+  const next = await f.arrival();
+  await expect(next.dispatch()).rejects.toThrow("cleanup is pending");
+  expect(f.connection.deliveries).toHaveLength(1);
 });
