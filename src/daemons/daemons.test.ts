@@ -532,6 +532,97 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
   });
 
+  it("keeps scoped credentials until all requests steering the active agent finish", async () => {
+    await hub.connectDaemon();
+    const settings = {
+      continuation: { key: "same-thread", compatibility: { target: "same-repository" } },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write" as const },
+        durationMs: 60 * 60 * 1000,
+      },
+    };
+    const first = await hub.handoff(settings);
+    await hub.waitForCreatedAgentLaunch();
+    await hub.advanceDispatchTime(1_000);
+    const next = await hub.handoff(settings);
+    await hub.waitForRecoveredExecution(next.execution.id);
+
+    assert.equal(hub.createdAgentRequestCount(), 1);
+    assert.equal(hub.authorityMintInputs().length, 1);
+    assert.equal(
+      (await hub.execution(next.execution.id)).deadlineAt?.getTime(),
+      (await hub.execution(first.execution.id)).deadlineAt?.getTime(),
+    );
+    assert.equal(
+      Reflect.get(Object(hub.createdAgentLaunch().env), "GH_TOKEN"),
+      "durable-scoped-token-1",
+    );
+    await hub.callSessionTool(first.execution.id, "finish_execution");
+    assert.equal((await hub.execution(first.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), []);
+
+    await hub.disconnectDaemon();
+    await hub.reconnectDaemon();
+    await hub.waitForRecoveredExecution(next.execution.id);
+    assert.equal(hub.createdAgentRequestCount(), 1);
+    assert.equal(hub.authorityMintInputs().length, 1);
+
+    await hub.callSessionTool(next.execution.id, "finish_execution");
+    assert.equal((await hub.execution(next.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+
+    const later = await hub.handoff(settings);
+    await hub.waitForRecoveredExecution(later.execution.id);
+    assert.equal(hub.createdAgentRequestCount(), 2);
+    assert.equal(hub.authorityMintInputs().length, 2);
+    assert.notEqual(
+      (await hub.execution(later.execution.id)).agentSessionId,
+      (await hub.execution(first.execution.id)).agentSessionId,
+    );
+    await hub.callSessionTool(later.execution.id, "finish_execution");
+    assert.equal((await hub.execution(later.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), [
+      "durable-scoped-token-1",
+      "durable-scoped-token-2",
+    ]);
+  });
+
+  it.each(["agent", "workflow"])(
+    "stops steered requests and revokes credentials at the hard deadline via %s",
+    async (deadlineOwner) => {
+      await hub.connectDaemon();
+      const settings = {
+        timeoutMs: 10_000,
+        continuation: { key: "bounded-thread", compatibility: { target: "same-repository" } },
+        github: {
+          connection: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          permissions: { contents: "write" as const },
+          durationMs: 60 * 60 * 1000,
+        },
+      };
+      const first = await hub.handoff(settings);
+      await hub.waitForCreatedAgentLaunch();
+      await hub.advanceDispatchTime(5_000);
+      const next = await hub.handoff(settings);
+      await hub.waitForRecoveredExecution(next.execution.id, "running");
+
+      if (deadlineOwner === "workflow") {
+        hub.advanceDispatchClock(5_000);
+        await hub.drainWorkflowOutbox();
+      } else {
+        await hub.advanceDispatchTime(5_000);
+      }
+      await hub.waitForExecutionStatus(first.execution.id, "failed");
+      await hub.waitForExecutionStatus(next.execution.id, "failed");
+      await hub.waitForControlAction("interrupt");
+      await hub.waitForAuthorityRevocation();
+      assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+    },
+  );
+
   it("fails recovery of revoked scoped credentials without recreating the agent or reminting", async () => {
     await hub.connectDaemon();
     const handedOff = await hub.handoff({

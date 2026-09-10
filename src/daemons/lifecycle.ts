@@ -929,6 +929,10 @@ export class DaemonDispatchLifecycle {
       this.clearExecutionDeadline(executionId);
       this.releaseExecutionResources(executionId);
       this.startedExecutions.delete(executionId);
+      const execution = await this.options.database.findAgentExecutionById(executionId);
+      if (execution && isTerminalExecutionStatus(execution.status)) {
+        await this.notifyExecutionTerminal(execution);
+      }
     }
     await this.recoverPendingHubActions();
   }
@@ -1010,13 +1014,15 @@ export class DaemonDispatchLifecycle {
     if (
       current.agentSessionId !== null &&
       this.options.executionAuthority &&
-      !this.options.executionAuthority.canResume({
-        executionId: current.id,
-        projectId: intent.projectId,
-        triggerContext: intent.triggerContext,
-        env: { ...intent.environment.env, ...intent.env },
-        ...(intent.github === undefined ? {} : { github: intent.github }),
-      })
+      !(await this.sessionOwner().canResumeAuthority(current, (executionId) =>
+        this.options.executionAuthority!.canResume({
+          executionId,
+          projectId: intent.projectId,
+          triggerContext: intent.triggerContext,
+          env: { ...intent.environment.env, ...intent.env },
+          ...(intent.github === undefined ? {} : { github: intent.github }),
+        }),
+      ))
     ) {
       await this.failAgentExecution(current.id, "execution_credentials_unavailable");
       return;
@@ -1381,19 +1387,18 @@ export class DaemonDispatchLifecycle {
         this.report(error, "daemon.provider.terminal-cleanup", { executionId: execution.id });
       });
     }
-    await Promise.all(
-      this.options.executionAuthority === undefined
-        ? []
-        : [
-            this.options.executionAuthority
-              .onExecutionTerminal(execution.id)
-              .catch((error: unknown) => {
-                this.report(error, "daemon.execution-authority.terminal-cleanup", {
-                  executionId: execution.id,
-                });
-              }),
-          ],
-    );
+    const authority = this.options.executionAuthority;
+    if (authority === undefined) return;
+    const release = (executionId: string) => authority.onExecutionTerminal(executionId);
+    await (
+      execution.agentSessionId === null
+        ? release(execution.id)
+        : this.sessionOwner().releaseAuthority(execution, release)
+    ).catch((error: unknown) => {
+      this.report(error, "daemon.execution-authority.terminal-cleanup", {
+        executionId: execution.id,
+      });
+    });
   }
 
   private async notifyMachineTerminatedForExecution(
@@ -1513,6 +1518,7 @@ export class DaemonDispatchLifecycle {
       this.options.completionTokenSecret,
       this.options.publicBaseUrl,
       this.executionCapabilities,
+      () => this.now(),
     );
   }
 

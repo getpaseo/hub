@@ -1738,6 +1738,38 @@ class PgDatabase implements Database {
     return toAgentExecutionRecord(rows.rows[0]);
   }
 
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void> {
+    await this.pool.transaction(async (client) => {
+      // Match completion and deadline recovery: lock the run, then step, then execution.
+      const association = await client.query<{ id: string; trigger_run_id: string }>(
+        `select s.id, s.trigger_run_id from workflow_step_runs s
+         join agent_executions e on e.workflow_step_run_id = s.id where e.id = $1`,
+        [executionId],
+      );
+      const step = association.rows[0];
+      if (step) {
+        await client.query("select id from trigger_runs where id = $1 for update", [
+          step.trigger_run_id,
+        ]);
+        await client.query("select id from workflow_step_runs where id = $1 for update", [step.id]);
+      }
+      await client.query(
+        `with bounded as (
+         update agent_executions
+         set deadline_at = least(deadline_at, $2::timestamptz),
+             idle_deadline_at = case when idle_deadline_at is null then null
+               else least(idle_deadline_at, deadline_at, $2::timestamptz) end
+         where id = $1 and status in ('spawning', 'running')
+         returning workflow_step_run_id, deadline_at, idle_deadline_at
+       )
+       update workflow_step_runs s
+       set deadline_at = bounded.deadline_at, idle_deadline_at = bounded.idle_deadline_at
+       from bounded where s.id = bounded.workflow_step_run_id`,
+        [executionId, deadlineAt],
+      );
+    });
+  }
+
   async setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
@@ -2717,9 +2749,19 @@ class PgDatabase implements Database {
   ): Promise<void> {
     await this.pool.query(
       `insert into agent_sessions (id, organization_id, project_id, continuation_key, data)
-       values ($1, $2, $3, $4, $5) on conflict (id) do update set data = excluded.data`,
+       values ($1, $2, $3, $4, $5) on conflict (id) do update set data = excluded.data, continuation_key = excluded.continuation_key`,
       [session.id, session.organizationId, session.projectId, session.continuationKey, session],
     );
+  }
+
+  async findAgentSessionByKey(projectId: string, key: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where project_id = $1 and continuation_key = $2", [
+      projectId,
+      key,
+    ]);
+    return result.rows[0]?.data;
   }
 
   async attachExecutionToSession(
