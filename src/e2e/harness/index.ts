@@ -1050,6 +1050,13 @@ export class HubE2E {
     return readJsonLines(`${this.outputFile}.authority`);
   }
 
+  async credentialIsRevoked() {
+    await this.observe(
+      async () => (await this.credentialEvents()).some((event) => event["action"] === "revoke"),
+      "credential revocation",
+    );
+  }
+
   async beginAmbiguousManualRun(): Promise<AmbiguousRunEvidence> {
     await rm(this.completionGate, { force: true });
     this.requireProxy().loseNextCreateResponse();

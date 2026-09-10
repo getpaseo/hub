@@ -247,6 +247,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
       const completed = await hub.completedRun(run.executionId);
       assert.equal(completed.status, "succeeded");
       assert.equal(completed.agentId, run.agentId);
+      await hub.credentialIsRevoked();
       assert.deepEqual(await hub.credentialEvents(), [
         ...issued,
         { action: "revoke", token: issued[0]?.["token"] },
