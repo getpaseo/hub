@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import type { LucideIcon } from "lucide-react";
 import { useCallback } from "react";
 
-import { usePresentedPathname } from "../navigation/index.js";
+import { usePresentedDestination } from "../navigation/index.js";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -68,8 +68,7 @@ export function NavigationGroup({
  */
 function NavItem({ item }: { item: NavigationItem }) {
   const { to, label, icon: Icon, subtree = false } = item;
-  const pathname = usePresentedPathname();
-  const active = pathname === to || (subtree && pathname.startsWith(`${to}/`));
+  const active = usePresentedDestination(to, subtree);
   const { isMobile, setOpenMobile } = useSidebar();
   // On compact the sidebar is an overlay covering the destination. A document load used
   // to dismiss it; client-side navigation has to dismiss it deliberately.

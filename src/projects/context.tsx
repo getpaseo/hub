@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { usePresentedPathname } from "../navigation/index.js";
+import { usePresentedTenantScope } from "../navigation/index.js";
 import { tenantContext } from "./functions.js";
 import type { ProjectDashboard } from "./dashboard.js";
 
@@ -25,8 +25,7 @@ const ProjectTenantContext = createContext<TenantContextValue | null>(null);
 const RouteTenantStatusContext = createContext<RouteTenantStatus>({ state: "outside" });
 
 export function RouteTenantProvider({ children }: { children: ReactNode }) {
-  const pathname = usePresentedPathname();
-  const scope = routeScope(pathname);
+  const scope = usePresentedTenantScope();
   const load = useServerFn(tenantContext);
   const snapshot = useQuery({
     queryKey: ["tenant", scope?.organizationSlug, scope?.projectSlug],
@@ -88,17 +87,4 @@ export function useOptionalRouteTenant(): TenantContextValue | null {
 
 export function useRouteTenantStatus(): RouteTenantStatus {
   return useContext(RouteTenantStatusContext);
-}
-
-export function routeScope(
-  pathname: string,
-): { organizationSlug: string; projectSlug?: string } | undefined {
-  const segments = pathname.split("/").filter(Boolean);
-  if (segments[0] !== "o" || segments[1] === undefined) return undefined;
-  const projectIndex = segments.indexOf("projects");
-  const projectSlug = projectIndex >= 0 ? segments[projectIndex + 1] : undefined;
-  return {
-    organizationSlug: decodeURIComponent(segments[1]),
-    ...(projectSlug === undefined ? {} : { projectSlug: decodeURIComponent(projectSlug) }),
-  };
 }

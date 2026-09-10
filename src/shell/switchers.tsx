@@ -3,7 +3,7 @@ import { Check, FolderKanban, LogOut, Plus, ShieldCheck } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useState, type FormEvent } from "react";
 
-import { usePresentedPathname } from "../navigation/index.js";
+import { usePageContext } from "../navigation/index.js";
 import { PaseoGlyph } from "../components/app/auth-layout.js";
 import { FormDialog } from "../components/app/form-dialog.js";
 import { FormField } from "../components/app/form-field.js";
@@ -17,7 +17,6 @@ import { formValue } from "../auth/account-actions.js";
 import type { ActiveAccountState } from "../auth/organization-contract.js";
 import type { useOptionalRouteTenant } from "../projects/context.js";
 import { SidebarSwitcher } from "./sidebar-switcher.js";
-import { routeSection } from "./site-header.js";
 
 /** The organization, project, and membership behind the URL, once the shell has resolved it. */
 export type RouteTenant = NonNullable<ReturnType<typeof useOptionalRouteTenant>>;
@@ -152,10 +151,7 @@ function OrganizationItem({
 
 /** One line, and no organization on it: the switcher above already says which one. */
 export function ProjectSwitcher({ tenant }: { tenant: RouteTenant }) {
-  const pathname = usePresentedPathname();
-  const route = routeSection(pathname);
-  const section =
-    route !== undefined && "projectSection" in route ? route.projectSection : "overview";
+  const { projectSection: section } = usePageContext();
   const activeProjects = tenant.projects.filter((project) => project.status === "active");
   return (
     <SidebarSwitcher
