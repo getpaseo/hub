@@ -2,7 +2,10 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useActiveAccount } from "../../auth/active-account.js";
 import { CliLoginApproval } from "../../cli-authorizations/approval.js";
 
-export const Route = createFileRoute("/_shell/cli-login")({ component: CliLogin });
+export const Route = createFileRoute("/_shell/cli-login")({
+  staticData: { breadcrumb: "CLI login" },
+  component: CliLogin,
+});
 
 function CliLogin() {
   const account = useActiveAccount();

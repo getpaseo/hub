@@ -1,5 +1,5 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- tenant-scoped paths are assembled from server-resolved route metadata */
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, trimPathRight, useMatches } from "@tanstack/react-router";
 
 import { cn } from "../../lib/utils.js";
 import { Skeleton } from "../ui/skeleton.js";
@@ -18,7 +18,7 @@ export interface TabNavItem {
  * These are routes. A control that swaps state without changing the URL is `SegmentedControl`.
  */
 export function TabNav({ label, items }: { label: string; items: readonly TabNavItem[] }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useMatches({ select: (matches) => trimPathRight(matches.at(-1)!.pathname) });
   return (
     <nav aria-label={label} className="mb-6 flex flex-wrap gap-4 border-b">
       {items.map((item) => {
