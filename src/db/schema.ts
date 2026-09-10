@@ -1436,3 +1436,22 @@ export const triggerSchedules = pgTable(
   },
   (table) => [index("trigger_schedules_due_idx").on(table.nextAt)],
 );
+
+export const executionAuthorities = pgTable("execution_authorities", {
+  executionId: uuid("execution_id")
+    .primaryKey()
+    .references(() => agentExecutions.id, { onDelete: "cascade" }),
+  data: jsonb("data").notNull(),
+});
+
+export const executionCredentialLeases = pgTable(
+  "execution_credential_leases",
+  {
+    id: uuid("id").primaryKey(),
+    executionId: uuid("execution_id")
+      .notNull()
+      .references(() => agentExecutions.id, { onDelete: "cascade" }),
+    data: jsonb("data").notNull(),
+  },
+  (table) => [index("execution_credential_leases_execution_idx").on(table.executionId)],
+);

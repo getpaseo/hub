@@ -181,8 +181,12 @@ export function createGitHubRegistration(
           throw new Error(`github connection is unavailable: ${connectionSlug}`);
         }
         const token = await appAuth.mintInstallationToken(selectedConnection.installationId);
-        await context?.registerToken?.(token, () => appAuth.revokeInstallationToken(token));
-        return token;
+        await context?.registerToken?.({
+          provider: "github",
+          token: token.token,
+          expiresAt: token.expiresAt,
+        });
+        return token.token;
       },
       githubAuthority: {
         async mint(input) {

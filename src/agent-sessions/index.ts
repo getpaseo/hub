@@ -239,11 +239,14 @@ export class AgentSessions {
 
   async canResumeAuthority(
     execution: AgentExecutionRecord,
-    available: (executionId: string) => boolean,
+    available: (executionId: string) => Promise<boolean>,
   ): Promise<boolean> {
     if (execution.agentSessionId === null) return available(execution.id);
     const owners = await this.database.listAgentSessionExecutions(execution.agentSessionId);
-    return owners.some((owner) => available(owner.id));
+    for (const owner of owners) {
+      if (await available(owner.id)) return true;
+    }
+    return false;
   }
 }
 

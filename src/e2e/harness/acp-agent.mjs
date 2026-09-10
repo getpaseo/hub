@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
@@ -96,6 +96,17 @@ class PhaseFiveAgent {
         },
       },
     });
+    if (service === "credential-restart") {
+      const gate = requiredEnvironment("HUB_E2E_COMPLETE_GATE");
+      while (
+        !(await access(gate).then(
+          () => true,
+          () => false,
+        ))
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
     if (service === "daemon-restart" || prompt.includes("daemon-restart"))
       await runUntilInterrupted();
     if (this.hubMcp && sessionExecutionId) {

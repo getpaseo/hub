@@ -239,6 +239,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     handleUpgrade:
       options.database === null ? null : createDaemonUpgradeHandler(options.database, daemons!),
     async start(sources = []) {
+      await options.executionAuthority?.recover();
       await Promise.all([
         daemonModule?.lifecycle.recoverAgentExecutionDeadlines(),
         daemonModule?.lifecycle.recoverPendingHubActions(),

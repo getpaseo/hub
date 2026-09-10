@@ -2255,6 +2255,39 @@ class MemoryDatabase implements Database {
     return record;
   }
 
+  private readonly authorityRecords = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionAuthorityRecord
+  >();
+  private readonly authorityLeases = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionCredentialLease
+  >();
+  readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore = {
+    executions: async () => [...this.authorityRecords.keys()],
+    read: async (id) => structuredClone(this.authorityRecords.get(id)),
+    commit: async (record) => {
+      if (!this.authorityRecords.has(record.executionId))
+        this.authorityRecords.set(record.executionId, structuredClone(record));
+      return structuredClone(this.authorityRecords.get(record.executionId)!);
+    },
+    remove: async (id) => {
+      this.authorityRecords.delete(id);
+    },
+    leases: async (executionId) =>
+      structuredClone(
+        [...this.authorityLeases.values()].filter(
+          (lease) => executionId === undefined || lease.executionId === executionId,
+        ),
+      ),
+    saveLease: async (lease) => {
+      this.authorityLeases.set(lease.id, structuredClone(lease));
+    },
+    removeLease: async (id) => {
+      this.authorityLeases.delete(id);
+    },
+  };
+
   private readonly agentSessions = new Map<
     string,
     import("../agent-sessions/index.js").AgentSessionRecord

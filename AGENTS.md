@@ -8,7 +8,7 @@ runbooks for privately operated instances must not live here.
 
 The optional billing integration in `src/billing/` is inert without `STRIPE_SECRET_KEY`; instances without billing configuration expose no billing surface. See `docs/entitlements.md` and `docs/billing.md`.
 
-The public docs (served at https://paseo.sh/docs/hub) live in the main Paseo repository under `public-docs/`, keep it up to date with any relevant externallly observable changes. Update via PR.
+Public docs live in `getpaseo/paseo` under `public-docs/`. Follow the documentation criteria in `MAINTAINERS.md` before opening a companion PR.
 
 Repository verification, release, cross-repository compatibility, and documentation procedures
 live in `MAINTAINERS.md`.

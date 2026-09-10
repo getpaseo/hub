@@ -393,6 +393,24 @@ export class HubE2E {
       '        prompt: [{ text: "Deploy mcp-capability for phase-five-operator" }] ',
       "        allow_outputs:",
       "          - type: discord.reply",
+      "  - name: credential-restart",
+      "    on: manual.run",
+      "    max_runtime: 2h",
+      "    filters:",
+      "      from_users: [phase-five-operator]",
+      "    steps:",
+      "      - id: credential-step",
+      "        environment: phase-five",
+      "        max_runtime: 1h",
+      "        idle_timeout: 5m",
+      "        auto_archive: true",
+      "        github:",
+      "          connection: getpaseo-github",
+      "          repositories: [getpaseo/paseo]",
+      "          permissions: {contents: write}",
+      "        agent:",
+      "          provider: hub-e2e",
+      '        prompt: [{ text: "Deploy credential-restart for phase-five-operator" }]',
       "  - name: restart",
       "    on: manual.run",
       "    max_runtime: 2h",
@@ -1001,6 +1019,44 @@ export class HubE2E {
     await this.requireSource().disconnect();
   }
 
+  async beginCredentialRun() {
+    await rm(this.completionGate, { force: true });
+    const run = await this.runManual("credential-restart", "recovery", "credential-restart");
+    await this.observe(
+      async () =>
+        (await readJsonLines(this.acpRecordFile)).some(
+          (record) => record["executionId"] === run.executionId,
+        ),
+      "credentialed agent to execute its prompt",
+    );
+    await this.observe(
+      async () => (await this.persistedDaemonAgents(run.executionId))[0]?.lastStatus === "running",
+      "credentialed agent to be running",
+    );
+    return run;
+  }
+
+  async restartHubWithRunningAgent(executionId: string, crash: boolean) {
+    await this.restartHub(crash);
+    await this.daemonIsConnected();
+    await this.observe(
+      async () => this.requireProxy().hasReplacementConnection(),
+      "replacement Hub connection",
+    );
+    return this.sessionEvidence(executionId);
+  }
+
+  async credentialEvents() {
+    return readJsonLines(`${this.outputFile}.authority`);
+  }
+
+  async credentialIsRevoked() {
+    await this.observe(
+      async () => (await this.credentialEvents()).some((event) => event["action"] === "revoke"),
+      "credential revocation",
+    );
+  }
+
   async beginAmbiguousManualRun(): Promise<AmbiguousRunEvidence> {
     await rm(this.completionGate, { force: true });
     this.requireProxy().loseNextCreateResponse();
@@ -1359,8 +1415,8 @@ export class HubE2E {
     });
   }
 
-  private async restartHub(): Promise<void> {
-    await stopChild(this.hub);
+  private async restartHub(crash = false): Promise<void> {
+    await stopChild(this.hub, undefined, crash ? "SIGKILL" : "SIGTERM");
     this.hub = await this.startHub();
     await this.observe(
       async () => (await fetch(`${this.proxy!.origin}/health`).catch(() => undefined))?.ok === true,
@@ -1702,17 +1758,21 @@ async function startChild(input: {
   return { name: input.name, process: child, logFile, output };
 }
 
-async function stopChild(child: ManagedChild | undefined, knownFamily?: number[]): Promise<void> {
+async function stopChild(
+  child: ManagedChild | undefined,
+  knownFamily?: number[],
+  signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
+): Promise<void> {
   if (!child || child.process.exitCode !== null) return;
   const pid = child.process.pid;
   if (pid === undefined) throw new Error(`${child.name} has no process id`);
   const family = knownFamily ?? (await processFamily(pid));
-  child.process.kill("SIGTERM");
+  child.process.kill(signal);
   await withDiagnosticTimeout(
     new Promise<void>((done) => child.process.once("exit", () => done())),
     10_000,
     async () =>
-      new Error(`${child.name} did not exit after SIGTERM\n${await processDiagnostics(pid)}`),
+      new Error(`${child.name} did not exit after ${signal}\n${await processDiagnostics(pid)}`),
   );
   await withDiagnosticTimeout(
     waitForProcessExit(family),
