@@ -11,10 +11,11 @@ import {
   SlidersHorizontal,
   Zap,
 } from "lucide-react";
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback } from "react";
+import { usePageContext } from "../navigation/index.js";
 import { Page } from "../components/app/page.js";
 import { FailureAlert } from "../components/app/failure-alert.js";
 import { PanelSkeleton } from "../components/app/loading.js";
@@ -51,7 +52,7 @@ import {
   ProjectSwitcher,
   type RouteTenant,
 } from "./switchers.js";
-import { routeSection, SiteHeader } from "./site-header.js";
+import { SiteHeader } from "./site-header.js";
 import { SiteHeaderActionsProvider } from "./site-header-actions.js";
 
 type ActiveAccount = ActiveAccountState;
@@ -207,16 +208,14 @@ function PageContent({
   transitioning: boolean;
 }) {
   const status = useRouteTenantStatus();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const page = usePageContext();
   // One name for the slot, whichever read is in flight: switching organization and resolving the
   // tenant behind a URL are the same wait to someone listening to the page.
   if (transitioning || status.state === "pending") {
-    // The URL already says whether the page arriving here is one of the settings sections, and
+    // Route metadata says whether the page arriving here is one of the settings sections, and
     // those carry a tab strip above their own header. Holding that rail open is the difference
     // between a page that fills in and a page that drops when the tenant resolves.
-    const section = routeSection(pathname);
-    const tabs = section !== undefined && "group" in section;
-    return <PanelSkeleton label="Loading account context" tabs={tabs} />;
+    return <PanelSkeleton label="Loading account context" tabs={page.tabs} />;
   }
   if (status.state === "failed") {
     return <FailureAlert title={status.title} error={status.message} fallback={status.message} />;
@@ -380,8 +379,7 @@ const PROJECT_SECTIONS: readonly SectionDestination[] = [
   { section: "activity", label: "Activity", icon: History },
   { section: "settings", label: "Settings", icon: Settings },
 ];
-// The instance is the deployment, so its surfaces sit outside `/o/` and there is no tenant in
-// their paths. That also makes the path the only thing that can say you are on one.
+// Instance destinations sit outside the organization hierarchy.
 const INSTANCE_DESTINATIONS: readonly NavigationItem[] = [
   { to: "/apps", label: "Apps", icon: Blocks },
   { to: "/operator", label: "Operator", icon: ShieldCheck },
@@ -392,9 +390,6 @@ const INSTANCE_DESTINATIONS: readonly NavigationItem[] = [
  * route keeps the organization sidebar and their way back out — the route itself refuses them.
  */
 function useInstanceScope(operator: boolean): boolean {
-  const onInstanceRoute = useRouterState({
-    select: (state) =>
-      INSTANCE_DESTINATIONS.some((destination) => destination.to === state.location.pathname),
-  });
-  return operator && onInstanceRoute;
+  const page = usePageContext();
+  return operator && page.instance;
 }

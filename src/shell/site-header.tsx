@@ -1,6 +1,6 @@
-import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
+import { usePageContext } from "../navigation/index.js";
 import { cn } from "../lib/utils.js";
 import { Separator } from "../components/ui/separator.js";
 import { SidebarTrigger, useSidebar } from "../components/ui/sidebar.js";
@@ -13,7 +13,7 @@ import { SiteHeaderActionsTarget } from "./site-header-actions.js";
  * ends on the thing the reader is looking at.
  */
 export function SiteHeader({ scope, project }: { scope: string; project?: string }) {
-  const trail = useRouterState({ select: (state) => viewTrail(state.location.pathname) });
+  const { breadcrumbs: trail } = usePageContext();
   return (
     <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b bg-background px-4">
       <RestoringSidebarTrigger />
@@ -70,38 +70,4 @@ function RestoringSidebarTrigger() {
   }, [isMobile, openMobile]);
 
   return <SidebarTrigger ref={trigger} className="-ml-1" />;
-}
-
-// Longest suffix first: an organization settings path ends with `/settings/team`, a project
-// settings path ends with `/settings`, and only the first match may win.
-const ROUTE_SECTIONS = [
-  { suffix: "/settings/api-keys", label: "API keys", group: "Settings" },
-  { suffix: "/settings/team", label: "Team", group: "Settings" },
-  { suffix: "/settings/usage", label: "Usage", group: "Settings" },
-  { suffix: "/settings/billing", label: "Billing", group: "Settings" },
-  { suffix: "/settings", label: "Settings", projectSection: "settings" },
-  { suffix: "/configuration", label: "Configuration", projectSection: "configuration" },
-  { suffix: "/activity", label: "Activity", projectSection: "activity" },
-  { suffix: "/overview", label: "Overview", projectSection: "overview" },
-  { suffix: "/triggers", label: "Triggers" },
-  { suffix: "/projects", label: "Projects" },
-  { suffix: "/daemons", label: "Daemons" },
-  { suffix: "/connections", label: "Connections" },
-  { suffix: "/apps", label: "Apps" },
-  { suffix: "/operator", label: "Operator" },
-  { suffix: "/cli-login", label: "CLI login" },
-] as const;
-
-/** Which surface a pathname is, for the breadcrumb and for the project switcher's target. */
-export function routeSection(pathname: string) {
-  return ROUTE_SECTIONS.find((route) => pathname.endsWith(route.suffix));
-}
-
-function viewTrail(pathname: string): string[] {
-  if (/\/triggers\/[^/]+$/u.test(pathname)) return ["Triggers", "Trigger editor"];
-  const section = routeSection(pathname);
-  // A path this list does not know is a path with nothing true to say about it. The scope crumb
-  // still stands on its own, and the page's own `<h1>` says what the surface is.
-  if (section === undefined) return [];
-  return "group" in section ? [section.group, section.label] : [section.label];
 }
