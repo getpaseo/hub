@@ -532,6 +532,89 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
   });
 
+  it("keeps scoped credentials until all requests steering the active agent finish", async () => {
+    await hub.connectDaemon();
+    const settings = {
+      continuation: { key: "same-thread", compatibility: { target: "same-repository" } },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write" as const },
+        durationMs: 60 * 60 * 1000,
+      },
+    };
+    const first = await hub.handoff(settings);
+    await hub.waitForCreatedAgentLaunch();
+    await hub.advanceDispatchTime(1_000);
+    const next = await hub.handoff(settings);
+    await hub.waitForRecoveredExecution(next.execution.id);
+
+    assert.equal(hub.createdAgentRequestCount(), 1);
+    assert.equal(hub.authorityMintInputs().length, 1);
+    assert.equal(
+      (await hub.execution(next.execution.id)).deadlineAt?.getTime(),
+      (await hub.execution(first.execution.id)).deadlineAt?.getTime(),
+    );
+    assert.equal(
+      Reflect.get(Object(hub.createdAgentLaunch().env), "GH_TOKEN"),
+      "durable-scoped-token-1",
+    );
+    await hub.callSessionTool(first.execution.id, "finish_execution");
+    assert.equal((await hub.execution(first.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), []);
+
+    await hub.restartApp();
+    assert.deepEqual(hub.authorityRevokedTokens(), []);
+    await hub.waitForRecoveredExecution(next.execution.id);
+    assert.equal((await hub.execution(next.execution.id)).status, "running");
+    assert.equal(hub.createdAgentRequestCount(), 1);
+    assert.equal(hub.authorityMintInputs().length, 1);
+
+    await hub.callSessionTool(next.execution.id, "finish_execution");
+    assert.equal((await hub.execution(next.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+
+    const later = await hub.handoff(settings);
+    await hub.waitForRecoveredExecution(later.execution.id);
+    assert.equal(hub.createdAgentRequestCount(), 2);
+    assert.equal(hub.authorityMintInputs().length, 2);
+    assert.notEqual(
+      (await hub.execution(later.execution.id)).agentSessionId,
+      (await hub.execution(first.execution.id)).agentSessionId,
+    );
+    await hub.callSessionTool(later.execution.id, "finish_execution");
+    assert.equal((await hub.execution(later.execution.id)).status, "succeeded");
+    assert.deepEqual(hub.authorityRevokedTokens(), [
+      "durable-scoped-token-1",
+      "durable-scoped-token-2",
+    ]);
+  });
+
+  it("stops all steered requests and revokes their scoped credentials at the original hard deadline", async () => {
+    await hub.connectDaemon();
+    const settings = {
+      timeoutMs: 10_000,
+      continuation: { key: "bounded-thread", compatibility: { target: "same-repository" } },
+      github: {
+        connection: "getpaseo-github",
+        repositories: ["getpaseo/paseo"],
+        permissions: { contents: "write" as const },
+        durationMs: 60 * 60 * 1000,
+      },
+    };
+    const first = await hub.handoff(settings);
+    await hub.waitForCreatedAgentLaunch();
+    await hub.advanceDispatchTime(5_000);
+    const next = await hub.handoff(settings);
+    await hub.waitForRecoveredExecution(next.execution.id);
+
+    await hub.advanceDispatchTime(5_000);
+    assert.equal((await hub.execution(first.execution.id)).status, "failed");
+    assert.equal((await hub.execution(next.execution.id)).status, "failed");
+    assert.ok(hub.controlActions().includes("interrupt"));
+    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+  });
+
   it("resumes scoped credentials after restart without recreating the agent or reminting", async () => {
     await hub.connectDaemon();
     const handedOff = await hub.handoff({

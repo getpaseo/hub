@@ -60,7 +60,13 @@ export interface ExecutionAuthorityResourceCounts {
   pendingMaterializations: number;
 }
 export interface CreateExecutionAuthorityOptions {
-  database: Pick<Database, "executionAuthority" | "withAdvisoryLock">;
+  database: Pick<
+    Database,
+    | "executionAuthority"
+    | "withAdvisoryLock"
+    | "findAgentExecutionById"
+    | "listAgentSessionExecutions"
+  >;
   connectionsForProject: (projectId: string) => ConnectionResolver;
   githubAuthority?: GitHubAuthorityRegistration | undefined;
   clock?: ExecutionAuthorityClock | undefined;
@@ -236,14 +242,24 @@ export function createExecutionAuthority(
     return valid;
   }
 
+  async function authorityIsInUse(executionId: string): Promise<boolean> {
+    if (await options.isExecutionActive(executionId)) return true;
+    const execution = await options.database.findAgentExecutionById(executionId);
+    if (!execution?.agentSessionId) return false;
+    const requests = await options.database.listAgentSessionExecutions(execution.agentSessionId);
+    return requests.some(
+      (request) => request.status === "spawning" || request.status === "running",
+    );
+  }
+
   async function recover(): Promise<void> {
     for (const executionId of await store.executions()) {
       if (stopped) return;
-      if (!(await options.isExecutionActive(executionId))) await onExecutionTerminal(executionId);
+      if (!(await authorityIsInUse(executionId))) await onExecutionTerminal(executionId);
     }
     for (const lease of await store.leases()) {
       if (stopped) return;
-      if (!(await options.isExecutionActive(lease.executionId))) {
+      if (!(await authorityIsInUse(lease.executionId))) {
         await store.remove(lease.executionId);
         await release(lease, true);
       } else if (lease.revoking || lease.deadlineAt <= clock.now()) {

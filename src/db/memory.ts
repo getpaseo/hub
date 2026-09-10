@@ -1625,6 +1625,29 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date) {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) return;
+    const boundedDeadline = new Date(
+      Math.min(deadlineAt.getTime(), execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY),
+    );
+    const idleDeadlineAt = capIdleDeadline(execution.idleDeadlineAt, boundedDeadline);
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      deadlineAt: boundedDeadline,
+      idleDeadlineAt,
+    });
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      if (step !== undefined)
+        this.workflowStepRuns.set(step.id, {
+          ...step,
+          deadlineAt: boundedDeadline,
+          idleDeadlineAt,
+        });
+    }
+  }
+
   async setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
@@ -2271,6 +2294,13 @@ class MemoryDatabase implements Database {
   >();
   async findAgentSession(id: string) {
     return structuredClone(this.agentSessions.get(id));
+  }
+  async findAgentSessionByKey(projectId: string, key: string) {
+    return structuredClone(
+      [...this.agentSessions.values()].find(
+        (session) => session.projectId === projectId && session.continuationKey === key,
+      ),
+    );
   }
   async saveAgentSession(
     session: import("../agent-sessions/index.js").AgentSessionRecord,

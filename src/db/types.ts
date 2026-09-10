@@ -1152,6 +1152,10 @@ export interface TerminateMachineFields {
 export interface Database {
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
+  findAgentSessionByKey(
+    projectId: string,
+    key: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
   findAgentSession(
     id: string,
   ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
@@ -1334,6 +1338,7 @@ export interface Database {
     observedAt: Date,
     processedAt: Date,
   ): Promise<AgentExecutionRecord>;
+  limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void>;
   prepareAgentExecutionForDispatch(
     executionId: string,
     daemonId: string,
