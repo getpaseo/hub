@@ -929,6 +929,10 @@ export class DaemonDispatchLifecycle {
       this.clearExecutionDeadline(executionId);
       this.releaseExecutionResources(executionId);
       this.startedExecutions.delete(executionId);
+      const execution = await this.options.database.findAgentExecutionById(executionId);
+      if (execution && isTerminalExecutionStatus(execution.status)) {
+        await this.notifyExecutionTerminal(execution);
+      }
     }
     await this.recoverPendingHubActions();
   }

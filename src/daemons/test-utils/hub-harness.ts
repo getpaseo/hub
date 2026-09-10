@@ -837,6 +837,9 @@ export class HubHarness {
   controlActions(): readonly HubExecutionControlAction[] {
     return this.requireDaemon().controlActions();
   }
+  async waitForControlAction(action: HubExecutionControlAction): Promise<void> {
+    await waitFor(async () => this.controlActions().includes(action));
+  }
   originUrl(): string {
     return this.origin;
   }

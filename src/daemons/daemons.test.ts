@@ -590,30 +590,39 @@ describe("daemon enrollment and execution", () => {
     ]);
   });
 
-  it("stops all steered requests and revokes their scoped credentials at the original hard deadline", async () => {
-    await hub.connectDaemon();
-    const settings = {
-      timeoutMs: 10_000,
-      continuation: { key: "bounded-thread", compatibility: { target: "same-repository" } },
-      github: {
-        connection: "getpaseo-github",
-        repositories: ["getpaseo/paseo"],
-        permissions: { contents: "write" as const },
-        durationMs: 60 * 60 * 1000,
-      },
-    };
-    const first = await hub.handoff(settings);
-    await hub.waitForCreatedAgentLaunch();
-    await hub.advanceDispatchTime(5_000);
-    const next = await hub.handoff(settings);
-    await hub.waitForRecoveredExecution(next.execution.id);
+  it.each(["agent", "workflow"])(
+    "stops steered requests and revokes credentials at the hard deadline via %s",
+    async (deadlineOwner) => {
+      await hub.connectDaemon();
+      const settings = {
+        timeoutMs: 10_000,
+        continuation: { key: "bounded-thread", compatibility: { target: "same-repository" } },
+        github: {
+          connection: "getpaseo-github",
+          repositories: ["getpaseo/paseo"],
+          permissions: { contents: "write" as const },
+          durationMs: 60 * 60 * 1000,
+        },
+      };
+      const first = await hub.handoff(settings);
+      await hub.waitForCreatedAgentLaunch();
+      await hub.advanceDispatchTime(5_000);
+      const next = await hub.handoff(settings);
+      await hub.waitForRecoveredExecution(next.execution.id, "running");
 
-    await hub.advanceDispatchTime(5_000);
-    assert.equal((await hub.execution(first.execution.id)).status, "failed");
-    assert.equal((await hub.execution(next.execution.id)).status, "failed");
-    assert.ok(hub.controlActions().includes("interrupt"));
-    assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
-  });
+      if (deadlineOwner === "workflow") {
+        hub.advanceDispatchClock(5_000);
+        await hub.drainWorkflowOutbox();
+      } else {
+        await hub.advanceDispatchTime(5_000);
+      }
+      await hub.waitForExecutionStatus(first.execution.id, "failed");
+      await hub.waitForExecutionStatus(next.execution.id, "failed");
+      await hub.waitForControlAction("interrupt");
+      await hub.waitForAuthorityRevocation();
+      assert.deepEqual(hub.authorityRevokedTokens(), ["durable-scoped-token-1"]);
+    },
+  );
 
   it("resumes scoped credentials after restart without recreating the agent or reminting", async () => {
     await hub.connectDaemon();

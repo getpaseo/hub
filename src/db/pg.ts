@@ -1742,8 +1742,22 @@ class PgDatabase implements Database {
   }
 
   async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void> {
-    await this.pool.query(
-      `with bounded as (
+    await this.pool.transaction(async (client) => {
+      // Match completion and deadline recovery: lock the run, then step, then execution.
+      const association = await client.query<{ id: string; trigger_run_id: string }>(
+        `select s.id, s.trigger_run_id from workflow_step_runs s
+         join agent_executions e on e.workflow_step_run_id = s.id where e.id = $1`,
+        [executionId],
+      );
+      const step = association.rows[0];
+      if (step) {
+        await client.query("select id from trigger_runs where id = $1 for update", [
+          step.trigger_run_id,
+        ]);
+        await client.query("select id from workflow_step_runs where id = $1 for update", [step.id]);
+      }
+      await client.query(
+        `with bounded as (
          update agent_executions
          set deadline_at = least(deadline_at, $2::timestamptz),
              idle_deadline_at = case when idle_deadline_at is null then null
@@ -1754,8 +1768,9 @@ class PgDatabase implements Database {
        update workflow_step_runs s
        set deadline_at = bounded.deadline_at, idle_deadline_at = bounded.idle_deadline_at
        from bounded where s.id = bounded.workflow_step_run_id`,
-      [executionId, deadlineAt],
-    );
+        [executionId, deadlineAt],
+      );
+    });
   }
 
   async setAgentExecutionIdleDeadline(
