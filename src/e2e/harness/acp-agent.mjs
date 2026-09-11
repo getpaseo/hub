@@ -110,10 +110,7 @@ class PhaseFiveAgent {
     if (service === "daemon-restart" || prompt.includes("daemon-restart"))
       await runUntilInterrupted();
     if (this.hubMcp) {
-      if (
-        sessionExecutionId !== undefined ||
-        process.env["HUB_E2E_COMPLETE_IN_TURN"] === "1"
-      ) {
+      if (sessionExecutionId !== undefined || process.env["HUB_E2E_COMPLETE_IN_TURN"] === "1") {
         await initializeMcp(this.hubMcp);
         const completion = await callMcp(this.hubMcp, 4, "tools/call", {
           name: "finish_execution",
