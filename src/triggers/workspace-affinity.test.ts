@@ -20,6 +20,7 @@ on:
 run:
   target: { daemon: devbox, cwd: /repo }
   agent: { provider: codex }
+  continuation: { mode: new }
   prompt: Handle the request
   workspace_affinity:
     key: "\${{ paseo.trigger.conversation_key }}"
