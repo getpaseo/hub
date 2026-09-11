@@ -74,6 +74,9 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
           ...(allowOutputs.length === 0 ? {} : { allow_outputs: allowOutputs }),
           auto_archive: authored.run.auto_archive,
+          ...(authored.run.workspace_affinity === undefined
+            ? {}
+            : { workspace_affinity: authored.run.workspace_affinity }),
         },
       ],
     };

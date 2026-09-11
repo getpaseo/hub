@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubBundle, type HubBundleFile } from "../config/bundle.js";
+import { parseCompiledHubConfig } from "../config/compiler.js";
+import { compileTriggerDocument } from "./configuration/index.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, ProjectRecord } from "../db/types.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
@@ -69,6 +71,55 @@ describe("startup project trigger migration", () => {
       legacyMultistepTriggers: 0,
     });
     assert.equal((await database.listOrganizationTriggers("org")).length, 2);
+  });
+
+  it("preserves a single-step affinity configuration durably across startup migration", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const key = "slack:${{ paseo.trigger.conversation_key }}";
+    await activeProject(database, "affinity", [
+      workflow(
+        "affinity",
+        "slack.mention",
+        `${oneStep()}    workspace_affinity: { key: ${JSON.stringify(key)} }\n`,
+      ),
+    ]);
+    const source = (await database.listPendingProjectTriggerMigrations())[0]!;
+    const original = parseCompiledHubConfig(source.revision.normalizedConfiguration).triggers[0]!;
+
+    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+      projects: 1,
+      triggers: 1,
+      legacyMultistepTriggers: 0,
+    });
+    const [trigger] = await database.listOrganizationTriggers("org");
+    assert.equal(trigger?.format, "single_run");
+    assert.ok(trigger);
+    const revision = await database.findOrganizationTriggerRevision(
+      trigger.id,
+      trigger.activeRevisionId,
+    );
+    assert.ok(revision);
+    const migrated = parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]!;
+    assert.deepEqual(migrated.steps[0]?.workspaceAffinity, { key });
+    assert.equal(migrated.maxRuntimeMs, original.maxRuntimeMs);
+    assert.equal(migrated.steps[0]?.maxRuntimeMs, original.steps[0]?.maxRuntimeMs);
+    assert.equal(migrated.steps[0]?.idleTimeoutMs, original.steps[0]?.idleTimeoutMs);
+    assert.equal(migrated.steps[0]?.autoArchive, original.steps[0]?.autoArchive);
+    assert.deepEqual(compileTriggerDocument(revision.yaml).events[0]?.steps[0]?.workspaceAffinity, {
+      key,
+    });
+    assert.match(revision.yaml, /workspace_affinity:/u);
+
+    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+      projects: 0,
+      triggers: 0,
+      legacyMultistepTriggers: 0,
+    });
+    assert.deepEqual(await database.listOrganizationTriggers("org"), [trigger]);
+    assert.deepEqual(
+      await database.findOrganizationTriggerRevision(trigger.id, trigger.activeRevisionId),
+      revision,
+    );
   });
 
   it("deterministically disambiguates duplicate trigger names when projects collapse", async () => {

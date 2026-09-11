@@ -37,6 +37,7 @@
     "test:scripts": "node --test scripts/release-metadata.node-test.mjs scripts/paseo-workspace.node-test.mjs",
     "test:release": "node --test scripts/release-metadata.node-test.mjs",
     "test:e2e:hub:source": "RUN_HUB_E2E=1 vitest run src/e2e/hub-foundation.e2e.test.ts src/e2e/hub-attachments.e2e.test.ts --bail=1",
+    "test:e2e:hub:affinity": "RUN_HUB_AFFINITY_E2E=1 vitest run src/e2e/hub-workspace-affinity.e2e.test.ts --bail=1",
     "test:e2e:hub:real-agent": "RUN_HUB_REAL_AGENT_E2E=1 vitest run src/e2e/hub-real-agent.e2e.test.ts --bail=1",
     "test:e2e:browser": "npm run build && playwright test",
     "format": "oxfmt .",

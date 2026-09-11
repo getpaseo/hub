@@ -29,6 +29,11 @@ describe("LaunchMachineIntent", () => {
       timeoutMs: 3_600_000,
       idleTimeoutMs: 300_000,
       autoArchive: true,
+      workspaceAffinity: {
+        key: "discord-thread-1",
+        retainUntil: "2026-08-06T12:02:00.000Z",
+        autoArchive: true,
+      },
       triggerContext: { messageId: "message-1" },
       outputContext: { messageId: "message-1" },
       hubConfig: { triggers: [] },
@@ -59,6 +64,11 @@ describe("LaunchMachineIntent", () => {
       timeoutMs: 3_600_000,
       idleTimeoutMs: 300_000,
       autoArchive: true,
+      workspaceAffinity: {
+        key: "discord-thread-1",
+        retainUntil: "2026-08-06T12:02:00.000Z",
+        autoArchive: true,
+      },
       triggerContext: { messageId: "message-1" },
       outputContext: { messageId: "message-1" },
       configurationRevisionId: "config-version-1",

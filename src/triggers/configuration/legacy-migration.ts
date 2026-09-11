@@ -176,6 +176,9 @@ function singleRunDocument(
         : { output: { schema: structuredClone(asJsonObject(step.output.schema)) } }),
       ...(Object.keys(outputs).length === 0 ? {} : { outputs }),
       auto_archive: step.autoArchive,
+      ...(step.workspaceAffinity === undefined
+        ? {}
+        : { workspace_affinity: { key: step.workspaceAffinity.key } }),
     },
   };
 }

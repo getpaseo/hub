@@ -51,7 +51,10 @@ export class DaemonRegistryHarness {
     return harness;
   }
 
-  async pendingCreate(executionId: string): Promise<PendingRequest<AgentSnapshot>> {
+  async pendingCreate(
+    executionId: string,
+    options: { workspaceAffinity?: boolean } = {},
+  ): Promise<PendingRequest<AgentSnapshot>> {
     const connection = this.connection();
     const promise = connection.agents.create(executionId, {
       provider: "opencode",
@@ -62,6 +65,15 @@ export class DaemonRegistryHarness {
       toolPolicy: {
         preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
       },
+      ...(options.workspaceAffinity
+        ? {
+            workspaceAffinity: {
+              key: "thread-1",
+              retainUntil: "2026-08-06T12:02:00.000Z",
+              autoArchive: true,
+            },
+          }
+        : {}),
     });
     void promise.catch(() => undefined);
     return {

@@ -121,6 +121,67 @@ describe("self-contained trigger documents", () => {
     assert.deepEqual(parseTriggerDocument(serializeTriggerDocument(parsed)), parsed);
   });
 
+  it.each([
+    "  shared-review  ",
+    "review:${{ paseo.trigger.conversation_key }}",
+    "review:${{ paseo.inputs.model }}",
+  ])(
+    "preserves affinity %s for every event and keeps workspace retention separate from idle timeout",
+    (key) => {
+      const document = parseTriggerDocument(trigger);
+      document.max_runtime = "4h";
+      document.run.continuation = { mode: "new" };
+      document.run.workspace_affinity = { key };
+      document.run.auto_archive = false;
+      const yaml = serializeTriggerDocument(document);
+      const compiled = compileTriggerDocument(yaml);
+      assert.deepEqual(parseTriggerDocument(yaml).run.workspace_affinity, { key });
+      for (const event of compiled.events) {
+        assert.equal(event.maxRuntimeMs, 4 * 60 * 60_000);
+        assert.deepEqual(event.steps[0]?.workspaceAffinity, { key });
+        assert.equal(event.steps[0]?.maxRuntimeMs, 90 * 60_000);
+        assert.equal(event.steps[0]?.idleTimeoutMs, 10 * 60_000);
+        assert.equal(event.steps[0]?.autoArchive, false);
+      }
+    },
+  );
+
+  it.each([
+    "${{ paseo.prompt }}",
+    "${{ paseo.context.linear.issue.id }}",
+    "${{ paseo.execution.id }}",
+  ])("rejects untrusted workspace selection %s through the single-run compiler", (key) => {
+    const document = parseTriggerDocument(trigger);
+    document.run.continuation = { mode: "new" };
+    document.run.workspace_affinity = { key };
+    assert.throws(
+      () => compileTriggerDocument(serializeTriggerDocument(document)),
+      TriggerDocumentError,
+    );
+  });
+
+  it("validates the conversation key against every subscribed event", () => {
+    const document = parseTriggerDocument(trigger);
+    document.on["manual.run"] = {};
+    document.run.continuation = { mode: "new" };
+    document.run.workspace_affinity = { key: "${{ paseo.trigger.conversation_key }}" };
+    assert.throws(
+      () => compileTriggerDocument(serializeTriggerDocument(document)),
+      /manual\.run does not provide a conversation key/u,
+    );
+  });
+
+  it("rejects an execution-scoped worktree for a single-run affinity key", () => {
+    const document = parseTriggerDocument(trigger);
+    document.run.continuation = { mode: "new" };
+    document.run.workspace_affinity = { key: "shared-review" };
+    document.run.target.worktree = {
+      mode: "branch-off",
+      newBranch: "run-${{ paseo.execution.id }}",
+    };
+    assert.throws(() => compileTriggerDocument(serializeTriggerDocument(document)), /execution/u);
+  });
+
   it("allows authenticated manual dispatches when no actor filter is authored", () => {
     const compiled = compileTriggerDocument(`
 name: deploy

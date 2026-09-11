@@ -160,6 +160,16 @@ export function createLinearTriggerProvider(options: {
       }
       return matches.length === 0 ? "trigger_filters_rejected" : matches;
     },
+    workspaceAffinityKey(triggerContext) {
+      // The issue owns the files. Comments, deliveries, and (in the session integration) agent
+      // sessions own individual turns/replies, not workspace identity. Use UUIDs, not ENG-123.
+      return JSON.stringify([
+        "linear",
+        triggerContext.event.linear.connection_id,
+        triggerContext.target.linearOrganizationId,
+        triggerContext.target.issueId,
+      ]);
+    },
     async materializeContext(launch): Promise<LinearMaterializedContext> {
       const { trigger_thread_context: locator, ...linear } = launch.triggerContext.event.linear;
       const root = issueRootMessage(linear.issue);

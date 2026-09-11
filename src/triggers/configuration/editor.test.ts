@@ -62,6 +62,11 @@ run:
     slack.reply:
       max: 3
   auto_archive: false
+  continuation:
+    mode: new
+  workspace_affinity:
+    # preserve this identity exactly
+    key: "  review-\${{ paseo.trigger.conversation_key }}  "
 `;
 
 describe("trigger form YAML bridge", () => {
@@ -107,6 +112,10 @@ describe("trigger form YAML bridge", () => {
     expect(value.run.output).toBeDefined();
     expect(value.run.outputs).toEqual({ "slack.reply": { max: 3 } });
     expect(value.run.auto_archive).toBe(false);
+    expect(value.run.workspace_affinity).toEqual({
+      key: "  review-${{ paseo.trigger.conversation_key }}  ",
+    });
+    expect(yaml).toContain("# preserve this identity exactly");
     expect(value.on["slack.mention"]?.filters?.channels).toEqual(["engineering"]);
   });
 
@@ -121,6 +130,37 @@ describe("trigger form YAML bridge", () => {
     if ("choices" in value.run.agent) throw new Error("expected an inline agent");
     expect(value.run.agent.options).toEqual({ sandbox_mode: "read-only" });
     expect(value.run.agent.thinkingOptionId).toBe("xhigh");
+  });
+
+  test("creates, changes, and explicitly removes affinity without normalizing keys", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(projection.value.workspaceAffinityKey).toBe(
+      "  review-${{ paseo.trigger.conversation_key }}  ",
+    );
+    const value = { ...projection.value, workspaceAffinityKey: "  custom:key  " };
+    for (const yaml of [createTriggerYaml(value), patchTriggerYaml(ADVANCED, value)]) {
+      expect(
+        TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).run.workspace_affinity,
+      ).toEqual({
+        key: "  custom:key  ",
+      });
+      const removed = patchTriggerYaml(yaml, { ...value, workspaceAffinityKey: "" });
+      expect(removed).not.toContain("workspace_affinity");
+      expect(
+        TriggerDocumentSchema.parse(parseDocument(removed).toJS()).run.workspace_affinity,
+      ).toBeUndefined();
+    }
+    expect(patchTriggerYaml(ADVANCED, value)).toContain("# preserve this identity exactly");
+  });
+
+  test("rejects whitespace-only affinity instead of silently disabling reuse", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const value = { ...projection.value, workspaceAffinityKey: "   " };
+    expect(triggerFormErrors(value).workspaceAffinityKey).toMatch(/nonblank affinity key/u);
+    expect(() => createTriggerYaml(value)).toThrow(/nonblank affinity key/u);
+    expect(() => patchTriggerYaml(ADVANCED, value)).toThrow(/nonblank affinity key/u);
   });
 
   test("keeps advanced YAML added before a new trigger's first save", () => {
@@ -168,6 +208,7 @@ describe("trigger form YAML bridge", () => {
       continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
+      workspaceAffinityKey: "",
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
@@ -207,6 +248,7 @@ describe("trigger form YAML bridge", () => {
       continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
+      workspaceAffinityKey: "",
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
@@ -437,8 +479,8 @@ test.each(["github.issue_label_added", "github.pull_request_label_added"])(
 test("continuation policies round-trip through the form and YAML", () => {
   const projection = projectTriggerForm(ADVANCED);
   if (projection.status !== "editable") throw new Error(projection.reason);
-  expect(projection.value.continuationMode).toBe("conversation");
-  for (const mode of ["key", "new", "conversation"]) {
+  expect(projection.value.continuationMode).toBe("new");
+  for (const mode of ["new"]) {
     const yaml = patchTriggerYaml(ADVANCED, {
       ...projection.value,
       continuationMode: mode,
@@ -447,5 +489,19 @@ test("continuation policies round-trip through the form and YAML", () => {
     const next = projectTriggerForm(yaml);
     expect(next).toMatchObject({ status: "editable", value: { continuationMode: mode } });
     expect(yaml).toContain("# keep this heading");
+  }
+});
+
+test("rejects agent continuation when workspace affinity is enabled", () => {
+  const projection = projectTriggerForm(ADVANCED);
+  if (projection.status !== "editable") throw new Error(projection.reason);
+  for (const mode of ["conversation", "key"]) {
+    const value = {
+      ...projection.value,
+      continuationMode: mode,
+      continuationKey: "shared-agent",
+    };
+    expect(triggerFormErrors(value).continuationMode).toMatch(/New agent continuity/u);
+    expect(() => patchTriggerYaml(ADVANCED, value)).toThrow(/New agent continuity/u);
   }
 });

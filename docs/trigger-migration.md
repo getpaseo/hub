@@ -7,6 +7,7 @@ migration finishes before provider events are accepted and is safe to retry afte
 
 - Event type, filters, connection routing, and invocation inputs
 - Daemon, working directory, and worktree behavior
+- Workspace affinity keys, retention deadlines, and auto-archive policy
 - Agent provider configuration and finite agent selection
 - The rendered prompt text, including resolved prompt partial content
 - Environment variables, GitHub authority, structured output, output grants, and timeouts
@@ -18,6 +19,7 @@ migration finishes before provider events are accepted and is safe to retry afte
 These affect authoring or presentation, not what the active trigger is allowed to do:
 
 - YAML comments, whitespace, key ordering, anchors, and quoting style are regenerated.
+  String values such as an affinity key retain their exact bytes, including surrounding whitespace.
 - Prompt partial boundaries and file names disappear after their resolved content is inlined.
 - Shared environment and agent names disappear after their values are inlined.
 - A converted one-run workflow uses the internal step ID `run`; the former step ID remains only in

@@ -44,6 +44,7 @@ import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/proto
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
+import { triggerSupportsWorkspaceAffinityConversationKey } from "./workspace-affinity.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -596,6 +597,7 @@ function TriggerForm({
   const githubEnabled = form.githubConnection !== "";
   const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
   const [optionsExpanded, setOptionsExpanded] = useState(false);
+  const [affinityExpanded, setAffinityExpanded] = useState(form.workspaceAffinityKey !== "");
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
@@ -798,6 +800,41 @@ function TriggerForm({
                     {...fieldError(errors, "idleTimeout")}
                   />
                 </div>
+              )}
+              {selectedDaemon === undefined ? null : (
+                <Disclosure
+                  id="trigger-workspace-affinity"
+                  open={affinityExpanded}
+                  onOpenChange={setAffinityExpanded}
+                  title="Workspace affinity"
+                  description="Optionally share a workspace across related arrivals."
+                >
+                  <FormField
+                    id="trigger-workspace-affinity-key"
+                    label="Affinity key"
+                    description={
+                      triggerSupportsWorkspaceAffinityConversationKey(form.event)
+                        ? "Use ${{ paseo.trigger.conversation_key }} for the authenticated thread or issue, or author a custom key. Leave empty to disable reuse."
+                        : "Use a literal or finite declared input choices. This event has no conversation key. Leave empty to disable reuse."
+                    }
+                    kind="text"
+                    name="workspaceAffinityKey"
+                    value={form.workspaceAffinityKey}
+                    onChange={text("workspaceAffinityKey")}
+                    placeholder={
+                      triggerSupportsWorkspaceAffinityConversationKey(form.event)
+                        ? "${{ paseo.trigger.conversation_key }}"
+                        : "release-triage"
+                    }
+                    {...fieldError(errors, "workspaceAffinityKey")}
+                  />
+                  <WarningAlert title="Workspace sharing, not session continuation">
+                    Each arrival creates a separate agent; runs can overlap in the same files.
+                    Supporting daemons retain the workspace through the latest trigger maximum
+                    runtime, including gaps between runs. Idle timeout only stops unresponsive
+                    agents. Older daemons ignore affinity and create fresh workspaces.
+                  </WarningAlert>
+                </Disclosure>
               )}
             </>
           )}
@@ -1280,6 +1317,7 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     continuationKey: "",
     maxRuntime: "2h",
     idleTimeout: "10m",
+    workspaceAffinityKey: "",
     githubConnection: "",
     githubRepositories: "",
     githubPermissions: "",

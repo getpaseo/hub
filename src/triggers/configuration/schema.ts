@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
+import { WorkspaceAffinitySchema } from "../../config/workspace-affinity.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -111,6 +112,7 @@ export const TriggerRunSchema = z
       .optional(),
     outputs: z.record(z.string().regex(EVENT_NAME), TriggerOutputSchema).optional(),
     auto_archive: z.boolean().default(true),
+    workspace_affinity: WorkspaceAffinitySchema.optional(),
   })
   .strict();
 
@@ -177,6 +179,13 @@ export const TriggerDocumentSchema = z
         code: z.ZodIssueCode.custom,
         path: ["run", "agent", "choices"],
         message: "at least one agent choice is required",
+      });
+    }
+    if (trigger.run.workspace_affinity !== undefined && trigger.run.continuation.mode !== "new") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["run", "continuation"],
+        message: "Workspace affinity requires New agent continuity.",
       });
     }
   });

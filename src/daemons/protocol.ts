@@ -17,6 +17,11 @@ export interface DaemonCreateAgentOptions {
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
   worktree?: WorktreeTarget;
+  workspaceAffinity?: {
+    key: string;
+    retainUntil: string;
+    autoArchive: boolean;
+  };
 }
 
 export interface McpToolRef {

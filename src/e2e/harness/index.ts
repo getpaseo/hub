@@ -21,8 +21,11 @@ const HUB_ROOT = process.cwd();
 let MACHINE_KEY = "";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 const PROJECT_SLUG = "default";
+const SOURCE_E2E_DAEMON_ID = "00000000-0000-4000-8000-0000000000dd";
 const PersistedDaemonAgentSchema = z.object({
   id: z.string(),
+  workspaceId: z.string().optional(),
+  archivedAt: z.string().nullable().optional(),
   lastStatus: z.enum(["error", "initializing", "idle", "running", "closed"]),
   config: z.object({
     mcpServers: z
@@ -109,6 +112,7 @@ interface ManagedChild {
 
 interface HubE2EOptions {
   realAgent?: boolean;
+  completeInTurn?: boolean;
 }
 
 export interface SourceCliBundleDeploymentEvidence {
@@ -206,6 +210,16 @@ export class HubE2E {
       );
       return result.rows[0]?.connected !== "0" && this.requireProxy().hubConnectionIsOpen();
     }, "daemon to become connected");
+  }
+
+  private async sourceE2EDaemonSlug(): Promise<string> {
+    const daemon = await this.requirePool().query<{ slug: string }>(
+      "select slug from daemons where id = $1",
+      [SOURCE_E2E_DAEMON_ID],
+    );
+    const slug = daemon.rows[0]?.slug;
+    if (!slug) throw new Error("Source E2E daemon is unavailable");
+    return slug;
   }
 
   async status(): Promise<{ state: string }> {
@@ -348,12 +362,9 @@ export class HubE2E {
 
   async installProductionConfiguration(
     prompt = "Deploy requested for phase-five-operator",
+    workspaceAffinityKey?: string,
   ): Promise<void> {
-    const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
-    );
-    const slug = daemon.rows[0]?.slug;
-    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const slug = await this.sourceE2EDaemonSlug();
     const yaml = [
       "environments:",
       "  - name: phase-five",
@@ -372,6 +383,12 @@ export class HubE2E {
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
+      ...(workspaceAffinityKey === undefined
+        ? []
+        : [
+            "        workspace_affinity:",
+            `          key: ${JSON.stringify(workspaceAffinityKey)}`,
+          ]),
       "        agent:",
       "          provider: hub-e2e",
       `        prompt: [{ text: ${JSON.stringify(prompt)} }]`,
@@ -442,11 +459,7 @@ export class HubE2E {
   }
 
   async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
-    const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
-    );
-    const slug = daemon.rows[0]?.slug;
-    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const slug = await this.sourceE2EDaemonSlug();
     const yaml = [
       "environments:",
       "  - name: real-agent",
@@ -482,11 +495,7 @@ export class HubE2E {
   }
 
   async installRealAgentRoutingConfiguration(provider: RealAgentProvider): Promise<void> {
-    const daemon = await this.requirePool().query<{ slug: string }>(
-      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
-    );
-    const slug = daemon.rows[0]?.slug;
-    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const slug = await this.sourceE2EDaemonSlug();
     const yaml = [
       "environments:",
       "  - name: real-agent-routing",
@@ -985,6 +994,30 @@ export class HubE2E {
     };
   }
 
+  async completedExecutionWorkspace(executionId: string): Promise<string> {
+    await this.completedRun(executionId);
+    await this.observe(async () => {
+      const records = await this.persistedDaemonAgents(executionId);
+      return records.length === 1 && typeof records[0]?.archivedAt === "string";
+    }, "completed execution agent archival");
+    const record = (await this.persistedDaemonAgents(executionId))[0];
+    if (!record?.workspaceId) throw new Error("Completed execution has no workspace");
+    return record.workspaceId;
+  }
+
+  async expectWorkspaceActive(workspaceId: string, active: boolean): Promise<void> {
+    await this.observe(
+      async () =>
+        (await this.requireSource().activeWorkspaceIds()).includes(workspaceId) === active,
+      `workspace ${workspaceId} to be ${active ? "active" : "archived"}`,
+    );
+  }
+
+  async archiveWorkspace(workspaceId: string): Promise<void> {
+    await this.cli(["workspace", "archive", workspaceId, "--host", this.daemonHost, "--json"]);
+    await this.expectWorkspaceActive(workspaceId, false);
+  }
+
   requestForbiddenOperation() {
     return this.requireProxy().requestForbiddenOperation();
   }
@@ -1365,7 +1398,7 @@ export class HubE2E {
     this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();
-    if (this.options.realAgent !== true) {
+    if (this.options.realAgent !== true && this.options.completeInTurn !== true) {
       this.completionRunner = await startChild({
         name: "completion-runner",
         command: process.execPath,
@@ -1452,6 +1485,7 @@ export class HubE2E {
                     HUB_E2E_ACP_RECORD_FILE: this.acpRecordFile,
                     HUB_E2E_COMPLETE_GATE: this.completionGate,
                     HUB_E2E_COMPLETION_JOBS: this.completionJobs,
+                    HUB_E2E_COMPLETE_IN_TURN: this.options.completeInTurn === true ? "1" : "0",
                   },
                 },
               },

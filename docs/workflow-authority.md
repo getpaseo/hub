@@ -3,6 +3,46 @@
 Workflow authority is authored on an individual step. It is not a trigger option,
 agent option, sandbox setting, or Paseo daemon feature.
 
+## Workspace selection
+
+An affinity key can select files left by earlier work, so it is an authority-bearing field.
+Both `run.workspace_affinity.key` in a trigger document and `steps[].workspace_affinity.key` in a
+legacy bundle use the same compiler validation. The editor preserves the authored key exactly and
+never enables affinity by default. Prompt/context text cannot choose an existing workspace.
+
+Keep four identities separate:
+
+| Identity               | Owns                                             | Continuity                                |
+| ---------------------- | ------------------------------------------------ | ----------------------------------------- |
+| Workspace affinity key | Checkout and files                               | Related trigger arrivals                  |
+| Hub execution ID       | Completion, output grants, deadline, and retries | One step execution                        |
+| External session ID    | Provider reply destination and lifecycle signals | For example, one Linear Agent Session     |
+| Provider agent ID      | Provider conversation/history                    | A new agent per execution in this feature |
+
+Linear's issue UUID is the conversation boundary, scoped by the authenticated connection and
+Linear organization. Mutable identifiers, comment IDs, and delivery IDs cannot fragment that
+identity. The Agent Sessions integration in [#88](https://github.com/getpaseo/hub/pull/88) can use
+the same identity fields, but must add its implemented event names to conversation-key validation
+and test multiple sessions on one issue, different issues/connections, and session-scoped replies
+and cancellation. This PR does not enable unimplemented session events or resume provider agents.
+
+Hub owns configuration validation, trusted provider identity, and the durable launch intent.
+The daemon owns atomic workspace binding, restoration, and safe expiry. Hub's restricted
+`hub.execute` permission cannot restore existing workspaces on an older daemon. Requesting general
+workspace-management authority to emulate affinity would broaden the operator's permissions and
+duplicate daemon-local lifecycle state; do not do that implicitly.
+
+The latest arriving workflow deadline retains the workspace across gaps between executions.
+Execution `idle_timeout` cannot represent those gaps because no agent need be running then.
+Affinity does not serialize writers or preserve uncommitted files through destructive archival.
+Those guarantees need separate, explicit policies; a shared key must not silently enable either.
+
+An old daemon may successfully execute a launch while ignoring affinity. Keep the baseline and
+capable-daemon integration tests separate, as described in [MAINTAINERS.md](../MAINTAINERS.md).
+The optional `workspaceAffinityApplied` acknowledgement is accepted on the wire but is not yet
+retained in execution state. Operator-visible application status remains follow-up work: missing
+acknowledgement must be distinguished from a confirmed application, including after reconnect.
+
 ## Generic connection values
 
 Step environment values may explicitly request a named value from a configured

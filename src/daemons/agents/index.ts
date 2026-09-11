@@ -130,6 +130,7 @@ export class DaemonAgents implements AgentConnection {
         },
         env: options.env,
         worktree: options.worktree,
+        workspaceAffinity: options.workspaceAffinity,
       },
       timeoutMs,
     );

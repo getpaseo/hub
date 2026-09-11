@@ -132,6 +132,55 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   });
 });
 
+test("authors, persists, and explicitly disables workspace affinity in the trigger form", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  await hub.seedSlackConnection("owner", "company-slack", "Acme Slack");
+  const triggers = new OrganizationTriggers(page);
+  const key = "  triage:${{ paseo.trigger.conversation_key }}  ";
+
+  await triggers.open();
+  await triggers.startNew();
+  await triggers.configureSlackMention({
+    name: "affinity",
+    connection: "company-slack",
+    daemon,
+    cwd: "/workspace/acme",
+    users: "U123",
+    agent: "pi/gateway/vendor/model-v1",
+    mode: "full-access",
+    thinking: "high",
+    providerOptions: "",
+    prompt: "Handle the request.",
+  });
+  await triggers.changeWorkspaceAffinity(key);
+  await page.getByRole("radio", { name: "New agent", exact: true }).click();
+  await triggers.capture(`${SHOTS}/affinity-desktop.png`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel("Affinity key", { exact: true }).scrollIntoViewIfNeeded();
+  await triggers.capture(`${SHOTS}/affinity-mobile.png`);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await triggers.save("affinity");
+  await triggers.openTrigger("affinity");
+  await triggers.expectWorkspaceAffinity(key);
+  await triggers.changePrompt("Updated instructions must not reset the workspace key.");
+  await triggers.save("affinity");
+  await triggers.openTrigger("affinity");
+  await triggers.expectWorkspaceAffinity(key);
+  await triggers.switchToYaml();
+  await triggers.expectYamlContains("workspace_affinity:", key);
+  await page.getByRole("radio", { name: "Form", exact: true }).click();
+  await triggers.changeWorkspaceAffinity("");
+  await triggers.save("affinity");
+  await triggers.openTrigger("affinity");
+  await triggers.switchToYaml();
+  await expect(page.locator(".cm-content")).not.toContainText("workspace_affinity");
+});
+
 for (const scenario of [
   { event: "github.issue_label_added", name: "issue-label" },
   { event: "github.pull_request_label_added", name: "pr-label" },

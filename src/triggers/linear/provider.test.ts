@@ -8,6 +8,74 @@ import type { NormalizedLinearCommentEvent } from "./events.js";
 import { createLinearTriggerProvider } from "./provider.js";
 
 describe("Linear trigger provider", () => {
+  it("uses the same issue identity across comments and issue events, isolated by connection and tenant", async () => {
+    const configuration = linearCommentConfiguration();
+    const comment = configuration.triggers[0]!;
+    const { project, revision, store } = await activeConfiguration({
+      ...configuration,
+      triggers: [comment, { ...comment, name: "issue", on: "linear.issue_entered_scope" }],
+    });
+    const provider = createLinearTriggerProvider({ configurationStoreForProject: () => store });
+    const original = external(project.id, revision.id);
+    const payload = event("2026-01-02T00:00:00.000Z");
+    assert.ok(payload.issue);
+    const keyFor = async (input: ExternalTrigger) => {
+      const matches = await provider.match(input);
+      if (typeof matches === "string" || !isAcceptedTriggerProviderMatch(matches[0])) {
+        throw new Error("expected accepted Linear match");
+      }
+      return provider.workspaceAffinityKey?.(matches[0].triggerContext);
+    };
+    const key = await keyFor(original);
+    assert.equal(key, JSON.stringify(["linear", "linear-connection", "linear-org", "issue-1"]));
+    assert.equal(
+      await keyFor({
+        ...original,
+        deliveryId: "another-delivery",
+        payload: {
+          ...payload,
+          id: "comment-2",
+          comment: { ...payload.comment, id: "comment-2", body: "another request" },
+          issue: { ...payload.issue, identifier: "MOVED-99", title: "Renamed" },
+        },
+      }),
+      key,
+    );
+    assert.equal(
+      await keyFor({
+        ...original,
+        source: "linear.issue",
+        payload: {
+          type: "issue",
+          action: "create",
+          id: payload.issue.id,
+          organizationId: payload.organizationId,
+          actor: payload.actor,
+          issue: payload.issue,
+          updatedFrom: {},
+        },
+      }),
+      key,
+    );
+    assert.notEqual(await keyFor({ ...original, connectionId: "another-connection" }), key);
+    assert.notEqual(await keyFor({ ...original, connectionId: null }), key);
+    assert.notEqual(
+      await keyFor({ ...original, payload: { ...payload, organizationId: "another-tenant" } }),
+      key,
+    );
+    assert.notEqual(
+      await keyFor({
+        ...original,
+        payload: {
+          ...payload,
+          comment: { ...payload.comment, issueId: "issue-2" },
+          issue: { ...payload.issue, id: "issue-2" },
+        },
+      }),
+      key,
+    );
+  });
+
   it.each([
     ["pattern", { pattern: "/run" }, "/run priority=high investigate"],
     ["contains", { contains: "/run" }, "please /run priority=high investigate"],

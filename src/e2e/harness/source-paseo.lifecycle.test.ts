@@ -1,7 +1,40 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { describe, it } from "vitest";
-import { stopProcess } from "./source-paseo.js";
+import { sourceHubConnectArguments, stopProcess } from "./source-paseo.js";
+
+describe("source Paseo Hub connection", () => {
+  it("keeps execution authority opt-in at the CLI boundary", () => {
+    const input = {
+      hubOrigin: "https://hub.test",
+      credential: "machine-key",
+      daemonHost: "127.0.0.1:4010",
+    };
+
+    assert.deepEqual(sourceHubConnectArguments(input), [
+      "hub",
+      "connect",
+      "https://hub.test",
+      "--api-key",
+      "machine-key",
+      "--host",
+      "127.0.0.1:4010",
+      "--json",
+    ]);
+    assert.deepEqual(sourceHubConnectArguments({ ...input, permissions: ["hub.execute"] }), [
+      "hub",
+      "connect",
+      "https://hub.test",
+      "--api-key",
+      "machine-key",
+      "--host",
+      "127.0.0.1:4010",
+      "--permission",
+      "hub.execute",
+      "--json",
+    ]);
+  });
+});
 
 describe("source Paseo process ownership", () => {
   it("terminates a detached agent CLI child tree", async () => {

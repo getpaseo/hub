@@ -15,6 +15,16 @@ export interface DaemonEnvironmentTarget {
   worktree?: WorktreeTarget;
 }
 
+/**
+ * An opaque, daemon-scoped workspace lease. The daemon owns the resulting workspace mapping;
+ * Hub never receives or selects a workspace ID.
+ */
+export interface WorkspaceAffinity {
+  key: string;
+  retainUntil: string;
+  autoArchive: boolean;
+}
+
 export interface LaunchMachineIntent {
   continuation?: { key: string | null; compatibility: unknown };
   kind: "launch_machine";
@@ -34,6 +44,7 @@ export interface LaunchMachineIntent {
   startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  workspaceAffinity?: WorkspaceAffinity;
   triggerContext: unknown;
   outputContext: unknown;
   outputSchema?: JsonValue;
@@ -59,6 +70,7 @@ export function buildLaunchMachineIntent(input: {
   startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  workspaceAffinity?: WorkspaceAffinity;
   triggerContext: unknown;
   outputContext: unknown;
   hubConfig: unknown;
@@ -80,6 +92,15 @@ export function buildLaunchMachineIntent(input: {
     ...(input.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: input.startupTimeoutMs }),
     ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     autoArchive: input.autoArchive,
+    ...(input.workspaceAffinity === undefined
+      ? {}
+      : {
+          workspaceAffinity: {
+            key: input.workspaceAffinity.key,
+            retainUntil: input.workspaceAffinity.retainUntil,
+            autoArchive: input.workspaceAffinity.autoArchive,
+          },
+        }),
     triggerContext: input.triggerContext,
     outputContext: input.outputContext,
     configurationRevisionId: input.configurationRevisionId,

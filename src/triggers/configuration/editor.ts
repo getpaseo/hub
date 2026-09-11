@@ -8,6 +8,7 @@ import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import { WorkspaceAffinityKeySchema } from "../../config/workspace-affinity.js";
 
 import {
   eventDefinition,
@@ -35,6 +36,7 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
+  workspaceAffinityKey: string;
   githubConnection: string;
   githubRepositories: string;
   githubPermissions: string;
@@ -84,7 +86,7 @@ function toFormValue(
     connection: definition.connection ?? "",
     allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
     qualifiers: readQualifiers(event, definition.filters),
-    recurrence: definition.recurrence ?? DEFAULT_RECURRENCE,
+    recurrence: formRecurrence(definition),
     daemon: trigger.run.target.daemon,
     cwd: trigger.run.target.cwd,
     agent: joinAgentId(agent.provider, agent.model),
@@ -95,6 +97,7 @@ function toFormValue(
     continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
     maxRuntime: trigger.run.max_runtime,
     idleTimeout: trigger.run.idle_timeout,
+    workspaceAffinityKey: trigger.run.workspace_affinity?.key ?? "",
     githubConnection: trigger.run.github?.connection ?? "",
     githubRepositories: trigger.run.github?.repositories?.join(", ") ?? "",
     githubPermissions:
@@ -104,6 +107,10 @@ function toFormValue(
     githubDuration: trigger.run.github?.duration ?? "",
     prompt: trigger.run.prompt,
   };
+}
+
+function formRecurrence(definition: TriggerDocument["on"][string]): Recurrence {
+  return definition.recurrence ?? DEFAULT_RECURRENCE;
 }
 
 /** Patch only form-owned YAML nodes, retaining comments, ordering, and advanced nodes. */
@@ -163,6 +170,8 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
+  if (value.workspaceAffinityKey === "") deleteIfPresent(document, ["run", "workspace_affinity"]);
+  else setIfChanged(document, ["run", "workspace_affinity", "key"], value.workspaceAffinityKey);
   setOptional(document, ["run", "github"], githubAuthority(value));
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
@@ -226,6 +235,9 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         continuation: formContinuation(value),
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
+        ...(value.workspaceAffinityKey === ""
+          ? {}
+          : { workspace_affinity: { key: value.workspaceAffinityKey } }),
         ...(github === undefined ? {} : { github }),
         prompt: value.prompt,
       },
@@ -305,12 +317,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
       errors.allowedUsers = "Name at least one user ID, or let everyone trigger it.";
     }
   }
-  for (const qualifier of eventDefinition(value.event).qualifiers) {
-    const selection = value.qualifiers[qualifier.key];
-    if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
-      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
-    }
-  }
+  Object.assign(errors, requiredQualifierErrors(value));
   Object.assign(errors, recurrenceErrors(value));
   if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
   if (!value.cwd.trim().startsWith("/")) {
@@ -318,6 +325,15 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   }
   if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required.";
   if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
+  if (
+    value.workspaceAffinityKey !== "" &&
+    !WorkspaceAffinityKeySchema.safeParse(value.workspaceAffinityKey).success
+  ) {
+    errors.workspaceAffinityKey = "Enter a nonblank affinity key, or clear it to disable reuse.";
+  }
+  if (value.workspaceAffinityKey !== "" && value.continuationMode !== "new") {
+    errors.continuationMode = "Workspace affinity requires New agent continuity.";
+  }
   const agent = refused(() => splitAgentId(value.agent));
   if (agent !== undefined) errors.agent = agent;
   if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
@@ -329,6 +345,17 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   }
   Object.assign(errors, continuationErrors(value));
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
+  return errors;
+}
+
+function requiredQualifierErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const errors: TriggerFieldErrors = {};
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const selection = value.qualifiers[qualifier.key];
+    if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
+      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
+    }
+  }
   return errors;
 }
 

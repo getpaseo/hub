@@ -58,6 +58,48 @@ steps:
     assert.doesNotMatch(trigger.yaml, /include:|partials|steps:/u);
   });
 
+  it.each(["  custom-workspace  ", "slack:${{ paseo.trigger.conversation_key }}"])(
+    "preserves single-step affinity %s in the current trigger format",
+    (key) => {
+      const migrated = migrateLegacyBundle({
+        files: [
+          { path: ".paseo/hub.yml", content: hub },
+          {
+            path: ".paseo/workflows/affinity.yml",
+            content: `
+name: affinity
+on: slack.mention
+filters: { from_users: [U123] }
+max_runtime: 2h
+steps:
+  - id: work
+    environment: runner
+    max_runtime: 90m
+    idle_timeout: 10m
+    auto_archive: false
+    workspace_affinity: { key: ${JSON.stringify(key)} }
+    agent: codex
+    prompt: [{ text: work }]
+`,
+          },
+        ],
+      });
+
+      assert.equal(migrated.length, 1);
+      const trigger = migrated[0];
+      assert.equal(trigger?.format, "single_run");
+      if (trigger?.format !== "single_run") return;
+      assert.deepEqual(trigger.compiled.authored.run.workspace_affinity, { key });
+      const event = trigger.compiled.events[0]!;
+      assert.deepEqual(event.steps[0]?.workspaceAffinity, { key });
+      assert.equal(event.maxRuntimeMs, 2 * 60 * 60_000);
+      assert.equal(event.steps[0]?.maxRuntimeMs, 90 * 60_000);
+      assert.equal(event.steps[0]?.idleTimeoutMs, 10 * 60_000);
+      assert.equal(event.steps[0]?.autoArchive, false);
+      assert.match(trigger.yaml, /workspace_affinity:/u);
+    },
+  );
+
   it("preserves a multi-step workflow as one self-contained normalized legacy trigger", () => {
     const migrated = migrateLegacyBundle({
       files: [

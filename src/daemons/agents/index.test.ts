@@ -64,6 +64,43 @@ test("requires ordinary agent RPCs and durable receipts instead of falling back 
   expect(frames).toEqual([]);
 });
 
+test("forwards optional workspace affinity through the ordinary agent creation request", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    requests.push(message);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "status",
+        payload: {
+          requestId: message["requestId"],
+          status: "agent_created",
+          agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+        },
+      },
+    });
+  });
+  enable(agents);
+  await agents.create("affinity-key", {
+    ...options,
+    workspaceAffinity: {
+      key: "thread-1",
+      retainUntil: "2026-08-06T12:02:00.000Z",
+      autoArchive: true,
+    },
+  });
+  expect(requests[0]).toMatchObject({
+    workspaceAffinity: {
+      key: "thread-1",
+      retainUntil: "2026-08-06T12:02:00.000Z",
+      autoArchive: true,
+    },
+  });
+});
+
 test("a lost response remains recoverable instead of reporting a rejected creation", async () => {
   const agents = new DaemonAgents(() => {});
   enable(agents);

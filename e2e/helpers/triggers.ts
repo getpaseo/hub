@@ -445,6 +445,21 @@ export class OrganizationTriggers {
     await this.page.getByLabel("Instructions", { exact: true }).fill(prompt);
   }
 
+  async changeWorkspaceAffinity(key: string) {
+    const toggle = this.page.getByRole("button", { name: "Workspace affinity", exact: false });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    await this.page.getByLabel("Affinity key", { exact: true }).fill(key);
+    await expect(
+      this.page
+        .getByRole("alert")
+        .filter({ hasText: "Workspace sharing, not session continuation" }),
+    ).toContainText("Older daemons ignore affinity and create fresh workspaces.");
+  }
+
+  async expectWorkspaceAffinity(key: string) {
+    await expect(this.page.getByLabel("Affinity key", { exact: true })).toHaveValue(key);
+  }
+
   async expectMergeTagsAndAutosizing() {
     const instructions = this.page.getByLabel("Instructions", { exact: true });
     await instructions.fill("Start  finish");
