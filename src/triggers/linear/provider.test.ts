@@ -33,6 +33,10 @@ describe("Linear trigger provider", () => {
         prompt: body,
         inputs: { priority: "high" },
       });
+      assert.deepEqual(match.conversation, {
+        key: JSON.stringify(["linear", "linear-org", "issue-1"]),
+        label: "Linear issue",
+      });
     },
   );
 
