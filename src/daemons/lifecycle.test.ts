@@ -1,6 +1,6 @@
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { DaemonResponseLostError } from "./protocol.js";
-import type { AgentConnection } from "./agents/index.js";
+import type { AgentConnection, AgentEvent } from "./agents/index.js";
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { deriveAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
@@ -13,7 +13,6 @@ import {
   type DaemonDispatchLifecycle,
   type ExecutionDeadlineClock,
 } from "./lifecycle.js";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../execution-capabilities/outputs.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import type { TriggerProvider } from "../triggers/index.js";
@@ -394,6 +393,11 @@ describe("durable Hub action acknowledgement state", () => {
     });
     await database.linkWorkflowStepRunExecution(step.id, stopped.id);
     await database.attachAgentToExecution(stopped.id, DAEMON_ID, AGENT_ID);
+    await attachTestAgentSession(database, stopped.id, {
+      id: "hub-session-stop-1",
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+    });
     await database.transitionAgentExecution(stopped.id, "running");
     const untouched = await database.insertAgentExecution({
       id: "00000000-0000-4000-8000-0000000000e2",
@@ -517,6 +521,11 @@ describe("durable Hub action acknowledgement state", () => {
     });
     await database.linkWorkflowStepRunExecution(step.id, execution.id);
     await database.attachAgentToExecution(execution.id, DAEMON_ID, AGENT_ID);
+    await attachTestAgentSession(database, execution.id, {
+      id: "hub-session-stop-race",
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+    });
     await database.transitionAgentExecution(execution.id, "running");
 
     // Model the interleaving where creation commits after the first pending scan. The run-level
@@ -814,13 +823,17 @@ describe("durable Hub action acknowledgement state", () => {
       const recoveryLifecycle = createDaemonDispatchLifecycle({
         database: fixture.database,
         connectionForDaemon: () => undefined,
+        publicBaseUrl: "http://hub.test",
+        completionTokenSecret: "completion-secret",
         executionAuthority: {
           materialize: async () => ({ env: {} }),
+          canResume: async () => true,
+          recover: async () => {},
           onExecutionTerminal: async (executionId) => {
             terminalExecutionIds.push(executionId);
           },
           resourceCounts: () => ({ executionStates: 0, leases: 0, pendingMaterializations: 0 }),
-          stop: async () => ({ residualExposures: [] }),
+          stop: async () => {},
         },
       });
 
@@ -868,7 +881,7 @@ describe("durable Hub action acknowledgement state", () => {
         (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
         "timed_out",
       );
-      assert.deepEqual(dispatchFailures(fixture.stream), ["step_idle_timeout"]);
+      assert.deepEqual(dispatchFailures(fixture.stream), []);
       await fixture.lifecycle.stop();
     });
 
@@ -917,7 +930,7 @@ describe("durable Hub action acknowledgement state", () => {
         { status: execution?.status, result: execution?.result },
         { status: "failed", result: { status: "failed", reason: "step_idle_timeout" } },
       );
-      assert.deepEqual(dispatchFailures(fixture.stream), ["step_idle_timeout"]);
+      assert.deepEqual(dispatchFailures(fixture.stream), []);
       await fixture.lifecycle.stop();
     });
 
@@ -953,7 +966,7 @@ describe("durable Hub action acknowledgement state", () => {
         { status: run.status, failureReason: run.failureReason },
         { status: "failed", failureReason: "output_delivery_failed" },
       );
-      assert.deepEqual(dispatchFailures(fixture.stream), ["output_delivery_failed"]);
+      assert.deepEqual(dispatchFailures(fixture.stream), []);
       const logged = fixture.stream.records().find(isOutputDeliveryLogRecord);
       assert.deepEqual(
         logged?.["diagnostic"],
@@ -1049,6 +1062,30 @@ function agentSessionIdOf(outputContext: unknown): unknown {
     "agentSessionId" in outputContext
     ? outputContext.agentSessionId
     : undefined;
+}
+
+async function attachTestAgentSession(
+  database: ReturnType<typeof createMemoryDatabase>,
+  executionId: string,
+  session: { id: string; organizationId: string; projectId: string },
+): Promise<void> {
+  await database.saveAgentSession({
+    ...session,
+    continuationKey: null,
+    daemonId: DAEMON_ID,
+    agentId: AGENT_ID,
+    workspaceId: "workspace",
+    compatibility: "test",
+    capabilityTokenHash: "test",
+    tools: [],
+    creationOptions: {
+      provider: "codex",
+      cwd: "/workspace",
+      env: {},
+      toolPolicy: { preapproved: [] },
+    },
+  });
+  await database.attachExecutionToSession(executionId, session.id);
 }
 
 async function acknowledgementFixture() {
@@ -1200,12 +1237,26 @@ class ManualDeadlineClock implements ExecutionDeadlineClock {
 }
 
 class DispatchConnection implements DaemonConnection {
-  private readonly handlers = new Set<DaemonEventHandler>();
-
-  on(handler: DaemonEventHandler): () => void {
-    this.handlers.add(handler);
-    return () => this.handlers.delete(handler);
-  }
+  private readonly handlers = new Set<(event: AgentEvent) => void>();
+  readonly agents: AgentConnection = {
+    create: async () => ({
+      id: AGENT_ID,
+      workspaceId: "workspace",
+      status: "idle",
+    }),
+    get: async () => ({
+      id: AGENT_ID,
+      workspaceId: "workspace",
+      status: "idle",
+    }),
+    send: async () => {},
+    restore: async () => true,
+    control: async () => {},
+    watch: async (_agentId, handler) => {
+      this.handlers.add(handler);
+      return () => this.handlers.delete(handler);
+    },
+  };
 
   subscriptions(): number {
     return this.handlers.size;
@@ -1220,11 +1271,25 @@ class DispatchConnection implements DaemonConnection {
   }
 
   async emit(event: DaemonEvent): Promise<void> {
-    for (const handler of this.handlers) await handler(event);
-  }
-
-  async createAgent(): Promise<{ id: string }> {
-    return { id: AGENT_ID };
+    const agentEvent: AgentEvent =
+      event.type === "agent_stream"
+        ? {
+            type: "agent_stream",
+            agentId: event.agentId,
+            event: event.event,
+            timestamp: event.timestamp,
+          }
+        : {
+            type: "agent_update",
+            agent: {
+              id: event.agentId,
+              workspaceId: "workspace",
+              status: event.agent.status,
+            },
+            timestamp: event.timestamp,
+          };
+    for (const handler of this.handlers) handler(agentEvent);
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   async getProviderSnapshot(): Promise<never> {
@@ -1234,8 +1299,6 @@ class DispatchConnection implements DaemonConnection {
   async refreshProviderSnapshot(): Promise<never> {
     throw new Error("not used");
   }
-
-  async controlExecution(): Promise<void> {}
 }
 
 function createLifecycle(

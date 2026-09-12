@@ -678,10 +678,9 @@ class PgDatabase implements Database {
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     const { id, created } = await acceptWorkflowRun(client, input);
-    const selected = await client.query<TriggerRunRow>(
-      "select * from trigger_runs where id = $1",
-      [id],
-    );
+    const selected = await client.query<TriggerRunRow>("select * from trigger_runs where id = $1", [
+      id,
+    ]);
     const record = toTriggerRunRecord(selected.rows[0]!);
     if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
     return { run: record, created };
