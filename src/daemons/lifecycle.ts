@@ -955,12 +955,7 @@ export class DaemonDispatchLifecycle {
       outputs: undelivered,
     });
     this.clearExecutionDeadline(execution.id);
-    const failed = await this.failAgentExecution(execution.id, OUTPUT_DELIVERY_FAILED_REASON);
-    if (failed !== undefined) {
-      this.completionWatchersByExecution.get(execution.id)?.(
-        new DaemonDispatchFailure(OUTPUT_DELIVERY_FAILED_REASON),
-      );
-    }
+    await this.failAgentExecution(execution.id, OUTPUT_DELIVERY_FAILED_REASON);
   }
 
   async recoverAgentExecutionDeadlines(): Promise<void> {
@@ -1008,7 +1003,6 @@ export class DaemonDispatchLifecycle {
       if (execution && isTerminalExecutionStatus(execution.status)) {
         await this.notifyExecutionTerminal(execution);
       }
-      this.completionWatchersByExecution.get(executionId)?.(new DaemonDispatchFailure("timeout"));
     }
     for (const executionId of completedExecutionIds) {
       this.clearExecutionDeadline(executionId);
@@ -1017,7 +1011,6 @@ export class DaemonDispatchLifecycle {
       const execution = await this.options.database.findAgentExecutionById(executionId);
       if (execution === undefined) throw new Error(`agent execution not found: ${executionId}`);
       await this.notifyExecutionTerminal(execution);
-      this.completionWatchersByExecution.get(executionId)?.();
     }
     await this.recoverPendingHubActions();
   }
@@ -1223,11 +1216,6 @@ export class DaemonDispatchLifecycle {
     const stopped = await Promise.all(
       executions.map(async (execution) => {
         const failed = await this.failAgentExecution(execution.id, input.reason);
-        if (failed !== undefined) {
-          this.completionWatchersByExecution.get(execution.id)?.(
-            new DaemonDispatchFailure(input.reason),
-          );
-        }
         return failed;
       }),
     );
@@ -1238,7 +1226,7 @@ export class DaemonDispatchLifecycle {
       undispatched.map(async (run) => {
         const failed = await this.options.database.failWorkflowRun(run.id, "failed", input.reason);
         if (failed?.transitioned !== true || failed.run.outcome !== "accepted") return undefined;
-        await this.finishStoppedWorkflowExecutions(failed.failedExecutionIds, input.reason);
+        await this.finishStoppedWorkflowExecutions(failed.failedExecutionIds);
         return failed.run;
       }),
     );
@@ -1248,10 +1236,7 @@ export class DaemonDispatchLifecycle {
     };
   }
 
-  private async finishStoppedWorkflowExecutions(
-    executionIds: readonly string[],
-    reason: string,
-  ): Promise<void> {
+  private async finishStoppedWorkflowExecutions(executionIds: readonly string[]): Promise<void> {
     await Promise.all(
       executionIds.map(async (executionId) => {
         const execution = await this.options.database.findAgentExecutionById(executionId);
@@ -1261,7 +1246,6 @@ export class DaemonDispatchLifecycle {
         this.startedExecutions.delete(executionId);
         await this.notifyExecutionTerminal(execution);
         await this.reconcileHubActionSafely(execution);
-        this.completionWatchersByExecution.get(executionId)?.(new DaemonDispatchFailure(reason));
       }),
     );
   }
@@ -1902,19 +1886,7 @@ export class DaemonDispatchLifecycle {
         observedAt: new Date(this.now()),
       },
     });
-    if (completed.status === "succeeded") {
-      this.completionWatchersByExecution.get(executionId)?.();
-      return true;
-    }
-    if (isTerminalExecutionStatus(completed.status)) {
-      // The database settled the execution another way (for example the whole
-      // run expired in the same transaction); the dispatch must still learn
-      // its terminal outcome, otherwise its watcher never settles.
-      this.completionWatchersByExecution.get(executionId)?.(
-        new DaemonDispatchFailure(executionFailureReason(completed) ?? completed.status),
-      );
-      return true;
-    }
+    if (isTerminalExecutionStatus(completed.status)) return true;
     this.armExecutionDeadline(completed);
     return false;
   }
