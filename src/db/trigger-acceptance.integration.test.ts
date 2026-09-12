@@ -238,6 +238,10 @@ describe("trigger acceptance persistence", () => {
       inputs: {},
       triggerContext: {},
       outputContext: { provider: "linear" },
+      conversation: {
+        key: JSON.stringify(["linear", "linear-control-workspace", "issue-1"]),
+        label: "Linear issue",
+      },
       deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
       stepIds: ["work"],
     });
@@ -329,6 +333,11 @@ describe("trigger acceptance persistence", () => {
     });
     assert.equal(later.created, true);
     assert.equal("suppressionReason" in later, false);
+    if (!("run" in later)) throw new Error("expected an accepted Linear run");
+    assert.deepEqual(later.run.conversation, {
+      key: JSON.stringify(["linear", "linear-control-workspace", "issue-1"]),
+      label: "Linear issue",
+    });
     await database.close();
   }, 120_000);
 
