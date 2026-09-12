@@ -5,8 +5,13 @@ import { z } from "zod";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import type { StartConnectionAttemptInput } from "../../db/types.js";
-import type { LinearApiClient, LinearConnectionClient } from "./client.js";
+import type { BindLinearConnectionInput, StartConnectionAttemptInput } from "../../db/types.js";
+import {
+  createLinearConnectionClient,
+  type LinearApiClient,
+  type LinearAuthorizationMode,
+  type LinearConnectionClient,
+} from "./client.js";
 import { createLinearRegistration } from "./index.js";
 
 describe("Linear registration", () => {
@@ -60,9 +65,21 @@ describe("Linear registration", () => {
       ...linearConfiguration(),
     });
     const body = z.object({ url: z.string() }).parse(await response.json());
-    const state = new URL(body.url).searchParams.get("state");
+    const authorization = new URL(body.url);
+    const state = authorization.searchParams.get("state");
     assert(state !== null && state.length > 20);
     assert.notEqual(attempt?.stateVerifier, state);
+    assert.equal(authorization.searchParams.get("mode"), "baseline");
+
+    const agentResponse = await registration.connection.actions["start"]!(
+      new Request("https://hub.test/start?organizationSlug=org&linearAgentSessions=true", {
+        method: "POST",
+      }),
+    );
+    const agentBody = z.object({ url: z.string() }).parse(await agentResponse.json());
+    const agentAuthorization = new URL(agentBody.url);
+    assert.equal(agentAuthorization.searchParams.get("mode"), "agentSessions");
+    assert.match(agentAuthorization.searchParams.get("state") ?? "", /^agent-sessions\./u);
   });
 
   it("does not construct partial behavior when Linear is not configured", () => {
@@ -81,6 +98,96 @@ describe("Linear registration", () => {
     assert.deepEqual(registration.sources, []);
     assert.deepEqual(registration.outputs, []);
     assert.deepEqual(registration.requests, []);
+  });
+
+  it("carries the Agent Session opt-in through a scope-omitting OAuth callback", async () => {
+    const database = createMemoryDatabase({
+      memberships: [
+        {
+          userId: "user",
+          organizationId: "org",
+          organizationName: "Org",
+          organizationSlug: "org",
+          membershipId: "membership",
+          role: "owner",
+        },
+      ],
+    });
+    let attempt: StartConnectionAttemptInput | undefined;
+    let binding: BindLinearConnectionInput | undefined;
+    database.startConnectionAttempt = (input) => {
+      attempt = input;
+      return Promise.resolve();
+    };
+    database.readConnectionAttempt = () => {
+      if (attempt === undefined) return Promise.reject(new Error("connection attempt missing"));
+      return Promise.resolve({
+        id: "attempt",
+        provider: "linear" as const,
+        phase: "linear_authorization" as const,
+        organizationId: attempt.access.organizationId,
+        returnRoute: attempt.access.returnRoute,
+        userId: attempt.access.userId,
+        sessionId: attempt.access.sessionId,
+        candidateExternalId: null,
+        pkceVerifier: null,
+        configurationVersion: attempt.configurationVersion,
+        providerApplicationId: attempt.providerApplicationId,
+        callbackOrigin: attempt.callbackOrigin,
+        configurationSnapshot: attempt.configurationSnapshot,
+        expectedConfigurationVersion: attempt.expectedConfigurationVersion,
+        activateConfiguration: false,
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: null,
+      });
+    };
+    database.bindLinearConnection = (input) => {
+      binding = input;
+      return Promise.resolve();
+    };
+    const connectionClient = createLinearConnectionClient({
+      clientId: "client",
+      clientSecret: "secret",
+      publicBaseUrl: "https://hub.test",
+      fetch: async (url) => {
+        let requestUrl: string;
+        if (typeof url === "string") requestUrl = url;
+        else if (url instanceof URL) requestUrl = url.href;
+        else requestUrl = url.url;
+        return requestUrl.endsWith("/oauth/token")
+          ? Response.json({ access_token: "token", refresh_token: "refresh" })
+          : Response.json({
+              data: {
+                viewer: { id: "app-user", organization: { id: "linear-org", name: "Acme" } },
+              },
+            });
+      },
+    });
+    const registration = createLinearRegistration({
+      database,
+      auth: new RegistrationAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: linearConfiguration(),
+      connectionClient,
+    });
+    const start = await registration.connection.actions["start"]!(
+      new Request("https://hub.test/start?organizationSlug=org&linearAgentSessions=true", {
+        method: "POST",
+      }),
+    );
+    const authorization = z.object({ url: z.string() }).parse(await start.json());
+    const state = new URL(authorization.url).searchParams.get("state");
+    assert(state !== null);
+
+    const callback = await registration.connection.actions["callback"]!(
+      new Request(
+        `https://hub.test/api/integrations/linear/callback?state=${encodeURIComponent(state)}&code=code`,
+      ),
+    );
+
+    assert.equal(callback.status, 303);
+    assert.deepEqual(binding?.scopes, ["read", "write", "app:assignable", "app:mentionable"]);
   });
 
   it("rejects an insecure direct connection start before auth or attempt persistence", async () => {
@@ -155,7 +262,7 @@ describe("Linear registration", () => {
       accessToken: "expired-token",
       refreshToken: null,
       accessTokenExpiresAt: new Date(0),
-      scopes: ["read", "comments:create"],
+      scopes: ["read", "write", "app:assignable", "app:mentionable"],
     };
     assert.deepEqual(
       registration.connection.status({ github: [], discord: [], slack: [], linear: [expired] }),
@@ -208,7 +315,10 @@ describe("Linear registration", () => {
         throw new Error("under-scoped token must not hydrate");
       },
       readIssueComments: async () => ({ comments: [], complete: true }),
+      readAgentSessionActivities: async () => ({ activities: [], complete: true }),
+      readCommentThread: async () => undefined,
       createComment: async () => {},
+      createAgentActivity: async () => {},
     };
     const registration = createLinearRegistration({
       database,
@@ -255,8 +365,11 @@ function linearCommentRequest(): Request {
 }
 
 class LinearConnectionFake implements LinearConnectionClient {
-  authorizationUrl(state: string): string {
-    return `https://linear.test/oauth?state=${state}`;
+  authorizationUrl(state: string, mode: LinearAuthorizationMode = "baseline"): string {
+    const url = new URL("https://linear.test/oauth");
+    url.searchParams.set("state", state);
+    url.searchParams.set("mode", mode);
+    return url.toString();
   }
 
   exchangeCode(): Promise<never> {

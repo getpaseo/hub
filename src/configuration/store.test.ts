@@ -36,7 +36,7 @@ const linear: LinearConnectionRecord = {
   accessToken: "token",
   refreshToken: "refresh-token",
   accessTokenExpiresAt: null,
-  scopes: ["read", "comments:create"],
+  scopes: ["read", "write", "app:assignable", "app:mentionable"],
 };
 
 describe("ProjectConfigurationStore resource compilation", () => {
@@ -186,6 +186,26 @@ describe("ProjectConfigurationStore resource compilation", () => {
                 },
               ],
             },
+            {
+              name: "team-scout",
+              on: "linear.issue_entered_scope",
+              max_runtime: "1h",
+              filters: {
+                connection: "acme-linear",
+                team: "linear-team-1",
+                states: ["ready"],
+              },
+              steps: [
+                {
+                  id: "assess-by-team",
+                  environment: "runner",
+                  max_runtime: "30m",
+                  idle_timeout: "5m",
+                  agent: { provider: "codex" },
+                  prompt: [{ text: "Assess the issue" }],
+                },
+              ],
+            },
           ],
         }),
       ),
@@ -194,6 +214,9 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const active = await store.activate(revision.id);
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, linear.id);
     assert.equal(active.configuration.triggers[0]?.filters?.resourceId, "linear-project-1");
+    assert.equal(active.configuration.triggers[1]?.filters?.team, "linear-team-1");
+    assert.equal(active.configuration.triggers[1]?.filters?.connectionId, linear.id);
+    assert.equal(active.configuration.triggers[1]?.filters?.resourceId, "linear-team-1");
 
     const accepted = await database.acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
@@ -205,6 +228,55 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, project.id);
+
+    const acceptedByTeam = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      teamId: "linear-team-1",
+      deliveryId: "linear-team-entry",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(acceptedByTeam.status, "accepted");
+    if (acceptedByTeam.status === "accepted") {
+      assert.equal(acceptedByTeam.events[0]?.projectId, project.id);
+      assert.equal(acceptedByTeam.events[0]?.resourceId, "linear-team-1");
+    }
+
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === linear.linearOrganizationId
+        ? { ...linear, scopes: ["read", "comments:create"] }
+        : undefined;
+    const baselineAccepted = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-scope-entry",
+      source: "linear.issue",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAccepted.status, "accepted");
+    const baselineAgentSession = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-agent-session",
+      source: "linear.agent_session",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAgentSession.status, "dropped");
+    if (baselineAgentSession.status === "dropped") {
+      assert.equal(baselineAgentSession.reason, "configuration_unavailable");
+    }
+    const baselineAgentSessionStop = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-baseline-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(0),
+    });
+    assert.equal(baselineAgentSessionStop.status, "accepted");
 
     database.findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId
@@ -227,7 +299,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       linearOrganizationId === linear.linearOrganizationId
         ? {
             ...linear,
-            scopes: ["read", "comments:create"],
+            scopes: ["read", "write", "app:assignable", "app:mentionable"],
             refreshToken: null,
             accessTokenExpiresAt: new Date(0),
           }
@@ -244,6 +316,15 @@ describe("ProjectConfigurationStore resource compilation", () => {
     if (expired.status === "dropped") {
       assert.equal(expired.reason, "configuration_unavailable");
     }
+    const expiredStop = await database.acceptLinearEvent({
+      linearOrganizationId: linear.linearOrganizationId,
+      projectId: "linear-project-1",
+      deliveryId: "linear-expired-agent-session-stop",
+      source: "linear.agent_session",
+      payload: { type: "agent_session", agentActivity: { signal: "stop" } },
+      receivedAt: new Date(120_000),
+    });
+    assert.equal(expiredStop.status, "accepted");
   });
 
   it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {

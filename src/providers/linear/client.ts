@@ -1,12 +1,23 @@
 import { z } from "zod";
 import type { Database, LinearConnectionRecord } from "../../db/types.js";
 
-/** The minimum authority required to read issues and leave an outcome on the issue. */
+/** The original issue/comment trigger authority. `write` also satisfies comment creation. */
 export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
+
+/** Additional authority requested for Linear's optional native app-agent mode. */
+export const LINEAR_AGENT_SESSION_REQUIRED_SCOPES = [
+  "read",
+  "write",
+  "app:assignable",
+  "app:mentionable",
+] as const;
+
+export type LinearAuthorizationMode = "baseline" | "agentSessions";
 
 /** Keep an issue description plus its preceding discussion within one bounded context window. */
 export const LINEAR_ISSUE_CONTEXT_LIMIT = 50;
 export const LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
+export const LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT = LINEAR_ISSUE_CONTEXT_LIMIT - 1;
 const LINEAR_ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 const LinearTokenResponseSchema = z
@@ -47,6 +58,10 @@ const IssueResponseSchema = z.object({
           .object({ id: z.string().min(1) })
           .nullable()
           .optional(),
+        team: z
+          .object({ id: z.string().min(1) })
+          .nullable()
+          .optional(),
         state: z
           .object({ id: z.string().min(1) })
           .nullable()
@@ -83,9 +98,106 @@ const IssueCommentHistoryResponseSchema = z.object({
   }),
 });
 
+const CommentAuthorSchema = z.object({
+  user: z
+    .object({ id: z.string().min(1) })
+    .nullable()
+    .optional(),
+  botActor: z
+    .object({ id: z.string().min(1).nullable().optional() })
+    .nullable()
+    .optional(),
+});
+
+const CommentRepliesSchema = z.object({
+  nodes: z.array(CommentAuthorSchema),
+  pageInfo: z.object({
+    hasNextPage: z.boolean(),
+    endCursor: z.string().min(1).nullable(),
+  }),
+});
+
+const CommentThreadResponseSchema = z.object({
+  data: z.object({
+    comment: CommentAuthorSchema.extend({
+      id: z.string().min(1),
+      parent: CommentAuthorSchema.extend({
+        id: z.string().min(1),
+        children: CommentRepliesSchema,
+      })
+        .nullable()
+        .optional(),
+      children: CommentRepliesSchema,
+      issue: z
+        .object({
+          agentSessions: z.object({
+            nodes: z.array(
+              z.object({
+                comment: z
+                  .object({ id: z.string().min(1) })
+                  .nullable()
+                  .optional(),
+              }),
+            ),
+            pageInfo: z.object({
+              hasNextPage: z.boolean(),
+              endCursor: z.string().min(1).nullable(),
+            }),
+          }),
+        })
+        .nullable()
+        .optional(),
+    }).nullable(),
+  }),
+});
+
 const CommentResponseSchema = z.object({
   data: z.object({
     commentCreate: z.object({ success: z.literal(true) }),
+  }),
+});
+
+const AgentActivityBodyContentSchema = z.object({
+  __typename: z.enum([
+    "AgentActivityThoughtContent",
+    "AgentActivityElicitationContent",
+    "AgentActivityErrorContent",
+    "AgentActivityPromptContent",
+    "AgentActivityResponseContent",
+  ]),
+  type: z.enum(["thought", "elicitation", "error", "prompt", "response"]),
+  body: z.string(),
+});
+
+const AgentActivityActionContentSchema = z.object({
+  __typename: z.literal("AgentActivityActionContent"),
+  type: z.literal("action"),
+  action: z.string(),
+  parameter: z.string(),
+  result: z.string().nullable().optional(),
+});
+
+const AgentActivityHistoryResponseSchema = z.object({
+  data: z.object({
+    agentSession: z.object({
+      activities: z.object({
+        nodes: z.array(
+          z.object({
+            id: z.string().min(1),
+            createdAt: z.string().datetime(),
+            user: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+            content: z.union([AgentActivityBodyContentSchema, AgentActivityActionContentSchema]),
+          }),
+        ),
+        pageInfo: z.object({ hasPreviousPage: z.boolean() }),
+      }),
+    }),
+  }),
+});
+
+const AgentActivityResponseSchema = z.object({
+  data: z.object({
+    agentActivityCreate: z.object({ success: z.literal(true) }),
   }),
 });
 
@@ -107,8 +219,8 @@ export interface LinearTokenRefresh {
 }
 
 export interface LinearConnectionClient {
-  authorizationUrl(state: string): string;
-  exchangeCode(code: string): Promise<LinearInstallation>;
+  authorizationUrl(state: string, mode?: LinearAuthorizationMode): string;
+  exchangeCode(code: string, mode?: LinearAuthorizationMode): Promise<LinearInstallation>;
   refresh(refreshToken: string): Promise<LinearTokenRefresh>;
   revoke(accessToken: string): Promise<void>;
 }
@@ -120,6 +232,7 @@ export interface LinearIssueDetails {
   description: string | null;
   url?: string;
   projectId: string | null;
+  teamId: string | null;
   stateId: string | null;
   assigneeId: string | null;
   labelIds: string[];
@@ -132,9 +245,55 @@ export interface LinearIssueComment {
   author: { id: string; name?: string } | null;
 }
 
+export interface LinearCommentThread {
+  /** The thread root: the comment's parent when it is a reply, otherwise the comment itself. */
+  rootId: string;
+  /** Distinct authors of the root and its replies: `user.id`, or `botActor.id` without a user. */
+  authorIds: string[];
+  /**
+   * Root comments of the issue's agent-session threads. Linear materializes a session as a
+   * comment thread (bot root, human prompts, app responses), so one of these as `rootId` marks
+   * a thread the session already handles.
+   */
+  agentSessionRootIds: string[];
+}
+
 export interface LinearIssueCommentHistory {
   comments: LinearIssueComment[];
   complete: boolean;
+}
+
+export type LinearAgentActivityType =
+  | "thought"
+  | "elicitation"
+  | "action"
+  | "response"
+  | "prompt"
+  | "error";
+
+export interface LinearAgentActivity {
+  id: string;
+  type: LinearAgentActivityType;
+  body: string;
+  createdAt: string;
+  author: { id: string; name?: string } | null;
+}
+
+export interface LinearAgentActivityHistory {
+  activities: LinearAgentActivity[];
+  complete: boolean;
+}
+
+export interface LinearAgentActivityContent {
+  type: "thought" | "response" | "error" | "elicitation";
+  body: string;
+}
+
+/** Linear renders a `select` elicitation as a choice list built from `signalMetadata.options`. */
+export type LinearAgentActivitySignal = "select";
+
+export interface LinearAgentActivitySignalMetadata {
+  options: Array<{ label: string; value: string }>;
 }
 
 export interface LinearApiClient {
@@ -147,16 +306,41 @@ export interface LinearApiClient {
     issueId: string;
     beforeCreatedAt: string;
   }): Promise<LinearIssueCommentHistory>;
+  readAgentSessionActivities(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    beforeCreatedAt: string;
+  }): Promise<LinearAgentActivityHistory>;
+  /** The thread a comment belongs to; `undefined` when Linear no longer has the comment. */
+  readCommentThread(input: {
+    linearOrganizationId: string;
+    commentId: string;
+  }): Promise<LinearCommentThread | undefined>;
   createComment(input: {
     linearOrganizationId: string;
     issueId: string;
     body: string;
+    /** Top-level comment to reply under; Linear rejects a nested comment as parent. */
+    parentId?: string;
+  }): Promise<void>;
+  createAgentActivity(input: {
+    linearOrganizationId: string;
+    agentSessionId: string;
+    content: LinearAgentActivityContent;
+    ephemeral?: boolean;
+    signal?: LinearAgentActivitySignal;
+    signalMetadata?: LinearAgentActivitySignalMetadata;
   }): Promise<void>;
 }
 
 export function hasRequiredLinearScopes(scopes: readonly string[]): boolean {
   const granted = new Set(scopes);
-  return LINEAR_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+  return granted.has("read") && (granted.has("comments:create") || granted.has("write"));
+}
+
+export function hasRequiredLinearAgentSessionScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return LINEAR_AGENT_SESSION_REQUIRED_SCOPES.every((scope) => granted.has(scope));
 }
 
 export function linearConnectionRequiresReauthorization(
@@ -194,12 +378,13 @@ export function createLinearConnectionClient(options: {
   const now = options.now ?? (() => new Date());
 
   return {
-    authorizationUrl(state) {
+    authorizationUrl(state, mode = "baseline") {
+      const requestedScopes = linearAuthorizationScopes(mode);
       const parameters = new URLSearchParams({
         client_id: options.clientId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: LINEAR_REQUIRED_SCOPES.join(","),
+        scope: requestedScopes.join(","),
         state,
         // Keep workflow results visibly attributable to the installed Paseo application instead
         // of impersonating the administrator who completed the connection.
@@ -207,7 +392,8 @@ export function createLinearConnectionClient(options: {
       });
       return `https://linear.app/oauth/authorize?${parameters.toString()}`;
     },
-    async exchangeCode(code) {
+    async exchangeCode(code, mode = "baseline") {
+      const requestedScopes = linearAuthorizationScopes(mode);
       const token = await exchangeToken(
         request,
         options,
@@ -226,7 +412,7 @@ export function createLinearConnectionClient(options: {
         accessToken: token.accessToken,
         refreshToken: token.refreshToken ?? null,
         accessTokenExpiresAt: token.accessTokenExpiresAt ?? null,
-        scopes: token.scopes ?? [...LINEAR_REQUIRED_SCOPES],
+        scopes: token.scopes ?? [...requestedScopes],
       };
     },
     async refresh(refreshToken) {
@@ -259,6 +445,10 @@ export function createLinearConnectionClient(options: {
       if (!response.ok) throw new Error(`Linear revoke HTTP ${response.status}`);
     },
   };
+}
+
+function linearAuthorizationScopes(mode: LinearAuthorizationMode): readonly string[] {
+  return mode === "agentSessions" ? LINEAR_AGENT_SESSION_REQUIRED_SCOPES : LINEAR_REQUIRED_SCOPES;
 }
 
 /**
@@ -326,6 +516,7 @@ export function createLinearApiClient(options: {
             issue(id: $id) {
               id identifier title description url
               project { id }
+              team { id }
               state { id }
               assignee { id }
               labels { nodes { id } }
@@ -344,6 +535,7 @@ export function createLinearApiClient(options: {
             description: issue.description ?? null,
             ...(issue.url === undefined ? {} : { url: issue.url }),
             projectId: issue.project?.id ?? null,
+            teamId: issue.team?.id ?? null,
             stateId: issue.state?.id ?? null,
             assigneeId: issue.assignee?.id ?? null,
             labelIds: issue.labels.nodes.map(({ id }) => id),
@@ -352,7 +544,7 @@ export function createLinearApiClient(options: {
     async readIssueComments(input) {
       const result = IssueCommentHistoryResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
-          query: `query PaseoIssueCommentHistory($issueId: String!, $before: DateTime!) {
+          query: `query PaseoIssueCommentHistory($issueId: ID!, $before: DateTimeOrDuration!) {
             comments(
               last: ${LINEAR_ISSUE_COMMENT_CONTEXT_LIMIT}
               orderBy: createdAt
@@ -389,18 +581,213 @@ export function createLinearApiClient(options: {
         complete: !result.data.comments.pageInfo.hasPreviousPage,
       };
     },
+    async readAgentSessionActivities(input) {
+      const result = AgentActivityHistoryResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `query PaseoAgentSessionActivityHistory(
+            $agentSessionId: String!
+            $before: DateTimeOrDuration!
+          ) {
+            agentSession(id: $agentSessionId) {
+              activities(
+                last: ${LINEAR_AGENT_ACTIVITY_CONTEXT_LIMIT}
+                orderBy: createdAt
+                filter: { createdAt: { lt: $before } }
+              ) {
+                nodes {
+                  id createdAt user { id name }
+                  content {
+                    __typename
+                    ... on AgentActivityThoughtContent { type body }
+                    ... on AgentActivityElicitationContent { type body }
+                    ... on AgentActivityErrorContent { type body }
+                    ... on AgentActivityPromptContent { type body }
+                    ... on AgentActivityResponseContent { type body }
+                    ... on AgentActivityActionContent { type action parameter result }
+                  }
+                }
+                pageInfo { hasPreviousPage }
+              }
+            }
+          }`,
+          variables: {
+            agentSessionId: input.agentSessionId,
+            before: input.beforeCreatedAt,
+          },
+        }),
+      );
+      const activities = result.data.agentSession.activities.nodes
+        .map((activity) => ({
+          id: activity.id,
+          type: activity.content.type,
+          body: agentActivityBody(activity.content),
+          createdAt: activity.createdAt,
+          author: { id: activity.user.id, name: activity.user.name },
+        }))
+        .sort(compareLinearActivityOrder);
+      return {
+        activities,
+        complete: !result.data.agentSession.activities.pageInfo.hasPreviousPage,
+      };
+    },
+    async readCommentThread(input) {
+      const accessToken = await accessTokenFor(input.linearOrganizationId);
+      const authorIds = new Set<string>();
+      const agentSessionRootIds = new Set<string>();
+      let commentId = input.commentId;
+      let commentAfter: string | null = null;
+      let sessionAfter: string | null = null;
+      let commentPagesComplete = false;
+      let sessionPagesComplete = false;
+      let rootId: string | undefined;
+      for (;;) {
+        const result = CommentThreadResponseSchema.parse(
+          await graphql(request, accessToken, {
+            query: `query PaseoCommentThread(
+              $id: String!
+              $commentAfter: String
+              $sessionAfter: String
+            ) {
+            comment(id: $id) {
+              id user { id } botActor { id }
+              parent {
+                id user { id } botActor { id }
+                children(first: 100, after: $commentAfter) {
+                  nodes { user { id } botActor { id } }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+              children(first: 100, after: $commentAfter) {
+                nodes { user { id } botActor { id } }
+                pageInfo { hasNextPage endCursor }
+              }
+              issue {
+                agentSessions(first: 50, after: $sessionAfter) {
+                  nodes { comment { id } }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }`,
+            variables: { id: commentId, commentAfter, sessionAfter },
+          }),
+        );
+        const comment = result.data.comment;
+        if (comment === null) return undefined;
+        if (!sessionPagesComplete) {
+          const sessions = comment.issue?.agentSessions;
+          const nextSessionCursor =
+            sessions === undefined
+              ? undefined
+              : collectLinearAgentSessionRoots(agentSessionRootIds, sessions);
+          sessionPagesComplete = nextSessionCursor === undefined;
+          sessionAfter = nextSessionCursor ?? sessionAfter;
+        }
+        // Linear threads are one level deep: a reply's parent is the root, and the root's
+        // children are the whole thread.
+        const root = comment.parent ?? comment;
+        rootId ??= root.id;
+        if (!commentPagesComplete) {
+          collectLinearCommentAuthors(authorIds, [root, ...root.children.nodes]);
+          const nextCommentCursor = nextLinearPageCursor(root.children.pageInfo, "comment thread");
+          commentPagesComplete = nextCommentCursor === undefined;
+          commentAfter = nextCommentCursor ?? commentAfter;
+        }
+        if (commentPagesComplete && sessionPagesComplete) {
+          return {
+            rootId,
+            authorIds: [...authorIds],
+            agentSessionRootIds: [...agentSessionRootIds],
+          };
+        }
+        commentId = rootId;
+      }
+    },
     async createComment(input) {
       const result = CommentResponseSchema.parse(
         await graphql(request, await accessTokenFor(input.linearOrganizationId), {
-          query: `mutation PaseoComment($issueId: String!, $body: String!) {
-            commentCreate(input: { issueId: $issueId, body: $body }) { success }
+          query: `mutation PaseoComment($issueId: String!, $body: String!, $parentId: String) {
+            commentCreate(input: { issueId: $issueId, body: $body, parentId: $parentId }) {
+              success
+            }
           }`,
-          variables: { issueId: input.issueId, body: input.body },
+          variables: {
+            issueId: input.issueId,
+            body: input.body,
+            ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
+          },
         }),
       );
       if (!result.data.commentCreate.success) throw new Error("Linear comment was not accepted");
     },
+    async createAgentActivity(input) {
+      const result = AgentActivityResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `mutation PaseoAgentActivity(
+            $agentSessionId: String!
+            $content: JSONObject!
+            $ephemeral: Boolean
+            $signal: AgentActivitySignal
+            $signalMetadata: JSONObject
+          ) {
+            agentActivityCreate(input: {
+              agentSessionId: $agentSessionId
+              content: $content
+              ephemeral: $ephemeral
+              signal: $signal
+              signalMetadata: $signalMetadata
+            }) { success }
+          }`,
+          variables: {
+            agentSessionId: input.agentSessionId,
+            content: input.content,
+            ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }),
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            ...(input.signalMetadata === undefined ? {} : { signalMetadata: input.signalMetadata }),
+          },
+        }),
+      );
+      if (!result.data.agentActivityCreate.success) {
+        throw new Error("Linear agent activity was not accepted");
+      }
+    },
   };
+}
+
+function collectLinearAgentSessionRoots(
+  roots: Set<string>,
+  page: {
+    nodes: Array<{ comment?: { id: string } | null | undefined }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  },
+): string | undefined {
+  for (const session of page.nodes) {
+    const id = session.comment?.id;
+    if (id !== undefined) roots.add(id);
+  }
+  return nextLinearPageCursor(page.pageInfo, "agent-session");
+}
+
+function collectLinearCommentAuthors(
+  authorIds: Set<string>,
+  authors: Array<{
+    user?: { id: string } | null | undefined;
+    botActor?: { id?: string | null | undefined } | null | undefined;
+  }>,
+): void {
+  for (const author of authors) {
+    const id = author.user?.id ?? author.botActor?.id ?? undefined;
+    if (id !== undefined && id !== null) authorIds.add(id);
+  }
+}
+
+function nextLinearPageCursor(
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  subject: string,
+): string | undefined {
+  if (!pageInfo.hasNextPage) return undefined;
+  if (pageInfo.endCursor === null) throw new Error(`Linear ${subject} page omitted its cursor`);
+  return pageInfo.endCursor;
 }
 
 function compareLinearCommentOrder(
@@ -409,6 +796,26 @@ function compareLinearCommentOrder(
 ): number {
   const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
   return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
+}
+
+function compareLinearActivityOrder(
+  left: Pick<LinearAgentActivity, "createdAt" | "id">,
+  right: Pick<LinearAgentActivity, "createdAt" | "id">,
+): number {
+  const byCreatedAt = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  return byCreatedAt === 0 ? left.id.localeCompare(right.id) : byCreatedAt;
+}
+
+function agentActivityBody(
+  content:
+    | z.infer<typeof AgentActivityBodyContentSchema>
+    | z.infer<typeof AgentActivityActionContentSchema>,
+): string {
+  if (content.type !== "action") return content.body;
+  const invocation = `${content.action}: ${content.parameter}`;
+  return content.result === undefined || content.result === null || content.result.length === 0
+    ? invocation
+    : `${invocation}\n\n${content.result}`;
 }
 
 async function exchangeToken(
@@ -456,7 +863,7 @@ async function readViewer(request: typeof fetch, accessToken: string) {
 async function graphql(
   request: typeof fetch,
   accessToken: string,
-  payload: { query: string; variables: Record<string, string> },
+  payload: { query: string; variables: Record<string, unknown> },
 ): Promise<unknown> {
   const response = await request("https://api.linear.app/graphql", {
     method: "POST",

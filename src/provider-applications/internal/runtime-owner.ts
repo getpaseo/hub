@@ -14,6 +14,7 @@ import type {
 } from "../../providers/registration.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
+import { linearReplyOutputTool } from "../../triggers/linear/reply.js";
 import type {
   Provider,
   ProviderApplicationConfiguration,
@@ -402,7 +403,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       outputs: [
         {
           type: `${provider}.reply`,
-          tool: replyOutputTool,
+          tool: provider === "linear" ? linearReplyOutputTool : replyOutputTool,
           available: (context) => {
             const output = slot.active?.registration.outputs.find(
               (candidate) => candidate.type === `${provider}.reply`,
@@ -642,7 +643,7 @@ function actionNames(provider: Provider): readonly string[] {
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
-  if (provider === "linear") return ["linear.issue", "linear.comment"];
+  if (provider === "linear") return ["linear.issue", "linear.comment", "linear.agent_session"];
   return GITHUB_TRIGGER_SOURCE_NAMES;
 }
 
