@@ -85,6 +85,36 @@ describe("GitHub trigger matching", () => {
       expected: 0,
     },
     {
+      acceptance: "3: changes_requested accepts only submitted change requests",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest(),
+        review: { body: "Please fix this", state: "changes_requested", user: { login: "boudra" } },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "3: changes_requested rejects approved reviews",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest(),
+        review: { body: "Looks good", state: "approved", user: { login: "boudra" } },
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "3: changes_requested rejects edited change requests",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "edited",
+        pull_request: pullRequest(),
+        review: { body: "Please fix this", state: "changes_requested", user: { login: "boudra" } },
+      }),
+      expected: 0,
+    },
+    {
       acceptance: "4: issue label_added matches its changed label case-insensitively",
       on: "github.issue_label_added",
       filters: { label: "READY-FOR-AGENT" },

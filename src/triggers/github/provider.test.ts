@@ -154,6 +154,76 @@ describe("GitHub Phase 1 trigger provider", () => {
     });
   });
 
+  it("derives a pull-request reaction target for submitted change requests", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_review_changes_requested",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      id: "github-pull-request-review-submitted",
+      type: "pull_request_review",
+      repo: "boudra/faro",
+      repositoryId: 7,
+      installationId: 42,
+      payload: {
+        action: "submitted",
+        pull_request: {
+          number: 312,
+          title: "smoke",
+          body: "pull request body",
+          user: { login: "boudra" },
+        },
+        review: {
+          body: "Please fix this @paseo",
+          state: "changes_requested",
+          user: { login: "boudra" },
+        },
+        sender: { login: "boudra" },
+      },
+      createdAt: "2026-05-19T00:00:00.000Z",
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected review match");
+
+    assert.deepEqual(matches[0]?.triggerContext.reactionSubject, {
+      kind: "item",
+      issueNumber: 312,
+    });
+  });
+
+  it("does not add pull-request reactions for legacy review triggers", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_review",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      id: "github-pull-request-review-submitted",
+      type: "pull_request_review",
+      repo: "boudra/faro",
+      repositoryId: 7,
+      installationId: 42,
+      payload: {
+        action: "submitted",
+        pull_request: { number: 312 },
+        review: { body: "@paseo please fix this", state: "changes_requested" },
+        sender: { login: "boudra" },
+      },
+      createdAt: "2026-05-19T00:00:00.000Z",
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected review match");
+
+    assert.equal(matches[0]?.triggerContext.reactionSubject, null);
+  });
+
   it.each([
     ["completed", "+1"],
     ["failed", "-1"],

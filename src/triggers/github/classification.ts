@@ -13,6 +13,7 @@ export const GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES = [
   "github.issue_closed",
   "github.pull_request_created",
   "github.pull_request_synchronized",
+  "github.pull_request_review_changes_requested",
   "github.issue_comment_created",
   "github.pull_request_comment_created",
   "github.issue_label_added",
@@ -60,8 +61,11 @@ export function classifyGitHubEvent(event: NormalizedGitHubEvent): GitHubClassif
 }
 
 function classifyPush(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
-  const payload = PushPayloadSchema.parse(event.payload);
-  return { ...emptyClassification(), actor: payload.sender?.login ?? "" };
+  const payload = PushPayloadSchema.safeParse(event.payload);
+  return {
+    ...emptyClassification(),
+    actor: payload.success ? (payload.data.sender?.login ?? "") : "",
+  };
 }
 
 function classifyIssue(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
@@ -111,6 +115,10 @@ function classifyReview(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const payload = PullRequestReviewPayloadSchema.parse(event.payload);
   return {
     ...emptyClassification(),
+    semanticEvent:
+      payload.action === "submitted" && payload.review?.state === "changes_requested"
+        ? "github.pull_request_review_changes_requested"
+        : undefined,
     actor: payload.sender?.login ?? payload.review?.user?.login ?? "",
     text: payload.review?.body ?? "",
     labels: labelsFor(payload.pull_request?.labels),
