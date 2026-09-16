@@ -4,12 +4,15 @@ import {
   PullRequestPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
   PullRequestReviewPayloadSchema,
+  PushPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 
 export const GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES = [
   "github.issue_created",
+  "github.issue_closed",
   "github.pull_request_created",
+  "github.pull_request_synchronized",
   "github.issue_comment_created",
   "github.pull_request_comment_created",
   "github.issue_label_added",
@@ -52,7 +55,13 @@ export function classifyGitHubEvent(event: NormalizedGitHubEvent): GitHubClassif
   if (event.type === "issue_comment") return classifyIssueComment(event);
   if (event.type === "pull_request_review") return classifyReview(event);
   if (event.type === "pull_request_review_comment") return classifyReviewComment(event);
+  if (event.type === "push") return classifyPush(event);
   return emptyClassification();
+}
+
+function classifyPush(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
+  const payload = PushPayloadSchema.parse(event.payload);
+  return { ...emptyClassification(), actor: payload.sender?.login ?? "" };
 }
 
 function classifyIssue(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
@@ -133,12 +142,14 @@ function emptyClassification(): GitHubClassifiedEvent {
 
 function issueSemanticEvent(action: string | undefined): GitHubSemanticEvent | undefined {
   if (action === "opened") return "github.issue_created";
+  if (action === "closed") return "github.issue_closed";
   if (action === "labeled") return "github.issue_label_added";
   return undefined;
 }
 
 function pullRequestSemanticEvent(action: string | undefined): GitHubSemanticEvent | undefined {
   if (action === "opened") return "github.pull_request_created";
+  if (action === "synchronize") return "github.pull_request_synchronized";
   if (action === "labeled") return "github.pull_request_label_added";
   return undefined;
 }
